@@ -1,14 +1,13 @@
-//! Global hotkeys via RegisterHotKey and a message loop on the calling thread.
+//! Global hotkeys (F13–F24 suit a Stream Deck). Registered to the tray window, so presses arrive as
+//! WM_HOTKEY there, and re-registered whenever the settings change.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
-use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, PostThreadMessageW, MB_ICONHAND, MB_OK, MSG, WM_HOTKEY, WM_QUIT,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONHAND, MB_OK};
 
 /// "Ctrl+Alt+F9" → (modifier flags, virtual key code).
 pub fn parse(keys: &str) -> Result<(u32, u32)> {
@@ -34,9 +33,7 @@ pub fn parse(keys: &str) -> Result<(u32, u32)> {
                     "pause" => 0x13,
                     "scrolllock" => 0x91,
                     "printscreen" => 0x2C,
-                    k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => {
-                        k.as_bytes()[0].to_ascii_uppercase() as u32
-                    }
+                    k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => k.as_bytes()[0].to_ascii_uppercase() as u32,
                     k => match k.strip_prefix('f').and_then(|n| n.parse::<u32>().ok()) {
                         Some(n @ 1..=24) => 0x70 + n - 1,
                         _ => bail!("unknown key {key:?} in hotkey {keys:?}"),
@@ -51,44 +48,27 @@ pub fn parse(keys: &str) -> Result<(u32, u32)> {
     }
 }
 
-pub fn current_thread_id() -> u32 {
-    unsafe { GetCurrentThreadId() }
-}
-
-/// Makes `run_loop` on the given thread return.
-pub fn quit(thread_id: u32) {
-    unsafe { PostThreadMessageW(thread_id, WM_QUIT, 0, 0) };
-}
-
 pub fn beep(ok: bool) {
     unsafe { MessageBeep(if ok { MB_OK } else { MB_ICONHAND }) };
 }
 
-/// Registers the hotkeys and blocks, calling `on_press(index)` for each press, until `quit` is called.
-/// Hotkeys that can't be registered (already taken by another app) are reported and skipped.
-pub fn run_loop(hotkeys: &[String], mut on_press: impl FnMut(usize)) {
-    let mut registered = Vec::new();
-    for (i, keys) in hotkeys.iter().enumerate() {
-        match parse(keys) {
+/// Registers the hotkeys to `hwnd` with ids 1.., replacing `old`. Keys another app already holds
+/// are logged and skipped.
+pub fn register(hwnd: HWND, keys: &[String], old: &mut Vec<i32>) {
+    for id in old.drain(..) {
+        unsafe { UnregisterHotKey(hwnd, id) };
+    }
+    for (i, k) in keys.iter().enumerate() {
+        let id = i as i32 + 1;
+        match parse(k) {
             Ok((mods, vk)) => {
-                if unsafe { RegisterHotKey(std::ptr::null_mut(), i as i32, mods | MOD_NOREPEAT, vk) } != 0 {
-                    registered.push(i as i32);
+                if unsafe { RegisterHotKey(hwnd, id, mods | MOD_NOREPEAT, vk) } != 0 {
+                    old.push(id);
                 } else {
-                    crate::log(&format!("hotkey {keys} is already in use by another app; skipped"));
+                    crate::util::log(&format!("hotkey {k} is already used by another app; skipped"));
                 }
             }
-            Err(e) => crate::log(&format!("{e}; skipped")),
-        }
-    }
-    unsafe {
-        let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
-            if msg.message == WM_HOTKEY {
-                on_press(msg.wParam);
-            }
-        }
-        for id in registered {
-            UnregisterHotKey(std::ptr::null_mut(), id);
+            Err(e) => crate::util::log(&format!("{e}; skipped")),
         }
     }
 }
@@ -101,6 +81,7 @@ mod tests {
     fn parses() {
         assert_eq!(parse("Ctrl+Alt+F9").unwrap(), (MOD_CONTROL | MOD_ALT, 0x78));
         assert_eq!(parse("win + shift + r").unwrap(), (MOD_WIN | MOD_SHIFT, 'R' as u32));
+        assert_eq!(parse("F13").unwrap(), (0, 0x7C));
         assert_eq!(parse("F24").unwrap(), (0, 0x87));
         assert!(parse("Ctrl+Alt").is_err());
         assert!(parse("Ctrl+F25").is_err());

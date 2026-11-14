@@ -12,9 +12,9 @@ and turn "that just happened" into a shareable file on the clipboard in seconds.
 - Simple settings: encoder, quality, buffer size, save location, excluded apps, hotkeys.
 
 ## How long can the buffer be? (this PC)
-Video is encoded on the GPU (RTX 4070 Ti NVENC, AV1), so games barely notice. Recording at 60 fps:
+Video is encoded on the GPU (RTX 4070 Ti NVENC), so games barely notice. Recording at 60 fps:
 
-| Quality (1440p60 AV1) | Per hour | 100 GB buffer | 300 GB buffer |
+| Quality (1440p60) | Per hour | 100 GB buffer | 300 GB buffer |
 |---|---|---|---|
 | 6 Mbps (good desktop/most games) | 2.7 GB | ~37 h | ~110 h |
 | 12 Mbps (fast games, sharp) | 5.4 GB | ~18 h | ~55 h |
@@ -36,12 +36,21 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 
 ## Phases
 1. **Done.** ffmpeg ddagrab → NVENC → segment ring; "save last N min" from a hotkey. (Proves the buffer length.)
-2. Per-app audio tracks from the capture core; export with track selection + volumes.
-3. Stream Deck plugin + clipboard-as-file.
-4. Quick editor (thumbnails, in/out, presets).
-5. Polish: excluded apps, pause on lock screen, multi-monitor option.
+2. **Done.** Per-app audio streams (WASAPI process loopback + mic), fixed track layout in every clip:
+   Mix · Mic · Communication · one per app. App categories and the game list shared with lifelog.
+3. **Done.** Stream Deck via F13–F24 hotkeys (no plugin needed), copy-file-to-clipboard, tray icon with pause.
+4. **Done.** Clips window (hover-scrub thumbnails, player) and quick editor (trim, keyframed zoom, per-track volume,
+   Discord size presets). Local web UI in an Edge app window, not Tauri: no extra toolchain, opens instantly.
+5. Next: multi-monitor option, a "custom range" Stream Deck button (open the editor on the last 10 min of the
+   buffer without saving first), start-with-Windows installer step.
 
-## Things to decide
-- Default quality (6 vs 12 Mbps) and buffer cap (e.g. 200 GB). *Phase 1 default: 12 Mbps, 200 GB; both in the config file.*
-- Record at 60 fps or match the 180 Hz monitor (much bigger files). *Phase 1 default: 60 fps, configurable.*
-- Build lifelog's capture core first (shared), or start here since phase 1 needs no custom audio code. *Started here.*
+## Decisions made
+- **Format: H.264** by default (AV1 doesn't open in Premiere). HEVC/AV1 still selectable.
+- 20 Mbps, 60 fps, 200 GB cap (~22 h). All in Options.
+- Clips go to `<Videos>\Clips <year>`, alongside the existing yearly folders.
+- One MP4 per clip; MP4 has no practical audio-track limit, so every app that made sound gets its own track.
+- Audio code is clipback's own (lifelog's capture is speech-oriented and 16 kHz mono); lifelog's process watching,
+  icons, game list and clipboard helper are reused through a path dependency.
+- Sync: video runs are anchored to wall-clock by the first frame's RTC time; audio packets by their QPC timestamps.
+  Measured offset ~40 ms (mostly playback latency).
+- A new app's first ~1 s of sound can be missed (streams start when an app is seen playing; polled every second).

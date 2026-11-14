@@ -1,73 +1,76 @@
-//! Keeps ffmpeg recording the screen into the ring, restarting it whenever it stops
-//! (desktop capture dies on the lock screen, UAC prompts and display mode changes).
+//! Keeps ffmpeg recording the screen into the video ring, restarting it whenever it stops
+//! (desktop capture dies on the lock screen, UAC prompts and display mode changes), when
+//! recording is paused/resumed, or when the video settings change.
 
-use crate::config::{log_path, Config};
-use crate::ring;
+use crate::config::{Config, SEGMENT_SECS};
+use crate::state;
+use crate::util::{self, log};
 use anyhow::{Context, Result};
-use std::fs::File;
-use std::io::Write;
-use std::os::windows::io::AsRawHandle;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-};
 
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
-/// A job object that kills ffmpeg if we die without stopping it, so it can never record unsupervised.
-struct KillOnExitJob(windows_sys::Win32::Foundation::HANDLE);
-
-impl KillOnExitJob {
-    fn new() -> Self {
-        unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if !job.is_null() {
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &info as *const _ as *const _,
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
-            }
-            Self(job)
-        }
-    }
-
-    fn adopt(&self, child: &Child) {
-        if !self.0.is_null() {
-            unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as _) };
-        }
-    }
+fn ffmpeg_log() -> PathBuf {
+    crate::config::local_dir().join("ffmpeg-video.log")
 }
 
-fn spawn(cfg: &Config, ffmpeg: &Path) -> Result<Child> {
-    let log = File::create(log_path()).context("creating ffmpeg log")?;
-    let bitrate = format!("{}k", (cfg.bitrate_mbps * 1000.0).round() as u64);
-    let peak = format!("{}k", (cfg.bitrate_mbps * 2000.0).round() as u64);
-    let grab = format!(
-        "ddagrab=output_idx={}:framerate={}:draw_mouse={}",
-        cfg.output_idx, cfg.fps, cfg.draw_mouse as u8
+/// ddagrab → NVENC → 2 s segments. Frame 0's wall-clock time is printed once (the `print` in
+/// setpts) and saved as the run's anchor, which lines the video up with the audio streams.
+fn spawn(cfg: &Config, ffmpeg: &Path, run: &Path) -> Result<Child> {
+    let v = &cfg.video;
+    let bitrate = format!("{}k", (v.bitrate_mbps * 1000.0).round() as u64);
+    let peak = format!("{}k", (v.bitrate_mbps * 2000.0).round() as u64);
+    let graph = format!(
+        "ddagrab=output_idx={}:framerate={}:draw_mouse={},setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'",
+        v.output_idx, v.fps, v.draw_mouse as u8
     );
-    let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "warning", "-nostats"])
+    let mut cmd = util::command(ffmpeg);
+    cmd.args(["-hide_banner", "-nostats", "-loglevel", "info"])
         .args(["-init_hw_device", "d3d11va"])
-        .args(["-filter_complex", &grab])
+        .args(["-filter_complex", &graph])
         .args(["-c:v", cfg.encoder(), "-preset", "p4", "-rc", "vbr"])
         .args(["-b:v", &bitrate, "-maxrate", &peak, "-bufsize", &peak])
-        .args(["-g", &(cfg.fps * cfg.segment_secs).to_string()])
-        .args(["-f", "segment", "-segment_time", &cfg.segment_secs.to_string()])
-        .args(["-segment_format", "matroska", "-reset_timestamps", "1", "-strftime", "1"])
-        .arg(cfg.ring_dir.join(ring::FFMPEG_PATTERN))
+        // No B-frames and a keyframe every segment: easy to cut, quick to scrub in an editor.
+        .args(["-bf", "0", "-g", &(v.fps * SEGMENT_SECS).to_string()])
+        .args(["-f", "segment", "-segment_time", &SEGMENT_SECS.to_string(), "-segment_format", "matroska"])
+        .args(["-reset_timestamps", "0", "-segment_list_type", "csv", "-segment_list"])
+        .arg(run.join("list.csv"))
+        .arg(run.join("v_%05d.mkv"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(log));
-    cmd.spawn().with_context(|| format!("starting {}", ffmpeg.display()))
+        .stderr(Stdio::piped());
+    let child = cmd.spawn().with_context(|| format!("starting {}", ffmpeg.display()))?;
+    util::job().adopt(&child);
+    Ok(child)
+}
+
+/// Reads ffmpeg's messages: saves the anchor, logs the rest (minus the per-segment chatter).
+fn watch_stderr(child: &mut Child, run: PathBuf) -> std::thread::JoinHandle<String> {
+    let stderr = child.stderr.take().expect("piped");
+    std::thread::spawn(move || {
+        let mut log = std::fs::OpenOptions::new().create(true).append(true).open(ffmpeg_log()).ok();
+        let mut last = String::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if line.starts_with("[Eval @") {
+                if let Some(us) = line.rsplit(' ').next().and_then(|v| v.trim().parse::<f64>().ok()) {
+                    let _ = std::fs::write(run.join("anchor.txt"), format!("{}", us.round() as i64));
+                }
+                continue;
+            }
+            if line.contains("Opening '") || line.trim().is_empty() || line.starts_with("  ") {
+                continue;
+            }
+            if let Some(f) = log.as_mut() {
+                let _ = writeln!(f, "{}", line);
+            }
+            last = line;
+        }
+        last
+    })
 }
 
 /// Asks ffmpeg to finish the current segment and exit; kills it if it doesn't.
@@ -75,76 +78,74 @@ fn stop_gracefully(child: &mut Child) {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(b"q");
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+    util::wait_or_kill(child, 5);
 }
 
-fn last_log_line() -> String {
-    std::fs::read_to_string(log_path())
-        .ok()
-        .and_then(|t| t.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()))
-        .unwrap_or_default()
-}
-
-fn sleep_unless_stopped(d: Duration, stop: &AtomicBool) {
+fn sleep_while(d: Duration, keep_waiting: impl Fn() -> bool) {
     let end = Instant::now() + d;
-    while Instant::now() < end && !stop.load(Ordering::Relaxed) {
+    while Instant::now() < end && keep_waiting() {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-/// Runs until `stop` is set.
-pub fn run(cfg: &Config, ffmpeg: &Path, stop: &AtomicBool) {
-    let job = KillOnExitJob::new();
-    // Only report changes of state, so hours on the lock screen don't flood the console.
+/// Runs until clipback quits.
+pub fn run() {
+    let _ = std::fs::create_dir_all(crate::config::local_dir());
+    let _ = std::fs::write(ffmpeg_log(), "");
+    // Only changes of state are logged, so hours on the lock screen don't flood the log.
     let mut healthy = true;
-    while !stop.load(Ordering::Relaxed) {
-        let mut child = match spawn(cfg, ffmpeg) {
+    while !state::stopping() {
+        if state::paused() {
+            sleep_while(Duration::from_secs(1), || state::paused() && !state::stopping());
+            continue;
+        }
+        let cfg = state::cfg();
+        let generation = state::VIDEO_GENERATION.load(Ordering::Relaxed);
+        let run = cfg.video_ring().join(chrono::Local::now().format("%Y%m%d_%H%M%S_%3f").to_string());
+        let mut child = match std::fs::create_dir_all(&run).map_err(anyhow::Error::from).and_then(|_| spawn(&cfg, &state::ffmpeg(), &run)) {
             Ok(c) => c,
             Err(e) => {
                 if healthy {
-                    crate::log(&format!("recorder failed to start: {e:#}"));
+                    log(&format!("video recorder failed to start: {e:#}"));
                     healthy = false;
                 }
-                sleep_unless_stopped(RETRY_DELAY, stop);
+                sleep_while(RETRY_DELAY, || !state::stopping());
                 continue;
             }
         };
-        job.adopt(&child);
+        let stderr = watch_stderr(&mut child, run.clone());
         let started = Instant::now();
         let mut announced = false;
-        let status = loop {
-            if stop.load(Ordering::Relaxed) {
+        let exit = loop {
+            let restart = state::VIDEO_GENERATION.load(Ordering::Relaxed) != generation;
+            if state::stopping() || state::paused() || restart {
                 stop_gracefully(&mut child);
-                return;
+                break None;
             }
             match child.try_wait() {
-                Ok(Some(status)) => break status.to_string(),
+                Ok(Some(status)) => break Some(status.to_string()),
                 Ok(None) => {}
-                Err(e) => break e.to_string(),
+                Err(e) => break Some(e.to_string()),
             }
             if !announced && started.elapsed() > Duration::from_secs(4) {
-                crate::log(if healthy { "recording" } else { "recording again" });
+                log(if healthy { "recording video" } else { "recording video again" });
                 announced = true;
                 healthy = true;
+                state::VIDEO_LIVE.store(true, Ordering::Relaxed);
             }
             std::thread::sleep(Duration::from_millis(200));
         };
-        if healthy {
-            crate::log(&format!(
-                "capture stopped ({status}): {} — retrying every {}s (normal while locked)",
-                last_log_line(),
-                RETRY_DELAY.as_secs()
-            ));
-            healthy = false;
+        state::VIDEO_LIVE.store(false, Ordering::Relaxed);
+        let last = stderr.join().unwrap_or_default();
+        if let Some(status) = exit {
+            if healthy {
+                log(&format!(
+                    "video capture stopped ({status}): {last} — retrying every {}s (normal while locked)",
+                    RETRY_DELAY.as_secs()
+                ));
+                healthy = false;
+            }
+            sleep_while(RETRY_DELAY, || !state::stopping());
         }
-        sleep_unless_stopped(RETRY_DELAY, stop);
     }
 }

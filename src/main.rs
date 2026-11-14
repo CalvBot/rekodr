@@ -1,38 +1,18 @@
-mod config;
-mod export;
-mod hotkey;
-mod recorder;
-mod ring;
+//! clipback from a terminal: `clipback` runs it here (with a log in the console); the other
+//! commands talk to the running copy.
 
-use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
-use config::{format_duration, parse_duration, Config};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use anyhow::{Result, bail};
+use clipback::config::{self, Config, format_duration, parse_duration};
 
-#[derive(Parser)]
-#[command(version, about = "Hands-off long replay buffer")]
-struct Cli {
-    #[command(subcommand)]
-    command: Cmd,
-}
+const HELP: &str = "clipback: hands-off long replay buffer
 
-#[derive(Subcommand)]
-enum Cmd {
-    /// Record the screen into the rolling buffer and listen for hotkeys (leave this running)
-    Run,
-    /// Save the last N seconds/minutes/hours as an MP4, e.g. `clipback save 2m`
-    Save { duration: String },
-    /// Show how much is in the buffer
-    Status,
-    /// Print the settings file location
-    Config,
-}
-
-pub fn log(msg: &str) {
-    println!("[{}] {msg}", chrono::Local::now().format("%H:%M:%S"));
-}
+  clipback              run (tray icon, hotkeys, recording) with a console log
+  clipback save 2m      save the last 2 minutes (30s, 10m, 1h …) from the running copy
+  clipback pause|resume pause or resume recording
+  clipback open         open the clips window
+  clipback quit         stop the running copy
+  clipback status       what's in the buffer
+  clipback config       print the settings file's path";
 
 fn main() {
     if let Err(e) = real_main() {
@@ -41,120 +21,59 @@ fn main() {
     }
 }
 
-fn real_main() -> Result<()> {
-    let cli = Cli::parse();
-    if let Cmd::Config = cli.command {
-        println!("{}", config::config_path().display());
-        return Ok(());
+fn call(method: &str, path: &str) -> Result<serde_json::Value> {
+    let port = Config::load()?.port;
+    let body = lifelog::api::call(port, method, path)
+        .map_err(|_| anyhow::anyhow!("clipback isn't running (start it with `clipback`)"))?;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+    if let Some(e) = v["error"].as_str() {
+        bail!("{e}");
     }
-    let cfg = Config::load()?;
-    match cli.command {
-        Cmd::Run => run(cfg),
-        Cmd::Save { duration } => {
-            let secs = parse_duration(&duration)?;
-            let out = export::save_last(&cfg, &cfg.find_ffmpeg()?, secs)?;
-            println!("{}", out.display());
+    Ok(v)
+}
+
+fn real_main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None | Some("run") => clipback::run_service(),
+        Some("save") => {
+            let secs = parse_duration(args.get(1).map(String::as_str).unwrap_or("30s"))?;
+            let v = call("POST", &format!("/api/save?secs={secs}"))?;
+            println!("{}", v["path"].as_str().unwrap_or("saved"));
+            if let Some(t) = v["tracks"].as_array() {
+                let names: Vec<&str> = t.iter().filter_map(|t| t.as_str()).collect();
+                println!("audio tracks: {}", names.join(", "));
+            }
             Ok(())
         }
-        Cmd::Status => status(&cfg),
-        Cmd::Config => unreachable!(),
-    }
-}
-
-/// True if another `clipback run` already holds the instance lock. The lock lives as long as this process.
-fn already_running() -> bool {
-    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows_sys::Win32::System::Threading::CreateMutexW;
-    let name: Vec<u16> = "Local\\clipback-recorder\0".encode_utf16().collect();
-    unsafe {
-        let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-        handle.is_null() || GetLastError() == ERROR_ALREADY_EXISTS
-    }
-}
-
-fn run(cfg: Config) -> Result<()> {
-    if already_running() {
-        bail!("clipback is already running");
-    }
-    let ffmpeg = cfg.find_ffmpeg()?;
-    std::fs::create_dir_all(&cfg.ring_dir).with_context(|| format!("creating {}", cfg.ring_dir.display()))?;
-    log(&format!(
-        "buffer: {} (cap {} GB, about {:.0} h at {} Mbps) · clips: {}",
-        cfg.ring_dir.display(),
-        cfg.max_ring_gb,
-        cfg.max_ring_gb * 8000.0 / cfg.bitrate_mbps / 3600.0,
-        cfg.bitrate_mbps,
-        cfg.save_dir.display()
-    ));
-
-    let cfg = Arc::new(cfg);
-    let stop = Arc::new(AtomicBool::new(false));
-    let main_thread = hotkey::current_thread_id();
-    {
-        let stop = stop.clone();
-        ctrlc::set_handler(move || {
-            stop.store(true, Ordering::Relaxed);
-            hotkey::quit(main_thread);
-        })
-        .context("installing Ctrl+C handler")?;
-    }
-
-    let recorder = {
-        let (cfg, ffmpeg, stop) = (cfg.clone(), ffmpeg.clone(), stop.clone());
-        std::thread::spawn(move || recorder::run(&cfg, &ffmpeg, &stop))
-    };
-
-    // Pruner: keeps the ring under its cap. Detached; it only ever deletes whole old segments.
-    {
-        let (cfg, stop) = (cfg.clone(), stop.clone());
-        std::thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                if let Err(e) = ring::prune(&cfg.ring_dir, cfg.max_ring_bytes()) {
-                    log(&format!("pruning failed: {e:#}"));
-                }
-                std::thread::sleep(Duration::from_secs(20));
+        Some(cmd @ ("pause" | "resume" | "quit")) => call("POST", &format!("/api/{cmd}")).map(|_| ()),
+        Some("open") => {
+            call("GET", "/api/status")?;
+            let port = Config::load()?.port;
+            let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", &format!("http://127.0.0.1:{port}/")]).spawn();
+            Ok(())
+        }
+        Some("status") => {
+            let v = call("GET", "/api/status")?;
+            let state = if v["paused"] == true { "paused" } else if v["live"] == true { "recording" } else { "waiting for the screen" };
+            println!("State:   {state}");
+            println!("Buffer:  {:.1} GB of {:.0} GB", v["ring_bytes"].as_f64().unwrap_or(0.0) / 1e9, v["ring_cap"].as_f64().unwrap_or(0.0) / 1e9);
+            if let (Some(old), Some(now)) = (v["oldest_us"].as_i64(), v["now_us"].as_i64()) {
+                println!("Footage: last {}", format_duration(((now - old) / 1_000_000).max(0) as u64));
             }
-        });
-    }
-
-    for h in &cfg.hotkey {
-        log(&format!("hotkey {} saves the last {}", h.keys, h.save));
-    }
-    let keys: Vec<String> = cfg.hotkey.iter().map(|h| h.keys.clone()).collect();
-    hotkey::run_loop(&keys, |i| {
-        let Some(secs) = cfg.hotkey.get(i).and_then(|h| parse_duration(&h.save).ok()) else { return };
-        let (cfg, ffmpeg) = (cfg.clone(), ffmpeg.clone());
-        std::thread::spawn(move || match export::save_last(&cfg, &ffmpeg, secs) {
-            Ok(path) => {
-                log(&format!("saved {}", path.display()));
-                hotkey::beep(true);
+            for a in v["audio"].as_array().into_iter().flatten() {
+                println!("Audio:   {} → {}", a["exe"].as_str().unwrap_or("?"), a["track"].as_str().unwrap_or("?"));
             }
-            Err(e) => {
-                log(&format!("save failed: {e:#}"));
-                hotkey::beep(false);
-            }
-        });
-    });
-
-    log("stopping");
-    stop.store(true, Ordering::Relaxed);
-    let _ = recorder.join();
-    Ok(())
-}
-
-fn status(cfg: &Config) -> Result<()> {
-    let segs = ring::list(&cfg.ring_dir)?;
-    let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
-        println!("Buffer at {} is empty.", cfg.ring_dir.display());
-        return Ok(());
-    };
-    let bytes: u64 = segs.iter().map(|s| s.size).sum();
-    let recorded = segs.len() as u64 * cfg.segment_secs as u64;
-    let live = (chrono::Local::now() - last.start).num_seconds() < cfg.segment_secs as i64 + 5;
-    println!("Recording:  {}", if live { "yes" } else { "no (newest segment is old)" });
-    println!("Buffer:     {:.2} GB of {} GB in {} segments", bytes as f64 / 1e9, cfg.max_ring_gb, segs.len());
-    println!("Footage:    {}", format_duration(recorded));
-    println!("Oldest:     {}", first.start.format("%Y-%m-%d %H:%M:%S"));
-    println!("Newest:     {}", last.start.format("%Y-%m-%d %H:%M:%S"));
-    Ok(())
+            Ok(())
+        }
+        Some("config") => {
+            println!("{}", config::config_path().display());
+            Ok(())
+        }
+        Some("-h" | "--help" | "help") => {
+            println!("{HELP}");
+            Ok(())
+        }
+        Some(other) => bail!("unknown command {other:?}\n\n{HELP}"),
+    }
 }

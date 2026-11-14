@@ -1,160 +1,226 @@
-//! Settings, read from %APPDATA%\clipback\config.toml (created with defaults on first run).
+//! Settings in %APPDATA%\clipback\config.toml (created with defaults on first run, rewritten by the
+//! Options page). The live copy is in `state`, so changes apply without a restart.
 
-use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(default)]
 pub struct Config {
-    /// Folder holding the rolling buffer of segments. Everything named seg_*.mkv in here is ours to delete.
+    /// Rolling buffer (video and audio). Everything in here is clipback's and gets deleted as it wraps.
     pub ring_dir: PathBuf,
-    /// Where saved clips go.
-    pub save_dir: PathBuf,
-    /// Buffer cap; the oldest segments are deleted beyond this.
+    /// Clips are saved to `<clips_dir>\Clips <year>`.
+    pub clips_dir: PathBuf,
+    /// Buffer cap in GB; the oldest footage is deleted beyond it.
     pub max_ring_gb: f64,
-    /// Which monitor to record (0 = first output of the default GPU, normally the main screen).
+    /// Port of the local web UI (127.0.0.1 only).
+    pub port: u16,
+    /// Path to ffmpeg.exe; empty = find it.
+    pub ffmpeg: String,
+    pub start_with_windows: bool,
+    pub video: Video,
+    pub audio: Audio,
+    pub hotkeys: Vec<Hotkey>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(default)]
+pub struct Video {
+    /// Monitor: 0 is normally the main screen.
     pub output_idx: u32,
     pub fps: u32,
-    /// av1 | hevc | h264 (all NVENC).
+    /// h264 (edits anywhere, e.g. Premiere), hevc or av1. All NVENC.
     pub codec: String,
     pub bitrate_mbps: f64,
-    /// Segment and keyframe interval. A saved clip starts on a segment boundary.
-    pub segment_secs: u32,
     pub draw_mouse: bool,
-    /// Path to ffmpeg.exe; empty = find it automatically.
-    pub ffmpeg: String,
-    pub hotkey: Vec<Hotkey>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct Hotkey {
-    /// e.g. "Ctrl+Alt+F9"
-    pub keys: String,
-    /// How much to save, e.g. "30s", "2m", "1h".
-    pub save: String,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(default)]
+pub struct Audio {
+    pub mic: bool,
+    /// Lower-case exe names mixed together onto the Communication track (track 3).
+    pub communication_apps: Vec<String>,
+    /// Never recorded.
+    pub ignored_apps: Vec<String>,
 }
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct Hotkey {
+    /// e.g. "F13" or "Ctrl+Alt+F9"
+    pub keys: String,
+    /// "save 30s" | "save 2m" | … | "open" (clips window) | "pause" (toggle recording)
+    pub action: String,
+}
+
+pub const SEGMENT_SECS: u32 = 2;
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             ring_dir: PathBuf::from(r"G:\clipback\ring"),
-            save_dir: default_save_dir(),
+            clips_dir: default_videos(),
             max_ring_gb: 200.0,
-            output_idx: 0,
-            fps: 60,
-            codec: "av1".into(),
-            bitrate_mbps: 12.0,
-            segment_secs: 2,
-            draw_mouse: true,
+            port: 47820,
             ffmpeg: String::new(),
-            hotkey: vec![
-                Hotkey { keys: "Ctrl+Alt+F9".into(), save: "30s".into() },
-                Hotkey { keys: "Ctrl+Alt+F10".into(), save: "2m".into() },
-                Hotkey { keys: "Ctrl+Alt+F11".into(), save: "10m".into() },
+            start_with_windows: false,
+            video: Video::default(),
+            audio: Audio::default(),
+            hotkeys: vec![
+                Hotkey { keys: "F13".into(), action: "save 30s".into() },
+                Hotkey { keys: "F14".into(), action: "save 2m".into() },
+                Hotkey { keys: "F15".into(), action: "save 10m".into() },
+                Hotkey { keys: "F16".into(), action: "open".into() },
             ],
         }
     }
 }
 
-fn default_save_dir() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\"));
-    home.join("Videos").join("clipback")
+impl Default for Video {
+    fn default() -> Self {
+        Self { output_idx: 0, fps: 60, codec: "h264".into(), bitrate_mbps: 20.0, draw_mouse: true }
+    }
+}
+
+impl Default for Audio {
+    fn default() -> Self {
+        let comms = [
+            "discord.exe", "discordptb.exe", "discordcanary.exe", "ms-teams.exe", "teams.exe", "zoom.exe",
+            "slack.exe", "ts3client_win64.exe", "teamspeak.exe", "skype.exe", "telegram.exe", "whatsapp.exe",
+            "signal.exe", "mumble.exe", "guilded.exe", "element.exe", "vesktop.exe",
+        ];
+        Self { mic: true, communication_apps: comms.iter().map(|s| s.to_string()).collect(), ignored_apps: Vec::new() }
+    }
+}
+
+/// The user's Videos folder (it may have been moved off C:).
+fn default_videos() -> PathBuf {
+    known_videos_folder().unwrap_or_else(|| {
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\"));
+        home.join("Videos")
+    })
+}
+
+fn known_videos_folder() -> Option<PathBuf> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+    let key: Vec<u16> =
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders".encode_utf16().chain([0]).collect();
+    let value: Vec<u16> = "My Video\0".encode_utf16().collect();
+    let mut buf = vec![0u16; 1024];
+    let mut bytes = (buf.len() * 2) as u32;
+    // Expandable values (%USERPROFILE%\Videos) come back expanded, typed as REG_SZ.
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut _,
+            &mut bytes,
+        )
+    };
+    if r != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|c| *c == 0).unwrap_or(0);
+    (len > 0).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..len])))
+}
+
+pub fn app_dir() -> PathBuf {
+    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    base.join("clipback")
 }
 
 pub fn config_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    base.join("clipback").join("config.toml")
+    app_dir().join("config.toml")
 }
 
-/// Where the recorder's ffmpeg output is logged.
-pub fn log_path() -> PathBuf {
-    config_path().with_file_name("ffmpeg.log")
-}
-
-fn default_file_text() -> String {
-    let d = Config::default();
-    let mut s = format!(
-        "# clipback settings. Restart `clipback run` after editing.\n\n\
-         # Rolling buffer folder. Everything named seg_*.mkv in here gets deleted as the buffer wraps.\n\
-         ring_dir = '{ring}'\n\
-         # Where saved clips go.\n\
-         save_dir = '{save}'\n\
-         # Buffer size cap in GB (12 Mbps is about 5.4 GB per hour).\n\
-         max_ring_gb = {cap}\n\n\
-         # Monitor to record: 0 is normally the main screen.\n\
-         output_idx = {idx}\n\
-         fps = {fps}\n\
-         # av1, hevc or h264 (NVENC)\n\
-         codec = \"{codec}\"\n\
-         bitrate_mbps = {br}\n\
-         # Segment / keyframe length in seconds. Clips start on a segment boundary.\n\
-         segment_secs = {seg}\n\
-         draw_mouse = {mouse}\n\
-         # Path to ffmpeg.exe; leave empty to find it automatically.\n\
-         ffmpeg = \"\"\n",
-        ring = d.ring_dir.display(),
-        save = d.save_dir.display(),
-        cap = d.max_ring_gb,
-        idx = d.output_idx,
-        fps = d.fps,
-        codec = d.codec,
-        br = d.bitrate_mbps,
-        seg = d.segment_secs,
-        mouse = d.draw_mouse,
-    );
-    s.push_str("\n# Global hotkeys: save the last N seconds/minutes/hours.\n");
-    for h in &d.hotkey {
-        s.push_str(&format!("[[hotkey]]\nkeys = \"{}\"\nsave = \"{}\"\n\n", h.keys, h.save));
-    }
-    s
+/// %LOCALAPPDATA%\clipback: logs, thumbnails, the editor's browser profile.
+pub fn local_dir() -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    base.join("clipback")
 }
 
 impl Config {
-    /// Loads the config, writing the default file first if there isn't one.
     pub fn load() -> Result<Self> {
         let path = config_path();
         if !path.exists() {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-            }
-            std::fs::write(&path, default_file_text()).with_context(|| format!("writing {}", path.display()))?;
-            println!("Wrote default settings to {}", path.display());
+            let cfg = Config::default();
+            cfg.save()?;
+            return Ok(cfg);
         }
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let mut cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        cfg.normalise();
         cfg.validate()?;
         Ok(cfg)
     }
 
-    fn validate(&self) -> Result<()> {
-        if !matches!(self.codec.as_str(), "av1" | "hevc" | "h264") {
-            bail!("codec must be av1, hevc or h264 (got {:?})", self.codec);
+    pub fn save(&self) -> Result<()> {
+        self.validate()?;
+        let path = config_path();
+        std::fs::create_dir_all(app_dir())?;
+        let text = format!(
+            "# clipback settings. Easiest to change from the tray icon's Options page.\n\
+             # hotkey actions: \"save 30s\" / \"save 2m\" / \"save 1h\" (any length), \"open\", \"pause\"\n\n{}",
+            toml::to_string_pretty(self)?
+        );
+        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
+    }
+
+    fn normalise(&mut self) {
+        for list in [&mut self.audio.communication_apps, &mut self.audio.ignored_apps] {
+            for app in list.iter_mut() {
+                *app = app.trim().to_lowercase();
+            }
+            list.retain(|a| !a.is_empty());
+            list.sort();
+            list.dedup();
         }
-        if self.fps == 0 || self.segment_secs == 0 || self.bitrate_mbps <= 0.0 {
-            bail!("fps, segment_secs and bitrate_mbps must be above zero");
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !matches!(self.video.codec.as_str(), "h264" | "hevc" | "av1") {
+            bail!("codec must be h264, hevc or av1 (got {:?})", self.video.codec);
+        }
+        if self.video.fps == 0 || self.video.fps > 240 || self.video.bitrate_mbps <= 0.0 {
+            bail!("fps must be 1–240 and bitrate above zero");
         }
         if self.max_ring_gb < 1.0 {
-            bail!("max_ring_gb must be at least 1");
+            bail!("buffer size must be at least 1 GB");
         }
-        for h in &self.hotkey {
-            parse_duration(&h.save).with_context(|| format!("hotkey {:?}", h.keys))?;
+        for h in &self.hotkeys {
+            crate::hotkey::parse(&h.keys)?;
+            parse_action(&h.action)?;
         }
         Ok(())
     }
 
     pub fn encoder(&self) -> &'static str {
-        match self.codec.as_str() {
+        match self.video.codec.as_str() {
             "hevc" => "hevc_nvenc",
-            "h264" => "h264_nvenc",
-            _ => "av1_nvenc",
+            "av1" => "av1_nvenc",
+            _ => "h264_nvenc",
         }
     }
 
     pub fn max_ring_bytes(&self) -> u64 {
         (self.max_ring_gb * 1e9) as u64
+    }
+
+    pub fn year_dir(&self, year: i32) -> PathBuf {
+        self.clips_dir.join(format!("Clips {year}"))
+    }
+
+    pub fn video_ring(&self) -> PathBuf {
+        self.ring_dir.join("video")
+    }
+
+    pub fn audio_ring(&self) -> PathBuf {
+        self.ring_dir.join("audio")
     }
 
     /// Finds ffmpeg: the configured path, then PATH, then winget's links folder.
@@ -179,8 +245,16 @@ impl Config {
     }
 }
 
+/// ffprobe next to ffmpeg.
+pub fn ffprobe_for(ffmpeg: &Path) -> PathBuf {
+    if ffmpeg == Path::new("ffmpeg") {
+        return PathBuf::from("ffprobe");
+    }
+    ffmpeg.with_file_name("ffprobe.exe")
+}
+
 fn runs(exe: &Path) -> bool {
-    Command::new(exe)
+    crate::util::command(exe)
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -188,6 +262,25 @@ fn runs(exe: &Path) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    Save(u64),
+    Open,
+    Pause,
+}
+
+pub fn parse_action(s: &str) -> Result<Action> {
+    let s = s.trim().to_lowercase();
+    match s.as_str() {
+        "open" => Ok(Action::Open),
+        "pause" => Ok(Action::Pause),
+        _ => match s.strip_prefix("save") {
+            Some(rest) => Ok(Action::Save(parse_duration(rest)?)),
+            None => bail!("unknown hotkey action {s:?} (use \"save 30s\", \"open\" or \"pause\")"),
+        },
+    }
 }
 
 /// "90" / "30s" / "2m" / "1h" → seconds.
@@ -206,7 +299,7 @@ pub fn parse_duration(s: &str) -> Result<u64> {
     Ok((n * mult).round().max(1.0) as u64)
 }
 
-/// 150 → "2m30s"; used in file names and messages.
+/// 150 → "2m30s".
 pub fn format_duration(secs: u64) -> String {
     let (h, m, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
     let mut out = String::new();
@@ -227,23 +320,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn durations() {
+    fn durations_and_actions() {
         assert_eq!(parse_duration("90").unwrap(), 90);
-        assert_eq!(parse_duration("30s").unwrap(), 30);
         assert_eq!(parse_duration("2m").unwrap(), 120);
         assert_eq!(parse_duration("1.5H").unwrap(), 5400);
         assert!(parse_duration("0").is_err());
-        assert!(parse_duration("abc").is_err());
         assert_eq!(format_duration(150), "2m30s");
-        assert_eq!(format_duration(3600), "1h");
-        assert_eq!(format_duration(30), "30s");
+        assert_eq!(parse_action("save 30s").unwrap(), Action::Save(30));
+        assert_eq!(parse_action("Open").unwrap(), Action::Open);
+        assert!(parse_action("dance").is_err());
     }
 
     #[test]
-    fn default_file_parses() {
-        let cfg: Config = toml::from_str(&default_file_text()).unwrap();
-        cfg.validate().unwrap();
-        assert_eq!(cfg.hotkey.len(), 3);
-        assert_eq!(cfg.ring_dir, Config::default().ring_dir);
+    fn default_round_trips() {
+        let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        back.validate().unwrap();
+        assert_eq!(back.hotkeys, cfg.hotkeys);
+        assert_eq!(back.video.codec, "h264");
+        assert!(back.audio.communication_apps.contains(&"discord.exe".to_string()));
     }
 }

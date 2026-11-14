@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clips</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/common.js"></script>
+</head>
+<body>
+<header>
+  <h1><span id="dot" class="dot"></span>clipback</h1>
+  <span id="status" class="status"></span>
+  <span class="grow"></span>
+  <input id="search" type="text" placeholder="Search clips" style="width:170px">
+  <button id="save30" title="Save the last 30 seconds">Save 30s</button>
+  <button id="pause">Pause</button>
+  <button onclick="location.href='/options'">Options</button>
+</header>
+<main id="grid" class="grid"></main>
+<div id="more" style="height:1px"></div>
+
+<script>
+const FRAMES = 24, PAGE = 60;
+const grid = document.getElementById("grid");
+let clips = [], shown = 0, filter = "", lastSig = "";
+
+// Thumbnails load as cards come into view; strips are cached by the browser for good.
+const seen = new IntersectionObserver(entries => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    seen.unobserve(e.target);
+    const c = e.target._clip;
+    const img = new Image();
+    img.onload = () => {
+      e.target.style.backgroundImage = `url("${img.src}")`;
+      if (!c.info) api(`/api/info?id=${enc(c.id)}`).then(i => { c.info = i; fillInfo(e.target.closest(".card"), c); }).catch(() => {});
+    };
+    img.src = `/api/sprite?id=${enc(c.id)}&m=${c.mtime}`;
+  }
+}, { rootMargin: "400px" });
+
+function fillInfo(card, c) {
+  if (!c.info) return;
+  card.querySelector(".len").textContent = fmtTime(c.info.duration);
+  const n = c.info.tracks.length;
+  const t = card.querySelector(".tracks");
+  t.textContent = n > 1 ? `${n} tracks` : "";
+  t.style.display = n > 1 ? "" : "none";
+  t.title = c.info.tracks.join(" · ");
+}
+
+function scrub(thumb, e) {
+  const r = thumb.getBoundingClientRect();
+  const f = Math.min(0.999, Math.max(0, (e.clientX - r.left) / r.width));
+  thumb.style.backgroundPosition = `${(Math.floor(f * FRAMES) / (FRAMES - 1)) * 100}% 0`;
+  thumb.querySelector(".bar").style.width = f * 100 + "%";
+  thumb._f = f;
+}
+
+function card(c) {
+  const thumb = h("div", { class: "thumb", onmousemove: e => scrub(thumb, e),
+      onmouseleave: () => { thumb.style.backgroundPosition = "0 0"; thumb._f = 0; },
+      onclick: () => play(c, thumb._f || 0) },
+    h("div", { class: "bar" }), h("span", { class: "tracks", style: "display:none" }), h("span", { class: "len" }, ""));
+  thumb._clip = c;
+  const el = h("div", { class: "card" }, thumb,
+    h("div", { class: "meta" },
+      h("div", { class: "name", title: c.name }, c.name.replace(/ \d{4}-\d\d-\d\d \d\d-\d\d-\d\d/, "") || c.name),
+      h("div", { class: "sub" }, ago(c.mtime) + " · " + fmtSize(c.size))),
+    h("div", { class: "actions" },
+      h("button", { onclick: () => copy(c), title: "Copy the file, ready to paste into Discord etc." }, "Copy"),
+      h("button", { onclick: () => location.href = `/editor?id=${enc(c.id)}` }, "Edit"),
+      h("button", { onclick: () => api(`/api/reveal?id=${enc(c.id)}`, { method: "POST" }), title: "Show in folder" }, "Folder")));
+  fillInfo(el, c);
+  seen.observe(thumb);
+  return el;
+}
+
+async function copy(c) {
+  try { await api(`/api/copy?id=${enc(c.id)}`, { method: "POST" }); toast("Copied — paste it anywhere"); }
+  catch (e) { toast(e.message, true); }
+}
+
+function visible() {
+  const q = filter.toLowerCase();
+  return q ? clips.filter(c => c.name.toLowerCase().includes(q)) : clips;
+}
+
+function dayOf(ms) {
+  const d = new Date(ms), today = new Date();
+  const y = new Date(); y.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+}
+
+function render(reset) {
+  const list = visible();
+  if (reset) { grid.textContent = ""; shown = 0; }
+  if (!list.length) { grid.append(h("div", { class: "empty" }, filter ? "No clips match." : "No clips yet. Press your save hotkey (F13 by default) to save the last 30 seconds.")); return; }
+  const frag = document.createDocumentFragment();
+  let lastDay = shown ? dayOf(list[shown - 1].mtime) : "";
+  for (const c of list.slice(shown, shown + PAGE)) {
+    const day = dayOf(c.mtime);
+    if (day !== lastDay) { frag.append(h("div", { class: "day" }, day)); lastDay = day; }
+    frag.append(card(c));
+  }
+  shown = Math.min(list.length, shown + PAGE);
+  grid.append(frag);
+}
+
+new IntersectionObserver(e => { if (e[0].isIntersecting && shown < visible().length) render(false); }, { rootMargin: "600px" })
+  .observe(document.getElementById("more"));
+
+async function load() {
+  const list = await api("/api/clips");
+  const sig = list.map(c => c.id + c.mtime).join("|");
+  if (sig === lastSig) return;
+  lastSig = sig;
+  clips = list;
+  render(true);
+}
+
+function play(c, frac) {
+  const v = h("video", { src: `/media?id=${enc(c.id)}`, controls: true, autoplay: true });
+  v.addEventListener("loadedmetadata", () => { if (frac > 0.02) v.currentTime = frac * v.duration; }, { once: true });
+  const close = () => { v.pause(); v.removeAttribute("src"); v.load(); ov.remove(); document.removeEventListener("keydown", esc); };
+  const esc = e => e.key === "Escape" && close();
+  const ov = h("div", { class: "overlay", onclick: e => e.target === ov && close() }, v,
+    h("div", { class: "row" },
+      h("strong", {}, c.name),
+      h("button", { onclick: () => copy(c) }, "Copy"),
+      h("button", { onclick: () => location.href = `/editor?id=${enc(c.id)}&t=${v.currentTime || 0}` }, "Edit"),
+      h("button", { onclick: close }, "Close")));
+  document.addEventListener("keydown", esc);
+  document.body.append(ov);
+}
+
+document.getElementById("search").oninput = e => { filter = e.target.value; render(true); };
+document.getElementById("save30").onclick = async e => {
+  e.target.disabled = true;
+  try { const r = await api("/api/save?secs=30", { method: "POST" }); toast("Saved " + (r.tracks.length) + " audio tracks"); await load(); }
+  catch (err) { toast(err.message, true); }
+  e.target.disabled = false;
+};
+
+statusBar();
+load();
+setInterval(() => document.visibilityState === "visible" && load(), 4000);
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && load());
+</script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Options</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/common.js"></script>
+</head>
+<body>
+<header>
+  <button onclick="location.href='/'">← Clips</button>
+  <h1><span id="dot" class="dot"></span>Options</h1>
+  <span id="status" class="status"></span>
+  <span class="grow"></span>
+  <button id="pause">Pause</button>
+</header>
+<div class="options">
+  <section class="box">
+    <h2>Apps and audio tracks</h2>
+    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.</p>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <input id="newApp" type="text" placeholder="Add an app, e.g. obs64.exe" style="flex:1">
+      <button id="addApp">Add as communication</button>
+    </div>
+    <table class="apps"><tbody id="apps"></tbody></table>
+  </section>
+
+  <section class="box">
+    <h2>Hotkeys</h2>
+    <p class="help">Keys like <kbd>F13</kbd>–<kbd>F24</kbd> (good for a Stream Deck) or <kbd>Ctrl+Alt+F9</kbd>. Actions: <code>save 30s</code>, <code>save 2m</code>, <code>save 1h</code> (any length), <code>open</code>, <code>pause</code>.</p>
+    <div id="hotkeys"></div>
+    <button id="addHotkey">+ Hotkey</button>
+  </section>
+
+  <section class="box">
+    <h2>Recording</h2>
+    <div class="form">
+      <label>Record the mic</label><span><input type="checkbox" id="mic"></span>
+      <label>Monitor</label><span><input type="number" id="output_idx" min="0" max="8" style="width:70px"> <span class="dim small">0 = main display</span></span>
+      <label>Frame rate</label><span><input type="number" id="fps" min="10" max="240" style="width:70px"> fps</span>
+      <label>Quality</label><span><input type="number" id="bitrate_mbps" min="2" max="150" step="1" style="width:70px"> Mbps <span class="dim small">20 is sharp at 1440p</span></span>
+      <label>Format</label><span><select id="codec">
+        <option value="h264">H.264 — opens everywhere (Premiere, Discord)</option>
+        <option value="hevc">HEVC — smaller, needs HEVC support</option>
+        <option value="av1">AV1 — smallest, not for Premiere</option></select></span>
+      <label>Show the mouse</label><span><input type="checkbox" id="draw_mouse"></span>
+    </div>
+  </section>
+
+  <section class="box">
+    <h2>Storage</h2>
+    <div class="form">
+      <label>Clips folder</label><span><input type="text" id="clips_dir"><div class="dim small">Clips go in “Clips 2026” etc. inside it.</div></span>
+      <label>Buffer folder</label><span><input type="text" id="ring_dir"></span>
+      <label>Buffer size</label><span><input type="number" id="max_ring_gb" min="1" step="10" style="width:90px"> GB <span id="hours" class="dim small"></span></span>
+      <label>Start with Windows</label><span><input type="checkbox" id="start_with_windows"></span>
+    </div>
+  </section>
+
+  <div style="display:flex;gap:8px;justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--bg);border-top:1px solid var(--line)">
+    <span id="cfgPath" class="dim small" style="flex:1;align-self:center"></span>
+    <button id="saveBtn" class="primary">Save settings</button>
+  </div>
+</div>
+<script>
+let cfg = null;
+const CATS = [["communication", "Communication"], ["game", "Game"], ["app", "Own track"], ["ignored", "Ignore"]];
+const $ = id => document.getElementById(id);
+
+function hoursText() {
+  const h = (+$("max_ring_gb").value * 8000) / (+$("bitrate_mbps").value || 20) / 3600;
+  $("hours").textContent = `≈ ${h >= 10 ? Math.round(h) : h.toFixed(1)} hours of footage`;
+}
+
+function hotkeyRows() {
+  const box = $("hotkeys");
+  box.textContent = "";
+  cfg.hotkeys.forEach((hk, i) => {
+    box.append(h("div", { class: "hk" },
+      h("input", { type: "text", value: hk.keys, oninput: e => hk.keys = e.target.value }),
+      h("input", { type: "text", value: hk.action, oninput: e => hk.action = e.target.value }),
+      h("button", { class: "danger", title: "Remove", onclick: () => { cfg.hotkeys.splice(i, 1); hotkeyRows(); } }, "×")));
+  });
+}
+
+async function loadSettings() {
+  const s = await api("/api/settings");
+  cfg = s.config;
+  $("cfgPath").textContent = s.path;
+  for (const k of ["clips_dir", "ring_dir", "max_ring_gb", "start_with_windows"]) set(k, cfg[k]);
+  for (const k of ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse"]) set(k, cfg.video[k]);
+  set("mic", cfg.audio.mic);
+  hotkeyRows();
+  hoursText();
+}
+function set(id, v) { const el = $(id); if (el.type === "checkbox") el.checked = v; else el.value = v; }
+function get(id) { const el = $(id); return el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value; }
+
+$("max_ring_gb").oninput = hoursText;
+$("bitrate_mbps").oninput = hoursText;
+$("addHotkey").onclick = () => { cfg.hotkeys.push({ keys: "F" + (13 + cfg.hotkeys.length), action: "save 30s" }); hotkeyRows(); };
+$("saveBtn").onclick = async () => {
+  for (const k of ["clips_dir", "ring_dir", "max_ring_gb", "start_with_windows"]) cfg[k] = get(k);
+  for (const k of ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse"]) cfg.video[k] = get(k);
+  cfg.audio.mic = get("mic");
+  try {
+    // App categories are saved as they're clicked; keep those lists as the service has them.
+    const fresh = (await api("/api/settings")).config;
+    cfg.audio.communication_apps = fresh.audio.communication_apps;
+    cfg.audio.ignored_apps = fresh.audio.ignored_apps;
+    await api("/api/settings", { body: cfg });
+    toast("Saved");
+  } catch (e) { toast(e.message, true); }
+};
+
+async function loadApps() {
+  const { apps, live } = await api("/api/apps");
+  const playing = new Set(live.map(a => a.exe));
+  const body = $("apps");
+  body.textContent = "";
+  for (const a of apps) {
+    const seg = h("div", { class: "seg" }, CATS.map(([cat, label]) =>
+      h("button", { class: (a.category === cat ? "on " : "") + cat, onclick: () => setCat(a.exe, cat) }, label)));
+    const heard = playing.has(a.exe) ? h("span", { class: "live" }, "● recording now")
+      : h("span", { class: "dim small" }, a.last_heard ? "heard " + ago(a.last_heard / 1000) : "not heard yet");
+    body.append(h("tr", {},
+      h("td", {}, h("img", { src: `/api/icon?exe=${enc(a.exe)}`, alt: "", onerror: e => e.target.style.visibility = "hidden" })),
+      h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, "")), heard),
+      h("td", { style: "text-align:right" }, seg)));
+  }
+}
+async function setCat(exe, cat) {
+  try { await api(`/api/app-category?exe=${enc(exe)}&category=${cat}`, { method: "POST" }); await loadApps(); }
+  catch (e) { toast(e.message, true); }
+}
+$("addApp").onclick = async () => {
+  let exe = $("newApp").value.trim().toLowerCase();
+  if (!exe) return;
+  if (!exe.endsWith(".exe")) exe += ".exe";
+  await setCat(exe, "communication");
+  $("newApp").value = "";
+};
+
+statusBar();
+loadSettings().catch(e => toast(e.message, true));
+loadApps().catch(e => toast(e.message, true));
+setInterval(() => document.visibilityState === "visible" && loadApps(), 5000);
+</script>
+</body>
+</html>
