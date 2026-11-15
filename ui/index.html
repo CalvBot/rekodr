@@ -134,7 +134,7 @@ function dayOf(ms) {
 function render(reset) {
   const list = visible();
   if (reset) { grid.textContent = ""; shown = 0; }
-  if (!list.length) { grid.append(h("div", { class: "empty" }, filter ? "No clips match." : "No clips yet. Press your save hotkey (F13 by default) to save the last 30 seconds.")); return; }
+  if (!list.length) { grid.append(h("div", { class: "empty" }, filter ? "No clips match." : "No clips yet. Press Alt+F10 (or your save hotkey) to save the last 30 seconds.")); return; }
   const frag = document.createDocumentFragment();
   let lastDay = shown ? dayOf(list[shown - 1].mtime) : "";
   for (const c of list.slice(shown, shown + PAGE)) {

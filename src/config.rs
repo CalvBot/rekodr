@@ -120,12 +120,9 @@ impl Default for Config {
             start_with_windows: false,
             video: Video::default(),
             audio: Audio::default(),
-            hotkeys: vec![
-                Hotkey { keys: "F13".into(), action: "save 30s".into() },
-                Hotkey { keys: "F14".into(), action: "save 2m".into() },
-                Hotkey { keys: "F15".into(), action: "save 10m".into() },
-                Hotkey { keys: "F16".into(), action: "open".into() },
-            ],
+            // One hotkey, the same as NVIDIA's "save instant replay", so it's where hands already go.
+            // Stream Deck keys use `clipbackw save 90s` etc. instead of hotkeys.
+            hotkeys: vec![Hotkey { keys: "Alt+F10".into(), action: "save 30s".into() }],
         }
     }
 }

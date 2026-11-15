@@ -38,7 +38,7 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 1. **Done.** ffmpeg ddagrab → NVENC → segment ring; "save last N min" from a hotkey. (Proves the buffer length.)
 2. **Done.** Per-app audio streams (WASAPI process loopback + mic), fixed track layout in every clip:
    Mix · Mic · Communication · one per app. App categories and the game list shared with lifelog.
-3. **Done.** Stream Deck via F13–F24 hotkeys (no plugin needed), copy-file-to-clipboard, tray icon with pause.
+3. **Done.** Stream Deck via `clipbackw` commands (no plugin needed), one default hotkey (Alt+F10), copy-file-to-clipboard, tray icon with pause.
 4. **Done.** Clips window (hover-scrub thumbnails, player) and quick editor (trim, keyframed zoom, per-track volume,
    Discord size presets). Local web UI in an Edge app window, not Tauri: no extra toolchain, opens instantly.
 5. **Done.** Monitor picker (DXGI outputs in ddagrab's order, with names), per-game bitrate, advanced encoder options.

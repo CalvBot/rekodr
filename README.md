@@ -25,7 +25,8 @@ or `toggle`. clipbackw passes the command to the running copy without a console 
 saved, and shows a warning if clipback isn't running. The same commands are `POST http://127.0.0.1:47820/api/save?secs=90s`
 etc. for anything that can send a web request.
 
-Default hotkeys: **F13** = last 30 s, **F14** = 2 min, **F15** = 10 min, **F16** = open the clips window.
+Default hotkey: **Alt+F10** saves the last 30 s (the same keys as NVIDIA's instant replay, so turn that off if
+you use both). Add more in Options.
 
 **Tray icon:** the clipback replay arrow; red dot = recording, grey with a pause sign = paused. Left click opens the clips window; right click has
 Save last 30s/2m/10m/30m, Pause/Resume, Options, Open clips folder and Quit.
