@@ -42,7 +42,7 @@ pub fn set_cfg(new: Config) -> anyhow::Result<()> {
         || old.video.codec != new.video.codec
         || old.video.bitrate_mbps != new.video.bitrate_mbps
         || old.video.draw_mouse != new.video.draw_mouse
-        || old.ring_dir != new.ring_dir;
+        || old.buffer_dir != new.buffer_dir;
     let startup_changed = old.start_with_windows != new.start_with_windows;
     *CONFIG.write().unwrap() = Some(new.clone());
     if video_changed {

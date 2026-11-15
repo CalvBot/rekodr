@@ -43,7 +43,7 @@ pub fn run_service() -> Result<()> {
         bail!("clipback is already running");
     }
     let ffmpeg = cfg.find_ffmpeg()?;
-    std::fs::create_dir_all(cfg.video_ring()).with_context(|| format!("creating {}", cfg.ring_dir.display()))?;
+    std::fs::create_dir_all(cfg.video_ring()).with_context(|| format!("creating {}", cfg.buffer_dir.display()))?;
     std::fs::create_dir_all(cfg.audio_ring())?;
     state::init(cfg.clone(), ffmpeg);
     if cfg.start_with_windows {
@@ -52,9 +52,9 @@ pub fn run_service() -> Result<()> {
     log(&format!(
         "clipback {} · buffer {} (cap {} GB, about {:.0} h) · clips {}",
         env!("CARGO_PKG_VERSION"),
-        cfg.ring_dir.display(),
-        cfg.max_ring_gb,
-        cfg.max_ring_gb * 8000.0 / cfg.video.bitrate_mbps / 3600.0,
+        cfg.buffer_dir.display(),
+        cfg.max_buffer_gb,
+        cfg.max_buffer_gb * 8000.0 / cfg.video.bitrate_mbps / 3600.0,
         cfg.clips_dir.display()
     ));
 
@@ -64,10 +64,10 @@ pub fn run_service() -> Result<()> {
         let mut ticks = 0u32;
         while !state::stopping() {
             let cfg = state::cfg();
-            if let Err(e) = ring::prune(&cfg.ring_dir, cfg.max_ring_bytes()) {
+            if let Err(e) = ring::prune(&cfg.buffer_dir, cfg.max_ring_bytes()) {
                 log(&format!("pruning failed: {e:#}"));
             }
-            state::RING_BYTES.store(ring::size(&cfg.ring_dir), Ordering::Relaxed);
+            state::RING_BYTES.store(ring::size(&cfg.buffer_dir), Ordering::Relaxed);
             if ticks % 180 == 0 {
                 clips::tidy_cache(); // hourly
             }

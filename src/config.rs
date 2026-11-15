@@ -10,11 +10,13 @@ use std::process::Stdio;
 #[serde(default)]
 pub struct Config {
     /// Rolling buffer (video and audio). Everything in here is clipback's and gets deleted as it wraps.
-    pub ring_dir: PathBuf,
+    #[serde(alias = "ring_dir")]
+    pub buffer_dir: PathBuf,
     /// Clips are saved to `<clips_dir>\Clips <year>`.
     pub clips_dir: PathBuf,
     /// Buffer cap in GB; the oldest footage is deleted beyond it.
-    pub max_ring_gb: f64,
+    #[serde(alias = "max_ring_gb")]
+    pub max_buffer_gb: f64,
     /// Port of the local web UI (127.0.0.1 only).
     pub port: u16,
     /// Path to ffmpeg.exe; empty = find it.
@@ -60,9 +62,9 @@ pub const SEGMENT_SECS: u32 = 2;
 impl Default for Config {
     fn default() -> Self {
         Self {
-            ring_dir: PathBuf::from(r"G:\clipback\ring"),
+            buffer_dir: PathBuf::from(r"G:\clipback\buffer"),
             clips_dir: default_videos(),
-            max_ring_gb: 200.0,
+            max_buffer_gb: 200.0,
             port: 47820,
             ffmpeg: String::new(),
             start_with_windows: false,
@@ -189,7 +191,7 @@ impl Config {
         if self.video.fps == 0 || self.video.fps > 240 || self.video.bitrate_mbps <= 0.0 {
             bail!("fps must be 1–240 and bitrate above zero");
         }
-        if self.max_ring_gb < 1.0 {
+        if self.max_buffer_gb < 1.0 {
             bail!("buffer size must be at least 1 GB");
         }
         for h in &self.hotkeys {
@@ -208,7 +210,7 @@ impl Config {
     }
 
     pub fn max_ring_bytes(&self) -> u64 {
-        (self.max_ring_gb * 1e9) as u64
+        (self.max_buffer_gb * 1e9) as u64
     }
 
     pub fn year_dir(&self, year: i32) -> PathBuf {
@@ -216,11 +218,11 @@ impl Config {
     }
 
     pub fn video_ring(&self) -> PathBuf {
-        self.ring_dir.join("video")
+        self.buffer_dir.join("video")
     }
 
     pub fn audio_ring(&self) -> PathBuf {
-        self.ring_dir.join("audio")
+        self.buffer_dir.join("audio")
     }
 
     /// Finds ffmpeg: the configured path, then PATH, then winget's links folder.

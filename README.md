@@ -55,7 +55,7 @@ A small local web UI (127.0.0.1:47820, in an Edge app window):
 
 ## Settings
 `%APPDATA%\clipback\config.toml` (written on first run; easiest to change from Options). Defaults: 1440p60 H.264 at
-20 Mbps, 200 GB buffer in `G:\clipback\ring` (about 22 hours). Logs and thumbnails live in `%LOCALAPPDATA%\clipback`.
+20 Mbps, 200 GB buffer in `G:\clipback\buffer` (about 22 hours). Logs and thumbnails live in `%LOCALAPPDATA%\clipback`.
 
 ## How it works
 - **Video:** ffmpeg `ddagrab` (GPU capture) → NVENC, no B-frames, keyframe every 2 s → 2 s `.mkv` segments. The

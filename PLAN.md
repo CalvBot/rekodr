@@ -24,7 +24,7 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 
 ## Architecture
 - **Video:** ffmpeg `ddagrab` (GPU desktop capture) → `av1_nvenc` (or `hevc_nvenc`), 2-second keyframes → written as
-  2 s segments into a ring folder; oldest segments deleted when the buffer cap is hit. No frames touch the CPU.
+  2 s segments into a buffer folder; oldest segments deleted when the buffer cap is hit. No frames touch the CPU.
 - **Audio:** the same Rust capture core as lifelog (per-process loopback + mic), each app → its own Opus segment
   stream with timestamps. One capture core feeding both tools avoids doubling up.
 - **Export:** pick segments covering the range → video is stream-copied (instant), cut to the nearest keyframe (or

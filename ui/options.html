@@ -58,8 +58,8 @@
     <h2>Storage</h2>
     <div class="form">
       <label>Clips folder</label><span><input type="text" id="clips_dir"><div class="dim small">Clips go in “Clips 2026” etc. inside it.</div></span>
-      <label>Buffer folder</label><span><input type="text" id="ring_dir"></span>
-      <label>Buffer size</label><span><input type="number" id="max_ring_gb" min="1" step="10" style="width:90px"> GB <span id="hours" class="dim small"></span></span>
+      <label>Buffer folder</label><span><input type="text" id="buffer_dir"></span>
+      <label>Buffer size</label><span><input type="number" id="max_buffer_gb" min="1" step="10" style="width:90px"> GB <span id="hours" class="dim small"></span></span>
       <label>Start with Windows</label><span><input type="checkbox" id="start_with_windows"></span>
     </div>
   </section>
@@ -75,7 +75,7 @@ const CATS = [["communication", "Communication"], ["game", "Game"], ["app", "Own
 const $ = id => document.getElementById(id);
 
 function hoursText() {
-  const h = (+$("max_ring_gb").value * 8000) / (+$("bitrate_mbps").value || 20) / 3600;
+  const h = (+$("max_buffer_gb").value * 8000) / (+$("bitrate_mbps").value || 20) / 3600;
   $("hours").textContent = `≈ ${h >= 10 ? Math.round(h) : h.toFixed(1)} hours of footage`;
 }
 
@@ -94,7 +94,7 @@ async function loadSettings() {
   const s = await api("/api/settings");
   cfg = s.config;
   $("cfgPath").textContent = s.path;
-  for (const k of ["clips_dir", "ring_dir", "max_ring_gb", "start_with_windows"]) set(k, cfg[k]);
+  for (const k of ["clips_dir", "buffer_dir", "max_buffer_gb", "start_with_windows"]) set(k, cfg[k]);
   for (const k of ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse"]) set(k, cfg.video[k]);
   set("mic", cfg.audio.mic);
   hotkeyRows();
@@ -103,11 +103,11 @@ async function loadSettings() {
 function set(id, v) { const el = $(id); if (el.type === "checkbox") el.checked = v; else el.value = v; }
 function get(id) { const el = $(id); return el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value; }
 
-$("max_ring_gb").oninput = hoursText;
+$("max_buffer_gb").oninput = hoursText;
 $("bitrate_mbps").oninput = hoursText;
 $("addHotkey").onclick = () => { cfg.hotkeys.push({ keys: "F" + (13 + cfg.hotkeys.length), action: "save 30s" }); hotkeyRows(); };
 $("saveBtn").onclick = async () => {
-  for (const k of ["clips_dir", "ring_dir", "max_ring_gb", "start_with_windows"]) cfg[k] = get(k);
+  for (const k of ["clips_dir", "buffer_dir", "max_buffer_gb", "start_with_windows"]) cfg[k] = get(k);
   for (const k of ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse"]) cfg.video[k] = get(k);
   cfg.audio.mic = get("mic");
   try {
