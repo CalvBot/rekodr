@@ -5,23 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Options</title>
 <link rel="stylesheet" href="/style.css">
+<script src="/icons.js"></script>
 <script src="/common.js"></script>
 </head>
 <body>
 <header>
-  <button onclick="location.href='/'">← Clips</button>
+  <button data-icon="arrow-left" onclick="location.href='/'">Clips</button>
   <h1><span id="dot" class="dot"></span>Options</h1>
   <span id="status" class="status"></span>
   <span class="grow"></span>
-  <button id="pause">Pause</button>
+  <button id="pause" class="pausebtn">Pause</button>
 </header>
 <div class="options">
   <section class="box">
-    <h2>Apps and audio tracks</h2>
-    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.<br>Games can have their own <b>bitrate</b>, used while that game is running (blank = the normal one). Switching costs about a second of footage.</p>
+    <h2 data-icon="audio-lines">Apps and audio tracks</h2>
+    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.<br>Games can have their own <b>bitrate</b>, used while it's the game being played (blank = the normal one). Switching costs about a second of footage.</p>
     <div style="display:flex;gap:6px;margin-bottom:8px">
       <input id="newApp" type="text" placeholder="Add an app, e.g. obs64.exe" style="flex:1">
-      <button id="addApp">Add as communication</button>
+      <button id="addApp" data-icon="plus">Add as communication</button>
     </div>
     <table class="apps"><tbody id="apps"></tbody></table>
     <div class="pager" id="appsPager"></div>
@@ -33,14 +34,14 @@
   </section>
 
   <section class="box">
-    <h2>Hotkeys</h2>
+    <h2 data-icon="keyboard">Hotkeys</h2>
     <p class="help">Keys like <kbd>F13</kbd>–<kbd>F24</kbd> (good for a Stream Deck) or <kbd>Ctrl+Alt+F9</kbd>. Actions: <code>save 30s</code>, <code>save 2m</code>, <code>save 1h</code> (any length), <code>open</code>, <code>pause</code>.</p>
     <div id="hotkeys"></div>
-    <button id="addHotkey">+ Hotkey</button>
+    <button id="addHotkey" data-icon="plus">Hotkey</button>
   </section>
 
   <section class="box">
-    <h2>Recording</h2>
+    <h2 data-icon="video">Recording</h2>
     <div class="form">
       <label>Record the mic</label><span><input type="checkbox" id="mic"></span>
       <label>Monitor</label><span><select id="output_idx"></select></span>
@@ -69,7 +70,7 @@
   </section>
 
   <section class="box">
-    <h2>Storage</h2>
+    <h2 data-icon="hard-drive">Storage</h2>
     <div class="form">
       <label>Clips folder</label><span><input type="text" id="clips_dir"><div class="dim small">Clips go in “Clips 2026” etc. inside it.</div></span>
       <label>Buffer folder</label><span><input type="text" id="buffer_dir"></span>
@@ -80,7 +81,7 @@
 
   <div style="display:flex;gap:8px;justify-content:flex-end;position:sticky;bottom:0;padding:10px 0;background:var(--bg);border-top:1px solid var(--line)">
     <span id="cfgPath" class="dim small" style="flex:1;align-self:center"></span>
-    <button id="saveBtn" class="primary">Save settings</button>
+    <button id="saveBtn" class="primary" data-icon="save">Save settings</button>
   </div>
 </div>
 <script>
@@ -100,7 +101,7 @@ function hotkeyRows() {
     box.append(h("div", { class: "hk" },
       h("input", { type: "text", value: hk.keys, oninput: e => hk.keys = e.target.value }),
       h("input", { type: "text", value: hk.action, oninput: e => hk.action = e.target.value }),
-      h("button", { class: "danger", title: "Remove", onclick: () => { cfg.hotkeys.splice(i, 1); hotkeyRows(); } }, "×")));
+      h("button", { class: "danger icononly", icon: "trash-2", title: "Remove", onclick: () => { cfg.hotkeys.splice(i, 1); hotkeyRows(); } })));
   });
 }
 
@@ -197,9 +198,9 @@ function fillList(key, list, playing, empty) {
   const pager = $(key + "Pager");
   pager.textContent = "";
   pager.append(
-    h("button", { onclick: () => go(-1), disabled: pages[key] === 0, title: "Previous page" }, "‹"),
+    h("button", { class: "icononly", icon: "chevron-left", onclick: () => go(-1), disabled: pages[key] === 0, title: "Previous page" }),
     h("span", { class: "dim small" }, `${pages[key] + 1} / ${count}`),
-    h("button", { onclick: () => go(1), disabled: pages[key] >= count - 1, title: "Next page" }, "›"));
+    h("button", { class: "icononly", icon: "chevron-right", onclick: () => go(1), disabled: pages[key] >= count - 1, title: "Next page" }));
 }
 
 function render() {
@@ -209,7 +210,7 @@ function render() {
   const ignored = apps.filter(a => a.category === "ignored");
   fillList("apps", apps.filter(a => a.category !== "ignored"), playing, "No apps heard yet.");
   fillList("ignored", ignored, playing, "Nothing ignored.");
-  $("ignoredToggle").textContent = `${$("ignoredBox").hidden ? "▸" : "▾"} Ignored apps (${ignored.length})`;
+  setLabel($("ignoredToggle"), $("ignoredBox").hidden ? "chevron-right" : "chevron-down", `Ignored apps (${ignored.length})`);
 }
 
 $("ignoredToggle").onclick = () => { $("ignoredBox").hidden = !$("ignoredBox").hidden; render(); };

@@ -18,6 +18,15 @@ button {
   background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 5px 11px; cursor: pointer;
   transition: background .1s, border-color .1s;
 }
+button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+button.icononly { padding-left: 0; padding-right: 0; }
+.pausebtn { min-width: 96px; } /* Pause ⇄ Resume doesn't move its neighbours */
+svg.i { width: 16px; height: 16px; flex: none; }
+h2 { display: flex; align-items: center; gap: 8px; }
+h2 svg.i { width: 18px; height: 18px; color: var(--dim); }
+.chip svg.i { width: 15px; height: 15px; }
+.thumb .tracks { display: inline-flex; align-items: center; gap: 4px; }
+.thumb .tracks svg.i { width: 12px; height: 12px; }
 button:hover { background: #2b3039; border-color: #3a404c; }
 button:active { transform: translateY(1px); }
 button.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
@@ -138,7 +147,6 @@ button.linkish:hover { color: var(--text, inherit); }
 .games { display: flex; gap: 6px; padding: 10px 16px 0; height: 42px; box-sizing: border-box; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
 .chip { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 30px; padding: 0 10px; border-radius: 15px; font-size: 13px; white-space: nowrap; }
 .chip img { width: 16px; height: 16px; }
-.chip .glyph { font-size: 13px; line-height: 1; }
 .chip .n { color: var(--dim); font-size: 11px; }
 .chip.on { background: var(--accent2); border-color: var(--accent2); color: #fff; }
 .chip.on .n { color: #fff; opacity: .8; }

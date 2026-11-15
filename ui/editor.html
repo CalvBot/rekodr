@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Edit clip</title>
 <link rel="stylesheet" href="/style.css">
+<script src="/icons.js"></script>
 <script src="/common.js"></script>
 </head>
 <body>
 <header>
-  <button onclick="location.href='/'">← Clips</button>
+  <button data-icon="arrow-left" onclick="location.href='/'">Clips</button>
   <h1 id="title" style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></h1>
   <span class="grow"></span>
   <span class="dim small"><kbd>Space</kbd> play · <kbd>I</kbd>/<kbd>O</kbd> trim · <kbd>K</kbd> keyframe · <kbd>←</kbd><kbd>→</kbd> step</span>
@@ -18,7 +19,7 @@
   <div class="left">
     <div class="stage-wrap" id="wrap"><div class="stage" id="stage"><video id="video" preload="auto" playsinline></video></div></div>
     <div class="transport">
-      <button id="playBtn" style="width:70px">Play</button>
+      <button id="playBtn" data-icon="play" style="width:92px">Play</button>
       <span class="time" id="time">0:00.0 / 0:00.0</span>
       <span class="grow" style="flex:1"></span>
       <span class="time" id="sel"></span>
@@ -37,9 +38,9 @@
       <div class="field"><label>Zoom</label><input id="zoom" type="range" min="1" max="4" step="0.01" value="1"><span class="val" id="zoomVal">1.00×</span></div>
       <div class="dim small" style="margin:4px 0 8px">Zoom in, then drag the video to aim. Changes go on a keyframe at the playhead; the view eases smoothly between keyframes.</div>
       <div style="display:flex;gap:6px;margin-bottom:8px">
-        <button id="addKey">+ Keyframe</button>
-        <button id="delKey" class="danger" disabled>Delete keyframe</button>
-        <button id="clearKeys" class="danger" title="Remove all zoom">Clear</button>
+        <button id="addKey" data-icon="diamond">Keyframe</button>
+        <button id="delKey" class="danger" data-icon="trash-2" disabled>Delete keyframe</button>
+        <button id="clearKeys" class="danger" data-icon="eraser" title="Remove all zoom">Clear</button>
       </div>
       <div class="keys-list" id="keyList"></div>
     </div>
@@ -56,7 +57,7 @@
           <option value="discord50">Discord Nitro (50 MB)</option>
         </select></div>
       <label class="field small" style="gap:6px"><input type="checkbox" id="copyAfter" checked> Copy to clipboard when done</label>
-      <button id="exportBtn" class="primary" style="width:100%;margin-top:6px">Export</button>
+      <button id="exportBtn" class="primary" data-icon="download" style="width:100%;margin-top:6px">Export</button>
       <div class="progress" style="margin-top:8px;display:none" id="prog"><div></div></div>
       <div id="result" class="small" style="margin-top:8px"></div>
     </div>
@@ -180,8 +181,8 @@ function togglePlay() {
   } else video.pause();
 }
 document.getElementById("playBtn").onclick = togglePlay;
-video.addEventListener("play", () => { document.getElementById("playBtn").textContent = "Pause"; for (const p of players) { p.el.currentTime = video.currentTime; p.el.play().catch(() => {}); } });
-video.addEventListener("pause", () => { document.getElementById("playBtn").textContent = "Play"; for (const p of players) p.el.pause(); });
+video.addEventListener("play", () => { setLabel(document.getElementById("playBtn"), "pause", "Pause"); for (const p of players) { p.el.currentTime = video.currentTime; p.el.play().catch(() => {}); } });
+video.addEventListener("pause", () => { setLabel(document.getElementById("playBtn"), "play", "Play"); for (const p of players) p.el.pause(); });
 video.addEventListener("seeked", () => { for (const p of players) p.el.currentTime = video.currentTime; });
 
 function frame() {

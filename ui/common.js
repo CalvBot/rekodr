@@ -51,10 +51,26 @@ function toast(msg, err = false) {
   toastTimer = setTimeout(() => (el.className = ""), err ? 5000 : 2200);
 }
 
+// An icon from icons.js (Lucide), drawn in the text colour.
+function icon(name) {
+  const t = document.createElement("template");
+  t.innerHTML = `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+  return t.content.firstChild;
+}
+// Sets a button's icon and text together.
+function setLabel(el, name, text) {
+  el.replaceChildren(icon(name), ...(text ? [text] : []));
+}
+// <button data-icon="settings">Options</button> → icon before the text.
+document.addEventListener("DOMContentLoaded", () => {
+  for (const el of document.querySelectorAll("[data-icon]")) el.prepend(icon(el.dataset.icon));
+});
+
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    if (k === "icon") el.append(icon(v));
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "class") el.className = v;
     else if (k === "style") el.style.cssText = v;
     else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
@@ -76,7 +92,7 @@ async function statusBar(onUpdate) {
         `Recording · ${span} buffered` + (s.encode && s.encode[1] ? ` · ${s.encode[0]} Mbps for ${s.encode[1].replace(/\.exe$/, "")}` : "") +
         (apps.length ? " · " + apps.join(", ") : "");
       text.title = `${fmtSize(s.ring_bytes)} of ${fmtSize(s.ring_cap)}`;
-      if (btn) btn.textContent = s.paused ? "Resume" : "Pause";
+      if (btn) setLabel(btn, s.paused ? "play" : "pause", s.paused ? "Resume" : "Pause");
       if (btn) btn.dataset.paused = s.paused;
       onUpdate && onUpdate(s);
     } catch {

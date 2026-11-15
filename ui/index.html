@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Clips</title>
 <link rel="stylesheet" href="/style.css">
+<script src="/icons.js"></script>
 <script src="/common.js"></script>
 </head>
 <body>
@@ -13,9 +14,9 @@
   <span id="status" class="status"></span>
   <span class="grow"></span>
   <input id="search" type="text" placeholder="Search clips" style="width:170px">
-  <button id="save30" title="Save the last 30 seconds">Save 30s</button>
-  <button id="pause">Pause</button>
-  <button onclick="location.href='/options'">Options</button>
+  <button id="save30" data-icon="history" title="Save the last 30 seconds">Save 30s</button>
+  <button id="pause" class="pausebtn">Pause</button>
+  <button data-icon="settings" onclick="location.href='/options'">Options</button>
 </header>
 <nav id="games" class="games"></nav>
 <main id="grid" class="grid"></main>
@@ -46,7 +47,7 @@ function fillInfo(card, c) {
   card.querySelector(".len").textContent = fmtTime(c.info.duration);
   const n = c.info.tracks.length;
   const t = card.querySelector(".tracks");
-  t.textContent = n > 1 ? `${n} tracks` : "";
+  t.querySelector("b").textContent = n > 1 ? n : "";
   t.style.display = n > 1 ? "" : "none";
   t.title = c.info.tracks.join(" · ");
 }
@@ -63,16 +64,16 @@ function card(c) {
   const thumb = h("div", { class: "thumb", onmousemove: e => scrub(thumb, e),
       onmouseleave: () => { thumb.style.backgroundPosition = "0 0"; thumb._f = 0; },
       onclick: () => play(c, thumb._f || 0) },
-    h("div", { class: "bar" }), h("span", { class: "tracks", style: "display:none" }), h("span", { class: "len" }, ""));
+    h("div", { class: "bar" }), h("span", { class: "tracks", style: "display:none" }, icon("audio-lines"), h("b")), h("span", { class: "len" }, ""));
   thumb._clip = c;
   const el = h("div", { class: "card" }, thumb,
     h("div", { class: "meta" },
       h("div", { class: "name", title: c.name }, c.name.replace(/ \d{4}-\d\d-\d\d \d\d-\d\d-\d\d/, "") || c.name),
       h("div", { class: "sub" }, ago(c.mtime) + " · " + fmtSize(c.size))),
     h("div", { class: "actions" },
-      h("button", { onclick: () => copy(c), title: "Copy the file, ready to paste into Discord etc." }, "Copy"),
-      h("button", { onclick: () => location.href = `/editor?id=${enc(c.id)}` }, "Edit"),
-      h("button", { onclick: () => api(`/api/reveal?id=${enc(c.id)}`, { method: "POST" }), title: "Show in folder" }, "Folder")));
+      h("button", { icon: "copy", onclick: () => copy(c), title: "Copy the file, ready to paste into Discord etc." }, "Copy"),
+      h("button", { icon: "scissors", onclick: () => location.href = `/editor?id=${enc(c.id)}` }, "Edit"),
+      h("button", { icon: "folder-open", onclick: () => api(`/api/reveal?id=${enc(c.id)}`, { method: "POST" }), title: "Show in folder" }, "Folder")));
   fillInfo(el, c);
   seen.observe(thumb);
   return el;
@@ -108,12 +109,12 @@ function gameBar() {
   bar.textContent = "";
   const btn = (value, label, n, icon) => h("button", { class: "chip", "data-game": value, onclick: () => { game = value; mark(); render(true); } },
     icon, label, n != null ? h("span", { class: "n" }, n) : null);
-  bar.append(btn("", "All", clips.length, null));
+  bar.append(btn("", "All", clips.length, icon("layout-grid")));
   for (const name of names) {
     const g = games.get(name);
-    const icon = name === "Desktop" ? h("span", { class: "glyph" }, "🖥")
-      : g.exe ? h("img", { src: `/api/icon?exe=${enc(g.exe)}`, alt: "", onerror: e => e.target.remove() }) : null;
-    bar.append(btn(name, name, g.n, icon));
+    const pic = name === "Desktop" ? icon("monitor") : name === "Other" ? icon("folder")
+      : g.exe ? h("img", { src: `/api/icon?exe=${enc(g.exe)}`, alt: "", onerror: e => e.target.replaceWith(icon("gamepad-2")) }) : icon("gamepad-2");
+    bar.append(btn(name, name, g.n, pic));
   }
   mark();
 }
@@ -165,9 +166,9 @@ function play(c, frac) {
   const ov = h("div", { class: "overlay", onclick: e => e.target === ov && close() }, v,
     h("div", { class: "row" },
       h("strong", {}, c.name),
-      h("button", { onclick: () => copy(c) }, "Copy"),
-      h("button", { onclick: () => location.href = `/editor?id=${enc(c.id)}&t=${v.currentTime || 0}` }, "Edit"),
-      h("button", { onclick: close }, "Close")));
+      h("button", { icon: "copy", onclick: () => copy(c) }, "Copy"),
+      h("button", { icon: "scissors", onclick: () => location.href = `/editor?id=${enc(c.id)}&t=${v.currentTime || 0}` }, "Edit"),
+      h("button", { icon: "x", onclick: close }, "Close")));
   document.addEventListener("keydown", esc);
   document.body.append(ov);
 }
