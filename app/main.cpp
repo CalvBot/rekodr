@@ -1,0 +1,230 @@
+// Startup, the single instance, commands and the main loop.
+//
+// `clipback.exe` with no arguments starts clipback (or opens the window of the copy already running).
+// `clipback.exe <command>` hands the command to the running copy as WM_COPYDATA and exits; Stream Deck keys use
+// this. With no running copy it starts clipback and runs the command there.
+//
+// Commands: open | timeline | options | save <length> | pause | resume | toggle | folder | quit
+
+#define COPYDATA_COMMAND 0x4B424C43 // "CLBK"
+
+static const wchar_t *MSG_CLASS = L"clipback.msg";
+
+// Run on the main thread for every command, whatever it came from.
+static void run_command(const char *text)
+{
+    char cmd[512];
+    str_set(cmd, text);
+    char *arg = strchr(cmd, ' ');
+    if (arg) *arg++ = 0;
+    else arg = cmd + strlen(cmd);
+    arg = trim(arg);
+
+    if (!*cmd || !strcmp(cmd, "open")) ui_show(SCREEN_LIBRARY);
+    else if (!strcmp(cmd, "timeline")) ui_show(SCREEN_TIMELINE);
+    else if (!strcmp(cmd, "options")) ui_show(SCREEN_OPTIONS);
+    else if (!strcmp(cmd, "save")) {
+        i64 secs = parse_length_secs(*arg ? arg : "30s");
+        if (secs <= 0) log_line("save: \"%s\" isn't a length (try 30s, 2m, 1h)", arg);
+        else save_last(secs);
+    } else if (!strcmp(cmd, "pause") || !strcmp(cmd, "resume") || !strcmp(cmd, "toggle")) {
+        bool pause = !strcmp(cmd, "pause") ? true : !strcmp(cmd, "resume") ? false : !g_app.recorder.paused;
+        recorder_set_paused(pause);
+        tray_update(g_app.msg_hwnd, false);
+        ui_wake();
+    } else if (!strcmp(cmd, "folder")) {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        Path dir = {};
+        swprintf(dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, t.wYear);
+        if (GetFileAttributesW(dir.s) == INVALID_FILE_ATTRIBUTES) dir = g_app.config.save_dir;
+        ShellExecuteW(0, L"open", dir.s, 0, 0, SW_SHOWNORMAL);
+    } else if (!strcmp(cmd, "quit")) {
+        g_app.quitting = true;
+        PostQuitMessage(0);
+    } else {
+        log_line("unknown command \"%s\"", text);
+    }
+}
+
+static void handle_event(const Event &e)
+{
+    switch (e.kind) {
+    case EV_COMMAND: run_command(e.text); break;
+    case EV_LOG: log_line("%s", e.text); break;
+    default: break;
+    }
+    ui_wake();
+}
+
+static LRESULT CALLBACK msg_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_APP_EVENT: {
+        Event e;
+        while (event_take(&e)) handle_event(e);
+        return 0;
+    }
+    case WM_COPYDATA: {
+        COPYDATASTRUCT *cd = (COPYDATASTRUCT *)lp;
+        if (cd->dwData != COPYDATA_COMMAND || cd->cbData == 0 || cd->cbData > 4096) return FALSE;
+        char text[1024] = {};
+        memcpy(text, cd->lpData, cd->cbData < sizeof text - 1 ? cd->cbData : sizeof text - 1);
+        run_command(text);
+        return TRUE;
+    }
+    case WM_HOTKEY: {
+        i32 i = (i32)wp - 1;
+        if (i >= 0 && i < g_app.config.hotkey_count) run_command(g_app.config.hotkeys[i].action.s);
+        return 0;
+    }
+    case WM_APP_TRAY:
+        switch (LOWORD(lp)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT: run_command("open"); break;
+        case WM_CONTEXTMENU: {
+            char command[64];
+            tray_menu(hwnd, command, sizeof command);
+            if (command[0]) run_command(command);
+            break;
+        }
+        }
+        return 0;
+    }
+    if (msg == g_taskbar_created && msg != 0) {
+        tray_update(hwnd, true);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Crashes: a minidump and a log line. Windows restarts clipback (RegisterApplicationRestart) once it has run for
+// a minute.
+
+static LONG WINAPI on_crash(EXCEPTION_POINTERS *info)
+{
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    wchar_t name[64];
+    swprintf(name, 64, L"crash-%04d%02d%02d-%02d%02d%02d.dmp", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    Path dump = path_join(g_app.paths.local_dir, name);
+    HANDLE f = CreateFileW(dump.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION mei = {GetCurrentThreadId(), info, FALSE};
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, MiniDumpWithThreadInfo, &mei, 0, 0);
+        CloseHandle(f);
+    }
+    log_line("crashed (0x%08x at %p); dump: %ls", (u32)info->ExceptionRecord->ExceptionCode,
+             info->ExceptionRecord->ExceptionAddress, dump.s);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+
+// The command line after the exe name, as UTF-8 ("save 30s").
+static void command_from_args(char *out, i32 out_size)
+{
+    out[0] = 0;
+    i32 argc = 0;
+    wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (i32 i = 1; i < argc; i++) {
+        char part[512];
+        wide_to_utf8(argv[i], part, sizeof part);
+        if (i > 1) strncat_s(out, out_size, " ", _TRUNCATE);
+        strncat_s(out, out_size, part, _TRUNCATE);
+    }
+    LocalFree(argv);
+}
+
+// Sends the command to a running copy. Returns false if there isn't one.
+static bool send_to_running(const char *command)
+{
+    HWND other = FindWindowExW(HWND_MESSAGE, 0, MSG_CLASS, 0);
+    if (!other) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(other, &pid);
+    AllowSetForegroundWindow(pid); // so "open" can bring its window to the front
+    const char *text = *command ? command : "open";
+    COPYDATASTRUCT cd = {COPYDATA_COMMAND, (DWORD)strlen(text), (void *)text};
+    DWORD_PTR result = 0;
+    return SendMessageTimeoutW(other, WM_COPYDATA, 0, (LPARAM)&cd, SMTO_ABORTIFHUNG, 5000, &result) != 0;
+}
+
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
+{
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED);
+    InitializeSRWLock(&g_log_lock);
+    InitializeSRWLock(&g_events.lock);
+
+    char command[1024];
+    command_from_args(command, sizeof command);
+
+    // One clipback per user (per CLIPBACK_HOME in development, so a test copy can run next to the real one)
+    wchar_t mutex_name[MAX_PATH + 32] = L"Local\\clipback.native";
+    wchar_t home[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
+        u32 h = 2166136261u;
+        for (wchar_t *c = home; *c; c++) h = (h ^ (u32)towlower(*c)) * 16777619u;
+        swprintf(mutex_name, COUNT(mutex_name), L"Local\\clipback.native.%08x", h);
+        MSG_CLASS = L"clipback.msg.dev";
+    }
+    HANDLE single = CreateMutexW(0, TRUE, mutex_name);
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        for (i32 tries = 0; tries < 20; tries++) { // the running copy may still be starting
+            if (send_to_running(command)) return 0;
+            Sleep(250);
+        }
+        return 1;
+    }
+
+    paths_init(&g_app.paths);
+    SetUnhandledExceptionFilter(on_crash);
+    RegisterApplicationRestart(L"", RESTART_NO_REBOOT);
+    if (!config_load(&g_app.config, g_app.paths)) config_save(g_app.config, g_app.paths);
+    log_line("clipback (native) starting");
+
+    WNDCLASSEXW wc = {sizeof wc};
+    wc.lpfnWndProc = msg_wndproc;
+    wc.hInstance = inst;
+    wc.lpszClassName = MSG_CLASS;
+    RegisterClassExW(&wc);
+    g_app.msg_hwnd = CreateWindowExW(0, MSG_CLASS, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, 0, inst, 0);
+    CHECK(g_app.msg_hwnd, "the message window couldn't be created (%d)", (int)GetLastError());
+
+    if (!ui_init()) log_line("the window couldn't be created; clipback keeps recording without it");
+    tray_init(g_app.msg_hwnd);
+    hotkeys_apply(g_app.config, g_app.msg_hwnd);
+    recorder_start();
+    if (command[0]) run_command(command);
+
+    // The main loop. While the window is hidden or idle it sleeps in GetMessage; it only draws while shown, for a
+    // few frames after input or a change, or continuously while something animates (Present waits for vsync).
+    MSG msg;
+    while (!g_app.quitting) {
+        Ui &ui = g_app.ui;
+        bool draw = ui.shown && (ui.frames_left > 0 || ui.animating);
+        if (!draw) {
+            if (GetMessageW(&msg, 0, 0, 0) <= 0) break;
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) g_app.quitting = true;
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (g_app.quitting) break;
+        if (ui.shown && (ui.frames_left > 0 || ui.animating)) {
+            ui_frame();
+            if (ui.frames_left > 0) ui.frames_left--;
+        }
+    }
+
+    log_line("clipback (native) quitting");
+    recorder_stop();
+    tray_remove(g_app.msg_hwnd);
+    ReleaseMutex(single);
+    return 0;
+}
