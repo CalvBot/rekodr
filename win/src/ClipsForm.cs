@@ -6,7 +6,7 @@ namespace Clipback;
 /// The clips window: header (status, search, Save 30s, Pause, Options), a chip per game, a fixed-size page of clip
 /// cards with a pager, and the player over them when a clip is clicked. The same features as ui/index.html.
 /// </summary>
-sealed class ClipsForm : DarkForm
+sealed partial class ClipsForm : DarkForm
 {
     readonly Header header = new();
     readonly SearchBox search = new("Search clips");
@@ -50,6 +50,7 @@ sealed class ClipsForm : DarkForm
         player.OnEdit = c => Edit(c, player.Position);
         player.Closed += () => grid.Focus();
         refresh.Tick += async (_, _) => { if (WindowState != FormWindowState.Minimized && !player.Visible) await LoadClips(); };
+        InitOptions();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -80,6 +81,7 @@ sealed class ClipsForm : DarkForm
         grid.SetBounds(0, chips.Bottom, w, ClientSize.Height - chips.Bottom - pagerH);
         pager.SetBounds(0, grid.Bottom, w, pagerH);
         player.SetBounds(0, top, w, ClientSize.Height - top);
+        LayoutOptions();
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
@@ -210,6 +212,7 @@ sealed class ClipsForm : DarkForm
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keys)
     {
+        if (OnOptions) return base.ProcessCmdKey(ref msg, keys);
         if (player.Visible)
         {
             switch (keys)

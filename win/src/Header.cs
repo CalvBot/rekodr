@@ -33,7 +33,6 @@ sealed class Header : Painted
             busy = false;
             await Tick();
         };
-        Options.Click += (_, _) => Api.OpenPage("/options"); // temporary, until Options is native
         poll.Tick += async (_, _) => { if (FindForm() is { WindowState: not FormWindowState.Minimized }) await Tick(); };
     }
 
