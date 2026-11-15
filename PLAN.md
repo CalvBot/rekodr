@@ -1,5 +1,8 @@
 # clipback — hands-off long replay buffer (plan)
 
+> The rewrite (one C++ program plus ffmpeg, sessions, buffer timeline, keep/share editing) is specified in
+> [SPEC.md](SPEC.md). This plan describes the current Rust + C# version.
+
 Goal: always record the main screen with every app's audio on its own track, keep as long a buffer as possible,
 and turn "that just happened" into a shareable file on the clipboard in seconds.
 
