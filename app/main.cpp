@@ -171,7 +171,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         u32 h = 2166136261u;
         for (wchar_t *c = home; *c; c++) h = (h ^ (u32)towlower(*c)) * 16777619u;
         swprintf(mutex_name, COUNT(mutex_name), L"Local\\clipback.native.%08x", h);
-        MSG_CLASS = L"clipback.msg.dev";
+        // Per home too, so a command from one test copy never reaches another one running beside it.
+        static wchar_t dev_class[64];
+        swprintf(dev_class, COUNT(dev_class), L"clipback.msg.dev.%08x", h);
+        MSG_CLASS = dev_class;
     }
     HANDLE single = CreateMutexW(0, TRUE, mutex_name);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
