@@ -63,6 +63,19 @@ A small local web UI (127.0.0.1:47820, in an Edge app window):
   being played (switching costs about a second of footage). **Advanced:** preset P1–P7 (NVENC's scale, mapped onto the other encoders),
   VBR / CBR / constant quality, peak bitrate and adaptive quantisation.
 
+### Native clips window (in progress)
+`win/` holds `clipback-ui.exe`, the native replacement for the Edge window (C# .NET 9 WinForms, see PLAN.md).
+The clips screen works: status line and pause, Save 30s, search, game chips, a paged grid with hover-scrub, and a
+player (Media Foundation, run in a short-lived `clipback-ui --player` child process so its graphics memory is
+freed when the player closes). Options and Edit still open the web pages in the browser for now.
+```
+win\build.ps1                 # publish to win\dist\clipback-ui.exe (needs the .NET 9 SDK)
+win\build.ps1 -SelfContained  # bundle the runtime instead (bigger exe, no .NET install needed)
+win\dist\clipback-ui.exe      # needs clipback running; a second launch focuses the open window
+```
+The default build is framework-dependent, like Compress for Discord, so it needs the
+[.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). It reads the port from `config.toml`.
+
 ## Settings
 `%APPDATA%\clipback\config.toml` (written on first run; easiest to change from Options). Defaults: 1440p60 H.264 at
 20 Mbps, 200 GB buffer in `G:\clipback\buffer` (about 22 hours). Logs and thumbnails live in `%LOCALAPPDATA%\clipback`.
