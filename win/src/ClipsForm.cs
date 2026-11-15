@@ -6,7 +6,7 @@ namespace Clipback;
 /// The clips window: header (status, search, Save 30s, Pause, Options), a chip per game, a fixed-size page of clip
 /// cards with a pager, and the player over them when a clip is clicked. The same features as ui/index.html.
 /// </summary>
-sealed class ClipsForm : DarkForm
+sealed partial class ClipsForm : DarkForm
 {
     readonly Header header = new();
     readonly SearchBox search = new("Search clips");
@@ -50,6 +50,7 @@ sealed class ClipsForm : DarkForm
         player.OnEdit = c => Edit(c, player.Position);
         player.Closed += () => grid.Focus();
         refresh.Tick += async (_, _) => { if (WindowState != FormWindowState.Minimized && !player.Visible) await LoadClips(); };
+        InitEditor();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -66,6 +67,7 @@ sealed class ClipsForm : DarkForm
         base.OnShown(e);
         header.Start();
         refresh.Start();
+        OpenArgs(StartArgs);
         await LoadClips();
     }
 
@@ -80,12 +82,14 @@ sealed class ClipsForm : DarkForm
         grid.SetBounds(0, chips.Bottom, w, ClientSize.Height - chips.Bottom - pagerH);
         pager.SetBounds(0, grid.Bottom, w, pagerH);
         player.SetBounds(0, top, w, ClientSize.Height - top);
+        editor.SetBounds(0, top, w, ClientSize.Height - top);
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         refresh.Stop();
         player.Close();
+        editor.Close();
         base.OnFormClosed(e);
     }
 
@@ -185,9 +189,7 @@ sealed class ClipsForm : DarkForm
         catch (ApiException ex) { toast.Show(ex.Message, true); }
     }
 
-    /// <summary>The web editor in the default browser (temporary, until the editor is native)</summary>
-    static void Edit(Clip c, double t) =>
-        Api.OpenPage($"/editor?id={Api.Enc(c.Id)}" + (t > 0 ? "&t=" + t.ToString("0.###", CultureInfo.InvariantCulture) : ""));
+    void Edit(Clip c, double t) => OpenEditor(c.Id, t);
 
     void Play(Clip c, double frac)
     {
