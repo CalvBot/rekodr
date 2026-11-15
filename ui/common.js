@@ -51,6 +51,9 @@ function toast(msg, err = false) {
   toastTimer = setTimeout(() => (el.className = ""), err ? 5000 : 2200);
 }
 
+// Every page title ends with this; clipback finds its own window by it (see server.rs).
+const TITLE_END = " · clipback";
+
 // An icon from icons.js (Lucide), drawn in the text colour.
 function icon(name) {
   const t = document.createElement("template");

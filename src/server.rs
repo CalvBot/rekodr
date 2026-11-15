@@ -339,6 +339,7 @@ pub fn serve(port: u16) -> Result<()> {
             std::thread::spawn(move || handle(req));
         }
     })?;
+    keep_window_icon(); // a window may still be open from before a restart
     Ok(())
 }
 
@@ -370,7 +371,76 @@ pub fn open_window(page: &str) {
         if own == 0 || !lifelog::watcher::processes().contains_key(&own) {
             crate::audio::OWN_BROWSER_PID.store(child.id(), Ordering::Relaxed);
         }
+        keep_window_icon();
     }
+}
+
+/// Edge gives an app window its 16 px favicon, blown up and blurry in the taskbar. While the
+/// window is open, this swaps in clipback's own icon at the sizes the taskbar wants (and again
+/// whenever Edge puts the favicon back, e.g. after moving between pages). It also notes which
+/// Edge process owns the window, which `open_window` can't know if the window outlived a restart.
+pub fn keep_window_icon() {
+    use std::sync::atomic::AtomicBool;
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let mut missing = 0;
+        // Give the window up to 20 s to appear, then stop a few seconds after it closes.
+        while missing < 40 && !state::stopping() {
+            if fix_windows() { missing = 0 } else { missing += 1 }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        RUNNING.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Every page title ends with this (ui/common.js). Edge app windows show the bare page title,
+/// while a normal browser tab adds " - Microsoft Edge" etc., so only our window matches.
+const TITLE_END: &str = " · clipback";
+
+/// Puts the app icon on clipback's Edge windows; false if there are none.
+fn fix_windows() -> bool {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    unsafe extern "system" fn each(hwnd: HWND, lp: LPARAM) -> i32 {
+        unsafe {
+            let found = &mut *(lp as *mut Vec<(HWND, u32)>);
+            let mut buf = [0u16; 512];
+            let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            if n > 0 && IsWindowVisible(hwnd) != 0 && String::from_utf16_lossy(&buf[..n as usize]).ends_with(TITLE_END) {
+                let mut pid = 0;
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                found.push((hwnd, pid));
+            }
+        }
+        1
+    }
+    let mut found: Vec<(HWND, u32)> = Vec::new();
+    unsafe { EnumWindows(Some(each), &mut found as *mut _ as LPARAM) };
+    if found.is_empty() {
+        return false;
+    }
+    let procs = lifelog::watcher::processes();
+    found.retain(|(_, pid)| procs.get(pid).is_some_and(|p| p.exe == "msedge.exe"));
+    for &(hwnd, pid) in &found {
+        crate::audio::OWN_BROWSER_PID.store(pid, Ordering::Relaxed);
+        unsafe {
+            let dpi = GetDpiForWindow(hwnd);
+            for (kind, metric) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)] {
+                // LR_SHARED: Windows loads each size once and hands back the same handle.
+                let px = GetSystemMetricsForDpi(metric, dpi);
+                let icon = LoadImageW(GetModuleHandleW(std::ptr::null()), 1 as *const u16, IMAGE_ICON, px, px, LR_SHARED);
+                if !icon.is_null() && SendMessageW(hwnd, WM_GETICON, kind as usize, 0) != icon as isize {
+                    SendMessageW(hwnd, WM_SETICON, kind as usize, icon as isize);
+                }
+            }
+        }
+    }
+    !found.is_empty()
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Edit clip</title>
+<title>Edit clip · clipback</title>
 <link rel="icon" href="/favicon.png">
 <link rel="stylesheet" href="/style.css">
 <script src="/icons.js"></script>
@@ -75,7 +75,7 @@ const trackState = [];          // {index, volume, muted}
 let ownTracks = [];              // indexes of tracks that make up the sound (not the Mix)
 
 document.getElementById("title").textContent = id.split("/").pop().replace(/\.[^.]+$/, "");
-document.title = "Edit · " + document.getElementById("title").textContent;
+document.title = "Edit · " + document.getElementById("title").textContent + TITLE_END;
 video.src = `/media?id=${enc(id)}`;
 
 // ---------- layout ----------
