@@ -149,8 +149,9 @@ pub fn set_category(exe: &str, category: Category) -> anyhow::Result<()> {
         Category::Ignored => cfg.audio.ignored_apps.push(exe.clone()),
         _ => {}
     }
-    cfg.audio.communication_apps.sort();
-    cfg.audio.ignored_apps.sort();
+    if !cfg.audio.sorted_apps.contains(&exe) {
+        cfg.audio.sorted_apps.push(exe.clone());
+    }
     let is_game = games().0.contains(&exe);
     if (category == Category::Game) != is_game {
         set_game(&exe, category == Category::Game)?;
@@ -199,6 +200,8 @@ pub struct AppRow {
     pub category: Category,
     /// Last time it played audio (µs), if ever.
     pub last_heard: Option<i64>,
+    /// Heard, but not given a category yet (it gets its own track meanwhile).
+    pub new: bool,
 }
 
 /// Every app clipback knows about: heard ones, plus everything in the lists.
@@ -207,8 +210,27 @@ pub fn rows(cfg: &Config) -> Vec<AppRow> {
     for exe in cfg.audio.communication_apps.iter().chain(&cfg.audio.ignored_apps).chain(&games().0) {
         map.entry(exe.clone()).or_insert(None);
     }
-    let mut rows: Vec<AppRow> =
-        map.into_iter().map(|(exe, last_heard)| AppRow { category: category(cfg, &exe), exe, last_heard }).collect();
-    rows.sort_by(|a, b| b.last_heard.cmp(&a.last_heard).then_with(|| a.exe.cmp(&b.exe)));
+    let mut rows: Vec<AppRow> = map
+        .into_iter()
+        .map(|(exe, last_heard)| {
+            let category = category(cfg, &exe);
+            let new = is_new(cfg, &exe, category);
+            AppRow { category, exe, last_heard, new }
+        })
+        .collect();
+    // New ones first, so sorting them is like clearing an inbox.
+    rows.sort_by(|a, b| b.new.cmp(&a.new).then(b.last_heard.cmp(&a.last_heard)).then_with(|| a.exe.cmp(&b.exe)));
     rows
+}
+
+/// Only plain apps can be new: communication and ignored are your choices, and games are either
+/// yours or found by lifelog from Steam, Epic, …
+fn is_new(cfg: &Config, exe: &str, category: Category) -> bool {
+    category == Category::App && !cfg.audio.sorted_apps.iter().any(|a| a == exe)
+}
+
+/// How many heard apps are waiting for a category.
+pub fn new_count(cfg: &Config) -> usize {
+    let heard: Vec<String> = with_seen(|m| m.keys().cloned().collect());
+    heard.iter().filter(|e| is_new(cfg, e, category(cfg, e))).count()
 }

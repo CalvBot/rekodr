@@ -20,7 +20,7 @@
 <div class="options">
   <section class="box">
     <h2 data-icon="audio-lines">Apps and audio tracks</h2>
-    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.<br>Games can have their own <b>bitrate</b>, used while it's the game being played (blank = the normal one). Switching costs about a second of footage.</p>
+    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.<br>Games can have their own <b>bitrate</b>, used while it's the game being played (blank = the normal one). Switching costs about a second of footage.<br>Apps heard for the first time are marked <span class="newtag">New</span> and listed first: pick a category for each.</p>
     <div style="display:flex;gap:6px;margin-bottom:8px">
       <input id="newApp" type="text" placeholder="Add an app, e.g. obs64.exe" style="flex:1">
       <button id="addApp" data-icon="plus">Add as communication</button>
@@ -172,7 +172,7 @@ let lastApps = null;
 
 function appRow(a, playing) {
   const seg = h("div", { class: "seg" }, CATS.map(([cat, label]) =>
-    h("button", { class: (a.category === cat ? "on " : "") + cat, onclick: () => setCat(a.exe, cat) }, label)));
+    h("button", { class: (a.category === cat && !a.new ? "on " : "") + cat, onclick: () => setCat(a.exe, cat) }, label)));
   const heard = playing.has(a.exe) ? h("span", { class: "live" }, "● recording now")
     : h("span", { class: "dim small" }, a.last_heard ? "heard " + ago(a.last_heard / 1000) : "not heard yet");
   // Always there (hidden unless it's a game) so the category buttons never shift.
@@ -181,7 +181,7 @@ function appRow(a, playing) {
       title: "Bitrate while this game runs (blank = normal)", onchange: e => setRate(a.exe, e.target.value) }), " Mbps");
   return h("tr", {},
     h("td", {}, h("img", { src: `/api/icon?exe=${enc(a.exe)}`, alt: "", onerror: e => e.target.style.visibility = "hidden" })),
-    h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, "")), heard),
+    h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, ""), a.new ? h("span", { class: "newtag", title: "Pick a category. Until then it gets its own track." }, "New") : ""), heard),
     h("td", { style: "text-align:right;white-space:nowrap" }, box, seg));
 }
 

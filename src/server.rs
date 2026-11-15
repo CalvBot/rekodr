@@ -156,6 +156,7 @@ fn status() -> Value {
         "audio": *state::LIVE_AUDIO.lock().unwrap(),
         "clips_dir": cfg.clips_dir,
         "encode": *state::VIDEO_ENCODE.lock().unwrap(),
+        "new_apps": apps::new_count(&cfg),
         "now_us": util::now_us(),
     })
 }

@@ -97,6 +97,8 @@ pub struct Audio {
     pub communication_apps: Vec<String>,
     /// Never recorded.
     pub ignored_apps: Vec<String>,
+    /// Apps you've given a category in Options. Others heard playing audio show as "new" there.
+    pub sorted_apps: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -153,7 +155,7 @@ impl Default for Audio {
             "slack.exe", "ts3client_win64.exe", "teamspeak.exe", "skype.exe", "telegram.exe", "whatsapp.exe",
             "signal.exe", "mumble.exe", "guilded.exe", "element.exe", "vesktop.exe",
         ];
-        Self { mic: true, communication_apps: comms.iter().map(|s| s.to_string()).collect(), ignored_apps: Vec::new() }
+        Self { mic: true, communication_apps: comms.iter().map(|s| s.to_string()).collect(), ignored_apps: Vec::new(), sorted_apps: Vec::new() }
     }
 }
 
@@ -234,7 +236,7 @@ impl Config {
     }
 
     pub fn normalise(&mut self) {
-        for list in [&mut self.audio.communication_apps, &mut self.audio.ignored_apps] {
+        for list in [&mut self.audio.communication_apps, &mut self.audio.ignored_apps, &mut self.audio.sorted_apps] {
             for app in list.iter_mut() {
                 *app = app.trim().to_lowercase();
             }

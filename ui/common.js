@@ -97,6 +97,12 @@ async function statusBar(onUpdate) {
       text.title = `${fmtSize(s.ring_bytes)} of ${fmtSize(s.ring_cap)}`;
       if (btn) setLabel(btn, s.paused ? "play" : "pause", s.paused ? "Resume" : "Pause");
       if (btn) btn.dataset.paused = s.paused;
+      const badge = document.getElementById("newApps");
+      if (badge) {
+        badge.hidden = !s.new_apps;
+        badge.textContent = s.new_apps;
+        badge.title = `${s.new_apps} new app${s.new_apps === 1 ? "" : "s"} to sort in Options`;
+      }
       onUpdate && onUpdate(s);
     } catch {
       dot.className = "dot";
