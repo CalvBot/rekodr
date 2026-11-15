@@ -18,7 +18,7 @@
 <div class="options">
   <section class="box">
     <h2>Apps and audio tracks</h2>
-    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.</p>
+    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.<br>Games can have their own <b>bitrate</b>, used while that game is running (blank = the normal one). Switching costs about a second of footage.</p>
     <div style="display:flex;gap:6px;margin-bottom:8px">
       <input id="newApp" type="text" placeholder="Add an app, e.g. obs64.exe" style="flex:1">
       <button id="addApp">Add as communication</button>
@@ -43,14 +43,28 @@
     <h2>Recording</h2>
     <div class="form">
       <label>Record the mic</label><span><input type="checkbox" id="mic"></span>
-      <label>Monitor</label><span><input type="number" id="output_idx" min="0" max="8" style="width:70px"> <span class="dim small">0 = main display</span></span>
+      <label>Monitor</label><span><select id="output_idx"></select></span>
       <label>Frame rate</label><span><input type="number" id="fps" min="10" max="240" style="width:70px"> fps</span>
-      <label>Quality</label><span><input type="number" id="bitrate_mbps" min="2" max="150" step="1" style="width:70px"> Mbps <span class="dim small">20 is sharp at 1440p</span></span>
+      <label>Bitrate</label><span><input type="number" id="bitrate_mbps" min="2" max="150" step="1" style="width:70px"> Mbps <span class="dim small">20 is sharp at 1440p · games can have their own (above)</span></span>
       <label>Format</label><span><select id="codec">
         <option value="h264">H.264 — opens everywhere (Premiere, Discord)</option>
         <option value="hevc">HEVC — smaller, needs HEVC support</option>
         <option value="av1">AV1 — smallest, not for Premiere</option></select></span>
       <label>Show the mouse</label><span><input type="checkbox" id="draw_mouse"></span>
+      <label>Advanced</label><span><input type="checkbox" id="advanced"> <span class="dim small">use the encoder settings below (off = defaults)</span></span>
+    </div>
+    <div class="form" id="advBox" style="margin-top:8px">
+      <label>Preset</label><span><select id="preset">
+        <option value="p1">P1 — fastest</option><option value="p2">P2</option><option value="p3">P3</option>
+        <option value="p4">P4 — balanced (default)</option><option value="p5">P5</option><option value="p6">P6</option>
+        <option value="p7">P7 — best quality, more GPU</option></select></span>
+      <label>Rate control</label><span><select id="rate_control">
+        <option value="vbr">VBR — target bitrate, peaks allowed (default)</option>
+        <option value="cbr">CBR — fixed bitrate, predictable size</option>
+        <option value="cq">Constant quality — bitrate is only a cap; smaller on quiet scenes</option></select></span>
+      <label>Quality level</label><span><input type="number" id="cq" min="0" max="51" style="width:70px"> <span class="dim small">constant quality only · 18 near-lossless, 23 good, 28 small</span></span>
+      <label>Peak bitrate</label><span><input type="number" id="peak_factor" min="1" max="4" step="0.25" style="width:70px"> × bitrate <span class="dim small">VBR and constant quality</span></span>
+      <label>Adaptive quantisation</label><span><input type="checkbox" id="spatial_aq"> <span class="dim small">less banding in skies and dark scenes</span></span>
     </div>
   </section>
 
@@ -95,11 +109,37 @@ async function loadSettings() {
   cfg = s.config;
   $("cfgPath").textContent = s.path;
   for (const k of ["clips_dir", "buffer_dir", "max_buffer_gb", "start_with_windows"]) set(k, cfg[k]);
-  for (const k of ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse"]) set(k, cfg.video[k]);
+  await loadMonitors(cfg.video.output_idx);
+  for (const k of VIDEO_KEYS) set(k, cfg.video[k]);
   set("mic", cfg.audio.mic);
+  advState();
   hotkeyRows();
   hoursText();
 }
+const VIDEO_KEYS = ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse", "advanced", "preset", "rate_control", "cq", "peak_factor", "spatial_aq"];
+
+async function loadMonitors(current) {
+  const list = await api("/api/monitors").catch(() => []);
+  const sel = $("output_idx");
+  sel.textContent = "";
+  for (const m of list) {
+    const hz = m.hz ? ` @ ${m.hz} Hz` : "";
+    sel.append(h("option", { value: m.idx }, `${m.idx + 1}. ${m.name} — ${m.width}×${m.height}${hz}${m.primary ? " (main)" : ""}`));
+  }
+  if (!list.some(m => m.idx === current)) sel.append(h("option", { value: current }, `${current + 1}. not connected`));
+}
+
+// The advanced fields stay on screen (greyed out) so nothing moves when the box is ticked.
+function advState() {
+  const on = $("advanced").checked;
+  $("advBox").classList.toggle("off", !on);
+  for (const el of $("advBox").querySelectorAll("input,select")) el.disabled = !on;
+  $("cq").disabled = !on || $("rate_control").value !== "cq";
+  $("peak_factor").disabled = !on || $("rate_control").value === "cbr";
+}
+$("advanced").onchange = advState;
+$("rate_control").onchange = advState;
+
 function set(id, v) { const el = $(id); if (el.type === "checkbox") el.checked = v; else el.value = v; }
 function get(id) { const el = $(id); return el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value; }
 
@@ -108,11 +148,13 @@ $("bitrate_mbps").oninput = hoursText;
 $("addHotkey").onclick = () => { cfg.hotkeys.push({ keys: "F" + (13 + cfg.hotkeys.length), action: "save 30s" }); hotkeyRows(); };
 $("saveBtn").onclick = async () => {
   for (const k of ["clips_dir", "buffer_dir", "max_buffer_gb", "start_with_windows"]) cfg[k] = get(k);
-  for (const k of ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse"]) cfg.video[k] = get(k);
+  for (const k of VIDEO_KEYS) cfg.video[k] = get(k);
+  cfg.video.output_idx = +cfg.video.output_idx;
   cfg.audio.mic = get("mic");
   try {
-    // App categories are saved as they're clicked; keep those lists as the service has them.
+    // App categories and game bitrates are saved as they're changed; keep those as the service has them.
     const fresh = (await api("/api/settings")).config;
+    cfg.video.game_bitrates = fresh.video.game_bitrates;
     cfg.audio.communication_apps = fresh.audio.communication_apps;
     cfg.audio.ignored_apps = fresh.audio.ignored_apps;
     await api("/api/settings", { body: cfg });
@@ -131,10 +173,14 @@ function appRow(a, playing) {
     h("button", { class: (a.category === cat ? "on " : "") + cat, onclick: () => setCat(a.exe, cat) }, label)));
   const heard = playing.has(a.exe) ? h("span", { class: "live" }, "● recording now")
     : h("span", { class: "dim small" }, a.last_heard ? "heard " + ago(a.last_heard / 1000) : "not heard yet");
+  // Always there (hidden unless it's a game) so the category buttons never shift.
+  const box = h("span", { class: "rate", style: a.category === "game" ? "" : "visibility:hidden" },
+    h("input", { type: "number", min: 1, max: 300, step: 1, value: gameRates[a.exe] ?? "", placeholder: cfg ? cfg.video.bitrate_mbps : "",
+      title: "Bitrate while this game runs (blank = normal)", onchange: e => setRate(a.exe, e.target.value) }), " Mbps");
   return h("tr", {},
     h("td", {}, h("img", { src: `/api/icon?exe=${enc(a.exe)}`, alt: "", onerror: e => e.target.style.visibility = "hidden" })),
     h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, "")), heard),
-    h("td", { style: "text-align:right" }, seg));
+    h("td", { style: "text-align:right;white-space:nowrap" }, box, seg));
 }
 
 function fillList(key, list, playing, empty) {
@@ -168,9 +214,20 @@ function render() {
 
 $("ignoredToggle").onclick = () => { $("ignoredBox").hidden = !$("ignoredBox").hidden; render(); };
 
+let gameRates = {};
 async function loadApps() {
-  lastApps = await api("/api/apps");
-  render();
+  const [apps, settings] = await Promise.all([api("/api/apps"), api("/api/settings")]);
+  gameRates = settings.config.video.game_bitrates || {};
+  lastApps = apps;
+  // Don't redraw under someone typing a bitrate.
+  if (!(document.activeElement && document.activeElement.closest(".rate"))) render();
+}
+async function setRate(exe, v) {
+  try {
+    await api(`/api/game-bitrate?exe=${enc(exe)}&mbps=${enc(v)}`, { method: "POST" });
+    toast(v ? `${exe.replace(/\.exe$/, "")}: ${v} Mbps while running` : "Normal bitrate");
+    await loadApps();
+  } catch (e) { toast(e.message, true); }
 }
 async function setCat(exe, cat) {
   try { await api(`/api/app-category?exe=${enc(exe)}&category=${cat}`, { method: "POST" }); await loadApps(); }

@@ -41,8 +41,11 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 3. **Done.** Stream Deck via F13–F24 hotkeys (no plugin needed), copy-file-to-clipboard, tray icon with pause.
 4. **Done.** Clips window (hover-scrub thumbnails, player) and quick editor (trim, keyframed zoom, per-track volume,
    Discord size presets). Local web UI in an Edge app window, not Tauri: no extra toolchain, opens instantly.
-5. Next: multi-monitor option, a "custom range" Stream Deck button (open the editor on the last 10 min of the
-   buffer without saving first), start-with-Windows installer step.
+5. **Done.** Monitor picker (DXGI outputs in ddagrab's order, with names), per-game bitrate, advanced encoder options.
+   Recording at a lower resolution was tried and dropped: ffmpeg 8.1's `scale_d3d11` fails on ddagrab frames here,
+   and scaling on the CPU would cost games frames.
+6. Next: a "custom range" Stream Deck button (open the editor on the last 10 min of the
+   buffer without saving first, reserved on the Stream Deck), start-with-Windows installer step.
 
 ## Decisions made
 - **Format: H.264** by default (AV1 doesn't open in Premiere). HEVC/AV1 still selectable.

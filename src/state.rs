@@ -19,6 +19,8 @@ pub static VIDEO_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub static RING_BYTES: AtomicU64 = AtomicU64::new(0);
 /// The video recorder has a live ffmpeg producing frames.
 pub static VIDEO_LIVE: AtomicBool = AtomicBool::new(false);
+/// What the recorder is running right now: (Mbps, game whose bitrate is in use).
+pub static VIDEO_ENCODE: Mutex<Option<(f64, Option<String>)>> = Mutex::new(None);
 
 pub fn init(cfg: Config, ffmpeg: PathBuf) {
     *CONFIG.write().unwrap() = Some(cfg);
@@ -34,15 +36,12 @@ pub fn ffmpeg() -> PathBuf {
 }
 
 /// Saves new settings and applies them.
-pub fn set_cfg(new: Config) -> anyhow::Result<()> {
+pub fn set_cfg(mut new: Config) -> anyhow::Result<()> {
+    new.normalise();
     new.save()?;
     let old = cfg();
-    let video_changed = old.video.output_idx != new.video.output_idx
-        || old.video.fps != new.video.fps
-        || old.video.codec != new.video.codec
-        || old.video.bitrate_mbps != new.video.bitrate_mbps
-        || old.video.draw_mouse != new.video.draw_mouse
-        || old.buffer_dir != new.buffer_dir;
+    // The recorder only restarts if what it would run actually differs.
+    let video_changed = old.video != new.video || old.buffer_dir != new.buffer_dir;
     let startup_changed = old.start_with_windows != new.start_with_windows;
     *CONFIG.write().unwrap() = Some(new.clone());
     if video_changed {

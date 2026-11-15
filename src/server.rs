@@ -153,6 +153,7 @@ fn status() -> Value {
         "ring_cap": cfg.max_ring_bytes(),
         "audio": *state::LIVE_AUDIO.lock().unwrap(),
         "clips_dir": cfg.clips_dir,
+        "encode": *state::VIDEO_ENCODE.lock().unwrap(),
         "now_us": util::now_us(),
     })
 }
@@ -213,6 +214,7 @@ fn handle(mut req: Request) {
             None => (404, "text/plain", b"no icon".to_vec()),
         },
         (true, "/api/settings") => ok_json(json!({ "config": state::cfg(), "path": crate::config::config_path() })),
+        (true, "/api/monitors") => ok_json(json!(crate::monitors::list())),
         (true, "/api/apps") => {
             let cfg = state::cfg();
             ok_json(json!({ "apps": apps::rows(&cfg), "live": *state::LIVE_AUDIO.lock().unwrap() }))
@@ -238,6 +240,20 @@ fn handle(mut req: Request) {
                 _ => None,
             };
             match cat.ok_or(anyhow!("unknown category")).and_then(|c| apps::set_category(&exe, c)) {
+                Ok(()) => ok_json(json!({ "ok": true })),
+                Err(e) => err_json(400, format!("{e:#}")),
+            }
+        }
+        (false, "/api/game-bitrate") => {
+            // Saved as soon as it's typed, like the app categories. No value = use the normal bitrate.
+            let exe = query(&url, "exe").unwrap_or_default().to_lowercase();
+            let mbps = query(&url, "mbps").and_then(|m| m.parse::<f64>().ok()).filter(|m| *m > 0.0);
+            let mut cfg = state::cfg();
+            match mbps {
+                Some(m) => cfg.video.game_bitrates.insert(exe, m),
+                None => cfg.video.game_bitrates.remove(&exe),
+            };
+            match state::set_cfg(cfg) {
                 Ok(()) => ok_json(json!({ "ok": true })),
                 Err(e) => err_json(400, format!("{e:#}")),
             }

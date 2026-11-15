@@ -51,7 +51,10 @@ A small local web UI (127.0.0.1:47820, in an Edge app window):
 - **Editor:** trim with the yellow handles (or I/O), zoom with keyframes (set zoom, drag the picture to aim; eases
   smoothly between keyframes), volume and mute per track, export at full quality or sized for Discord (10/50 MB).
   Exports land next to the clip and can go straight to the clipboard.
-- **Options:** app categories, hotkeys, monitor, fps, quality, format, buffer size and folders, start with Windows.
+- **Options:** app categories, hotkeys, monitor (by name, size and refresh rate), fps, bitrate, format, buffer size
+  and folders, start with Windows. **Per-game bitrate:** a game can have its own bitrate, used while it's running
+  (the highest wins if several run; switching costs about a second of footage). **Advanced:** NVENC preset P1–P7,
+  VBR / CBR / constant quality, peak bitrate and adaptive quantisation.
 
 ## Settings
 `%APPDATA%\clipback\config.toml` (written on first run; easiest to change from Options). Defaults: 1440p60 H.264 at

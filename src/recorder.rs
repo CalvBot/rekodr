@@ -1,8 +1,9 @@
 //! Keeps ffmpeg recording the screen into the video ring, restarting it whenever it stops
 //! (desktop capture dies on the lock screen, UAC prompts and display mode changes), when
-//! recording is paused/resumed, or when the video settings change.
+//! recording is paused/resumed, when the video settings change, or when a game with its own
+//! bitrate starts or quits.
 
-use crate::config::{Config, SEGMENT_SECS};
+use crate::config::{Config, Encode, SEGMENT_SECS};
 use crate::state;
 use crate::util::{self, log};
 use anyhow::{Context, Result};
@@ -13,6 +14,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// How often to look for games that have their own bitrate.
+const GAME_CHECK: Duration = Duration::from_secs(3);
 
 fn ffmpeg_log() -> PathBuf {
     crate::config::local_dir().join("ffmpeg-video.log")
@@ -20,10 +23,11 @@ fn ffmpeg_log() -> PathBuf {
 
 /// ddagrab → NVENC → 2 s segments. Frame 0's wall-clock time is printed once (the `print` in
 /// setpts) and saved as the run's anchor, which lines the video up with the audio streams.
-fn spawn(cfg: &Config, ffmpeg: &Path, run: &Path) -> Result<Child> {
+fn spawn(cfg: &Config, enc: &Encode, ffmpeg: &Path, run: &Path) -> Result<Child> {
     let v = &cfg.video;
-    let bitrate = format!("{}k", (v.bitrate_mbps * 1000.0).round() as u64);
-    let peak = format!("{}k", (v.bitrate_mbps * 2000.0).round() as u64);
+    let kbps = |mbps: f64| format!("{}k", (mbps * 1000.0).round() as u64);
+    let bitrate = kbps(enc.bitrate_mbps);
+    let peak = kbps(enc.bitrate_mbps * if enc.rate_control == "cbr" { 1.0 } else { enc.peak_factor });
     let graph = format!(
         "ddagrab=output_idx={}:framerate={}:draw_mouse={},setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'",
         v.output_idx, v.fps, v.draw_mouse as u8
@@ -32,8 +36,17 @@ fn spawn(cfg: &Config, ffmpeg: &Path, run: &Path) -> Result<Child> {
     cmd.args(["-hide_banner", "-nostats", "-loglevel", "info"])
         .args(["-init_hw_device", "d3d11va"])
         .args(["-filter_complex", &graph])
-        .args(["-c:v", cfg.encoder(), "-preset", "p4", "-rc", "vbr"])
-        .args(["-b:v", &bitrate, "-maxrate", &peak, "-bufsize", &peak])
+        .args(["-c:v", cfg.encoder(), "-preset", &enc.preset]);
+    match enc.rate_control.as_str() {
+        // Constant quality: the bitrate is only a cap, so quiet scenes take far less space.
+        "cq" => cmd.args(["-rc", "vbr", "-cq", &enc.cq.to_string(), "-b:v", "0", "-maxrate", &peak, "-bufsize", &peak]),
+        "cbr" => cmd.args(["-rc", "cbr", "-b:v", &bitrate, "-maxrate", &bitrate, "-bufsize", &bitrate]),
+        _ => cmd.args(["-rc", "vbr", "-b:v", &bitrate, "-maxrate", &peak, "-bufsize", &peak]),
+    };
+    if enc.spatial_aq {
+        cmd.args(["-spatial-aq", "1"]);
+    }
+    cmd
         // No B-frames and a keyframe every segment: easy to cut, quick to scrub in an editor.
         .args(["-bf", "0", "-g", &(v.fps * SEGMENT_SECS).to_string()])
         .args(["-f", "segment", "-segment_time", &SEGMENT_SECS.to_string(), "-segment_format", "matroska"])
@@ -88,6 +101,25 @@ fn sleep_while(d: Duration, keep_waiting: impl Fn() -> bool) {
     }
 }
 
+/// The encoder settings for what's running now (the process list is only read if a game has its own bitrate).
+fn encode_now(cfg: &Config) -> Encode {
+    if cfg.video.game_bitrates.is_empty() {
+        return cfg.video.encode([]);
+    }
+    let procs = lifelog::watcher::processes();
+    cfg.video.encode(procs.values().map(|p| p.exe.as_str()))
+}
+
+/// Everything that needs a new ffmpeg when it changes.
+fn same_capture(a: &Config, b: &Config) -> bool {
+    let (x, y) = (&a.video, &b.video);
+    x.output_idx == y.output_idx
+        && x.fps == y.fps
+        && x.codec == y.codec
+        && x.draw_mouse == y.draw_mouse
+        && a.buffer_dir == b.buffer_dir
+}
+
 /// Runs until clipback quits.
 pub fn run() {
     let _ = std::fs::create_dir_all(crate::config::local_dir());
@@ -100,9 +132,13 @@ pub fn run() {
             continue;
         }
         let cfg = state::cfg();
-        let generation = state::VIDEO_GENERATION.load(Ordering::Relaxed);
+        let mut generation = state::VIDEO_GENERATION.load(Ordering::Relaxed);
+        let enc = encode_now(&cfg);
         let run = cfg.video_ring().join(chrono::Local::now().format("%Y%m%d_%H%M%S_%3f").to_string());
-        let mut child = match std::fs::create_dir_all(&run).map_err(anyhow::Error::from).and_then(|_| spawn(&cfg, &state::ffmpeg(), &run)) {
+        let mut child = match std::fs::create_dir_all(&run)
+            .map_err(anyhow::Error::from)
+            .and_then(|_| spawn(&cfg, &enc, &state::ffmpeg(), &run))
+        {
             Ok(c) => c,
             Err(e) => {
                 if healthy {
@@ -114,10 +150,26 @@ pub fn run() {
             }
         };
         let stderr = watch_stderr(&mut child, run.clone());
+        *state::VIDEO_ENCODE.lock().unwrap() = Some((enc.bitrate_mbps, enc.game.clone()));
         let started = Instant::now();
+        let mut checked = Instant::now();
         let mut announced = false;
         let exit = loop {
-            let restart = state::VIDEO_GENERATION.load(Ordering::Relaxed) != generation;
+            let mut restart = false;
+            let now_gen = state::VIDEO_GENERATION.load(Ordering::Relaxed);
+            if now_gen != generation || checked.elapsed() > GAME_CHECK {
+                generation = now_gen;
+                checked = Instant::now();
+                let new = state::cfg();
+                let new_enc = encode_now(&new);
+                restart = !same_capture(&cfg, &new) || new_enc != enc;
+                if restart && new_enc.game != enc.game {
+                    log(&match &new_enc.game {
+                        Some(g) => format!("{g} is running: switching to {} Mbps", new_enc.bitrate_mbps),
+                        None => format!("back to {} Mbps", new_enc.bitrate_mbps),
+                    });
+                }
+            }
             if state::stopping() || state::paused() || restart {
                 stop_gracefully(&mut child);
                 break None;
@@ -136,6 +188,7 @@ pub fn run() {
             std::thread::sleep(Duration::from_millis(200));
         };
         state::VIDEO_LIVE.store(false, Ordering::Relaxed);
+        *state::VIDEO_ENCODE.lock().unwrap() = None;
         let last = stderr.join().unwrap_or_default();
         if let Some(status) = exit {
             if healthy {

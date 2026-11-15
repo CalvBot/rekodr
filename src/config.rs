@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -27,16 +28,72 @@ pub struct Config {
     pub hotkeys: Vec<Hotkey>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Video {
-    /// Monitor: 0 is normally the main screen.
+    /// Monitor: DXGI output index on the main GPU (0 is normally the main screen).
     pub output_idx: u32,
     pub fps: u32,
     /// h264 (edits anywhere, e.g. Premiere), hevc or av1. All NVENC.
     pub codec: String,
     pub bitrate_mbps: f64,
     pub draw_mouse: bool,
+    /// Bitrate while a game is running (lower-case exe → Mbps). The highest running one wins.
+    pub game_bitrates: BTreeMap<String, f64>,
+    /// The settings below only apply when this is on; otherwise the defaults are used.
+    pub advanced: bool,
+    /// NVENC preset p1 (fastest) … p7 (best quality).
+    pub preset: String,
+    /// "vbr", "cbr" or "cq" (constant quality: the bitrate becomes a cap).
+    pub rate_control: String,
+    /// Constant-quality level, 0–51 (lower is better).
+    pub cq: u32,
+    /// Peak bitrate as a multiple of the target (VBR and CQ).
+    pub peak_factor: f64,
+    /// Adaptive quantisation: spends bits on flat areas (sky, dark scenes) that would band.
+    pub spatial_aq: bool,
+}
+
+/// The encoder settings actually used, after "advanced" and the per-game bitrate are applied.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Encode {
+    pub preset: String,
+    pub rate_control: String,
+    pub cq: u32,
+    pub bitrate_mbps: f64,
+    pub peak_factor: f64,
+    pub spatial_aq: bool,
+    /// The game whose bitrate is in use, if any.
+    pub game: Option<String>,
+}
+
+impl Video {
+    /// `running` is the lower-case exe names running now.
+    pub fn encode<'a>(&self, running: impl IntoIterator<Item = &'a str>) -> Encode {
+        let mut bitrate = self.bitrate_mbps;
+        let mut game = None;
+        let mut best = 0.0;
+        for exe in running {
+            if let Some(&mbps) = self.game_bitrates.get(exe) {
+                if mbps > best {
+                    best = mbps;
+                    bitrate = mbps;
+                    game = Some(exe.to_string());
+                }
+            }
+        }
+        let d = Video::default();
+        let src = if self.advanced { self } else { &d };
+        Encode {
+            preset: src.preset.clone(),
+            rate_control: src.rate_control.clone(),
+            cq: src.cq,
+            bitrate_mbps: bitrate,
+            peak_factor: src.peak_factor,
+            spatial_aq: src.spatial_aq,
+            game,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -82,7 +139,20 @@ impl Default for Config {
 
 impl Default for Video {
     fn default() -> Self {
-        Self { output_idx: 0, fps: 60, codec: "h264".into(), bitrate_mbps: 20.0, draw_mouse: true }
+        Self {
+            output_idx: 0,
+            fps: 60,
+            codec: "h264".into(),
+            bitrate_mbps: 20.0,
+            draw_mouse: true,
+            game_bitrates: BTreeMap::new(),
+            advanced: false,
+            preset: "p4".into(),
+            rate_control: "vbr".into(),
+            cq: 23,
+            peak_factor: 2.0,
+            spatial_aq: false,
+        }
     }
 }
 
@@ -173,7 +243,7 @@ impl Config {
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
     }
 
-    fn normalise(&mut self) {
+    pub fn normalise(&mut self) {
         for list in [&mut self.audio.communication_apps, &mut self.audio.ignored_apps] {
             for app in list.iter_mut() {
                 *app = app.trim().to_lowercase();
@@ -182,6 +252,9 @@ impl Config {
             list.sort();
             list.dedup();
         }
+        let games = std::mem::take(&mut self.video.game_bitrates);
+        self.video.game_bitrates =
+            games.into_iter().map(|(k, v)| (k.trim().to_lowercase(), v)).filter(|(k, _)| !k.is_empty()).collect();
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -190,6 +263,19 @@ impl Config {
         }
         if self.video.fps == 0 || self.video.fps > 240 || self.video.bitrate_mbps <= 0.0 {
             bail!("fps must be 1–240 and bitrate above zero");
+        }
+        let v = &self.video;
+        if !matches!(v.preset.as_str(), "p1" | "p2" | "p3" | "p4" | "p5" | "p6" | "p7") {
+            bail!("preset must be p1–p7 (got {:?})", v.preset);
+        }
+        if !matches!(v.rate_control.as_str(), "vbr" | "cbr" | "cq") {
+            bail!("rate control must be vbr, cbr or cq (got {:?})", v.rate_control);
+        }
+        if v.cq > 51 || !(1.0..=4.0).contains(&v.peak_factor) {
+            bail!("quality level must be 0–51 and peak 1–4× the bitrate");
+        }
+        if v.game_bitrates.values().any(|m| !(1.0..=300.0).contains(m)) {
+            bail!("game bitrates must be 1–300 Mbps");
         }
         if self.max_buffer_gb < 1.0 {
             bail!("buffer size must be at least 1 GB");
@@ -331,6 +417,20 @@ mod tests {
         assert_eq!(parse_action("save 30s").unwrap(), Action::Save(30));
         assert_eq!(parse_action("Open").unwrap(), Action::Open);
         assert!(parse_action("dance").is_err());
+    }
+
+    #[test]
+    fn game_bitrate_and_advanced() {
+        let mut v = Video::default();
+        v.game_bitrates.insert("cs2.exe".into(), 40.0);
+        v.game_bitrates.insert("overwatch.exe".into(), 35.0);
+        v.preset = "p7".into();
+        let e = v.encode(["explorer.exe", "overwatch.exe", "cs2.exe"]);
+        assert_eq!((e.bitrate_mbps, e.game.as_deref()), (40.0, Some("cs2.exe")));
+        assert_eq!(e.preset, "p4"); // advanced is off
+        v.advanced = true;
+        let e = v.encode(["explorer.exe"]);
+        assert_eq!((e.bitrate_mbps, e.game, e.preset.as_str()), (20.0, None, "p7"));
     }
 
     #[test]

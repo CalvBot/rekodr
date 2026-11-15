@@ -73,7 +73,8 @@ async function statusBar(onUpdate) {
       const apps = s.audio.filter(a => a.exe !== "mic").map(a => a.exe.replace(/\.exe$/, ""));
       const span = s.oldest_us ? fmtTime((s.now_us - s.oldest_us) / 1e6) : "0:00";
       text.textContent = s.paused ? "Paused" : !s.live ? "Waiting for the screen…" :
-        `Recording · ${span} buffered` + (apps.length ? " · " + apps.join(", ") : "");
+        `Recording · ${span} buffered` + (s.encode && s.encode[1] ? ` · ${s.encode[0]} Mbps for ${s.encode[1].replace(/\.exe$/, "")}` : "") +
+        (apps.length ? " · " + apps.join(", ") : "");
       text.title = `${fmtSize(s.ring_bytes)} of ${fmtSize(s.ring_cap)}`;
       if (btn) btn.textContent = s.paused ? "Resume" : "Pause";
       if (btn) btn.dataset.paused = s.paused;

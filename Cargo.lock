@@ -111,6 +111,7 @@ dependencies = [
  "tiny_http",
  "toml",
  "wasapi",
+ "windows",
  "windows-sys 0.59.0",
 ]
 
