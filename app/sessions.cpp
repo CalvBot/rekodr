@@ -698,42 +698,65 @@ static void sessions_popup()
     Session *s = sessions_asking(&waiting);
     if (!s) return;
     f32 sc = g_dpi_scale;
-    const ImGuiStyle &st = ImGui::GetStyle();
-    f32 button_w = 120 * sc, line = ImGui::GetTextLineHeightWithSpacing();
-    ImVec2 size(460 * sc, st.WindowPadding.y * 2 + line * 3 + st.ItemSpacing.y + ImGui::GetFrameHeight());
+    f32 pad = 20 * sc, tile = 44 * sc, button_w = 104 * sc, fh = ImGui::GetFrameHeight();
+    // Fixed size: the lines below are always there, whatever they say, so the buttons never move
+    ImVec2 size(420 * sc, pad + 92 * sc + 18 * sc + fh + pad);
     const ImGuiViewport *vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - size.x - 16 * sc,
-                                   vp->WorkPos.y + vp->WorkSize.y - size.y - 16 * sc));
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - size.x - 20 * sc,
+                                   vp->WorkPos.y + vp->WorkSize.y - size.y - 20 * sc));
     ImGui::SetNextWindowSize(size);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, rgb(COL_PANEL));
+    ImGui::PushStyleColor(ImGuiCol_Border, rgb(COL_LINE));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8 * sc);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12 * sc);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
     ImGui::Begin("##session_popup", 0,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
-    char len[32], from[32], to[32];
+    char len[32], from[32], to[32], when[128];
     fmt_length(s->end_us - s->start_us, len, sizeof len);
     fmt_clock(s->start_us, from, sizeof from);
     fmt_clock(s->end_us, to, sizeof to);
-    ImGui::PushFont(g_font_bold);
-    ImGui::Text("%s session", s->name);
+    snprintf(when, sizeof when, "%s  \xC2\xB7  %s \xE2\x80\x93 %s", len, from, to);
+
+    // A game tile, then what ended and when
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    dl->AddRectFilled(a, ImVec2(a.x + tile, a.y + tile), col32(COL_ACCENT_SOFT), 10 * sc);
+    ImGui::PushFont(g_font_icon);
+    ImVec2 is = ImGui::CalcTextSize(ICON_GAME);
+    dl->AddText(ImVec2(floorf(a.x + (tile - is.x) / 2), floorf(a.y + (tile - is.y) / 2)), col32(COL_ACCENT), ICON_GAME);
     ImGui::PopFont();
-    ImGui::Text("%s (%s to %s). Save it?", len, from, to);
-    // Always a line here, so the buttons stay put when the queue empties.
-    if (waiting == 1) ImGui::TextDisabled("1 more session is waiting.");
-    else if (waiting > 1) ImGui::TextDisabled("%d more sessions are waiting.", waiting);
-    else ImGui::TextDisabled("Not now keeps it in Sessions, under Not saved.");
-    ImGui::SetCursorPosY(size.y - st.WindowPadding.y - ImGui::GetFrameHeight());
-    u32 id = s->id;
-    ImGui::PushStyleColor(ImGuiCol_Button, rgb(COL_BLUE));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(COL_BLUE, 0.85f));
-    bool save = ImGui::Button("Save", ImVec2(button_w, 0));
-    ImGui::PopStyleColor(2);
-    ImGui::SameLine();
-    bool later = ImGui::Button("Not now", ImVec2(button_w, 0));
-    ImGui::End();
-    ImGui::PopStyleVar(2);
+    f32 tx = a.x + tile + 14 * sc, text_w = a.x + size.x - 2 * pad - tx;
+    ImGui::SetCursorScreenPos(ImVec2(tx, a.y - 2 * sc));
+    kit_label("SESSION ENDED");
+    ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y - 6 * sc));
+    ImGui::PushFont(g_font_big);
+    ImGui::PushClipRect(ImVec2(tx, a.y - 4 * sc), ImVec2(tx + text_w, a.y + 92 * sc), true);
+    ImGui::TextUnformatted(s->name);
+    ImGui::PopClipRect();
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y - 4 * sc));
+    kit_dim("%s", when);
+    // Always a line here, so nothing moves when the queue empties
+    ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y - 2 * sc));
+    ImGui::PushFont(g_font_small);
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_FAINT));
+    if (waiting == 1) ImGui::TextUnformatted("1 more session is waiting.");
+    else if (waiting > 1) ImGui::Text("%d more sessions are waiting.", waiting);
+    else ImGui::TextUnformatted("Not now keeps it in the Library, under Not saved.");
     ImGui::PopStyleColor();
+    ImGui::PopFont();
+
+    // Save it? Pinned to the bottom right
+    u32 id = s->id;
+    ImGui::SetCursorScreenPos(ImVec2(a.x + size.x - 2 * pad - 2 * button_w - 8 * sc, ImGui::GetWindowPos().y + size.y - pad - fh));
+    bool later = kit_button("Not now", KIT_GHOST, ImVec2(button_w, 0));
+    ImGui::SameLine(0, 8 * sc);
+    bool save = kit_button(ICON_SAVE "  Save", KIT_PRIMARY, ImVec2(button_w, 0));
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
 
     Session *cur = session_find(id);
     if (save && cur) session_save(cur);

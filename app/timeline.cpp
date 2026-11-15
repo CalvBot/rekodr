@@ -632,15 +632,6 @@ static i64 tl_playhead()
     return b.seg_count ? b.segs[b.seg_count - 1].start_us : 0; // the newest footage, at its keyframe
 }
 
-// A fixed-width button that's disabled rather than hidden, so nothing moves.
-static bool tl_button(const char *label, f32 w, bool enabled)
-{
-    ImGui::BeginDisabled(!enabled);
-    bool clicked = ImGui::Button(label, ImVec2(w * g_dpi_scale, 0));
-    ImGui::EndDisabled();
-    return clicked;
-}
-
 static void tl_keys(i64 now)
 {
     Timeline &tl = g_app.timeline;
@@ -714,6 +705,54 @@ static void tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h, 
     r->z = z;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Drawing helpers. tl_text_fit and tl_pill are generic enough to move to the kit.
+
+#define TL_ICON_DOWN "\xEE\x9C\x8D" // E70D chevron down
+
+static const u32 TL_COL_VIDEO = 0x5a7fbf, TL_COL_SOUND = 0x35a585, TL_COL_MIC = 0xc9a04a, TL_COL_LANE = 0x131418;
+
+// Text cut to max_w with an ellipsis, so a long name never runs into what's next to it.
+static void tl_text_fit(ImDrawList *dl, ImVec2 p, f32 max_w, ImU32 col, const char *text)
+{
+    if (max_w <= 0) return;
+    if (ImGui::CalcTextSize(text).x <= max_w) {
+        dl->AddText(p, col, text);
+        return;
+    }
+    static const char ell[] = "\xE2\x80\xA6";
+    f32 ew = ImGui::CalcTextSize(ell).x;
+    const char *end = text + strlen(text);
+    while (end > text && ImGui::CalcTextSize(text, end).x + ew > max_w) {
+        end--;
+        while (end > text && ((u8)*end & 0xC0) == 0x80) end--; // whole UTF-8 characters
+    }
+    while (end > text && end[-1] == ' ') end--;
+    if (end == text) return; // not even one letter fits: nothing rather than a lone "…"
+    dl->AddText(p, col, text, end);
+    dl->AddText(ImVec2(p.x + ImGui::CalcTextSize(text, end).x, p.y), col, ell);
+}
+
+// A small rounded label centred on x, its top at y, kept inside [lo, hi]. Current font.
+static void tl_pill(ImDrawList *dl, f32 x, f32 y, f32 lo, f32 hi, const char *text, ImU32 bg, ImU32 fg)
+{
+    ImVec2 ts = ImGui::CalcTextSize(text);
+    f32 px = kit_px(7), py = kit_px(2);
+    f32 w = ts.x + 2 * px, h = ts.y + 2 * py;
+    f32 a = x - w / 2;
+    if (a + w > hi) a = hi - w;
+    if (a < lo) a = lo;
+    dl->AddRectFilled(ImVec2(a, y), ImVec2(a + w, y + h), bg, h / 2);
+    dl->AddText(ImVec2(floorf(a + px), floorf(y + py)), fg, text);
+}
+
+// Sound groups, collapsible from their header in the track list. Kept for the run, like the view.
+static bool g_tl_closed[3];
+static const char *const TL_GROUP_NAMES[3] = {"MICROPHONE", "GAMES", "APPS"};
+
+// One line of the sound area: a group's header (row -1) or an app's row.
+struct TlLine { i8 group; i16 row; };
+
 static void screen_timeline()
 {
     Timeline &tl = g_app.timeline;
@@ -721,7 +760,7 @@ static void screen_timeline()
     i64 now = now_us();
     if (!tl.idx) tl_ask_index();
     if (!tl.idx) {
-        ImGui::TextDisabled("Not enough memory to show the buffer.");
+        kit_dim("Not enough memory to show the buffer.");
         return;
     }
     if (!tl.view_span_us) {
@@ -737,72 +776,70 @@ static void screen_timeline()
     tl_clamp_selection();
     tl_keys(now);
     bool has_sel = tl.sel_in && tl.sel_out > tl.sel_in;
+    ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImVec2 top = ImGui::GetCursorScreenPos();
+    f32 fh = ImGui::GetFrameHeight();
 
-    // --- Toolbar: zoom presets and panning, all fixed widths ----------------------------------------------------
-    struct Preset { const char *label; i64 span; f32 w; };
-    static const Preset presets[] = {{"1 min", 60 * TL_SEC, 72},      {"10 min", 600 * TL_SEC, 72},
-                                     {"1 hour", 3600 * TL_SEC, 72},   {"6 hours", 21600 * TL_SEC, 72},
-                                     {"Whole buffer", 0, 110}};
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Show");
-    for (const Preset &p : presets) {
-        ImGui::SameLine();
-        i64 span = p.span ? p.span : tl_max_span(b, now);
-        ImGui::PushStyleColor(ImGuiCol_Button, tl.view_span_us == span ? rgb(COL_LINE) : rgb(COL_PANEL2));
-        if (tl_button(p.label, p.w, true)) tl_set_span(span, now);
-        ImGui::PopStyleColor();
-    }
-    ImGui::SameLine(0, 20 * s);
-    i64 centre = tl.view_end_us - tl.view_span_us / 2;
-    if (tl_button("Zoom in", 80, tl.view_span_us > TL_MIN_SPAN)) tl_zoom(0.5, centre, now);
-    ImGui::SameLine();
-    if (tl_button("Zoom out", 80, tl.view_span_us < tl_max_span(b, now))) tl_zoom(2, centre, now);
-    ImGui::SameLine(0, 20 * s);
-    if (tl_button("Earlier", 80, true)) {
-        tl.follow = false;
-        tl.view_end_us -= tl.view_span_us / 2;
-        tl_clamp_view(now);
-    }
-    ImGui::SameLine();
-    if (tl_button("Later", 80, !tl.follow)) {
-        tl.view_end_us += tl.view_span_us / 2;
-        tl_clamp_view(now);
-    }
-    ImGui::SameLine();
-    if (tl_button("Now", 80, !tl.follow)) {
-        tl.follow = true;
-        tl_clamp_view(now);
-    }
+    // --- Toolbar: how much to show, zoom, pan, and the range shown ----------------------------------------------
     {
-        char a[16], z[16], len[32];
+        static const char *const labels[] = {"1 min", "10 min", "1 h", "6 h", "All"};
+        const i64 spans[] = {60 * TL_SEC, 600 * TL_SEC, 3600 * TL_SEC, 21600 * TL_SEC, tl_max_span(b, now)};
+        i32 sel = -1;
+        for (i32 i = 0; i < COUNT(spans); i++)
+            if (tl.view_span_us == spans[i]) sel = i;
+        if (kit_segmented("##span", labels, COUNT(labels), &sel, 64 * s)) tl_set_span(spans[sel], now);
+        i64 centre = tl.view_end_us - tl.view_span_us / 2;
+        ImGui::SameLine(0, 18 * s);
+        if (kit_icon_button(ICON_ZOOM_OUT, "##zoom_out", KIT_GHOST, tl.view_span_us < tl_max_span(b, now)))
+            tl_zoom(2, centre, now);
+        ImGui::SameLine(0, 2 * s);
+        if (kit_icon_button(ICON_ZOOM_IN, "##zoom_in", KIT_GHOST, tl.view_span_us > TL_MIN_SPAN)) tl_zoom(0.5, centre, now);
+        ImGui::SameLine(0, 14 * s);
+        if (kit_icon_button(ICON_LEFT, "##earlier")) {
+            tl.follow = false;
+            tl.view_end_us -= tl.view_span_us / 2;
+            tl_clamp_view(now);
+        }
+        ImGui::SameLine(0, 2 * s);
+        if (kit_icon_button(ICON_RIGHT, "##later", KIT_GHOST, !tl.follow)) {
+            tl.view_end_us += tl.view_span_us / 2;
+            tl_clamp_view(now);
+        }
+        ImGui::SameLine(0, 2 * s);
+        if (kit_icon_button(ICON_NOW, "##now", KIT_GHOST, !tl.follow)) {
+            tl.follow = true;
+            tl_clamp_view(now);
+        }
+        char a[16], z[16], text[48];
         bool secs = tl.view_span_us < 600 * TL_SEC;
         tl_clock(tl.view_end_us - tl.view_span_us, secs, a, sizeof a);
         tl_clock(tl.view_end_us, secs, z, sizeof z);
-        tl_length(tl.view_span_us, len, sizeof len);
-        ImGui::SameLine(0, 20 * s);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("%s to %s (%s)", a, z, len);
+        snprintf(text, sizeof text, "%s  \xE2\x80\x93  %s", a, z);
+        f32 tw = ImGui::CalcTextSize(text).x;
+        dl->AddText(ImVec2(top.x + avail.x - tw - 4 * s, floorf(top.y + (fh - ImGui::GetFontSize()) / 2)), col32(COL_DIM), text);
     }
 
-    // --- The bar ---------------------------------------------------------------------------------------------
-    const f32 bottom_h = 300 * s; // the preview and selection panel, fixed so the bar never changes size
-    const f32 label_w = 150 * s, ruler_h = 24 * s, video_h = 30 * s, game_h = 24 * s, head_h = 28 * s, row_h = 20 * s;
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    f32 canvas_h = avail.y - bottom_h;
-    f32 min_h = ruler_h + video_h + game_h + head_h + row_h;
-    if (canvas_h < min_h) canvas_h = min_h;
-    ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImDrawList *dl = ImGui::GetWindowDrawList();
+    // --- Sizes: fixed for a given window size, whatever is shown ---------------------------------------------------
+    const f32 gap = 16 * s;
+    f32 bottom_h = (avail.y - fh) * 0.4f;
+    if (bottom_h < 250 * s) bottom_h = 250 * s;
+    if (bottom_h > 340 * s) bottom_h = 340 * s;
+    f32 card_h = avail.y - fh - 2 * gap - bottom_h;
+    const f32 label_w = 176 * s, pad_r = 14 * s, ruler_h = 28 * s, video_h = 40 * s, game_h = 32 * s, line_h = 28 * s;
+    if (card_h < 8 * s + ruler_h + video_h + game_h + 10 * s + 2 * line_h + 10 * s)
+        card_h = 8 * s + ruler_h + video_h + game_h + 10 * s + 2 * line_h + 10 * s;
+    ImVec2 origin(top.x, top.y + fh + gap);
+    ImVec2 card_z(origin.x + avail.x, origin.y + card_h);
     TlCanvas c = {};
     c.dl = dl;
     c.x0 = origin.x + label_w;
-    c.x1 = origin.x + avail.x;
-    f32 y_video = origin.y + ruler_h, y_game = y_video + video_h, y_head = y_game + game_h, y_rows = y_head + head_h;
-    f32 y_end = origin.y + canvas_h;
-    i32 rows_fit = (i32)((y_end - y_rows) / row_h);
-    if (rows_fit < 1) rows_fit = 1;
-    if (tl.row_scroll > tl.row_count - rows_fit) tl.row_scroll = tl.row_count - rows_fit;
-    if (tl.row_scroll < 0) tl.row_scroll = 0;
+    c.x1 = card_z.x - pad_r;
+    f32 y_ruler = origin.y + 8 * s, y_video = y_ruler + ruler_h, y_game = y_video + video_h, y_snd = y_game + game_h + 10 * s;
+    f32 y_bottom = card_z.y - 10 * s;
+    i32 lines_fit = (i32)((y_bottom - y_snd) / line_h);
+    if (lines_fit < 1) lines_fit = 1;
     auto set_view = [&]() {
         c.span = tl.view_span_us;
         c.start = tl.view_end_us - tl.view_span_us;
@@ -810,14 +847,35 @@ static void screen_timeline()
     };
     set_view();
 
-    dl->AddRectFilled(origin, ImVec2(c.x1, y_end), col32(COL_PANEL), 8);
+    // The sound lines: a header per group that has rows, then its rows unless it's collapsed
+    TlLine lines[COUNT(tl.rows) + 3];
+    i32 line_count = 0, head_line[3] = {-1, -1, -1}, row_line[COUNT(tl.rows)];
+    for (i32 g = 0; g < 3; g++) {
+        bool any = false;
+        for (i32 r = 0; r < tl.row_count && !any; r++) any = tl_row_group(tl.rows[r]) == g;
+        if (!any) continue;
+        head_line[g] = line_count;
+        lines[line_count++] = {(i8)g, -1};
+        for (i32 r = 0; r < tl.row_count; r++) {
+            if (tl_row_group(tl.rows[r]) != g) continue;
+            row_line[r] = g_tl_closed[g] ? head_line[g] : line_count;
+            if (!g_tl_closed[g]) lines[line_count++] = {(i8)g, (i16)r};
+        }
+    }
+    // The mouse wheel over the track names scrolls the sound lines (over the bars it zooms)
+    if (ImGui::IsWindowHovered() && io.MouseWheel != 0 &&
+        ImGui::IsMouseHoveringRect(ImVec2(origin.x, y_snd), ImVec2(c.x0, y_bottom)))
+        tl.row_scroll -= (i32)(io.MouseWheel > 0 ? ceilf(io.MouseWheel) : floorf(io.MouseWheel));
+    if (tl.row_scroll > line_count - lines_fit) tl.row_scroll = line_count - lines_fit;
+    if (tl.row_scroll < 0) tl.row_scroll = 0;
 
-    // The mouse: the bar is one invisible button, so ImGui keeps the drag even outside it.
+    dl->AddRectFilled(origin, card_z, col32(COL_PANEL), 10 * s);
+
+    // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
     ImGui::SetCursorScreenPos(ImVec2(c.x0, origin.y));
-    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, canvas_h),
+    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, card_h),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
                                ImGuiButtonFlags_MouseButtonMiddle);
-    ImGuiIO &io = ImGui::GetIO();
     bool bar_hovered = ImGui::IsItemHovered();
     ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
     f32 mx = io.MousePos.x < c.x0 ? c.x0 : io.MousePos.x > c.x1 ? c.x1 : io.MousePos.x;
@@ -826,15 +884,17 @@ static void screen_timeline()
     // No position while the mouse is outside the window (WM_MOUSELEAVE): leave the drag where it was rather than
     // jumping it to the left edge.
     bool mouse_ok = ImGui::IsMousePosValid();
+    f32 grab = 7 * s;
+    bool near_in = has_sel && fabsf(io.MousePos.x - tl_x(c, tl.sel_in)) <= grab;
+    bool near_out = has_sel && !near_in && fabsf(io.MousePos.x - tl_x(c, tl.sel_out)) <= grab;
     if (ImGui::IsItemActivated() && b.seg_count) {
-        f32 grab = 6 * s;
         tl.drag_x = io.MousePos.x;
         tl.dragged = false;
         tl.drag_anchor_us = mouse_sec;
         tl.drag_view_end = tl.view_end_us;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) tl.drag = TL_DRAG_PAN;
-        else if (has_sel && fabsf(io.MousePos.x - tl_x(c, tl.sel_in)) <= grab) tl.drag = TL_DRAG_IN;
-        else if (has_sel && fabsf(io.MousePos.x - tl_x(c, tl.sel_out)) <= grab) tl.drag = TL_DRAG_OUT;
+        else if (near_in) tl.drag = TL_DRAG_IN;
+        else if (near_out) tl.drag = TL_DRAG_OUT;
         else tl.drag = TL_DRAG_NEW;
     }
     if (ImGui::IsItemActive() && tl.drag != TL_DRAG_NONE && mouse_ok) {
@@ -869,67 +929,107 @@ static void screen_timeline()
         tl.drag = TL_DRAG_NONE;
     }
     if (bar_hovered && io.MouseWheel != 0) tl_zoom(pow(0.8, (f64)io.MouseWheel), mouse_t, now);
+    if (tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT || (bar_hovered && tl.drag == TL_DRAG_NONE && (near_in || near_out)))
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    else if (tl.drag == TL_DRAG_PAN) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     set_view(); // the view may have moved: draw it where it is now
     tl.hovering = bar_hovered && tl.drag == TL_DRAG_NONE && b.seg_count > 0;
     tl.hover_us = tl_t(c, mx);
     has_sel = tl.sel_in && tl.sel_out > tl.sel_in;
     i64 view_end = c.start + c.span;
+    // The time shown on the ruler: under the mouse, or at the edge being dragged
+    i64 pill_t = 0;
+    if (tl.hovering) pill_t = tl.hover_us;
+    else if (tl.drag == TL_DRAG_IN) pill_t = tl.sel_in;
+    else if (tl.drag == TL_DRAG_OUT) pill_t = tl.sel_out;
+    else if (tl.drag == TL_DRAG_NEW && tl.dragged) pill_t = mouse_sec;
 
-    // Row labels on the left
-    f32 tx = origin.x + 12 * s, th = ImGui::GetTextLineHeight();
-    ImGui::PushFont(g_font_bold);
-    dl->AddText(ImVec2(tx, y_video + (video_h - th) / 2), col32(COL_DIM), "Video");
-    dl->AddText(ImVec2(tx, y_game + (game_h - th) / 2), col32(COL_DIM), "Game");
-    dl->AddText(ImVec2(tx, y_head + (head_h - th) / 2), col32(COL_DIM), "Sound");
-    ImGui::PopFont();
-    for (i32 r = 0; r < rows_fit && tl.row_scroll + r < tl.row_count; r++) {
-        f32 y = y_rows + r * row_h;
-        dl->PushClipRect(ImVec2(origin.x, y), ImVec2(c.x0 - 6 * s, y + row_h), true);
-        dl->AddText(ImVec2(tx + 8 * s, y + (row_h - th) / 2), col32(COL_TEXT), tl.rows[tl.row_scroll + r].name);
-        dl->PopClipRect();
-    }
-    // Paging the sound rows when there are more than fit: always there, disabled when not needed
+    // --- Track names on the left ----------------------------------------------------------------------------------
+    f32 tx = origin.x + 18 * s, th = ImGui::GetTextLineHeight();
+    f32 name_w = c.x0 - 16 * s - tx;
     {
-        f32 bw = ImGui::GetFrameHeight();
-        ImGui::SetCursorScreenPos(ImVec2(c.x0 - 2 * bw - 14 * s, y_head + (head_h - bw) / 2));
-        ImGui::BeginDisabled(tl.row_scroll <= 0);
-        if (ImGui::ArrowButton("rows_up", ImGuiDir_Up)) tl.row_scroll -= rows_fit;
-        ImGui::EndDisabled();
-        ImGui::SameLine(0, 4 * s);
-        ImGui::BeginDisabled(tl.row_scroll + rows_fit >= tl.row_count);
-        if (ImGui::ArrowButton("rows_down", ImGuiDir_Down)) tl.row_scroll += rows_fit;
-        ImGui::EndDisabled();
-        if (tl.row_scroll < 0) tl.row_scroll = 0;
+        ImGui::PushFont(g_font_small);
+        f32 sh = ImGui::GetTextLineHeight();
+        dl->AddText(ImVec2(tx, floorf(y_video + (video_h - sh) / 2)), col32(COL_FAINT), ICON_VIDEO);
+        dl->AddText(ImVec2(tx, floorf(y_game + (game_h - sh) / 2)), col32(COL_FAINT), ICON_GAME);
+        ImGui::PopFont();
+        dl->AddText(ImVec2(tx + 22 * s, floorf(y_video + (video_h - th) / 2)), col32(COL_DIM), "Video");
+        dl->AddText(ImVec2(tx + 22 * s, floorf(y_game + (game_h - th) / 2)), col32(COL_DIM), "Game");
+    }
+    dl->AddLine(ImVec2(origin.x + 14 * s, y_snd - 5 * s), ImVec2(c.x1, y_snd - 5 * s), col32(COL_LINE));
+    if (!line_count) {
+        dl->AddText(ImVec2(tx, floorf(y_snd + (line_h - th) / 2)), col32(COL_FAINT), "No sound recorded");
+    }
+    for (i32 i = 0; i < lines_fit && tl.row_scroll + i < line_count; i++) {
+        const TlLine &ln = lines[tl.row_scroll + i];
+        f32 y = y_snd + i * line_h;
+        if (ln.row < 0) {
+            // A group header: a chevron and a caption; a click collapses or opens it
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + 8 * s, y));
+            ImGui::PushID(ln.group);
+            if (ImGui::InvisibleButton("##group", ImVec2(c.x0 - origin.x - 16 * s, line_h))) g_tl_closed[ln.group] = !g_tl_closed[ln.group];
+            bool hot = ImGui::IsItemHovered();
+            ImGui::PopID();
+            if (hot) dl->AddRectFilled(ImVec2(origin.x + 8 * s, y + 2 * s), ImVec2(c.x0 - 8 * s, y + line_h - 2 * s), col32(COL_PANEL2), 6 * s);
+            ImGui::PushFont(g_font_small);
+            f32 sh = ImGui::GetTextLineHeight();
+            u32 ink = hot ? COL_TEXT : COL_DIM;
+            dl->AddText(ImVec2(tx, floorf(y + (line_h - sh) / 2)), col32(ink), g_tl_closed[ln.group] ? ICON_RIGHT : TL_ICON_DOWN);
+            dl->AddText(ImVec2(tx + 22 * s, floorf(y + (line_h - sh) / 2)), col32(hot ? COL_TEXT : COL_FAINT), TL_GROUP_NAMES[ln.group]);
+            ImGui::PopFont();
+        } else {
+            tl_text_fit(dl, ImVec2(tx + 22 * s, floorf(y + (line_h - th) / 2)), name_w - 22 * s, col32(COL_DIM), tl.rows[ln.row].name);
+        }
+    }
+    // When the lines don't all fit, a thin bar shows where the list is (the wheel scrolls it)
+    if (line_count > lines_fit) {
+        f32 ta = y_snd + 3 * s, tz = y_snd + lines_fit * line_h - 3 * s, x = c.x0 - 8 * s;
+        dl->AddRectFilled(ImVec2(x, ta), ImVec2(x + 3 * s, tz), col32(COL_PANEL2), 2 * s);
+        f32 h = (tz - ta) * lines_fit / line_count, y = ta + (tz - ta) * tl.row_scroll / line_count;
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + 3 * s, y + h), col32(COL_FAINT), 2 * s);
     }
 
-    dl->PushClipRect(ImVec2(c.x0, origin.y), ImVec2(c.x1, y_end), true);
-    dl->AddRectFilled(ImVec2(c.x0, y_video + 3 * s), ImVec2(c.x1, y_video + video_h - 3 * s), col32(COL_BG));
-    dl->AddLine(ImVec2(c.x0, y_head), ImVec2(c.x1, y_head), col32(COL_LINE));
-    for (i32 r = 1; r < rows_fit; r += 2)
-        dl->AddRectFilled(ImVec2(c.x0, y_rows + r * row_h), ImVec2(c.x1, y_rows + (r + 1) * row_h), col32(COL_PANEL2, 0.5f));
+    // --- The bars -------------------------------------------------------------------------------------------------
+    dl->PushClipRect(ImVec2(c.x0 - 6 * s, origin.y), ImVec2(c.x1 + 6 * s, card_z.y), true);
+    f32 lane_r = 6 * s;
+    dl->AddRectFilled(ImVec2(c.x0, y_video + 3 * s), ImVec2(c.x1, y_video + video_h - 3 * s), col32(TL_COL_LANE), lane_r);
+    dl->AddRectFilled(ImVec2(c.x0, y_game + 3 * s), ImVec2(c.x1, y_game + game_h - 3 * s), col32(TL_COL_LANE), lane_r);
+    for (i32 i = 0; i < lines_fit && tl.row_scroll + i < line_count; i++) {
+        const TlLine &ln = lines[tl.row_scroll + i];
+        if (ln.row < 0 && !g_tl_closed[ln.group]) continue; // an open header has no bar of its own
+        f32 y = y_snd + i * line_h;
+        dl->AddRectFilled(ImVec2(c.x0, y + 4 * s), ImVec2(c.x1, y + line_h - 4 * s), col32(TL_COL_LANE), lane_r);
+    }
 
-    // Ruler, ticks on round local times
+    // Ruler, ticks on round local times, and their lines faintly through the tracks
     {
         static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-        i64 step = tl_tick_step(c.px_per_us, 90 * s);
+        i64 step = tl_tick_step(c.px_per_us, 96 * s);
         i64 off = tl_utc_offset(now);
+        ImGui::PushFont(g_font_small);
+        f32 sh = ImGui::GetTextLineHeight();
+        f32 pill_x = pill_t ? tl_x(c, pill_t) : -1e9f, pill_half = ImGui::CalcTextSize("00:00:00").x / 2 + 10 * s;
         for (i64 t = ((c.start + off) / step + 1) * step - off; t < view_end; t += step) {
-            f32 x = tl_x(c, t);
-            dl->AddLine(ImVec2(x, origin.y + ruler_h - 6 * s), ImVec2(x, y_end), col32(COL_LINE, 0.6f));
+            f32 x = floorf(tl_x(c, t)) + 0.5f;
+            dl->AddLine(ImVec2(x, y_ruler + ruler_h - 7 * s), ImVec2(x, y_ruler + ruler_h), col32(COL_FAINT));
+            dl->AddLine(ImVec2(x, y_video), ImVec2(x, y_bottom), col32(COL_LINE, 0.55f));
             char label[16];
             SYSTEMTIME lt = local_time(t);
             if (step >= 3600 * TL_SEC && lt.wHour == 0 && lt.wMinute == 0)
                 snprintf(label, sizeof label, "%d %s", lt.wDay, months[(lt.wMonth + 11) % 12]);
             else tl_clock(t, step < 60 * TL_SEC, label, sizeof label);
-            dl->AddText(ImVec2(x + 4 * s, origin.y + 4 * s), col32(COL_DIM), label);
+            f32 lw = ImGui::CalcTextSize(label).x;
+            if (x + 5 * s < pill_x + pill_half && x + 5 * s + lw > pill_x - pill_half) continue; // under the time pill
+            dl->AddText(ImVec2(x + 5 * s, floorf(y_ruler + (ruler_h - 7 * s - sh) / 2)), col32(COL_DIM), label);
         }
+        ImGui::PopFont();
     }
 
     // Video: footage as bars; gaps (lock screen, paused, clipback not running) stay empty
     {
         TlRun run = {};
-        ImU32 col = col32(COL_BLUE, 0.75f);
-        f32 y = y_video + 5 * s, h = video_h - 10 * s;
+        ImU32 col = col32(TL_COL_VIDEO, 0.9f);
+        f32 y = y_video + 7 * s, h = video_h - 14 * s;
         for (i32 i = tl_seg_after(b, c.start); i < b.seg_count && b.segs[i].start_us < view_end; i++)
             tl_run_add(c, &run, b.segs[i].start_us, b.segs[i].end_us, y, h, col);
         if (run.a) tl_span(c, run.a, run.z, y, h, col);
@@ -940,26 +1040,26 @@ static void screen_timeline()
         const ActivityEntry &e = b.activity[i];
         i64 end = i + 1 < b.activity_count ? b.activity[i + 1].us : now;
         if (!e.exe[0] || end < c.start || e.us > view_end) continue;
-        tl_span(c, e.us, end, y_game + 3 * s, game_h - 6 * s, col32(tl_game_colour(e.exe), 0.85f));
+        f32 y = y_game + 6 * s, h = game_h - 12 * s;
+        tl_span(c, e.us, end, y, h, col32(tl_game_colour(e.exe), 0.9f));
         f32 xa = tl_x(c, e.us), xb = tl_x(c, end);
         if (xa < c.x0) xa = c.x0;
         if (xb > c.x1) xb = c.x1;
         char name[64];
         audio_display_name(g_app.config, e.exe, name, sizeof name);
-        if (xb - xa > ImGui::CalcTextSize(name).x + 10 * s) {
-            dl->PushClipRect(ImVec2(xa, y_game), ImVec2(xb, y_game + game_h), true);
-            dl->AddText(ImVec2(xa + 5 * s, y_game + (game_h - th) / 2), col32(COL_TEXT), name);
-            dl->PopClipRect();
-        }
+        ImGui::PushFont(g_font_small);
+        tl_text_fit(dl, ImVec2(xa + 7 * s, floorf(y + (h - ImGui::GetTextLineHeight()) / 2)), xb - xa - 12 * s, col32(0xffffff), name);
+        ImGui::PopFont();
     }
 
-    // Sound: when each app had a stream open
+    // Sound: when each app had a stream open. A collapsed group shows all its apps on its header line.
     for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
-        i32 r = tl.stream_row[st] - tl.row_scroll;
-        if (tl.stream_row[st] < 0 || r < 0 || r >= rows_fit) continue;
+        if (tl.stream_row[st] < 0) continue;
+        i32 r = row_line[tl.stream_row[st]] - tl.row_scroll;
+        if (r < 0 || r >= lines_fit) continue;
         const AudioStreamInfo &info = b.streams[st];
-        f32 y = y_rows + r * row_h + 4 * s, h = row_h - 8 * s;
-        ImU32 col = col32(info.mic ? 0xd0a24a : COL_OK, 0.8f);
+        f32 y = y_snd + r * line_h + 9 * s, h = line_h - 18 * s;
+        ImU32 col = col32(info.mic ? TL_COL_MIC : TL_COL_SOUND, 0.9f);
         TlRun run = {};
         for (i32 k = 0; k < info.seg_count; k++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + k];
@@ -974,43 +1074,69 @@ static void screen_timeline()
 
     // The future, dimmed, and the now edge
     f32 x_now = tl_x(c, now);
-    dl->AddRectFilled(ImVec2(x_now, origin.y), ImVec2(c.x1, y_end), col32(COL_BG, 0.6f));
-    dl->AddLine(ImVec2(x_now, origin.y), ImVec2(x_now, y_end), col32(COL_ACCENT), 2 * s);
+    if (x_now < c.x1) {
+        dl->AddRectFilled(ImVec2(x_now, y_video), ImVec2(c.x1 + 6 * s, y_bottom), col32(COL_PANEL, 0.7f));
+        dl->AddLine(ImVec2(x_now, y_video), ImVec2(x_now, y_bottom), col32(COL_FAINT), 1.5f * s);
+    }
 
-    // The selection, with a handle on each edge
+    // The selection: an accent tint, a band on the ruler, and a handle on each edge
+    f32 y_band = y_ruler + ruler_h - 6 * s;
     if (has_sel) {
-        f32 edges[2] = {tl_x(c, tl.sel_in), tl_x(c, tl.sel_out)};
-        dl->AddRectFilled(ImVec2(edges[0], origin.y), ImVec2(edges[1], y_end), col32(COL_BLUE, 0.18f));
-        for (f32 x : edges) {
-            dl->AddLine(ImVec2(x, origin.y), ImVec2(x, y_end), col32(COL_TEXT), 2 * s);
-            dl->AddRectFilled(ImVec2(x - 4 * s, origin.y), ImVec2(x + 4 * s, origin.y + ruler_h - 6 * s), col32(COL_TEXT), 2);
+        f32 xa = tl_x(c, tl.sel_in), xb = tl_x(c, tl.sel_out);
+        dl->AddRectFilled(ImVec2(xa, y_video), ImVec2(xb, y_bottom), col32(COL_ACCENT, 0.12f));
+        dl->AddRectFilled(ImVec2(xa, y_band), ImVec2(xb, y_band + 4 * s), col32(COL_ACCENT, 0.85f));
+        for (i32 k = 0; k < 2; k++) {
+            f32 x = k ? xb : xa;
+            bool hot = (k ? tl.drag == TL_DRAG_OUT : tl.drag == TL_DRAG_IN) ||
+                       (bar_hovered && tl.drag == TL_DRAG_NONE && (k ? near_out : near_in));
+            ImU32 col = col32(hot ? COL_ACCENT_HOVER : COL_ACCENT);
+            dl->AddLine(ImVec2(x, y_band), ImVec2(x, y_bottom), col, 2 * s);
+            f32 hw = 5 * s, hy = y_band + 2 * s;
+            dl->AddRectFilled(ImVec2(x - hw, hy - 11 * s), ImVec2(x + hw, hy + 11 * s), col, 4 * s);
+            dl->AddLine(ImVec2(x - 1.5f * s, hy - 5 * s), ImVec2(x - 1.5f * s, hy + 5 * s), col32(0xffffff, 0.8f), 1);
+            dl->AddLine(ImVec2(x + 1.5f * s, hy - 5 * s), ImVec2(x + 1.5f * s, hy + 5 * s), col32(0xffffff, 0.8f), 1);
         }
     }
 
-    // The playhead (where the preview comes from) and the time under the mouse
+    // The playhead (where the preview comes from)
     i64 play = tl_playhead();
     if (play) {
         f32 x = tl_x(c, play);
-        ImU32 col = col32(0xf2c94c);
-        dl->AddLine(ImVec2(x, origin.y + ruler_h - 8 * s), ImVec2(x, y_end), col, 1.5f * s);
-        dl->AddTriangleFilled(ImVec2(x - 5 * s, origin.y + ruler_h - 12 * s), ImVec2(x + 5 * s, origin.y + ruler_h - 12 * s),
-                              ImVec2(x, origin.y + ruler_h - 3 * s), col);
+        ImU32 col = col32(COL_TEXT);
+        dl->AddLine(ImVec2(x, y_video - 4 * s), ImVec2(x, y_bottom), col, 1.5f * s);
+        f32 hy = y_video - 4 * s;
+        dl->AddTriangleFilled(ImVec2(x - 5 * s, hy - 7 * s), ImVec2(x + 5 * s, hy - 7 * s), ImVec2(x, hy), col);
     }
-    if (tl.hovering) {
-        f32 x = tl_x(c, tl.hover_us);
-        dl->AddLine(ImVec2(x, origin.y + ruler_h), ImVec2(x, y_end), col32(COL_TEXT, 0.35f));
+    // The time under the mouse, or at the edge being dragged, on the ruler
+    {
+        i64 t = pill_t;
+        if (t) {
+            f32 x = tl_x(c, t);
+            if (tl.hovering) dl->AddLine(ImVec2(x, y_video), ImVec2(x, y_bottom), col32(COL_TEXT, 0.3f));
+            char when[16];
+            tl_clock(t, true, when, sizeof when);
+            ImGui::PushFont(g_font_small);
+            tl_pill(dl, x, y_ruler + 2 * s, c.x0, c.x1, when, col32(COL_HOVER), col32(COL_TEXT));
+            ImGui::PopFont();
+        }
     }
     if (!tl.loaded || !b.seg_count) {
-        const char *msg = !tl.loaded ? "Reading the buffer..." : "Nothing recorded yet.";
+        const char *msg = !tl.loaded ? "Reading the buffer\xE2\x80\xA6" : "Nothing recorded yet";
         ImVec2 sz = ImGui::CalcTextSize(msg);
-        dl->AddText(ImVec2((c.x0 + c.x1 - sz.x) / 2, y_video + (video_h - th) / 2), col32(COL_DIM), msg);
+        dl->AddText(ImVec2(floorf((c.x0 + c.x1 - sz.x) / 2), floorf(y_video + (video_h - th) / 2)), col32(COL_DIM), msg);
     }
     dl->PopClipRect();
 
-    // --- Preview and the selection panel ---------------------------------------------------------------------
-    f32 pw = 400 * s, ph = pw * (f32)TL_FRAME_H / (f32)TL_FRAME_W;
-    ImVec2 p0 = ImVec2(origin.x, y_end + 12 * s);
-    dl->AddRectFilled(p0, ImVec2(p0.x + pw, p0.y + ph), col32(0x000000), 6);
+    // --- The preview frame -------------------------------------------------------------------------------------------
+    f32 bottom_y = card_z.y + gap;
+    f32 min_card_w = 430 * s;
+    f32 pw = bottom_h * 16 / 9;
+    if (pw > avail.x - gap - min_card_w) pw = avail.x - gap - min_card_w;
+    if (pw < 200 * s) pw = 200 * s;
+    f32 ph = pw * (f32)TL_FRAME_H / (f32)TL_FRAME_W;
+    ImVec2 p0(origin.x, bottom_y), p1(origin.x + pw, bottom_y + ph);
+    f32 pr = 10 * s;
+    dl->AddRectFilled(p0, p1, col32(0x000000), pr);
     // Hovering shows the keyframe under the mouse (quick); otherwise the exact frame at the playhead.
     bool exact = !tl.hovering;
     i64 want_t = tl.hovering ? tl.hover_us : play;
@@ -1018,136 +1144,223 @@ static void screen_timeline()
     TimelineFrame *frame = tl_frame_find(want_key);
     if (frame) tl.shown_key = frame->key;
     else if (want_key) frame = tl_frame_find(tl.shown_key); // the last one shown, until the new one is ready
-    if (frame) dl->AddImage((ImTextureID)(intptr_t)frame->srv, p0, ImVec2(p0.x + pw, p0.y + ph));
+    if (frame) dl->AddImageRounded((ImTextureID)(intptr_t)frame->srv, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col32(0xffffff), pr);
     {
-        char when[16], caption[96];
-        if (!b.seg_count) str_set(caption, "No footage");
+        char when[16], msg[64] = "";
+        if (!b.seg_count) str_set(msg, "No footage");
         else if (!want_key) {
             tl_clock(want_t, true, when, sizeof when);
-            snprintf(caption, sizeof caption, "Nothing recorded at %s", when);
-        } else if (want_key == tl.failed_key) str_set(caption, "No frame (see the log)");
-        else if (frame) {
+            snprintf(msg, sizeof msg, "Nothing recorded at %s", when);
+        } else if (want_key == tl.failed_key) str_set(msg, "No frame here");
+        else if (!frame) str_set(msg, "Loading\xE2\x80\xA6");
+        if (msg[0] && !frame) {
+            ImVec2 sz = ImGui::CalcTextSize(msg);
+            dl->AddText(ImVec2(floorf((p0.x + p1.x - sz.x) / 2), floorf((p0.y + p1.y - sz.y) / 2)), col32(COL_DIM), msg);
+        }
+        if (frame) {
+            // The time of the frame shown, on it, bottom left
             tl_clock(frame->time_us, true, when, sizeof when);
-            snprintf(caption, sizeof caption, "Frame at %s", when);
-        } else str_set(caption, "Loading the frame...");
-        ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + ph + 6 * s));
-        ImGui::TextDisabled("%s", caption);
+            ImGui::PushFont(g_font_small);
+            ImVec2 ts = ImGui::CalcTextSize(when);
+            f32 x = p0.x + 12 * s + (ts.x + 14 * s) / 2;
+            tl_pill(dl, x, p1.y - ts.y - 16 * s, p0.x, p1.x, when, col32(0x000000, 0.6f), col32(0xffffff));
+            ImGui::PopFont();
+        }
     }
 
-    // Right of the preview: the selection and what to do with it
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + pw + 24 * s, p0.y));
-    ImGui::BeginGroup();
-    ImGui::PushFont(g_font_bold);
-    ImGui::TextUnformatted("Selection");
-    ImGui::PopFont();
-    {
-        char a[16] = "--:--:--", z[16] = "--:--:--", len[32] = "none";
+    // --- The selection card ----------------------------------------------------------------------------------------
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + pw + gap, bottom_y));
+    if (kit_card_begin("##selection", ImVec2(avail.x - pw - gap, bottom_h), 20)) {
+        ImDrawList *cd = ImGui::GetWindowDrawList();
+        ImVec2 c0 = ImGui::GetCursorScreenPos();
+        f32 cw = ImGui::GetContentRegionAvail().x, ch = ImGui::GetContentRegionAvail().y;
+        kit_label("SELECTION");
+        f32 ib = 28 * s;
+        ImGui::SetCursorScreenPos(ImVec2(c0.x + cw - ib, c0.y - 6 * s));
+        if (kit_icon_button(ICON_CLOSE, "##clear", KIT_GHOST, has_sel, false, ib)) tl.sel_in = tl.sel_out = 0;
+
+        // Start, end and length, the nudges beside each time
+        char a[16] = "--:--:--", z[16] = "--:--:--", len[32] = "\xE2\x80\x93";
         if (has_sel) {
             tl_clock(tl.sel_in, true, a, sizeof a);
             tl_clock(tl.sel_out, true, z, sizeof z);
             tl_length(tl.sel_out - tl.sel_in, len, sizeof len);
         }
-        ImGui::TextDisabled("Start");
-        ImGui::SameLine(60 * s);
-        ImGui::TextUnformatted(a);
-        ImGui::SameLine(160 * s);
-        ImGui::TextDisabled("End");
-        ImGui::SameLine(200 * s);
-        ImGui::TextUnformatted(z);
-        ImGui::SameLine(300 * s);
-        ImGui::TextDisabled("Length");
-        ImGui::SameLine(360 * s);
-        ImGui::PushFont(g_font_bold);
-        ImGui::TextUnformatted(len);
-        ImGui::PopFont();
-    }
-    // Fine adjustment, a second at a time
-    {
         bool longer = has_sel && tl.sel_out - tl.sel_in > TL_SEC;
-        if (tl_button("Start -1 s", 90, has_sel)) { tl.sel_in -= TL_SEC; tl_clamp_selection(); tl.playhead_us = tl.sel_in; }
-        ImGui::SameLine();
-        if (tl_button("Start +1 s", 90, longer)) { tl.sel_in += TL_SEC; tl_clamp_selection(); tl.playhead_us = tl.sel_in; }
-        ImGui::SameLine(0, 20 * s);
-        if (tl_button("End -1 s", 90, longer)) { tl.sel_out -= TL_SEC; tl_clamp_selection(); tl.playhead_us = tl.sel_out; }
-        ImGui::SameLine();
-        if (tl_button("End +1 s", 90, has_sel)) { tl.sel_out += TL_SEC; tl_clamp_selection(); tl.playhead_us = tl.sel_out; }
-        ImGui::SameLine(0, 20 * s);
-        if (tl_button("Clear", 70, has_sel)) tl.sel_in = tl.sel_out = 0;
-    }
-    // The games in it
-    GameTime games[16];
-    i32 game_count = has_sel ? games_in(b, tl.sel_in, tl.sel_out, games, COUNT(games)) : 0;
-    bool has_video = has_sel && tl_has_video(b, tl.sel_in, tl.sel_out);
-    {
-        char list[256] = {};
-        for (i32 g = 0; g < game_count; g++) {
-            char n[64];
-            audio_display_name(g_app.config, games[g].exe, n, sizeof n);
-            size_t l = strlen(list);
-            snprintf(list + l, sizeof list - l, "%s%s", g ? ", " : "", n);
+        f32 y_cap = c0.y + 34 * s, y_val = y_cap + 22 * s, col_w = cw / 3, sb = 24 * s;
+        ImFont *time_font = g_font_title;
+        ImGui::PushFont(time_font);
+        f32 big_h = ImGui::GetTextLineHeight(), time_w = ImGui::CalcTextSize("00:00:00").x;
+        ImGui::PopFont();
+        if (time_w + 2 * sb + 16 * s > col_w) { // narrow window: a smaller size so the nudges still fit
+            time_font = g_font_big;
+            ImGui::PushFont(time_font);
+            big_h = ImGui::GetTextLineHeight();
+            time_w = ImGui::CalcTextSize("00:00:00").x;
+            ImGui::PopFont();
         }
-        ImGui::TextDisabled("Games");
-        ImGui::SameLine(60 * s);
-        ImGui::TextUnformatted(!has_sel ? "" : !has_video ? "No video in this range" : game_count ? list : "Desktop only");
-    }
-    ImGui::Spacing();
-    bool busy = tl.job_edit; // waiting for the save to open the editor
-    if (tl_button("Save clip", 130, has_video && !busy)) tl_save(SAVE_CLIP, false);
-    ImGui::SameLine();
-    if (tl_button("Save and edit", 130, has_video && !busy)) tl_save(SAVE_CLIP, true);
-    // A session: a name typed, or a game picked
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Session name");
-    ImGui::SameLine(110 * s);
-    ImGui::SetNextItemWidth(230 * s);
-    ImGui::InputTextWithHint("##session", "empty: the game played most", tl.session_name, sizeof tl.session_name);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(140 * s);
-    if (ImGui::BeginCombo("##pick", "Pick a game", ImGuiComboFlags_HeightRegular)) {
-        // Games in the selection first, then the other games in the buffer
-        GameTime all[64];
-        i32 n = b.seg_count ? games_in(b, b.oldest_us, now, all, COUNT(all)) : 0;
-        for (i32 pass = 0; pass < 2; pass++) {
-            for (i32 g = 0; g < (pass ? n : game_count); g++) {
-                const char *exe = pass ? all[g].exe : games[g].exe;
-                bool dup = false;
-                for (i32 k = 0; pass && k < game_count; k++) dup |= !strcmp(games[k].exe, exe);
-                if (dup) continue;
-                char name[64];
-                audio_display_name(g_app.config, exe, name, sizeof name);
-                ImGui::PushID(exe);
-                if (ImGui::Selectable(name)) str_set(tl.session_name, name);
-                ImGui::PopID();
+        for (i32 k = 0; k < 3; k++) {
+            f32 x = c0.x + k * col_w;
+            ImGui::SetCursorScreenPos(ImVec2(x, y_cap));
+            kit_label(k == 0 ? "START" : k == 1 ? "END" : "LENGTH");
+            ImGui::PushFont(time_font);
+            cd->AddText(ImVec2(x, y_val), col32(has_sel ? COL_TEXT : COL_FAINT), k == 0 ? a : k == 1 ? z : len);
+            ImGui::PopFont();
+            if (k == 2) continue;
+            // Earlier and later by a second
+            f32 bx = x + time_w + 8 * s, by = floorf(y_val + (big_h - sb) / 2);
+            ImGui::PushID(k);
+            ImGui::SetCursorScreenPos(ImVec2(bx, by));
+            bool can_down = k == 0 ? has_sel : longer, can_up = k == 0 ? longer : has_sel;
+            if (kit_icon_button(ICON_LEFT, "##down", KIT_SECONDARY, can_down, false, sb)) {
+                if (k == 0) tl.sel_in -= TL_SEC;
+                else tl.sel_out -= TL_SEC;
+                tl_clamp_selection();
+                tl.playhead_us = k == 0 ? tl.sel_in : tl.sel_out;
+            }
+            ImGui::SetCursorScreenPos(ImVec2(bx + sb + 3 * s, by));
+            if (kit_icon_button(ICON_RIGHT, "##up", KIT_SECONDARY, can_up, false, sb)) {
+                if (k == 0) tl.sel_in += TL_SEC;
+                else tl.sel_out += TL_SEC;
+                tl_clamp_selection();
+                tl.playhead_us = k == 0 ? tl.sel_in : tl.sel_out;
+            }
+            ImGui::PopID();
+        }
+
+        // The games in it
+        GameTime games[16];
+        i32 game_count = has_sel ? games_in(b, tl.sel_in, tl.sel_out, games, COUNT(games)) : 0;
+        bool has_video = has_sel && tl_has_video(b, tl.sel_in, tl.sel_out);
+        {
+            char list[256] = {};
+            for (i32 g = 0; g < game_count; g++) {
+                char n[64];
+                audio_display_name(g_app.config, games[g].exe, n, sizeof n);
+                size_t l = strlen(list);
+                snprintf(list + l, sizeof list - l, "%s%s", g ? ", " : "", n);
+            }
+            const char *what = !has_sel ? "Drag across the tracks to select"
+                             : !has_video ? "No video in this range"
+                             : game_count ? list : "Desktop only";
+            f32 y = y_val + big_h + 18 * s;
+            ImGui::PushFont(g_font_small);
+            f32 sh = ImGui::GetTextLineHeight();
+            if (has_sel) cd->AddText(ImVec2(c0.x, y), col32(COL_FAINT), ICON_GAME);
+            ImGui::PopFont();
+            f32 x = has_sel ? c0.x + 22 * s : c0.x;
+            tl_text_fit(cd, ImVec2(x, floorf(y + (sh - th) / 2)), c0.x + cw - x, col32(has_sel && !has_video ? COL_WARN : COL_DIM), what);
+        }
+
+        // The actions, then the last save's progress, both pinned to the bottom of the card
+        bool busy = tl.job_edit; // waiting for the save to open the editor
+        bool can = has_video && !busy;
+        f32 bgap = 8 * s, y_status = c0.y + ch - fh, y_buttons = y_status - 14 * s - fh;
+        f32 w1 = 118 * s, w2 = 128 * s, w3 = 146 * s;
+        if (w1 + w2 + w3 + 2 * bgap > cw) w1 = w2 = w3 = (cw - 2 * bgap) / 3;
+        ImGui::SetCursorScreenPos(ImVec2(c0.x, y_buttons));
+        if (kit_button(ICON_SAVE "  Save clip", KIT_PRIMARY, ImVec2(w1, 0), can)) tl_save(SAVE_CLIP, false);
+        ImGui::SameLine(0, bgap);
+        if (kit_button(ICON_EDIT "  Save and edit", KIT_SECONDARY, ImVec2(w2, 0), can)) tl_save(SAVE_CLIP, true);
+        ImGui::SameLine(0, bgap);
+        ImVec2 ses_pos = ImGui::GetCursorScreenPos();
+        if (kit_button(ICON_GAME "  Save session\xE2\x80\xA6", KIT_SECONDARY, ImVec2(w3, 0), can)) ImGui::OpenPopup("##session");
+
+        // A session: a name typed, or a game picked. In a popup over the card, so nothing moves.
+        // Anchored to the button's right edge so it stays inside the window
+        ImGui::SetNextWindowPos(ImVec2(ses_pos.x + w3, ses_pos.y - 8 * s), ImGuiCond_Appearing, ImVec2(1, 1));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18 * s, 16 * s));
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 10 * s);
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1);
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(COL_PANEL));
+        if (ImGui::BeginPopup("##session")) {
+            f32 fw = 300 * s;
+            ImGui::PushFont(g_font_bold);
+            ImGui::TextUnformatted("Save as a session");
+            ImGui::PopFont();
+            ImGui::Dummy(ImVec2(0, 2 * s));
+            kit_label("NAME");
+            ImGui::SetNextItemWidth(fw);
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::InputTextWithHint("##session_name", "The game played most", tl.session_name, sizeof tl.session_name);
+            ImGui::SetNextItemWidth(fw);
+            if (ImGui::BeginCombo("##pick", "Or pick a game", ImGuiComboFlags_HeightRegular)) {
+                // Games in the selection first, then the other games in the buffer
+                GameTime all[64];
+                i32 n = b.seg_count ? games_in(b, b.oldest_us, now, all, COUNT(all)) : 0;
+                for (i32 pass = 0; pass < 2; pass++) {
+                    for (i32 g = 0; g < (pass ? n : game_count); g++) {
+                        const char *exe = pass ? all[g].exe : games[g].exe;
+                        bool dup = false;
+                        for (i32 k = 0; pass && k < game_count; k++) dup |= !strcmp(games[k].exe, exe);
+                        if (dup) continue;
+                        char name[64];
+                        audio_display_name(g_app.config, exe, name, sizeof name);
+                        ImGui::PushID(exe);
+                        if (ImGui::Selectable(name)) str_set(tl.session_name, name);
+                        ImGui::PopID();
+                    }
+                }
+                if (!n) kit_dim("No games in the buffer");
+                ImGui::EndCombo();
+            }
+            ImGui::Dummy(ImVec2(0, 4 * s));
+            if (kit_button("Save session", KIT_PRIMARY, ImVec2(130 * s, 0), can)) {
+                tl_save(SAVE_SESSION, false);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine(0, bgap);
+            if (kit_button("Cancel", KIT_GHOST, ImVec2(90 * s, 0))) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(3);
+
+        // The last save started here: what it's doing on the left, a thin bar under it while it runs, and Cancel on
+        // the right while it can be cancelled (its space is kept either way).
+        SaveJobView *v = save_view(tl.job);
+        if (v) {
+            f32 progress = v->state == SAVE_DONE ? 1 : v->progress;
+            bool running = v->state < SAVE_DONE;
+            const char *kind = v->kind == SAVE_SESSION ? "session" : "clip";
+            char text[600];
+            u32 ink = COL_DIM;
+            const char *icon = 0;
+            if (v->state == SAVE_QUEUED) str_set(text, "Waiting for another save to finish");
+            else if (v->state == SAVE_RUNNING) snprintf(text, sizeof text, "Saving the %s  %d%%", kind, (int)(progress * 100));
+            else if (v->state == SAVE_DONE) {
+                const char *file = strrchr(v->path, '\\');
+                snprintf(text, sizeof text, "Saved %s", file ? file + 1 : v->path);
+                icon = ICON_CHECK;
+                ink = COL_OK;
+            } else if (v->state == SAVE_FAILED) {
+                snprintf(text, sizeof text, "Save failed: %s", v->error);
+                icon = ICON_WARNING;
+                ink = COL_ACCENT;
+            } else str_set(text, "Save cancelled");
+            f32 cancel_w = 84 * s, text_w = cw - cancel_w - 12 * s;
+            ImGui::PushFont(g_font_small);
+            f32 sh = ImGui::GetTextLineHeight();
+            f32 ty = running ? y_status + 3 * s : floorf(y_status + (fh - sh) / 2);
+            f32 x = c0.x;
+            if (icon) {
+                cd->AddText(ImVec2(x, ty), col32(ink), icon);
+                x += 20 * s;
+            }
+            tl_text_fit(cd, ImVec2(x, ty), c0.x + text_w - x, col32(icon ? COL_TEXT : COL_DIM), text);
+            ImGui::PopFont();
+            if (running) {
+                f32 by = y_status + fh - 10 * s;
+                cd->AddRectFilled(ImVec2(c0.x, by), ImVec2(c0.x + text_w, by + 4 * s), col32(COL_PANEL2), 2 * s);
+                if (progress > 0)
+                    cd->AddRectFilled(ImVec2(c0.x, by), ImVec2(c0.x + text_w * progress, by + 4 * s), col32(COL_ACCENT), 2 * s);
+                ImGui::SetCursorScreenPos(ImVec2(c0.x + cw - cancel_w, y_status));
+                if (kit_button("Cancel", KIT_GHOST, ImVec2(cancel_w, 0))) save_cancel(v->id);
             }
         }
-        if (!n) ImGui::TextDisabled("No games in the buffer");
-        ImGui::EndCombo();
     }
-    ImGui::SameLine();
-    if (tl_button("Save as session", 140, has_video && !busy)) tl_save(SAVE_SESSION, false);
-    ImGui::Spacing();
-    // The last save started here: bar and Cancel first, so the text changing length moves nothing
-    {
-        SaveJobView *v = save_view(tl.job);
-        f32 progress = !v ? 0 : v->state == SAVE_DONE ? 1 : v->progress;
-        ImGui::ProgressBar(progress, ImVec2(200 * s, 0), "");
-        ImGui::SameLine();
-        if (tl_button("Cancel", 80, v && v->state < SAVE_DONE)) save_cancel(v->id);
-        char text[600];
-        const char *kind = v && v->kind == SAVE_SESSION ? "session" : "clip";
-        if (!v) str_set(text, "Nothing saved from here yet");
-        else if (v->state == SAVE_QUEUED) str_set(text, "Waiting for another save to finish");
-        else if (v->state == SAVE_RUNNING) snprintf(text, sizeof text, "Saving the %s, %d%%", kind, (int)(progress * 100));
-        else if (v->state == SAVE_DONE) {
-            const char *file = strrchr(v->path, '\\');
-            snprintf(text, sizeof text, "Saved %s", file ? file + 1 : v->path);
-        } else if (v->state == SAVE_FAILED) snprintf(text, sizeof text, "Save failed: %s", v->error);
-        else str_set(text, "Save cancelled");
-        ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, v && v->state == SAVE_FAILED ? rgb(COL_ACCENT) : rgb(COL_TEXT));
-        ImGui::TextUnformatted(text);
-        ImGui::PopStyleColor();
-    }
-    ImGui::EndGroup();
+    kit_card_end();
+    ImGui::SetCursorScreenPos(top);
+    ImGui::Dummy(avail);
 }

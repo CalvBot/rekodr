@@ -578,85 +578,160 @@ static void kit_align_right(f32 w)
 struct HelpRow { const char *keys, *what; };
 struct HelpSection { const char *title; const HelpRow *rows; i32 count; };
 
-static void help_section(const char *title, const HelpRow *rows, i32 count)
+// One group of the Help window, in a column w wide. A row's keys are written with markup: [Ctrl] is drawn as a key
+// cap, `clipback open` as a command, and anything else (mouse actions, "+", " / ") as plain text.
+static void help_section(const char *title, const HelpRow *rows, i32 count, f32 w)
 {
-    ImGui::PushFont(g_font_bold);
-    ImGui::TextDisabled("%s", title);
-    ImGui::PopFont();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 keys_w = kit_px(168), gap = kit_px(8);
+    kit_label(title);
+    ImGui::Dummy(ImVec2(0, kit_px(2)));
     for (i32 i = 0; i < count; i++) {
-        ImGui::TextUnformatted(rows[i].keys);
-        ImGui::SameLine(220 * g_dpi_scale);
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        ImGui::PushFont(g_font_small);
+        f32 sh = ImGui::GetTextLineHeight(), cap_h = sh + kit_px(6);
+        f32 x = a.x, y = a.y;
+        for (const char *p = rows[i].keys; *p;) {
+            char close = *p == '[' ? ']' : *p == '`' ? '`' : 0;
+            const char *end = close ? strchr(p + 1, close) : 0;
+            if (end) {
+                // A key cap (raised) or a command (flat, darker)
+                ImVec2 ts = ImGui::CalcTextSize(p + 1, end);
+                f32 cw = ts.x + kit_px(14);
+                if (cw < cap_h) cw = cap_h;
+                if (close == ']') {
+                    dl->AddRectFilled(ImVec2(x, y + kit_px(2)), ImVec2(x + cw, y + cap_h + kit_px(2)), col32(0x0c0d10), kit_px(5));
+                    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw, y + cap_h), col32(COL_HOVER), kit_px(5));
+                    dl->AddText(ImVec2(floorf(x + (cw - ts.x) / 2), floorf(y + (cap_h - sh) / 2)), col32(COL_TEXT), p + 1, end);
+                } else {
+                    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw, y + cap_h), col32(COL_BG), kit_px(5));
+                    dl->AddText(ImVec2(floorf(x + kit_px(7)), floorf(y + (cap_h - sh) / 2)), col32(0xc4c8cf), p + 1, end);
+                }
+                x += cw + kit_px(3);
+                p = end + 1;
+            } else {
+                // Plain text up to the next cap or command
+                const char *q = p + 1;
+                while (*q && *q != '[' && *q != '`') q++;
+                ImGui::PushFont(g_font);
+                f32 fs = ImGui::GetTextLineHeight();
+                dl->AddText(ImVec2(x, floorf(y + (cap_h - fs) / 2)), col32(COL_DIM), p, q);
+                x += ImGui::CalcTextSize(p, q).x + kit_px(3);
+                ImGui::PopFont();
+                p = q;
+            }
+        }
+        ImGui::PopFont();
+        ImGui::SetCursorScreenPos(ImVec2(a.x + keys_w + gap, floorf(a.y + (cap_h - ImGui::GetTextLineHeight()) / 2)));
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w - keys_w - gap);
         ImGui::TextUnformatted(rows[i].what);
+        ImGui::PopTextWrapPos();
+        f32 bottom = ImGui::GetCursorScreenPos().y;
+        if (bottom < a.y + cap_h + kit_px(8)) bottom = a.y + cap_h + kit_px(8);
+        ImGui::SetCursorScreenPos(ImVec2(a.x, bottom));
     }
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(w, kit_px(12)));
 }
 
 static void help_window()
 {
     if (g_app.ui.help_open) ImGui::OpenPopup("Help");
-    ImGui::SetNextWindowSize(ImVec2(640 * g_dpi_scale, 0));
+    f32 col_w = kit_px(372), col_gap = kit_px(40), pad = kit_px(28);
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x / 2, vp->WorkPos.y + vp->WorkSize.y / 2), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(2 * col_w + col_gap + 2 * pad, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, kit_px(24)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kit_px(14));
     bool open = true;
-    if (ImGui::BeginPopupModal("Help", &open, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+    if (ImGui::BeginPopupModal("Help", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
         static const HelpRow anywhere[] = {
-            {"clipback save 90s", "Save the last 90 s (or 30s, 2m, 1h …)"},
-            {"clipback timeline", "Open the buffer timeline"},
-            {"clipback open", "Open this window"},
-            {"clipback pause", "Pause / resume recording"},
+            {"`clipback save 90s`", "Save the last 90 s (or 30s, 2m, 1h \xE2\x80\xA6)"},
+            {"`clipback timeline`", "Open the buffer timeline"},
+            {"`clipback open`", "Open this window"},
+            {"`clipback pause`", "Pause / resume recording"},
         };
-        static const HelpRow window[] = {{"F1", "This help"}, {"Esc", "Close this help"},
-                                           {"Esc", "Options, setting a hotkey's keys: cancel"}};
+        static const HelpRow window[] = {{"[F1]", "This help"}, {"[Esc]", "Close this help"},
+                                         {"[Esc]", "Options, setting a hotkey's keys: cancel"}};
         static const HelpRow library[] = {
-            {"Ctrl+F", "Search"},
-            {"Page Up / Page Down", "Previous / next page (or the mouse wheel)"},
+            {"[Ctrl]+[F]", "Search"},
+            {"[Page Up] / [Page Down]", "Previous / next page (or the mouse wheel)"},
             {"Point at a thumbnail", "Scrub through it; click to play from there"},
             {"Right-click a card", "Edit, rename, delete and more"},
         };
         static const HelpRow player[] = {
-            {"Space", "Play / pause"},
-            {"← / →", "Back / forward 5 s"},
-            {"Esc", "Close the player"},
+            {"[Space]", "Play / pause"},
+            {"[\xE2\x86\x90] / [\xE2\x86\x92]", "Back / forward 5 s"},
+            {"[Esc]", "Close the player"},
         };
         static const HelpRow editor[] = {
-            {"Space", "Play / pause"},
-            {"I / O", "Trim start / end at the playhead"},
-            {"K", "Zoom keyframe at the playhead"},
-            {"Delete", "Delete the keyframe at the playhead"},
-            {"← / →", "Step one frame"},
-            {"Shift+← / →", "Step 1 s"},
+            {"[Space]", "Play / pause"},
+            {"[I] / [O]", "Trim start / end at the playhead"},
+            {"[K]", "Zoom keyframe at the playhead"},
+            {"[Delete]", "Delete the keyframe at the playhead"},
+            {"[\xE2\x86\x90] / [\xE2\x86\x92]", "Step one frame"},
+            {"[Shift]+[\xE2\x86\x90] / [\xE2\x86\x92]", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},
             {"Double-click a volume", "Back to as recorded"},
-            {"Esc", "Back to the library"},
+            {"[Esc]", "Back to the library"},
         };
         static const HelpRow timeline[] = {
-            {"Drag on the bar", "Select a range (drag its edges to adjust)"},
-            {"Click on the bar", "Move the playhead (the preview frame)"},
+            {"Drag across the tracks", "Select a range (drag its edges to adjust)"},
+            {"Click on the tracks", "Move the playhead (the preview frame)"},
             {"Mouse wheel", "Zoom in and out around the mouse"},
+            {"Wheel over the names", "Scroll the sound tracks"},
             {"Right or middle drag", "Pan earlier or later"},
-            {"Left / Right", "Move the selection 1 s (with Shift 10 s)"},
-            {"I / O", "Set the start / end at the mouse, or the playhead"},
-            {"Enter", "Save the selection as a clip"},
-            {"+ / -", "Zoom in / out"},
-            {"Home", "Back to now"},
+            {"[\xE2\x86\x90] / [\xE2\x86\x92]", "Move the selection 1 s (with Shift 10 s)"},
+            {"[I] / [O]", "Set the start / end at the mouse, or the playhead"},
+            {"[Enter]", "Save the selection as a clip"},
+            {"[+] / [-]", "Zoom in / out"},
+            {"[Home]", "Back to now"},
         };
-        ImGui::PushFont(g_font_bold);
-        ImGui::TextDisabled("HOTKEYS");
-        ImGui::PopFont();
-        for (i32 i = 0; i < g_app.config.hotkey_count; i++) {
-            ImGui::TextUnformatted(g_app.config.hotkeys[i].keys.s);
-            ImGui::SameLine(220 * g_dpi_scale);
-            ImGui::TextUnformatted(g_app.config.hotkeys[i].action.s);
+        // The hotkeys set in Options, their keys as caps: "Ctrl+Alt+S" becomes [Ctrl]+[Alt]+[S]
+        static char hotkey_keys[COUNT(g_app.config.hotkeys)][96];
+        static HelpRow hotkeys[COUNT(g_app.config.hotkeys)];
+        i32 hk = 0;
+        for (; hk < g_app.config.hotkey_count && hk < COUNT(hotkeys); hk++) {
+            char *o = hotkey_keys[hk];
+            i32 n = 0, cap = (i32)sizeof hotkey_keys[hk];
+            o[n++] = '[';
+            for (const char *k = g_app.config.hotkeys[hk].keys.s; *k && n < cap - 4; k++) {
+                if (*k == '+') {
+                    o[n++] = ']';
+                    o[n++] = '+';
+                    o[n++] = '[';
+                } else o[n++] = *k;
+            }
+            o[n++] = ']';
+            o[n] = 0;
+            hotkeys[hk].keys = o;
+            hotkeys[hk].what = g_app.config.hotkeys[hk].action.s;
         }
-        ImGui::Spacing();
-        help_section("ANYWHERE (STREAM DECK)", anywhere, COUNT(anywhere));
-        help_section("LIBRARY", library, COUNT(library));
-        help_section("PLAYER", player, COUNT(player));
-        help_section("EDITOR", editor, COUNT(editor));
-        help_section("WINDOW", window, COUNT(window));
-        help_section("TIMELINE", timeline, COUNT(timeline));
+
+        // Title and close
+        ImVec2 top = ImGui::GetCursorScreenPos();
+        kit_heading("Keyboard and mouse");
+        ImGui::SetCursorScreenPos(ImVec2(top.x + 2 * col_w + col_gap - ImGui::GetFrameHeight() + kit_px(8), top.y - kit_px(6)));
+        if (kit_icon_button(ICON_CLOSE, "##help_close")) open = false;
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + kit_px(46)));
+
+        ImGui::BeginGroup();
+        if (hk) help_section("HOTKEYS", hotkeys, hk, col_w);
+        help_section("ANYWHERE (STREAM DECK)", anywhere, COUNT(anywhere), col_w);
+        help_section("LIBRARY", library, COUNT(library), col_w);
+        help_section("PLAYER", player, COUNT(player), col_w);
+        help_section("WINDOW", window, COUNT(window), col_w);
+        ImGui::EndGroup();
+        ImGui::SameLine(0, col_gap);
+        ImGui::BeginGroup();
+        help_section("TIMELINE", timeline, COUNT(timeline), col_w);
+        help_section("EDITOR", editor, COUNT(editor), col_w);
+        ImGui::EndGroup();
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
         if (!open) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+    ImGui::PopStyleVar(2);
     g_app.ui.help_open = false;
 }
 
