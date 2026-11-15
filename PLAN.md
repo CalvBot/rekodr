@@ -30,7 +30,9 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 - **Export:** pick segments covering the range → video is stream-copied (instant), cut to the nearest keyframe (or
   re-encode the first 2 s for a frame-exact start) → chosen audio tracks mixed at chosen volumes → MP4. Size presets
   re-encode on NVENC to hit the target size. Result copied to the clipboard as a file (pastes into Discord).
-- **App:** Rust service (capture, ring, export) + a small Tauri tray/editor window + Stream Deck plugin calling a local API.
+- **App:** Rust background service (capture, buffer, export, tray, hotkeys, local HTTP API) + a window app that only
+  runs while it's open (today an Edge app window; moving to native, see "Native window app" below). Stream Deck keys
+  run `clipbackw <command>`.
 - Existing tools checked: OBS replay buffer (RAM only, mixed audio unless set up manually), NVIDIA App (~20 min cap),
   Medal/Outplayed (cloud-focused). None do hours-long disk buffers with per-app tracks and a fast editor.
 
@@ -46,7 +48,8 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
    and scaling on the CPU would cost games frames.
    Clips are tagged with the game played most in them (or Desktop), from a log of the game in front kept in the
    buffer; the clips window filters by game.
-6. Next: a "custom range" Stream Deck button (open the editor on the last 10 min of the
+6. Next: the native window app and encoder auto-detect (below).
+7. Later: a "custom range" Stream Deck button (open the editor on the last 10 min of the
    buffer without saving first, reserved on the Stream Deck), start-with-Windows installer step.
 
 ## Decisions made
@@ -59,3 +62,45 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 - Sync: video runs are anchored to wall-clock by the first frame's RTC time; audio packets by their QPC timestamps.
   Measured offset ~40 ms (mostly playback latency).
 - A new app's first ~1 s of sound can be missed (streams start when an app is seen playing; polled every second).
+
+## Native window app (next)
+The clips, options and editor pages are web pages in an Edge `--app` window. That works, but every time you open
+it, it starts a full Edge process tree (about 150–300 MB, about a second to appear). It also needed workarounds: a
+separate profile, keeping the editor's playback out of the recording, and a taskbar icon fix. clipback runs all day
+on other people's PCs too, so the part that's always on must stay tiny, and the window should cost nothing until
+it's opened.
+
+**Split:**
+- `clipback.exe` (Rust, unchanged role): recording, buffer, export, tray, hotkeys, Stream Deck commands and the
+  local HTTP API on 127.0.0.1:47820. No UI beyond the tray. The API stays the only contract between the two halves.
+- `clipback-ui.exe` (new): C# .NET 9 WinForms, a ReadyToRun single exe, the same stack as Compress for Discord
+  (`../simple-video-compressor`). The tray, "open" hotkey and `clipbackw open` start it, and closing the window
+  ends the process. The audio code already treats any `clipback*` exe as our own, so its playback stays out of
+  clips without the browser-PID tracking.
+- It lives in this repo under `win/`, built by one script into the same install folder. Files are copied from
+  Compress for Discord (not shared as a library yet). Candidates are `DarkForm`, `Controls`, `Player` (Media
+  Foundation, GPU-decoded scrubbing), `FrameReader`, `Waveform`, `AudioOut` and `Planner` (Discord size targets).
+
+**Order** (each Edge page is removed once its replacement is done; until then both work):
+1. Clips: the game chips, a fixed-size paged grid of cards with hover-scrub thumbnails (the sprites clipback already
+   makes), the player, copy, folder and delete actions. Status line and pause.
+2. Options: apps and tracks (New apps first, right-click for the file location), hotkeys, recording (monitor
+   picker, per-game bitrate, advanced) and storage.
+3. Editor: trim, keyframed zoom, per-track volume and size presets, with GPU scrubbing from `Player`. Rendering
+   stays in `clipback.exe` (`/api/render`).
+4. Remove the Edge code: `open_window`, `keep_window_icon`, the browser-PID tracking and `ui/`.
+
+**Targets:** the window appears in under 300 ms. It uses well under 100 MB while open and nothing once closed. No
+WebView2, Edge or extra runtime: a self-contained exe.
+
+## Encoder auto-detect (next, alongside)
+Recording and editor exports are NVIDIA-only today (`*_nvenc`; `render.rs` hard-codes `h264_nvenc`). Plan:
+- On start, try each encoder with a one-frame test encode, in order: NVENC → AMD AMF → Intel QSV → CPU
+  (`libx264`/`libx265`/`libsvtav1`). Use the first that works for the chosen codec, and show it in Options with an
+  override.
+- Capture stays `ddagrab` (D3D11, any GPU). AMF takes D3D11 frames directly. QSV needs
+  `hwmap=derive_device=qsv`. CPU needs `hwdownload,format=bgra` and warns that it costs game frames.
+- Advanced options map per vendor (presets and rate-control names differ). Options shows only what the detected
+  encoder supports.
+- Editor exports and size presets use the same detection.
+- Test on this PC by forcing each path. AMD and Intel need someone else's PC, or a VM with GPU passthrough for QSV.
