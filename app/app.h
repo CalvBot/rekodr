@@ -98,11 +98,22 @@ struct Ui {
 // data and report through events (EV_RECORDER, EV_AUDIO, EV_SAVE).
 
 // recorder.cpp: video capture into the buffer, and pruning the buffer.
+enum Vendor : u8 { VENDOR_NVENC, VENDOR_AMF, VENDOR_QSV, VENDOR_CPU, VENDOR_COUNT }; // tried in this order
+enum { CODEC_COUNT = 3 };                                                            // h264, hevc, av1
+
 struct Recorder {
-    bool  paused;
-    bool  recording;    // ffmpeg is capturing right now
-    Str64 encoder_used; // "h264_nvenc"
-    Str256 last_error;
+    bool   paused;
+    bool   recording;          // ffmpeg is capturing right now (it has run for a few seconds)
+    Str64  encoder_used;       // "h264_nvenc"; empty while not recording
+    u8     vendor;             // Vendor of encoder_used
+    Str64  run;                // the run folder being written, "20261115_210654_504"
+    i64    recording_since_us;
+    Str256 last_error;         // why it isn't recording; empty while healthy
+    bool   encoders_known;     // the test encodes have finished
+    u8     encoders_ok[CODEC_COUNT]; // per codec (h264, hevc, av1): a bit per Vendor whose test encode worked
+    i64    oldest_us;          // the oldest buffered video, 0 = none (updated by the pruner every 30 s)
+    i64    buffer_bytes;       // footage in the buffer, video and audio
+    i64    free_bytes;         // free space on the buffer's drive, -1 = unknown
 };
 
 // audio.cpp: one stream per app playing sound, plus the mic, and the game being played.
