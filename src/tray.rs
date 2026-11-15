@@ -53,6 +53,17 @@ fn copy_wide(dst: &mut [u16], text: &str) {
     dst[w.len()] = 0;
 }
 
+/// The tray icon embedded by build.rs (2 = recording, 3 = paused), at the tray's size; the
+/// drawn one if that fails.
+fn tray_icon(paused: bool) -> HICON {
+    unsafe {
+        let (cx, cy) = (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+        let id = if paused { 3usize } else { 2 };
+        let icon = LoadImageW(GetModuleHandleW(std::ptr::null()), id as *const u16, IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR);
+        if icon.is_null() { make_icon(paused) } else { icon }
+    }
+}
+
 /// A 32×32 icon drawn here: a red dot, or a grey dot with a pause sign.
 fn make_icon(paused: bool) -> HICON {
     const S: usize = 32;
@@ -310,8 +321,8 @@ pub fn run() -> anyhow::Result<()> {
         }
         TASKBAR_CREATED.store(RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()), Ordering::Relaxed);
         *UI.lock().unwrap() = Some(UiCell(Ui {
-            recording: make_icon(false),
-            paused: make_icon(true),
+            recording: tray_icon(false),
+            paused: tray_icon(true),
             hotkeys: Vec::new(),
             note_target: None,
         }));

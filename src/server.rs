@@ -15,6 +15,7 @@ const OPTIONS: &str = include_str!("../ui/options.html");
 const STYLE: &str = include_str!("../ui/style.css");
 const COMMON: &str = include_str!("../ui/common.js");
 const ICONS: &str = include_str!("../ui/icons.js");
+const FAVICON: &[u8] = include_bytes!("../assets/favicon.png");
 
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
@@ -205,6 +206,7 @@ fn handle(mut req: Request) {
         (true, "/style.css") => (200, "text/css; charset=utf-8", STYLE.into()),
         (true, "/common.js") => (200, "text/javascript; charset=utf-8", COMMON.into()),
         (true, "/icons.js") => (200, "text/javascript; charset=utf-8", ICONS.into()),
+        (true, "/favicon.png") | (true, "/favicon.ico") => (200, "image/png", FAVICON.to_vec()),
         (true, "/api/status") => ok_json(status()),
         (true, "/api/clips") => ok_json(json!(clips::list())),
         (true, "/api/info") => match id.as_deref().map(clips::resolve).transpose().and_then(|p| p.ok_or(anyhow!("no id"))).and_then(|p| clips::info(&p)) {

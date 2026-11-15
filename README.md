@@ -27,7 +27,7 @@ etc. for anything that can send a web request.
 
 Default hotkeys: **F13** = last 30 s, **F14** = 2 min, **F15** = 10 min, **F16** = open the clips window.
 
-**Tray icon:** red = recording, grey with a pause sign = paused. Left click opens the clips window; right click has
+**Tray icon:** the clipback replay arrow; red dot = recording, grey with a pause sign = paused. Left click opens the clips window; right click has
 Save last 30s/2m/10m/30m, Pause/Resume, Options, Open clips folder and Quit.
 
 Clips go to `<Videos>\Clips <year>\`, named after the game being played (`Overwatch 2026-11-15 21-04-10.mp4`),
@@ -64,6 +64,10 @@ A small local web UI (127.0.0.1:47820, in an Edge app window):
 ## Settings
 `%APPDATA%\clipback\config.toml` (written on first run; easiest to change from Options). Defaults: 1440p60 H.264 at
 20 Mbps, 200 GB buffer in `G:\clipback\buffer` (about 22 hours). Logs and thumbnails live in `%LOCALAPPDATA%\clipback`.
+
+## Icons
+The app and tray icons are drawn by `assets/make_icons.py` (Pillow) and embedded by `build.rs`. UI icons are
+[Lucide](https://lucide.dev) (ISC), bundled in `ui/icons.js` with only the ones used.
 
 ## How it works
 - **Video:** ffmpeg `ddagrab` (GPU capture) → NVENC, no B-frames, keyframe every 2 s → 2 s `.mkv` segments. The
