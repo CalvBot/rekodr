@@ -51,6 +51,7 @@ sealed partial class ClipsForm : DarkForm
         player.Closed += () => grid.Focus();
         refresh.Tick += async (_, _) => { if (WindowState != FormWindowState.Minimized && !player.Visible) await LoadClips(); };
         InitOptions();
+        InitEditor();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -67,6 +68,7 @@ sealed partial class ClipsForm : DarkForm
         base.OnShown(e);
         header.Start();
         refresh.Start();
+        OpenArgs(StartArgs);
         await LoadClips();
     }
 
@@ -82,12 +84,14 @@ sealed partial class ClipsForm : DarkForm
         pager.SetBounds(0, grid.Bottom, w, pagerH);
         player.SetBounds(0, top, w, ClientSize.Height - top);
         LayoutOptions();
+        editor.SetBounds(0, top, w, ClientSize.Height - top);
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         refresh.Stop();
         player.Close();
+        editor.Close();
         base.OnFormClosed(e);
     }
 
@@ -187,9 +191,7 @@ sealed partial class ClipsForm : DarkForm
         catch (ApiException ex) { toast.Show(ex.Message, true); }
     }
 
-    /// <summary>The web editor in the default browser (temporary, until the editor is native)</summary>
-    static void Edit(Clip c, double t) =>
-        Api.OpenPage($"/editor?id={Api.Enc(c.Id)}" + (t > 0 ? "&t=" + t.ToString("0.###", CultureInfo.InvariantCulture) : ""));
+    void Edit(Clip c, double t) => OpenEditor(c.Id, t);
 
     void Play(Clip c, double frac)
     {

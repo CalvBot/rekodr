@@ -11,8 +11,6 @@ sealed partial class ClipsForm
 {
     OptionsView? options;
 
-    /// <summary>Open on the Options screen (`clipback-ui --options`)</summary>
-    public bool StartOnOptions { get; init; }
     bool OnOptions => options?.Visible == true;
 
     Control[] ClipsScreen => [chips, grid, pager, search, save30, header.Options];
@@ -31,7 +29,6 @@ sealed partial class ClipsForm
         Application.ThreadException += (_, x) => File.WriteAllText(Path.Combine(Path.GetTempPath(), "claude-options-test", "crash.txt"), x.Exception.ToString());
 #endif
         base.OnLoad(e);
-        if (StartOnOptions) ShowOptions();
     }
 
     /// <summary>Switches to Options (nothing happens if it's already showing, so typed changes aren't lost)</summary>
@@ -74,50 +71,6 @@ sealed partial class ClipsForm
     {
         var top = this.Px(Header.Height96);
         options?.SetBounds(0, top, ClientSize.Width, Math.Max(0, ClientSize.Height - top));
-    }
-
-    // ---------- a second launch hands its screen to this window ----------
-
-    const int WM_COPYDATA = 0x4A;
-    const long ScreenMessage = 0x434C4250; // "CLBP"
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct CopyData
-    {
-        public IntPtr Data;
-        public int Size;
-        public IntPtr Ptr;
-    }
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr SendMessageTimeout(IntPtr hwnd, int msg, IntPtr w, ref CopyData l, int flags, int timeout, out IntPtr result);
-
-    /// <summary>Asks the window already open to show a screen ("options")</summary>
-    public static void SendScreen(IntPtr hwnd, string screen)
-    {
-        var text = Marshal.StringToHGlobalUni(screen);
-        try
-        {
-            var data = new CopyData { Data = (IntPtr)ScreenMessage, Size = (screen.Length + 1) * 2, Ptr = text };
-            SendMessageTimeout(hwnd, WM_COPYDATA, IntPtr.Zero, ref data, 0x2 /* SMTO_ABORTIFHUNG */, 2000, out _);
-        }
-        finally { Marshal.FreeHGlobal(text); }
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == WM_COPYDATA)
-        {
-            var data = Marshal.PtrToStructure<CopyData>(m.LParam);
-            if ((long)data.Data == ScreenMessage)
-            {
-                var screen = Marshal.PtrToStringUni(data.Ptr, Math.Max(0, data.Size / 2 - 1));
-                if (screen == "options") BeginInvoke(ShowOptions);
-                m.Result = 1;
-                return;
-            }
-        }
-        base.WndProc(ref m);
     }
 
 #if DEBUG

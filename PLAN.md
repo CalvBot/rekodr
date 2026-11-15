@@ -88,7 +88,7 @@ it's opened.
    pause, Save 30s, search, single instance. Measured: visible in ~220–270 ms; ~72 MB working set (~27 MB
    private) with the clips open. Playback runs in a child `clipback-ui --player` process (~250 MB while a clip
    plays, all freed on close): in-process, the GPU driver and decoder kept ~90 MB after closing. Still to do:
-   delete, and the Edge clips page's removal. Edit opens the web page for now.
+   delete, and the Edge clips page's removal.
 2. Options: apps and tracks (New apps first, right-click for the file location), hotkeys, recording (monitor
    picker, per-game bitrate, advanced) and storage.
    **Done** (branch `win-options`): a screen inside the clips window (header Options, `clipback-ui --options`, or
@@ -96,6 +96,13 @@ it's opened.
    folder picker. Still to do: remove `ui/options.html` once the installer ships the exe.
 3. Editor: trim, keyframed zoom, per-track volume and size presets, with GPU scrubbing from `Player`. Rendering
    stays in `clipback.exe` (`/api/render`).
+   **Mostly done** (`win/src/Editor`, branch `win-editor`): a screen in the clips window with a Clips back button,
+   opened by the player's Edit, `clipback-ui --edit <clip id> [--t seconds]` (handed to an open window) and the
+   tray/toasts' `/editor?` pages via `open_window`. Trim on the sprite timeline, keyframed zoom/pan (same
+   smoothstep, previewed live through the video's source rect), per-track volume/mute (each track's m4a in its own
+   audio-only engine, kept in sync), presets, export through `/api/render` with the web page's request and
+   clipboard copy. Video and tracks decode in a child `clipback-ui --editor-player` (~260 MB, gone on Back); the
+   window stays ~80 MB (~30 MB private). Still to do: track volumes over 100% only preview relative to each other.
 4. Remove the Edge code: `open_window`, `keep_window_icon`, the browser-PID tracking and `ui/`.
 
 **Targets:** the window appears in under 300 ms. It uses well under 100 MB while open and nothing once closed. No
