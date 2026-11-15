@@ -1,0 +1,432 @@
+// Reading the buffer's index from disk into a BufferIdx. Saves use it now; the timeline will later.
+//
+// The format is the one the Rust version writes, so switching versions keeps the buffer:
+//
+//   buffer\video\<run>\v_00000.mkv …  one folder per capture ffmpeg run (restarts after the lock screen etc.)
+//                      list.csv       "v_00000.mkv,0.000000,2.000000" per finished segment (ffmpeg writes it)
+//                      anchor.txt     wall-clock µs of the run's first frame
+//   buffer\audio\<stream>\a_00000.mka one folder per app audio stream (or the mic), Opus, 10 s segments
+//                      list.csv       as above, seconds from the stream's start
+//                      meta.json      {"kind":"app","exe":"spotify.exe","pid":1,"start_us":…}
+//   buffer\activity.tsv               "µs<TAB>exe" per change of the game being played (empty exe = desktop)
+//
+// Every time is wall-clock µs, so video and every audio stream line up. Files are only read, never changed:
+// ffmpeg may be writing them right now.
+
+static i64 filetime_to_us(FILETIME ft)
+{
+    i64 t = ((i64)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (t - 116444736000000000LL) / 10;
+}
+
+static i64 secs_to_us(f64 s) { return (i64)(s * 1e6 + (s >= 0 ? 0.5 : -0.5)); }
+
+// "v_00012.mkv" → 12. Segment names sort by this number, which is also how they're matched to list.csv.
+static bool seg_number(const char *name, u32 *out)
+{
+    const char *u = strchr(name, '_');
+    if (!u || !isdigit((u8)u[1])) return false;
+    *out = (u32)strtoul(u + 1, 0, 10);
+    return true;
+}
+
+struct ScratchFile { u32 num; u64 size; char name[20]; };
+struct ScratchLine { u32 num; f64 start, end; char name[20]; };
+struct ScratchDir  { char name[128]; };
+
+// buffer_read's working memory: too big for a stack, and buffer_read may run on two threads at once.
+struct BufferScratch {
+    ScratchFile files[65536];
+    i32         file_count;
+    ScratchLine lines[65536];
+    i32         line_count;
+    ScratchDir  dirs[1024];
+    i32         dir_count;
+};
+
+static int cmp_file(const void *a, const void *b)
+{
+    u32 x = ((const ScratchFile *)a)->num, y = ((const ScratchFile *)b)->num;
+    return x < y ? -1 : x > y;
+}
+static int cmp_line(const void *a, const void *b)
+{
+    u32 x = ((const ScratchLine *)a)->num, y = ((const ScratchLine *)b)->num;
+    return x < y ? -1 : x > y;
+}
+static int cmp_dir(const void *a, const void *b)
+{
+    return strcmp(((const ScratchDir *)a)->name, ((const ScratchDir *)b)->name);
+}
+
+// The sub-folders of `dir`, sorted by name (run and stream folders are named by start time).
+static void list_dirs(const Path &dir, BufferScratch *s)
+{
+    s->dir_count = 0;
+    Path pattern = path_join(dir, L"*");
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(pattern.s, FindExInfoBasic, &fd, FindExSearchNameMatch, 0, FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+        if (s->dir_count == COUNT(s->dirs)) { log_line("buffer: more than %d folders in one place", COUNT(s->dirs)); break; }
+        wide_to_utf8(fd.cFileName, s->dirs[s->dir_count].name, COUNT(s->dirs[0].name));
+        s->dir_count++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(s->dirs, s->dir_count, sizeof s->dirs[0], cmp_dir);
+}
+
+// The numbered media files (`ext` like L"*.mkv") in `dir`, sorted by number.
+static void list_media(const Path &dir, const wchar_t *ext, BufferScratch *s)
+{
+    s->file_count = 0;
+    Path pattern = path_join(dir, ext);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(pattern.s, FindExInfoBasic, &fd, FindExSearchNameMatch, 0, FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (s->file_count == COUNT(s->files)) { log_line("buffer: more than %d segments in one folder", COUNT(s->files)); break; }
+        ScratchFile *f = &s->files[s->file_count];
+        wide_to_utf8(fd.cFileName, f->name, COUNT(f->name));
+        if (!seg_number(f->name, &f->num)) continue;
+        f->size = ((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        s->file_count++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(s->files, s->file_count, sizeof s->files[0], cmp_file);
+}
+
+// Reads list.csv lines ("name,start,end"; a half-written last line is skipped), sorted by number.
+static void read_list(const Path &dir, BufferScratch *s)
+{
+    s->line_count = 0;
+    Path p = path_join(dir, L"list.csv");
+    FILE *f = _wfopen(p.s, L"rb");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        // Split from the right, like the Rust version: the name could in theory hold a comma.
+        char *c2 = strrchr(line, ',');
+        if (!c2) continue;
+        *c2 = 0;
+        char *c1 = strrchr(line, ',');
+        if (!c1) continue;
+        *c1 = 0;
+        char *end_s = trim(c2 + 1), *start_s = trim(c1 + 1), *name = trim(line);
+        if (!*end_s || !*start_s) continue;
+        if (*name == '"') { name++; char *q = strchr(name, '"'); if (q) *q = 0; }
+        if (s->line_count == COUNT(s->lines)) { log_line("buffer: list.csv longer than %d lines", COUNT(s->lines)); break; }
+        ScratchLine *l = &s->lines[s->line_count];
+        if (!seg_number(name, &l->num)) continue;
+        char *e1 = 0, *e2 = 0;
+        l->start = strtod(start_s, &e1);
+        l->end = strtod(end_s, &e2);
+        if (e1 == start_s || e2 == end_s) continue;
+        str_set(l->name, name);
+        s->line_count++;
+    }
+    fclose(f);
+    qsort(s->lines, s->line_count, sizeof s->lines[0], cmp_line);
+}
+
+static const ScratchFile *find_file(const BufferScratch *s, u32 num)
+{
+    ScratchFile key = {num};
+    return (const ScratchFile *)bsearch(&key, s->files, s->file_count, sizeof key, cmp_file);
+}
+
+static const ScratchLine *find_line(const BufferScratch *s, u32 num)
+{
+    ScratchLine key = {num};
+    return (const ScratchLine *)bsearch(&key, s->lines, s->line_count, sizeof key, cmp_line);
+}
+
+// Reads a small text file whole into `buf` (cut to fit). Returns false if it isn't there.
+static bool read_small(const Path &p, char *buf, i32 cap)
+{
+    buf[0] = 0;
+    FILE *f = _wfopen(p.s, L"rb");
+    if (!f) return false;
+    size_t n = fread(buf, 1, cap - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    return true;
+}
+
+// The value after "key": in a flat JSON object, as text (strings without their quotes). Enough for meta.json,
+// which clipback writes itself.
+static bool json_field(const char *json, const char *key, char *out, i32 cap)
+{
+    char pat[80];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *k = strstr(json, pat);
+    if (!k) return false;
+    const char *v = strchr(k + strlen(pat), ':');
+    if (!v) return false;
+    v++;
+    while (*v == ' ' || *v == '\t' || *v == '\r' || *v == '\n') v++;
+    i32 n = 0;
+    if (*v == '"') {
+        for (v++; *v && *v != '"'; v++) {
+            if (*v == '\\' && v[1]) v++;
+            if (n + 1 < cap) out[n++] = *v;
+        }
+    } else {
+        while (*v && *v != ',' && *v != '}' && *v != ' ' && *v != '\r' && *v != '\n' && n + 1 < cap) out[n++] = *v++;
+    }
+    out[n] = 0;
+    return true;
+}
+
+static bool file_mtime_us(const Path &p, i64 *out)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExW(p.s, GetFileExInfoStandard, &a)) return false;
+    *out = filetime_to_us(a.ftLastWriteTime);
+    return true;
+}
+
+static int cmp_run(const void *a, const void *b)
+{
+    i64 x = ((const VideoRun *)a)->anchor_us, y = ((const VideoRun *)b)->anchor_us;
+    return x < y ? -1 : x > y;
+}
+
+static void read_video(const Path &video_dir, BufferIdx *b, BufferScratch *s)
+{
+    list_dirs(video_dir, s);
+    for (i32 d = 0; d < s->dir_count && b->run_count < COUNT(b->runs); d++) {
+        wchar_t wname[128];
+        utf8_to_wide(s->dirs[d].name, wname, COUNT(wname));
+        Path run_dir = path_join(video_dir, wname);
+        char text[64];
+        if (!read_small(path_join(run_dir, L"anchor.txt"), text, sizeof text)) continue;
+        char *end = 0;
+        i64 anchor = strtoll(trim(text), &end, 10);
+        if (end == text || anchor <= 0) continue;
+        VideoRun *r = &b->runs[b->run_count++];
+        *r = {};
+        str_set(r->name, s->dirs[d].name);
+        r->anchor_us = anchor;
+    }
+    // Runs never overlap, so in anchor order their segments come out oldest first without a global sort.
+    qsort(b->runs, b->run_count, sizeof b->runs[0], cmp_run);
+
+    for (i32 i = 0; i < b->run_count; i++) {
+        VideoRun *r = &b->runs[i];
+        wchar_t wname[128];
+        utf8_to_wide(r->name, wname, COUNT(wname));
+        Path run_dir = path_join(video_dir, wname);
+        list_media(run_dir, L"*.mkv", s);
+        read_list(run_dir, s);
+        i64 written = 0;
+        if (file_mtime_us(path_join(run_dir, L"list.csv"), &written) && written > b->video_written_us)
+            b->video_written_us = written;
+        r->first_seg = b->seg_count;
+        for (i32 l = 0; l < s->line_count; l++) {
+            const ScratchLine *line = &s->lines[l];
+            const ScratchFile *file = find_file(s, line->num);
+            if (!file) continue; // pruned, its line stays in list.csv
+            if (b->seg_count == COUNT(b->segs)) { log_line("buffer: more than %d video segments; the rest left out", COUNT(b->segs)); break; }
+            VideoSeg *v = &b->segs[b->seg_count++];
+            v->start_us = r->anchor_us + secs_to_us(line->start);
+            v->end_us = r->anchor_us + secs_to_us(line->end);
+            v->inpoint = line->start;
+            v->outpoint = line->end;
+            v->size = file->size;
+            v->run = i;
+            str_set(v->name, file->name);
+            b->total_bytes += file->size;
+        }
+        r->seg_count = b->seg_count - r->first_seg;
+    }
+    if (b->seg_count) {
+        b->oldest_us = b->segs[0].start_us;
+        b->newest_us = b->segs[b->seg_count - 1].end_us;
+    }
+}
+
+static void read_audio(const Path &audio_dir, BufferIdx *b, BufferScratch *s)
+{
+    list_dirs(audio_dir, s);
+    for (i32 d = 0; d < s->dir_count; d++) {
+        if (b->stream_count == COUNT(b->streams)) { log_line("buffer: more than %d audio streams; the rest left out", COUNT(b->streams)); break; }
+        wchar_t wname[128];
+        utf8_to_wide(s->dirs[d].name, wname, COUNT(wname));
+        Path dir = path_join(audio_dir, wname);
+        char json[2048], kind[32], exe[64], num[32];
+        if (!read_small(path_join(dir, L"meta.json"), json, sizeof json)) continue;
+        if (!json_field(json, "kind", kind, sizeof kind) || !json_field(json, "exe", exe, sizeof exe) ||
+            !json_field(json, "start_us", num, sizeof num))
+            continue;
+        AudioStreamInfo *st = &b->streams[b->stream_count];
+        *st = {};
+        str_set(st->dir, s->dirs[d].name);
+        for (char *c = exe; *c; c++) *c = (char)tolower((u8)*c);
+        str_set(st->exe, exe);
+        st->mic = !strcmp(kind, "mic");
+        st->start_us = strtoll(num, 0, 10);
+        if (json_field(json, "pid", num, sizeof num)) st->pid = (u32)strtoul(num, 0, 10);
+
+        list_media(dir, L"*.mka", s);
+        read_list(dir, s);
+        st->first_seg = b->audio_seg_count;
+        i64 next_start = 0; // offset from the stream start
+        for (i32 f = 0; f < s->file_count; f++) {
+            if (b->audio_seg_count == COUNT(b->audio_segs)) { log_line("buffer: more than %d audio segments; the rest left out", COUNT(b->audio_segs)); break; }
+            const ScratchFile *file = &s->files[f];
+            const ScratchLine *line = find_line(s, file->num);
+            AudioSeg *a = &b->audio_segs[b->audio_seg_count++];
+            *a = {};
+            str_set(a->name, file->name);
+            a->size = file->size;
+            b->total_bytes += file->size;
+            if (line) {
+                a->start_us = st->start_us + secs_to_us(line->start);
+                a->end_us = st->start_us + secs_to_us(line->end);
+                next_start = secs_to_us(line->end);
+            } else {
+                a->start_us = st->start_us + next_start; // not listed yet: the one being written
+                a->open = true;
+            }
+        }
+        // An unlisted file before the last one means ffmpeg died mid-segment: keep only the segments after it,
+        // which run on contiguously to the end.
+        i32 last_open = -1;
+        for (i32 k = st->first_seg; k < b->audio_seg_count; k++) if (b->audio_segs[k].open) last_open = k;
+        if (last_open >= 0 && last_open + 1 != b->audio_seg_count) {
+            i32 keep = b->audio_seg_count - (last_open + 1);
+            memmove(&b->audio_segs[st->first_seg], &b->audio_segs[last_open + 1], keep * sizeof(AudioSeg));
+            b->audio_seg_count = st->first_seg + keep;
+        }
+        st->seg_count = b->audio_seg_count - st->first_seg;
+        b->stream_count++;
+    }
+}
+
+static void read_activity(const Path &buffer_dir, BufferIdx *b)
+{
+    FILE *f = _wfopen(path_join(buffer_dir, L"activity.tsv").s, L"rb");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        char *end = 0;
+        i64 us = strtoll(line, &end, 10);
+        if (end == line) continue;
+        if (b->activity_count == COUNT(b->activity)) {
+            // Only the recent past matters for saves: drop the older half.
+            i32 half = COUNT(b->activity) / 2;
+            memmove(b->activity, b->activity + half, (COUNT(b->activity) - half) * sizeof b->activity[0]);
+            b->activity_count -= half;
+        }
+        ActivityEntry *e = &b->activity[b->activity_count++];
+        e->us = us;
+        str_set(e->exe, trim(tab + 1));
+    }
+    fclose(f);
+}
+
+// Fills `b` from the buffer folder. Returns false only if the working memory couldn't be had; an empty or missing
+// buffer is just an empty index.
+static bool buffer_read(const Path &buffer_dir, BufferIdx *b)
+{
+    // Zeroing only the counts and header: the arrays are big and every entry used is written whole.
+    b->run_count = b->seg_count = b->stream_count = b->audio_seg_count = b->activity_count = 0;
+    b->oldest_us = b->newest_us = b->video_written_us = 0;
+    b->total_bytes = 0;
+    BufferScratch *s = (BufferScratch *)VirtualAlloc(0, sizeof(BufferScratch), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!s) {
+        log_line("buffer: out of memory reading the index");
+        return false;
+    }
+    read_video(path_join(buffer_dir, L"video"), b, s);
+    read_audio(path_join(buffer_dir, L"audio"), b, s);
+    read_activity(buffer_dir, b);
+    VirtualFree(s, 0, MEM_RELEASE);
+    return true;
+}
+
+// The end of the newest finished video segment, read cheaply (only the newest run's list.csv tail), and when that
+// list was last written. For waiting on the segment being written without re-reading the whole index.
+static bool buffer_video_newest_end(const Path &buffer_dir, i64 *end_us, i64 *written_us)
+{
+    *end_us = *written_us = 0;
+    Path video_dir = path_join(buffer_dir, L"video");
+    // Run folders are named by their start time, so the newest is the greatest name.
+    wchar_t newest[MAX_PATH] = {};
+    Path pattern = path_join(video_dir, L"*");
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(pattern.s, FindExInfoBasic, &fd, FindExSearchNameMatch, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != L'.' && wcscmp(fd.cFileName, newest) > 0)
+            wcscpy_s(newest, fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (!newest[0]) return false;
+    Path run_dir = path_join(video_dir, newest);
+    char text[64];
+    if (!read_small(path_join(run_dir, L"anchor.txt"), text, sizeof text)) return false;
+    i64 anchor = strtoll(trim(text), 0, 10);
+    Path list = path_join(run_dir, L"list.csv");
+    file_mtime_us(list, written_us);
+
+    FILE *f = _wfopen(list.s, L"rb");
+    if (!f) return false;
+    char tail[1024];
+    _fseeki64(f, 0, SEEK_END);
+    i64 size = _ftelli64(f);
+    _fseeki64(f, size > (i64)sizeof tail - 1 ? size - (i64)sizeof tail + 1 : 0, SEEK_SET);
+    size_t n = fread(tail, 1, sizeof tail - 1, f);
+    tail[n] = 0;
+    fclose(f);
+    // The last complete line: ends in a newline, has two commas.
+    char *last_nl = strrchr(tail, '\n');
+    if (!last_nl) return false;
+    *last_nl = 0;
+    char *line = strrchr(tail, '\n');
+    line = line ? line + 1 : tail;
+    char *comma = strrchr(line, ',');
+    if (!comma) return false;
+    *end_us = anchor + secs_to_us(strtod(comma + 1, 0));
+    return true;
+}
+
+// Seconds spent on each game within [from, to], most first (desktop time isn't counted). Returns how many.
+struct GameTime { char exe[64]; i64 us; };
+
+static i32 games_in(const BufferIdx &b, i64 from, i64 to, GameTime *out, i32 cap)
+{
+    i32 n = 0;
+    for (i32 i = 0; i < b.activity_count; i++) {
+        const ActivityEntry &e = b.activity[i];
+        i64 end = i + 1 < b.activity_count ? b.activity[i + 1].us : INT64_MAX;
+        i64 overlap = (end < to ? end : to) - (e.us > from ? e.us : from);
+        if (!e.exe[0] || overlap <= 0) continue;
+        i32 k = 0;
+        while (k < n && strcmp(out[k].exe, e.exe)) k++;
+        if (k == n) {
+            if (n == cap) continue;
+            str_set(out[n].exe, e.exe);
+            out[n].us = 0;
+            n++;
+        }
+        out[k].us += overlap;
+    }
+    // Most time first, then by name, so the order is the same every time.
+    for (i32 i = 1; i < n; i++) {
+        GameTime g = out[i];
+        i32 j = i;
+        while (j > 0 && (out[j - 1].us < g.us || (out[j - 1].us == g.us && strcmp(out[j - 1].exe, g.exe) > 0))) {
+            out[j] = out[j - 1];
+            j--;
+        }
+        out[j] = g;
+    }
+    return n;
+}
