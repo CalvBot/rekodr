@@ -376,6 +376,20 @@ fn edge() -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// clipback-ui's arguments for an editor page: "/editor?id=<clip>&t=<seconds>" gives
+/// `--edit <clip> [--t <seconds>]`.
+fn editor_args(page: &str) -> Option<Vec<String>> {
+    if !page.starts_with("/editor?") {
+        return None;
+    }
+    let id = query(page, "id").filter(|id| !id.is_empty())?;
+    let mut args = vec!["--edit".to_string(), id];
+    if let Some(t) = query(page, "t").and_then(|t| t.parse::<f64>().ok()).filter(|t| t.is_finite()) {
+        args.extend(["--t".to_string(), t.to_string()]);
+    }
+    Some(args)
+}
+
 /// Opens a page of the UI in its own small window (Edge app mode with a separate profile, so the
 /// editor's playback can be kept out of the recording), or the default browser.
 pub fn open_window(page: &str) {
@@ -385,6 +399,15 @@ pub fn open_window(page: &str) {
         let ui = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("clipback-ui.exe")));
         if let Some(ui) = ui.filter(|p| p.is_file()) {
             if std::process::Command::new(&ui).spawn().is_ok() {
+                return;
+            }
+        }
+    }
+    // The native editor too: "/editor?id=..&t=.." opens it in the clips window
+    if let Some(args) = editor_args(page) {
+        let ui = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("clipback-ui.exe")));
+        if let Some(ui) = ui.filter(|p| p.is_file()) {
+            if std::process::Command::new(&ui).args(args).spawn().is_ok() {
                 return;
             }
         }
@@ -496,5 +519,14 @@ mod tests {
         let p = png(1, 1, &[255, 0, 0, 255]);
         assert!(p.starts_with(b"\x89PNG"));
         assert!(p.ends_with(&[0xAE, 0x42, 0x60, 0x82]), "IEND crc");
+    }
+
+    #[test]
+    fn editor_pages_open_the_native_editor() {
+        let a = editor_args("/editor?id=Clips%202026%2Fa%20b.mp4&t=12.5").unwrap();
+        assert_eq!(a, ["--edit", "Clips 2026/a b.mp4", "--t", "12.5"]);
+        assert_eq!(editor_args("/editor?id=x.mp4").unwrap(), ["--edit", "x.mp4"]);
+        assert!(editor_args("/editor?t=3").is_none());
+        assert!(editor_args("/options").is_none());
     }
 }
