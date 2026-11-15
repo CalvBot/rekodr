@@ -35,6 +35,7 @@
 #include "proc.cpp"
 #include "recorder.cpp"
 #include "audio.cpp"
+#include "buffer.cpp"
 #include "save.cpp"
 #include "hotkeys.cpp"
 #include "tray.cpp"

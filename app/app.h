@@ -110,9 +110,81 @@ struct Audio {
     i32 stream_count;
 };
 
-// save.cpp: reading the buffer and turning ranges of it into files (clips, sessions, Keep, Share).
+// buffer.cpp: the buffer's index as read from disk (format in buffer.cpp). Big: the arrays hold 24 h of 2 s video
+// segments with room to spare, so instances are static, never on a stack.
+struct VideoRun {
+    char name[64];  // folder under buffer\video
+    i64  anchor_us; // wall clock of the run's first frame (anchor.txt)
+    i32  first_seg, seg_count;
+};
+
+struct VideoSeg {
+    i64  start_us, end_us;  // wall clock
+    f64  inpoint, outpoint; // the segment's own timestamps (seconds from its run's start), for ffmpeg's concat
+    u64  size;
+    i32  run;
+    char name[20];          // "v_00012.mkv"
+};
+
+struct AudioStreamInfo {
+    char dir[128]; // folder under buffer\audio
+    char exe[64];  // lower case; "mic" for the mic
+    bool mic;
+    u32  pid;
+    i64  start_us; // wall clock of the first sample (meta.json)
+    i32  first_seg, seg_count;
+};
+
+struct AudioSeg {
+    i64  start_us, end_us; // wall clock; end_us is 0 while `open`
+    u64  size;
+    bool open;             // being written (not in list.csv yet); only ever a stream's last segment
+    char name[20];         // "a_00003.mka"
+};
+
+struct ActivityEntry {
+    i64  us;
+    char exe[64]; // the game being played from `us` on; empty = the desktop
+};
+
+struct BufferIdx {
+    VideoRun        runs[512];
+    i32             run_count;
+    VideoSeg        segs[65536]; // every run's segments, oldest first
+    i32             seg_count;
+    AudioStreamInfo streams[1024];
+    i32             stream_count;
+    AudioSeg        audio_segs[65536]; // grouped by stream (first_seg, seg_count)
+    i32             audio_seg_count;
+    ActivityEntry   activity[4096];
+    i32             activity_count;
+    i64             oldest_us, newest_us; // video footage span (0 if none)
+    u64             total_bytes;          // video and audio segments
+    i64             video_written_us;     // last write of the newest run's list.csv: recent = recording now
+};
+
+// save.cpp: turning ranges of the buffer into files (clips, sessions; later Keep and Share), one ffmpeg at a time
+// on a worker thread. `jobs` is what the UI shows; the worker reports into it through EV_SAVE events.
+enum SaveKind : u8 { SAVE_CLIP, SAVE_SESSION };
+
+enum SaveState : u8 { SAVE_QUEUED, SAVE_RUNNING, SAVE_DONE, SAVE_FAILED, SAVE_CANCELLED };
+
+struct SaveJobView {
+    u32       id; // 0 = free slot
+    SaveKind  kind;
+    SaveState state;
+    i64       from_us, to_us;
+    f32       progress;  // 0..1 while running
+    char      name[256]; // the name asked for; empty = named after the game played most
+    char      path[512]; // the output file once known (UTF-8)
+    char      error[512];
+};
+
 struct Saving {
-    i32 jobs_running;
+    SaveJobView jobs[32];        // a new job takes the oldest finished slot
+    i32         jobs_running;    // queued or running
+    u32         next_id;
+    char        last_saved[512]; // path of the last file saved
 };
 
 struct Paths {
