@@ -1,4 +1,5 @@
-// Saving: turning a wall-clock range of the buffer into an MP4 (clips and sessions; Keep and Share come later).
+// Saving: turning a wall-clock range of the buffer into an MP4 (clips and sessions), and the editor's Keep and
+// Share, which render an edit of a saved file (edit_run).
 //
 // The main thread queues jobs (save_range, save_last) and owns the jobs table in g_app.saving. One worker thread
 // runs them in order, one ffmpeg at a time so a long save never fights a short one for the disk. The worker gets a
@@ -29,6 +30,7 @@ struct SaveSettings {
     Path    ffmpeg;   // empty = not found
     Path    work_dir; // temp lists and graphs (under local_dir, so test copies keep to CLIPBACK_HOME)
     char    codec[64];
+    u8      vendor; // the H.264 encoder Keep and Share use when they re-encode (Vendor)
     AppInfo apps[512];
     i32     app_count;
 };
@@ -39,6 +41,7 @@ struct SaveRequest {
     i64      from_us, to_us;
     char     name[256];
     bool     recording; // the recorder says it's capturing, so the newest segment is still being written
+    EditJob  edit;      // SAVE_KEEP and SAVE_SHARE
 };
 
 // The only data shared between the main thread and the worker, always under `lock`.
@@ -433,6 +436,8 @@ static void arg_pair(wchar_t *a, i32 cap, const char *key, const char *fmt, ...)
 }
 
 // Runs one job. Returns the event to finish with; `out` gets the path saved or the error.
+static i64 edit_run(SaveWork *w, char *out, i32 out_cap); // Keep and Share, below
+
 static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 {
     const SaveRequest &req = w->req;
@@ -441,6 +446,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         snprintf(out, out_cap, "ffmpeg not found (install it with winget install Gyan.FFmpeg, or set it in Options)");
         return SAVE_EV_FAILED;
     }
+    if (req.kind == SAVE_KEEP || req.kind == SAVE_SHARE) return edit_run(w, out, out_cap);
 
     // The segment covering `to` is still being written: wait for it to finish (a couple of seconds at most), so the
     // clip ends at the moment the save was asked for. "Being written" is the recorder saying it's capturing, or a
@@ -656,6 +662,295 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     return result;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Keep and Share: an edit of a saved file (ported from the Rust version's render.rs).
+//
+// Keep is the edit at full quality into <year>\Clips, every track kept: the video is stream-copied when there's no
+// zoom (the trim is then cut at the keyframe before the start), else re-encoded at a constant quality; the audio is
+// copied as it is when no volume was touched, else the Mix is rebuilt from the edited tracks and the separate
+// tracks are copied as recorded. Share is a small file in the share folder: zoomed, scaled down and encoded to the
+// size asked for, with one stereo mix of the edited tracks.
+
+// Whether a file has the clipback layout: track 1 is a Mix of the tracks after it.
+static bool edit_has_mix(const MediaInfo &m) { return m.track_count >= 2 && !strcmp(m.tracks[0], "Mix"); }
+
+// Whether the edit changes what's heard.
+static bool edit_audio_touched(const EditRecord &e, const MediaInfo &m)
+{
+    for (i32 t = 0; t < m.track_count && t < MEDIA_MAX_TRACKS; t++)
+        if (e.muted[t] || e.boost[t] > 0.005f || e.boost[t] < -0.005f) return true;
+    return false;
+}
+
+static bool edit_zoomed(const EditRecord &e)
+{
+    for (i32 k = 0; k < e.key_count; k++)
+        if (e.keys[k].z > 1.001) return true;
+    return false;
+}
+
+// One of a keyframe's values (0 z, 1 x, 2 y) at time `t` (an ffmpeg expression), eased between keys (smoothstep).
+static void smooth_expr(SaveWork *w, const EditRecord &e, i32 field, const char *t)
+{
+    auto val = [&](i32 k) { return field == 0 ? e.keys[k].z : field == 1 ? e.keys[k].x : e.keys[k].y; };
+    i32 n = e.key_count;
+    for (i32 k = 0; k + 1 < n; k++) {
+        f64 ta = e.keys[k].t, tb = e.keys[k + 1].t, a = val(k), b = val(k + 1);
+        f64 span = tb - ta > 0.001 ? tb - ta : 0.001;
+        char u[160];
+        snprintf(u, sizeof u, "clip((%s-%.4f)/%.4f,0,1)", t, ta, span);
+        graph_add(w, "if(lt(%s,%.4f),(%.5f+(%.5f)*%s*%s*(3-2*%s)),", t, tb, a, b - a, u, u, u);
+    }
+    graph_add(w, "%.5f", val(n - 1));
+    for (i32 k = 0; k + 1 < n; k++) graph_add(w, ")");
+}
+
+// The zoom as a perspective filter that crops the view and stretches it to the whole frame, each frame.
+static void zoom_filter(SaveWork *w, const EditRecord &e, f64 fps, f64 start)
+{
+    char t[64];
+    snprintf(t, sizeof t, "(in/%.4f+%.4f)", fps > 1 ? fps : 30, start);
+    // The view's top-left corner, kept inside the picture: x = clip(cx*W - W/(2z), 0, W - W/z).
+    auto z = [&]() { graph_add(w, "max(1,"); smooth_expr(w, e, 0, t); graph_add(w, ")"); };
+    auto corner = [&](const char *dim, i32 field, bool far_edge) {
+        graph_add(w, "clip(");
+        smooth_expr(w, e, field, t);
+        graph_add(w, "*%s-%s/(2*", dim, dim);
+        z();
+        graph_add(w, "),0,%s-%s/", dim, dim);
+        z();
+        graph_add(w, ")");
+        if (far_edge) { graph_add(w, "+%s/", dim); z(); }
+    };
+    graph_add(w, "perspective=");
+    for (i32 c = 0; c < 4; c++) {
+        bool right = c & 1, down = c & 2;
+        graph_add(w, "%sx%d='", c ? ":" : "", c);
+        corner("W", 1, right);
+        graph_add(w, "':y%d='", c);
+        corner("H", 2, down);
+        graph_add(w, "'");
+    }
+    graph_add(w, ":interpolation=linear:eval=frame,");
+}
+
+// The audio of a share, or Keep's rebuilt Mix, as [a]. Returns false if the file has no audio.
+static bool edit_audio_graph(SaveWork *w, const EditJob &j)
+{
+    const MediaInfo &m = j.info;
+    if (m.track_count <= 0) return false;
+    if (!edit_audio_touched(j.edit, m)) {
+        graph_add(w, "[0:a:0]anull[a];\n");
+        return true;
+    }
+    i32 first = edit_has_mix(m) ? 1 : 0, n = 0;
+    for (i32 t = first; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
+        if (j.edit.muted[t]) continue;
+        graph_add(w, "[0:a:%d]volume=%.3f,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[s%d];\n", t,
+                  1.0 + j.edit.boost[t], n);
+        n++;
+    }
+    if (!n) {
+        graph_add(w, "anullsrc=r=48000:cl=stereo[a];\n");
+        return true;
+    }
+    for (i32 i = 0; i < n; i++) graph_add(w, "[s%d]", i);
+    graph_add(w, "amix=inputs=%d:normalize=0:dropout_transition=0,alimiter=limit=0.98:level=0[a];\n", n);
+    return true;
+}
+
+// Encoder settings for H.264 on `vendor`: a target bitrate for Share, else a constant quality for Keep.
+static void edit_encoder_args(wchar_t *a, i32 cap, u8 vendor, i32 kbps)
+{
+    arg_pair(a, cap, "-c:v", "%s", encoder_name(vendor, "h264"));
+    switch (vendor) {
+    case VENDOR_NVENC:
+        arg_pair(a, cap, "-preset", "p5");
+        arg_pair(a, cap, "-rc", "vbr");
+        if (kbps) arg_pair(a, cap, "-multipass", "fullres");
+        else { arg_pair(a, cap, "-cq", "19"); arg_pair(a, cap, "-b:v", "0"); }
+        break;
+    case VENDOR_AMF:
+        arg_pair(a, cap, "-quality", "quality");
+        if (kbps) arg_pair(a, cap, "-rc", "vbr_peak");
+        else { arg_pair(a, cap, "-rc", "cqp"); arg_pair(a, cap, "-qp_i", "19"); arg_pair(a, cap, "-qp_p", "19"); }
+        break;
+    case VENDOR_QSV:
+        arg_pair(a, cap, "-preset", "slower");
+        if (!kbps) arg_pair(a, cap, "-global_quality", "19");
+        break;
+    default:
+        arg_pair(a, cap, "-preset", "medium");
+        if (!kbps) arg_pair(a, cap, "-crf", "19");
+        break;
+    }
+    if (kbps) {
+        arg_pair(a, cap, "-b:v", "%dk", kbps);
+        arg_pair(a, cap, "-maxrate", "%dk", kbps * 3 / 2);
+        arg_pair(a, cap, "-bufsize", "%dk", kbps * 2);
+    }
+}
+
+static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
+{
+    const SaveRequest &req = w->req;
+    const EditJob &j = req.edit;
+    const MediaInfo &m = j.info;
+    bool share = req.kind == SAVE_SHARE;
+    f64 in_s = j.edit.in_s > 0 ? j.edit.in_s : 0;
+    f64 out_s = j.edit.out_s > in_s ? j.edit.out_s : m.duration;
+    f64 dur = out_s - in_s;
+    if (dur <= 0.05) {
+        snprintf(out, out_cap, "the trim leaves nothing to save");
+        return SAVE_EV_FAILED;
+    }
+    int made = SHCreateDirectoryExW(0, j.out_dir.s, 0);
+    if (made != ERROR_SUCCESS && made != ERROR_ALREADY_EXISTS && made != ERROR_FILE_EXISTS) {
+        snprintf(out, out_cap, "couldn't create the folder to save in (%d)", made);
+        return SAVE_EV_FAILED;
+    }
+    wchar_t wstem[256];
+    utf8_to_wide(j.stem, wstem, COUNT(wstem));
+    Path final_path = {}, part_path = {};
+    for (i32 n = 1; n < 1000; n++) {
+        if (n == 1) swprintf(final_path.s, MAX_PATH, L"%s\\%s.mp4", j.out_dir.s, wstem);
+        else swprintf(final_path.s, MAX_PATH, L"%s\\%s (%d).mp4", j.out_dir.s, wstem, n);
+        swprintf(part_path.s, MAX_PATH, L"%s.part", final_path.s);
+        if (!file_exists(final_path.s) && !file_exists(part_path.s)) break;
+    }
+    char final8[MAX_PATH * 3];
+    wide_to_utf8(final_path.s, final8, sizeof final8);
+    save_post(SAVE_EV_PATH, req.id, 0, final8);
+
+    bool zoom = edit_zoomed(j.edit);
+    bool touched = edit_audio_touched(j.edit, m);
+    bool reencode = share || zoom;
+    i32 audio_kbps = 0, video_kbps = 0, height = 0;
+    bool fps30 = false;
+    if (share) {
+        f32 mb = j.share_mb > 1 ? j.share_mb : 1;
+        audio_kbps = mb <= 10.5f ? 96 : 160;
+        if (m.track_count <= 0) audio_kbps = 0;
+        f64 k = mb * 8000.0 * 0.92 / dur - audio_kbps;
+        video_kbps = k < 150 ? 150 : (i32)k;
+        height = video_kbps < 1200 ? 480 : video_kbps < 3500 ? 720 : 1080;
+        fps30 = video_kbps < 3000 && m.fps > 31;
+    }
+
+    // The graph: video (when re-encoded) as [v], audio (when re-mixed, or for a share) as [a].
+    w->graph_len = 0;
+    w->graph_full = false;
+    w->graph[0] = 0;
+    if (reencode) {
+        graph_add(w, "[0:v]");
+        if (zoom) zoom_filter(w, j.edit, m.fps, in_s);
+        if (share) {
+            graph_add(w, "scale=-2:'min(%d,ih)':flags=lanczos,", height);
+            if (fps30) graph_add(w, "fps=30,");
+        }
+        graph_add(w, "format=%s[v];\n", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p");
+    }
+    bool mix = (share || touched) && edit_audio_graph(w, j);
+    if (w->graph_full) {
+        snprintf(out, out_cap, "the zoom has too many keyframes");
+        return SAVE_EV_FAILED;
+    }
+    Path work = work_file(w->cfg.work_dir, L"edit-%d", (i32)req.id);
+    SHCreateDirectoryExW(0, work.s, 0);
+    Path graph = path_join(work, L"graph.txt");
+    if (w->graph_len) {
+        FILE *f = _wfopen(graph.s, L"wb");
+        if (!f) { snprintf(out, out_cap, "couldn't write the edit's work files"); return SAVE_EV_FAILED; }
+        fwrite(w->graph, 1, w->graph_len, f);
+        fclose(f);
+    }
+
+    wchar_t *a = w->args;
+    i32 cap = COUNT(w->args);
+    a[0] = 0;
+    static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"};
+    arg_list(a, cap, head, COUNT(head));
+    arg_pair(a, cap, "-ss", "%.3f", in_s);
+    cmd_arg8(a, cap, "-i");
+    cmd_arg(a, cap, j.src.s);
+    arg_pair(a, cap, "-t", "%.3f", dur);
+    if (w->graph_len) {
+        cmd_arg8(a, cap, "-/filter_complex");
+        cmd_arg(a, cap, graph.s);
+    }
+    if (reencode) {
+        arg_pair(a, cap, "-map", "[v]");
+        edit_encoder_args(a, cap, w->cfg.vendor, share ? video_kbps : 0);
+    } else {
+        arg_pair(a, cap, "-map", "0:v:0");
+        arg_pair(a, cap, "-c:v", "copy");
+    }
+    i32 outs = 0; // audio streams written
+    if (share) {
+        if (mix) {
+            arg_pair(a, cap, "-map", "[a]");
+            arg_pair(a, cap, "-c:a", "aac");
+            arg_pair(a, cap, "-b:a", "%dk", audio_kbps);
+            arg_pair(a, cap, "-ar", "48000");
+        }
+    } else if (!touched) {
+        if (m.track_count > 0) {
+            arg_pair(a, cap, "-map", "0:a");
+            arg_pair(a, cap, "-c:a", "copy");
+        }
+    } else {
+        // The rebuilt Mix first, then the original tracks as recorded (a clipback file's old Mix is dropped).
+        arg_pair(a, cap, "-map", "[a]");
+        arg_pair(a, cap, "-c:a:0", "aac");
+        arg_pair(a, cap, "-b:a:0", "192k");
+        arg_pair(a, cap, "-ar:a:0", "48000");
+        outs = 1;
+        for (i32 t = edit_has_mix(m) ? 1 : 0; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
+            arg_pair(a, cap, "-map", "0:a:%d", t);
+            char key[32];
+            snprintf(key, sizeof key, "-c:a:%d", outs);
+            arg_pair(a, cap, key, "copy");
+            snprintf(key, sizeof key, "-metadata:s:a:%d", outs);
+            arg_pair(a, cap, key, "title=%s", m.tracks[t]);
+            arg_pair(a, cap, key, "handler_name=%s", m.tracks[t]);
+            snprintf(key, sizeof key, "-disposition:a:%d", outs);
+            arg_pair(a, cap, key, "0");
+            outs++;
+        }
+        arg_pair(a, cap, "-metadata:s:a:0", "title=Mix");
+        arg_pair(a, cap, "-metadata:s:a:0", "handler_name=Mix");
+        arg_pair(a, cap, "-disposition:a:0", "default");
+    }
+    arg_pair(a, cap, "-movflags", "+faststart");
+    arg_pair(a, cap, "-f", "mp4");
+    cmd_arg(a, cap, part_path.s);
+
+    log_line("%s %u: %.1f s from %.2f s, zoom %d, audio %s, %s -> %s", share ? "share" : "keep", req.id, dur, in_s,
+             zoom ? j.edit.key_count : 0, touched ? "re-mixed" : "as recorded",
+             share ? "re-encoded" : reencode ? "re-encoded" : "copied", final8);
+    if (share) log_line("share %u: %.0f MB asked: video %d kbps at %dp%s, audio %d kbps", req.id, j.share_mb, video_kbps,
+                        height, fps30 ? ", 30 fps" : "", audio_kbps);
+    i32 code = run_ffmpeg(w, (i64)(dur * 1e6), out, out_cap);
+    i64 result;
+    if (code == 0 && MoveFileExW(part_path.s, final_path.s, 0)) {
+        snprintf(out, out_cap, "%s", final8);
+        result = SAVE_EV_DONE;
+    } else {
+        DeleteFileW(part_path.s);
+        if (code == -2) {
+            result = SAVE_EV_CANCELLED;
+        } else {
+            if (code == 0) snprintf(out, out_cap, "couldn't rename the finished file (%d)", (int)GetLastError());
+            else if (!out[0]) snprintf(out, out_cap, "ffmpeg failed (exit code %d)", code);
+            if (w->graph_len) CopyFileW(graph.s, path_join(w->cfg.work_dir, L"last-failed-graph.txt").s, FALSE);
+            result = SAVE_EV_FAILED;
+        }
+    }
+    DeleteFileW(graph.s);
+    RemoveDirectoryW(work.s);
+    return result;
+}
+
 static DWORD WINAPI save_thread(void *)
 {
     SaveWork *w = &g_save_work;
@@ -696,13 +991,9 @@ static SaveJobView *save_view(u32 id)
 // Queues a save of the wall-clock range [from_us, to_us]: a clip into <year>\Clips, or a session into
 // <year>\Sessions. An empty `name` names it after the game played most. Returns the job id, or 0 if it couldn't be
 // queued (32 saves already waiting).
-static u32 save_range(i64 from_us, i64 to_us, SaveKind kind, const char *name)
+static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, const EditJob *edit)
 {
     Saving &sv = g_app.saving;
-    if (to_us <= from_us) {
-        log_line("save: empty range");
-        return 0;
-    }
     // A free slot, else the oldest finished job's.
     SaveJobView *v = 0;
     for (i32 i = 0; i < COUNT(sv.jobs); i++) {
@@ -737,18 +1028,42 @@ static u32 save_range(i64 from_us, i64 to_us, SaveKind kind, const char *name)
     r->to_us = to_us;
     str_set(r->name, name);
     r->recording = g_app.recorder.recording;
+    if (edit) r->edit = *edit;
     SaveSettings *s = &g_save_q.settings;
     s->buffer_dir = c.buffer_dir;
     s->save_dir = c.save_dir;
     s->ffmpeg = ffmpeg;
     s->work_dir = g_app.paths.local_dir;
     str_set(s->codec, c.codec.s);
+    // H.264 for edits: the encoder forced in Options if it's set, else the first whose test encode worked.
+    i32 forced = vendor_parse(c.encoder.s);
+    u8 ok = g_app.recorder.encoders_ok[0];
+    s->vendor = VENDOR_CPU;
+    if (forced >= 0) s->vendor = (u8)forced;
+    else
+        for (i32 vi = 0; vi < VENDOR_COUNT; vi++)
+            if (ok & (1 << vi)) { s->vendor = (u8)vi; break; }
     memcpy(s->apps, c.apps, c.app_count * sizeof c.apps[0]);
     s->app_count = c.app_count;
     if (!g_save_q.thread) g_save_q.thread = thread_start(save_thread, 0);
     WakeConditionVariable(&g_save_q.wake);
     ReleaseSRWLockExclusive(&g_save_q.lock);
     return v->id;
+}
+
+static u32 save_range(i64 from_us, i64 to_us, SaveKind kind, const char *name)
+{
+    if (to_us <= from_us) {
+        log_line("save: empty range");
+        return 0;
+    }
+    return save_queue(kind, from_us, to_us, name, 0);
+}
+
+// Queues the editor's Keep or Share of `job`. Returns the job id, or 0 if it couldn't be queued.
+static u32 save_edit(SaveKind kind, const EditJob &job)
+{
+    return save_queue(kind, 0, 0, job.stem, &job);
 }
 
 // Saves the last `secs` seconds of the buffer as a clip in <save_dir>\<year>\Clips.

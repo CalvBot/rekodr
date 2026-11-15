@@ -26,6 +26,8 @@ static const u32 COL_BG = 0x111317, COL_PANEL = 0x1a1d23, COL_PANEL2 = 0x22262e,
 static ImFont *g_font, *g_font_bold, *g_font_big;
 static f32 g_dpi_scale = 1;
 
+static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
+
 static void ui_wake(i32 frames = 3)
 {
     if (g_app.ui.frames_left < frames) g_app.ui.frames_left = frames;
@@ -42,8 +44,14 @@ static void gpu_create_target()
 static bool gpu_init(HWND hwnd)
 {
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
-    HRESULT hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_HARDWARE, 0, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 1,
+    // Video support lets the player's Media Foundation decode straight into textures on this device; without it the
+    // window still works, but nothing plays.
+    HRESULT hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_HARDWARE, 0,
+                                   D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels, 1,
                                    D3D11_SDK_VERSION, &g_gpu.device, 0, &g_gpu.context);
+    if (FAILED(hr))
+        hr = D3D11CreateDevice(0, D3D_DRIVER_TYPE_HARDWARE, 0, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 1,
+                               D3D11_SDK_VERSION, &g_gpu.device, 0, &g_gpu.context);
     if (FAILED(hr)) {
         log_line("D3D11 device failed (0x%08x)", (u32)hr);
         return false;
@@ -169,6 +177,7 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
         g_app.ui.shown = false;
+        library_window_shown(false);
         return 0;
     case WM_DPICHANGED: {
         RECT *r = (RECT *)lp;
@@ -234,6 +243,7 @@ static void ui_show(Screen screen)
     if (!ui.shown) {
         ShowWindow(ui.hwnd, IsZoomed(ui.hwnd) ? SW_SHOWMAXIMIZED : SW_SHOW);
         ui.shown = true;
+        library_window_shown(true);
     }
     if (IsIconic(ui.hwnd)) ShowWindow(ui.hwnd, SW_RESTORE);
     // A second launch (Stream Deck, hotkey) gave us the right to take the foreground; the tray did too.
@@ -245,6 +255,7 @@ static void ui_show(Screen screen)
 // Screens, each in its own file. They can use everything above (theme colours, fonts, ui_wake).
 
 #include "sessions.cpp"
+#include "player.cpp"
 #include "library.cpp"
 #include "editor.cpp"
 #include "timeline.cpp"
@@ -279,6 +290,28 @@ static void help_window()
             {"clipback pause", "Pause / resume recording"},
         };
         static const HelpRow window[] = {{"F1", "This help"}, {"Esc", "Close this help"}};
+        static const HelpRow library[] = {
+            {"Ctrl+F", "Search"},
+            {"Page Up / Page Down", "Previous / next page (or the mouse wheel)"},
+            {"Point at a thumbnail", "Scrub through it; click to play from there"},
+            {"Right-click a card", "Edit, rename, delete and more"},
+        };
+        static const HelpRow player[] = {
+            {"Space", "Play / pause"},
+            {"â / â", "Back / forward 5 s"},
+            {"Esc", "Close the player"},
+        };
+        static const HelpRow editor[] = {
+            {"Space", "Play / pause"},
+            {"I / O", "Trim start / end at the playhead"},
+            {"K", "Zoom keyframe at the playhead"},
+            {"Delete", "Delete the keyframe at the playhead"},
+            {"â / â", "Step one frame"},
+            {"Shift+â / â", "Step 1 s"},
+            {"Drag the picture", "Aim the zoom (when zoomed in)"},
+            {"Double-click a volume", "Back to as recorded"},
+            {"Esc", "Back to the library"},
+        };
         ImGui::PushFont(g_font_bold);
         ImGui::TextDisabled("HOTKEYS");
         ImGui::PopFont();
@@ -289,6 +322,9 @@ static void help_window()
         }
         ImGui::Spacing();
         help_section("ANYWHERE (STREAM DECK)", anywhere, COUNT(anywhere));
+        help_section("LIBRARY", library, COUNT(library));
+        help_section("PLAYER", player, COUNT(player));
+        help_section("EDITOR", editor, COUNT(editor));
         help_section("WINDOW", window, COUNT(window));
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
         if (!open) ImGui::CloseCurrentPopup();
@@ -354,6 +390,7 @@ static void ui_frame()
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
     header();
+    screens_left_behind(); // editor.cpp: closes the player of a screen that isn't shown any more
     switch (g_app.ui.screen) {
     case SCREEN_LIBRARY: screen_library(); break;
     case SCREEN_TIMELINE: screen_timeline(); break;

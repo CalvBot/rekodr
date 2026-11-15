@@ -11,6 +11,7 @@ enum EventKind : u8 {
     EV_RECORDER,
     EV_AUDIO,
     EV_SAVE,
+    EV_LIBRARY, // library.cpp and player.cpp: scans, thumbnails, Media Foundation events
 };
 
 struct Event {

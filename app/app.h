@@ -200,9 +200,54 @@ struct BufferIdx {
 
 // save.cpp: turning ranges of the buffer into files (clips, sessions; later Keep and Share), one ffmpeg at a time
 // on a worker thread. `jobs` is what the UI shows; the worker reports into it through EV_SAVE events.
-enum SaveKind : u8 { SAVE_CLIP, SAVE_SESSION };
+enum SaveKind : u8 {
+    SAVE_CLIP,    // a range of the buffer into <year>\Clips
+    SAVE_SESSION, // a range of the buffer into <year>\Sessions
+    SAVE_KEEP,    // the editor's Keep: an edit of a saved file, at full quality, into <year>\Clips
+    SAVE_SHARE,   // the editor's Share: a small copy with one stereo mix, into the share folder
+};
 
 enum SaveState : u8 { SAVE_QUEUED, SAVE_RUNNING, SAVE_DONE, SAVE_FAILED, SAVE_CANCELLED };
+
+// ---------------------------------------------------------------------------------------------------------------
+// Saved files and edits (library.cpp probes files, editor.cpp edits them, save.cpp renders Keep and Share)
+
+enum { MEDIA_MAX_TRACKS = 16, EDIT_MAX_KEYS = 64 };
+
+// What ffprobe says about a saved file (cached next to its thumbnails).
+struct MediaInfo {
+    f64  duration; // seconds
+    i32  width, height;
+    f64  fps;
+    i32  track_count;                  // audio tracks
+    char tracks[MEDIA_MAX_TRACKS][32]; // their titles: "Mix", "Mic", "Communication", "Overwatch (game)" ...
+    char game[64];                     // what it's of: the tagged game, "Desktop", or "Other" for files not ours
+};
+
+struct ZoomKey {
+    f64 t;    // seconds into the video
+    f64 z;    // 1 = no zoom
+    f64 x, y; // centre of the view, 0..1 across and down
+};
+
+// An edit never changes the original: it's this small record, kept in <year>\Data\<video name>.edit.txt.
+struct EditRecord {
+    f64     in_s, out_s;             // trim, seconds into the video; out_s 0 = to the end
+    ZoomKey keys[EDIT_MAX_KEYS];     // sorted by t
+    i32     key_count;
+    f32     boost[MEDIA_MAX_TRACKS]; // per audio track: volume - 1, so zero is as recorded (-1 .. +1)
+    bool    muted[MEDIA_MAX_TRACKS];
+};
+
+// A Keep or Share job: everything the save worker needs, copied with the request.
+struct EditJob {
+    Path       src;       // the original
+    Path       out_dir;   // <year>\Clips for Keep, the share folder for Share
+    char       stem[256]; // the output's name without ".mp4" (made unique if taken)
+    MediaInfo  info;
+    EditRecord edit;
+    f32        share_mb;  // Share: the size to aim for
+};
 
 struct SaveJobView {
     u32       id; // 0 = free slot
@@ -230,8 +275,125 @@ struct Paths {
 };
 
 // Screens, one struct each, owned by the file of the same name (included from ui.cpp).
-struct Library { i32 page; };   // library.cpp: clips and sessions, the player
-struct Editor { bool open; };   // editor.cpp: trim, volumes, Keep and Share
+
+// player.cpp: one video through Media Foundation's Media Engine into a texture on the UI's device. The library and
+// the editor each have one; only one is open at a time.
+enum { PLAYER_MAX_TRACK_ENGINES = 8 };
+
+struct Player {
+    bool              open;
+    Path              path;
+    u8                id;  // which player (0 library, 1 editor): media events carry it
+    u32               gen; // bumped on every open, so events from a closed file are dropped
+    IMFMediaEngine   *engine;
+    IMFMediaEngineEx *engine_ex;
+    // The editor plays each audio track on its own audio-only engine, so each has its own volume. The main engine
+    // is muted then.
+    IMFMediaEngine   *track_engine[PLAYER_MAX_TRACK_ENGINES];
+    i32               track_of_engine[PLAYER_MAX_TRACK_ENGINES]; // the audio track each one plays
+    i32               track_engine_count;
+    ID3D11Texture2D          *tex;
+    ID3D11ShaderResourceView *srv;
+    u32               width, height; // the video's own size, 0 until it's loaded
+    bool              loaded, frame_ready, autoplay;
+    f64               duration, pos;
+    bool              paused, ended, seeking;
+    f64               start_at;  // seek here once loaded
+    bool              scrubbing; // the scrub bar is held: seeks are approximate until it's let go
+    bool              has_seek;  // a seek waits for the one before it to finish
+    f64               seek_to;
+    i32               audio_stream[MEDIA_MAX_TRACKS]; // the engine's stream index of each audio track
+    i32               audio_count;
+    i32               sound;              // the audio track heard (the library's Sound choice)
+    f64               stop_at, loop_from; // editor: playing stops at the trim's end; 0 = the whole file
+    char              error[256];
+    bool              set_animating; // this player asked ui.animating to keep the frames coming
+};
+
+enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS };
+enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 64 };
+
+struct LibItem {
+    char      name[256]; // file name without the extension (UTF-8)
+    char      ext[8];    // ".mp4"
+    i16       year;      // the year folder it's in
+    LibView   kind;      // in Clips or Sessions
+    bool      loose;     // directly in the year folder (the Rust version's layout), not in its Clips subfolder
+    bool      probed;    // `info` is known
+    u64       size;
+    i64       mtime_us;
+    u64       key;       // thumbnail cache key; changes when the file does, not when it's renamed
+    MediaInfo info;
+};
+
+struct LibThumb {
+    u64                       key;
+    ID3D11ShaderResourceView *srv;
+    i32                       w, h; // one frame
+    bool                      pending, failed;
+    u32                       used; // for dropping the least recently shown
+};
+
+struct Library {
+    LibView  view;
+    i32      page;
+    char     search[128];
+    char     game[64];             // the game chip picked; empty = all
+    i32      chip_page;
+    LibItem  items[LIB_MAX_ITEMS]; // both views, newest first (handed over by the scan worker)
+    i32      item_count;
+    bool     scanned;              // a scan has finished at least once
+    bool     scanning, scan_again;
+    u32      scan_gen;
+    i32      shown[LIB_MAX_ITEMS]; // this view's items that match the chip and the search
+    i32      shown_count;
+    char     games[LIB_MAX_GAMES][64]; // chips for this view, most recent first
+    i32      game_items[LIB_MAX_GAMES];
+    i32      game_count;
+    i32      view_count;           // items in this view
+    LibThumb thumbs[LIB_THUMBS];
+    u32      thumb_clock;
+    // The hovered card's whole scrub strip (each is a few MB, so only one is kept). The editor's timeline uses it too.
+    u64                       strip_key, strip_want;
+    ID3D11ShaderResourceView *strip;
+    i32                       strip_w, strip_h, strip_frames;
+    LibItem  target;               // the card a menu, rename or delete is about
+    char     rename_buf[256];
+    char     rename_error[256];
+    char     message[256];         // the last result, shown in the pager row ("Copied", "Couldn't rename ...")
+    bool     message_error;
+    Player   player;
+    LibItem  playing;              // the item the player shows
+};
+
+struct ShareFile {
+    char name[200]; // in the share folder (UTF-8)
+    i64  mtime_us;
+    u64  size;
+};
+
+struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep and Share
+    bool       open;
+    LibItem    item;            // the clip or session being edited
+    Path       path;
+    EditRecord edit;
+    bool       dirty;           // the record changed and isn't written yet
+    Player     player;
+    i32        tab;             // side panel: 0 edit, 1 keep and share
+    i32        key_page, track_page, share_page;
+    i32        drag;            // timeline: 0 none, 1 trim start, 2 trim end, 3 playhead
+    bool       aiming;          // dragging the picture aims the zoom
+    i32        aim_key;
+    f64        aim_mx, aim_my, aim_kx, aim_ky;
+    bool       tracks_ready;    // the player's per-track engines are set up for this file
+    i32        share_size;      // 0 = 50 MB, 1 = 10 MB, 2 = custom
+    f32        custom_mb;
+    u32        keep_job, share_job;
+    char       result[300];     // what the last Keep or Share did
+    bool       result_error;
+    ShareFile  shares[64];      // Recent shares, newest first
+    i32        share_count;
+};
 struct Timeline { i32 zoom; };  // timeline.cpp: the buffer and a range to save
 struct OptionsUi { i32 tab; };  // options.cpp: every setting
 struct Sessions { i32 count; }; // sessions.cpp: detecting sessions, the save popup, Not saved
