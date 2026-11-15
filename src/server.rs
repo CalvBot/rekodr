@@ -156,8 +156,25 @@ fn status() -> Value {
         "audio": *state::LIVE_AUDIO.lock().unwrap(),
         "clips_dir": cfg.clips_dir,
         "encode": *state::VIDEO_ENCODE.lock().unwrap(),
+        "encoder": *state::VIDEO_ENCODER.lock().unwrap(),
         "new_apps": apps::new_count(&cfg),
         "now_us": util::now_us(),
+    })
+}
+
+/// What each vendor's test encode found, the setting, and what it resolves to now.
+fn encoders_json() -> Value {
+    use crate::encoders::{self, ORDER};
+    let video = state::cfg().video;
+    let found = encoders::detected();
+    let chosen = encoders::choose(&video.encoder, &video.codec, &found);
+    json!({
+        "setting": video.encoder,
+        "codec": video.codec,
+        "order": ORDER,
+        "detected": found,
+        "chosen": chosen.map(|v| json!({ "vendor": v, "name": v.encoder(&video.codec) })),
+        "active": *state::VIDEO_ENCODER.lock().unwrap(),
     })
 }
 
@@ -219,6 +236,7 @@ fn handle(mut req: Request) {
             None => (404, "text/plain", b"no icon".to_vec()),
         },
         (true, "/api/settings") => ok_json(json!({ "config": state::cfg(), "path": crate::config::config_path() })),
+        (true, "/api/encoders") => ok_json(encoders_json()),
         (true, "/api/monitors") => ok_json(json!(crate::monitors::list())),
         (true, "/api/apps") => {
             let cfg = state::cfg();
