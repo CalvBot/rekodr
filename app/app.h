@@ -310,7 +310,7 @@ struct Player {
     bool              set_animating; // this player asked ui.animating to keep the frames coming
 };
 
-enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS };
+enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS, LIB_NOT_SAVED }; // the last is a view only: sessions.cpp's list
 enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 64 };
 
 struct LibItem {
@@ -386,6 +386,8 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     i32        aim_key;
     f64        aim_mx, aim_my, aim_kx, aim_ky;
     bool       tracks_ready;    // the player's per-track engines are set up for this file
+    char       pending[MAX_PATH * 3]; // a file to open once the library's scan has it (Timeline's "Save and edit")
+    u64        pending_since;   // GetTickCount64 when it was asked for
     i32        share_size;      // 0 = 50 MB, 1 = 10 MB, 2 = custom
     f32        custom_mb;
     u32        keep_job, share_job;
@@ -394,9 +396,129 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     ShareFile  shares[64];      // Recent shares, newest first
     i32        share_count;
 };
-struct Timeline { i32 zoom; };  // timeline.cpp: the buffer and a range to save
-struct OptionsUi { i32 tab; };  // options.cpp: every setting
-struct Sessions { i32 count; }; // sessions.cpp: detecting sessions, the save popup, Not saved
+// timeline.cpp: the buffer and a range to save. Times are wall-clock µs; 0 = not set.
+struct TimelineRow {   // one audio row: every stream of one exe (or the mic)
+    char exe[64];
+    char name[64];
+};
+
+struct TimelineFrame { // a preview frame uploaded to the GPU
+    i64                       key;     // what it shows (see tl_frame_key), 0 = free slot
+    i64                       time_us;
+    ID3D11ShaderResourceView *srv;
+    u32                       used;    // for evicting the least recently shown
+};
+
+enum TimelineDrag : u8 { TL_DRAG_NONE, TL_DRAG_NEW, TL_DRAG_IN, TL_DRAG_OUT, TL_DRAG_PAN };
+
+struct Timeline {
+    BufferIdx    *idx;          // the index drawn (heap, swapped with the worker's; freed while hidden)
+    bool          loaded;       // idx holds a read, not just zeroes
+    u32           ticks;        // 1 s ticks while shown, for the 3 s refresh
+    i64           view_end_us, view_span_us;
+    bool          follow;       // the right edge stays at now
+    i64           sel_in, sel_out;
+    i64           playhead_us;  // 0 = the newest footage
+    TimelineDrag  drag;
+    i64           drag_anchor_us, drag_view_end;
+    f32           drag_x;
+    bool          dragged;      // moved far enough to be a drag, not a click
+    bool          hovering;
+    i64           hover_us;
+    TimelineRow   rows[64];
+    i32           row_count;
+    i32           row_scroll;   // first audio row shown
+    i16           stream_row[1024]; // the row of each idx->streams entry, -1 = none
+    TimelineFrame frames[8];
+    u32           frame_clock;
+    i64           pending_key, failed_key, shown_key;
+    char          session_name[128];
+    u32           job;          // the last save started here
+    bool          job_edit;     // open the editor when it's done
+};
+// sessions.cpp: detecting sessions, the save popup, Not saved (SPEC.md, "1. Whole sessions").
+enum SessionState : u8 {
+    SES_FREE,      // empty slot
+    SES_OPEN,      // its game is being played, or was less than the session gap ago
+    SES_ASKING,    // ended; the popup asks whether to save it
+    SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Not saved list
+    SES_SAVING,    // a save job is copying it
+    SES_SAVED,
+    SES_DISMISSED, // taken off the Not saved list; kept until its footage is gone so it's never found again
+};
+
+struct Session {
+    u32          id;
+    SessionState state;
+    bool         custom;           // a name typed by hand rather than a game
+    bool         prompted;         // the window was brought up for its popup
+    char         exe[64];          // the game (lower case); empty for a custom session
+    char         name[128];        // shown, and names the file: "Overwatch", "Stream with Sam"
+    i64          start_us, end_us; // the real start and end; while open, end is when the game was last seen
+    u32          job;              // the save job while SAVING
+    char         video[256];       // the saved file's name once SAVED
+    char         record[256];      // its record under save_dir, "2026\Data\<name>.session.txt"; empty = none
+};
+
+struct Sessions {
+    Session items[256];     // slot order means nothing; SES_FREE slots are empty
+    u32     next_id;
+    bool    loaded;         // sessions.txt and activity.tsv have been read
+    bool    game_known;     // the watcher has said what's being played since start
+    bool    dirty;          // sessions.txt needs writing
+    i64     written_us;     // when sessions.txt was last written
+    i64     woke_minute;    // the minute the window was last redrawn for the countdowns
+    u32     waiting_logged; // the session whose popup waits on a game in front (logged once)
+    // The Not saved list: its rows stay put while it's on screen, so a click never moves the others.
+    u32     rows[256];
+    i32     row_count;
+    i32     page;
+    i32     drawn_frame;
+};
+
+static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp the game being played
+
+// options.cpp: every setting. Lists are paged and their order is frozen while Options is open, so a row never
+// moves under the mouse after a click (sorting a new app doesn't send it to another page).
+enum OptionsTab : u8 {
+    OPT_APPS, OPT_HOTKEYS, OPT_RECORDING, OPT_GAME_BITRATES, OPT_ADVANCED, OPT_SESSIONS, OPT_STORAGE, OPT_STARTUP,
+    OPT_TAB_COUNT,
+};
+
+struct MonitorInfo {
+    char name[64]; // "DELL S2721DGF"
+    i32  width, height, hz;
+    bool primary;
+};
+
+struct OptionsUi {
+    i32  tab;             // OptionsTab
+    i32  last_frame;      // ImGui frame Options was last drawn in: a gap means it was entered again
+    // Apps
+    i32  filter;          // AppsFilter (options.cpp)
+    char search[64];
+    char add_exe[64];
+    i32  add_category;    // AppCategory for "Add"; 0 = Communication
+    i16  order[512];      // indexes into config.apps, in the order shown
+    i32  order_count;
+    i32  order_app_count; // config.app_count when `order` was made; apps heard since go on the end
+    bool order_dirty;     // make `order` again (filter or search changed)
+    i32  apps_page;
+    i32  menu_app;        // the app right-clicked
+    Path menu_path;       // its exe, empty if it isn't running and lifelog never saw it
+    // Pages of the other lists
+    i32  hotkeys_page, bitrates_page, sessions_page;
+    // Hotkeys: the one whose keys are being pressed, + 1 (0 = none)
+    i32  capture_slot;
+    bool capture_added;   // it was just added, so cancelling removes it again
+    // Recording
+    MonitorInfo monitors[16];
+    i32  monitor_count;
+    // The text box being edited keeps its text here until the edit is finished (Enter or clicking away), so a
+    // half-typed number never reaches the settings.
+    char edit[MAX_PATH * 3];
+    bool startup_logged;
+};
 
 struct App {
     Paths    paths;

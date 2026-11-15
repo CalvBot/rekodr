@@ -235,6 +235,7 @@ static void editor_open(const LibItem &item)
     ed_save_record();
     player_close(&ed.player);
     ed.open = true;
+    ed.pending[0] = 0;
     ed.item = item;
     ed.path = lib_item_path(item);
     edit_read(lib_edit_path(item), &ed.edit);
@@ -251,6 +252,40 @@ static void editor_open(const LibItem &item)
     g_app.ui.screen = SCREEN_EDITOR;
     log_line("editor: %s", item.name);
     ui_wake();
+}
+
+// Opens a file by its path (UTF-8), for screens that just saved one: it opens once the library's scan has found
+// and probed it, since the editor needs its tracks and length.
+static void editor_open_file(const char *path)
+{
+    Editor &ed = g_app.editor;
+    str_set(ed.pending, path);
+    ed.pending_since = GetTickCount64();
+    library_rescan();
+    g_app.ui.screen = SCREEN_EDITOR;
+    log_line("editor: waiting for the library to have %s", path);
+    ui_wake();
+}
+
+// The pending file, if the library has it now.
+static void ed_check_pending()
+{
+    Editor &ed = g_app.editor;
+    if (!ed.pending[0]) return;
+    Library &lib = g_app.library;
+    wchar_t want[MAX_PATH];
+    utf8_to_wide(ed.pending, want, MAX_PATH);
+    for (i32 i = 0; i < lib.item_count; i++) {
+        if (_wcsicmp(lib_item_path(lib.items[i]).s, want)) continue;
+        if (!lib.items[i].probed) return; // found, not probed yet
+        ed.pending[0] = 0;
+        editor_open(lib.items[i]);
+        return;
+    }
+    if (GetTickCount64() - ed.pending_since > 15000 && !lib.scanning) {
+        log_line("editor: %s never turned up in the library", ed.pending);
+        ed.pending[0] = 0;
+    }
 }
 
 static void editor_close()
@@ -684,6 +719,12 @@ static void screen_editor()
     f32 s = g_dpi_scale;
     const ImGuiStyle &st = ImGui::GetStyle();
     ImGuiIO &io = ImGui::GetIO();
+    ed_check_pending();
+    if (!ed.open && ed.pending[0]) {
+        ImGui::TextDisabled("Opening the saved file...");
+        ui_wake(10); // look again soon: the scan posts its results, but probing can lag them
+        return;
+    }
     if (!ed.open) {
         g_app.ui.screen = SCREEN_LIBRARY;
         return;

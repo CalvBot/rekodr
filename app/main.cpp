@@ -59,6 +59,7 @@ static void handle_event(const Event &e)
     case EV_AUDIO: audio_on_event(e); break;
     case EV_SAVE: save_on_event(e); editor_on_save_event(e); break;
     case EV_LIBRARY: library_on_event(e); break;
+    case EV_TIMELINE: timeline_on_event(e); break;
     default: break;
     }
     ui_wake();
@@ -68,7 +69,10 @@ static LRESULT CALLBACK msg_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_TIMER:
-        if (wp == TIMER_TICK) sessions_tick();
+        if (wp == TIMER_TICK) {
+            sessions_tick();
+            timeline_tick();
+        }
         return 0;
     case WM_APP_EVENT: {
         Event e;
@@ -196,7 +200,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     proc_init();
     SetUnhandledExceptionFilter(on_crash);
     RegisterApplicationRestart(L"", RESTART_NO_REBOOT);
-    if (!config_load(&g_app.config, g_app.paths)) config_save(g_app.config, g_app.paths);
+    if (!config_load(&g_app.config, g_app.paths)) { // first run: bring over the Rust version's settings (options.cpp)
+        options_first_run(&g_app.config, g_app.paths);
+        config_save(g_app.config, g_app.paths);
+    }
     log_line("clipback (native) starting");
 
     WNDCLASSEXW wc = {sizeof wc};

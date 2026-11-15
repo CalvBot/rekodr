@@ -289,7 +289,8 @@ static void help_window()
             {"clipback open", "Open this window"},
             {"clipback pause", "Pause / resume recording"},
         };
-        static const HelpRow window[] = {{"F1", "This help"}, {"Esc", "Close this help"}};
+        static const HelpRow window[] = {{"F1", "This help"}, {"Esc", "Close this help"},
+                                           {"Esc", "Options, setting a hotkey's keys: cancel"}};
         static const HelpRow library[] = {
             {"Ctrl+F", "Search"},
             {"Page Up / Page Down", "Previous / next page (or the mouse wheel)"},
@@ -298,7 +299,7 @@ static void help_window()
         };
         static const HelpRow player[] = {
             {"Space", "Play / pause"},
-            {"â / â", "Back / forward 5 s"},
+            {"← / →", "Back / forward 5 s"},
             {"Esc", "Close the player"},
         };
         static const HelpRow editor[] = {
@@ -306,11 +307,22 @@ static void help_window()
             {"I / O", "Trim start / end at the playhead"},
             {"K", "Zoom keyframe at the playhead"},
             {"Delete", "Delete the keyframe at the playhead"},
-            {"â / â", "Step one frame"},
-            {"Shift+â / â", "Step 1 s"},
+            {"← / →", "Step one frame"},
+            {"Shift+← / →", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},
             {"Double-click a volume", "Back to as recorded"},
             {"Esc", "Back to the library"},
+        };
+        static const HelpRow timeline[] = {
+            {"Drag on the bar", "Select a range (drag its edges to adjust)"},
+            {"Click on the bar", "Move the playhead (the preview frame)"},
+            {"Mouse wheel", "Zoom in and out around the mouse"},
+            {"Right or middle drag", "Pan earlier or later"},
+            {"Left / Right", "Move the selection 1 s (with Shift 10 s)"},
+            {"I / O", "Set the start / end at the mouse, or the playhead"},
+            {"Enter", "Save the selection as a clip"},
+            {"+ / -", "Zoom in / out"},
+            {"Home", "Back to now"},
         };
         ImGui::PushFont(g_font_bold);
         ImGui::TextDisabled("HOTKEYS");
@@ -326,6 +338,7 @@ static void help_window()
         help_section("PLAYER", player, COUNT(player));
         help_section("EDITOR", editor, COUNT(editor));
         help_section("WINDOW", window, COUNT(window));
+        help_section("TIMELINE", timeline, COUNT(timeline));
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
         if (!open) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -381,7 +394,10 @@ static void ui_frame()
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::IsPopupOpen("Help")) g_app.ui.help_open = true;
+    if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::IsPopupOpen("Help")) {
+        g_app.ui.help_open = true;
+        ui_wake(6); // a modal takes a few frames to open and size itself; don't wait for the mouse to move
+    }
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);

@@ -428,6 +428,7 @@ struct StderrReader {
     Path   run_dir;
     Path   log;
     char   last[512];
+    volatile i64 segment_tick; // GetTickCount64 when ffmpeg last opened a segment (the stall watchdog reads it)
 };
 
 static StderrReader g_reader;
@@ -458,7 +459,11 @@ static DWORD WINAPI stderr_thread(void *arg)
             }
             continue;
         }
-        if (strstr(line, "Opening '") || starts_with(line, "  ")) continue;
+        if (strstr(line, "Opening '")) {
+            r->segment_tick = (i64)GetTickCount64();
+            continue;
+        }
+        if (starts_with(line, "  ")) continue;
         if (log) fprintf(log, "%s\n", line);
         str_set(r->last, line);
     }
@@ -598,6 +603,7 @@ static DWORD WINAPI recorder_thread(void *)
         g_reader.pipe = p.err;
         g_reader.run_dir = run_dir;
         g_reader.log = path_join(s.local_dir, L"ffmpeg-video.log");
+        g_reader.segment_tick = 0;
         HANDLE reader = thread_start(stderr_thread, &g_reader);
 
         u64 started = GetTickCount64();
@@ -620,6 +626,16 @@ static DWORD WINAPI recorder_thread(void *)
             }
             if (rec_stopping() || now.paused || restart) {
                 capture_stop(&p);
+                break;
+            }
+            // ffmpeg can hit an encoder or capture error and stay running without writing anything ("Generic
+            // error in an external library"). No new segment for 15 s (they come every 2 s) means it's stuck.
+            i64 last_seg = g_reader.segment_tick;
+            u64 since = last_seg ? (u64)last_seg : started;
+            if (GetTickCount64() - since > 15000) {
+                log_line("video capture stalled: no new segment for 15 s (%s); restarting it", g_reader.last);
+                capture_stop(&p);
+                code = 2; // handled like ffmpeg stopping by itself: retry with backoff
                 break;
             }
             if (!announced && GetTickCount64() - started > 4000) {

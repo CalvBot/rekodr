@@ -798,7 +798,7 @@ static i64 local_day(i64 us, SYSTEMTIME *out)
     return (i64)((((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 864000000000ull);
 }
 
-static const char *const MONTHS[] = {"January", "February", "March", "April", "May", "June", "July", "August",
+static const char *const LIB_MONTHS[] = {"January", "February", "March", "April", "May", "June", "July", "August",
                                      "September", "October", "November", "December"};
 static const char *const WEEKDAYS[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
 
@@ -808,7 +808,7 @@ static void fmt_day(i64 us, char *out, i32 cap)
     i64 day = local_day(us, &t), today = local_day(now_us(), 0);
     if (day == today) snprintf(out, cap, "Today");
     else if (day == today - 1) snprintf(out, cap, "Yesterday");
-    else snprintf(out, cap, "%s %d %s", WEEKDAYS[day % 7], t.wDay, MONTHS[(t.wMonth + 11) % 12]); // 1601-01-01 was a Monday
+    else snprintf(out, cap, "%s %d %s", WEEKDAYS[day % 7], t.wDay, LIB_MONTHS[(t.wMonth + 11) % 12]); // 1601-01-01 was a Monday
 }
 
 // "today 9:04 pm", "yesterday 9:04 pm", "14 Nov 9:04 pm"
@@ -820,7 +820,7 @@ static void fmt_when(i64 us, char *out, i32 cap)
     char when[32];
     if (day == today) str_set(when, "today");
     else if (day == today - 1) str_set(when, "yesterday");
-    else snprintf(when, sizeof when, "%d %.3s", t.wDay, MONTHS[(t.wMonth + 11) % 12]);
+    else snprintf(when, sizeof when, "%d %.3s", t.wDay, LIB_MONTHS[(t.wMonth + 11) % 12]);
     snprintf(out, cap, "%s %d:%02d %s", when, h, t.wMinute, t.wHour < 12 ? "am" : "pm");
 }
 
@@ -1176,13 +1176,26 @@ static void screen_library()
     if (view_tab("Clips", lib.view == LIB_CLIPS, 110 * s)) lib_set_view(LIB_CLIPS);
     ImGui::SameLine();
     if (view_tab("Sessions", lib.view == LIB_SESSIONS, 110 * s)) lib_set_view(LIB_SESSIONS);
+    ImGui::SameLine();
+    if (view_tab("Not saved", lib.view == LIB_NOT_SAVED, 110 * s)) lib_set_view(LIB_NOT_SAVED);
     f32 search_w = 300 * s;
     ImGui::SameLine(right - search_w);
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
+    bool not_saved = lib.view == LIB_NOT_SAVED;
+    if (!not_saved && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(search_w);
+    ImGui::BeginDisabled(not_saved); // stays in its place; it searches saved files only
     if (ImGui::InputTextWithHint("##search", "Search names and games", lib.search, sizeof lib.search)) {
         lib.page = 0;
         lib_refilter();
+    }
+    ImGui::EndDisabled();
+
+    // Not saved: sessions still in the buffer, sessions.cpp's own fixed-size, paged list, with the whole screen.
+    if (not_saved) {
+        ImGui::BeginChild("not_saved", ImVec2(full_w, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+        sessions_not_saved();
+        ImGui::EndChild();
+        return;
     }
 
     // Row 2: game chips, paged; the arrows are always there.
@@ -1227,13 +1240,6 @@ static void screen_library()
     if (button_enabled("\xE2\x86\x90##chips", ImVec2(arrow_w, 0), lib.chip_page > 0)) lib.chip_page--;
     ImGui::SameLine();
     if (button_enabled("\xE2\x86\x92##chips", ImVec2(arrow_w, 0), lib.chip_page + 1 < chip_pages)) lib.chip_page++;
-
-    // Sessions: the ones not saved yet, in a fixed slot above the grid.
-    if (lib.view == LIB_SESSIONS) {
-        ImGui::BeginChild("not_saved", ImVec2(full_w, 170 * s), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
-        sessions_not_saved();
-        ImGui::EndChild();
-    }
 
     // The grid fills what's left above the pager row.
     f32 pager_h = ImGui::GetFrameHeight();
