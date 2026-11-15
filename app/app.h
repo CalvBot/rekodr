@@ -234,7 +234,47 @@ struct Library { i32 page; };   // library.cpp: clips and sessions, the player
 struct Editor { bool open; };   // editor.cpp: trim, volumes, Keep and Share
 struct Timeline { i32 zoom; };  // timeline.cpp: the buffer and a range to save
 struct OptionsUi { i32 tab; };  // options.cpp: every setting
-struct Sessions { i32 count; }; // sessions.cpp: detecting sessions, the save popup, Not saved
+// sessions.cpp: detecting sessions, the save popup, Not saved (SPEC.md, "1. Whole sessions").
+enum SessionState : u8 {
+    SES_FREE,      // empty slot
+    SES_OPEN,      // its game is being played, or was less than the session gap ago
+    SES_ASKING,    // ended; the popup asks whether to save it
+    SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Not saved list
+    SES_SAVING,    // a save job is copying it
+    SES_SAVED,
+    SES_DISMISSED, // taken off the Not saved list; kept until its footage is gone so it's never found again
+};
+
+struct Session {
+    u32          id;
+    SessionState state;
+    bool         custom;           // a name typed by hand rather than a game
+    bool         prompted;         // the window was brought up for its popup
+    char         exe[64];          // the game (lower case); empty for a custom session
+    char         name[128];        // shown, and names the file: "Overwatch", "Stream with Sam"
+    i64          start_us, end_us; // the real start and end; while open, end is when the game was last seen
+    u32          job;              // the save job while SAVING
+    char         video[256];       // the saved file's name once SAVED
+    char         record[256];      // its record under save_dir, "2026\Data\<name>.session.txt"; empty = none
+};
+
+struct Sessions {
+    Session items[256];     // slot order means nothing; SES_FREE slots are empty
+    u32     next_id;
+    bool    loaded;         // sessions.txt and activity.tsv have been read
+    bool    game_known;     // the watcher has said what's being played since start
+    bool    dirty;          // sessions.txt needs writing
+    i64     written_us;     // when sessions.txt was last written
+    i64     woke_minute;    // the minute the window was last redrawn for the countdowns
+    u32     waiting_logged; // the session whose popup waits on a game in front (logged once)
+    // The Not saved list: its rows stay put while it's on screen, so a click never moves the others.
+    u32     rows[256];
+    i32     row_count;
+    i32     page;
+    i32     drawn_frame;
+};
+
+static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp the game being played
 
 struct App {
     Paths    paths;
