@@ -17,14 +17,64 @@ struct Gpu {
 
 static Gpu g_gpu;
 
-// Colours, from the dark theme the current window uses.
+// Colours. One dark theme: a near-black page, a darker sidebar, raised surfaces for cards and fields, and one
+// accent (clipback red) for the primary action, the selected item and recording. Blue is for links and focus only.
 static ImVec4 rgb(u32 c, f32 a = 1) { return ImVec4(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a); }
-static const u32 COL_BG = 0x111317, COL_PANEL = 0x1a1d23, COL_PANEL2 = 0x22262e, COL_LINE = 0x2e333d,
-                 COL_TEXT = 0xe8eaee, COL_DIM = 0x9097a3, COL_ACCENT = 0xe8333f, COL_BLUE = 0x4d8dff,
-                 COL_HOVER = 0x2b3039, COL_OK = 0x3fbf74;
+static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, a)); }
+static const u32 COL_BG = 0x101114,      // the page
+                 COL_SIDEBAR = 0x0b0c0e, // the navigation column
+                 COL_PANEL = 0x18191d,   // cards, the timeline, popups
+                 COL_PANEL2 = 0x222429,  // fields, secondary buttons
+                 COL_HOVER = 0x2c2f35,   // anything under the mouse
+                 COL_LINE = 0x2a2c32,    // hairlines
+                 COL_TEXT = 0xeceef1, COL_DIM = 0x8e939c, COL_FAINT = 0x5d626b,
+                 COL_ACCENT = 0xf0434f, COL_ACCENT_HOVER = 0xff5b66, COL_ACCENT_SOFT = 0x3a1c20,
+                 COL_BLUE = 0x5b9cff, COL_OK = 0x3fbf74, COL_WARN = 0xe8a33d;
 
-static ImFont *g_font, *g_font_bold, *g_font_big;
+// Fonts: Segoe UI with the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*).
+// g_font 14 px, g_font_bold 14 px semibold, g_font_small 12.5 px, g_font_big 18 px semibold (card and dialog
+// titles), g_font_title 26 px semibold (screen titles), g_font_icon 18 px icons alone (icon buttons).
+static ImFont *g_font, *g_font_bold, *g_font_small, *g_font_big, *g_font_title, *g_font_icon;
 static f32 g_dpi_scale = 1;
+
+// Segoe Fluent Icons code points, as UTF-8
+#define ICON_LIBRARY  "\xEE\xA3\xB1" // E8F1
+#define ICON_TIMELINE "\xEE\xA0\x9C" // E81C history
+#define ICON_SETTINGS "\xEE\x9C\x93" // E713
+#define ICON_HELP     "\xEE\xA2\x97" // E897
+#define ICON_PLAY     "\xEE\x9D\xA8" // E768
+#define ICON_PAUSE    "\xEE\x9D\xA9" // E769
+#define ICON_RECORD   "\xEE\x9F\x88" // E7C8
+#define ICON_SEARCH   "\xEE\x9C\xA1" // E721
+#define ICON_SAVE     "\xEE\x9D\x8E" // E74E
+#define ICON_EDIT     "\xEE\x9C\x8F" // E70F
+#define ICON_DELETE   "\xEE\x9D\x8D" // E74D
+#define ICON_SHARE    "\xEE\x9C\xAD" // E72D
+#define ICON_FOLDER   "\xEE\xA2\xB7" // E8B7
+#define ICON_RENAME   "\xEE\xA2\xAC" // E8AC
+#define ICON_CLOSE    "\xEE\x9C\x91" // E711
+#define ICON_LEFT     "\xEE\x9D\xAB" // E76B chevron
+#define ICON_RIGHT    "\xEE\x9D\xAC" // E76C chevron
+#define ICON_BACK     "\xEE\x9C\xAB" // E72B arrow
+#define ICON_ZOOM_IN  "\xEE\xA2\xA3" // E8A3
+#define ICON_ZOOM_OUT "\xEE\x9C\x9F" // E71F
+#define ICON_ADD      "\xEE\x9C\x90" // E710
+#define ICON_MUTE     "\xEE\x9D\x8F" // E74F
+#define ICON_VOLUME   "\xEE\x9D\xA7" // E767
+#define ICON_CUT      "\xEE\xA3\x86" // E8C6
+#define ICON_MORE     "\xEE\x9C\x92" // E712
+#define ICON_COPY     "\xEE\xA3\x88" // E8C8
+#define ICON_CLOCK    "\xEE\xA0\xA3" // E823
+#define ICON_GAME     "\xEE\x9F\xBC" // E7FC
+#define ICON_MIC      "\xEE\x9C\xA0" // E720
+#define ICON_CHECK    "\xEE\x9C\xBE" // E73E
+#define ICON_KEYBOARD "\xEE\x9D\xA5" // E765
+#define ICON_STORAGE  "\xEE\xB6\xA2" // EDA2 hard drive
+#define ICON_VIDEO    "\xEE\x9C\x94" // E714
+#define ICON_POWER    "\xEE\x9F\xA8" // E7E8
+#define ICON_WARNING  "\xEE\x9E\xBA" // E7BA
+#define ICON_NOW      "\xEE\xA2\x93" // E893 skip to end
+#define ICON_FULLSCREEN "\xEE\x9D\x80" // E740
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
 
@@ -105,13 +155,40 @@ static void ui_load_fonts(f32 scale)
     snprintf(regular, sizeof regular, "%s\\Fonts\\segoeui.ttf", dir);
     snprintf(semibold, sizeof semibold, "%s\\Fonts\\seguisb.ttf", dir);
 
+    char icons[MAX_PATH * 3];
+    snprintf(icons, sizeof icons, "%s\\Fonts\\SegoeIcons.ttf", dir);
+    if (GetFileAttributesA(icons) == INVALID_FILE_ATTRIBUTES) // Windows 10: the older icon font has the same code points
+        snprintf(icons, sizeof icons, "%s\\Fonts\\segmdl2.ttf", dir);
+
     static const ImWchar ranges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0x2190, 0x2193, 0x25CF, 0x25CF, 0}; // Latin-1, dashes, arrows, ●
+    static const ImWchar icon_ranges[] = {0xE700, 0xF8FF, 0};
     ImFontConfig cfg;
     cfg.OversampleH = 2;
-    g_font = io.Fonts->AddFontFromFileTTF(regular, 15 * scale, &cfg, ranges);
-    g_font_bold = io.Fonts->AddFontFromFileTTF(semibold, 15 * scale, &cfg, ranges);
-    g_font_big = io.Fonts->AddFontFromFileTTF(semibold, 20 * scale, &cfg, ranges);
-    if (!g_font) g_font = g_font_bold = g_font_big = io.Fonts->AddFontDefault();
+    ImFontConfig merge;
+    merge.MergeMode = true;
+    merge.OversampleH = 2;
+    merge.PixelSnapH = true;
+    merge.GlyphOffset = ImVec2(0, 2 * scale); // the icons sit high next to Segoe UI's x-height
+    auto add = [&](const char *file, f32 px, f32 icon_px) {
+        ImFont *f = io.Fonts->AddFontFromFileTTF(file, px * scale, &cfg, ranges);
+        if (f) io.Fonts->AddFontFromFileTTF(icons, icon_px * scale, &merge, icon_ranges);
+        return f;
+    };
+    g_font = add(regular, 14, 14);
+    g_font_bold = add(semibold, 14, 14);
+    g_font_small = add(regular, 12.5f, 12.5f);
+    g_font_big = add(semibold, 18, 17);
+    g_font_title = add(semibold, 26, 22);
+    ImFontConfig alone;
+    alone.OversampleH = 2;
+    alone.PixelSnapH = true;
+    g_font_icon = io.Fonts->AddFontFromFileTTF(icons, 17 * scale, &alone, icon_ranges);
+    if (!g_font) g_font = io.Fonts->AddFontDefault();
+    if (!g_font_bold) g_font_bold = g_font;
+    if (!g_font_small) g_font_small = g_font;
+    if (!g_font_big) g_font_big = g_font_bold;
+    if (!g_font_title) g_font_title = g_font_big;
+    if (!g_font_icon) g_font_icon = g_font;
     io.Fonts->Build();
     ImGui_ImplDX11_InvalidateDeviceObjects(); // the font texture is remade on the next frame
 }
@@ -120,19 +197,30 @@ static void ui_style(f32 scale)
 {
     ImGuiStyle &s = ImGui::GetStyle();
     s = ImGuiStyle();
-    s.WindowRounding = 0;
-    s.FrameRounding = 6;
-    s.ChildRounding = 8;
-    s.PopupRounding = 6;
-    s.GrabRounding = 6;
-    s.FramePadding = ImVec2(10, 6);
-    s.ItemSpacing = ImVec2(8, 8);
-    s.WindowPadding = ImVec2(16, 12);
+    // No outlines anywhere: controls are told apart by fill, not by boxes.
+    s.WindowRounding = 10;
+    s.FrameRounding = 7;
+    s.ChildRounding = 10;
+    s.PopupRounding = 8;
+    s.GrabRounding = 7;
+    s.TabRounding = 7;
+    s.ScrollbarRounding = 7;
+    s.ScrollbarSize = 10;
+    s.GrabMinSize = 12;
+    s.FramePadding = ImVec2(12, 8);
+    s.ItemSpacing = ImVec2(10, 10);
+    s.ItemInnerSpacing = ImVec2(8, 6);
+    s.WindowPadding = ImVec2(20, 18);
+    s.PopupBorderSize = 0;
     s.WindowBorderSize = 0;
-    s.FrameBorderSize = 1;
+    s.ChildBorderSize = 0;
+    s.FrameBorderSize = 0;
+    s.SeparatorTextBorderSize = 1;
+    s.CellPadding = ImVec2(10, 7);
+    s.SelectableTextAlign = ImVec2(0, 0.5f);
     ImVec4 *c = s.Colors;
     c[ImGuiCol_WindowBg] = rgb(COL_BG);
-    c[ImGuiCol_ChildBg] = rgb(COL_PANEL);
+    c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
     c[ImGuiCol_PopupBg] = rgb(COL_PANEL);
     c[ImGuiCol_Border] = rgb(COL_LINE);
     c[ImGuiCol_Text] = rgb(COL_TEXT);
@@ -145,14 +233,23 @@ static void ui_style(f32 scale)
     c[ImGuiCol_ButtonActive] = rgb(COL_LINE);
     c[ImGuiCol_Header] = rgb(COL_PANEL2);
     c[ImGuiCol_HeaderHovered] = rgb(COL_HOVER);
-    c[ImGuiCol_HeaderActive] = rgb(COL_LINE);
-    c[ImGuiCol_CheckMark] = rgb(COL_BLUE);
-    c[ImGuiCol_SliderGrab] = rgb(COL_BLUE);
-    c[ImGuiCol_SliderGrabActive] = rgb(COL_BLUE);
+    c[ImGuiCol_HeaderActive] = rgb(COL_HOVER);
+    c[ImGuiCol_CheckMark] = rgb(COL_ACCENT);
+    c[ImGuiCol_SliderGrab] = rgb(COL_TEXT);
+    c[ImGuiCol_SliderGrabActive] = rgb(COL_TEXT);
     c[ImGuiCol_Separator] = rgb(COL_LINE);
-    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.55f);
-    c[ImGuiCol_ScrollbarBg] = rgb(COL_BG);
-    c[ImGuiCol_ScrollbarGrab] = rgb(COL_LINE);
+    c[ImGuiCol_TableHeaderBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_TableBorderLight] = rgb(COL_LINE);
+    c[ImGuiCol_TableBorderStrong] = rgb(COL_LINE);
+    c[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_TableRowBgAlt] = ImVec4(1, 1, 1, 0.02f);
+    c[ImGuiCol_TextSelectedBg] = rgb(COL_BLUE, 0.35f);
+    c[ImGuiCol_NavCursor] = rgb(COL_BLUE);
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.6f);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab] = rgb(COL_HOVER);
+    c[ImGuiCol_ScrollbarGrabHovered] = rgb(COL_FAINT);
+    c[ImGuiCol_ScrollbarGrabActive] = rgb(COL_DIM);
     s.ScaleAllSizes(scale);
 }
 
@@ -207,7 +304,7 @@ static bool ui_init()
     wc.hInstance = inst;
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.hCursor = LoadCursorW(0, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(0x11, 0x13, 0x17));
+    wc.hbrBackground = CreateSolidBrush(RGB(0x10, 0x11, 0x14));
     wc.lpszClassName = L"clipback.window";
     RegisterClassExW(&wc);
 
@@ -252,7 +349,224 @@ static void ui_show(Screen screen)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Screens, each in its own file. They can use everything above (theme colours, fonts, ui_wake).
+// Kit: the controls every screen is built from, so the screens look like one app. Rules they keep:
+// - No outlines. A control is a filled shape; the fill says what it is (accent = the main action, grey = an
+//   ordinary one, none = a quiet one that only shows a fill under the mouse).
+// - One accent (clipback red) per screen region at most: the primary button, the selected chip or nav item.
+// - Sizes never depend on state: a segmented control sizes every segment to the widest label, a button that
+//   changes its label is given a width.
+
+enum KitKind { KIT_SECONDARY, KIT_PRIMARY, KIT_GHOST, KIT_DANGER };
+
+static f32 kit_px(f32 v) { return v * g_dpi_scale; }
+
+// A text button. size 0 = fit the label.
+static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 size = ImVec2(0, 0), bool enabled = true)
+{
+    u32 bg = COL_PANEL2, hover = COL_HOVER, text = COL_TEXT;
+    f32 bg_a = 1;
+    switch (kind) {
+    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; text = 0xffffff; break;
+    case KIT_GHOST: bg_a = 0; break;
+    case KIT_DANGER: bg = COL_ACCENT_SOFT; hover = 0x4a2025; text = 0xff8a92; break;
+    default: break;
+    }
+    ImGui::PushStyleColor(ImGuiCol_Button, rgb(bg, bg_a));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(hover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(hover, 0.8f));
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(text));
+    if (kind == KIT_PRIMARY) ImGui::PushFont(g_font_bold);
+    if (!enabled) ImGui::BeginDisabled();
+    bool clicked = ImGui::Button(label, size);
+    if (!enabled) ImGui::EndDisabled();
+    if (kind == KIT_PRIMARY) ImGui::PopFont();
+    ImGui::PopStyleColor(4);
+    return clicked && enabled;
+}
+
+// A square button showing one icon (ICON_*). id must be unique in the window ("##play"). active draws it selected.
+static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT_GHOST, bool enabled = true,
+                            bool active = false, f32 size = 0)
+{
+    if (size <= 0) size = ImGui::GetFrameHeight();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    if (!enabled) ImGui::BeginDisabled();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size));
+    if (!enabled) ImGui::EndDisabled();
+    bool hot = enabled && ImGui::IsItemHovered(), held = hot && ImGui::IsItemActive();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 z(a.x + size, a.y + size);
+    u32 fill = 0, ink = COL_TEXT;
+    f32 fill_a = 1;
+    switch (kind) {
+    case KIT_PRIMARY: fill = hot ? COL_ACCENT_HOVER : COL_ACCENT; ink = 0xffffff; break;
+    case KIT_SECONDARY: fill = hot ? COL_HOVER : COL_PANEL2; break;
+    case KIT_DANGER: fill = hot ? 0x4a2025 : COL_ACCENT_SOFT; ink = 0xff8a92; break;
+    default:
+        if (active) fill = COL_HOVER;
+        else if (hot) fill = COL_PANEL2;
+        else fill_a = 0;
+        if (!active && !hot) ink = 0xc4c8cf;
+        break;
+    }
+    if (held) fill_a *= 0.8f;
+    if (fill_a > 0) dl->AddRectFilled(a, z, col32(fill, fill_a), ImGui::GetStyle().FrameRounding);
+    ImGui::PushFont(g_font_icon);
+    ImVec2 ts = ImGui::CalcTextSize(icon);
+    dl->AddText(ImVec2(floorf(a.x + (size - ts.x) / 2), floorf(a.y + (size - ts.y) / 2)), col32(ink, enabled ? 1 : 0.35f), icon);
+    ImGui::PopFont();
+    return clicked && enabled;
+}
+
+// A row of options sharing one rounded track; the chosen one is lifted. Every segment is as wide as the widest
+// label (or item_w), so nothing moves. Returns true when *sel changed.
+static bool kit_segmented(const char *id, const char *const *labels, i32 n, i32 *sel, f32 item_w = 0)
+{
+    ImGuiStyle &st = ImGui::GetStyle();
+    if (item_w <= 0)
+        for (i32 i = 0; i < n; i++) item_w = fmaxf(item_w, ImGui::CalcTextSize(labels[i]).x + 2 * st.FramePadding.x);
+    f32 h = ImGui::GetFrameHeight(), pad = kit_px(3);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, ImVec2(a.x + n * item_w + 2 * pad, a.y + h), col32(COL_PANEL2), st.FrameRounding);
+    bool changed = false;
+    ImGui::PushID(id);
+    for (i32 i = 0; i < n; i++) {
+        ImVec2 p(a.x + pad + i * item_w, a.y + pad);
+        ImGui::SetCursorScreenPos(p);
+        ImGui::PushID(i);
+        bool clicked = ImGui::InvisibleButton("##seg", ImVec2(item_w, h - 2 * pad));
+        bool hot = ImGui::IsItemHovered();
+        ImGui::PopID();
+        if (clicked && *sel != i) { *sel = i; changed = true; }
+        bool on = *sel == i;
+        if (on) dl->AddRectFilled(p, ImVec2(p.x + item_w, p.y + h - 2 * pad), col32(0x3a3d44), st.FrameRounding - 2);
+        else if (hot) dl->AddRectFilled(p, ImVec2(p.x + item_w, p.y + h - 2 * pad), col32(COL_HOVER), st.FrameRounding - 2);
+        ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+        dl->AddText(ImVec2(floorf(p.x + (item_w - ts.x) / 2), floorf(a.y + (h - ts.y) / 2)), col32(on || hot ? COL_TEXT : COL_DIM), labels[i]);
+    }
+    ImGui::PopID();
+    ImGui::SetCursorScreenPos(a);
+    ImGui::Dummy(ImVec2(n * item_w + 2 * pad, h));
+    return changed;
+}
+
+// A rounded filter pill. active = white with dark text. count is drawn after the label, dimmer. w 0 = fit.
+static bool kit_chip(const char *id_label, bool active, const char *count = 0, f32 w = 0)
+{
+    const char *end = ImGui::FindRenderedTextEnd(id_label);
+    ImVec2 ls = ImGui::CalcTextSize(id_label, end);
+    f32 gap = kit_px(8), padx = kit_px(14), h = ImGui::GetFrameHeight();
+    ImVec2 cs = count ? ImGui::CalcTextSize(count) : ImVec2(0, 0);
+    if (w <= 0) w = ls.x + (count ? gap + cs.x : 0) + 2 * padx;
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id_label, ImVec2(w, h));
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    u32 fill = active ? COL_TEXT : hot ? COL_HOVER : COL_PANEL2;
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(fill), h / 2);
+    f32 y = floorf(a.y + (h - ls.y) / 2);
+    dl->AddText(ImVec2(a.x + padx, y), col32(active ? COL_BG : COL_TEXT), id_label, end);
+    if (count) dl->AddText(ImVec2(a.x + w - padx - cs.x, y), col32(active ? 0x5d626b : COL_DIM), count);
+    return clicked;
+}
+
+// An on/off switch. Returns true when flipped.
+static bool kit_toggle(const char *id, bool *v)
+{
+    f32 h = kit_px(20), w = kit_px(36);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 fh = ImGui::GetFrameHeight();
+    a.y += (fh - h) / 2;
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y - (fh - h) / 2));
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, fh));
+    if (clicked) *v = !*v;
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(*v ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : (hot ? 0x45484f : 0x3a3d44)), h / 2);
+    f32 r = h / 2 - kit_px(3);
+    dl->AddCircleFilled(ImVec2(*v ? a.x + w - h / 2 : a.x + h / 2, a.y + h / 2), r, col32(0xffffff));
+    return clicked;
+}
+
+// A search field with a magnifier inside it.
+static bool kit_search(const char *id, char *buf, i32 cap, const char *hint, f32 w)
+{
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(36), ImGui::GetStyle().FramePadding.y));
+    ImGui::SetNextItemWidth(w);
+    bool changed = ImGui::InputTextWithHint(id, hint, buf, cap);
+    ImGui::PopStyleVar();
+    ImGui::PushFont(g_font_icon);
+    ImVec2 ts = ImGui::CalcTextSize(ICON_SEARCH);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + kit_px(12), floorf(a.y + (ImGui::GetFrameHeight() - ts.y) / 2) + kit_px(1)),
+                                        col32(COL_DIM), ICON_SEARCH);
+    ImGui::PopFont();
+    return changed;
+}
+
+// A raised panel. Everything between begin and end is drawn inside it, padded.
+static bool kit_card_begin(const char *id, ImVec2 size, f32 pad = 18)
+{
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, rgb(COL_PANEL));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(pad), kit_px(pad)));
+    bool open = ImGui::BeginChild(id, size, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+    return open;
+}
+static void kit_card_end()
+{
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
+// Text helpers
+static void kit_title(const char *text)
+{
+    ImGui::PushFont(g_font_title);
+    ImGui::TextUnformatted(text);
+    ImGui::PopFont();
+}
+static void kit_heading(const char *text) // a card or section title
+{
+    ImGui::PushFont(g_font_big);
+    ImGui::TextUnformatted(text);
+    ImGui::PopFont();
+}
+static void kit_label(const char *text) // a small dim caption above a group: "SOUND", "SELECTION"
+{
+    ImGui::PushFont(g_font_small);
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_FAINT));
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+}
+static void kit_dim(const char *fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
+    ImGui::TextUnformatted(buf);
+    ImGui::PopStyleColor();
+}
+static void kit_dim_wrapped(const char *text) // one short sentence of explanation; never a paragraph
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+// Places the next item so it ends at the right edge of the content region (w = its width).
+static void kit_align_right(f32 w)
+{
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - w);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Screens, each in its own file. They can use everything above (theme colours, fonts, ui_wake, the kit).
 
 #include "sessions.cpp"
 #include "player.cpp"
@@ -346,46 +660,95 @@ static void help_window()
     g_app.ui.help_open = false;
 }
 
-static bool header_tab(const char *label, Screen screen)
+// One navigation row in the sidebar: an icon and a label, lifted with an accent bar when it's the current screen.
+static bool nav_item(const char *icon, const char *label, bool active)
 {
-    bool active = g_app.ui.screen == screen;
-    ImGui::PushStyleColor(ImGuiCol_Button, active ? rgb(COL_PANEL2) : ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Text, active ? rgb(COL_TEXT) : rgb(COL_DIM));
-    bool clicked = ImGui::Button(label);
-    ImGui::PopStyleColor(2);
-    if (clicked) g_app.ui.screen = screen;
+    f32 w = ImGui::GetContentRegionAvail().x, h = kit_px(40);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(label, ImVec2(w, h));
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (active || hot) dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(active ? COL_PANEL2 : COL_PANEL), kit_px(8));
+    if (active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(10)), ImVec2(a.x + kit_px(3), a.y + h - kit_px(10)), col32(COL_ACCENT), kit_px(2));
+    u32 ink = active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM;
+    ImGui::PushFont(g_font_icon);
+    ImVec2 is = ImGui::CalcTextSize(icon);
+    dl->AddText(ImVec2(a.x + kit_px(16), floorf(a.y + (h - is.y) / 2)), col32(active ? COL_ACCENT : ink), icon);
+    ImGui::PopFont();
+    ImGui::PushFont(active ? g_font_bold : g_font);
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(a.x + kit_px(48), floorf(a.y + (h - ts.y) / 2)), col32(ink), label);
+    ImGui::PopFont();
     return clicked;
 }
 
-static void header()
+// The left column: the name, the three screens, and at the bottom what the recorder is doing with its
+// Pause / Resume, then Help. Fixed width; the status card keeps its size whatever it says.
+static void sidebar(f32 w)
 {
     Recorder &rec = g_app.recorder;
-    ImGui::PushFont(g_font_big);
-    ImGui::TextUnformatted("clipback");
-    ImGui::PopFont();
-    ImGui::SameLine(0, 24 * g_dpi_scale);
-    header_tab("Library", SCREEN_LIBRARY);
-    ImGui::SameLine();
-    header_tab("Timeline", SCREEN_TIMELINE);
-    ImGui::SameLine();
-    header_tab("Options", SCREEN_OPTIONS);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, rgb(COL_SIDEBAR));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(12), kit_px(18)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0);
+    ImGui::BeginChild("##sidebar", ImVec2(w, 0), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
 
-    // Right side, laid out from fixed widths so nothing moves when the status text changes
-    f32 help_w = 70 * g_dpi_scale, pause_w = 90 * g_dpi_scale, status_w = 220 * g_dpi_scale;
-    f32 right = ImGui::GetWindowContentRegionMax().x;
-    ImGui::SameLine(right - help_w - pause_w - status_w - 2 * ImGui::GetStyle().ItemSpacing.x);
+    // The name, with the record mark
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 r = kit_px(9);
+    ImVec2 c(a.x + kit_px(16) + r - kit_px(2), a.y + kit_px(16));
+    dl->AddCircleFilled(c, r, col32(COL_ACCENT));
+    dl->AddCircleFilled(c, r * 0.42f, col32(COL_SIDEBAR));
+    ImGui::PushFont(g_font_big);
+    dl->AddText(ImVec2(a.x + kit_px(48), floorf(c.y - ImGui::GetFontSize() / 2)), col32(COL_TEXT), "clipback");
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(w, kit_px(32)));
+    ImGui::Dummy(ImVec2(0, kit_px(14)));
+
+    Screen s = g_app.ui.screen;
+    if (nav_item(ICON_LIBRARY, "Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR)) g_app.ui.screen = SCREEN_LIBRARY;
+    if (nav_item(ICON_TIMELINE, "Timeline", s == SCREEN_TIMELINE)) g_app.ui.screen = SCREEN_TIMELINE;
+    if (nav_item(ICON_SETTINGS, "Options", s == SCREEN_OPTIONS)) g_app.ui.screen = SCREEN_OPTIONS;
+
+    // Bottom: status card, then Help
+    f32 card_h = kit_px(108), help_h = kit_px(40);
+    f32 bottom = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y;
+    ImGui::SetCursorPosY(bottom - help_h - card_h - kit_px(8));
     const char *status = rec.paused ? "Paused" : rec.recording ? "Recording" : "Not recording";
-    ImVec4 dot = rec.paused ? rgb(COL_DIM) : rec.recording ? rgb(COL_ACCENT) : rgb(COL_DIM);
-    ImGui::PushStyleColor(ImGuiCol_Text, dot);
-    ImGui::TextUnformatted("\xE2\x97\x8F"); // ●
+    char detail[64] = "";
+    if (rec.paused) snprintf(detail, sizeof detail, "Nothing is being kept");
+    else if (rec.recording && rec.recording_since_us) {
+        SYSTEMTIME t = local_time(rec.recording_since_us);
+        snprintf(detail, sizeof detail, "Since %d:%02d", t.wHour, t.wMinute);
+    } else if (rec.last_error.s[0]) snprintf(detail, sizeof detail, "See Options, Recording");
+    else snprintf(detail, sizeof detail, "Starting");
+    if (kit_card_begin("##status", ImVec2(0, card_h), 14)) {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        ImDrawList *cd = ImGui::GetWindowDrawList();
+        u32 dot = rec.paused ? COL_WARN : rec.recording ? COL_ACCENT : COL_FAINT;
+        f32 fs = ImGui::GetFontSize();
+        cd->AddCircleFilled(ImVec2(p.x + kit_px(5), p.y + fs / 2 + kit_px(1)), kit_px(4.5f), col32(dot));
+        if (rec.recording && !rec.paused)
+            cd->AddCircle(ImVec2(p.x + kit_px(5), p.y + fs / 2 + kit_px(1)), kit_px(8), col32(COL_ACCENT, 0.35f), 0, kit_px(1.5f));
+        ImGui::SetCursorScreenPos(ImVec2(p.x + kit_px(18), p.y));
+        ImGui::PushFont(g_font_bold);
+        ImGui::TextUnformatted(status);
+        ImGui::PopFont();
+        ImGui::SetCursorScreenPos(ImVec2(p.x + kit_px(18), ImGui::GetCursorScreenPos().y - kit_px(6)));
+        ImGui::PushFont(g_font_small);
+        kit_dim("%s", detail);
+        ImGui::PopFont();
+        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - kit_px(14) - ImGui::GetFrameHeight());
+        if (kit_button(rec.paused ? ICON_RECORD "  Resume" : ICON_PAUSE "  Pause", KIT_SECONDARY, ImVec2(-1, 0)))
+            event_post_text(EV_COMMAND, "toggle");
+    }
+    kit_card_end();
+    ImGui::SetCursorPosY(bottom - help_h);
+    if (nav_item(ICON_HELP, "Help", false)) g_app.ui.help_open = true;
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
-    ImGui::SameLine();
-    ImGui::TextUnformatted(status);
-    ImGui::SameLine(right - help_w - pause_w - ImGui::GetStyle().ItemSpacing.x);
-    if (ImGui::Button(rec.paused ? "Resume" : "Pause", ImVec2(pause_w, 0))) event_post_text(EV_COMMAND, "toggle");
-    ImGui::SameLine(right - help_w);
-    if (ImGui::Button("Help", ImVec2(help_w, 0))) g_app.ui.help_open = true;
-    ImGui::Separator();
 }
 
 static void ui_frame()
@@ -402,10 +765,19 @@ static void ui_frame()
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
     ImGui::Begin("main", 0,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
-    header();
+    ImGui::PopStyleVar(2);
+    sidebar(kit_px(212));
+    ImGui::SameLine(0, 0);
+    // The screen: padded content area right of the sidebar. Screens lay out inside it with GetContentRegionAvail.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(28), kit_px(24)));
+    ImGui::BeginChild("##screen", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
     screens_left_behind(); // editor.cpp: closes the player of a screen that isn't shown any more
     switch (g_app.ui.screen) {
     case SCREEN_LIBRARY: screen_library(); break;
@@ -413,6 +785,7 @@ static void ui_frame()
     case SCREEN_EDITOR: screen_editor(); break;
     case SCREEN_OPTIONS: screen_options(); break;
     }
+    ImGui::EndChild();
     help_window();
     sessions_popup(); // "Save that session?" when a session has just ended
     ImGui::End();

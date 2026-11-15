@@ -523,7 +523,6 @@ static u32 tl_game_colour(const char *exe)
     return cols[h % COUNT(cols)];
 }
 
-static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, a)); }
 
 static i64 tl_max_span(const BufferIdx &b, i64 now)
 {
