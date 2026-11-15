@@ -84,6 +84,11 @@ it's opened.
 **Order** (each Edge page is removed once its replacement is done; until then both work):
 1. Clips: the game chips, a fixed-size paged grid of cards with hover-scrub thumbnails (the sprites clipback already
    makes), the player, copy, folder and delete actions. Status line and pause.
+   **Mostly done** (`win/`, branch `win-ui`): chips, paged grid, hover-scrub, player, copy, folder, status line,
+   pause, Save 30s, search, single instance. Measured: visible in ~220–270 ms; ~72 MB working set (~27 MB
+   private) with the clips open. Playback runs in a child `clipback-ui --player` process (~250 MB while a clip
+   plays, all freed on close): in-process, the GPU driver and decoder kept ~90 MB after closing. Still to do:
+   delete, and the Edge clips page's removal. Options/Edit open the web pages for now.
 2. Options: apps and tracks (New apps first, right-click for the file location), hotkeys, recording (monitor
    picker, per-game bitrate, advanced) and storage.
 3. Editor: trim, keyframed zoom, per-track volume and size presets, with GPU scrubbing from `Player`. Rendering
@@ -91,7 +96,8 @@ it's opened.
 4. Remove the Edge code: `open_window`, `keep_window_icon`, the browser-PID tracking and `ui/`.
 
 **Targets:** the window appears in under 300 ms. It uses well under 100 MB while open and nothing once closed. No
-WebView2, Edge or extra runtime: a self-contained exe.
+WebView2, Edge or extra runtime: a self-contained exe. (For now `win/build.ps1` makes a framework-dependent exe like
+Compress for Discord, 0.7 MB; `-SelfContained` bundles the runtime. Decide which to ship with the installer.)
 
 ## Encoder auto-detect (next, alongside)
 Recording and editor exports are NVIDIA-only today (`*_nvenc`; `render.rs` hard-codes `h264_nvenc`). Plan:
