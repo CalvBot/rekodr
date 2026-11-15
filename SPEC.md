@@ -8,13 +8,18 @@ code carries over.
 ## The three ways recordings are used
 
 ### 1. Whole sessions
-Keep a whole gaming session from start to finish.
+Keep a whole session from start to finish.
 
-- **A session** is a stretch of playing one game. It starts when the game becomes the game being played (see
-  "Which game"). It ends when the game has been gone for longer than the **session gap** (setting, default 5 min).
-  If the same game comes back within the gap, for example after a crash or restart, it is still the same session.
-- When a session ends and lasted at least the **minimum session length** (setting, default 15 min), a small popup
-  asks:
+- **A session** is a named stretch of time: a start, an end and what it was of. That can be a game ("Overwatch")
+  or a custom name ("Stream with Sam", "Tax return"). Sessions are created two ways:
+  - **Automatically, for games only.** A game session starts when the game becomes the game being played (see
+    "Which game"). It ends when the game has been gone for longer than the **session gap** (setting, default
+    5 min). If the same game comes back within the gap, for example after a crash or restart, it is still the
+    same session.
+  - **By hand,** from the timeline or the library: pick in and out points, then pick a game or type a name.
+    A session's start, end and name can be changed later the same way, including an automatic one.
+- When an automatic session ends and lasted at least the **minimum session length** (setting, default 15 min), a
+  small popup asks:
   `Overwatch session, 2 h 14 min (19:02 to 21:16). Save it?` **Save** · **Not now**
   - The popup appears in the corner of the screen and never takes the keyboard focus. If a game is in front, it
     waits until it isn't.
@@ -22,27 +27,31 @@ Keep a whole gaming session from start to finish.
     session will stay in the buffer before it's gone, and it can still be saved from there.
   - Per game: *Ask* (default), *Always save* or *Never*.
 - **Save** copies the buffer into one MP4 with every audio track. The video isn't re-encoded, so the only cost is
-  the disk copy. It goes to `<Videos>\Sessions\<year>\Overwatch 2026-11-15 19-02.mp4` and runs as a background job
-  with progress. Buffer segments being copied are not deleted until the copy is done.
+  the disk copy. It goes to `<year>\Sessions\Overwatch 2026-11-15 19-02.mp4` (see Folders) and runs as a
+  background job with progress. Buffer segments being copied are not deleted until the copy is done.
+- **Sessions longer than the buffer** (24 h by default) can only keep what's still in the buffer. The session's
+  record still holds its real start and end, which can be set by hand, so the library shows how long it really
+  lasted, and which part has footage.
 
 ### 2. Clips from the buffer
 - **Quick save:** a hotkey, Stream Deck key or tray item saves the last *N* (30 s, 2 min, 1 h, any length) into
-  `<Videos>\Clips\<year>\`, as today. The video is stream-copied, so a save takes seconds.
+  `<year>\Clips\`. The video is stream-copied, so a save takes seconds.
 - **Timeline:** a hotkey, Stream Deck key (`clipback timeline`) or tray item opens the window on the buffer timeline:
   - It shows the last hour, and zooms out to the whole buffer.
   - **Rows:** thumbnails, a band per game played, and one row per audio stream showing when each app made sound.
-  - Drag to select a range and play to check it. **Save** writes it to `Clips\<year>` with every audio track. **Edit**
-    opens the range in the editor without saving first.
+  - Drag to select a range and play to check it. **Save** writes it to `<year>\Clips` with every audio track.
+    **Edit** opens the range in the editor without saving first. **Session** makes it a session (pick a game or
+    type a name).
 - Thumbnails come from each 2 s segment's first keyframe. They are made only when the timeline needs them, at the
   zoom level shown, and cached in the buffer so they are deleted with their footage.
 
 ### 3. Library, editing and sharing
-- **Library:** clips and sessions, newest first, filtered by game, with search. It's a fixed-size paged grid with
-  hover-scrub and a player.
+- **Library:** clips and sessions, newest first, filtered by game or session name, with search. It's a fixed-size
+  paged grid with hover-scrub and a player.
 - **Edits never change the original.** An edit is a small record: trim in/out, zoom keyframes, per-track volume and
-  mute. It's saved automatically and reopens with the clip.
+  mute. It's saved automatically in the year's `Data` folder and reopens with the clip.
 - **Two ways out of the editor:**
-  - **Keep:** writes the edited result as a new clip in `Clips\<year>` at original quality. Trims are stream-copied
+  - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. Trims are stream-copied
     where possible. A zoom forces a re-encode, done at the recording's quality. Every track is kept, and the Mix
     track is rebuilt from the volumes. Sessions are cut into clips this way.
   - **Share:** encodes a small copy (Discord 10 MB, 50 MB, or a custom size) with one stereo mix. It goes to
@@ -53,16 +62,26 @@ Keep a whole gaming session from start to finish.
 
 ## Folders
 
+Everything clipback saves goes under one folder (setting, default `<Videos>\Clips`), with a folder per year:
+
 ```
-<Videos>\Clips\<year>\<Game> 2026-11-15 21-04-10.mp4     clips (quick saves, timeline saves, Keep)
-<Videos>\Sessions\<year>\<Game> 2026-11-15 19-02.mp4     whole sessions
-<buffer>\                                                the rolling buffer (format below)
-%APPDATA%\clipback\config                                settings
-%LOCALAPPDATA%\clipback\                                 log, thumbnails, edit records
-%TEMP%\clipback\share\                                   share copies
+<Videos>\Clips\2026\Clips\<Game> 2026-11-15 21-04-10.mp4    clips (quick saves, timeline saves, Keep)
+<Videos>\Clips\2026\Sessions\<Name> 2026-11-15 19-02.mp4    sessions
+<Videos>\Clips\2026\Data\                                   everything that isn't video, for that year
+<buffer>\                                                   the rolling buffer (format below)
+%APPDATA%\clipback\config                                   settings
+%LOCALAPPDATA%\clipback\                                    log, thumbnail cache
+%TEMP%\clipback\share\                                      share copies
 ```
 
-Every file is named after the game played most in it, or `Desktop`. Files are tagged in the MP4:
+`Data` holds one small text file per clip or session, named after the video:
+- **Edit records:** trim, zoom keyframes, track volumes.
+- **Session records:** name, whether it's a game or custom, the real start and end, and which part has footage.
+  This includes sessions not saved yet, so a session can be defined before, or without, saving its video.
+
+Moving a year folder keeps its videos and their records together. The year is the year the footage starts in.
+
+Clips are named after the game played most in them, or `Desktop`. Sessions are named after the session. Files are tagged in the MP4:
 - **Genre:** the game (Explorer can group by it).
 - **Title:** `Overwatch · 15 Nov 2026 21:04`.
 - **Description:** every game in the file.
@@ -84,7 +103,10 @@ This works today and stays the same, including the on-disk buffer format, so swi
 - **Which game:** every 2 s, the game being played is the game whose window is in front. Failing that, it's the last
   one played if it's still running, then any running game, then the desktop. Changes are logged to
   `buffer\activity.tsv`. This log drives file names, tags, sessions and per-game bitrate.
-- **Buffer cap:** the oldest footage is deleted once the buffer passes its size cap.
+- **Buffer length:** the buffer keeps the last 24 hours (setting). Nobody needs an automatic session longer than
+  that, and longer ones can still be recorded by hand (see Sessions). Footage older than that is deleted. A
+  disk-space floor (setting, default 50 GB free) deletes the oldest footage early rather than fill the drive. 24 h
+  at 20 Mbps is about 216 GB.
 - **Track layout in every saved file:**
   1. Mix
   2. Mic
@@ -111,7 +133,8 @@ struct App {
     AudioState audio;         // live streams: app, kind, start time, last sound
     BufferIdx  buffer;        // video runs/segments and audio streams on disk, total size, oldest time
     Activity   activity;      // game-over-time (from activity.tsv) and the game being played now
-    Session    sessions[256]; // game, start, end, state: open / ended (asking) / saving / saved / expired
+    Session    sessions[256]; // name, game or custom, start, end, footage range,
+                              // state: open / ended (asking) / saving / saved / expired
     Library    library;       // clips and sessions on disk, with probed info and game
     Job        jobs[32];      // kind, progress, ffmpeg child, result path or error
     AppInfo    apps[512];     // known apps: exe, category, icon, last heard
@@ -158,7 +181,7 @@ One window with a header (status, pause, Help, Options):
   - recording (monitor, fps, codec, encoder, bitrate, per-game bitrate, advanced, showing only what the encoder in
     use supports)
   - sessions (gap, minimum length, per-game ask/always/never)
-  - storage (buffer folder and cap, Videos folder, share retention)
+  - storage (buffer folder, buffer length and disk-space floor, save folder, share retention)
   - start with Windows
 - **Help (F1):** every shortcut and command. This is the only place shortcuts are explained.
 
@@ -192,13 +215,8 @@ One window with a header (status, pause, Help, Options):
 - Recording more than one monitor at once.
 
 ## Open questions
-1. Sessions with no game: never, or offer desktop sessions too?
-2. Edit records: in `%LOCALAPPDATA%` keyed by file (lost if the file is moved outside clipback) or a sidecar file
-   next to the clip (survives moves, but adds files to the folder)?
-3. When a session is waiting for an answer, should its footage be protected from the buffer cap? If so, for how
-   long?
-4. Cuts snap to the 2 s keyframes today. Should they be frame-exact, by re-encoding only the first part?
-5. Settings file format: keep `config.toml` (needs a TOML parser) or switch to a plain `key = value` file
+1. Cuts snap to the 2 s keyframes today. Should they be frame-exact, by re-encoding only the first part?
+2. Settings file format: keep `config.toml` (needs a TOML parser) or switch to a plain `key = value` file
    (migrated once)?
-6. Audio: keep one ffmpeg per stream for Opus, or link libopus and write the segments directly?
-7. Which files lifelog and clipback share, given lifelog is being rewritten too.
+3. Audio: keep one ffmpeg per stream for Opus, or link libopus and write the segments directly?
+4. Which files lifelog and clipback share, given lifelog is being rewritten too.
