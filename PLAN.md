@@ -88,9 +88,12 @@ it's opened.
    pause, Save 30s, search, single instance. Measured: visible in ~220–270 ms; ~72 MB working set (~27 MB
    private) with the clips open. Playback runs in a child `clipback-ui --player` process (~250 MB while a clip
    plays, all freed on close): in-process, the GPU driver and decoder kept ~90 MB after closing. Still to do:
-   delete, and the Edge clips page's removal. Options/Edit open the web pages for now.
+   delete, and the Edge clips page's removal. Edit opens the web page for now.
 2. Options: apps and tracks (New apps first, right-click for the file location), hotkeys, recording (monitor
    picker, per-game bitrate, advanced) and storage.
+   **Done** (branch `win-options`): a screen inside the clips window (header Options, `clipback-ui --options`, or
+   the tray's Options, which now starts the exe). Same features and saving as `ui/options.html`, plus a native
+   folder picker. Still to do: remove `ui/options.html` once the installer ships the exe.
 3. Editor: trim, keyframed zoom, per-track volume and size presets, with GPU scrubbing from `Player`. Rendering
    stays in `clipback.exe` (`/api/render`).
 4. Remove the Edge code: `open_window`, `keep_window_icon`, the browser-PID tracking and `ui/`.

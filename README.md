@@ -67,7 +67,8 @@ A small local web UI (127.0.0.1:47820, in an Edge app window):
 `win/` holds `clipback-ui.exe`, the native replacement for the Edge window (C# .NET 9 WinForms, see PLAN.md).
 The clips screen works: status line and pause, Save 30s, search, game chips, a paged grid with hover-scrub, and a
 player (Media Foundation, run in a short-lived `clipback-ui --player` child process so its graphics memory is
-freed when the player closes). Options and Edit still open the web pages in the browser for now.
+freed when the player closes). Options is a screen in the same window (`clipback-ui --options` opens on it). Edit
+still opens the web page in the browser for now.
 ```
 win\build.ps1                 # publish to win\dist\clipback-ui.exe (needs the .NET 9 SDK)
 win\build.ps1 -SelfContained  # bundle the runtime instead (bigger exe, no .NET install needed)
