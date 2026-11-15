@@ -52,6 +52,9 @@
         <option value="h264">H.264 — opens everywhere (Premiere, Discord)</option>
         <option value="hevc">HEVC — smaller, needs HEVC support</option>
         <option value="av1">AV1 — smallest, not for Premiere</option></select></span>
+      <label>Encoder</label><span><select id="encoder">
+        <option value="auto">Auto</option><option value="nvenc">NVIDIA NVENC</option><option value="amf">AMD AMF</option>
+        <option value="qsv">Intel Quick Sync</option><option value="cpu">CPU — costs game frames</option></select></span>
       <label>Show the mouse</label><span><input type="checkbox" id="draw_mouse"></span>
       <label>Advanced</label><span><input type="checkbox" id="advanced"> <span class="dim small">use the encoder settings below (off = defaults)</span></span>
     </div>
@@ -112,13 +115,14 @@ async function loadSettings() {
   $("cfgPath").textContent = s.path;
   for (const k of ["clips_dir", "buffer_dir", "max_buffer_gb", "start_with_windows"]) set(k, cfg[k]);
   await loadMonitors(cfg.video.output_idx);
+  await loadEncoders();
   for (const k of VIDEO_KEYS) set(k, cfg.video[k]);
   set("mic", cfg.audio.mic);
   advState();
   hotkeyRows();
   hoursText();
 }
-const VIDEO_KEYS = ["output_idx", "fps", "bitrate_mbps", "codec", "draw_mouse", "advanced", "preset", "rate_control", "cq", "peak_factor", "spatial_aq"];
+const VIDEO_KEYS = ["output_idx", "fps", "bitrate_mbps", "codec", "encoder", "draw_mouse", "advanced", "preset", "rate_control", "cq", "peak_factor", "spatial_aq"];
 
 async function loadMonitors(current) {
   const list = await api("/api/monitors").catch(() => []);
@@ -130,6 +134,24 @@ async function loadMonitors(current) {
   }
   if (!list.some(m => m.idx === current)) sel.append(h("option", { value: current }, `${current + 1}. not connected`));
 }
+
+// Labels each encoder with what the test encodes found for the chosen format.
+let foundEncoders = null;
+async function loadEncoders() {
+  foundEncoders = await api("/api/encoders").catch(() => null);
+  encoderLabels();
+}
+function encoderLabels() {
+  if (!foundEncoders) return;
+  const works = foundEncoders.detected[$("codec").value] || [];
+  const names = { nvenc: "NVIDIA NVENC", amf: "AMD AMF", qsv: "Intel Quick Sync", cpu: "CPU" };
+  for (const o of $("encoder").options) {
+    o.textContent = o.textContent.replace(/ \(.*\)$/, "");
+    if (o.value === "auto") o.textContent += works.length ? ` (${names[works[0]]})` : " (none found)";
+    else if (!works.includes(o.value)) o.textContent += " (not found)";
+  }
+}
+$("codec").onchange = encoderLabels;
 
 // The advanced fields stay on screen (greyed out) so nothing moves when the box is ticked.
 function advState() {
