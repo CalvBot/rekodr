@@ -381,14 +381,13 @@ static void diamond(ImDrawList *dl, ImVec2 c, f32 r, u32 col)
     dl->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), col);
 }
 
-// The timeline: the strip across the whole file, dimmed outside the trim, with handles for the trim, the playhead
-// and the zoom keys.
+// The timeline: the strip across the whole file, dimmed outside the trim, with accent handles for the trim, the
+// playhead and the zoom keys.
 static void ed_timeline(f32 w, f32 h)
 {
     Editor &ed = g_app.editor;
     Library &lib = g_app.library;
     Player &p = ed.player;
-    f32 s = g_dpi_scale;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
     f64 dur = ed_duration();
@@ -400,7 +399,7 @@ static void ed_timeline(f32 w, f32 h)
     auto x_of = [&](f64 t) { return a.x + (dur > 0 ? (f32)(t / dur) * w : 0); };
     f32 in_x = x_of(ed.edit.in_s), out_x = x_of(ed_out());
     if (ImGui::IsItemActivated()) {
-        f32 grab = 8 * s;
+        f32 grab = kit_px(10);
         if (fabsf(mx - out_x) < grab) ed.drag = 2;
         else if (fabsf(mx - in_x) < grab) ed.drag = 1;
         else ed.drag = 3;
@@ -429,72 +428,75 @@ static void ed_timeline(f32 w, f32 h)
         player_seek(&p, p.pos);
     }
 
-    f32 round = 6 * s;
-    dl->AddRectFilled(a, b, ImGui::GetColorU32(rgb(COL_PANEL2)), round);
+    f32 round = kit_px(8);
+    dl->AddRectFilled(a, b, col32(COL_PANEL2), round);
     if (lib_want_strip(ed.item))
         dl->AddImageRounded((ImTextureID)(intptr_t)lib.strip, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
-    // Outside the trim, dimmed.
     in_x = x_of(ed.edit.in_s);
     out_x = x_of(ed_out());
-    if (in_x > a.x) dl->AddRectFilled(a, ImVec2(in_x, b.y), IM_COL32(0, 0, 0, 170), round, ImDrawFlags_RoundCornersLeft);
-    if (out_x < b.x) dl->AddRectFilled(ImVec2(out_x, a.y), b, IM_COL32(0, 0, 0, 170), round, ImDrawFlags_RoundCornersRight);
-    u32 handle = ImGui::GetColorU32(rgb(COL_TEXT));
-    f32 hw = 4 * s;
-    dl->AddRect(ImVec2(in_x, a.y), ImVec2(out_x, b.y), handle, 0, 0, 2 * s);
-    dl->AddRectFilled(ImVec2(in_x, a.y), ImVec2(in_x + hw, b.y), handle);
-    dl->AddRectFilled(ImVec2(out_x - hw, a.y), ImVec2(out_x, b.y), handle);
-    // Zoom keys along the top.
-    for (i32 k = 0; k < ed.edit.key_count; k++)
-    {
-        // Kept inside the strip so a key at the very start or end is still seen whole.
-        f32 kx = x_of(ed.edit.keys[k].t), r = 6 * s;
+    // Outside the trim, darkened.
+    if (in_x > a.x) dl->AddRectFilled(a, ImVec2(in_x, b.y), IM_COL32(0, 0, 0, 185), round, ImDrawFlags_RoundCornersLeft);
+    if (out_x < b.x) dl->AddRectFilled(ImVec2(out_x, a.y), b, IM_COL32(0, 0, 0, 185), round, ImDrawFlags_RoundCornersRight);
+    // The kept part: an accent frame with a grip at each end.
+    u32 acc = col32(ed.drag == 1 || ed.drag == 2 ? COL_ACCENT_HOVER : COL_ACCENT);
+    f32 hw = kit_px(7), bw = kit_px(2);
+    dl->AddRectFilled(ImVec2(in_x, a.y), ImVec2(out_x, a.y + bw), acc);
+    dl->AddRectFilled(ImVec2(in_x, b.y - bw), ImVec2(out_x, b.y), acc);
+    dl->AddRectFilled(ImVec2(in_x, a.y), ImVec2(in_x + hw, b.y), acc, kit_px(4), ImDrawFlags_RoundCornersLeft);
+    dl->AddRectFilled(ImVec2(out_x - hw, a.y), ImVec2(out_x, b.y), acc, kit_px(4), ImDrawFlags_RoundCornersRight);
+    f32 gh = kit_px(8), cy = (a.y + b.y) / 2;
+    dl->AddRectFilled(ImVec2(in_x + hw / 2 - kit_px(1), cy - gh), ImVec2(in_x + hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
+    dl->AddRectFilled(ImVec2(out_x - hw / 2 - kit_px(1), cy - gh), ImVec2(out_x - hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
+    // Zoom keys along the top, kept inside the strip so a key at the very start or end is still seen whole.
+    for (i32 k = 0; k < ed.edit.key_count; k++) {
+        f32 kx = x_of(ed.edit.keys[k].t), r = kit_px(6);
         kx = kx < a.x + r ? a.x + r : kx > b.x - r ? b.x - r : kx;
-        diamond(dl, ImVec2(kx, a.y + 9 * s), r, ImGui::GetColorU32(rgb(COL_BLUE)));
+        diamond(dl, ImVec2(kx, a.y + kit_px(11)), r + kit_px(1.5f), IM_COL32(0, 0, 0, 160));
+        diamond(dl, ImVec2(kx, a.y + kit_px(11)), r, col32(COL_BLUE));
     }
+    // The playhead: a white line with a knob above the strip.
     f32 px = x_of(p.pos);
-    dl->AddRectFilled(ImVec2(px - 1 * s, a.y - 3 * s), ImVec2(px + 1 * s, b.y + 3 * s), ImGui::GetColorU32(rgb(COL_ACCENT)));
+    dl->AddRectFilled(ImVec2(px - kit_px(1), a.y - kit_px(4)), ImVec2(px + kit_px(1), b.y + kit_px(4)), IM_COL32_WHITE);
+    dl->AddCircleFilled(ImVec2(px, a.y - kit_px(4)), kit_px(5), IM_COL32_WHITE);
 }
 
-static void ed_section(const char *title)
+// A group's caption on the left and its page controls on the right, on one row.
+static void ed_group_head(const char *label, const char *id, i32 *page, i32 pages, f32 w)
 {
-    ImGui::PushFont(g_font_bold);
-    ImGui::TextDisabled("%s", title);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 fh = ImGui::GetFrameHeight();
+    ImGui::PushFont(g_font_small);
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(a.x, floorf(a.y + (fh - ts.y) / 2)), col32(COL_FAINT), label);
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(a.x + w - lib_pager_w(), a.y));
+    lib_pager(id, page, pages);
+}
+
+// A plain caption row the same height as ed_group_head, for groups with no pages.
+static void ed_caption(const char *label)
+{
+    ImGui::PushFont(g_font_small);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddText(a, col32(COL_FAINT), label);
+    ImGui::Dummy(ImVec2(1, g_font_small->FontSize));
     ImGui::PopFont();
 }
 
-// A row of page controls at a fixed place: "←  1 of 3  →".
-static void ed_pager(const char *id, i32 *page, i32 pages)
-{
-    f32 s = g_dpi_scale, bw = 36 * s, tw = 70 * s;
-    ImGui::PushID(id);
-    if (*page >= pages) *page = pages - 1;
-    if (*page < 0) *page = 0;
-    if (button_enabled("\xE2\x86\x90", ImVec2(bw, 0), *page > 0)) (*page)--;
-    ImGui::SameLine();
-    char t[32];
-    snprintf(t, sizeof t, "%d of %d", *page + 1, pages);
-    f32 x = ImGui::GetCursorPosX();
-    ImGui::SetCursorPosX(x + (tw - ImGui::CalcTextSize(t).x) / 2);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s", t);
-    ImGui::SameLine(x + tw + ImGui::GetStyle().ItemSpacing.x);
-    if (button_enabled("\xE2\x86\x92", ImVec2(bw, 0), *page + 1 < pages)) (*page)++;
-    ImGui::PopID();
-}
-
-static void ed_edit_tab()
+static void ed_edit_tab(f32 w)
 {
     Editor &ed = g_app.editor;
     Player &p = ed.player;
-    f32 s = g_dpi_scale;
-    f32 w = ImGui::GetContentRegionAvail().x;
+    const ImGuiStyle &st = ImGui::GetStyle();
+    f32 fh = ImGui::GetFrameHeight(), sp = st.ItemSpacing.x;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
 
-    ed_section("ZOOM");
+    // Zoom at the playhead: a slider with its value on the right.
+    ed_caption("ZOOM");
     f64 z, cx, cy;
     zoom_at(ed.edit, p.pos, &z, &cx, &cy);
-    f32 zf = (f32)z;
-    ImGui::SetNextItemWidth(w);
-    if (ImGui::SliderFloat("##zoom", &zf, 1.f, 4.f, "Zoom at the playhead: %.1fx")) {
+    f32 zf = (f32)z, val_w = kit_px(44);
+    if (lib_slider("##zoom", &zf, 1.f, 4.f, w - val_w, fh)) {
         i32 k = ed_add_key(p.pos);
         if (k >= 0) {
             ed.edit.keys[k].z = zf;
@@ -505,179 +507,180 @@ static void ed_edit_tab()
         i32 k = ed_key_at(p.pos);
         if (k >= 0) { ed.edit.keys[k].z = 1; ed.dirty = true; }
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
-    ImGui::TextUnformatted("Zooming adds a keyframe at the playhead. Drag the picture to aim. The view eases from one "
-                           "keyframe to the next.");
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleColor();
-    f32 bw = (w - 2 * ImGui::GetStyle().ItemSpacing.x) / 3;
+    ImGui::SameLine(0, 0);
+    char zt[16];
+    snprintf(zt, sizeof zt, "%.1fx", zf);
+    ImVec2 zp = ImGui::GetCursorScreenPos(), zs = ImGui::CalcTextSize(zt);
+    dl->AddText(ImVec2(zp.x + val_w - zs.x, floorf(zp.y + (fh - zs.y) / 2)), col32(COL_TEXT), zt);
+    ImGui::Dummy(ImVec2(val_w, fh));
+    kit_dim("Drag the picture to aim");
+
+    // Keyframe actions: one filled, two quiet.
     i32 here = ed_key_at(p.pos);
-    if (button_enabled("Add keyframe", ImVec2(bw, 0), here < 0 && ed.edit.key_count < EDIT_MAX_KEYS)) ed_add_key(p.pos);
+    f32 bw = (w - 2 * sp) / 3;
+    if (kit_button(ICON_ADD "  Keyframe", KIT_SECONDARY, ImVec2(bw, 0), here < 0 && ed.edit.key_count < EDIT_MAX_KEYS))
+        ed_add_key(p.pos);
     ImGui::SameLine();
-    if (button_enabled("Delete keyframe", ImVec2(bw, 0), here >= 0)) ed_delete_key(here);
+    if (kit_button(ICON_DELETE "  Delete", KIT_GHOST, ImVec2(bw, 0), here >= 0)) ed_delete_key(here);
     ImGui::SameLine();
-    if (button_enabled("Clear all", ImVec2(bw, 0), ed.edit.key_count > 0)) {
+    if (kit_button("Clear all", KIT_GHOST, ImVec2(bw, 0), ed.edit.key_count > 0)) {
         ed.edit.key_count = 0;
         ed.dirty = true;
     }
+    ImGui::Dummy(ImVec2(1, kit_px(4)));
+
     // The keys, three to a page.
     const i32 key_rows = 3;
     i32 key_pages = ed.edit.key_count ? (ed.edit.key_count + key_rows - 1) / key_rows : 1;
-    if (ed.key_page >= key_pages) ed.key_page = key_pages - 1;
+    ed_group_head("KEYFRAMES", "keys", &ed.key_page, key_pages, w);
     for (i32 r = 0; r < key_rows; r++) {
         i32 k = ed.key_page * key_rows + r;
         ImGui::PushID(r);
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        f32 row_w = w - fh - kit_px(4);
         if (k < ed.edit.key_count) {
             const ZoomKey &key = ed.edit.keys[k];
-            char t[32], label[96];
+            if (ImGui::InvisibleButton("##key", ImVec2(row_w, fh))) player_seek(&p, key.t);
+            bool hot = ImGui::IsItemHovered();
+            if (k == here || hot) dl->AddRectFilled(a, ImVec2(a.x + row_w, a.y + fh), col32(k == here ? COL_HOVER : COL_PANEL2), st.FrameRounding);
+            diamond(dl, ImVec2(a.x + kit_px(14), a.y + fh / 2), kit_px(5), col32(COL_BLUE));
+            char t[32], zl[16];
             fmt_time(key.t, t, sizeof t, true);
-            snprintf(label, sizeof label, "%s   %.1fx###key", t, key.z);
-            f32 del_w = 80 * s;
-            if (ImGui::Selectable(label, k == here, 0, ImVec2(w - del_w - ImGui::GetStyle().ItemSpacing.x, ImGui::GetFrameHeight())))
-                player_seek(&p, key.t);
-            ImGui::SameLine();
-            if (ImGui::Button("Delete", ImVec2(del_w, 0))) ed_delete_key(k);
-        } else if (k == 0) {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("No zoom keyframes: the whole clip is shown.");
+            snprintf(zl, sizeof zl, "%.1fx", key.z);
+            ImVec2 ts = ImGui::CalcTextSize(t), zs2 = ImGui::CalcTextSize(zl);
+            f32 ty = floorf(a.y + (fh - ts.y) / 2);
+            dl->AddText(ImVec2(a.x + kit_px(30), ty), col32(COL_TEXT), t);
+            dl->AddText(ImVec2(a.x + row_w - kit_px(10) - zs2.x, ty), col32(COL_DIM), zl);
+            ImGui::SameLine(0, kit_px(4));
+            if (kit_icon_button(ICON_DELETE, "##del", KIT_GHOST)) ed_delete_key(k);
         } else {
-            ImGui::Dummy(ImVec2(w, ImGui::GetFrameHeight()));
+            if (k == 0) {
+                ImVec2 ts = ImGui::CalcTextSize("No keyframes");
+                dl->AddText(ImVec2(a.x + kit_px(10), floorf(a.y + (fh - ts.y) / 2)), col32(COL_FAINT), "No keyframes");
+            }
+            ImGui::Dummy(ImVec2(w, fh));
         }
         ImGui::PopID();
     }
-    ed_pager("keys", &ed.key_page, key_pages);
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(1, kit_px(6)));
 
-    ed_section("AUDIO");
+    // Sound: a mute button, the track's name, its volume.
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
     const i32 track_rows = 5;
     i32 track_pages = n ? (n + track_rows - 1) / track_rows : 1;
-    if (ed.track_page >= track_pages) ed.track_page = track_pages - 1;
-    f32 mute_w = 80 * s, name_w = 120 * s, slider_w = w - mute_w - name_w - 2 * ImGui::GetStyle().ItemSpacing.x;
+    ed_group_head("SOUND", "tracks", &ed.track_page, track_pages, w);
+    f32 name_w = kit_px(104), pct_w = kit_px(44), slider_w = w - fh - kit_px(6) - name_w - pct_w;
     bool changed = false;
     for (i32 r = 0; r < track_rows; r++) {
         i32 i = ed.track_page * track_rows + r;
         ImGui::PushID(100 + r);
+        ImVec2 a = ImGui::GetCursorScreenPos();
         if (i < n) {
             i32 t = tracks[i];
             bool muted = ed.edit.muted[t];
-            ImGui::PushStyleColor(ImGuiCol_Button, muted ? rgb(COL_ACCENT, 0.8f) : rgb(COL_PANEL2));
-            if (ImGui::Button(muted ? "Muted###mute" : "Mute###mute", ImVec2(mute_w, 0))) {
+            if (kit_icon_button(muted ? ICON_MUTE : ICON_VOLUME, "##mute", KIT_GHOST, true, muted)) {
                 ed.edit.muted[t] = !muted;
                 changed = true;
             }
-            ImGui::PopStyleColor();
-            ImGui::SameLine();
-            ImVec2 np = ImGui::GetCursorScreenPos();
-            ImGui::Dummy(ImVec2(name_w, ImGui::GetFrameHeight()));
-            text_clipped(ImGui::GetWindowDrawList(), ImVec2(np.x, np.y + ImGui::GetStyle().FramePadding.y), name_w - 6 * s,
-                         ImGui::GetColorU32(rgb(muted ? COL_DIM : COL_TEXT)), ed.item.info.tracks[t]);
-            ImGui::SameLine();
+            f32 nx = a.x + fh + kit_px(6);
+            ImVec2 ts = ImGui::CalcTextSize("A");
+            text_clipped(dl, ImVec2(nx, floorf(a.y + (fh - ts.y) / 2)), name_w - kit_px(8), col32(muted ? COL_FAINT : COL_TEXT),
+                         ed.item.info.tracks[t]);
+            ImGui::SetCursorScreenPos(ImVec2(nx + name_w, a.y));
             f32 pct = (1 + ed.edit.boost[t]) * 100;
-            ImGui::SetNextItemWidth(slider_w);
-            ImGui::BeginDisabled(muted);
-            if (ImGui::SliderFloat("##vol", &pct, 0, 200, "%.0f%%")) {
+            if (lib_slider("##vol", &pct, 0, 200, slider_w, fh, 100, !muted)) {
                 ed.edit.boost[t] = pct / 100 - 1;
                 changed = true;
             }
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            if (!muted && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 ed.edit.boost[t] = 0;
+                pct = 100;
                 changed = true;
             }
-            ImGui::EndDisabled();
-        } else if (i == 0) {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("This file has no sound.");
+            char pt[16];
+            snprintf(pt, sizeof pt, "%.0f%%", pct);
+            ImVec2 ps = ImGui::CalcTextSize(pt);
+            dl->AddText(ImVec2(a.x + w - ps.x, floorf(a.y + (fh - ps.y) / 2)), col32(muted ? COL_FAINT : COL_DIM), pt);
+            ImGui::SetCursorScreenPos(a);
+            ImGui::Dummy(ImVec2(w, fh));
         } else {
-            ImGui::Dummy(ImVec2(w, ImGui::GetFrameHeight()));
+            if (i == 0) {
+                ImVec2 ts = ImGui::CalcTextSize("No sound");
+                dl->AddText(ImVec2(a.x + kit_px(10), floorf(a.y + (fh - ts.y) / 2)), col32(COL_FAINT), "No sound");
+            }
+            ImGui::Dummy(ImVec2(w, fh));
         }
         ImGui::PopID();
     }
-    ed_pager("tracks", &ed.track_page, track_pages);
     if (changed) {
         ed.dirty = true;
         ed_apply_volumes();
     }
 }
 
-static void ed_share_tab()
+static void ed_share_tab(f32 w)
 {
     Editor &ed = g_app.editor;
-    f32 s = g_dpi_scale;
     const ImGuiStyle &st = ImGui::GetStyle();
-    f32 w = ImGui::GetContentRegionAvail().x;
-    auto dim_text = [&](const char *t) {
-        ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
-        ImGui::TextUnformatted(t);
-        ImGui::PopTextWrapPos();
-        ImGui::PopStyleColor();
-    };
+    f32 fh = ImGui::GetFrameHeight();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
     bool keeping = ed_job_busy(ed.keep_job), sharing = ed_job_busy(ed.share_job);
 
-    ed_section("KEEP");
-    dim_text("Saves the trimmed, zoomed clip as a new file next to the original, at full quality, with every track.");
-    if (button_enabled("Keep", ImVec2(w, 0), !keeping)) ed_start(SAVE_KEEP);
-    ImGui::Spacing();
+    ed_caption("KEEP");
+    kit_dim("Full quality, next to the original");
+    if (kit_button(ICON_SAVE "  Keep", KIT_SECONDARY, ImVec2(w, 0), !keeping)) ed_start(SAVE_KEEP);
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
 
-    ed_section("SHARE");
-    dim_text("A small copy with one mix of the tracks, put on the clipboard to paste into a chat.");
+    ed_caption("SHARE");
+    kit_dim("A small copy, put on the clipboard");
     static const char *const sizes[] = {"50 MB", "10 MB", "Custom"};
-    f32 sw = (w - 3 * st.ItemSpacing.x - 90 * s) / 3;
-    for (i32 i = 0; i < 3; i++) {
-        if (i) ImGui::SameLine();
-        bool on = ed.share_size == i;
-        ImGui::PushStyleColor(ImGuiCol_Button, on ? rgb(COL_BLUE, 0.85f) : rgb(COL_PANEL2));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? rgb(COL_BLUE) : rgb(COL_HOVER));
-        if (ImGui::Button(sizes[i], ImVec2(sw, 0))) ed.share_size = i;
-        ImGui::PopStyleColor(2);
-    }
+    f32 mb_w = kit_px(84), seg_w = (w - mb_w - st.ItemSpacing.x - kit_px(6)) / 3;
+    kit_segmented("##size", sizes, 3, &ed.share_size, seg_w);
     ImGui::SameLine();
     if (ed.custom_mb <= 0) ed.custom_mb = 25;
-    ImGui::SetNextItemWidth(90 * s);
+    ImGui::SetNextItemWidth(w - (3 * seg_w + kit_px(6)) - st.ItemSpacing.x);
     ImGui::BeginDisabled(ed.share_size != 2);
     ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
     ImGui::EndDisabled();
     if (ed.custom_mb < 1) ed.custom_mb = 1;
     if (ed.custom_mb > 4000) ed.custom_mb = 4000;
-    if (button_enabled("Share", ImVec2(w, 0), !sharing)) ed_start(SAVE_SHARE);
+    if (kit_button(ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(w, 0), !sharing)) ed_start(SAVE_SHARE);
 
-    // Progress and the result, always in their places.
+    // Progress and the result, always in their places: a status line, a thin bar, two lines for the result.
     SaveJobView *v = save_view(sharing ? ed.share_job : keeping ? ed.keep_job : 0);
-    char label[64] = " ";
     f32 frac = 0;
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 line_h = ImGui::GetTextLineHeight(), bar_h = kit_px(4);
     if (v) {
+        char label[64];
         frac = v->progress;
-        snprintf(label, sizeof label, "%s%s %.0f%%", v->kind == SAVE_SHARE ? "Sharing" : "Keeping",
-                 v->state == SAVE_QUEUED ? " (waiting)" : "", frac * 100);
+        snprintf(label, sizeof label, "%s%s", v->kind == SAVE_SHARE ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
+        char pc[16];
+        snprintf(pc, sizeof pc, "%.0f%%", frac * 100);
+        dl->AddText(a, col32(COL_DIM), label);
+        dl->AddText(ImVec2(a.x + w - ImGui::CalcTextSize(pc).x, a.y), col32(COL_DIM), pc);
+        f32 by = a.y + line_h + kit_px(6);
+        dl->AddRectFilled(ImVec2(a.x, by), ImVec2(a.x + w, by + bar_h), col32(COL_PANEL2), bar_h);
+        if (frac > 0) dl->AddRectFilled(ImVec2(a.x, by), ImVec2(a.x + w * (frac > 1 ? 1 : frac), by + bar_h), col32(COL_ACCENT), bar_h);
+    } else if (ed.result[0]) {
+        ImGui::PushClipRect(a, ImVec2(a.x + w, a.y + line_h * 2 + kit_px(2)), true);
+        dl->AddText(g_font, ImGui::GetFontSize(), a, col32(ed.result_error ? 0xff8a92 : COL_OK), ed.result, 0, w);
+        ImGui::PopClipRect();
     }
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, rgb(COL_BLUE));
-    ImGui::ProgressBar(frac, ImVec2(w, 0), label);
-    ImGui::PopStyleColor();
-    ImVec2 rp = ImGui::GetCursorScreenPos();
-    f32 line_h = ImGui::GetTextLineHeightWithSpacing();
-    ImGui::Dummy(ImVec2(w, line_h * 2));
-    // Two lines kept for the result, wrapped inside them.
-    ImGui::PushClipRect(rp, ImVec2(rp.x + w, rp.y + line_h * 2), true);
-    ImGui::GetWindowDrawList()->AddText(g_font, ImGui::GetFontSize(), rp,
-                                        ImGui::GetColorU32(rgb(ed.result_error ? COL_ACCENT : COL_OK)), ed.result, 0, w);
-    ImGui::PopClipRect();
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(w, line_h * 2 + kit_px(4)));
+    ImGui::Dummy(ImVec2(1, kit_px(4)));
 
-    ed_section("RECENT SHARES");
+    // Recent shares, five to a page.
     const i32 rows = 5;
     i32 pages = ed.share_count ? (ed.share_count + rows - 1) / rows : 1;
-    if (ed.share_page >= pages) ed.share_page = pages - 1;
-    f32 copy_w = 70 * s;
+    ed_group_head("RECENT SHARES", "shares", &ed.share_page, pages, w);
     for (i32 r = 0; r < rows; r++) {
         i32 i = ed.share_page * rows + r;
         ImGui::PushID(200 + r);
         ImVec2 at = ImGui::GetCursorScreenPos();
         if (i < ed.share_count) {
             const ShareFile &f = ed.shares[i];
-            ImGui::Dummy(ImVec2(w - copy_w - st.ItemSpacing.x, ImGui::GetFrameHeight()));
             char age[48], size[24], line[96];
             i64 mins = (now_us() - f.mtime_us) / 60000000;
             if (mins < 1) str_set(age, "just now");
@@ -686,42 +689,41 @@ static void ed_share_tab()
             else snprintf(age, sizeof age, "%lld days ago", mins / 1440);
             fmt_size(f.size, size, sizeof size);
             snprintf(line, sizeof line, "%s \xC2\xB7 %s", age, size);
+            f32 text_w = w - fh - kit_px(8);
             ImVec2 ls = ImGui::CalcTextSize(line);
-            f32 text_w = w - copy_w - 2 * st.ItemSpacing.x;
-            ImVec2 tp(at.x, at.y + st.FramePadding.y);
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            text_clipped(dl, tp, text_w - ls.x - 8 * s, ImGui::GetColorU32(rgb(COL_TEXT)), f.name);
-            dl->AddText(ImVec2(at.x + text_w - ls.x, tp.y), ImGui::GetColorU32(rgb(COL_DIM)), line);
-            ImGui::SameLine();
-            if (ImGui::Button("Copy", ImVec2(copy_w, 0))) {
+            f32 ty = floorf(at.y + (fh - ls.y) / 2);
+            text_clipped(dl, ImVec2(at.x, ty), text_w - ls.x - kit_px(10), col32(COL_TEXT), f.name);
+            dl->AddText(ImVec2(at.x + text_w - ls.x, ty), col32(COL_DIM), line);
+            ImGui::SetCursorScreenPos(ImVec2(at.x + w - fh, at.y));
+            if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) {
                 wchar_t name[200];
                 utf8_to_wide(f.name, name, COUNT(name));
                 Path pth = path_join(g_app.paths.share_dir, name);
                 bool ok = clipboard_copy_file(pth.s);
-                snprintf(ed.result, sizeof ed.result, ok ? "Copied %s to the clipboard" : "Couldn't copy %s", f.name);
+                snprintf(ed.result, sizeof ed.result, ok ? "Copied %s" : "Couldn't copy %s", f.name);
                 ed.result_error = !ok;
             }
-        } else if (i == 0) {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("Nothing shared in the last %g days.", g_app.config.share_keep_days);
         } else {
-            ImGui::Dummy(ImVec2(w, ImGui::GetFrameHeight()));
+            if (i == 0) {
+                char none[64];
+                snprintf(none, sizeof none, "Nothing in the last %g days", g_app.config.share_keep_days);
+                ImVec2 ts = ImGui::CalcTextSize(none);
+                dl->AddText(ImVec2(at.x, floorf(at.y + (fh - ts.y) / 2)), col32(COL_FAINT), none);
+            }
+            ImGui::Dummy(ImVec2(w, fh));
         }
         ImGui::PopID();
     }
-    ed_pager("shares", &ed.share_page, pages);
 }
 
 static void screen_editor()
 {
     Editor &ed = g_app.editor;
     Player &p = ed.player;
-    f32 s = g_dpi_scale;
-    const ImGuiStyle &st = ImGui::GetStyle();
     ImGuiIO &io = ImGui::GetIO();
     ed_check_pending();
     if (!ed.open && ed.pending[0]) {
-        ImGui::TextDisabled("Opening the saved file...");
+        kit_dim("Opening the saved file...");
         ui_wake(10); // look again soon: the scan posts its results, but probing can lag them
         return;
     }
@@ -746,103 +748,124 @@ static void screen_editor()
     player_update(&p);
     if (p.track_engine_count && ed.tracks_ready) ed_apply_volumes(); // a track engine that's just loaded
 
-    // Title row.
-    bool back = ImGui::Button("\xE2\x86\x90 Library", ImVec2(110 * s, 0));
-    ImGui::SameLine();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 fh = ImGui::GetFrameHeight();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+
+    // Header: back, the name, and the game and when under it.
+    ImVec2 h0 = ImGui::GetCursorScreenPos();
+    f32 head_h = fmaxf(fh, g_font_big->FontSize + g_font_small->FontSize + kit_px(4));
+    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
+    bool back = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
+    f32 tx = h0.x + fh + kit_px(14), tw = avail.x - (tx - h0.x);
+    f32 ty = h0.y + (head_h - g_font_big->FontSize - g_font_small->FontSize - kit_px(4)) / 2;
     ImGui::PushFont(g_font_big);
-    ImGui::TextUnformatted(ed.item.name);
+    text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), ed.item.name);
+    ImGui::PopFont();
+    char when[48], sub[160];
+    fmt_when(ed.item.mtime_us, when, sizeof when);
+    if (ed.item.info.game[0]) snprintf(sub, sizeof sub, "Editing  \xC2\xB7  %s  \xC2\xB7  %s", ed.item.info.game, when);
+    else snprintf(sub, sizeof sub, "Editing  \xC2\xB7  %s", when);
+    ImGui::PushFont(g_font_small);
+    text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), sub);
     ImGui::PopFont();
 
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    f32 side_w = 400 * s, main_w = avail.x - side_w - st.ItemSpacing.x;
-    f32 row_h = ImGui::GetFrameHeight(), tl_h = 72 * s;
-    f32 video_h = avail.y - row_h - tl_h - 2 * st.ItemSpacing.y;
+    // Body: the picture, the transport bar and the timeline on the left; the panel on the right.
+    f32 body_y = h0.y + head_h + kit_px(18), body_h = h0.y + avail.y - body_y;
+    f32 side_w = kit_px(372), gap = kit_px(20), main_w = avail.x - side_w - gap;
+    f32 bar_h = fh + kit_px(16), tl_h = kit_px(64), tl_gap = kit_px(14);
+    f32 video_h = body_h - bar_h - tl_h - kit_px(12) - tl_gap - kit_px(6);
+    if (video_h < 1) video_h = 1;
 
-    ImGui::BeginChild("ed_main", ImVec2(main_w, avail.y), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
-    {
-        // The picture, as it will be rendered (zoomed at the playhead).
-        ImVec2 pos = ImGui::GetCursorScreenPos(), a, b;
-        player_fit(p, pos, ImVec2(main_w, video_h), &a, &b);
-        ImGui::SetCursorScreenPos(a);
-        ImGui::InvisibleButton("picture", ImVec2(b.x - a.x > 1 ? b.x - a.x : 1, b.y - a.y > 1 ? b.y - a.y : 1));
-        f64 z, cx, cy;
-        zoom_at(ed.edit, p.pos, &z, &cx, &cy);
-        if (ImGui::IsItemActivated()) {
-            ed.aiming = z > 1.001;
-            if (ed.aiming) {
-                ed.aim_key = ed_add_key(p.pos);
-                ed.aim_mx = io.MousePos.x;
-                ed.aim_my = io.MousePos.y;
-                ed.aim_kx = cx;
-                ed.aim_ky = cy;
-                if (ed.aim_key < 0) ed.aiming = false;
-            }
+    // The picture, as it will be rendered (zoomed at the playhead), on black.
+    ImVec2 pos(h0.x, body_y), a, b;
+    dl->AddRectFilled(pos, ImVec2(pos.x + main_w, pos.y + video_h), IM_COL32(0, 0, 0, 255), kit_px(10));
+    player_fit(p, pos, ImVec2(main_w, video_h), &a, &b);
+    ImGui::SetCursorScreenPos(a);
+    ImGui::InvisibleButton("picture", ImVec2(b.x - a.x > 1 ? b.x - a.x : 1, b.y - a.y > 1 ? b.y - a.y : 1));
+    f64 z, cx, cy;
+    zoom_at(ed.edit, p.pos, &z, &cx, &cy);
+    if (ImGui::IsItemActivated()) {
+        ed.aiming = z > 1.001;
+        if (ed.aiming) {
+            ed.aim_key = ed_add_key(p.pos);
+            ed.aim_mx = io.MousePos.x;
+            ed.aim_my = io.MousePos.y;
+            ed.aim_kx = cx;
+            ed.aim_ky = cy;
+            if (ed.aim_key < 0) ed.aiming = false;
         }
-        if (ImGui::IsItemActive() && ed.aiming && ed.aim_key < ed.edit.key_count) {
-            ZoomKey &k = ed.edit.keys[ed.aim_key];
-            f64 nx = ed.aim_kx - (io.MousePos.x - ed.aim_mx) / (b.x - a.x) / k.z;
-            f64 ny = ed.aim_ky - (io.MousePos.y - ed.aim_my) / (b.y - a.y) / k.z;
-            k.x = nx < 0 ? 0 : nx > 1 ? 1 : nx;
-            k.y = ny < 0 ? 0 : ny > 1 ? 1 : ny;
-            ed.dirty = true;
-        } else if (ImGui::IsItemDeactivated()) {
-            if (!ed.aiming) player_toggle(&p);
-            ed.aiming = false;
-        }
-        ImVec2 uv0, uv1;
-        zoom_uv(ed.edit, p.pos, &uv0, &uv1);
-        player_draw(p, a, b, uv0, uv1);
-        if (z > 1.001) {
-            char zt[32];
-            snprintf(zt, sizeof zt, "%.1fx", z);
-            badge(ImGui::GetWindowDrawList(), ImVec2(a.x + 10 * s, a.y + 10 * s), false, false, zt);
-        }
-        ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + video_h + st.ItemSpacing.y));
+    }
+    if (ImGui::IsItemActive() && ed.aiming && ed.aim_key < ed.edit.key_count) {
+        ZoomKey &k = ed.edit.keys[ed.aim_key];
+        f64 nx = ed.aim_kx - (io.MousePos.x - ed.aim_mx) / (b.x - a.x) / k.z;
+        f64 ny = ed.aim_ky - (io.MousePos.y - ed.aim_my) / (b.y - a.y) / k.z;
+        k.x = nx < 0 ? 0 : nx > 1 ? 1 : nx;
+        k.y = ny < 0 ? 0 : ny > 1 ? 1 : ny;
+        ed.dirty = true;
+    } else if (ImGui::IsItemDeactivated()) {
+        if (!ed.aiming) player_toggle(&p);
+        ed.aiming = false;
+    }
+    ImVec2 uv0, uv1;
+    zoom_uv(ed.edit, p.pos, &uv0, &uv1);
+    player_draw(p, a, b, uv0, uv1);
+    if (p.loaded && p.paused && !p.error[0] && !ed.aiming && !ed.drag)
+        lib_play_mark(dl, ImVec2((a.x + b.x) / 2, (a.y + b.y) / 2), kit_px(34));
+    if (z > 1.001) {
+        char zt[32];
+        snprintf(zt, sizeof zt, "%.1fx", z);
+        badge(dl, ImVec2(a.x + kit_px(10), a.y + kit_px(10)), false, false, zt);
+    }
 
-        // Transport row, fixed widths.
-        if (ImGui::Button(p.paused ? "Play###play" : "Pause###play", ImVec2(90 * s, 0))) player_toggle(&p);
-        ImGui::SameLine();
-        char t1[32], t2[32], tm[80];
-        fmt_time(p.pos, t1, sizeof t1, true);
-        fmt_time(ed_duration(), t2, sizeof t2, true);
-        snprintf(tm, sizeof tm, "%s / %s", t1, t2);
-        f32 x = ImGui::GetCursorPosX();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(tm);
-        ImGui::SameLine(x + 150 * s);
-        if (ImGui::Button("Set start", ImVec2(100 * s, 0))) {
-            if (p.pos < ed_out() - 0.2) { ed.edit.in_s = p.pos; ed.dirty = true; }
+    // The transport bar: play, the time, the trim buttons, and how much is kept on the right. Fixed widths.
+    ImVec2 r0(pos.x, pos.y + video_h + kit_px(12));
+    dl->AddRectFilled(r0, ImVec2(r0.x + main_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
+    f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
+    ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
+    if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_GHOST)) player_toggle(&p);
+    char t1[32], t2[32], tm[80];
+    fmt_time(p.pos, t1, sizeof t1, true);
+    fmt_time(ed_duration(), t2, sizeof t2, true);
+    snprintf(tm, sizeof tm, "%s / %s", t1, t2);
+    f32 time_x = r0.x + pad + fh + kit_px(8);
+    ImVec2 ts = ImGui::CalcTextSize(tm);
+    dl->AddText(ImVec2(time_x, floorf(y + (fh - ts.y) / 2)), col32(COL_DIM), tm);
+    static const char *const trims[] = {"Set start", "Set end", "Reset"};
+    f32 bx = time_x + kit_px(170);
+    for (i32 i = 0; i < 3; i++) {
+        f32 w = ImGui::CalcTextSize(trims[i]).x + 2 * ImGui::GetStyle().FramePadding.x;
+        ImGui::SetCursorScreenPos(ImVec2(bx, y));
+        bool enabled = i < 2 || ed.edit.in_s > 0 || ed.edit.out_s > 0;
+        if (kit_button(trims[i], KIT_GHOST, ImVec2(w, 0), enabled)) {
+            if (i == 0 && p.pos < ed_out() - 0.2) { ed.edit.in_s = p.pos; ed.dirty = true; }
+            if (i == 1 && p.pos > ed.edit.in_s + 0.2) { ed.edit.out_s = p.pos >= ed_duration() - 0.01 ? 0 : p.pos; ed.dirty = true; }
+            if (i == 2) { ed.edit.in_s = ed.edit.out_s = 0; ed.dirty = true; }
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Set end", ImVec2(100 * s, 0))) {
-            if (p.pos > ed.edit.in_s + 0.2) { ed.edit.out_s = p.pos >= ed_duration() - 0.01 ? 0 : p.pos; ed.dirty = true; }
-        }
-        ImGui::SameLine();
-        if (button_enabled("Reset trim", ImVec2(100 * s, 0), ed.edit.in_s > 0 || ed.edit.out_s > 0)) {
-            ed.edit.in_s = ed.edit.out_s = 0;
-            ed.dirty = true;
-        }
-        ImGui::SameLine();
-        char sel[48], st1[32];
-        fmt_time(ed_out() - ed.edit.in_s, st1, sizeof st1, true);
-        snprintf(sel, sizeof sel, "Kept: %s", st1);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("%s", sel);
-        ed_timeline(main_w, tl_h);
+        bx += w + kit_px(4);
     }
-    ImGui::EndChild();
-    ImGui::SameLine();
-    ImGui::BeginChild("ed_side", ImVec2(side_w, avail.y), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
-    {
-        f32 tw = (ImGui::GetContentRegionAvail().x - st.ItemSpacing.x) / 2;
-        if (view_tab("Edit", ed.tab == 0, tw)) ed.tab = 0;
-        ImGui::SameLine();
-        if (view_tab("Keep / Share", ed.tab == 1, tw)) ed.tab = 1;
-        ImGui::Spacing();
-        if (ed.tab == 0) ed_edit_tab();
-        else ed_share_tab();
+    char kept[32], sel[48];
+    fmt_time(ed_out() - ed.edit.in_s, kept, sizeof kept, true);
+    snprintf(sel, sizeof sel, "%s kept", kept);
+    ImVec2 ks = ImGui::CalcTextSize(sel);
+    f32 kx = r0.x + main_w - kit_px(16) - ks.x;
+    if (kx > bx + kit_px(8)) dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(COL_TEXT), sel);
+
+    // The timeline under it.
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, r0.y + bar_h + tl_gap + kit_px(6)));
+    ed_timeline(main_w, tl_h);
+
+    // The side panel: Edit, or Keep & share.
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + main_w + gap, body_y));
+    if (kit_card_begin("ed_side", ImVec2(side_w, body_h))) {
+        f32 cw = ImGui::GetContentRegionAvail().x;
+        static const char *const tabs[] = {"Edit", "Keep & share"};
+        kit_segmented("##tab", tabs, 2, &ed.tab, (cw - kit_px(6)) / 2);
+        ImGui::Dummy(ImVec2(1, kit_px(6)));
+        if (ed.tab == 0) ed_edit_tab(cw);
+        else ed_share_tab(cw);
     }
-    ImGui::EndChild();
+    kit_card_end();
 
     // Keys (never while typing).
     if (!io.WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {

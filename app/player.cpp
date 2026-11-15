@@ -452,18 +452,20 @@ static void fmt_time(f64 s, char *out, i32 cap, bool tenths = false)
     }
 }
 
-// A seek bar: the played part in red, a knob at the playhead. Dragging scrubs (approximate seeks while held, exact
-// when let go). Returns true while held.
+// A seek bar: a thin track, the played part in the accent, a knob at the playhead; track and knob grow under the
+// mouse. Dragging scrubs (approximate seeks while held, exact when let go). Returns true while held.
 static bool scrub_bar(const char *id, Player *p, f32 width, f32 height)
 {
     ImVec2 a = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(id, ImVec2(width, height));
     bool held = ImGui::IsItemActive();
-    bool hovered = ImGui::IsItemHovered();
+    bool hot = held || ImGui::IsItemHovered();
+    f32 pad = kit_px(7); // the knob stays inside the item
+    f32 x0 = a.x + pad, x1 = a.x + width - pad, len = x1 - x0 > 1 ? x1 - x0 : 1;
     f64 dur = p->duration;
     if (held && dur > 0) {
-        f32 x = ImGui::GetIO().MousePos.x - a.x;
-        f64 t = (x < 0 ? 0 : x > width ? width : x) / width * dur;
+        f32 x = ImGui::GetIO().MousePos.x - x0;
+        f64 t = (x < 0 ? 0 : x > len ? len : x) / len * dur;
         p->scrubbing = true;
         if (t < p->pos - 0.03 || t > p->pos + 0.03) player_seek(p, t);
     } else if (p->scrubbing) {
@@ -471,12 +473,12 @@ static bool scrub_bar(const char *id, Player *p, f32 width, f32 height)
         player_seek(p, p->pos); // the exact frame where it was let go
     }
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 cy = a.y + height * 0.5f, th = 4 * g_dpi_scale;
+    f32 cy = floorf(a.y + height * 0.5f), th = kit_px(hot ? 6.f : 4.f);
     f32 frac = dur > 0 ? (f32)(p->pos / dur) : 0;
     if (frac > 1) frac = 1;
-    dl->AddRectFilled(ImVec2(a.x, cy - th / 2), ImVec2(a.x + width, cy + th / 2), ImGui::GetColorU32(rgb(COL_LINE)), th);
-    dl->AddRectFilled(ImVec2(a.x, cy - th / 2), ImVec2(a.x + width * frac, cy + th / 2), ImGui::GetColorU32(rgb(COL_ACCENT)), th);
-    f32 r = (held || hovered ? 7 : 5) * g_dpi_scale;
-    dl->AddCircleFilled(ImVec2(a.x + width * frac, cy), r, ImGui::GetColorU32(rgb(COL_TEXT)));
+    f32 kx = x0 + len * frac;
+    dl->AddRectFilled(ImVec2(x0, cy - th / 2), ImVec2(x1, cy + th / 2), col32(COL_HOVER), th);
+    dl->AddRectFilled(ImVec2(x0, cy - th / 2), ImVec2(kx, cy + th / 2), col32(COL_ACCENT), th);
+    dl->AddCircleFilled(ImVec2(kx, cy), kit_px(hot ? 7.f : 5.f), col32(0xffffff));
     return held;
 }
