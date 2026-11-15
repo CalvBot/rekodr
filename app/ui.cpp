@@ -278,7 +278,8 @@ static void help_window()
             {"clipback open", "Open this window"},
             {"clipback pause", "Pause / resume recording"},
         };
-        static const HelpRow window[] = {{"F1", "This help"}, {"Esc", "Close this help"}};
+        static const HelpRow window[] = {{"F1", "This help"}, {"Esc", "Close this help"},
+                                           {"Esc", "Options, setting a hotkey's keys: cancel"}};
         static const HelpRow timeline[] = {
             {"Drag on the bar", "Select a range (drag its edges to adjust)"},
             {"Click on the bar", "Move the playhead (the preview frame)"},

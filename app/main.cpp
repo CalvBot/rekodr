@@ -199,7 +199,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     proc_init();
     SetUnhandledExceptionFilter(on_crash);
     RegisterApplicationRestart(L"", RESTART_NO_REBOOT);
-    if (!config_load(&g_app.config, g_app.paths)) config_save(g_app.config, g_app.paths);
+    if (!config_load(&g_app.config, g_app.paths)) { // first run: bring over the Rust version's settings (options.cpp)
+        options_first_run(&g_app.config, g_app.paths);
+        config_save(g_app.config, g_app.paths);
+    }
     log_line("clipback (native) starting");
 
     WNDCLASSEXW wc = {sizeof wc};

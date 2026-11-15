@@ -463,9 +463,23 @@ static void tl_save(SaveKind kind, bool edit)
     Timeline &tl = g_app.timeline;
     if (!tl.sel_in || tl.sel_out <= tl.sel_in || tl.job_edit) return;
     if (!tl_has_video(*tl.idx, tl.sel_in, tl.sel_out)) return;
-    char name[128];
-    str_set(name, kind == SAVE_SESSION ? tl.session_name : "");
-    u32 id = save_range(tl.sel_in, tl.sel_out, kind, trim(name));
+    u32 id = 0;
+    if (kind == SAVE_SESSION) {
+        // Through sessions.cpp, so the session gets its record in Data and shows under Not saved if the save fails.
+        // No name typed: the game played most in the range, as an automatic session would be named.
+        char name[128];
+        str_set(name, tl.session_name);
+        const char *n = trim(name);
+        GameTime top[1];
+        if (!n[0] && games_in(*tl.idx, tl.sel_in, tl.sel_out, top, 1)) n = top[0].exe;
+        u32 sid = sessions_add_manual(tl.sel_in, tl.sel_out, n);
+        if (!sid) return;
+        sessions_save(sid);
+        const Session *ses = session_find(sid);
+        if (ses && ses->state == SES_SAVING) id = ses->job;
+    } else {
+        id = save_range(tl.sel_in, tl.sel_out, kind, "");
+    }
     if (!id) return;
     tl.job = id;
     tl.job_edit = edit;

@@ -1027,7 +1027,10 @@ static void audio_on_event(const Event &e)
         }
         break;
     }
-    case AE_GAME: str_set(a.game.s, e.text); break;
+    case AE_GAME:
+        str_set(a.game.s, e.text);
+        sessions_on_game(e.text);
+        break;
     default: break;
     }
 }

@@ -272,8 +272,89 @@ struct Timeline {
     u32           job;          // the last save started here
     bool          job_edit;     // open the editor when it's done
 };
-struct OptionsUi { i32 tab; };  // options.cpp: every setting
-struct Sessions { i32 count; }; // sessions.cpp: detecting sessions, the save popup, Not saved
+// sessions.cpp: detecting sessions, the save popup, Not saved (SPEC.md, "1. Whole sessions").
+enum SessionState : u8 {
+    SES_FREE,      // empty slot
+    SES_OPEN,      // its game is being played, or was less than the session gap ago
+    SES_ASKING,    // ended; the popup asks whether to save it
+    SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Not saved list
+    SES_SAVING,    // a save job is copying it
+    SES_SAVED,
+    SES_DISMISSED, // taken off the Not saved list; kept until its footage is gone so it's never found again
+};
+
+struct Session {
+    u32          id;
+    SessionState state;
+    bool         custom;           // a name typed by hand rather than a game
+    bool         prompted;         // the window was brought up for its popup
+    char         exe[64];          // the game (lower case); empty for a custom session
+    char         name[128];        // shown, and names the file: "Overwatch", "Stream with Sam"
+    i64          start_us, end_us; // the real start and end; while open, end is when the game was last seen
+    u32          job;              // the save job while SAVING
+    char         video[256];       // the saved file's name once SAVED
+    char         record[256];      // its record under save_dir, "2026\Data\<name>.session.txt"; empty = none
+};
+
+struct Sessions {
+    Session items[256];     // slot order means nothing; SES_FREE slots are empty
+    u32     next_id;
+    bool    loaded;         // sessions.txt and activity.tsv have been read
+    bool    game_known;     // the watcher has said what's being played since start
+    bool    dirty;          // sessions.txt needs writing
+    i64     written_us;     // when sessions.txt was last written
+    i64     woke_minute;    // the minute the window was last redrawn for the countdowns
+    u32     waiting_logged; // the session whose popup waits on a game in front (logged once)
+    // The Not saved list: its rows stay put while it's on screen, so a click never moves the others.
+    u32     rows[256];
+    i32     row_count;
+    i32     page;
+    i32     drawn_frame;
+};
+
+static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp the game being played
+
+// options.cpp: every setting. Lists are paged and their order is frozen while Options is open, so a row never
+// moves under the mouse after a click (sorting a new app doesn't send it to another page).
+enum OptionsTab : u8 {
+    OPT_APPS, OPT_HOTKEYS, OPT_RECORDING, OPT_GAME_BITRATES, OPT_ADVANCED, OPT_SESSIONS, OPT_STORAGE, OPT_STARTUP,
+    OPT_TAB_COUNT,
+};
+
+struct MonitorInfo {
+    char name[64]; // "DELL S2721DGF"
+    i32  width, height, hz;
+    bool primary;
+};
+
+struct OptionsUi {
+    i32  tab;             // OptionsTab
+    i32  last_frame;      // ImGui frame Options was last drawn in: a gap means it was entered again
+    // Apps
+    i32  filter;          // AppsFilter (options.cpp)
+    char search[64];
+    char add_exe[64];
+    i32  add_category;    // AppCategory for "Add"; 0 = Communication
+    i16  order[512];      // indexes into config.apps, in the order shown
+    i32  order_count;
+    i32  order_app_count; // config.app_count when `order` was made; apps heard since go on the end
+    bool order_dirty;     // make `order` again (filter or search changed)
+    i32  apps_page;
+    i32  menu_app;        // the app right-clicked
+    Path menu_path;       // its exe, empty if it isn't running and lifelog never saw it
+    // Pages of the other lists
+    i32  hotkeys_page, bitrates_page, sessions_page;
+    // Hotkeys: the one whose keys are being pressed, + 1 (0 = none)
+    i32  capture_slot;
+    bool capture_added;   // it was just added, so cancelling removes it again
+    // Recording
+    MonitorInfo monitors[16];
+    i32  monitor_count;
+    // The text box being edited keeps its text here until the edit is finished (Enter or clicking away), so a
+    // half-typed number never reaches the settings.
+    char edit[MAX_PATH * 3];
+    bool startup_logged;
+};
 
 struct App {
     Paths    paths;
