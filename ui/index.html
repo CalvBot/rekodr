@@ -17,13 +17,14 @@
   <button id="pause">Pause</button>
   <button onclick="location.href='/options'">Options</button>
 </header>
+<nav id="games" class="games"></nav>
 <main id="grid" class="grid"></main>
 <div id="more" style="height:1px"></div>
 
 <script>
 const FRAMES = 24, PAGE = 60;
 const grid = document.getElementById("grid");
-let clips = [], shown = 0, filter = "", lastSig = "";
+let clips = [], shown = 0, filter = "", game = "", lastSig = "";
 
 // Thumbnails load as cards come into view; strips are cached by the browser for good.
 const seen = new IntersectionObserver(entries => {
@@ -84,7 +85,40 @@ async function copy(c) {
 
 function visible() {
   const q = filter.toLowerCase();
-  return q ? clips.filter(c => c.name.toLowerCase().includes(q)) : clips;
+  return clips.filter(c => (!game || c.game === game) && (!q || c.name.toLowerCase().includes(q) || c.game.toLowerCase().includes(q)));
+}
+
+// One button per game (most recent first), then Desktop and Other. Only rebuilt when the set of games
+// changes; picking one just moves the highlight, so nothing shifts under the mouse.
+let gamesSig = "";
+function gameBar() {
+  const games = new Map();
+  for (const c of clips) {
+    const g = games.get(c.game) || { n: 0, exe: null };
+    g.n++; g.exe = g.exe || c.game_exe;
+    games.set(c.game, g);
+  }
+  const last = n => n === "Other" ? 2 : n === "Desktop" ? 1 : 0;
+  const names = [...games.keys()].sort((a, b) => last(a) - last(b));
+  const sig = names.map(n => n + games.get(n).n + games.get(n).exe).join("|");
+  if (sig === gamesSig) return mark();
+  gamesSig = sig;
+  if (game && !games.has(game)) game = "";
+  const bar = document.getElementById("games");
+  bar.textContent = "";
+  const btn = (value, label, n, icon) => h("button", { class: "chip", "data-game": value, onclick: () => { game = value; mark(); render(true); } },
+    icon, label, n != null ? h("span", { class: "n" }, n) : null);
+  bar.append(btn("", "All", clips.length, null));
+  for (const name of names) {
+    const g = games.get(name);
+    const icon = name === "Desktop" ? h("span", { class: "glyph" }, "🖥")
+      : g.exe ? h("img", { src: `/api/icon?exe=${enc(g.exe)}`, alt: "", onerror: e => e.target.remove() }) : null;
+    bar.append(btn(name, name, g.n, icon));
+  }
+  mark();
+}
+function mark() {
+  for (const b of document.querySelectorAll("#games .chip")) b.classList.toggle("on", b.dataset.game === game);
 }
 
 function dayOf(ms) {
@@ -119,6 +153,7 @@ async function load() {
   if (sig === lastSig) return;
   lastSig = sig;
   clips = list;
+  gameBar();
   render(true);
 }
 

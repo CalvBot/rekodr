@@ -135,6 +135,13 @@ button.linkish:hover { color: var(--text, inherit); }
 .apps .rate { margin-right: 10px; font-size: 12px; color: var(--dim); }
 .apps .rate input { width: 58px; padding: 2px 4px; }
 #advBox.off { opacity: .45; }
+.games { display: flex; gap: 6px; padding: 10px 16px 0; height: 42px; box-sizing: border-box; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.chip { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 30px; padding: 0 10px; border-radius: 15px; font-size: 13px; white-space: nowrap; }
+.chip img { width: 16px; height: 16px; }
+.chip .glyph { font-size: 13px; line-height: 1; }
+.chip .n { color: var(--dim); font-size: 11px; }
+.chip.on { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+.chip.on .n { color: #fff; opacity: .8; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; padding: 3px 9px; font-size: 12px; background: transparent; }
 .seg button + button { border-left: 1px solid var(--line); }

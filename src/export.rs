@@ -50,17 +50,14 @@ struct Track {
     streams: Vec<usize>,
 }
 
+pub const DESKTOP: &str = "Desktop";
+
 fn pretty(exe: &str) -> String {
-    let stem = exe.trim_end_matches(".exe");
-    let mut chars = stem.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().chain(chars).collect(),
-        None => stem.to_string(),
-    }
+    apps::display_name(exe)
 }
 
-/// Mic, Communication, then one per app (games first).
-fn tracks(cfg: &Config, streams: &[AudioStream]) -> Vec<Track> {
+/// Mic, Communication, then one per app: games first (the one played most first), then the rest.
+fn tracks(cfg: &Config, streams: &[AudioStream], played: &[(String, f64)]) -> Vec<Track> {
     let mut mic = Track { title: "Mic".into(), streams: Vec::new() };
     let mut comms = Track { title: "Communication".into(), streams: Vec::new() };
     let mut others: Vec<(bool, String, Track)> = Vec::new();
@@ -82,8 +79,9 @@ fn tracks(cfg: &Config, streams: &[AudioStream]) -> Vec<Track> {
             },
         }
     }
-    // Stable: games first, otherwise in order of first sound.
-    others.sort_by_key(|(game, _, _)| !*game);
+    // Stable: games first, by time played; otherwise in order of first sound.
+    let rank = |exe: &str| played.iter().position(|(e, _)| e == exe).unwrap_or(usize::MAX);
+    others.sort_by_key(|(game, exe, _)| (!*game, rank(exe)));
     let mut out = vec![mic, comms];
     out.extend(others.into_iter().map(|(_, _, t)| t));
     out
@@ -226,17 +224,14 @@ pub fn save_range(from_us: i64, to_us: i64) -> Result<Saved> {
             None => false,
         })
         .collect();
-    let tracks = tracks(&cfg, &streams);
-
-    // Name: the game in the clip, if any, and when it starts.
+    // The game played most in the clip names and tags it; no game at all is "Desktop".
+    let played = crate::activity::games_in(&cfg.buffer_dir, clip_start, clip_end);
+    let tracks = tracks(&cfg, &streams, &played);
+    let names: Vec<String> = played.iter().map(|(exe, _)| pretty(exe)).collect();
+    let label = names.first().cloned().unwrap_or_else(|| DESKTOP.into());
     let start_local = chrono::DateTime::from_timestamp_micros(clip_start)
         .unwrap_or_default()
         .with_timezone(&chrono::Local);
-    let label = tracks
-        .iter()
-        .find(|t| t.title.ends_with("(game)"))
-        .map(|t| t.title.trim_end_matches(" (game)").to_string())
-        .unwrap_or_else(|| "Clip".into());
     let dir = cfg.year_dir(chrono::Datelike::year(&start_local));
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let out = unique(dir.join(format!("{label} {}.mp4", start_local.format("%Y-%m-%d %H-%M-%S"))));
@@ -276,7 +271,14 @@ pub fn save_range(from_us: i64, to_us: i64) -> Result<Saved> {
             cmd.arg(format!("-metadata:s:a:{i}")).arg(format!("handler_name={title}"));
             cmd.arg(format!("-disposition:a:{i}")).arg(if i == 0 { "default" } else { "0" });
         }
-        cmd.args(["-metadata", "comment=clipback", "-movflags", "+faststart"]);
+        // Genre = the game (Explorer can show, sort and group by it); the exe names are in the
+        // comment so the clips window can show icons.
+        let exes: Vec<&str> = played.iter().map(|(e, _)| e.as_str()).collect();
+        cmd.arg("-metadata").arg(format!("title={label} · {}", start_local.format("%-d %b %Y %H:%M")));
+        cmd.arg("-metadata").arg(format!("genre={label}"));
+        cmd.arg("-metadata").arg(format!("description={}", if names.is_empty() { DESKTOP.to_string() } else { names.join(", ") }));
+        cmd.arg("-metadata").arg(format!("comment=clipback; games={}", exes.join(",")));
+        cmd.args(["-movflags", "+faststart"]);
         cmd.arg(&out).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         let output = cmd.output().context("running ffmpeg")?;
         if !output.status.success() {
@@ -331,7 +333,7 @@ mod tests {
         let cfg = Config::default();
         let streams =
             vec![stream("app", "brave.exe", 0), stream("app", "discord.exe", 0), stream("mic", "mic", 0), stream("app", "brave.exe", 5)];
-        let t = tracks(&cfg, &streams);
+        let t = tracks(&cfg, &streams, &[]);
         let titles: Vec<&str> = t.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["Mic", "Communication", "Brave"]);
         assert_eq!(t[0].streams, [2]);
@@ -339,7 +341,7 @@ mod tests {
         assert_eq!(t[2].streams, [0, 3], "both Brave streams on one track");
 
         // Nothing playing still gives Mic and Communication.
-        assert_eq!(tracks(&cfg, &[]).len(), 2);
+        assert_eq!(tracks(&cfg, &[], &[]).len(), 2);
     }
 
     #[test]

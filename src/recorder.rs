@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const RETRY_DELAY: Duration = Duration::from_secs(2);
-/// How often to look for games that have their own bitrate.
+/// How often to check whether the game being played (and so the bitrate) changed.
 const GAME_CHECK: Duration = Duration::from_secs(3);
 
 fn ffmpeg_log() -> PathBuf {
@@ -101,13 +101,9 @@ fn sleep_while(d: Duration, keep_waiting: impl Fn() -> bool) {
     }
 }
 
-/// The encoder settings for what's running now (the process list is only read if a game has its own bitrate).
+/// The encoder settings for the game being played now.
 fn encode_now(cfg: &Config) -> Encode {
-    if cfg.video.game_bitrates.is_empty() {
-        return cfg.video.encode([]);
-    }
-    let procs = lifelog::watcher::processes();
-    cfg.video.encode(procs.values().map(|p| p.exe.as_str()))
+    cfg.video.encode(crate::activity::current().as_deref())
 }
 
 /// Everything that needs a new ffmpeg when it changes.
@@ -165,7 +161,7 @@ pub fn run() {
                 restart = !same_capture(&cfg, &new) || new_enc != enc;
                 if restart && new_enc.game != enc.game {
                     log(&match &new_enc.game {
-                        Some(g) => format!("{g} is running: switching to {} Mbps", new_enc.bitrate_mbps),
+                        Some(g) => format!("{} bitrate: {} Mbps", crate::apps::display_name(g), new_enc.bitrate_mbps),
                         None => format!("back to {} Mbps", new_enc.bitrate_mbps),
                     });
                 }

@@ -222,7 +222,8 @@ fn run(job: u64, req: &Request, src: &Path, info: &clips::Info) -> Result<(PathB
     if audio.is_some() {
         cmd.args(["-map", "[a]", "-c:a", "aac", "-b:a", &format!("{audio_kbps}k"), "-ar", "48000"]);
     }
-    cmd.args(["-movflags", "+faststart", "-metadata", "comment=clipback edit"]).arg(&out);
+    // The source's tags (game, title) carry over by default.
+    cmd.args(["-movflags", "+faststart"]).arg(&out);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().context("starting ffmpeg")?;
     util::job().adopt(&child);

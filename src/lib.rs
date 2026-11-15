@@ -2,6 +2,7 @@
 //! app's audio (and the mic) to its own stream, and a hotkey saves the last stretch as an MP4 with
 //! one audio track per source.
 
+pub mod activity;
 pub mod apps;
 pub mod audio;
 pub mod clips;
@@ -61,6 +62,7 @@ pub fn run_service() -> Result<()> {
 
     let recorder = std::thread::Builder::new().name("video".into()).spawn(recorder::run)?;
     let audio = std::thread::Builder::new().name("audio".into()).spawn(audio::run)?;
+    std::thread::Builder::new().name("activity".into()).spawn(activity::run)?;
     std::thread::Builder::new().name("prune".into()).spawn(|| {
         let mut ticks = 0u32;
         while !state::stopping() {
@@ -71,6 +73,9 @@ pub fn run_service() -> Result<()> {
             state::RING_BYTES.store(ring::size(&cfg.buffer_dir), Ordering::Relaxed);
             if ticks % 180 == 0 {
                 clips::tidy_cache(); // hourly
+                if let Some(oldest) = ring::video_segments(&cfg.video_ring()).first() {
+                    activity::prune(&cfg.buffer_dir, oldest.start_us);
+                }
             }
             ticks += 1;
             for _ in 0..20 {

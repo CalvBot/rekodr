@@ -44,6 +44,8 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 5. **Done.** Monitor picker (DXGI outputs in ddagrab's order, with names), per-game bitrate, advanced encoder options.
    Recording at a lower resolution was tried and dropped: ffmpeg 8.1's `scale_d3d11` fails on ddagrab frames here,
    and scaling on the CPU would cost games frames.
+   Clips are tagged with the game played most in them (or Desktop), from a log of the game in front kept in the
+   buffer; the clips window filters by game.
 6. Next: a "custom range" Stream Deck button (open the editor on the last 10 min of the
    buffer without saving first, reserved on the Stream Deck), start-with-Windows installer step.
 

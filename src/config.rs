@@ -38,7 +38,7 @@ pub struct Video {
     pub codec: String,
     pub bitrate_mbps: f64,
     pub draw_mouse: bool,
-    /// Bitrate while a game is running (lower-case exe → Mbps). The highest running one wins.
+    /// Bitrate while this game is being played (lower-case exe → Mbps).
     pub game_bitrates: BTreeMap<String, f64>,
     /// The settings below only apply when this is on; otherwise the defaults are used.
     pub advanced: bool,
@@ -68,20 +68,13 @@ pub struct Encode {
 }
 
 impl Video {
-    /// `running` is the lower-case exe names running now.
-    pub fn encode<'a>(&self, running: impl IntoIterator<Item = &'a str>) -> Encode {
-        let mut bitrate = self.bitrate_mbps;
-        let mut game = None;
-        let mut best = 0.0;
-        for exe in running {
-            if let Some(&mbps) = self.game_bitrates.get(exe) {
-                if mbps > best {
-                    best = mbps;
-                    bitrate = mbps;
-                    game = Some(exe.to_string());
-                }
-            }
-        }
+    /// `playing` is the game being played (lower-case exe), if any.
+    pub fn encode(&self, playing: Option<&str>) -> Encode {
+        let own = playing.and_then(|g| self.game_bitrates.get(g).map(|m| (g.to_string(), *m)));
+        let (game, bitrate) = match own {
+            Some((g, m)) => (Some(g), m),
+            None => (None, self.bitrate_mbps),
+        };
         let d = Video::default();
         let src = if self.advanced { self } else { &d };
         Encode {
@@ -425,11 +418,11 @@ mod tests {
         v.game_bitrates.insert("cs2.exe".into(), 40.0);
         v.game_bitrates.insert("overwatch.exe".into(), 35.0);
         v.preset = "p7".into();
-        let e = v.encode(["explorer.exe", "overwatch.exe", "cs2.exe"]);
-        assert_eq!((e.bitrate_mbps, e.game.as_deref()), (40.0, Some("cs2.exe")));
+        let e = v.encode(Some("overwatch.exe"));
+        assert_eq!((e.bitrate_mbps, e.game.as_deref()), (35.0, Some("overwatch.exe")));
         assert_eq!(e.preset, "p4"); // advanced is off
         v.advanced = true;
-        let e = v.encode(["explorer.exe"]);
+        let e = v.encode(Some("notepad.exe"));
         assert_eq!((e.bitrate_mbps, e.game, e.preset.as_str()), (20.0, None, "p7"));
     }
 

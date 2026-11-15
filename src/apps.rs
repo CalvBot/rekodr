@@ -33,6 +33,54 @@ fn list(table: &toml::Table, section: &str, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn lifelog_port() -> u16 {
+    lifelog_toml().and_then(|t| t.get("api_port").and_then(|v| v.as_integer())).unwrap_or(47800) as u16
+}
+
+/// Game names from lifelog's scan of the launchers (exe → "Counter-Strike 2"), asked for at most
+/// every 10 minutes. Empty if lifelog isn't running.
+static NAMES: Mutex<Option<(Instant, BTreeMap<String, String>)>> = Mutex::new(None);
+
+fn game_names() -> BTreeMap<String, String> {
+    if let Some((at, names)) = NAMES.lock().unwrap().as_ref() {
+        if at.elapsed() < Duration::from_secs(600) {
+            return names.clone();
+        }
+    }
+    let mut names = BTreeMap::new();
+    if let Ok(body) = lifelog::api::call(lifelog_port(), "GET", "/api/installed") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            for g in v["games"].as_array().into_iter().flatten() {
+                let Some(name) = g["name"].as_str() else { continue };
+                for exe in g["exes"].as_array().into_iter().flatten().filter_map(|e| e.as_str()) {
+                    names.entry(exe.to_lowercase()).or_insert_with(|| name.to_string());
+                }
+            }
+        }
+    }
+    *NAMES.lock().unwrap() = Some((Instant::now(), names.clone()));
+    names
+}
+
+/// A readable name for an app: the launcher's game name if known, else "Overwatch" from overwatch.exe.
+pub fn display_name(exe: &str) -> String {
+    let exe = exe.to_lowercase();
+    if let Some(name) = game_names().get(&exe) {
+        return clean(name);
+    }
+    let stem = exe.trim_end_matches(".exe");
+    let mut chars = stem.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+        None => stem.to_string(),
+    }
+}
+
+/// Safe in a file name.
+fn clean(name: &str) -> String {
+    name.chars().filter(|c| !r#"<>:"/\|?*"#.contains(*c) && !c.is_control()).collect::<String>().trim().to_string()
+}
+
 /// (games, not games) from lifelog's settings.
 pub fn games() -> (Vec<String>, Vec<String>) {
     let mut cache = GAMES.lock().unwrap();
@@ -67,9 +115,7 @@ fn encode(exe: &str) -> String {
 /// Marks an app as a game or not, in lifelog's list. Goes through the running lifelog service
 /// so its own copy stays right; edits its settings file directly if it isn't running.
 fn set_game(exe: &str, game: bool) -> anyhow::Result<()> {
-    let port = lifelog_toml()
-        .and_then(|t| t.get("api_port").and_then(|v| v.as_integer()))
-        .unwrap_or(47800) as u16;
+    let port = lifelog_port();
     let path = format!("/{}?app={}", if game { "game" } else { "not-game" }, encode(exe));
     if lifelog::api::call(port, "POST", &path).is_err() {
         let (mut games, mut not) = games();

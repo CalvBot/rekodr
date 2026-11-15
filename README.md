@@ -30,8 +30,13 @@ Default hotkeys: **F13** = last 30 s, **F14** = 2 min, **F15** = 10 min, **F16**
 **Tray icon:** red = recording, grey with a pause sign = paused. Left click opens the clips window; right click has
 Save last 30s/2m/10m/30m, Pause/Resume, Options, Open clips folder and Quit.
 
-Clips go to `<Videos>\Clips <year>\`, named after the game being played (`Overwatch 2026-11-15 21-04-10.mp4`)
-or `Clip …` otherwise. A notification and a beep confirm each save.
+Clips go to `<Videos>\Clips <year>\`, named after the game being played (`Overwatch 2026-11-15 21-04-10.mp4`),
+or `Desktop …` if no game was open (whatever else made sound). A notification and a beep confirm each save.
+
+**Which game:** every 2 s clipback notes the game being played: the game in front, else the last one played if it's
+still running, else any running game, else the desktop. A clip is named after the game played most in it and tagged
+in the MP4: **Genre** = the game (Explorer can sort and group by it), **Title** = "Overwatch · 15 Nov 2026 21:04",
+**Description** = every game in the clip. Edits keep the tags. The clips window has a filter button per game.
 
 ## Audio tracks
 Every clip has the same layout, so editing templates never shift:
@@ -46,14 +51,14 @@ games (the list is shared with lifelog) and which are ignored (never recorded).
 
 ## Clips window
 A small local web UI (127.0.0.1:47820, in an Edge app window):
-- **Clips:** newest first; hover a thumbnail and move left/right to scrub; click to play; Copy (puts the file on
+- **Clips:** newest first, filter by game; hover a thumbnail and move left/right to scrub; click to play; Copy (puts the file on
   the clipboard, pastes into Discord), Edit, Folder.
 - **Editor:** trim with the yellow handles (or I/O), zoom with keyframes (set zoom, drag the picture to aim; eases
   smoothly between keyframes), volume and mute per track, export at full quality or sized for Discord (10/50 MB).
   Exports land next to the clip and can go straight to the clipboard.
 - **Options:** app categories, hotkeys, monitor (by name, size and refresh rate), fps, bitrate, format, buffer size
-  and folders, start with Windows. **Per-game bitrate:** a game can have its own bitrate, used while it's running
-  (the highest wins if several run; switching costs about a second of footage). **Advanced:** NVENC preset P1–P7,
+  and folders, start with Windows. **Per-game bitrate:** a game can have its own bitrate, used while it's the game
+  being played (switching costs about a second of footage). **Advanced:** NVENC preset P1–P7,
   VBR / CBR / constant quality, peak bitrate and adaptive quantisation.
 
 ## Settings

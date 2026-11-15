@@ -22,6 +22,12 @@ pub struct Info {
     pub fps: f64,
     /// Audio track titles, in order.
     pub tracks: Vec<String>,
+    /// The clip's game ("Desktop" if none), from its tags. None for clips from before tagging.
+    #[serde(default)]
+    pub game: Option<String>,
+    /// The game's exe, for its icon.
+    #[serde(default)]
+    pub game_exe: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -33,6 +39,21 @@ pub struct Clip {
     /// Modified time, ms since 1970.
     pub mtime: i64,
     pub info: Option<Info>,
+    /// What the clip is of: a game's name or "Desktop".
+    pub game: String,
+    pub game_exe: Option<String>,
+}
+
+/// Untagged clips: "Overwatch 2026-11-15 21-04-10 2" → "Overwatch" (the old "Clip …" names had
+/// no game); anything not named by clipback → "Other".
+fn game_from_name(name: &str) -> String {
+    let words: Vec<&str> = name.split(' ').collect();
+    let date = words.iter().position(|w| w.len() == 10 && w.as_bytes()[4] == b'-' && w.as_bytes()[7] == b'-');
+    match date.map(|i| words[..i].join(" ")) {
+        Some(label) if label.is_empty() || label == "Clip" => crate::export::DESKTOP.to_string(),
+        Some(label) => label,
+        None => "Other".to_string(),
+    }
 }
 
 fn thumbs_dir() -> PathBuf {
@@ -92,12 +113,18 @@ pub fn list() -> Vec<Clip> {
                 continue;
             }
             let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let info = cached_info(&path);
+            let game = info.as_ref().and_then(|i| i.game.clone()).unwrap_or_else(|| game_from_name(&stem));
+            let game_exe = info.as_ref().and_then(|i| i.game_exe.clone());
             out.push(Clip {
                 id: format!("{name}/{}", f.file_name().to_string_lossy()),
-                name: path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
+                name: stem,
                 size: meta.len(),
                 mtime,
-                info: cached_info(&path),
+                info,
+                game,
+                game_exe,
             });
         }
     }
@@ -123,7 +150,7 @@ pub fn info(path: &Path) -> Result<Info> {
         return Ok(info);
     }
     let out = crate::util::command(crate::config::ffprobe_for(&state::ffmpeg()))
-        .args(["-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height,avg_frame_rate,r_frame_rate:stream_tags=title,handler_name"])
+        .args(["-v", "error", "-show_entries", "format=duration:format_tags=genre,comment:stream=codec_type,width,height,avg_frame_rate,r_frame_rate:stream_tags=title,handler_name"])
         .args(["-of", "json"])
         .arg(path)
         .stdin(Stdio::null())
@@ -146,7 +173,20 @@ pub fn info(path: &Path) -> Result<Info> {
             })
             .unwrap_or(0.0),
         tracks: Vec::new(),
+        game: None,
+        game_exe: None,
     };
+    let tags = &v["format"]["tags"];
+    let comment = tags["comment"].as_str().unwrap_or("");
+    if comment.starts_with("clipback") {
+        info.game = tags["genre"].as_str().filter(|g| !g.is_empty()).map(str::to_string);
+        info.game_exe = comment
+            .split("games=")
+            .nth(1)
+            .and_then(|g| g.split([',', ';']).next())
+            .filter(|e| !e.trim().is_empty())
+            .map(|e| e.trim().to_string());
+    }
     for (n, s) in streams.iter().filter(|s| s["codec_type"] == "audio").enumerate() {
         let tags = &s["tags"];
         let title = tags["title"].as_str().or(tags["handler_name"].as_str()).filter(|t| !t.is_empty() && *t != "SoundHandler");
@@ -267,5 +307,13 @@ mod tests {
         }
         assert_eq!(ratio("60/1"), 60.0);
         assert_eq!(ratio("30000/1001").round(), 30.0);
+    }
+
+    #[test]
+    fn game_from_old_names() {
+        assert_eq!(game_from_name("Counter-Strike 2 2026-11-15 21-04-10"), "Counter-Strike 2");
+        assert_eq!(game_from_name("Overwatch 2026-11-15 21-04-10 discord"), "Overwatch");
+        assert_eq!(game_from_name("Clip 2026-11-15 21-04-10"), "Desktop");
+        assert_eq!(game_from_name("my edit"), "Other");
     }
 }
