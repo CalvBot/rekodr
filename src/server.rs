@@ -379,12 +379,16 @@ fn edge() -> Option<std::path::PathBuf> {
 /// Opens a page of the UI in its own small window (Edge app mode with a separate profile, so the
 /// editor's playback can be kept out of the recording), or the default browser.
 pub fn open_window(page: &str) {
-    // The native clips window, when it's installed next to us (PLAN.md "Native window app").
-    // Options and the editor are still web pages until they're rebuilt there too.
-    if page == "/" {
+    // The native window, when it's installed next to us (PLAN.md "Native window app"): the clips
+    // screen, or Options with `--options`. The editor is still a web page until it's rebuilt there too.
+    if page == "/" || page == "/options" {
         let ui = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("clipback-ui.exe")));
         if let Some(ui) = ui.filter(|p| p.is_file()) {
-            if std::process::Command::new(&ui).spawn().is_ok() {
+            let mut cmd = std::process::Command::new(&ui);
+            if page == "/options" {
+                cmd.arg("--options");
+            }
+            if cmd.spawn().is_ok() {
                 return;
             }
         }
