@@ -232,7 +232,46 @@ struct Paths {
 // Screens, one struct each, owned by the file of the same name (included from ui.cpp).
 struct Library { i32 page; };   // library.cpp: clips and sessions, the player
 struct Editor { bool open; };   // editor.cpp: trim, volumes, Keep and Share
-struct Timeline { i32 zoom; };  // timeline.cpp: the buffer and a range to save
+// timeline.cpp: the buffer and a range to save. Times are wall-clock µs; 0 = not set.
+struct TimelineRow {   // one audio row: every stream of one exe (or the mic)
+    char exe[64];
+    char name[64];
+};
+
+struct TimelineFrame { // a preview frame uploaded to the GPU
+    i64                       key;     // what it shows (see tl_frame_key), 0 = free slot
+    i64                       time_us;
+    ID3D11ShaderResourceView *srv;
+    u32                       used;    // for evicting the least recently shown
+};
+
+enum TimelineDrag : u8 { TL_DRAG_NONE, TL_DRAG_NEW, TL_DRAG_IN, TL_DRAG_OUT, TL_DRAG_PAN };
+
+struct Timeline {
+    BufferIdx    *idx;          // the index drawn (heap, swapped with the worker's; freed while hidden)
+    bool          loaded;       // idx holds a read, not just zeroes
+    u32           ticks;        // 1 s ticks while shown, for the 3 s refresh
+    i64           view_end_us, view_span_us;
+    bool          follow;       // the right edge stays at now
+    i64           sel_in, sel_out;
+    i64           playhead_us;  // 0 = the newest footage
+    TimelineDrag  drag;
+    i64           drag_anchor_us, drag_view_end;
+    f32           drag_x;
+    bool          dragged;      // moved far enough to be a drag, not a click
+    bool          hovering;
+    i64           hover_us;
+    TimelineRow   rows[64];
+    i32           row_count;
+    i32           row_scroll;   // first audio row shown
+    i16           stream_row[1024]; // the row of each idx->streams entry, -1 = none
+    TimelineFrame frames[8];
+    u32           frame_clock;
+    i64           pending_key, failed_key, shown_key;
+    char          session_name[128];
+    u32           job;          // the last save started here
+    bool          job_edit;     // open the editor when it's done
+};
 struct OptionsUi { i32 tab; };  // options.cpp: every setting
 struct Sessions { i32 count; }; // sessions.cpp: detecting sessions, the save popup, Not saved
 
