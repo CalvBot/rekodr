@@ -32,7 +32,7 @@ you use both). Add more in Options.
 **Tray icon:** the clipback replay arrow; red dot = recording, grey with a pause sign = paused. Left click opens the clips window; right click has
 Save last 30s/2m/10m/30m, Pause/Resume, Options, Open clips folder and Quit.
 
-Clips go to `<Videos>\Clips <year>\`, named after the game being played (`Overwatch 2026-11-15 21-04-10.mp4`),
+Clips go to `<Videos>\Clips\<year>\`, named after the game being played (`Overwatch 2026-11-15 21-04-10.mp4`),
 or `Desktop …` if no game was open (whatever else made sound). A notification and a beep confirm each save.
 
 **Which game:** every 2 s clipback notes the game being played: the game in front, else the last one played if it's
@@ -74,7 +74,7 @@ Edit opens the native editor in the same window: trim, keyframed zoom, track vol
 win\build.ps1                 # publish to win\dist\clipback-ui.exe (needs the .NET 9 SDK)
 win\build.ps1 -SelfContained  # bundle the runtime instead (bigger exe, no .NET install needed)
 win\dist\clipback-ui.exe      # needs clipback running; a second launch focuses the open window
-win\dist\clipback-ui.exe --edit "Clips 2026/Clip.mp4" --t 5   # open a clip in the editor (the open window's, if any)
+win\dist\clipback-ui.exe --edit "Clips/2026/Clip.mp4" --t 5   # open a clip in the editor (the open window's, if any)
 ```
 The default build is framework-dependent, like Compress for Discord, so it needs the
 [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). It reads the port from `config.toml`.

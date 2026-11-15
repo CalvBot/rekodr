@@ -1,4 +1,4 @@
-//! The saved clips: listing the `Clips <year>` folders, probing them, and the scrub-strip
+//! The saved clips: listing the `Clips\<year>` folders, probing them, and the scrub-strip
 //! thumbnails (one image of 24 frames across the clip), cached in %LOCALAPPDATA%\clipback\thumbs.
 
 use crate::state;
@@ -74,13 +74,19 @@ fn key(path: &Path) -> String {
     format!("{:016x}", h.finish())
 }
 
-/// A clip id from the UI → its path, refusing anything outside the `Clips <year>` folders.
+fn is_year(name: &str) -> bool {
+    name.len() == 4 && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A clip id from the UI ("Clips/2026/x.mp4") → its path, refusing anything outside the `Clips\<year>` folders.
 pub fn resolve(id: &str) -> Result<PathBuf> {
     let rel = Path::new(id);
-    let mut parts = rel.components();
-    let ok_first = matches!(parts.next(), Some(Component::Normal(d)) if d.to_string_lossy().starts_with("Clips "));
-    let ok_rest = rel.components().skip(1).all(|c| matches!(c, Component::Normal(_)));
-    if !ok_first || !ok_rest || rel.components().count() < 2 || !is_video(rel) {
+    let parts: Vec<_> = rel.components().collect();
+    let ok = parts.len() == 3
+        && parts.iter().all(|c| matches!(c, Component::Normal(_)))
+        && parts[0].as_os_str() == "Clips"
+        && is_year(&parts[1].as_os_str().to_string_lossy());
+    if !ok || !is_video(rel) {
         bail!("not a clip: {id}");
     }
     // Ids use "/"; rebuild with backslashes so Explorer's /select (which wants a real Windows path) finds it.
@@ -96,14 +102,43 @@ pub fn id_of(path: &Path) -> Option<String> {
     Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
+/// Moves the old `Clips <year>` folders to `Clips\<year>`. A whole folder is renamed when its new place is free;
+/// otherwise its entries move one by one (skipping any name already taken) and the old folder goes once empty.
+pub fn migrate(clips_dir: &Path) {
+    let Ok(dirs) = std::fs::read_dir(clips_dir) else { return };
+    for dir in dirs.flatten() {
+        let name = dir.file_name().to_string_lossy().to_string();
+        let Some(year) = name.strip_prefix("Clips ").filter(|y| is_year(y)) else { continue };
+        if !dir.path().is_dir() {
+            continue;
+        }
+        let to = clips_dir.join("Clips").join(year);
+        let moved = if to.exists() {
+            let mut all = true;
+            for e in std::fs::read_dir(dir.path()).into_iter().flatten().flatten() {
+                let dest = to.join(e.file_name());
+                all &= !dest.exists() && std::fs::rename(e.path(), dest).is_ok();
+            }
+            all && std::fs::remove_dir(dir.path()).is_ok()
+        } else {
+            std::fs::create_dir_all(clips_dir.join("Clips")).is_ok() && std::fs::rename(dir.path(), &to).is_ok()
+        };
+        crate::util::log(&if moved {
+            format!("moved {name} to Clips\\{year}")
+        } else {
+            format!("couldn't fully move {name} to Clips\\{year} (something open, or names already taken)")
+        });
+    }
+}
+
 /// Every clip, newest first.
 pub fn list() -> Vec<Clip> {
-    let root = state::cfg().clips_dir;
+    let root = state::cfg().clips_root();
     let mut out = Vec::new();
     let Ok(dirs) = std::fs::read_dir(&root) else { return out };
     for dir in dirs.flatten() {
         let name = dir.file_name().to_string_lossy().to_string();
-        if !name.starts_with("Clips ") || !dir.path().is_dir() {
+        if !is_year(&name) || !dir.path().is_dir() {
             continue;
         }
         let Ok(files) = std::fs::read_dir(dir.path()) else { continue };
@@ -119,7 +154,7 @@ pub fn list() -> Vec<Clip> {
             let game = info.as_ref().and_then(|i| i.game.clone()).unwrap_or_else(|| game_from_name(&stem));
             let game_exe = info.as_ref().and_then(|i| i.game_exe.clone());
             out.push(Clip {
-                id: format!("{name}/{}", f.file_name().to_string_lossy()),
+                id: format!("Clips/{name}/{}", f.file_name().to_string_lossy()),
                 name: stem,
                 size: meta.len(),
                 mtime,
@@ -303,7 +338,7 @@ mod tests {
 
     #[test]
     fn ids_stay_inside_the_clip_folders() {
-        for bad in ["../x.mp4", "Clips 2026/../../x.mp4", "C:/x.mp4", "Other/x.mp4", "Clips 2026/x.exe", "x.mp4"] {
+        for bad in ["../x.mp4", "Clips/2026/../../x.mp4", "C:/x.mp4", "Other/x.mp4", "Clips/2026/x.exe", "x.mp4", "Clips 2026/x.mp4", "Clips/Old/x.mp4", "Clips/2026/a/x.mp4"] {
             assert!(resolve(bad).is_err(), "{bad}");
         }
         assert_eq!(ratio("60/1"), 60.0);

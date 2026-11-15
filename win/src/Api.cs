@@ -33,7 +33,7 @@ sealed class LiveAudio
 
 sealed class Clip
 {
-    /// <summary>Path under the clips folder with forward slashes, e.g. "Clips 2026/Overwatch 2026-11-15 21-04-10.mp4"</summary>
+    /// <summary>Path under the clips folder with forward slashes, e.g. "Clips/2026/Overwatch 2026-11-15 21-04-10.mp4"</summary>
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public long Size { get; set; }

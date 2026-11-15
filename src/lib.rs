@@ -48,6 +48,7 @@ pub fn run_service() -> Result<()> {
     let ffmpeg = cfg.find_ffmpeg()?;
     std::fs::create_dir_all(cfg.video_ring()).with_context(|| format!("creating {}", cfg.buffer_dir.display()))?;
     std::fs::create_dir_all(cfg.audio_ring())?;
+    clips::migrate(&cfg.clips_dir);
     state::init(cfg.clone(), ffmpeg);
     encoders::start(); // about a second; the recorder waits for it
     if cfg.start_with_windows {

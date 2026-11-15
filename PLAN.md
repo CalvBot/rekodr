@@ -55,7 +55,7 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
 ## Decisions made
 - **Format: H.264** by default (AV1 doesn't open in Premiere). HEVC/AV1 still selectable.
 - 20 Mbps, 60 fps, 200 GB cap (~22 h). All in Options.
-- Clips go to `<Videos>\Clips <year>`, alongside the existing yearly folders.
+- Clips go to `<Videos>\Clips\<year>`; the old `Clips <year>` folders are moved there on start.
 - One MP4 per clip; MP4 has no practical audio-track limit, so every app that made sound gets its own track.
 - Audio code is clipback's own (lifelog's capture is speech-oriented and 16 kHz mono); lifelog's process watching,
   icons, game list and clipboard helper are reused through a path dependency.

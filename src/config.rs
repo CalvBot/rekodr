@@ -13,7 +13,7 @@ pub struct Config {
     /// Rolling buffer (video and audio). Everything in here is clipback's and gets deleted as it wraps.
     #[serde(alias = "ring_dir")]
     pub buffer_dir: PathBuf,
-    /// Clips are saved to `<clips_dir>\Clips <year>`.
+    /// Clips are saved to `<clips_dir>\Clips\<year>`.
     pub clips_dir: PathBuf,
     /// Buffer cap in GB; the oldest footage is deleted beyond it.
     #[serde(alias = "max_ring_gb")]
@@ -289,8 +289,13 @@ impl Config {
         (self.max_buffer_gb * 1e9) as u64
     }
 
+    /// `<clips_dir>\Clips`, holding a folder per year.
+    pub fn clips_root(&self) -> PathBuf {
+        self.clips_dir.join("Clips")
+    }
+
     pub fn year_dir(&self, year: i32) -> PathBuf {
-        self.clips_dir.join(format!("Clips {year}"))
+        self.clips_root().join(year.to_string())
     }
 
     pub fn video_ring(&self) -> PathBuf {

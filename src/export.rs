@@ -190,7 +190,7 @@ pub fn save_last(secs: u64) -> Result<Saved> {
     save_range(to - secs as i64 * 1_000_000, to)
 }
 
-/// Saves wall-clock range [from, to] into `Clips <year>`.
+/// Saves wall-clock range [from, to] into `Clips\<year>`.
 pub fn save_range(from_us: i64, to_us: i64) -> Result<Saved> {
     let cfg = state::cfg();
     let ffmpeg = state::ffmpeg();

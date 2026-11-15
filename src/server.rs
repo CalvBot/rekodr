@@ -250,7 +250,10 @@ fn handle(mut req: Request) {
             .and_then(|v| serde_json::from_value::<crate::config::Config>(v).context("bad settings"))
             .and_then(state::set_cfg)
         {
-            Ok(()) => ok_json(json!({ "ok": true })),
+            Ok(()) => {
+                crate::clips::migrate(&state::cfg().clips_dir);
+                ok_json(json!({ "ok": true }))
+            }
             Err(e) => err_json(400, format!("{e:#}")),
         },
         (false, "/api/app-reveal") => match query(&url, "exe").and_then(|e| lifelog::apps::path_of(&e)) {
@@ -502,7 +505,7 @@ mod tests {
 
     #[test]
     fn decodes_queries() {
-        assert_eq!(query("/x?id=Clips%202026%2Fa+b.mp4&i=2", "id").unwrap(), "Clips 2026/a b.mp4");
+        assert_eq!(query("/x?id=Clips%2F2026%2Fa+b.mp4&i=2", "id").unwrap(), "Clips/2026/a b.mp4");
         assert_eq!(query("/x?id=a&i=2", "i").unwrap(), "2");
         assert_eq!(decode("100%"), "100%");
         assert_eq!(decode("%E2%9C%93"), "✓");
@@ -517,8 +520,8 @@ mod tests {
 
     #[test]
     fn editor_pages_open_the_native_editor() {
-        let a = editor_args("/editor?id=Clips%202026%2Fa%20b.mp4&t=12.5").unwrap();
-        assert_eq!(a, ["--edit", "Clips 2026/a b.mp4", "--t", "12.5"]);
+        let a = editor_args("/editor?id=Clips%2F2026%2Fa%20b.mp4&t=12.5").unwrap();
+        assert_eq!(a, ["--edit", "Clips/2026/a b.mp4", "--t", "12.5"]);
         assert_eq!(editor_args("/editor?id=x.mp4").unwrap(), ["--edit", "x.mp4"]);
         assert!(editor_args("/editor?t=3").is_none());
         assert!(editor_args("/options").is_none());

@@ -538,7 +538,7 @@ sealed class OptionsView : Panel
         var cy = b.ContentTop(w);
         var inner = w - 2 * b.PadX;
         var row = FormRow(b, ref cy, inner, "Clips folder", null, (clipsDir, 0), (pickClips, 34));
-        AddText(b, clipsDir.Left, cy - this.Px(RowGap96 + 2), this.Px(18), $"Clips go in “Clips {DateTime.Now.Year}” etc. inside it.", 12, Theme.Dim, null);
+        AddText(b, clipsDir.Left, cy - this.Px(RowGap96 + 2), this.Px(18), $"Clips go in “Clips\\{DateTime.Now.Year}” etc. inside it.", 12, Theme.Dim, null);
         cy += this.Px(16);
         FormRow(b, ref cy, inner, "Buffer folder", null, (bufferDir, 0), (pickBuffer, 34));
         FormRow(b, ref cy, inner, "Buffer size", null, (maxGb, 90), ("unit", "GB"));

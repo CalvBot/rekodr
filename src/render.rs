@@ -204,12 +204,7 @@ fn run(job: u64, req: &Request, src: &Path, info: &clips::Info) -> Result<(PathB
     }
 
     let stem = src.file_stem().unwrap_or_default().to_string_lossy().to_string();
-    let suffix = match req.preset.as_str() {
-        "discord10" => " (10MB)",
-        "discord50" => " (50MB)",
-        _ => " edit",
-    };
-    let out = unique(src.with_file_name(format!("{stem}{suffix}.mp4")));
+    let out = unique(src.with_file_name(format!("{stem} edit.mp4")));
     let tmp = std::env::temp_dir().join(format!("clipback-render-{}-{job}.txt", std::process::id()));
     std::fs::write(&tmp, &graph)?;
 
