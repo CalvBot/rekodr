@@ -379,6 +379,16 @@ fn edge() -> Option<std::path::PathBuf> {
 /// Opens a page of the UI in its own small window (Edge app mode with a separate profile, so the
 /// editor's playback can be kept out of the recording), or the default browser.
 pub fn open_window(page: &str) {
+    // The native clips window, when it's installed next to us (PLAN.md "Native window app").
+    // Options and the editor are still web pages until they're rebuilt there too.
+    if page == "/" {
+        let ui = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("clipback-ui.exe")));
+        if let Some(ui) = ui.filter(|p| p.is_file()) {
+            if std::process::Command::new(&ui).spawn().is_ok() {
+                return;
+            }
+        }
+    }
     let url = format!("http://127.0.0.1:{}{page}", state::cfg().port);
     let Some(edge) = edge() else {
         let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", &url]).spawn();

@@ -83,7 +83,8 @@ pub fn resolve(id: &str) -> Result<PathBuf> {
     if !ok_first || !ok_rest || rel.components().count() < 2 || !is_video(rel) {
         bail!("not a clip: {id}");
     }
-    let path = state::cfg().clips_dir.join(rel);
+    // Ids use "/"; rebuild with backslashes so Explorer's /select (which wants a real Windows path) finds it.
+    let path: PathBuf = std::iter::once(state::cfg().clips_dir.into_os_string()).chain(rel.iter().map(|c| c.to_os_string())).collect();
     if !path.is_file() {
         bail!("clip not found: {id}");
     }
