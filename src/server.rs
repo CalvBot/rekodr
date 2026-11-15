@@ -235,6 +235,13 @@ fn handle(mut req: Request) {
             Ok(()) => ok_json(json!({ "ok": true })),
             Err(e) => err_json(400, format!("{e:#}")),
         },
+        (false, "/api/app-reveal") => match query(&url, "exe").and_then(|e| lifelog::apps::path_of(&e)) {
+            Some(p) => {
+                util::reveal(&p);
+                ok_json(json!({ "ok": true }))
+            }
+            None => err_json(404, "Not sure where that app is. It's found once it runs while clipback or lifelog is on."),
+        },
         (false, "/api/app-category") => {
             let exe = query(&url, "exe").unwrap_or_default();
             let cat = match query(&url, "category").as_deref() {

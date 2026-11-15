@@ -20,7 +20,7 @@
 <div class="options">
   <section class="box">
     <h2 data-icon="audio-lines">Apps and audio tracks</h2>
-    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.<br>Games can have their own <b>bitrate</b>, used while it's the game being played (blank = the normal one). Switching costs about a second of footage.<br>Apps heard for the first time are marked <span class="newtag">New</span> and listed first: pick a category for each.</p>
+    <p class="help">Every clip has these audio tracks: <b>1 Mix</b> (everything) · <b>2 Mic</b> · <b>3 Communication</b> (all chat apps together) · then <b>one track per app</b>, games first. Ignored apps are never recorded. The game list is shared with lifelog.<br>Games can have their own <b>bitrate</b>, used while it's the game being played (blank = the normal one). Switching costs about a second of footage.<br>Apps heard for the first time are marked <span class="newtag">New</span> and listed first: pick a category for each. Right-click an app to open its file location.</p>
     <div style="display:flex;gap:6px;margin-bottom:8px">
       <input id="newApp" type="text" placeholder="Add an app, e.g. obs64.exe" style="flex:1">
       <button id="addApp" data-icon="plus">Add as communication</button>
@@ -179,11 +179,31 @@ function appRow(a, playing) {
   const box = h("span", { class: "rate", style: a.category === "game" ? "" : "visibility:hidden" },
     h("input", { type: "number", min: 1, max: 300, step: 1, value: gameRates[a.exe] ?? "", placeholder: cfg ? cfg.video.bitrate_mbps : "",
       title: "Bitrate while this game runs (blank = normal)", onchange: e => setRate(a.exe, e.target.value) }), " Mbps");
-  return h("tr", {},
+  return h("tr", { oncontextmenu: e => appMenu(e, a.exe) },
     h("td", {}, h("img", { src: `/api/icon?exe=${enc(a.exe)}`, alt: "", onerror: e => e.target.style.visibility = "hidden" })),
     h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, ""), a.new ? h("span", { class: "newtag", title: "Pick a category. Until then it gets its own track." }, "New") : ""), heard),
     h("td", { style: "text-align:right;white-space:nowrap" }, box, seg));
 }
+
+// Right-click an app: a small menu at the pointer.
+function appMenu(e, exe) {
+  e.preventDefault();
+  closeMenu();
+  const reveal = async () => {
+    closeMenu();
+    try { await api(`/api/app-reveal?exe=${enc(exe)}`, { method: "POST" }); } catch (err) { toast(err.message, true); }
+  };
+  const menu = h("div", { class: "menu", id: "menu" }, h("button", { icon: "folder-open", onclick: reveal }, "Open file location"));
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(e.clientX, innerWidth - r.width - 4) + "px";
+  menu.style.top = Math.min(e.clientY, innerHeight - r.height - 4) + "px";
+}
+function closeMenu() { document.getElementById("menu")?.remove(); }
+addEventListener("mousedown", e => { if (!e.target.closest("#menu")) closeMenu(); });
+addEventListener("keydown", e => e.key === "Escape" && closeMenu());
+addEventListener("blur", closeMenu);
+addEventListener("scroll", closeMenu, true);
 
 function fillList(key, list, playing, empty) {
   const count = Math.max(1, Math.ceil(list.length / PER_PAGE));
