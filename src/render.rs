@@ -168,6 +168,10 @@ fn unique(path: PathBuf) -> PathBuf {
 }
 
 fn run(job: u64, req: &Request, src: &Path, info: &clips::Info) -> Result<(PathBuf, bool)> {
+    // Exports are always H.264, on the same vendor recording would use for it.
+    let video = state::cfg().video;
+    let vendor = crate::encoders::choose(&video.encoder, "h264", &crate::encoders::detected())
+        .context("no working H.264 encoder found")?;
     let start = req.start.max(0.0);
     let end = req.end.min(info.duration.max(req.end));
     let dur = end - start;
@@ -192,7 +196,7 @@ fn run(job: u64, req: &Request, src: &Path, info: &clips::Info) -> Result<(PathB
             vf.push("fps=30".into());
         }
     }
-    vf.push("format=yuv420p".into());
+    vf.push(format!("format={}", crate::encoders::render_pix_fmt(vendor)));
     let mut graph = format!("[0:v]{}[v]", vf.join(","));
     if let Some(a) = &audio {
         graph.push_str(";\n");
@@ -214,11 +218,7 @@ fn run(job: u64, req: &Request, src: &Path, info: &clips::Info) -> Result<(PathB
     cmd.args(["-ss", &format!("{start:.3}"), "-i"]).arg(src);
     cmd.args(["-t", &format!("{dur:.3}")]);
     cmd.arg("-/filter_complex").arg(&tmp);
-    cmd.args(["-map", "[v]", "-c:v", "h264_nvenc", "-preset", "p5"]);
-    match video_kbps {
-        Some(k) => cmd.args(["-rc", "vbr", "-multipass", "fullres", "-b:v", &format!("{k}k"), "-maxrate", &format!("{}k", k * 3 / 2), "-bufsize", &format!("{}k", k * 2)]),
-        None => cmd.args(["-rc", "vbr", "-cq", "19", "-b:v", "0"]),
-    };
+    cmd.args(["-map", "[v]"]).args(crate::encoders::render_args(vendor, video_kbps));
     if audio.is_some() {
         cmd.args(["-map", "[a]", "-c:a", "aac", "-b:a", &format!("{audio_kbps}k"), "-ar", "48000"]);
     }
