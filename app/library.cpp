@@ -1540,4 +1540,3 @@ static void screen_library()
     if (lib.page != old_page) lib_drop_queued_thumbs();
 }
 
-static bool view_tab(const char *label, bool active, f32 w) { return kit_button(label, active ? KIT_PRIMARY : KIT_SECONDARY, ImVec2(w, 0)); }
