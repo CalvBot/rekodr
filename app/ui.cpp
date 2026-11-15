@@ -242,12 +242,13 @@ static void ui_show(Screen screen)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Screens. Each module's screen fills these in; for now they're placeholders.
+// Screens, each in its own file. They can use everything above (theme colours, fonts, ui_wake).
 
-static void screen_library() { ImGui::TextDisabled("Library: clips and sessions."); }
-static void screen_timeline() { ImGui::TextDisabled("Timeline: the buffer."); }
-static void screen_editor() { ImGui::TextDisabled("Editor."); }
-static void screen_options() { ImGui::TextDisabled("Options."); }
+#include "sessions.cpp"
+#include "library.cpp"
+#include "editor.cpp"
+#include "timeline.cpp"
+#include "options.cpp"
 
 struct HelpRow { const char *keys, *what; };
 struct HelpSection { const char *title; const HelpRow *rows; i32 count; };
@@ -360,6 +361,7 @@ static void ui_frame()
     case SCREEN_OPTIONS: screen_options(); break;
     }
     help_window();
+    sessions_popup(); // "Save that session?" when a session has just ended
     ImGui::End();
 
     ImGui::Render();

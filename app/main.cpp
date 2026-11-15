@@ -10,6 +10,8 @@
 
 static const wchar_t *MSG_CLASS = L"clipback.msg";
 
+#define TIMER_TICK 1 // once a second on the main thread, for anything that checks the clock
+
 // Run on the main thread for every command, whatever it came from.
 static void run_command(const char *text)
 {
@@ -64,6 +66,9 @@ static void handle_event(const Event &e)
 static LRESULT CALLBACK msg_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    case WM_TIMER:
+        if (wp == TIMER_TICK) sessions_tick();
+        return 0;
     case WM_APP_EVENT: {
         Event e;
         while (event_take(&e)) handle_event(e);
@@ -203,6 +208,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     if (!ui_init()) log_line("the window couldn't be created; clipback keeps recording without it");
     tray_init(g_app.msg_hwnd);
+    SetTimer(g_app.msg_hwnd, TIMER_TICK, 1000, 0);
     // Test copies (CLIPBACK_HOME) leave the hotkeys to the real clipback.
     if (!home[0]) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();

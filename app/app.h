@@ -229,6 +229,13 @@ struct Paths {
     Path share_dir;  // %TEMP%\clipback\share
 };
 
+// Screens, one struct each, owned by the file of the same name (included from ui.cpp).
+struct Library { i32 page; };   // library.cpp: clips and sessions, the player
+struct Editor { bool open; };   // editor.cpp: trim, volumes, Keep and Share
+struct Timeline { i32 zoom; };  // timeline.cpp: the buffer and a range to save
+struct OptionsUi { i32 tab; };  // options.cpp: every setting
+struct Sessions { i32 count; }; // sessions.cpp: detecting sessions, the save popup, Not saved
+
 struct App {
     Paths    paths;
     Config   config;
@@ -236,6 +243,11 @@ struct App {
     Audio    audio;
     Saving   saving;
     Ui       ui;
+    Library  library;
+    Editor   editor;
+    Timeline timeline;
+    OptionsUi options;
+    Sessions sessions;
     HWND     msg_hwnd;  // hidden message window: tray, hotkeys, commands, worker events
     bool     quitting;
 };
