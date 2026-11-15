@@ -7,6 +7,7 @@ pub mod apps;
 pub mod audio;
 pub mod clips;
 pub mod config;
+pub mod encoders;
 pub mod export;
 pub mod hotkey;
 pub mod monitors;
@@ -48,6 +49,7 @@ pub fn run_service() -> Result<()> {
     std::fs::create_dir_all(cfg.video_ring()).with_context(|| format!("creating {}", cfg.buffer_dir.display()))?;
     std::fs::create_dir_all(cfg.audio_ring())?;
     state::init(cfg.clone(), ffmpeg);
+    encoders::start(); // about a second; the recorder waits for it
     if cfg.start_with_windows {
         let _ = startup::set(true); // keeps the path current if the exe moved
     }

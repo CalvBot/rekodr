@@ -34,15 +34,17 @@ pub struct Video {
     /// Monitor: DXGI output index on the main GPU (0 is normally the main screen).
     pub output_idx: u32,
     pub fps: u32,
-    /// h264 (edits anywhere, e.g. Premiere), hevc or av1. All NVENC.
+    /// h264 (edits anywhere, e.g. Premiere), hevc or av1.
     pub codec: String,
+    /// "auto" (the first that works of NVENC, AMF, QSV, CPU), or force "nvenc", "amf", "qsv" or "cpu".
+    pub encoder: String,
     pub bitrate_mbps: f64,
     pub draw_mouse: bool,
     /// Bitrate while this game is being played (lower-case exe → Mbps).
     pub game_bitrates: BTreeMap<String, f64>,
     /// The settings below only apply when this is on; otherwise the defaults are used.
     pub advanced: bool,
-    /// NVENC preset p1 (fastest) … p7 (best quality).
+    /// Preset p1 (fastest) … p7 (best quality), NVENC's scale; mapped onto the other encoders'.
     pub preset: String,
     /// "vbr", "cbr" or "cq" (constant quality: the bitrate becomes a cap).
     pub rate_control: String,
@@ -135,6 +137,7 @@ impl Default for Video {
             output_idx: 0,
             fps: 60,
             codec: "h264".into(),
+            encoder: "auto".into(),
             bitrate_mbps: 20.0,
             draw_mouse: true,
             game_bitrates: BTreeMap::new(),
@@ -253,6 +256,9 @@ impl Config {
         if !matches!(self.video.codec.as_str(), "h264" | "hevc" | "av1") {
             bail!("codec must be h264, hevc or av1 (got {:?})", self.video.codec);
         }
+        if !matches!(self.video.encoder.as_str(), "auto" | "nvenc" | "amf" | "qsv" | "cpu") {
+            bail!("encoder must be auto, nvenc, amf, qsv or cpu (got {:?})", self.video.encoder);
+        }
         if self.video.fps == 0 || self.video.fps > 240 || self.video.bitrate_mbps <= 0.0 {
             bail!("fps must be 1–240 and bitrate above zero");
         }
@@ -277,14 +283,6 @@ impl Config {
             parse_action(&h.action)?;
         }
         Ok(())
-    }
-
-    pub fn encoder(&self) -> &'static str {
-        match self.video.codec.as_str() {
-            "hevc" => "hevc_nvenc",
-            "av1" => "av1_nvenc",
-            _ => "h264_nvenc",
-        }
     }
 
     pub fn max_ring_bytes(&self) -> u64 {
@@ -426,6 +424,22 @@ mod tests {
     }
 
     #[test]
+    fn encoder_setting() {
+        // Configs from before the setting existed get "auto".
+        let old: Config = toml::from_str("[video]
+codec = \"hevc\"
+").unwrap();
+        assert_eq!((old.video.codec.as_str(), old.video.encoder.as_str()), ("hevc", "auto"));
+        let mut cfg = Config::default();
+        for e in ["auto", "nvenc", "amf", "qsv", "cpu"] {
+            cfg.video.encoder = e.into();
+            cfg.validate().unwrap();
+        }
+        cfg.video.encoder = "h264_nvenc".into();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
     fn default_round_trips() {
         let cfg = Config::default();
         let text = toml::to_string_pretty(&cfg).unwrap();
@@ -433,6 +447,7 @@ mod tests {
         back.validate().unwrap();
         assert_eq!(back.hotkeys, cfg.hotkeys);
         assert_eq!(back.video.codec, "h264");
+        assert_eq!(back.video.encoder, "auto");
         assert!(back.audio.communication_apps.contains(&"discord.exe".to_string()));
     }
 }

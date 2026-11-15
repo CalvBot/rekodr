@@ -21,6 +21,8 @@ pub static RING_BYTES: AtomicU64 = AtomicU64::new(0);
 pub static VIDEO_LIVE: AtomicBool = AtomicBool::new(false);
 /// What the recorder is running right now: (Mbps, game whose bitrate is in use).
 pub static VIDEO_ENCODE: Mutex<Option<(f64, Option<String>)>> = Mutex::new(None);
+/// The ffmpeg encoder the recorder is running, e.g. "h264_nvenc".
+pub static VIDEO_ENCODER: Mutex<Option<&'static str>> = Mutex::new(None);
 
 pub fn init(cfg: Config, ffmpeg: PathBuf) {
     *CONFIG.write().unwrap() = Some(cfg);

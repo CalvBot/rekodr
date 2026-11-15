@@ -4,6 +4,7 @@
 //! bitrate starts or quits.
 
 use crate::config::{Config, Encode, SEGMENT_SECS};
+use crate::encoders::{self, Vendor};
 use crate::state;
 use crate::util::{self, log};
 use anyhow::{Context, Result};
@@ -21,36 +22,32 @@ fn ffmpeg_log() -> PathBuf {
     crate::config::local_dir().join("ffmpeg-video.log")
 }
 
-/// ddagrab → NVENC → 2 s segments. Frame 0's wall-clock time is printed once (the `print` in
-/// setpts) and saved as the run's anchor, which lines the video up with the audio streams.
-fn spawn(cfg: &Config, enc: &Encode, ffmpeg: &Path, run: &Path) -> Result<Child> {
+/// Everything before the output files: ddagrab → the encoder → 2 s segments. Frame 0's
+/// wall-clock time is printed once (the `print` in setpts) and saved as the run's anchor, which
+/// lines the video up with the audio streams.
+pub fn args(cfg: &Config, enc: &Encode, vendor: Vendor) -> Vec<String> {
     let v = &cfg.video;
-    let kbps = |mbps: f64| format!("{}k", (mbps * 1000.0).round() as u64);
-    let bitrate = kbps(enc.bitrate_mbps);
-    let peak = kbps(enc.bitrate_mbps * if enc.rate_control == "cbr" { 1.0 } else { enc.peak_factor });
     let graph = format!(
-        "ddagrab=output_idx={}:framerate={}:draw_mouse={},setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'",
-        v.output_idx, v.fps, v.draw_mouse as u8
+        "ddagrab=output_idx={}:framerate={}:draw_mouse={},setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'{}",
+        v.output_idx,
+        v.fps,
+        v.draw_mouse as u8,
+        encoders::capture_filter(vendor)
     );
+    let s = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let mut a = s(&["-hide_banner", "-nostats", "-loglevel", "info", "-init_hw_device", "d3d11va", "-filter_complex"]);
+    a.push(graph);
+    a.extend(encoders::record_args(vendor, &v.codec, enc));
+    // No B-frames and a keyframe every segment: easy to cut, quick to scrub in an editor.
+    a.extend(s(&["-bf", "0", "-g", &(v.fps * SEGMENT_SECS).to_string()]));
+    a.extend(s(&["-f", "segment", "-segment_time", &SEGMENT_SECS.to_string(), "-segment_format", "matroska"]));
+    a.extend(s(&["-reset_timestamps", "0", "-segment_list_type", "csv", "-segment_list"]));
+    a
+}
+
+fn spawn(cfg: &Config, enc: &Encode, vendor: Vendor, ffmpeg: &Path, run: &Path) -> Result<Child> {
     let mut cmd = util::command(ffmpeg);
-    cmd.args(["-hide_banner", "-nostats", "-loglevel", "info"])
-        .args(["-init_hw_device", "d3d11va"])
-        .args(["-filter_complex", &graph])
-        .args(["-c:v", cfg.encoder(), "-preset", &enc.preset]);
-    match enc.rate_control.as_str() {
-        // Constant quality: the bitrate is only a cap, so quiet scenes take far less space.
-        "cq" => cmd.args(["-rc", "vbr", "-cq", &enc.cq.to_string(), "-b:v", "0", "-maxrate", &peak, "-bufsize", &peak]),
-        "cbr" => cmd.args(["-rc", "cbr", "-b:v", &bitrate, "-maxrate", &bitrate, "-bufsize", &bitrate]),
-        _ => cmd.args(["-rc", "vbr", "-b:v", &bitrate, "-maxrate", &peak, "-bufsize", &peak]),
-    };
-    if enc.spatial_aq {
-        cmd.args(["-spatial-aq", "1"]);
-    }
-    cmd
-        // No B-frames and a keyframe every segment: easy to cut, quick to scrub in an editor.
-        .args(["-bf", "0", "-g", &(v.fps * SEGMENT_SECS).to_string()])
-        .args(["-f", "segment", "-segment_time", &SEGMENT_SECS.to_string(), "-segment_format", "matroska"])
-        .args(["-reset_timestamps", "0", "-segment_list_type", "csv", "-segment_list"])
+    cmd.args(args(cfg, enc, vendor))
         .arg(run.join("list.csv"))
         .arg(run.join("v_%05d.mkv"))
         .stdin(Stdio::piped())
@@ -112,6 +109,7 @@ fn same_capture(a: &Config, b: &Config) -> bool {
     x.output_idx == y.output_idx
         && x.fps == y.fps
         && x.codec == y.codec
+        && x.encoder == y.encoder
         && x.draw_mouse == y.draw_mouse
         && a.buffer_dir == b.buffer_dir
 }
@@ -122,6 +120,7 @@ pub fn run() {
     let _ = std::fs::write(ffmpeg_log(), "");
     // Only changes of state are logged, so hours on the lock screen don't flood the log.
     let mut healthy = true;
+    let mut last_encoder = "";
     while !state::stopping() {
         if state::paused() {
             sleep_while(Duration::from_secs(1), || state::paused() && !state::stopping());
@@ -130,10 +129,26 @@ pub fn run() {
         let cfg = state::cfg();
         let mut generation = state::VIDEO_GENERATION.load(Ordering::Relaxed);
         let enc = encode_now(&cfg);
+        let Some(vendor) = encoders::pick(&cfg.video) else {
+            if healthy {
+                log(&format!("no working {} encoder found (see the encoders line above)", cfg.video.codec));
+                healthy = false;
+            }
+            sleep_while(RETRY_DELAY, || !state::stopping());
+            continue;
+        };
+        let name = vendor.encoder(&cfg.video.codec);
+        if name != last_encoder {
+            log(&match vendor {
+                Vendor::Cpu => format!("encoding with {name} on the CPU (no GPU encoder): this costs game frames"),
+                _ => format!("encoding with {name}"),
+            });
+            last_encoder = name;
+        }
         let run = cfg.video_ring().join(chrono::Local::now().format("%Y%m%d_%H%M%S_%3f").to_string());
         let mut child = match std::fs::create_dir_all(&run)
             .map_err(anyhow::Error::from)
-            .and_then(|_| spawn(&cfg, &enc, &state::ffmpeg(), &run))
+            .and_then(|_| spawn(&cfg, &enc, vendor, &state::ffmpeg(), &run))
         {
             Ok(c) => c,
             Err(e) => {
@@ -147,6 +162,7 @@ pub fn run() {
         };
         let stderr = watch_stderr(&mut child, run.clone());
         *state::VIDEO_ENCODE.lock().unwrap() = Some((enc.bitrate_mbps, enc.game.clone()));
+        *state::VIDEO_ENCODER.lock().unwrap() = Some(name);
         let started = Instant::now();
         let mut checked = Instant::now();
         let mut announced = false;
@@ -158,7 +174,8 @@ pub fn run() {
                 checked = Instant::now();
                 let new = state::cfg();
                 let new_enc = encode_now(&new);
-                restart = !same_capture(&cfg, &new) || new_enc != enc;
+                // A detection retry can find a GPU whose driver wasn't ready at start.
+                restart = !same_capture(&cfg, &new) || new_enc != enc || encoders::pick(&new.video) != Some(vendor);
                 if restart && new_enc.game != enc.game {
                     log(&match &new_enc.game {
                         Some(g) => format!("{} bitrate: {} Mbps", crate::apps::display_name(g), new_enc.bitrate_mbps),
@@ -185,6 +202,7 @@ pub fn run() {
         };
         state::VIDEO_LIVE.store(false, Ordering::Relaxed);
         *state::VIDEO_ENCODE.lock().unwrap() = None;
+        *state::VIDEO_ENCODER.lock().unwrap() = None;
         let last = stderr.join().unwrap_or_default();
         if let Some(status) = exit {
             if healthy {
@@ -196,5 +214,34 @@ pub fn run() {
             }
             sleep_while(RETRY_DELAY, || !state::stopping());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole NVENC command as it was before other vendors, so it can't drift.
+    #[test]
+    fn nvenc_command_unchanged() {
+        let cfg = Config::default();
+        let a = args(&cfg, &cfg.video.encode(None), Vendor::Nvenc).join(" ");
+        assert_eq!(
+            a,
+            "-hide_banner -nostats -loglevel info -init_hw_device d3d11va -filter_complex \
+             ddagrab=output_idx=0:framerate=60:draw_mouse=1,setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)' \
+             -c:v h264_nvenc -preset p4 -rc vbr -b:v 20000k -maxrate 40000k -bufsize 40000k \
+             -bf 0 -g 120 -f segment -segment_time 2 -segment_format matroska \
+             -reset_timestamps 0 -segment_list_type csv -segment_list"
+        );
+    }
+
+    #[test]
+    fn cpu_downloads_frames() {
+        let mut cfg = Config::default();
+        cfg.video.codec = "av1".into();
+        let a = args(&cfg, &cfg.video.encode(None), Vendor::Cpu).join(" ");
+        assert!(a.contains("print(RTCTIME)\\,0)',hwdownload,format=bgra,format=yuv420p -c:v libsvtav1 -preset 10"), "{a}");
+        assert!(a.contains("-bf 0 -g 120 -f segment -segment_time 2"), "{a}");
     }
 }
