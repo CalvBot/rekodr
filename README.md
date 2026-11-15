@@ -7,7 +7,8 @@ stretch as an H.264 MP4 with one audio track per source, ready for Premiere or D
 See [PLAN.md](PLAN.md) for the design and what's next.
 
 ## Requirements
-- Windows 10/11, an NVIDIA GPU (NVENC), Edge (for the clips window)
+- Windows 10/11, Edge (for the clips window). Any GPU: NVIDIA (NVENC), AMD (AMF) or Intel (Quick Sync) encodes,
+  otherwise the CPU does (x264 / x265 / SVT-AV1), which costs game frames
 - ffmpeg 7+ (`winget install Gyan.FFmpeg`)
 - Rust to build. clipback uses [lifelog](../lifelog) as a path dependency (app watching, icons, game list, clipboard),
   so both repos must sit side by side.
@@ -58,8 +59,8 @@ A small local web UI (127.0.0.1:47820, in an Edge app window):
   smoothly between keyframes), volume and mute per track, export at full quality or sized for Discord (10/50 MB).
   Exports land next to the clip and can go straight to the clipboard.
 - **Options:** app categories, hotkeys, monitor (by name, size and refresh rate), fps, bitrate, format, buffer size
-  and folders, start with Windows. **Per-game bitrate:** a game can have its own bitrate, used while it's the game
-  being played (switching costs about a second of footage). **Advanced:** NVENC preset P1–P7,
+  and folders, encoder (auto or forced), start with Windows. **Per-game bitrate:** a game can have its own bitrate, used while it's the game
+  being played (switching costs about a second of footage). **Advanced:** preset P1–P7 (NVENC's scale, mapped onto the other encoders),
   VBR / CBR / constant quality, peak bitrate and adaptive quantisation.
 
 ## Settings
@@ -71,7 +72,9 @@ The app and tray icons are drawn by `assets/make_icons.py` (Pillow) and embedded
 [Lucide](https://lucide.dev) (ISC), bundled in `ui/icons.js` with only the ones used.
 
 ## How it works
-- **Video:** ffmpeg `ddagrab` (GPU capture) → NVENC, no B-frames, keyframe every 2 s → 2 s `.mkv` segments. The
+- **Video:** ffmpeg `ddagrab` (GPU capture) → the GPU's encoder, no B-frames, keyframe every 2 s → 2 s `.mkv`
+  segments. At start each encoder gets a one-frame test encode on the capture GPU, and the first that works of
+  NVENC → AMF → QSV → CPU is used (`video.encoder` forces one; `/api/encoders` shows what was found). The
   wall-clock time of the first frame is saved with each run, so footage is placed exactly in time.
 - **Audio:** WASAPI process loopback per app (child processes included) plus the mic, each to its own Opus segment
   stream stamped from the audio clock. Streams start when an app plays sound and end 30 s after it goes quiet or exits.

@@ -29,7 +29,7 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
   stream with timestamps. One capture core feeding both tools avoids doubling up.
 - **Export:** pick segments covering the range → video is stream-copied (instant), cut to the nearest keyframe (or
   re-encode the first 2 s for a frame-exact start) → chosen audio tracks mixed at chosen volumes → MP4. Size presets
-  re-encode on NVENC to hit the target size. Result copied to the clipboard as a file (pastes into Discord).
+  re-encode on the detected H.264 encoder to hit the target size. Result copied to the clipboard as a file (pastes into Discord).
 - **App:** Rust background service (capture, buffer, export, tray, hotkeys, local HTTP API) + a window app that only
   runs while it's open (today an Edge app window; moving to native, see "Native window app" below). Stream Deck keys
   run `clipbackw <command>`.
@@ -48,7 +48,7 @@ Audio tracks add ~0.1 GB/hour each. A RAM buffer (like OBS) would only fit a few
    and scaling on the CPU would cost games frames.
    Clips are tagged with the game played most in them (or Desktop), from a log of the game in front kept in the
    buffer; the clips window filters by game.
-6. Next: the native window app and encoder auto-detect (below).
+6. Next: the native window app (below). **Done:** encoder auto-detect (below).
 7. Later: a "custom range" Stream Deck button (open the editor on the last 10 min of the
    buffer without saving first, reserved on the Stream Deck), start-with-Windows installer step.
 
@@ -93,14 +93,19 @@ it's opened.
 **Targets:** the window appears in under 300 ms. It uses well under 100 MB while open and nothing once closed. No
 WebView2, Edge or extra runtime: a self-contained exe.
 
-## Encoder auto-detect (next, alongside)
-Recording and editor exports are NVIDIA-only today (`*_nvenc`; `render.rs` hard-codes `h264_nvenc`). Plan:
-- On start, try each encoder with a one-frame test encode, in order: NVENC → AMD AMF → Intel QSV → CPU
-  (`libx264`/`libx265`/`libsvtav1`). Use the first that works for the chosen codec, and show it in Options with an
-  override.
-- Capture stays `ddagrab` (D3D11, any GPU). AMF takes D3D11 frames directly. QSV needs
-  `hwmap=derive_device=qsv`. CPU needs `hwdownload,format=bgra` and warns that it costs game frames.
-- Advanced options map per vendor (presets and rate-control names differ). Options shows only what the detected
-  encoder supports.
-- Editor exports and size presets use the same detection.
-- Test on this PC by forcing each path. AMD and Intel need someone else's PC, or a VM with GPU passthrough for QSV.
+## Encoder auto-detect (done)
+Recording and editor exports used to be NVIDIA-only. Now (`src/encoders.rs`):
+- [x] At start, each encoder gets a one-frame test encode, in order NVENC → AMD AMF → Intel QSV → CPU
+  (`libx264`/`libx265`/`libsvtav1`), through the same D3D11 device ddagrab captures on (so an AMD iGPU next to an
+  NVIDIA card doesn't count). The first that works for the codec is used; `video.encoder` forces one, and Options
+  has a select for it. Finding no GPU is retried for two minutes (drivers can load after clipback at boot).
+- [x] Capture stays `ddagrab`. NVENC and AMF take its D3D11 frames directly; QSV maps them
+  (`hwmap=derive_device=qsv,format=qsv,vpp_qsv=format=nv12`); the CPU path downloads them (`hwdownload,format=bgra`)
+  and logs that it costs game frames.
+- [x] Presets and rate control map per vendor (AMF `-quality`/`-rc`, QSV presets and QVBR, x264/x265 presets and
+  capped CRF; SVT-AV1 has no peak cap or fast CBR, so VBR there).
+- [x] Editor exports and size presets use the detected H.264 encoder.
+- [ ] Options still shows every advanced setting; hide what the detected encoder ignores (e.g. adaptive
+  quantisation on QSV and CPU).
+- [ ] AMF and QSV recording are only unit-tested: this PC's AMD iGPU can't take the NVIDIA card's frames, and it
+  has no Intel GPU. They need someone else's PC, or a VM with GPU passthrough for QSV.
