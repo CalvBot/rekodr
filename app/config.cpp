@@ -242,7 +242,6 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps, 0 = normal)\n");
     for (i32 i = 0; i < c.app_count; i++) {
         const AppInfo &a = c.apps[i];
-        if (a.category == CAT_NONE) continue; // new apps are found again when they play sound
         fprintf(f, "app = %s | %s | %s | %s | %g\n", a.exe.s, a.name.s, category_name(a.category),
                 session_mode_name(a.session_mode), a.bitrate_mbps);
     }
