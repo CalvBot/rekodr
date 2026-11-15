@@ -11,6 +11,7 @@ enum EventKind : u8 {
     EV_RECORDER,
     EV_AUDIO,
     EV_SAVE,
+    EV_TIMELINE,
 };
 
 struct Event {

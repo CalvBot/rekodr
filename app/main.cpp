@@ -58,6 +58,7 @@ static void handle_event(const Event &e)
     case EV_RECORDER: recorder_on_event(e); break;
     case EV_AUDIO: audio_on_event(e); break;
     case EV_SAVE: save_on_event(e); break;
+    case EV_TIMELINE: timeline_on_event(e); break;
     default: break;
     }
     ui_wake();
@@ -67,7 +68,10 @@ static LRESULT CALLBACK msg_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_TIMER:
-        if (wp == TIMER_TICK) sessions_tick();
+        if (wp == TIMER_TICK) {
+            sessions_tick();
+            timeline_tick();
+        }
         return 0;
     case WM_APP_EVENT: {
         Event e;

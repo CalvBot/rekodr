@@ -280,6 +280,17 @@ static void help_window()
         };
         static const HelpRow window[] = {{"F1", "This help"}, {"Esc", "Close this help"},
                                            {"Esc", "Options, setting a hotkey's keys: cancel"}};
+        static const HelpRow timeline[] = {
+            {"Drag on the bar", "Select a range (drag its edges to adjust)"},
+            {"Click on the bar", "Move the playhead (the preview frame)"},
+            {"Mouse wheel", "Zoom in and out around the mouse"},
+            {"Right or middle drag", "Pan earlier or later"},
+            {"Left / Right", "Move the selection 1 s (with Shift 10 s)"},
+            {"I / O", "Set the start / end at the mouse, or the playhead"},
+            {"Enter", "Save the selection as a clip"},
+            {"+ / -", "Zoom in / out"},
+            {"Home", "Back to now"},
+        };
         ImGui::PushFont(g_font_bold);
         ImGui::TextDisabled("HOTKEYS");
         ImGui::PopFont();
@@ -291,6 +302,7 @@ static void help_window()
         ImGui::Spacing();
         help_section("ANYWHERE (STREAM DECK)", anywhere, COUNT(anywhere));
         help_section("WINDOW", window, COUNT(window));
+        help_section("TIMELINE", timeline, COUNT(timeline));
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
         if (!open) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
