@@ -358,7 +358,10 @@ static void ui_frame()
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::IsPopupOpen("Help")) g_app.ui.help_open = true;
+    if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::IsPopupOpen("Help")) {
+        g_app.ui.help_open = true;
+        ui_wake(6); // a modal takes a few frames to open and size itself; don't wait for the mouse to move
+    }
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);

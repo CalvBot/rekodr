@@ -30,7 +30,7 @@ static bool seg_number(const char *name, u32 *out)
     return true;
 }
 
-struct ScratchFile { u32 num; u64 size; char name[20]; };
+struct ScratchFile { u32 num; u64 size; i64 written_us; char name[20]; };
 struct ScratchLine { u32 num; f64 start, end; char name[20]; };
 struct ScratchDir  { char name[128]; };
 
@@ -92,6 +92,8 @@ static void list_media(const Path &dir, const wchar_t *ext, BufferScratch *s)
         wide_to_utf8(fd.cFileName, f->name, COUNT(f->name));
         if (!seg_number(f->name, &f->num)) continue;
         f->size = ((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        i64 t = ((i64)fd.ftLastWriteTime.dwHighDateTime << 32) | fd.ftLastWriteTime.dwLowDateTime;
+        f->written_us = (t - 116444736000000000LL) / 10;
         s->file_count++;
     } while (FindNextFileW(h, &fd));
     FindClose(h);
@@ -278,6 +280,9 @@ static void read_audio(const Path &audio_dir, BufferIdx *b, BufferScratch *s)
             if (b->audio_seg_count == COUNT(b->audio_segs)) { log_line("buffer: more than %d audio segments; the rest left out", COUNT(b->audio_segs)); break; }
             const ScratchFile *file = &s->files[f];
             const ScratchLine *line = find_line(s, file->num);
+            // Unlisted and not written for a minute: left by an ffmpeg that was killed (a live one flushes every
+            // second and starts a new file every 10 s). It's often empty, and ffmpeg can't open it.
+            if (!line && now_us() - file->written_us > 60 * 1000000LL) continue;
             AudioSeg *a = &b->audio_segs[b->audio_seg_count++];
             *a = {};
             str_set(a->name, file->name);
