@@ -24,6 +24,12 @@
       <button id="addApp">Add as communication</button>
     </div>
     <table class="apps"><tbody id="apps"></tbody></table>
+    <div class="pager" id="appsPager"></div>
+    <button id="ignoredToggle" class="linkish"></button>
+    <div id="ignoredBox" hidden>
+      <table class="apps"><tbody id="ignored"></tbody></table>
+      <div class="pager" id="ignoredPager"></div>
+    </div>
   </section>
 
   <section class="box">
@@ -114,21 +120,57 @@ $("saveBtn").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
-async function loadApps() {
-  const { apps, live } = await api("/api/apps");
-  const playing = new Set(live.map(a => a.exe));
-  const body = $("apps");
+// Both lists show PER_PAGE rows, padded with blank rows, so the page never changes height
+// and the buttons never move under the mouse when an app changes list.
+const PER_PAGE = 10;
+const pages = { apps: 0, ignored: 0 };
+let lastApps = null;
+
+function appRow(a, playing) {
+  const seg = h("div", { class: "seg" }, CATS.map(([cat, label]) =>
+    h("button", { class: (a.category === cat ? "on " : "") + cat, onclick: () => setCat(a.exe, cat) }, label)));
+  const heard = playing.has(a.exe) ? h("span", { class: "live" }, "● recording now")
+    : h("span", { class: "dim small" }, a.last_heard ? "heard " + ago(a.last_heard / 1000) : "not heard yet");
+  return h("tr", {},
+    h("td", {}, h("img", { src: `/api/icon?exe=${enc(a.exe)}`, alt: "", onerror: e => e.target.style.visibility = "hidden" })),
+    h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, "")), heard),
+    h("td", { style: "text-align:right" }, seg));
+}
+
+function fillList(key, list, playing, empty) {
+  const count = Math.max(1, Math.ceil(list.length / PER_PAGE));
+  pages[key] = Math.min(pages[key], count - 1);
+  const body = $(key);
   body.textContent = "";
-  for (const a of apps) {
-    const seg = h("div", { class: "seg" }, CATS.map(([cat, label]) =>
-      h("button", { class: (a.category === cat ? "on " : "") + cat, onclick: () => setCat(a.exe, cat) }, label)));
-    const heard = playing.has(a.exe) ? h("span", { class: "live" }, "● recording now")
-      : h("span", { class: "dim small" }, a.last_heard ? "heard " + ago(a.last_heard / 1000) : "not heard yet");
-    body.append(h("tr", {},
-      h("td", {}, h("img", { src: `/api/icon?exe=${enc(a.exe)}`, alt: "", onerror: e => e.target.style.visibility = "hidden" })),
-      h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, "")), heard),
-      h("td", { style: "text-align:right" }, seg)));
+  const shown = list.slice(pages[key] * PER_PAGE, (pages[key] + 1) * PER_PAGE);
+  shown.forEach(a => body.append(appRow(a, playing)));
+  for (let i = shown.length; i < PER_PAGE; i++) {
+    body.append(h("tr", { class: "pad" }, h("td", { colspan: 3 }, i === 0 && !list.length ? empty : "")));
   }
+  const go = d => { pages[key] += d; render(); };
+  const pager = $(key + "Pager");
+  pager.textContent = "";
+  pager.append(
+    h("button", { onclick: () => go(-1), disabled: pages[key] === 0, title: "Previous page" }, "‹"),
+    h("span", { class: "dim small" }, `${pages[key] + 1} / ${count}`),
+    h("button", { onclick: () => go(1), disabled: pages[key] >= count - 1, title: "Next page" }, "›"));
+}
+
+function render() {
+  if (!lastApps) return;
+  const { apps, live } = lastApps;
+  const playing = new Set(live.map(a => a.exe));
+  const ignored = apps.filter(a => a.category === "ignored");
+  fillList("apps", apps.filter(a => a.category !== "ignored"), playing, "No apps heard yet.");
+  fillList("ignored", ignored, playing, "Nothing ignored.");
+  $("ignoredToggle").textContent = `${$("ignoredBox").hidden ? "▸" : "▾"} Ignored apps (${ignored.length})`;
+}
+
+$("ignoredToggle").onclick = () => { $("ignoredBox").hidden = !$("ignoredBox").hidden; render(); };
+
+async function loadApps() {
+  lastApps = await api("/api/apps");
+  render();
 }
 async function setCat(exe, cat) {
   try { await api(`/api/app-category?exe=${enc(exe)}&category=${cat}`, { method: "POST" }); await loadApps(); }

@@ -122,7 +122,13 @@ section.box p.help { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
 .form label { color: var(--dim); }
 .form input[type=text] { width: 100%; }
 .apps { width: 100%; border-collapse: collapse; }
-.apps td { padding: 5px 4px; border-top: 1px solid var(--line); }
+.apps td { padding: 0 4px; height: 44px; border-top: 1px solid var(--line); }
+.apps tr.pad td { color: var(--dim); font-size: 13px; }
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px 0 4px; border-top: 1px solid var(--line); }
+.pager button { min-width: 34px; font-size: 16px; line-height: 1; padding: 4px 0; }
+.pager span { min-width: 44px; text-align: center; }
+button.linkish { background: transparent; border: 0; padding: 6px 0; color: var(--dim); font-size: 13px; }
+button.linkish:hover { color: var(--text, inherit); }
 .apps td:first-child { width: 28px; }
 .apps img { width: 20px; height: 20px; display: block; }
 .apps .exe { font-weight: 600; }
