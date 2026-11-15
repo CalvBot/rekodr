@@ -1,6 +1,1030 @@
-// Audio: a WASAPI loopback stream for each app playing sound, plus the mic, each encoded to Opus by ffmpeg into
-// the buffer. Not written yet.
+// Audio: a WASAPI capture stream for each app playing sound (process loopback of its whole process tree), plus the
+// mic, each piped as raw PCM into its own small ffmpeg that writes Opus in 10 s segments to the buffer. Also which
+// game is being played (activity.tsv).
+//
+// Threads:
+// - The watcher (one): every second it lists processes and the PIDs with an active audio session, starts a stream
+//   for each app that isn't ignored and closes streams whose app went quiet for 30 s or exited. Every 2 s it works
+//   out the game being played. It owns g_aw's workers and its own copy of the settings.
+// - One worker per stream: WASAPI → ffmpeg. It owns its client and ffmpeg pipe; it only shares its stop and
+//   finished flags with the watcher.
+// Neither touches g_app: they post EV_AUDIO events, applied by audio_on_event on the main thread.
+//
+// On disk (the same as the Rust version, so the saving code and old buffers keep working):
+//   <buffer>\audio\<yyyymmdd_hhmmss_mmm>_<exe>_<pid>\a_00000.mka …  Opus in Matroska, 10 s segments
+//                                                    list.csv        written by ffmpeg's segment muxer
+//                                                    meta.json       {"kind","exe","pid","start_us"}
+//                                                    ffmpeg.log      ffmpeg's errors
+//   <buffer>\activity.tsv   "<µs>\t<exe>" each time the game being played changes (empty exe = the desktop)
+// start_us is the wall-clock time of the first sample, from WASAPI's QPC packet times; gaps are padded with silence
+// and late audio is trimmed, so sample n of a stream is at start_us + n / 48000 s and lines up with the video.
 
-static void audio_start() {}
-static void audio_stop() {}
-static void audio_on_event(const Event &e) {}
+#include <mmreg.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+#include <audiopolicy.h>
+#include <audioclientactivationparams.h>
+#include <tlhelp32.h>
+
+#define AUDIO_RATE        48000
+#define AUDIO_FRAME_BYTES 8 // stereo f32
+
+static const i64 AUDIO_LINGER_US = 30000000; // a stream closes once its app has been quiet this long
+static const i64 AUDIO_GAP_US    = 20000;    // pad gaps longer than this with silence…
+static const i64 AUDIO_LATE_US   = 40000;    // …and trim audio arriving later than this, keeping the stream on time
+
+enum AudioEventKind : u8 {
+    AE_NONE,
+    AE_STARTED, // b = stream id | kind << 32, text = exe
+    AE_STOPPED, // b = stream id
+    AE_HEARD,   // b = µs, text = exe: an app played sound (added to Config.apps as new if it isn't known)
+    AE_GAME,    // text = the game being played, empty on the desktop
+};
+
+// ---------------------------------------------------------------------------------------------------------------
+// Helpers that only read their inputs (safe on any thread)
+
+static AppCategory audio_category(const Config &c, const char *exe)
+{
+    for (i32 i = 0; i < c.app_count; i++)
+        if (!strcmp(c.apps[i].exe.s, exe)) return c.apps[i].category;
+    return CAT_NONE;
+}
+
+static AudioTrack audio_track(const Config &c, AudioKind kind, const char *exe)
+{
+    if (kind == AUDIO_MIC) return TRACK_MIC;
+    switch (audio_category(c, exe)) {
+    case CAT_COMMUNICATION: return TRACK_COMMUNICATION;
+    case CAT_GAME: return TRACK_GAME;
+    default: return TRACK_APP;
+    }
+}
+
+// "Overwatch" for overwatch.exe, unless the app has a name in the settings.
+static void audio_display_name(const Config &c, const char *exe, char *out, i32 cap)
+{
+    for (i32 i = 0; i < c.app_count; i++) {
+        if (!strcmp(c.apps[i].exe.s, exe) && c.apps[i].name.s[0]) {
+            snprintf(out, cap, "%s", c.apps[i].name.s);
+            return;
+        }
+    }
+    snprintf(out, cap, "%s", exe);
+    size_t n = strlen(out);
+    if (n > 4 && !strcmp(out + n - 4, ".exe")) out[n - 4] = 0;
+    out[0] = (char)toupper((u8)out[0]);
+}
+
+// The performance counter in 100 ns units: the clock WASAPI stamps packets with.
+static i64 qpc_100ns()
+{
+    LARGE_INTEGER count, freq;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&freq);
+    if (!freq.QuadPart) return 0;
+    i64 secs = count.QuadPart / freq.QuadPart, rest = count.QuadPart % freq.QuadPart;
+    return secs * 10000000 + rest * 10000000 / freq.QuadPart; // split so it can't overflow
+}
+
+static i64 qpc_to_wall_us(u64 qpc)
+{
+    i64 now = now_us(), q = qpc_100ns();
+    return now - (q - (i64)qpc) / 10;
+}
+
+// The stream folder's name part for an exe: "discord" from discord.exe, anything odd as '_', at most 40 chars.
+static void audio_file_safe(const char *exe, wchar_t *out, i32 cap)
+{
+    wchar_t w[MAX_PATH];
+    utf8_to_wide(exe, w, COUNT(w));
+    size_t n = wcslen(w);
+    while (n >= 4 && !wcscmp(w + n - 4, L".exe")) w[n -= 4] = 0;
+    i32 o = 0;
+    for (size_t i = 0; i < n && o < 40 && o + 1 < cap; i++) {
+        wchar_t c = w[i];
+        out[o++] = (iswalnum(c) || c == L'-' || c == L'_') ? c : L'_';
+    }
+    out[o] = 0;
+}
+
+static bool write_whole_file(const wchar_t *path, const char *text)
+{
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    BOOL ok = WriteFile(f, text, (DWORD)strlen(text), &written, 0);
+    CloseHandle(f);
+    return ok && written == strlen(text);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Writer: one stream's PCM into its ffmpeg, kept on the wall clock
+
+struct AudioWriter {
+    bool   open;
+    Proc   proc;
+    HANDLE log;      // ffmpeg.log
+    i64    start_us; // wall clock of sample 0
+    i64    frames;   // written so far
+};
+
+static bool pipe_write_all(HANDLE pipe, const u8 *data, u32 n)
+{
+    while (n) {
+        DWORD written = 0;
+        if (!WriteFile(pipe, data, n, &written, 0) || !written) return false;
+        data += written;
+        n -= written;
+    }
+    return true;
+}
+
+// Copies whatever ffmpeg wrote to stderr into ffmpeg.log, without blocking.
+static void writer_drain_log(AudioWriter *w)
+{
+    if (!w->proc.err) return;
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(w->proc.err, 0, 0, 0, &avail, 0) || !avail) return;
+        char buf[1024];
+        DWORD got = 0;
+        if (!ReadFile(w->proc.err, buf, avail < sizeof buf ? avail : sizeof buf, &got, 0) || !got) return;
+        DWORD written;
+        if (w->log != INVALID_HANDLE_VALUE) WriteFile(w->log, buf, got, &written, 0);
+    }
+}
+
+static i64 writer_expected_us(const AudioWriter *w)
+{
+    return w->start_us + w->frames * 1000000 / AUDIO_RATE;
+}
+
+static bool writer_write(AudioWriter *w, const u8 *bytes, u32 n)
+{
+    if (!pipe_write_all(w->proc.in, bytes, n)) return false;
+    w->frames += n / AUDIO_FRAME_BYTES;
+    return true;
+}
+
+static bool writer_silence(AudioWriter *w, i64 frames)
+{
+    static const u8 zeros[8192 * AUDIO_FRAME_BYTES] = {};
+    while (frames > 0) {
+        i64 chunk = frames < 8192 ? frames : 8192;
+        if (!writer_write(w, zeros, (u32)(chunk * AUDIO_FRAME_BYTES))) return false;
+        frames -= chunk;
+    }
+    return true;
+}
+
+// Adds a packet that started at `t_us`: pads the gap before it, or trims it if it overlaps what's written.
+static bool writer_place(AudioWriter *w, const u8 *bytes, u32 n, i64 t_us)
+{
+    i64 diff = t_us - writer_expected_us(w);
+    if (diff > AUDIO_GAP_US) {
+        if (!writer_silence(w, diff * AUDIO_RATE / 1000000)) return false;
+    } else if (diff < -AUDIO_LATE_US) {
+        i64 drop = (-diff * AUDIO_RATE / 1000000) * AUDIO_FRAME_BYTES;
+        if (drop > n) drop = n;
+        bytes += drop;
+        n -= (u32)drop;
+    }
+    return writer_write(w, bytes, n);
+}
+
+// Nothing arrived for a while (the app is quiet): fill with silence up to shortly before now.
+static bool writer_idle(AudioWriter *w)
+{
+    i64 behind = now_us() - 150000 - writer_expected_us(w);
+    if (behind > 300000) return writer_silence(w, behind * AUDIO_RATE / 1000000);
+    return true;
+}
+
+static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, u32 pid, const Path &buffer_dir,
+                        const Path &ffmpeg, i64 start_us)
+{
+    *w = {};
+    w->log = INVALID_HANDLE_VALUE;
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    wchar_t safe[48];
+    audio_file_safe(exe, safe, COUNT(safe));
+    Path dir = {};
+    swprintf(dir.s, MAX_PATH, L"%s\\audio\\%04d%02d%02d_%02d%02d%02d_%03d_%s_%u", buffer_dir.s, t.wYear, t.wMonth,
+             t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, safe, pid);
+    int made = SHCreateDirectoryExW(0, dir.s, 0);
+    if (made != ERROR_SUCCESS && made != ERROR_ALREADY_EXISTS) {
+        log_line("%s: couldn't create the audio folder %ls (%d)", exe, dir.s, made);
+        return false;
+    }
+
+    char escaped[256];
+    i32 e = 0;
+    for (const char *c = exe; *c && e < (i32)sizeof escaped - 8; c++) {
+        if (*c == '"' || *c == '\\') { escaped[e++] = '\\'; escaped[e++] = *c; }
+        else if ((u8)*c < 0x20) e += snprintf(escaped + e, sizeof escaped - e, "\\u%04x", (u8)*c);
+        else escaped[e++] = *c;
+    }
+    escaped[e] = 0;
+    char meta[512];
+    snprintf(meta, sizeof meta, "{\"kind\":\"%s\",\"exe\":\"%s\",\"pid\":%u,\"start_us\":%lld}",
+             kind == AUDIO_MIC ? "mic" : "app", escaped, pid, (long long)start_us);
+    if (!write_whole_file(path_join(dir, L"meta.json").s, meta)) {
+        log_line("%s: couldn't write meta.json (%d)", exe, (int)GetLastError());
+        return false;
+    }
+
+    static const char *fixed[] = {
+        "-hide_banner", "-loglevel", "error",
+        "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
+        "-c:a", "libopus", "-b:a", "128k", "-application", "audio",
+        "-f", "segment", "-segment_time", "10", "-segment_format", "matroska",
+        // Small clusters, flushed: a clip can read the segment still being written.
+        "-segment_format_options", "cluster_time_limit=1000", "-flush_packets", "1",
+        "-reset_timestamps", "0", "-segment_list_type", "csv", "-segment_list",
+    };
+    wchar_t args[4096] = {};
+    for (const char *a : fixed) cmd_arg8(args, COUNT(args), a);
+    cmd_arg(args, COUNT(args), path_join(dir, L"list.csv").s);
+    cmd_arg(args, COUNT(args), path_join(dir, L"a_%05d.mka").s);
+
+    w->log = CreateFileW(path_join(dir, L"ffmpeg.log").s, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, 0);
+    if (!proc_start(ffmpeg.s, args, PROC_STDIN | PROC_STDERR, &w->proc)) {
+        if (w->log != INVALID_HANDLE_VALUE) CloseHandle(w->log);
+        *w = {};
+        return false;
+    }
+    w->open = true;
+    w->start_us = start_us;
+    char name[MAX_PATH * 3];
+    wide_to_utf8(wcsrchr(dir.s, L'\\') + 1, name, sizeof name);
+    log_line("audio stream %s started", name);
+    return true;
+}
+
+// Ends the input so ffmpeg finishes the last segment, then waits for it (up to 10 s).
+static void writer_finish(AudioWriter *w, const char *exe)
+{
+    if (!w->open) return;
+    proc_close_stdin(&w->proc);
+    i32 code = -1;
+    for (i32 i = 0; i < 100 && code < 0; i++) {
+        writer_drain_log(w);
+        code = proc_wait(&w->proc, 100);
+    }
+    writer_drain_log(w);
+    if (code < 0) {
+        log_line("%s: the audio encoder didn't finish; stopping it", exe);
+        proc_kill(&w->proc);
+    } else if (code != 0) {
+        log_line("%s: the audio encoder exited with %d (see its ffmpeg.log)", exe, code);
+    }
+    proc_close(&w->proc);
+    if (w->log != INVALID_HANDLE_VALUE) CloseHandle(w->log);
+    *w = {};
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// WASAPI
+
+// ActivateAudioInterfaceAsync wants a completion handler object. It only signals an event; the caller waits on it.
+// A plain struct laid out like a COM object (vtable pointer first), on the heap because the system may release it
+// after the caller has moved on.
+struct ActivateHandler;
+struct ActivateHandlerVtbl {
+    HRESULT(STDMETHODCALLTYPE *QueryInterface)(ActivateHandler *, REFIID, void **);
+    ULONG(STDMETHODCALLTYPE *AddRef)(ActivateHandler *);
+    ULONG(STDMETHODCALLTYPE *Release)(ActivateHandler *);
+    HRESULT(STDMETHODCALLTYPE *ActivateCompleted)(ActivateHandler *, IActivateAudioInterfaceAsyncOperation *);
+};
+struct ActivateHandler {
+    const ActivateHandlerVtbl *vtbl;
+    LONG   refs;
+    HANDLE done;
+};
+
+static ULONG STDMETHODCALLTYPE ah_add_ref(ActivateHandler *h) { return (ULONG)InterlockedIncrement(&h->refs); }
+
+static ULONG STDMETHODCALLTYPE ah_release(ActivateHandler *h)
+{
+    LONG left = InterlockedDecrement(&h->refs);
+    if (left == 0) {
+        CloseHandle(h->done);
+        HeapFree(GetProcessHeap(), 0, h);
+    }
+    return (ULONG)left;
+}
+
+static HRESULT STDMETHODCALLTYPE ah_query_interface(ActivateHandler *h, REFIID iid, void **out)
+{
+    // Agile, so the system can call it from any thread.
+    if (iid == __uuidof(IUnknown) || iid == __uuidof(IActivateAudioInterfaceCompletionHandler) ||
+        iid == __uuidof(IAgileObject)) {
+        ah_add_ref(h);
+        *out = h;
+        return S_OK;
+    }
+    *out = 0;
+    return E_NOINTERFACE;
+}
+
+static HRESULT STDMETHODCALLTYPE ah_completed(ActivateHandler *h, IActivateAudioInterfaceAsyncOperation *)
+{
+    SetEvent(h->done);
+    return S_OK;
+}
+
+static const ActivateHandlerVtbl g_activate_handler_vtbl = {ah_query_interface, ah_add_ref, ah_release, ah_completed};
+
+// An audio client capturing `pid` and its child processes.
+static HRESULT activate_process_loopback(u32 pid, IAudioClient **out)
+{
+    *out = 0;
+    AUDIOCLIENT_ACTIVATION_PARAMS params = {};
+    params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
+    params.ProcessLoopbackParams.TargetProcessId = pid;
+    params.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
+    PROPVARIANT pv = {};
+    pv.vt = VT_BLOB;
+    pv.blob.cbSize = sizeof params;
+    pv.blob.pBlobData = (BYTE *)&params;
+
+    ActivateHandler *h = (ActivateHandler *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *h);
+    CHECK(h, "out of memory for an activation handler");
+    h->vtbl = &g_activate_handler_vtbl;
+    h->refs = 1;
+    h->done = CreateEventW(0, TRUE, FALSE, 0);
+    IActivateAudioInterfaceAsyncOperation *op = 0;
+    HRESULT hr = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &pv,
+                                             (IActivateAudioInterfaceCompletionHandler *)h, &op);
+    if (SUCCEEDED(hr)) {
+        if (WaitForSingleObject(h->done, 5000) != WAIT_OBJECT_0) {
+            hr = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+        } else {
+            HRESULT activated = E_FAIL;
+            IUnknown *unk = 0;
+            hr = op->GetActivateResult(&activated, &unk);
+            if (SUCCEEDED(hr)) hr = activated;
+            if (SUCCEEDED(hr) && unk) hr = unk->QueryInterface(__uuidof(IAudioClient), (void **)out);
+            if (unk) unk->Release();
+        }
+    }
+    if (op) op->Release();
+    ah_release(h);
+    return hr;
+}
+
+static IMMDeviceEnumerator *device_enumerator()
+{
+    IMMDeviceEnumerator *en = 0;
+    CoCreateInstance(__uuidof(MMDeviceEnumerator), 0, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void **)&en);
+    return en;
+}
+
+// The default mic's endpoint id, empty if there's none.
+static void default_mic_id(wchar_t *out, i32 cap)
+{
+    out[0] = 0;
+    IMMDeviceEnumerator *en = device_enumerator();
+    if (!en) return;
+    IMMDevice *dev = 0;
+    if (SUCCEEDED(en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev))) {
+        wchar_t *id = 0;
+        if (SUCCEEDED(dev->GetId(&id))) {
+            wcsncpy_s(out, cap, id, _TRUNCATE);
+            CoTaskMemFree(id);
+        }
+        dev->Release();
+    }
+    en->Release();
+}
+
+static void device_name(IMMDevice *dev, char *out, i32 cap)
+{
+    // PKEY_Device_FriendlyName, spelled out so no header has to define the key's storage.
+    static const PROPERTYKEY friendly = {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
+    snprintf(out, cap, "default device");
+    IPropertyStore *props = 0;
+    if (FAILED(dev->OpenPropertyStore(STGM_READ, &props))) return;
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    if (SUCCEEDED(props->GetValue(friendly, &v)) && v.vt == VT_LPWSTR) wide_to_utf8(v.pwszVal, out, cap);
+    PropVariantClear(&v);
+    props->Release();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Workers: one thread per stream
+
+struct AudioWorker {
+    // Set by the watcher before the thread starts, read-only after.
+    bool      used;
+    u32       id;
+    AudioKind kind;
+    Str64     exe;
+    u32       pid; // the process tree's root (0 for the mic)
+    Path      buffer_dir;
+    Path      ffmpeg;
+    // Shared between the watcher and the worker.
+    volatile LONG stop;
+    volatile LONG finished;
+    HANDLE        thread;
+    // The watcher's own.
+    i64 last_playing_us;
+    i64 last_heard_us; // last AE_HEARD posted
+};
+
+enum CaptureEnd { CAPTURE_STOP, CAPTURE_RESTART, CAPTURE_ERROR };
+
+#define AUDIO_PACKET_CAP (AUDIO_RATE * AUDIO_FRAME_BYTES) // one second, far more than one packet ever holds
+
+// Captures until told to stop, the source fails, or (mic) the default device changes. Each call is one stream
+// folder, opened on the first packet so start_us is the first sample's time.
+static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
+{
+    IMMDeviceEnumerator *en = 0;
+    IMMDevice *dev = 0;
+    IAudioClient *client = 0;
+    IAudioCaptureClient *capture = 0;
+    HANDLE ready = 0;
+    AudioWriter writer = {};
+    wchar_t mic_id[256] = {};
+    CaptureEnd end = CAPTURE_ERROR;
+    const char *what = "";
+    HRESULT hr = S_OK;
+    u64 mic_checked = GetTickCount64();
+    bool warned_big = false;
+    WAVEFORMATEX fmt = {};
+    DWORD flags = 0;
+
+    if (w->kind == AUDIO_MIC) {
+        what = "opening the mic";
+        en = device_enumerator();
+        if (!en) { hr = E_FAIL; goto done; }
+        hr = en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev);
+        if (FAILED(hr)) goto done;
+        wchar_t *id = 0;
+        if (SUCCEEDED(dev->GetId(&id))) {
+            wcsncpy_s(mic_id, id, _TRUNCATE);
+            CoTaskMemFree(id);
+        }
+        char name[256];
+        device_name(dev, name, sizeof name);
+        log_line("mic: %s", name);
+        hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void **)&client);
+    } else {
+        what = "starting process loopback";
+        hr = activate_process_loopback(w->pid, &client);
+    }
+    if (FAILED(hr)) goto done;
+
+    // Always 48 kHz stereo float; WASAPI converts from whatever the device or app uses.
+    fmt.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+    fmt.nChannels = 2;
+    fmt.nSamplesPerSec = AUDIO_RATE;
+    fmt.wBitsPerSample = 32;
+    fmt.nBlockAlign = AUDIO_FRAME_BYTES;
+    fmt.nAvgBytesPerSec = AUDIO_RATE * AUDIO_FRAME_BYTES;
+    flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    if (w->kind == AUDIO_APP) flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
+    what = "initializing the capture";
+    hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 2000000 /* 200 ms */, 0, &fmt, 0);
+    if (FAILED(hr)) goto done;
+    ready = CreateEventW(0, FALSE, FALSE, 0);
+    hr = client->SetEventHandle(ready);
+    if (FAILED(hr)) goto done;
+    hr = client->GetService(__uuidof(IAudioCaptureClient), (void **)&capture);
+    if (FAILED(hr)) goto done;
+    what = "starting the capture";
+    hr = client->Start();
+    if (FAILED(hr)) goto done;
+
+    what = "capturing";
+    while (!w->stop) {
+        if (w->kind == AUDIO_MIC && GetTickCount64() - mic_checked >= 3000) {
+            mic_checked = GetTickCount64();
+            wchar_t now[256];
+            default_mic_id(now, COUNT(now));
+            if (now[0] && wcscmp(now, mic_id)) {
+                log_line("the default mic changed; switching");
+                end = CAPTURE_RESTART;
+                goto done;
+            }
+        }
+        bool got_event = WaitForSingleObject(ready, 200) == WAIT_OBJECT_0;
+        bool any = false;
+        for (;;) {
+            UINT32 next = 0;
+            hr = capture->GetNextPacketSize(&next);
+            if (FAILED(hr)) goto done;
+            if (!next) break;
+            BYTE *data = 0;
+            UINT32 frames = 0;
+            DWORD buf_flags = 0;
+            UINT64 qpc = 0;
+            hr = capture->GetBuffer(&data, &frames, &buf_flags, 0, &qpc);
+            if (FAILED(hr)) goto done;
+            u32 bytes = frames * AUDIO_FRAME_BYTES;
+            if (bytes > AUDIO_PACKET_CAP) {
+                if (!warned_big) log_line("%s: a %u-frame audio packet was cut to 1 s", w->exe.s, frames);
+                warned_big = true;
+                bytes = AUDIO_PACKET_CAP;
+            }
+            if (buf_flags & AUDCLNT_BUFFERFLAGS_SILENT) memset(packet, 0, bytes);
+            else memcpy(packet, data, bytes);
+            capture->ReleaseBuffer(frames);
+
+            i64 t_us = qpc > 0 && !(buf_flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR)
+                           ? qpc_to_wall_us(qpc)
+                           : now_us() - (i64)(bytes / AUDIO_FRAME_BYTES) * 1000000 / AUDIO_RATE;
+            if (!writer.open) {
+                what = "starting the encoder";
+                hr = E_FAIL;
+                if (!writer_open(&writer, w->kind, w->exe.s, w->pid, w->buffer_dir, w->ffmpeg, t_us)) goto done;
+                what = "capturing";
+                hr = S_OK;
+            }
+            if (!writer_place(&writer, packet, bytes, t_us)) {
+                what = "writing to the encoder (it stopped)";
+                hr = E_FAIL;
+                goto done;
+            }
+            any = true;
+        }
+        if (!any && !got_event && writer.open && !writer_idle(&writer)) {
+            what = "writing to the encoder (it stopped)";
+            hr = E_FAIL;
+            goto done;
+        }
+        writer_drain_log(&writer);
+    }
+    end = CAPTURE_STOP;
+
+done:
+    if (end == CAPTURE_ERROR) log_line("%s: audio capture stopped while %s (0x%08x)", w->exe.s, what, (u32)hr);
+    if (client) client->Stop();
+    writer_finish(&writer, w->exe.s);
+    if (capture) capture->Release();
+    if (client) client->Release();
+    if (ready) CloseHandle(ready);
+    if (dev) dev->Release();
+    if (en) en->Release();
+    return end;
+}
+
+static DWORD WINAPI audio_worker_thread(void *arg)
+{
+    AudioWorker *w = (AudioWorker *)arg;
+    CoInitializeEx(0, COINIT_MULTITHREADED);
+    u8 *packet = (u8 *)VirtualAlloc(0, AUDIO_PACKET_CAP, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    CHECK(packet, "couldn't allocate an audio packet buffer (%d)", (int)GetLastError());
+    while (!w->stop) {
+        CaptureEnd end = audio_capture(w, packet);
+        if (end == CAPTURE_STOP) break;
+        if (end == CAPTURE_RESTART) continue;
+        // An app's stream just ends; the watcher starts a new one if the app plays again. The mic retries every
+        // 5 s (a headset unplugged with no other mic, say).
+        if (w->kind == AUDIO_APP) break;
+        for (i32 i = 0; i < 50 && !w->stop; i++) Sleep(100);
+    }
+    VirtualFree(packet, 0, MEM_RELEASE);
+    CoUninitialize();
+    InterlockedExchange(&w->finished, 1);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The watcher
+
+struct AudioProc {
+    u32   pid, parent;
+    Str64 exe; // lower case
+};
+
+struct AudioProcList {
+    AudioProc items[8192];
+    i32       count;
+};
+
+struct AudioWatch {
+    // Handed over by the main thread (audio_config_changed, audio_set_paused).
+    SRWLOCK       lock;
+    Config        pending;
+    volatile LONG pending_set;
+    volatile LONG paused;
+    HANDLE        stop_event;
+    HANDLE        thread;
+
+    // The watcher thread's own.
+    Config        config;
+    Path          ffmpeg;
+    bool          ffmpeg_missing_logged;
+    AudioProcList procs;
+    AudioWorker   workers[COUNT(((Audio *)0)->streams)]; // as many as the UI can list
+    u32           next_id;
+    bool          activity_started;
+    Str64         game;
+    Path          activity_file;
+};
+
+static AudioWatch g_aw;
+
+static void procs_snapshot(AudioProcList *list)
+{
+    list->count = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    PROCESSENTRY32W e = {};
+    e.dwSize = sizeof e;
+    for (BOOL ok = Process32FirstW(snap, &e); ok && list->count < COUNT(list->items); ok = Process32NextW(snap, &e)) {
+        AudioProc *p = &list->items[list->count++];
+        p->pid = e.th32ProcessID;
+        p->parent = e.th32ParentProcessID;
+        CharLowerBuffW(e.szExeFile, (DWORD)wcslen(e.szExeFile));
+        char exe[MAX_PATH * 3];
+        wide_to_utf8(e.szExeFile, exe, sizeof exe);
+        str_set(p->exe.s, exe);
+    }
+    CloseHandle(snap);
+}
+
+static const AudioProc *procs_find(const AudioProcList &list, u32 pid)
+{
+    for (i32 i = 0; i < list.count; i++)
+        if (list.items[i].pid == pid) return &list.items[i];
+    return 0;
+}
+
+// Browsers and launchers play sound from a child process. Process loopback captures a whole tree, so climb to the
+// topmost ancestor that is still the same program.
+static u32 procs_root_of(const AudioProcList &list, u32 pid)
+{
+    const AudioProc *p = procs_find(list, pid);
+    if (!p) return pid;
+    u32 root = pid;
+    for (i32 i = 0; i < 32; i++) {
+        const AudioProc *parent = procs_find(list, p->parent);
+        if (!parent || parent->pid == root || strcmp(parent->exe.s, p->exe.s)) break;
+        root = parent->pid;
+        p = parent;
+    }
+    return root;
+}
+
+// PIDs with an audio session playing right now, on any output device.
+static i32 audio_playing_pids(u32 *out, i32 cap)
+{
+    i32 n = 0;
+    IMMDeviceEnumerator *en = device_enumerator();
+    if (!en) return 0;
+    IMMDeviceCollection *devices = 0;
+    UINT device_count = 0;
+    if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices))) devices->GetCount(&device_count);
+    for (UINT i = 0; i < device_count; i++) {
+        IMMDevice *dev = 0;
+        IAudioSessionManager2 *manager = 0;
+        IAudioSessionEnumerator *sessions = 0;
+        int session_count = 0;
+        if (FAILED(devices->Item(i, &dev))) continue;
+        if (SUCCEEDED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, 0, (void **)&manager)) &&
+            SUCCEEDED(manager->GetSessionEnumerator(&sessions)))
+            sessions->GetCount(&session_count);
+        for (int j = 0; j < session_count; j++) {
+            IAudioSessionControl *control = 0;
+            if (FAILED(sessions->GetSession(j, &control))) continue;
+            AudioSessionState state = AudioSessionStateInactive;
+            IAudioSessionControl2 *control2 = 0;
+            if (SUCCEEDED(control->GetState(&state)) && state == AudioSessionStateActive &&
+                SUCCEEDED(control->QueryInterface(__uuidof(IAudioSessionControl2), (void **)&control2))) {
+                DWORD pid = 0;
+                // A session shared by several processes still names one of them (AUDCLNT_S_NO_SINGLE_PROCESS).
+                if (SUCCEEDED(control2->GetProcessId(&pid))) {
+                    bool seen = false;
+                    for (i32 k = 0; k < n; k++) seen |= out[k] == pid;
+                    if (!seen && n < cap) out[n++] = pid;
+                }
+                control2->Release();
+            }
+            control->Release();
+        }
+        if (sessions) sessions->Release();
+        if (manager) manager->Release();
+        dev->Release();
+    }
+    if (devices) devices->Release();
+    en->Release();
+    return n;
+}
+
+static AudioWorker *worker_start(AudioKind kind, const char *exe, u32 pid)
+{
+    if (!g_aw.ffmpeg.s[0]) {
+        if (!g_aw.ffmpeg_missing_logged) log_line("audio: ffmpeg wasn't found, so audio isn't recorded");
+        g_aw.ffmpeg_missing_logged = true;
+        return 0;
+    }
+    AudioWorker *w = 0;
+    for (i32 i = 0; i < COUNT(g_aw.workers) && !w; i++)
+        if (!g_aw.workers[i].used) w = &g_aw.workers[i];
+    if (!w) {
+        log_line("audio: already %d streams; %s isn't recorded", COUNT(g_aw.workers), exe);
+        return 0;
+    }
+    *w = {};
+    w->used = true;
+    w->id = ++g_aw.next_id;
+    w->kind = kind;
+    str_set(w->exe.s, exe);
+    w->pid = pid;
+    w->buffer_dir = g_aw.config.buffer_dir;
+    w->ffmpeg = g_aw.ffmpeg;
+    w->last_playing_us = now_us();
+    w->thread = thread_start(audio_worker_thread, w);
+
+    Event e = {};
+    e.kind = EV_AUDIO;
+    e.a = AE_STARTED;
+    e.b = (i64)w->id | ((i64)kind << 32);
+    str_set(e.text, exe);
+    event_post(e);
+    return w;
+}
+
+// Stopping is two steps so several streams can finish their ffmpeg at the same time.
+static void worker_stop_begin(AudioWorker *w)
+{
+    InterlockedExchange(&w->stop, 1);
+}
+
+static void worker_join(AudioWorker *w)
+{
+    WaitForSingleObject(w->thread, INFINITE);
+    CloseHandle(w->thread);
+    Event e = {};
+    e.kind = EV_AUDIO;
+    e.a = AE_STOPPED;
+    e.b = w->id;
+    event_post(e);
+    *w = {};
+}
+
+static void workers_stop_all()
+{
+    for (i32 i = 0; i < COUNT(g_aw.workers); i++)
+        if (g_aw.workers[i].used) worker_stop_begin(&g_aw.workers[i]);
+    for (i32 i = 0; i < COUNT(g_aw.workers); i++)
+        if (g_aw.workers[i].used) worker_join(&g_aw.workers[i]);
+}
+
+static void post_heard(const char *exe, i64 us)
+{
+    Event e = {};
+    e.kind = EV_AUDIO;
+    e.a = AE_HEARD;
+    e.b = us;
+    str_set(e.text, exe);
+    event_post(e);
+}
+
+// One second's work: start streams for apps playing sound, close the ones gone quiet.
+static void audio_tick_streams()
+{
+    const Config &cfg = g_aw.config;
+    i64 now = now_us();
+
+    AudioWorker *mic = 0;
+    for (i32 i = 0; i < COUNT(g_aw.workers); i++)
+        if (g_aw.workers[i].used && g_aw.workers[i].kind == AUDIO_MIC) mic = &g_aw.workers[i];
+    if (mic && (!cfg.mic || mic->finished)) {
+        worker_stop_begin(mic);
+        worker_join(mic);
+        mic = 0;
+    }
+    if (cfg.mic && !mic) worker_start(AUDIO_MIC, "mic", 0);
+
+    // Close streams whose app exited, is now ignored, failed, or has been quiet too long.
+    bool closing[COUNT(g_aw.workers)] = {};
+    for (i32 i = 0; i < COUNT(g_aw.workers); i++) {
+        AudioWorker *w = &g_aw.workers[i];
+        if (!w->used || w->kind != AUDIO_APP) continue;
+        const AudioProc *p = procs_find(g_aw.procs, w->pid);
+        bool alive = p && !strcmp(p->exe.s, w->exe.s);
+        bool keep = alive && audio_category(cfg, w->exe.s) != CAT_IGNORED && !w->finished &&
+                    now - w->last_playing_us < AUDIO_LINGER_US;
+        if (!keep) {
+            log_line("%s audio stream closed", w->exe.s);
+            worker_stop_begin(w);
+            closing[i] = true;
+        }
+    }
+    for (i32 i = 0; i < COUNT(g_aw.workers); i++)
+        if (closing[i]) worker_join(&g_aw.workers[i]);
+
+    u32 playing[256];
+    i32 playing_count = audio_playing_pids(playing, COUNT(playing));
+    u32 own_pid = GetCurrentProcessId();
+    for (i32 i = 0; i < playing_count; i++) {
+        u32 pid = playing[i];
+        if (pid == 0 || pid == own_pid) continue; // 0 is "system sounds"
+        const AudioProc *p = procs_find(g_aw.procs, pid);
+        if (!p || !p->exe.s[0]) continue;
+        // clipback's own processes never: its window plays clips back.
+        if (starts_with(p->exe.s, "clipback") || audio_category(cfg, p->exe.s) == CAT_IGNORED) continue;
+        u32 root = procs_root_of(g_aw.procs, pid);
+        AudioWorker *running = 0;
+        for (i32 k = 0; k < COUNT(g_aw.workers) && !running; k++) {
+            AudioWorker *w = &g_aw.workers[k];
+            if (w->used && w->kind == AUDIO_APP && w->pid == root) running = w;
+        }
+        if (!running) {
+            log_line("recording %s audio (pid %u)", p->exe.s, root);
+            running = worker_start(AUDIO_APP, p->exe.s, root);
+            if (!running) continue;
+        }
+        running->last_playing_us = now;
+        // "Last heard" for Options (and new apps for it to list), at most once a minute per stream.
+        if (!running->last_heard_us || now - running->last_heard_us > 60000000) {
+            running->last_heard_us = now;
+            post_heard(running->exe.s, now);
+        }
+    }
+}
+
+// Every 2 s: the game whose window is in front, else the last one played if it's still running, else any running
+// game (the first by name), else the desktop. Changes are appended to activity.tsv.
+static void audio_tick_activity()
+{
+    const Config &cfg = g_aw.config;
+    Str64 game = {};
+
+    DWORD fg_pid = 0;
+    HWND fg = GetForegroundWindow();
+    if (fg) GetWindowThreadProcessId(fg, &fg_pid);
+    const AudioProc *front = fg_pid ? procs_find(g_aw.procs, fg_pid) : 0;
+    if (front && audio_category(cfg, front->exe.s) == CAT_GAME) {
+        game = front->exe;
+    } else {
+        bool prev_running = false;
+        const char *first = 0;
+        for (i32 i = 0; i < cfg.app_count; i++) {
+            const AppInfo &a = cfg.apps[i];
+            if (a.category != CAT_GAME) continue;
+            bool running = false;
+            for (i32 k = 0; k < g_aw.procs.count && !running; k++) running = !strcmp(g_aw.procs.items[k].exe.s, a.exe.s);
+            if (!running) continue;
+            if (str_eq(g_aw.game.s, a.exe.s)) prev_running = true;
+            if (!first || strcmp(a.exe.s, first) < 0) first = a.exe.s;
+        }
+        if (prev_running) game = g_aw.game;
+        else if (first) str_set(game.s, first);
+    }
+
+    Path file = path_join(cfg.buffer_dir, L"activity.tsv");
+    // A fresh line on start (and when the buffer moves) so the file always says what was on.
+    if (g_aw.activity_started && str_eq(game.s, g_aw.game.s) && !wcscmp(file.s, g_aw.activity_file.s)) return;
+
+    SHCreateDirectoryExW(0, cfg.buffer_dir.s, 0);
+    HANDLE f = CreateFileW(file.s, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, 0);
+    if (f != INVALID_HANDLE_VALUE) {
+        char line[128];
+        int n = snprintf(line, sizeof line, "%lld\t%s\n", (long long)now_us(), game.s);
+        DWORD written;
+        WriteFile(f, line, (DWORD)n, &written, 0);
+        CloseHandle(f);
+    } else {
+        log_line("couldn't write %ls (%d)", file.s, (int)GetLastError());
+    }
+    if (g_aw.activity_started) {
+        if (game.s[0]) {
+            char name[128];
+            audio_display_name(cfg, game.s, name, sizeof name);
+            log_line("playing %s", name);
+        } else {
+            log_line("on the desktop");
+        }
+    }
+    g_aw.activity_started = true;
+    g_aw.game = game;
+    g_aw.activity_file = file;
+
+    Event e = {};
+    e.kind = EV_AUDIO;
+    e.a = AE_GAME;
+    str_set(e.text, game.s);
+    event_post(e);
+}
+
+static DWORD WINAPI audio_watch_thread(void *)
+{
+    CoInitializeEx(0, COINIT_MULTITHREADED);
+    bool was_paused = false;
+    for (u64 tick = 0;; tick++) {
+        if (g_aw.pending_set) {
+            AcquireSRWLockExclusive(&g_aw.lock);
+            memcpy(&g_aw.config, &g_aw.pending, sizeof g_aw.config);
+            InterlockedExchange(&g_aw.pending_set, 0);
+            ReleaseSRWLockExclusive(&g_aw.lock);
+            Path found;
+            if (ffmpeg_find(g_aw.config.ffmpeg, &found)) {
+                g_aw.ffmpeg = found;
+                g_aw.ffmpeg_missing_logged = false;
+            } else {
+                g_aw.ffmpeg = {};
+            }
+        }
+        procs_snapshot(&g_aw.procs);
+        if (tick % 2 == 0) audio_tick_activity();
+        bool paused = g_aw.paused != 0;
+        if (paused && !was_paused) workers_stop_all();
+        if (!paused) audio_tick_streams();
+        was_paused = paused;
+        if (WaitForSingleObject(g_aw.stop_event, 1000) != WAIT_TIMEOUT) break;
+    }
+    workers_stop_all();
+    CoUninitialize();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Main thread
+
+// Hands the watcher a copy of the settings. Call it whenever Config changes (Options does; so does a new app heard).
+static void audio_config_changed()
+{
+    AcquireSRWLockExclusive(&g_aw.lock);
+    memcpy(&g_aw.pending, &g_app.config, sizeof g_aw.pending);
+    InterlockedExchange(&g_aw.pending_set, 1);
+    ReleaseSRWLockExclusive(&g_aw.lock);
+    Audio &a = g_app.audio;
+    for (i32 i = 0; i < a.stream_count; i++)
+        a.streams[i].track = audio_track(g_app.config, a.streams[i].kind, a.streams[i].exe.s);
+}
+
+static void audio_start()
+{
+    InitializeSRWLock(&g_aw.lock);
+    audio_config_changed();
+    g_aw.stop_event = CreateEventW(0, TRUE, FALSE, 0);
+    g_aw.thread = thread_start(audio_watch_thread, 0);
+}
+
+// Stops every stream, letting each ffmpeg finish its last segment.
+static void audio_stop()
+{
+    if (!g_aw.thread) return;
+    SetEvent(g_aw.stop_event);
+    WaitForSingleObject(g_aw.thread, INFINITE);
+    CloseHandle(g_aw.thread);
+    CloseHandle(g_aw.stop_event);
+    g_aw.thread = 0;
+}
+
+// Pausing stops every stream (what's recorded stays in the buffer); resuming starts them again as apps play.
+static void audio_set_paused(bool paused)
+{
+    InterlockedExchange(&g_aw.paused, paused ? 1 : 0);
+}
+
+static void audio_on_event(const Event &e)
+{
+    Audio &a = g_app.audio;
+    switch ((AudioEventKind)e.a) {
+    case AE_STARTED: {
+        // There are as many workers as slots here, so this only fails if events were dropped.
+        if (a.stream_count == COUNT(a.streams)) break;
+        AudioLive *s = &a.streams[a.stream_count++];
+        *s = {};
+        s->id = (u32)(e.b & 0xffffffff);
+        s->kind = (AudioKind)(e.b >> 32);
+        str_set(s->exe.s, e.text);
+        s->track = audio_track(g_app.config, s->kind, s->exe.s);
+        s->since_us = now_us();
+        break;
+    }
+    case AE_STOPPED:
+        for (i32 i = 0; i < a.stream_count; i++) {
+            if (a.streams[i].id != (u32)e.b) continue;
+            memmove(&a.streams[i], &a.streams[i + 1], (a.stream_count - i - 1) * sizeof a.streams[0]);
+            a.stream_count--;
+            break;
+        }
+        break;
+    case AE_HEARD: {
+        i32 before = g_app.config.app_count;
+        AppInfo *app = config_app(&g_app.config, e.text); // a new one is CAT_NONE: shown as new in Options
+        if (!app) break; // the table is full
+        app->last_heard_us = e.b;
+        if (g_app.config.app_count != before) {
+            log_line("new app heard: %s", e.text);
+            audio_config_changed();
+        }
+        break;
+    }
+    case AE_GAME: str_set(a.game.s, e.text); break;
+    default: break;
+    }
+}

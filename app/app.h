@@ -105,9 +105,33 @@ struct Recorder {
     Str256 last_error;
 };
 
-// audio.cpp: one stream per app playing sound, plus the mic.
+// audio.cpp: one stream per app playing sound, plus the mic, and the game being played.
+enum AudioKind : u8 {
+    AUDIO_APP, // an app's process tree (process loopback)
+    AUDIO_MIC, // the default capture device
+};
+
+// Which track of a saved file a stream ends up on (SPEC.md, "Track layout"). Follows the app's category, so it's
+// worked out again whenever the settings change.
+enum AudioTrack : u8 {
+    TRACK_MIC,
+    TRACK_COMMUNICATION,
+    TRACK_GAME, // its own track, before other apps
+    TRACK_APP,  // its own track
+};
+
+struct AudioLive {
+    u32        id;       // the audio worker's stream number, unique while clipback runs
+    AudioKind  kind;
+    AudioTrack track;
+    Str64      exe;      // lower-case exe, "mic" for the mic
+    i64        since_us; // when the stream started
+};
+
 struct Audio {
-    i32 stream_count;
+    AudioLive streams[64]; // live streams in the order they started
+    i32       stream_count;
+    Str64     game;        // the game being played (lower-case exe); empty on the desktop
 };
 
 // save.cpp: reading the buffer and turning ranges of it into files (clips, sessions, Keep, Share).
