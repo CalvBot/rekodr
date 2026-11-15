@@ -17,10 +17,10 @@ sealed class Header : Painted
 
     public Btn Pause { get; } = new("Pause", "pause") { Labels = ["Pause", "Resume"] };
     public Btn Options { get; } = new("Options", "settings") { Inset = 6 };
+    public Btn Help { get; } = new("Help", "circle-help");
     /// <summary>The last status clipback sent, or null if it isn't answering</summary>
     public Status? Last { get; private set; }
     public event Action<Status?>? Updated;
-    readonly ToolTip tip = new();
 
     public Header()
     {
@@ -57,13 +57,11 @@ sealed class Header : Painted
         Last = s;
         recording = s is { Paused: false, Live: true };
         status = s == null ? "clipback isn't running" : Describe(s);
-        tip.SetToolTip(this, s == null ? null : $"{Fmt.Size(s.RingBytes)} of {Fmt.Size(s.RingCap)}");
         var paused = s?.Paused == true;
         Pause.Text = paused ? "Resume" : "Pause";
         Pause.Icon = paused ? "play" : "pause";
         Pause.Enabled = s != null;
         Options.Badge = s?.NewApps ?? 0;
-        tip.SetToolTip(Options, s?.NewApps > 0 ? $"{s.NewApps} new app{(s.NewApps == 1 ? "" : "s")} to sort in Options" : null);
         Invalidate();
         Updated?.Invoke(s);
     }
@@ -129,7 +127,7 @@ sealed class Header : Painted
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { poll.Dispose(); tip.Dispose(); }
+        if (disposing) poll.Dispose();
         base.Dispose(disposing);
     }
 }

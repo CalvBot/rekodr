@@ -13,7 +13,6 @@ sealed class AppsList : Painted
 
     readonly AppRowView[] rows = new AppRowView[PerPage];
     readonly Btn prev = new("", "chevron-left"), next = new("", "chevron-right");
-    readonly ToolTip tips = new();
     int page, pages = 1;
 
     /// <summary>exe, category</summary>
@@ -33,15 +32,13 @@ sealed class AppsList : Painted
         BackColor = Theme.Panel;
         for (var i = 0; i < PerPage; i++)
         {
-            var row = rows[i] = new AppRowView(tips);
+            var row = rows[i] = new AppRowView();
             row.Seg.Picked += cat => { if (row.App is { } a) Category?.Invoke(a.Exe, cat); };
             row.Rate.Committed += () => { if (row.App is { } a) Rate?.Invoke(a.Exe, row.Rate.Text.Trim()); };
             row.MenuAt += p => { if (row.App is { } a) Menu?.Invoke(a.Exe, row, p); };
             Controls.Add(row);
         }
         Controls.AddRange([prev, next]);
-        tips.SetToolTip(prev, "Previous page");
-        tips.SetToolTip(next, "Next page");
         prev.Click += (_, _) => { page--; Fill(); };
         next.Click += (_, _) => { page++; Fill(); };
     }
@@ -103,7 +100,6 @@ sealed class AppsList : Painted
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) tips.Dispose();
         base.Dispose(disposing);
     }
 }
@@ -116,18 +112,15 @@ sealed class AppRowView : Painted
     public readonly Field Rate = new() { Numeric = true, FontPx = 12, PadX96 = 5 };
     public AppInfo? App { get; private set; }
     public event Action<Point>? MenuAt;
-    readonly ToolTip tips;
     bool playing;
     string? empty;
 
     static readonly Dictionary<string, Task<Image?>> icons = new(StringComparer.OrdinalIgnoreCase);
 
-    public AppRowView(ToolTip tips)
+    public AppRowView()
     {
-        this.tips = tips;
         BackColor = Theme.Panel;
         Controls.AddRange([Seg, Rate]);
-        tips.SetToolTip(Rate.Box, "Bitrate while this game runs (blank = normal)");
         Seg.MouseUp += (_, e) => { if (e.Button == MouseButtons.Right) MenuAt?.Invoke(PointToClient(Seg.PointToScreen(e.Location))); };
     }
 
@@ -141,7 +134,6 @@ sealed class AppRowView : Painted
         Rate.Visible = a?.Category == "game";
         if (!Rate.Box.Focused) Rate.Text = rate;
         Rate.Box.PlaceholderText = placeholder;
-        tips.SetToolTip(this, a is { New: true } ? "Pick a category. Until then it gets its own track." : null);
         if (a != null && !icons.ContainsKey(a.Exe)) icons[a.Exe] = LoadIcon(a.Exe);
         if (a != null && icons[a.Exe] is { IsCompleted: false } t) _ = t.ContinueWith(_ => { if (!IsDisposed) Invalidate(); }, TaskScheduler.FromCurrentSynchronizationContext());
         Invalidate();

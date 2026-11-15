@@ -11,7 +11,6 @@ sealed partial class EditorView : Control
     // Top row
     readonly Btn back = new("Clips", "arrow-left");
     readonly EdText title = new() { FontPx = 15, Style = FontStyle.Bold };
-    readonly EdText hint = new() { Ink = Theme.Dim, FontPx = 12, AlignRight = true, Text = "Space play · I / O trim · K keyframe · ← → step (Shift: 1 s)" };
     // Video and transport
     readonly Panel video = new() { BackColor = Color.Black };
     readonly Btn play = new("Play", "play") { Labels = ["Play", "Pause"] };
@@ -40,7 +39,6 @@ sealed partial class EditorView : Control
     readonly EdText result = new() { FontPx = 12 };
     readonly Btn reveal = new("Show in folder", "folder-open") { FontPx = 13, Visible = false };
     readonly Btn copyResult = new("Copy", "copy") { FontPx = 13, Visible = false };
-    readonly ToolTip tips = new();
     readonly System.Windows.Forms.Timer tick = new() { Interval = 30 };
 
     EditorPlayer? player;
@@ -71,7 +69,7 @@ sealed partial class EditorView : Control
         TabStop = true;
         side.Controls.AddRange([zoomHead, zoomLabel, zoom, zoomVal, zoomHelp, addKey, delKey, clearKeys, keyList, audioHead, noAudio,
             exportHead, .. presets, presetHelp, copyAfter, export, progress, result, reveal, copyResult]);
-        Controls.AddRange([back, title, hint, video, play, time, selection, timeline, side]);
+        Controls.AddRange([back, title, video, play, time, selection, timeline, side]);
 
         back.Click += (_, _) => Close();
         play.Click += (_, _) => TogglePlay();
@@ -95,13 +93,6 @@ sealed partial class EditorView : Control
         video.Resize += (_, _) => player?.Resized();
         side.Scroll += (_, _) => side.Invalidate();
 
-        tips.SetToolTip(back, "Back to the clips");
-        tips.SetToolTip(addKey, "Add a keyframe at the playhead (K)");
-        tips.SetToolTip(delKey, "Delete the keyframe at the playhead (Delete)");
-        tips.SetToolTip(clearKeys, "Remove all zoom");
-        tips.SetToolTip(presets[0], "Full quality");
-        tips.SetToolTip(presets[1], "Discord (10 MB)");
-        tips.SetToolTip(presets[2], "Discord Nitro (50 MB)");
         SetPreset(preset);
     }
 
@@ -370,9 +361,6 @@ sealed partial class EditorView : Control
             }
             mute.Click += (_, _) => { m.Muted = !m.Muted; Apply(); };
             slider.Moved += v => { m.Volume = v; Apply(); };
-            tips.SetToolTip(mute, "Mute");
-            tips.SetToolTip(name, names[i]);
-            tips.SetToolTip(slider, "Double-click for 100%");
             trackRows.Add((m, mute, name, slider, val));
             side.Controls.AddRange([mute, name, slider, val]);
         }
@@ -469,12 +457,10 @@ sealed partial class EditorView : Control
         if (Width <= 0) return;
         int pad = this.Px(16), gap = this.Px(14), h = this.Px(30);
 
-        // Top row: back, title, keyboard hints
+        // Top row: back, title
         var bw = back.FitWidth;
         back.SetBounds(pad, this.Px(10), bw, h);
-        var hintW = Math.Min(TextRenderer.MeasureText(hint.Text, Theme.Font(this, 12)).Width + this.Px(4), Math.Max(0, Width / 2 - pad));
-        hint.SetBounds(Width - pad - hintW, back.Top, hintW, h);
-        title.SetBounds(back.Right + this.Px(12), back.Top, Math.Max(0, hint.Left - back.Right - this.Px(24)), h);
+        title.SetBounds(back.Right + this.Px(12), back.Top, Math.Max(0, Width - pad - back.Right - this.Px(12)), h);
 
         // Side panel on the right
         var top = back.Bottom + this.Px(12);
@@ -583,7 +569,7 @@ sealed partial class EditorView : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { tick.Dispose(); player?.Dispose(); tips.Dispose(); timeline.Sprite?.Dispose(); }
+        if (disposing) { tick.Dispose(); player?.Dispose(); timeline.Sprite?.Dispose(); }
         base.Dispose(disposing);
     }
 }

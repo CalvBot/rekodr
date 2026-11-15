@@ -35,7 +35,6 @@ sealed class PlayerView : Control
         close.Click += (_, _) => Close();
         tick.Tick += (_, _) => Update(false);
         video.Resize += (_, _) => engine?.Resized();
-        new ToolTip().SetToolTip(copy, "Copy the file, ready to paste into Discord etc.");
     }
 
     public double Position => engine?.Position ?? 0;

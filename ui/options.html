@@ -105,7 +105,7 @@ function hotkeyRows() {
     box.append(h("div", { class: "hk" },
       h("input", { type: "text", value: hk.keys, oninput: e => hk.keys = e.target.value }),
       h("input", { type: "text", value: hk.action, oninput: e => hk.action = e.target.value }),
-      h("button", { class: "danger icononly", icon: "trash-2", title: "Remove", onclick: () => { cfg.hotkeys.splice(i, 1); hotkeyRows(); } })));
+      h("button", { class: "danger icononly", icon: "trash-2", onclick: () => { cfg.hotkeys.splice(i, 1); hotkeyRows(); } })));
   });
 }
 
@@ -199,11 +199,10 @@ function appRow(a, playing) {
     : h("span", { class: "dim small" }, a.last_heard ? "heard " + ago(a.last_heard / 1000) : "not heard yet");
   // Always there (hidden unless it's a game) so the category buttons never shift.
   const box = h("span", { class: "rate", style: a.category === "game" ? "" : "visibility:hidden" },
-    h("input", { type: "number", min: 1, max: 300, step: 1, value: gameRates[a.exe] ?? "", placeholder: cfg ? cfg.video.bitrate_mbps : "",
-      title: "Bitrate while this game runs (blank = normal)", onchange: e => setRate(a.exe, e.target.value) }), " Mbps");
+    h("input", { type: "number", min: 1, max: 300, step: 1, value: gameRates[a.exe] ?? "", placeholder: cfg ? cfg.video.bitrate_mbps : "", onchange: e => setRate(a.exe, e.target.value) }), " Mbps");
   return h("tr", { oncontextmenu: e => appMenu(e, a.exe) },
     h("td", {}, h("img", { src: `/api/icon?exe=${enc(a.exe)}`, alt: "", onerror: e => e.target.style.visibility = "hidden" })),
-    h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, ""), a.new ? h("span", { class: "newtag", title: "Pick a category. Until then it gets its own track." }, "New") : ""), heard),
+    h("td", {}, h("div", { class: "exe" }, a.exe.replace(/\.exe$/, ""), a.new ? h("span", { class: "newtag" }, "New") : ""), heard),
     h("td", { style: "text-align:right;white-space:nowrap" }, box, seg));
 }
 
@@ -241,9 +240,9 @@ function fillList(key, list, playing, empty) {
   const pager = $(key + "Pager");
   pager.textContent = "";
   pager.append(
-    h("button", { class: "icononly", icon: "chevron-left", onclick: () => go(-1), disabled: pages[key] === 0, title: "Previous page" }),
+    h("button", { class: "icononly", icon: "chevron-left", onclick: () => go(-1), disabled: pages[key] === 0 }),
     h("span", { class: "dim small" }, `${pages[key] + 1} / ${count}`),
-    h("button", { class: "icononly", icon: "chevron-right", onclick: () => go(1), disabled: pages[key] >= count - 1, title: "Next page" }));
+    h("button", { class: "icononly", icon: "chevron-right", onclick: () => go(1), disabled: pages[key] >= count - 1 }));
 }
 
 function render() {

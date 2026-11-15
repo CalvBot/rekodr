@@ -17,7 +17,6 @@ sealed partial class ClipsForm : DarkForm
     readonly PlayerView player = new();
     readonly Toast toast = new();
     readonly System.Windows.Forms.Timer refresh = new() { Interval = 4000 };
-    readonly ToolTip tips = new();
 
     List<Clip> clips = [];
     string game = "", filter = "", lastSig = "";
@@ -27,16 +26,17 @@ sealed partial class ClipsForm : DarkForm
         Text = "clipback";
         MinimumSize = new Size(760, 520);
 
+        header.AddRight(header.Help);
         header.AddRight(header.Options);
         header.AddRight(header.Pause, 96);
         header.AddRight(save30);
         header.AddRight(search, 170);
-        tips.SetToolTip(save30, "Save the last 30 seconds");
 
         Controls.AddRange([toast, player, header, chips, grid, pager]);
         player.BringToFront();
         toast.BringToFront();
 
+        header.Help.Click += (_, _) => ShowHelp();
         search.Box.TextChanged += (_, _) => { filter = search.Box.Text; ShowClips(false); };
         save30.Click += async (_, _) => await Save30();
         chips.Picked += g => { game = g; chips.Mark(game); ShowClips(false); };
@@ -212,8 +212,15 @@ sealed partial class ClipsForm : DarkForm
         menu.Show(grid, at);
     }
 
+    void ShowHelp()
+    {
+        using var help = new HelpForm();
+        help.ShowDialog(this);
+    }
+
     protected override bool ProcessCmdKey(ref Message msg, Keys keys)
     {
+        if (keys == Keys.F1) { ShowHelp(); return true; }
         if (OnOptions) return base.ProcessCmdKey(ref msg, keys);
         if (player.Visible)
         {

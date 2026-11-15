@@ -29,7 +29,6 @@ sealed class Box : Painted
     public string Icon { get; }
     public string? Help { get; set; }
     public readonly List<TextRun> Runs = [];
-    public readonly ToolTip Tips = new();
 
     public Box(string title, string icon, string? help = null)
     {
@@ -80,7 +79,6 @@ sealed class Box : Painted
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) Tips.Dispose();
         base.Dispose(disposing);
     }
 }

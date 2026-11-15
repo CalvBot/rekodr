@@ -15,7 +15,7 @@
   <span id="status" class="status"></span>
   <span class="grow"></span>
   <input id="search" type="text" placeholder="Search clips" style="width:170px">
-  <button id="save30" data-icon="history" title="Save the last 30 seconds">Save 30s</button>
+  <button id="save30" data-icon="history">Save 30s</button>
   <button id="pause" class="pausebtn">Pause</button>
   <button id="optionsBtn" data-icon="settings" onclick="location.href='/options'">Options<span id="newApps" class="badge" hidden></span></button>
 </header>
@@ -50,7 +50,6 @@ function fillInfo(card, c) {
   const t = card.querySelector(".tracks");
   t.querySelector("b").textContent = n > 1 ? n : "";
   t.style.display = n > 1 ? "" : "none";
-  t.title = c.info.tracks.join(" · ");
 }
 
 function scrub(thumb, e) {
@@ -69,12 +68,12 @@ function card(c) {
   thumb._clip = c;
   const el = h("div", { class: "card" }, thumb,
     h("div", { class: "meta" },
-      h("div", { class: "name", title: c.name }, c.name.replace(/ \d{4}-\d\d-\d\d \d\d-\d\d-\d\d/, "") || c.name),
+      h("div", { class: "name" }, c.name.replace(/ \d{4}-\d\d-\d\d \d\d-\d\d-\d\d/, "") || c.name),
       h("div", { class: "sub" }, ago(c.mtime) + " · " + fmtSize(c.size))),
     h("div", { class: "actions" },
-      h("button", { icon: "copy", onclick: () => copy(c), title: "Copy the file, ready to paste into Discord etc." }, "Copy"),
+      h("button", { icon: "copy", onclick: () => copy(c) }, "Copy"),
       h("button", { icon: "scissors", onclick: () => location.href = `/editor?id=${enc(c.id)}` }, "Edit"),
-      h("button", { icon: "folder-open", onclick: () => api(`/api/reveal?id=${enc(c.id)}`, { method: "POST" }), title: "Show in folder" }, "Folder")));
+      h("button", { icon: "folder-open", onclick: () => api(`/api/reveal?id=${enc(c.id)}`, { method: "POST" }) }, "Folder")));
   fillInfo(el, c);
   seen.observe(thumb);
   return el;

@@ -117,8 +117,6 @@ sealed class OptionsView : Panel
         maxGb.Box.TextChanged += (_, _) => HoursText();
         pickClips.Click += (_, _) => PickFolder(clipsDir, "Clips folder");
         pickBuffer.Click += (_, _) => PickFolder(bufferDir, "Buffer folder");
-        storeBox.Tips.SetToolTip(pickClips, "Choose a folder");
-        storeBox.Tips.SetToolTip(pickBuffer, "Choose a folder");
 
         bar.Save.Click += async (_, _) => await Save();
         AdvState();
@@ -250,7 +248,6 @@ sealed class OptionsView : Panel
                 var keys = new Field { Text = Str(hk["keys"]) };
                 var action = new Field { Text = Str(hk["action"]) };
                 var remove = new Btn("", "trash-2");
-                hotBox.Tips.SetToolTip(remove, "Remove");
                 keys.Box.TextChanged += (_, _) => hk["keys"] = keys.Text;
                 action.Box.TextChanged += (_, _) => hk["action"] = action.Text;
                 remove.Click += (_, _) => { list.Remove(hk); BeginInvoke(HotkeyRows); };
