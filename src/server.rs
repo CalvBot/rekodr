@@ -254,14 +254,30 @@ fn handle(mut req: Request) {
             state::set_paused(false);
             ok_json(status())
         }
+        (false, "/api/toggle") => {
+            state::set_paused(!state::paused());
+            ok_json(status())
+        }
+        (false, "/api/open") => {
+            let page = match query(&url, "page").as_deref() {
+                Some("options") => "/options",
+                _ => "/",
+            };
+            open_window(page);
+            ok_json(json!({ "ok": true }))
+        }
         (false, "/api/save") => {
             let secs = query(&url, "secs").and_then(|s| crate::config::parse_duration(&s).ok()).unwrap_or(30);
             match crate::export::save_last(secs) {
                 Ok(saved) => {
+                    crate::hotkey::beep(true);
                     crate::tray::notify("Clip saved", &saved.path.file_name().unwrap_or_default().to_string_lossy());
                     ok_json(json!({ "path": saved.path, "id": clips::id_of(&saved.path), "tracks": saved.tracks, "secs": saved.secs }))
                 }
-                Err(e) => err_json(500, format!("{e:#}")),
+                Err(e) => {
+                    crate::hotkey::beep(false);
+                    err_json(500, format!("{e:#}"))
+                }
             }
         }
         (false, "/api/copy") => match id.as_deref().map(clips::resolve).transpose().and_then(|p| p.ok_or(anyhow!("no id"))) {

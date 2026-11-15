@@ -2,14 +2,14 @@
 //! commands talk to the running copy.
 
 use anyhow::{Result, bail};
-use clipback::config::{self, Config, format_duration, parse_duration};
+use clipback::config::{self, format_duration, parse_duration};
 
 const HELP: &str = "clipback: hands-off long replay buffer
 
   clipback              run (tray icon, hotkeys, recording) with a console log
   clipback save 2m      save the last 2 minutes (30s, 10m, 1h …) from the running copy
-  clipback pause|resume pause or resume recording
-  clipback open         open the clips window
+  clipback pause|resume|toggle   pause or resume recording
+  clipback open|options open the clips window or the options page
   clipback quit         stop the running copy
   clipback status       what's in the buffer
   clipback config       print the settings file's path";
@@ -22,14 +22,7 @@ fn main() {
 }
 
 fn call(method: &str, path: &str) -> Result<serde_json::Value> {
-    let port = Config::load()?.port;
-    let body = lifelog::api::call(port, method, path)
-        .map_err(|_| anyhow::anyhow!("clipback isn't running (start it with `clipback`)"))?;
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-    if let Some(e) = v["error"].as_str() {
-        bail!("{e}");
-    }
-    Ok(v)
+    clipback::remote::call(method, path).map_err(|e| anyhow::anyhow!("{e:#} (start it with `clipback`)"))
 }
 
 fn real_main() -> Result<()> {
@@ -46,13 +39,9 @@ fn real_main() -> Result<()> {
             }
             Ok(())
         }
-        Some(cmd @ ("pause" | "resume" | "quit")) => call("POST", &format!("/api/{cmd}")).map(|_| ()),
-        Some("open") => {
-            call("GET", "/api/status")?;
-            let port = Config::load()?.port;
-            let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", &format!("http://127.0.0.1:{port}/")]).spawn();
-            Ok(())
-        }
+        Some(cmd @ ("pause" | "resume" | "toggle" | "quit")) => call("POST", &format!("/api/{cmd}")).map(|_| ()),
+        Some("open") => call("POST", "/api/open").map(|_| ()),
+        Some("options") => call("POST", "/api/open?page=options").map(|_| ()),
         Some("status") => {
             let v = call("GET", "/api/status")?;
             let state = if v["paused"] == true { "paused" } else if v["live"] == true { "recording" } else { "waiting for the screen" };

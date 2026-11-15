@@ -18,10 +18,14 @@ cargo build --release
 target\release\clipbackw.exe         # the app: tray icon, no window (this is what "Start with Windows" runs)
 target\release\clipback              # same, with a console log
 target\release\clipback save 2m      # save the last 2 minutes from the running copy (30s, 10m, 1h …)
-target\release\clipback pause|resume|open|status|quit
+target\release\clipback pause|resume|toggle|open|options|status|quit
 ```
+**Stream Deck:** use the built-in *Open* action with `"…\clipbackw.exe" save 90s` (any length), `open`, `options`
+or `toggle`. clipbackw passes the command to the running copy without a console window, beeps when the clip is
+saved, and shows a warning if clipback isn't running. The same commands are `POST http://127.0.0.1:47820/api/save?secs=90s`
+etc. for anything that can send a web request.
+
 Default hotkeys: **F13** = last 30 s, **F14** = 2 min, **F15** = 10 min, **F16** = open the clips window.
-F13–F24 don't exist on a normal keyboard, so they're ideal Stream Deck buttons (System → Hotkey).
 
 **Tray icon:** red = recording, grey with a pause sign = paused. Left click opens the clips window; right click has
 Save last 30s/2m/10m/30m, Pause/Resume, Options, Open clips folder and Quit.

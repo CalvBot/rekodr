@@ -9,6 +9,7 @@ pub mod config;
 pub mod export;
 pub mod hotkey;
 pub mod recorder;
+pub mod remote;
 pub mod render;
 pub mod ring;
 pub mod server;
