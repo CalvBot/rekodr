@@ -17,7 +17,8 @@ sealed class MediaEngine : IDisposable
     public event Action? Changed;
     public string? Error { get; private set; }
 
-    public MediaEngine(Control host)
+    /// <summary>audioOnly: sound only (one of the editor's tracks), no picture and no window</summary>
+    public MediaEngine(Control host, bool audioOnly = false)
     {
         this.host = host;
         notify = new Notify(this);
@@ -25,7 +26,7 @@ sealed class MediaEngine : IDisposable
         var factory = (IMFMediaEngineClassFactory)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("b44392da-499b-446b-a4cb-005fead0e6d5"))!)!;
         Check(MFCreateAttributes(out var attrs, 4));
         // Our own D3D11 device with video support, so decoding stays on the graphics card (frames in video memory)
-        if (MakeDeviceManager() is { } manager)
+        if (!audioOnly && MakeDeviceManager() is { } manager)
         {
             var dxgi = MF_MEDIA_ENGINE_DXGI_MANAGER;
             Check(attrs.SetUnknown(ref dxgi, manager));
@@ -33,11 +34,14 @@ sealed class MediaEngine : IDisposable
         }
         var key = MF_MEDIA_ENGINE_CALLBACK;
         Check(attrs.SetUnknown(ref key, notify));
-        key = MF_MEDIA_ENGINE_PLAYBACK_HWND;
-        Check(attrs.SetUINT64(ref key, (ulong)host.Handle));
-        key = MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT;
-        Check(attrs.SetUINT32(ref key, 87)); // DXGI_FORMAT_B8G8R8A8_UNORM
-        Check(factory.CreateInstance(0, attrs, out engine));
+        if (!audioOnly)
+        {
+            key = MF_MEDIA_ENGINE_PLAYBACK_HWND;
+            Check(attrs.SetUINT64(ref key, (ulong)host.Handle));
+            key = MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT;
+            Check(attrs.SetUINT32(ref key, 87)); // DXGI_FORMAT_B8G8R8A8_UNORM
+        }
+        Check(factory.CreateInstance(audioOnly ? 1u : 0u, attrs, out engine)); // 1: MF_MEDIA_ENGINE_AUDIOONLY
         Marshal.ReleaseComObject(attrs);
         Marshal.ReleaseComObject(factory);
     }
@@ -69,11 +73,12 @@ sealed class MediaEngine : IDisposable
         }
     }
 
-    public void Open(string path, double startAt)
+    public void Open(string path, double startAt, bool autoPlay = true)
     {
         pendingSeek = startAt;
         Error = null;
-        engine?.SetAutoPlay(true);
+        engine?.SetAutoPlay(autoPlay);
+        if (!autoPlay) engine?.SetPreload(4); // MF_MEDIA_ENGINE_PRELOAD_AUTOMATIC: load and show the first frame while paused
         var bstr = Marshal.StringToBSTR(path);
         try { Check(engine!.SetSource(bstr)); }
         finally { Marshal.FreeBSTR(bstr); }
@@ -97,6 +102,21 @@ sealed class MediaEngine : IDisposable
     public void Play() => engine?.Play();
     public void Pause() => engine?.Pause();
     public void Seek(double s) => engine?.SetCurrentTime(Math.Clamp(s, 0, Math.Max(0, Duration - 0.01)));
+    public bool Seeking => engine != null && engine.IsSeeking();
+    /// <summary>0–1</summary>
+    public void SetVolume(double v) => engine?.SetVolume(Math.Clamp(v, 0, 1));
+    public void SetMuted(bool muted) => engine?.SetMuted(muted);
+
+    /// <summary>The part of the frame to show (0–1 across and down), or null for all of it: the editor's zoom</summary>
+    public void SetView(RectangleF? part)
+    {
+        if (part == view) return;
+        view = part;
+        Resized();
+    }
+
+    RectangleF? view;
+    IntPtr viewRect;
 
     /// <summary>Call when the host window changes size: the picture is redrawn to fill it</summary>
     public void Resized()
@@ -104,7 +124,15 @@ sealed class MediaEngine : IDisposable
         if (engine is not IMFMediaEngineEx ex) return;
         var r = new RECT { right = host.ClientSize.Width, bottom = host.ClientSize.Height };
         var black = 0xFF000000u;
-        ex.UpdateVideoStream(IntPtr.Zero, ref r, ref black);
+        var src = IntPtr.Zero;
+        if (view is { } v)
+        {
+            // MFVideoNormalizedRect: left, top, right, bottom as floats
+            if (viewRect == IntPtr.Zero) viewRect = Marshal.AllocHGlobal(16);
+            Marshal.Copy(new[] { v.Left, v.Top, v.Right, v.Bottom }, 0, viewRect, 4);
+            src = viewRect;
+        }
+        ex.UpdateVideoStream(src, ref r, ref black);
     }
 
     /// <summary>
@@ -142,6 +170,8 @@ sealed class MediaEngine : IDisposable
         engine = null;
         if (manager != null) Marshal.ReleaseComObject(manager);
         manager = null;
+        if (viewRect != IntPtr.Zero) Marshal.FreeHGlobal(viewRect);
+        viewRect = IntPtr.Zero;
     }
 
     // ---------- interop (mfmediaengine.h) ----------
@@ -215,8 +245,11 @@ sealed class MediaEngine : IDisposable
         [PreserveSig] int GetError(out IMFMediaError? error);
         void SetErrorCode(); void SetSourceElements();
         [PreserveSig] int SetSource(IntPtr url);
-        void GetCurrentSource(); void GetNetworkState(); void GetPreload(); void SetPreload(); void GetBuffered(); void Load(); void CanPlayType();
-        void GetReadyState(); void IsSeeking();
+        void GetCurrentSource(); void GetNetworkState(); void GetPreload();
+        [PreserveSig] int SetPreload(int preload);
+        void GetBuffered(); void Load(); void CanPlayType();
+        void GetReadyState();
+        [PreserveSig][return: MarshalAs(UnmanagedType.Bool)] bool IsSeeking();
         [PreserveSig] double GetCurrentTime();
         [PreserveSig] int SetCurrentTime(double seconds);
         void GetStartTime();
@@ -229,7 +262,11 @@ sealed class MediaEngine : IDisposable
         void GetLoop(); void SetLoop();
         [PreserveSig] int Play();
         [PreserveSig] int Pause();
-        void GetMuted(); void SetMuted(); void GetVolume(); void SetVolume(); void HasVideo(); void HasAudio();
+        void GetMuted();
+        [PreserveSig] int SetMuted([MarshalAs(UnmanagedType.Bool)] bool muted);
+        void GetVolume();
+        [PreserveSig] int SetVolume(double volume);
+        void HasVideo(); void HasAudio();
         [PreserveSig] int GetNativeVideoSize(out uint x, out uint y);
         void GetVideoAspectRatio();
         [PreserveSig] int Shutdown();
