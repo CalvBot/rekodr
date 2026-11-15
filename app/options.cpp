@@ -671,7 +671,16 @@ static void options_list_monitors()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Controls
+// Controls. A page is built from cards (opt_card_begin/end) holding rows (opt_row_begin/end): the setting's name on
+// the left with at most one short dim line under it, its control right-aligned. Rows have fixed heights and
+// controls fixed widths, so nothing moves when a value changes. The opt_card, opt_row, opt_combo, opt_keycaps,
+// opt_pill and opt_pager helpers are generic and could move to the kit in ui.cpp.
+
+#define ICON_DOWN "\xEE\x9C\x8D" // E70D chevron down
+
+static const f32 OPT_PAD = 20;     // a card's padding left and right
+static const f32 OPT_FIELD_W = 84; // a number box
+static const f32 OPT_UNIT_W = 44;  // the unit after it ("Mbps", "hours")
 
 // A text box whose edit counts only once it's finished. Returns true then, with the text in `out`.
 static bool opt_text(const char *id, const char *current, f32 width, ImGuiInputTextFlags flags, const char *hint,
@@ -733,90 +742,332 @@ static bool opt_i32(const char *id, i32 *v, f64 lo, f64 hi, f32 width)
     return true;
 }
 
-// A drop-down of fixed width. Items whose bit is set in `disabled` show greyed out and can't be picked.
-static bool opt_combo(const char *id, const char *const *items, i32 count, i32 *index, f32 width, u32 disabled = 0,
-                      const char *preview = 0)
+// Text in `font` at p, cut short with an ellipsis before max_x. Fades inside BeginDisabled like the widgets.
+static void opt_text_at(ImDrawList *dl, ImFont *font, ImVec2 p, u32 col, const char *text, f32 max_x)
 {
-    bool changed = false;
+    if (max_x <= p.x) return;
+    ImGui::PushFont(font);
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(col));
+    ImGui::RenderTextEllipsis(dl, p, ImVec2(max_x, p.y + ImGui::GetFontSize()), max_x, max_x, text, 0, 0);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+}
+
+// The same, ending at right_x (and starting no further left than min_x).
+static void opt_text_right(ImDrawList *dl, ImFont *font, f32 right_x, f32 y, u32 col, const char *text, f32 min_x)
+{
+    ImGui::PushFont(font);
+    f32 w = ImGui::CalcTextSize(text).x;
+    ImGui::PopFont();
+    opt_text_at(dl, font, ImVec2(fmaxf(min_x, right_x - w), y), col, text, right_x + 1);
+}
+
+static f32 text_w(ImFont *font, const char *text)
+{
+    ImGui::PushFont(font);
+    f32 w = ImGui::CalcTextSize(text).x;
+    ImGui::PopFont();
+    return w;
+}
+
+// A small rounded tag: a count on a tab, "new" on an app. p is its left end, vertically centred.
+static f32 opt_pill_w(const char *text) { return fmaxf(dp(18), text_w(g_font_small, text) + dp(12)); }
+static void opt_pill(ImDrawList *dl, ImVec2 p, const char *text, u32 fill, u32 ink)
+{
+    f32 h = dp(18), w = opt_pill_w(text);
+    dl->AddRectFilled(ImVec2(p.x, p.y - h / 2), ImVec2(p.x + w, p.y + h / 2), col32(fill), h / 2);
+    f32 tw = text_w(g_font_small, text);
+    opt_text_at(dl, g_font_small, ImVec2(floorf(p.x + (w - tw) / 2), floorf(p.y - g_font_small->FontSize / 2) - 1), ink,
+                text, p.x + w);
+}
+
+// Cards: a raised panel as tall as what's drawn in it. The draw list is split so the panel goes under its rows.
+struct OptCard { ImVec2 a; f32 w; i32 rows; };
+static OptCard g_card;
+static f32 g_card_max_w = FLT_MAX; // settings pages keep their cards to a readable width; lists use the whole page
+
+static void opt_card_begin()
+{
+    g_card = {};
+    g_card.a = ImGui::GetCursorScreenPos();
+    g_card.w = fminf(ImGui::GetContentRegionAvail().x, g_card_max_w);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(1);
+    ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, g_card.a.y + dp(4)));
+}
+
+static void opt_card_end(f32 space_after = 18)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 y = ImGui::GetCursorScreenPos().y + dp(4);
+    dl->ChannelsSetCurrent(0);
+    dl->AddRectFilled(g_card.a, ImVec2(g_card.a.x + g_card.w, y), col32(COL_PANEL), dp(10));
+    dl->ChannelsMerge();
+    ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, y));
+    ImGui::Dummy(ImVec2(g_card.w, dp(space_after) - ImGui::GetStyle().ItemSpacing.y));
+}
+
+// A small caption over a card: "VIDEO", "BUFFER".
+static void opt_section(const char *text)
+{
+    ImGui::PushFont(g_font_small);
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - dp(4));
+}
+
+// Rows: begin draws the name (and the dim line) and puts the cursor where a control `control_w` wide ends at the
+// right edge, vertically centred; end moves to the next row. Rows after the first get a hairline above them
+// (unless `line` is false: the empty rows that keep a paged list's size).
+struct OptRow { f32 x0, x1, y, h; };
+static OptRow g_row;
+
+static void opt_row_begin(const char *name, const char *sub, f32 control_w, f32 h = 0, bool line = true)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    g_row.x0 = g_card.a.x + dp(OPT_PAD);
+    g_row.x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
+    g_row.y = ImGui::GetCursorScreenPos().y;
+    g_row.h = h > 0 ? h : dp(sub ? 64.f : 54.f);
+    if (g_card.rows++ && line) dl->AddLine(ImVec2(g_row.x0, g_row.y), ImVec2(g_row.x1, g_row.y), col32(COL_LINE));
+    if (name) {
+        f32 max_x = g_row.x1 - control_w - dp(20);
+        f32 nh = g_font->FontSize, sh = g_font_small->FontSize, gap = dp(3);
+        f32 ty = floorf(g_row.y + (g_row.h - nh - (sub ? gap + sh : 0)) / 2);
+        opt_text_at(dl, g_font, ImVec2(g_row.x0, ty), COL_TEXT, name, max_x);
+        if (sub) opt_text_at(dl, g_font_small, ImVec2(g_row.x0, ty + nh + gap), COL_DIM, sub, max_x);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - control_w, g_row.y + floorf((g_row.h - ImGui::GetFrameHeight()) / 2)));
+}
+
+static void opt_row_end() { ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, g_row.y + g_row.h)); }
+
+// Where a list row's text sits: vertically centred in the row.
+static f32 opt_row_text_y(ImFont *font) { return floorf(g_row.y + (g_row.h - font->FontSize) / 2); }
+static f32 opt_row_frame_y() { return g_row.y + floorf((g_row.h - ImGui::GetFrameHeight()) / 2); }
+
+static f32 opt_number_w() { return dp(OPT_FIELD_W + 8 + OPT_UNIT_W); }
+
+// The unit after the number box just drawn, in the slot kept for it.
+static void opt_unit(const char *unit)
+{
+    ImVec2 a = ImGui::GetItemRectMin(), z = ImGui::GetItemRectMax();
+    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(z.x + dp(8), floorf(a.y + (z.y - a.y - g_font->FontSize) / 2)),
+                COL_DIM, unit, z.x + dp(8 + OPT_UNIT_W));
+}
+
+static bool opt_row_f32(const char *name, const char *sub, const char *id, f32 *v, f64 lo, f64 hi, const char *unit)
+{
+    opt_row_begin(name, sub, opt_number_w());
+    bool changed = opt_f32(id, v, lo, hi, dp(OPT_FIELD_W));
+    opt_unit(unit);
+    opt_row_end();
+    return changed;
+}
+
+static bool opt_row_i32(const char *name, const char *sub, const char *id, i32 *v, f64 lo, f64 hi, const char *unit)
+{
+    opt_row_begin(name, sub, opt_number_w());
+    bool changed = opt_i32(id, v, lo, hi, dp(OPT_FIELD_W));
+    opt_unit(unit);
+    opt_row_end();
+    return changed;
+}
+
+static bool opt_row_toggle(const char *name, const char *sub, const char *id, bool *v)
+{
+    opt_row_begin(name, sub, dp(36));
+    bool changed = kit_toggle(id, v);
+    opt_row_end();
+    return changed;
+}
+
+// A row whose right side is a read-only value.
+static void opt_row_value(const char *name, const char *sub, const char *value, u32 col = COL_TEXT)
+{
+    f32 w = fminf(dp(360), g_card.w * 0.5f);
+    opt_row_begin(name, sub, w);
+    opt_text_right(ImGui::GetWindowDrawList(), g_font, g_row.x1, opt_row_text_y(g_font), col, value, g_row.x1 - w);
+    opt_row_end();
+}
+
+// Drop-downs: a filled box of fixed width with its own chevron, and a popup that can be wider than the box so each
+// item fits its note (a dim word or two on the right).
+static bool opt_combo_begin(const char *id, const char *preview, f32 width, f32 popup_w = 0, u32 preview_col = COL_TEXT)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList(); // the box's window: once open, the current window is the popup
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 h = ImGui::GetFrameHeight(), pad = ImGui::GetStyle().FramePadding.x;
     ImGui::SetNextItemWidth(width);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(fmaxf(width, popup_w), 0), ImVec2(FLT_MAX, FLT_MAX));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(6), dp(6)));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    bool open = ImGui::BeginCombo(id, "", ImGuiComboFlags_NoArrowButton);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    f32 chev = text_w(g_font_small, ICON_DOWN);
+    opt_text_at(dl, g_font_small, ImVec2(a.x + width - pad - chev, floorf(a.y + (h - g_font_small->FontSize) / 2) - dp(1)),
+                COL_DIM, ICON_DOWN, a.x + width);
+    opt_text_at(dl, g_font, ImVec2(a.x + pad, floorf(a.y + (h - g_font->FontSize) / 2)), preview_col, preview,
+                a.x + width - pad - chev - dp(6));
+    if (open) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(dp(6), dp(2)));
+        ImGui::PushStyleColor(ImGuiCol_Header, rgb(0x2e3137));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, rgb(0x34373e));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, rgb(0x34373e));
+    }
+    return open;
+}
+
+static bool opt_combo_item(const char *label, const char *note, bool selected, bool disabled = false)
+{
+    ImGui::PushID(label);
+    bool clicked = ImGui::Selectable("##item", selected, disabled ? ImGuiSelectableFlags_Disabled : 0, ImVec2(0, dp(30)));
+    ImGui::PopID();
+    ImVec2 a = ImGui::GetItemRectMin(), z = ImGui::GetItemRectMax();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 ty = floorf(a.y + (z.y - a.y - g_font->FontSize) / 2);
+    u32 ink = disabled ? COL_FAINT : COL_TEXT;
+    opt_text_at(dl, selected ? g_font_bold : g_font, ImVec2(a.x + dp(10), ty), ink, label, z.x - dp(10));
+    if (note && note[0]) opt_text_right(dl, g_font, z.x - dp(10), ty, disabled ? COL_FAINT : COL_DIM, note, a.x + dp(10));
+    if (selected && ImGui::IsWindowAppearing()) ImGui::SetScrollHereY();
+    return clicked && !disabled;
+}
+
+static void opt_combo_end()
+{
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+    ImGui::EndCombo();
+}
+
+// The popup width that fits the widest label and note.
+static f32 opt_combo_popup_w(const char *const *items, const char *const *notes, i32 count)
+{
+    f32 lw = 0, nw = 0;
+    for (i32 i = 0; i < count; i++) {
+        lw = fmaxf(lw, text_w(g_font_bold, items[i]));
+        if (notes && notes[i]) nw = fmaxf(nw, text_w(g_font, notes[i]));
+    }
+    return lw + (nw > 0 ? dp(32) + nw : 0) + dp(20 + 12);
+}
+
+// A whole drop-down. Items whose bit is set in `disabled` show greyed out and can't be picked.
+static bool opt_combo(const char *id, const char *const *items, const char *const *notes, i32 count, i32 *index,
+                      f32 width, u32 disabled = 0, const char *preview = 0, u32 preview_col = COL_TEXT)
+{
     const char *shown = preview ? preview : (*index >= 0 && *index < count ? items[*index] : "");
-    if (ImGui::BeginCombo(id, shown)) {
+    bool changed = false;
+    if (opt_combo_begin(id, shown, width, opt_combo_popup_w(items, notes, count), preview_col)) {
         for (i32 i = 0; i < count; i++) {
-            bool off = (disabled >> i) & 1;
-            if (ImGui::Selectable(items[i], i == *index, off ? ImGuiSelectableFlags_Disabled : 0) && i != *index) {
+            if (opt_combo_item(items[i], notes ? notes[i] : 0, i == *index, (disabled >> i) & 1) && i != *index) {
                 *index = i;
                 changed = true;
             }
         }
-        ImGui::EndCombo();
+        opt_combo_end();
     }
     return changed;
 }
 
-// The label column of a form row.
-static void opt_label(const char *label)
+static bool opt_row_combo(const char *name, const char *sub, const char *id, const char *const *items,
+                          const char *const *notes, i32 count, i32 *index, f32 width, u32 disabled = 0,
+                          const char *preview = 0)
 {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
-    ImGui::SameLine(dp(230));
+    opt_row_begin(name, sub, width);
+    bool changed = opt_combo(id, items, notes, count, index, width, disabled, preview);
+    opt_row_end();
+    return changed;
 }
 
-static void opt_unit(const char *text)
+// Keys as caps: "Ctrl+Shift+S" draws [Ctrl] [Shift] [S] from p (top left), h high, stopping before max_x.
+static void opt_keycaps(ImDrawList *dl, ImVec2 p, f32 h, const char *keys, f32 max_x)
 {
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s", text);
+    f32 x = p.x;
+    for (const char *s = keys; *s;) {
+        const char *e = strchr(s, '+');
+        i32 n = e ? (i32)(e - s) : (i32)strlen(s);
+        char part[32];
+        snprintf(part, sizeof part, "%.*s", n < 31 ? n : 31, s);
+        f32 tw = text_w(g_font_bold, part), w = fmaxf(h, tw + dp(18));
+        if (x + w > max_x) break;
+        dl->AddRectFilled(ImVec2(x, p.y + dp(2)), ImVec2(x + w, p.y + h), col32(0x101114), dp(6)); // the cap's edge
+        dl->AddRectFilled(ImVec2(x, p.y), ImVec2(x + w, p.y + h - dp(2)), col32(0x2e3137), dp(6));
+        opt_text_at(dl, g_font_bold, ImVec2(floorf(x + (w - tw) / 2), floorf(p.y + (h - dp(2) - g_font_bold->FontSize) / 2)),
+                    COL_TEXT, part, x + w);
+        x += w + dp(6);
+        s = e ? e + 1 : s + n;
+    }
 }
 
-static void opt_title(const char *title, const char *about)
-{
-    ImGui::PushFont(g_font_big);
-    ImGui::TextUnformatted(title);
-    ImGui::PopFont();
-    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
-    ImGui::TextWrapped("%s", about);
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-}
+static f32 opt_pager_h() { return ImGui::GetFrameHeight() + dp(14); }
 
-static f32 opt_row_height()
+// How many rows rh high fit in what's left of the page, leaving `below` for what follows (the pager).
+static i32 opt_rows_fit(f32 rh, f32 below)
 {
-    return ImGui::GetFrameHeight() + 2 * ImGui::GetStyle().CellPadding.y;
-}
-
-// How many rows of a paged list fit in what's left of the page, leaving `below` for the pager.
-static i32 opt_rows_fit(f32 below)
-{
-    f32 h = ImGui::GetContentRegionAvail().y - below - opt_row_height(); // the header row
-    i32 rows = (i32)(h / opt_row_height());
+    f32 h = ImGui::GetContentRegionAvail().y - below - dp(8); // the card's own padding
+    i32 rows = (i32)(h / rh);
     return rows < 3 ? 3 : rows > 30 ? 30 : rows;
 }
 
-static f32 opt_pager_height() { return ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y; }
-
-// Previous · Page 2 of 5 · Next, all fixed widths.
-static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page)
+// A footer line: `left` dim on the left, and  ‹  2 / 5  ›  on the right, all fixed sizes. The mouse wheel over the
+// page turns pages too.
+static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page, const char *left)
 {
     i32 pages = total > 0 ? (total + per_page - 1) / per_page : 1;
+    if (ImGui::IsWindowHovered() && !ImGui::IsAnyItemActive()) {
+        f32 wheel = ImGui::GetIO().MouseWheel;
+        if (wheel < 0) (*page)++;
+        else if (wheel > 0) (*page)--;
+    }
     if (*page >= pages) *page = pages - 1;
     if (*page < 0) *page = 0;
     ImGui::PushID(id);
-    ImGui::BeginDisabled(*page == 0);
-    if (ImGui::Button("Previous", ImVec2(dp(100), 0))) (*page)--;
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    char text[64];
-    snprintf(text, sizeof text, "Page %d of %d", *page + 1, pages);
-    f32 w = dp(130), tw = ImGui::CalcTextSize(text).x;
-    f32 x = ImGui::GetCursorPosX();
-    ImGui::SetCursorPosX(x + (w - tw) / 2);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + dp(4));
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(text);
-    ImGui::SameLine(x + w);
-    ImGui::BeginDisabled(*page >= pages - 1);
-    if (ImGui::Button("Next", ImVec2(dp(100), 0))) (*page)++;
-    ImGui::EndDisabled();
+    kit_dim("%s", left);
+    f32 bh = ImGui::GetFrameHeight(), slot = dp(64);
+    kit_align_right(2 * bh + slot);
+    if (kit_icon_button(ICON_LEFT, "##prev", KIT_GHOST, *page > 0)) (*page)--;
+    ImGui::SameLine(0, 0);
+    char text[32];
+    snprintf(text, sizeof text, "%d / %d", *page + 1, pages);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 tw = ImGui::CalcTextSize(text).x;
+    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(floorf(a.x + (slot - tw) / 2), floorf(a.y + (bh - g_font->FontSize) / 2)),
+                COL_DIM, text, a.x + slot);
+    ImGui::Dummy(ImVec2(slot, bh));
+    ImGui::SameLine(0, 0);
+    if (kit_icon_button(ICON_RIGHT, "##next", KIT_GHOST, *page < pages - 1)) (*page)++;
     ImGui::PopID();
+}
+
+// A list row's column caption (inside the card's first row).
+static void opt_caption(f32 x, const char *text, bool right = false)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 y = opt_row_text_y(g_font_small);
+    if (right) opt_text_right(dl, g_font_small, x, y, COL_FAINT, text, x - dp(200));
+    else opt_text_at(dl, g_font_small, ImVec2(x, y), COL_FAINT, text, x + dp(200));
+}
+
+// A list row's hover: a soft fill across the card. Returns whether the mouse is on the row.
+static bool opt_row_hover()
+{
+    ImVec2 a(g_card.a.x + dp(6), g_row.y + 1), z(g_card.a.x + g_card.w - dp(6), g_row.y + g_row.h);
+    bool hot = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(a, z);
+    if (hot) ImGui::GetWindowDrawList()->AddRectFilled(a, z, col32(0x1e2024), dp(6));
+    return hot;
+}
+
+static void opt_empty_row(const char *text)
+{
+    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(g_row.x0, opt_row_text_y(g_font)), COL_DIM, text, g_row.x1);
 }
 
 static void bytes_text(i64 bytes, char *out, i32 cap)
@@ -840,10 +1091,8 @@ static void ago_text(i64 us, char *out, i32 cap)
 // ---------------------------------------------------------------------------------------------------------------
 // Apps
 
-static const char *CATEGORY_LABELS[] = {
-    "New: pick a category", "App: its own track", "Game: own track, sessions", "Communication track",
-    "Ignored: never recorded",
-};
+static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Communication", "Ignored"};
+static const char *CATEGORY_NOTES[] = {0, "own track", "own track, sessions", "shared track", "never recorded"};
 
 // The name an app gets when it has none of its own: "Overwatch" for overwatch.exe (as audio_display_name).
 static void default_app_name(const char *exe, char *out, i32 cap)
@@ -922,50 +1171,44 @@ static void app_set_category(AppInfo *a, AppCategory cat)
     options_apply(APPLY_AUDIO);
 }
 
-static void options_apps()
+// "Add app": a small popup under its button with the exe name and its category.
+static void apps_add_popup(ImVec2 at, i32 rows)
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    opt_title("Apps", "Every app that has played sound. Each gets its own audio track in saved files, games first; "
-                      "communication apps share one track, and ignored apps are never recorded. New apps are listed "
-                      "first. Right-click an app to open its file location.");
-
-    if (o.order_dirty) apps_order_make();
-    apps_order_extend();
-
-    static const char *filters[] = {"All apps", "New apps", "Games", "Communication", "Other apps", "Ignored"};
-    opt_label("Show");
-    if (opt_combo("##filter", filters, COUNT(filters), &o.filter, dp(200))) {
-        o.order_dirty = true;
-        o.apps_page = 0;
-    }
-    ImGui::SameLine(0, dp(24));
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Search");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(dp(220));
-    if (ImGui::InputText("##search", o.search, sizeof o.search)) {
-        o.order_dirty = true;
-        o.apps_page = 0;
-    }
-
-    opt_label("Add an app by its exe name");
-    ImGui::SetNextItemWidth(dp(200));
-    bool enter = ImGui::InputText("##add", o.add_exe, sizeof o.add_exe, ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::SameLine();
-    static const char *add_cats[] = {"as communication", "as a game", "as an app", "as ignored"};
+    static const char *add_cats[] = {"Communication", "Game", "App", "Ignored"};
+    static const char *add_notes[] = {"shared track", "own track, sessions", "own track", "never recorded"};
     static const AppCategory add_cat_values[] = {CAT_COMMUNICATION, CAT_GAME, CAT_APP, CAT_IGNORED};
-    opt_combo("##addcat", add_cats, COUNT(add_cats), &o.add_category, dp(170));
-    ImGui::SameLine();
+    ImGui::SetNextWindowPos(at, ImGuiCond_Appearing, ImVec2(1, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    bool open = ImGui::BeginPopup("add app");
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (!open) return;
+    f32 w = dp(280);
+    ImGui::PushFont(g_font_bold);
+    ImGui::TextUnformatted("Add an app");
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, dp(2)));
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::SetNextItemWidth(w);
+    bool enter = ImGui::InputTextWithHint("##add", "name.exe", o.add_exe, sizeof o.add_exe, ImGuiInputTextFlags_EnterReturnsTrue);
+    opt_combo("##addcat", add_cats, add_notes, COUNT(add_cats), &o.add_category, w);
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, dp(2)));
+
     char exe[64];
     str_set(exe, o.add_exe);
     char *ex = trim(exe);
     for (char *p = ex; *p; p++) *p = (char)tolower((u8)*p);
-    ImGui::BeginDisabled(!ex[0] || c.app_count == COUNT(c.apps));
-    bool add = ImGui::Button("Add", ImVec2(dp(80), 0)) || (enter && ex[0]);
-    ImGui::EndDisabled();
-    i32 rows = opt_rows_fit(opt_pager_height() + ImGui::GetStyle().ItemSpacing.y);
-    if (add && ex[0]) {
+    f32 bw = dp(84), gap = dp(8);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
+    if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    ImGui::SameLine(0, gap);
+    bool add = kit_button("Add", KIT_PRIMARY, ImVec2(bw, 0), ex[0] && c.app_count < COUNT(c.apps));
+    if ((add || enter) && ex[0] && c.app_count < COUNT(c.apps)) {
         char name[64];
         size_t n = strlen(ex);
         snprintf(name, sizeof name, "%s%s", ex, n < 4 || strcmp(ex + n - 4, ".exe") ? ".exe" : "");
@@ -977,88 +1220,158 @@ static void options_apps()
             for (i32 i = 0; i < o.order_count; i++) // turn to its page
                 if (&c.apps[o.order[i]] == a) o.apps_page = i / rows;
         }
+        ImGui::CloseCurrentPopup();
     }
-    ImGui::Spacing();
+    ImGui::EndPopup();
+}
 
-    f32 rh = opt_row_height();
+static void options_apps()
+{
+    OptionsUi &o = g_app.options;
+    Config &c = g_app.config;
+    if (o.order_dirty) apps_order_make();
+    apps_order_extend();
+
+    // Filter chips; search and Add on the right (under the chips when the window is narrow)
+    static const char *chips[] = {"All", "New", "Games", "Apps", "Communication", "Ignored"};
+    static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED};
+    f32 page_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
+    f32 chips_w = 0;
+    for (i32 i = 0; i < COUNT(chips); i++) {
+        if (i) ImGui::SameLine(0, dp(6));
+        chips_w += ImGui::CalcTextSize(chips[i]).x + dp(28) + (i ? dp(6) : 0);
+        if (kit_chip(chips[i], o.filter == chip_filter[i]) && o.filter != chip_filter[i]) {
+            o.filter = chip_filter[i];
+            o.order_dirty = true;
+            o.apps_page = 0;
+        }
+    }
+    f32 search_w = dp(220), add_w = dp(118), right_w = search_w + dp(10) + add_w;
+    bool one_line = page_w >= chips_w + dp(24) + right_w;
+    if (one_line) kit_align_right(right_w);
+    if (kit_search("##search", o.search, sizeof o.search, "Search", search_w)) {
+        o.order_dirty = true;
+        o.apps_page = 0;
+    }
+    ImGui::SameLine(0, dp(10));
+    ImVec2 add_at = ImGui::GetCursorScreenPos();
+    if (kit_button(ICON_ADD "  Add app", KIT_SECONDARY, ImVec2(add_w, 0), c.app_count < COUNT(c.apps))) {
+        o.add_exe[0] = 0;
+        ImGui::OpenPopup("add app");
+    }
+    ImGui::Dummy(ImVec2(0, dp(2)));
+
+    f32 rh = dp(50), head_h = dp(34);
+    i32 rows = opt_rows_fit(rh, head_h + opt_pager_h());
     bool open_menu = false;
-    ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit;
-    if (ImGui::BeginTable("apps", 4, flags, ImVec2(0, rh * (rows + 1)))) {
-        ImGui::TableSetupColumn("App", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Name shown in files", ImGuiTableColumnFlags_WidthFixed, dp(210));
-        ImGui::TableSetupColumn("Category", ImGuiTableColumnFlags_WidthFixed, dp(230));
-        ImGui::TableSetupColumn("Last played sound", ImGuiTableColumnFlags_WidthFixed, dp(140));
-        ImGui::TableHeadersRow();
-        for (i32 r = 0; r < rows; r++) {
-            ImGui::TableNextRow(0, rh);
-            i32 k = o.apps_page * rows + r;
-            if (k >= o.order_count) {
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Dummy(ImVec2(0, ImGui::GetFrameHeight()));
-                continue;
-            }
-            i32 idx = o.order[k];
-            AppInfo &a = c.apps[idx];
-            ImGui::PushID(idx);
-            ImGui::TableSetColumnIndex(0);
-            // Spans the row, so a right-click anywhere on it (outside the boxes) opens the menu. Centred in a
-            // frame-high box rather than AlignTextToFramePadding, which would push it down and make the row taller.
-            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, 0.5f));
-            ImGui::Selectable(a.exe.s, false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
-                              ImVec2(0, ImGui::GetFrameHeight()));
-            ImGui::PopStyleVar();
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+    opt_card_begin();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
+    f32 more_x = x1 - fh + dp(6), heard_x1 = more_x - dp(14), heard_w = dp(96);
+    f32 cat_w = dp(170), cat_x = heard_x1 - heard_w - dp(16) - cat_w;
+    f32 name_x = x0 + floorf((cat_x - dp(16) - x0) * 0.48f), name_w = fminf(cat_x - dp(16) - name_x, dp(300));
+    f32 pad = ImGui::GetStyle().FramePadding.x;
+
+    opt_row_begin(0, 0, 0, head_h);
+    opt_caption(x0, "APP");
+    opt_caption(name_x + pad, "NAME IN FILES");
+    opt_caption(cat_x + pad, "CATEGORY");
+    opt_caption(heard_x1, "LAST HEARD", true);
+    opt_row_end();
+    for (i32 r = 0; r < rows; r++) {
+        i32 k = o.apps_page * rows + r;
+        opt_row_begin(0, 0, 0, rh, k < o.order_count);
+        if (k >= o.order_count) {
+            if (o.order_count == 0 && r == 0) opt_empty_row(o.search[0] || o.filter ? "No apps match" : "No apps have played sound yet");
+            opt_row_end();
+            continue;
+        }
+        i32 idx = o.order[k];
+        AppInfo &a = c.apps[idx];
+        ImGui::PushID(idx);
+        bool hot = opt_row_hover();
+        f32 cy = opt_row_frame_y();
+
+        // The exe, bold, with a "new" tag
+        bool is_new = a.category == CAT_NONE;
+        f32 tag_w = is_new ? opt_pill_w("new") + dp(8) : 0;
+        f32 exe_max = name_x - dp(12) - tag_w;
+        opt_text_at(dl, g_font_bold, ImVec2(x0, opt_row_text_y(g_font_bold)), COL_TEXT, a.exe.s, exe_max);
+        if (is_new) {
+            f32 ew = fminf(text_w(g_font_bold, a.exe.s), exe_max - x0);
+            opt_pill(dl, ImVec2(x0 + ew + dp(8), g_row.y + g_row.h / 2), "new", COL_ACCENT_SOFT, 0xff8a92);
+        }
+
+        // The name in files: quiet text until it's pointed at or clicked
+        ImGui::SetCursorScreenPos(ImVec2(name_x, cy));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, rgb(COL_PANEL2));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, rgb(COL_PANEL2));
+        char hint[64], name[64];
+        default_app_name(a.exe.s, hint, sizeof hint);
+        if (opt_text("##name", a.name.s, name_w, 0, hint, name, sizeof name)) {
+            for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
+            str_set(a.name.s, trim(name));
+            log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
+            options_apply(APPLY_AUDIO);
+        }
+        ImGui::PopStyleColor(3);
+
+        ImGui::SetCursorScreenPos(ImVec2(cat_x, cy));
+        i32 cat = a.category;
+        if (opt_combo("##cat", CATEGORY_LABELS, CATEGORY_NOTES, COUNT(CATEGORY_LABELS), &cat, cat_w, 1u << CAT_NONE,
+                      is_new ? "Choose\xE2\x80\xA6" : 0, is_new ? COL_DIM : COL_TEXT))
+            app_set_category(&a, (AppCategory)cat);
+
+        char ago[32];
+        bool playing = app_playing(a.exe.s);
+        if (!playing) ago_text(a.last_heard_us, ago, sizeof ago);
+        opt_text_right(dl, g_font, heard_x1, opt_row_text_y(g_font), playing ? COL_OK : COL_DIM, playing ? "playing now" : ago,
+                       heard_x1 - heard_w);
+
+        // Open file location: on the row under the mouse, or with a right-click anywhere on it
+        bool reveal = false;
+        if (hot) {
+            ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
+            reveal = kit_icon_button(ICON_FOLDER, "##reveal");
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 o.menu_app = idx;
                 app_find_path(a.exe.s, &o.menu_path);
                 open_menu = true; // opened outside the row's ID scope, where BeginPopup looks for it
             }
-            if (a.category == CAT_NONE) {
-                ImGui::SameLine();
-                ImGui::AlignTextToFramePadding();
-                ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_BLUE));
-                ImGui::TextUnformatted("new");
-                ImGui::PopStyleColor();
-            }
-
-            ImGui::TableSetColumnIndex(1);
-            char hint[64], name[64];
-            default_app_name(a.exe.s, hint, sizeof hint);
-            if (opt_text("##name", a.name.s, -FLT_MIN, 0, hint, name, sizeof name)) {
-                for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
-                str_set(a.name.s, trim(name));
-                log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
-                options_apply(APPLY_AUDIO);
-            }
-
-            ImGui::TableSetColumnIndex(2);
-            i32 cat = a.category;
-            if (opt_combo("##cat", CATEGORY_LABELS, COUNT(CATEGORY_LABELS), &cat, -FLT_MIN, 1u << CAT_NONE))
-                app_set_category(&a, (AppCategory)cat);
-
-            ImGui::TableSetColumnIndex(3);
-            ImGui::AlignTextToFramePadding();
-            char ago[32];
-            if (app_playing(a.exe.s)) {
-                ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_OK));
-                ImGui::TextUnformatted("playing now");
-                ImGui::PopStyleColor();
-            } else {
-                ago_text(a.last_heard_us, ago, sizeof ago);
-                ImGui::TextDisabled("%s", ago);
-            }
-            ImGui::PopID();
         }
-        ImGui::EndTable();
+        if (reveal) {
+            o.menu_app = idx;
+            if (app_find_path(a.exe.s, &o.menu_path)) reveal_file(o.menu_path);
+            else open_menu = true; // says why it can't
+        }
+        ImGui::PopID();
+        opt_row_end();
     }
+    opt_card_end(10);
+
     if (open_menu) ImGui::OpenPopup("app menu");
-    if (ImGui::BeginPopup("app menu")) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(8), dp(8)));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    bool menu = ImGui::BeginPopup("app menu");
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (menu) {
         ImGui::BeginDisabled(!o.menu_path.s[0]);
-        if (ImGui::MenuItem("Open file location")) reveal_file(o.menu_path);
+        if (ImGui::MenuItem(ICON_FOLDER "  Open file location")) reveal_file(o.menu_path);
         ImGui::EndDisabled();
-        if (!o.menu_path.s[0]) ImGui::TextDisabled("Not running, and lifelog hasn't seen where it is");
+        if (!o.menu_path.s[0]) {
+            ImGui::PushFont(g_font_small);
+            kit_dim("Not running, and lifelog hasn't seen where it is");
+            ImGui::PopFont();
+        }
         ImGui::EndPopup();
     }
-    opt_pager("apps", &o.apps_page, o.order_count, rows);
+    apps_add_popup(ImVec2(add_at.x + add_w, add_at.y + fh + dp(6)), rows);
+
+    char left[48];
+    snprintf(left, sizeof left, "%d app%s", o.order_count, o.order_count == 1 ? "" : "s");
+    opt_pager("apps", &o.apps_page, o.order_count, rows, left);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1197,113 +1510,131 @@ static void options_hotkeys()
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    opt_title("Hotkeys", "Keys that work anywhere, even in a game. Click a hotkey's keys, then press the new ones. "
-                         "Stream Deck keys can run commands instead; Help lists them.");
     capture_keys();
 
-    bool test = options_test_copy();
-    i32 rows = opt_rows_fit(opt_pager_height() + ImGui::GetFrameHeightWithSpacing());
-    ImGui::BeginDisabled(c.hotkey_count == COUNT(c.hotkeys) || o.capture_slot);
-    if (ImGui::Button("Add a hotkey", ImVec2(dp(160), 0))) {
+    f32 fh = ImGui::GetFrameHeight(), rh = dp(54), head_h = dp(34);
+    i32 rows = opt_rows_fit(rh, head_h + opt_pager_h() + ImGui::GetFrameHeightWithSpacing() + dp(2));
+    f32 add_w = dp(132);
+    ImGui::AlignTextToFramePadding();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
+    kit_dim("Keys that work anywhere, even in a game");
+    kit_align_right(add_w);
+    if (kit_button(ICON_ADD "  Add hotkey", KIT_SECONDARY, ImVec2(add_w, 0), c.hotkey_count < COUNT(c.hotkeys) && !o.capture_slot)) {
         Hotkey *h = &c.hotkeys[c.hotkey_count++];
         *h = {};
         str_set(h->action.s, "save 30s");
         o.hotkeys_page = (c.hotkey_count - 1) / rows;
         capture_start(c.hotkey_count - 1, true);
     }
-    ImGui::EndDisabled();
-    ImGui::SameLine(0, dp(16));
-    ImGui::AlignTextToFramePadding();
-    if (test) ImGui::TextDisabled("This is a test copy (CLIPBACK_HOME): the real clipback keeps the hotkeys.");
-    else ImGui::TextDisabled("%d of %d", c.hotkey_count, COUNT(c.hotkeys));
+    ImGui::Dummy(ImVec2(0, dp(2)));
 
-    f32 rh = opt_row_height();
     i32 remove = -1;
-    if (ImGui::BeginTable("hotkeys", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit,
-                          ImVec2(0, rh * (rows + 1)))) {
-        ImGui::TableSetupColumn("Keys", ImGuiTableColumnFlags_WidthFixed, dp(190));
-        ImGui::TableSetupColumn("Does", ImGuiTableColumnFlags_WidthFixed, dp(190));
-        ImGui::TableSetupColumn("How much", ImGuiTableColumnFlags_WidthFixed, dp(200));
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, dp(100));
-        ImGui::TableHeadersRow();
-        for (i32 r = 0; r < rows; r++) {
-            ImGui::TableNextRow(0, rh);
-            i32 i = o.hotkeys_page * rows + r;
-            if (i >= c.hotkey_count) {
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Dummy(ImVec2(0, ImGui::GetFrameHeight()));
-                continue;
-            }
-            Hotkey *h = &c.hotkeys[i];
-            ImGui::PushID(i);
-            ImGui::TableSetColumnIndex(0);
-            bool capturing = o.capture_slot == i + 1;
-            if (capturing) ImGui::PushStyleColor(ImGuiCol_Button, rgb(COL_BLUE, 0.35f));
-            const char *label = capturing ? "Press the keys" : h->keys.s[0] ? h->keys.s : "Set keys";
-            ImGui::BeginDisabled(o.capture_slot && !capturing);
-            if (ImGui::Button(label, ImVec2(-FLT_MIN, 0))) {
-                if (capturing) capture_end(true);
-                else capture_start(i, false);
-            }
-            ImGui::EndDisabled();
-            if (capturing) ImGui::PopStyleColor();
+    opt_card_begin();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
+    f32 keys_x = x0 - dp(6), keys_w = dp(230);
+    f32 act_x = keys_x + keys_w + dp(14), act_w = dp(170);
+    f32 amt_x = act_x + act_w + dp(10), amt_w = dp(64);
+    f32 unit_x = amt_x + amt_w + dp(6), unit_w = dp(108);
+    f32 warn_x = unit_x + unit_w + dp(16), del_x = x1 - fh + dp(6);
+    f32 pad = ImGui::GetStyle().FramePadding.x;
 
-            ImGui::TableSetColumnIndex(1);
-            i32 act = action_index(h->action.s);
-            if (opt_combo("##action", ACTION_LABELS, COUNT(ACTION_LABELS), &act, -FLT_MIN, 0, act < 0 ? h->action.s : 0)) {
-                if (act == 0) str_set(h->action.s, "save 30s");
-                else str_set(h->action.s, ACTION_COMMANDS[act]);
-                log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
-                options_apply(APPLY_HOTKEYS);
-            }
-
-            ImGui::TableSetColumnIndex(2);
-            f64 amount = 30;
-            i32 unit = 0;
-            bool save = act == 0;
-            if (save) save_length(h->action.s, &amount, &unit);
-            ImGui::BeginDisabled(!save);
-            if (opt_number("##amount", &amount, 0.1, 100000, dp(70))) {
-                set_save_action(h, amount, unit);
-                log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
-                options_apply(APPLY_HOTKEYS);
-            }
-            ImGui::SameLine();
-            if (opt_combo("##unit", LENGTH_UNITS, COUNT(LENGTH_UNITS), &unit, -FLT_MIN)) {
-                set_save_action(h, amount, unit);
-                log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
-                options_apply(APPLY_HOTKEYS);
-            }
-            ImGui::EndDisabled();
-
-            ImGui::TableSetColumnIndex(3);
-            ImGui::AlignTextToFramePadding();
-            u32 mods, vk;
-            bool same = false;
-            for (i32 k = 0; k < c.hotkey_count; k++) same |= k != i && h->keys.s[0] && !_stricmp(c.hotkeys[k].keys.s, h->keys.s);
-            if (!capturing && !hotkey_parse(h->keys.s, &mods, &vk)) ImGui::TextDisabled("Not a key combination");
-            else if (same) ImGui::TextDisabled("Same keys as another hotkey");
-
-            ImGui::TableSetColumnIndex(4);
-            ImGui::BeginDisabled(o.capture_slot != 0);
-            if (ImGui::Button("Remove", ImVec2(-FLT_MIN, 0))) remove = i;
-            ImGui::EndDisabled();
-            ImGui::PopID();
+    opt_row_begin(0, 0, 0, head_h);
+    opt_caption(x0, "KEYS");
+    opt_caption(act_x + pad, "ACTION");
+    opt_caption(amt_x + pad, "LENGTH");
+    opt_row_end();
+    for (i32 r = 0; r < rows; r++) {
+        i32 i = o.hotkeys_page * rows + r;
+        opt_row_begin(0, 0, 0, rh, i < c.hotkey_count);
+        if (i >= c.hotkey_count) {
+            if (c.hotkey_count == 0 && r == 0) opt_empty_row("No hotkeys");
+            opt_row_end();
+            continue;
         }
-        ImGui::EndTable();
+        Hotkey *h = &c.hotkeys[i];
+        ImGui::PushID(i);
+        bool hot = opt_row_hover();
+        f32 cy = opt_row_frame_y();
+        bool capturing = o.capture_slot == i + 1;
+
+        // The keys: caps in a fixed slot; click to press new ones ("Press keys…" in the same slot)
+        ImGui::SetCursorScreenPos(ImVec2(keys_x, cy));
+        ImGui::BeginDisabled(o.capture_slot && !capturing);
+        if (ImGui::InvisibleButton("##keys", ImVec2(keys_w, fh))) {
+            if (capturing) capture_end(true);
+            else capture_start(i, false);
+        }
+        bool slot_hot = ImGui::IsItemHovered();
+        f32 cap_h = dp(26), cap_y = cy + floorf((fh - cap_h) / 2);
+        if (capturing) {
+            dl->AddRectFilled(ImVec2(keys_x, cy), ImVec2(keys_x + keys_w, cy + fh), col32(COL_ACCENT_SOFT), ImGui::GetStyle().FrameRounding);
+            opt_text_at(dl, g_font_bold, ImVec2(x0, floorf(cy + (fh - g_font_bold->FontSize) / 2)), 0xff8a92,
+                        "Press keys\xE2\x80\xA6", keys_x + keys_w);
+        } else {
+            if (slot_hot) dl->AddRectFilled(ImVec2(keys_x, cy), ImVec2(keys_x + keys_w, cy + fh), col32(COL_PANEL2), ImGui::GetStyle().FrameRounding);
+            if (h->keys.s[0]) opt_keycaps(dl, ImVec2(x0, cap_y), cap_h, h->keys.s, keys_x + keys_w - dp(6));
+            else opt_text_at(dl, g_font, ImVec2(x0, floorf(cy + (fh - g_font->FontSize) / 2)), COL_DIM, "Set keys", keys_x + keys_w);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SetCursorScreenPos(ImVec2(act_x, cy));
+        i32 act = action_index(h->action.s);
+        if (opt_combo("##action", ACTION_LABELS, 0, COUNT(ACTION_LABELS), &act, act_w, 0, act < 0 ? h->action.s : 0)) {
+            if (act == 0) str_set(h->action.s, "save 30s");
+            else str_set(h->action.s, ACTION_COMMANDS[act]);
+            log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
+            options_apply(APPLY_HOTKEYS);
+        }
+
+        f64 amount = 30;
+        i32 unit = 0;
+        bool save = act == 0;
+        if (save) save_length(h->action.s, &amount, &unit);
+        ImGui::BeginDisabled(!save);
+        ImGui::SetCursorScreenPos(ImVec2(amt_x, cy));
+        if (opt_number("##amount", &amount, 0.1, 100000, amt_w)) {
+            set_save_action(h, amount, unit);
+            log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
+            options_apply(APPLY_HOTKEYS);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(unit_x, cy));
+        if (opt_combo("##unit", LENGTH_UNITS, 0, COUNT(LENGTH_UNITS), &unit, unit_w)) {
+            set_save_action(h, amount, unit);
+            log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
+            options_apply(APPLY_HOTKEYS);
+        }
+        ImGui::EndDisabled();
+
+        u32 mods, vk;
+        bool same = false;
+        for (i32 k = 0; k < c.hotkey_count; k++) same |= k != i && h->keys.s[0] && !_stricmp(c.hotkeys[k].keys.s, h->keys.s);
+        const char *warn = !capturing && !hotkey_parse(h->keys.s, &mods, &vk) ? "Not a key combination"
+                           : same ? "Same keys as another hotkey" : 0;
+        if (warn) opt_text_at(dl, g_font, ImVec2(warn_x, opt_row_text_y(g_font)), COL_WARN, warn, del_x - dp(8));
+
+        if (hot && !o.capture_slot) {
+            ImGui::SetCursorScreenPos(ImVec2(del_x, cy));
+            if (kit_icon_button(ICON_DELETE, "##remove")) remove = i;
+        }
+        ImGui::PopID();
+        opt_row_end();
     }
+    opt_card_end(10);
     if (remove >= 0) {
         hotkey_remove(remove);
         options_apply(APPLY_HOTKEYS);
     }
-    opt_pager("hotkeys", &o.hotkeys_page, c.hotkey_count, rows);
+    char left[96];
+    if (options_test_copy()) snprintf(left, sizeof left, "Test copy: the real clipback keeps the hotkeys");
+    else snprintf(left, sizeof left, "%d of %d", c.hotkey_count, COUNT(c.hotkeys));
+    opt_pager("hotkeys", &o.hotkeys_page, c.hotkey_count, rows, left);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Recording
 
-static const char *VENDOR_LABELS[VENDOR_COUNT] = {"NVIDIA NVENC", "AMD AMF", "Intel Quick Sync", "CPU (costs game frames)"};
+static const char *VENDOR_LABELS[VENDOR_COUNT] = {"NVIDIA NVENC", "AMD AMF", "Intel Quick Sync", "CPU"};
 
 // The vendor recording now, or the one that would record with these settings; -1 = not known yet.
 static i32 options_vendor()
@@ -1321,8 +1652,13 @@ static i32 options_vendor()
 
 static void monitor_label(i32 i, char *out, i32 cap)
 {
+    snprintf(out, cap, "%d. %s", i + 1, g_app.options.monitors[i].name);
+}
+
+static void monitor_note(i32 i, char *out, i32 cap)
+{
     const MonitorInfo &m = g_app.options.monitors[i];
-    snprintf(out, cap, "%d. %s, %d\xC3\x97%d at %d Hz%s", i + 1, m.name, m.width, m.height, m.hz, m.primary ? " (main)" : "");
+    snprintf(out, cap, "%d\xC3\x97%d, %d Hz%s", m.width, m.height, m.hz, m.primary ? ", main" : "");
 }
 
 static void options_recording()
@@ -1330,57 +1666,59 @@ static void options_recording()
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
     const Recorder &rec = g_app.recorder;
-    opt_title("Recording", "What goes into the buffer. Changes apply at once; the capture restarts when it needs to, "
-                           "which loses about a second of footage.");
+    f32 wide = dp(320);
 
-    opt_label("Record the microphone");
-    if (ImGui::Checkbox("##mic", &c.mic)) {
-        log_line("options: mic %s", c.mic ? "on" : "off");
-        options_apply(APPLY_AUDIO);
-    }
-
-    opt_label("Monitor");
-    char preview[128];
+    opt_section("VIDEO");
+    opt_card_begin();
+    char preview[160], note[64];
     snprintf(preview, sizeof preview, "%d. not connected", c.output_idx + 1);
-    if (c.output_idx >= 0 && c.output_idx < o.monitor_count) monitor_label(c.output_idx, preview, sizeof preview);
-    ImGui::SetNextItemWidth(dp(420));
-    if (ImGui::BeginCombo("##monitor", preview)) {
+    if (c.output_idx >= 0 && c.output_idx < o.monitor_count) {
+        monitor_label(c.output_idx, preview, sizeof preview);
+        monitor_note(c.output_idx, note, sizeof note);
+        size_t n = strlen(preview);
+        snprintf(preview + n, sizeof preview - n, " \xC2\xB7 %s", note);
+    }
+    opt_row_begin("Monitor", 0, wide);
+    f32 popup_w = 0;
+    for (i32 i = 0; i < o.monitor_count; i++) {
+        char label[96];
+        monitor_label(i, label, sizeof label);
+        monitor_note(i, note, sizeof note);
+        popup_w = fmaxf(popup_w, text_w(g_font_bold, label) + dp(32) + text_w(g_font, note) + dp(32));
+    }
+    if (opt_combo_begin("##monitor", preview, wide, popup_w)) {
         if (ImGui::IsWindowAppearing()) options_list_monitors(); // monitors come and go
         for (i32 i = 0; i < o.monitor_count; i++) {
-            char label[128];
+            char label[96];
             monitor_label(i, label, sizeof label);
-            if (ImGui::Selectable(label, i == c.output_idx) && i != c.output_idx) {
+            monitor_note(i, note, sizeof note);
+            if (opt_combo_item(label, note, i == c.output_idx) && i != c.output_idx) {
                 c.output_idx = i;
-                log_line("options: monitor %s", label);
+                log_line("options: monitor %s, %s", label, note);
                 options_apply(APPLY_RECORDER);
             }
         }
-        ImGui::EndCombo();
+        opt_combo_end();
     }
+    opt_row_end();
 
-    opt_label("Frame rate");
-    if (opt_i32("##fps", &c.fps, 1, 240, dp(90))) {
+    if (opt_row_i32("Frame rate", 0, "##fps", &c.fps, 1, 240, "fps")) {
         log_line("options: %d fps", c.fps);
         options_apply(APPLY_RECORDER);
     }
-    opt_unit("frames per second");
-
-    opt_label("Bitrate");
-    if (opt_f32("##bitrate", &c.bitrate_mbps, 1, 300, dp(90))) {
+    if (opt_row_f32("Bitrate", "Games can have their own under Game bitrates", "##bitrate", &c.bitrate_mbps, 1, 300, "Mbps")) {
         log_line("options: bitrate %g Mbps", c.bitrate_mbps);
         options_apply(APPLY_RECORDER);
     }
-    opt_unit("Mbps (20 is sharp at 1440p; games can have their own)");
 
-    static const char *codecs[CODEC_COUNT] = {"H.264: plays and edits everywhere", "HEVC: smaller files",
-                                              "AV1: smallest, not for Premiere"};
+    static const char *codecs[CODEC_COUNT] = {"H.264", "HEVC", "AV1"};
+    static const char *codec_notes[CODEC_COUNT] = {"plays everywhere", "smaller files", "smallest, not for Premiere"};
     u32 no_codec = 0;
     if (rec.encoders_known)
         for (i32 i = 0; i < CODEC_COUNT; i++)
             if (!rec.encoders_ok[i]) no_codec |= 1u << i;
-    opt_label("Format");
     i32 codec = codec_index(c.codec.s);
-    if (opt_combo("##codec", codecs, CODEC_COUNT, &codec, dp(420), no_codec)) {
+    if (opt_row_combo("Format", 0, "##codec", codecs, codec_notes, CODEC_COUNT, &codec, wide, no_codec)) {
         str_set(c.codec.s, CODECS[codec]);
         log_line("options: format %s", c.codec.s);
         options_apply(APPLY_RECORDER);
@@ -1388,51 +1726,60 @@ static void options_recording()
 
     // Encoders: Automatic, then each vendor; the ones whose test encode failed for this format are greyed out.
     u8 works = rec.encoders_ok[codec];
-    char labels[VENDOR_COUNT + 1][64];
-    const char *items[VENDOR_COUNT + 1];
     i32 first = -1;
     for (i32 v = 0; v < VENDOR_COUNT && first < 0; v++)
         if (works & (1 << v)) first = v;
-    if (!rec.encoders_known) snprintf(labels[0], sizeof labels[0], "Automatic (testing the encoders)");
-    else if (first < 0) snprintf(labels[0], sizeof labels[0], "Automatic (none works)");
-    else snprintf(labels[0], sizeof labels[0], "Automatic: %s", VENDOR_LABELS[first]);
+    const char *items[VENDOR_COUNT + 1], *notes[VENDOR_COUNT + 1];
+    items[0] = "Automatic";
+    notes[0] = !rec.encoders_known ? "testing\xE2\x80\xA6" : first < 0 ? "none works" : VENDOR_LABELS[first];
     u32 no_vendor = 0;
     for (i32 v = 0; v < VENDOR_COUNT; v++) {
         bool ok = !rec.encoders_known || (works & (1 << v));
-        snprintf(labels[v + 1], sizeof labels[v + 1], "%s%s", VENDOR_LABELS[v], ok ? "" : " (doesn't work here)");
+        items[v + 1] = VENDOR_LABELS[v];
+        notes[v + 1] = !ok ? "doesn't work here" : v == VENDOR_CPU ? "costs game frames" : 0;
         if (!ok) no_vendor |= 1u << (v + 1);
     }
-    for (i32 i = 0; i <= VENDOR_COUNT; i++) items[i] = labels[i];
-    opt_label("Encoder");
     i32 enc = vendor_parse(c.encoder.s) + 1;
-    if (opt_combo("##encoder", items, VENDOR_COUNT + 1, &enc, dp(420), no_vendor)) {
+    char enc_preview[96];
+    if (enc == 0) snprintf(enc_preview, sizeof enc_preview, "Automatic \xC2\xB7 %s", notes[0]);
+    else snprintf(enc_preview, sizeof enc_preview, "%s", items[enc]);
+    char status[160];
+    if (rec.paused) snprintf(status, sizeof status, "Paused");
+    else if (rec.recording) snprintf(status, sizeof status, "Recording with %s", rec.encoder_used.s);
+    else if (rec.last_error.s[0]) snprintf(status, sizeof status, "Not recording: %s", rec.last_error.s);
+    else snprintf(status, sizeof status, "Starting");
+    if (opt_row_combo("Encoder", status, "##encoder", items, notes, VENDOR_COUNT + 1, &enc, wide, no_vendor, enc_preview)) {
         str_set(c.encoder.s, enc == 0 ? "auto" : VENDOR_KEYS[enc - 1]);
         log_line("options: encoder %s", c.encoder.s);
         options_apply(APPLY_RECORDER);
     }
-
-    opt_label("Recording now");
-    ImGui::AlignTextToFramePadding();
-    if (rec.paused) ImGui::TextDisabled("Paused");
-    else if (rec.recording) ImGui::TextUnformatted(rec.encoder_used.s);
-    else if (rec.last_error.s[0]) ImGui::TextDisabled("Not recording: %s", rec.last_error.s);
-    else ImGui::TextDisabled("Starting");
-
-    opt_label("Show the mouse pointer");
-    if (ImGui::Checkbox("##mouse", &c.draw_mouse)) {
+    if (opt_row_toggle("Show the mouse pointer", 0, "##mouse", &c.draw_mouse)) {
         log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
         options_apply(APPLY_RECORDER);
     }
+    opt_card_end();
 
-    opt_label("ffmpeg.exe");
+    opt_section("AUDIO");
+    opt_card_begin();
+    if (opt_row_toggle("Record the microphone", "On its own track", "##mic", &c.mic)) {
+        log_line("options: mic %s", c.mic ? "on" : "off");
+        options_apply(APPLY_AUDIO);
+    }
+    opt_card_end();
+
+    opt_section("TOOLS");
+    opt_card_begin();
+    opt_row_begin("ffmpeg.exe", 0, wide);
     char ff[MAX_PATH * 3], text[MAX_PATH * 3];
     wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
-    if (opt_text("##ffmpeg", ff, dp(420), 0, "found on the PATH", text, sizeof text)) {
+    if (opt_text("##ffmpeg", ff, wide, 0, "Found on the PATH", text, sizeof text)) {
         char *t = trim(text);
         utf8_to_wide(t, c.ffmpeg.s, MAX_PATH);
         log_line("options: ffmpeg %s", t[0] ? t : "found on the PATH");
         options_apply(APPLY_RECORDER);
     }
+    opt_row_end();
+    opt_card_end();
 }
 
 // The games list behind Game bitrates and Sessions: every app sorted as a game, by exe. Neither page changes
@@ -1452,104 +1799,105 @@ static i32 options_games(i16 *out, i32 cap)
     return n;
 }
 
-static void game_name_cell(const AppInfo &a)
+// A game in a list row: its name, then its exe, dim.
+static void game_cell(const AppInfo &a, f32 max_x)
 {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
     char name[64];
     audio_display_name(g_app.config, a.exe.s, name, sizeof name);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(name);
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", a.exe.s);
+    f32 y = opt_row_text_y(g_font), x = g_row.x0;
+    opt_text_at(dl, g_font_bold, ImVec2(x, opt_row_text_y(g_font_bold)), COL_TEXT, name, max_x);
+    f32 nw = text_w(g_font_bold, name);
+    opt_text_at(dl, g_font, ImVec2(x + nw + dp(10), y), COL_DIM, a.exe.s, max_x);
 }
 
 static void options_game_bitrates()
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    char about[256];
-    snprintf(about, sizeof about,
-             "A game can record at its own bitrate while it's the game being played. An empty box uses the normal "
-             "bitrate (%g Mbps). Games are the apps sorted as Game under Apps.", c.bitrate_mbps);
-    opt_title("Game bitrates", about);
-
     static i16 games[512];
     i32 n = options_games(games, COUNT(games));
-    i32 rows = opt_rows_fit(opt_pager_height());
-    f32 rh = opt_row_height();
-    if (ImGui::BeginTable("rates", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit,
-                          ImVec2(0, rh * (rows + 1)))) {
-        ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Bitrate while playing it", ImGuiTableColumnFlags_WidthFixed, dp(260));
-        ImGui::TableHeadersRow();
-        for (i32 r = 0; r < rows; r++) {
-            ImGui::TableNextRow(0, rh);
-            i32 k = o.bitrates_page * rows + r;
-            ImGui::TableSetColumnIndex(0);
-            if (k >= n) {
-                if (n == 0 && r == 0) {
-                    ImGui::AlignTextToFramePadding();
-                    ImGui::TextDisabled("No games yet. Sort apps as Game under Apps.");
-                } else ImGui::Dummy(ImVec2(0, ImGui::GetFrameHeight()));
-                continue;
-            }
-            AppInfo &a = c.apps[games[k]];
-            ImGui::PushID(games[k]);
-            game_name_cell(a);
-            ImGui::TableSetColumnIndex(1);
-            f64 v = a.bitrate_mbps;
-            char hint[32];
-            snprintf(hint, sizeof hint, "%g", c.bitrate_mbps);
-            if (opt_number("##rate", &v, 1, 300, dp(90), true, hint)) {
-                a.bitrate_mbps = (f32)v;
-                if (v) log_line("options: %s records at %g Mbps", a.exe.s, v);
-                else log_line("options: %s records at the normal bitrate", a.exe.s);
-                options_apply(APPLY_RECORDER);
-            }
-            opt_unit("Mbps");
-            ImGui::PopID();
+
+    f32 rh = dp(50), head_h = dp(34);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
+    kit_dim("While a game is played, it records at its own bitrate. Empty uses the normal %g Mbps.", c.bitrate_mbps);
+    ImGui::Dummy(ImVec2(0, dp(2)));
+    i32 rows = opt_rows_fit(rh, head_h + opt_pager_h());
+    opt_card_begin();
+    opt_row_begin(0, 0, 0, head_h);
+    opt_caption(g_row.x0, "GAME");
+    opt_caption(g_row.x1 - opt_number_w() + ImGui::GetStyle().FramePadding.x, "BITRATE");
+    opt_row_end();
+    for (i32 r = 0; r < rows; r++) {
+        i32 k = o.bitrates_page * rows + r;
+        opt_row_begin(0, 0, opt_number_w(), rh, k < n);
+        if (k >= n) {
+            if (n == 0 && r == 0) opt_empty_row("No games yet. Mark apps as Game under Apps.");
+            opt_row_end();
+            continue;
         }
-        ImGui::EndTable();
+        AppInfo &a = c.apps[games[k]];
+        ImGui::PushID(games[k]);
+        opt_row_hover();
+        ImVec2 at = ImGui::GetCursorScreenPos();
+        game_cell(a, at.x - dp(20));
+        ImGui::SetCursorScreenPos(at);
+        f64 v = a.bitrate_mbps;
+        char hint[32];
+        snprintf(hint, sizeof hint, "%g", c.bitrate_mbps);
+        if (opt_number("##rate", &v, 1, 300, dp(OPT_FIELD_W), true, hint)) {
+            a.bitrate_mbps = (f32)v;
+            if (v) log_line("options: %s records at %g Mbps", a.exe.s, v);
+            else log_line("options: %s records at the normal bitrate", a.exe.s);
+            options_apply(APPLY_RECORDER);
+        }
+        opt_unit("Mbps");
+        ImGui::PopID();
+        opt_row_end();
     }
-    opt_pager("rates", &o.bitrates_page, n, rows);
+    opt_card_end(10);
+    char left[48];
+    snprintf(left, sizeof left, "%d game%s", n, n == 1 ? "" : "s");
+    opt_pager("rates", &o.bitrates_page, n, rows, left);
 }
 
 static void options_advanced()
 {
     Config &c = g_app.config;
     i32 vendor = options_vendor();
-    opt_title("Advanced encoding", "Encoder settings for people who want them. Off, clipback uses its defaults. "
-                                   "Settings the encoder in use doesn't support are greyed out.");
+    f32 wide = dp(240);
+    char in_use[96];
+    if (vendor < 0) snprintf(in_use, sizeof in_use, "Off uses clipback's defaults. Encoder in use: not known yet");
+    else snprintf(in_use, sizeof in_use, "Off uses clipback's defaults. Encoder in use: %s", VENDOR_LABELS[vendor]);
 
-    opt_label("Use these settings");
-    if (ImGui::Checkbox("##advanced", &c.advanced)) {
+    opt_card_begin();
+    if (opt_row_toggle("Custom encoder settings", in_use, "##advanced", &c.advanced)) {
         log_line("options: advanced encoding %s", c.advanced ? "on" : "off");
         options_apply(APPLY_RECORDER);
     }
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    if (vendor < 0) ImGui::TextDisabled("Encoder in use: not known yet");
-    else ImGui::TextDisabled("Encoder in use: %s", VENDOR_LABELS[vendor]);
+    opt_card_end();
 
+    opt_section("ENCODER");
+    opt_card_begin();
     ImGui::BeginDisabled(!c.advanced);
-    static const char *presets[] = {"P1: fastest", "P2", "P3", "P4: balanced", "P5", "P6", "P7: best quality, more GPU"};
+    static const char *presets[] = {"P1", "P2", "P3", "P4", "P5", "P6", "P7"};
+    static const char *preset_notes[] = {"fastest", 0, 0, "balanced", 0, 0, "best quality, more GPU"};
     static const char *preset_keys[] = {"p1", "p2", "p3", "p4", "p5", "p6", "p7"};
-    opt_label("Preset");
+    static const char *vendor_notes[VENDOR_COUNT] = {"Speed against quality", "AMF has three speeds; P1 to P7 spread over them",
+                                                     "Quick Sync's veryfast to veryslow", "CPU: fast presets only"};
     i32 preset = preset_step(c.preset.s);
-    if (opt_combo("##preset", presets, COUNT(presets), &preset, dp(300))) {
+    if (opt_row_combo("Preset", vendor >= 0 ? vendor_notes[vendor] : vendor_notes[0], "##preset", presets, preset_notes,
+                      COUNT(presets), &preset, wide)) {
         str_set(c.preset.s, preset_keys[preset]);
         log_line("options: preset %s", c.preset.s);
         options_apply(APPLY_RECORDER);
     }
-    static const char *preset_notes[VENDOR_COUNT] = {"", "AMF has three speeds; P1 to P7 spread over them",
-                                                     "Quick Sync's veryfast to veryslow", "CPU: fast presets only"};
-    opt_unit(vendor >= 0 ? preset_notes[vendor] : "");
 
-    static const char *rcs[] = {"VBR: target bitrate, peaks allowed", "CBR: fixed bitrate",
-                                "Constant quality: the bitrate is a cap"};
+    static const char *rcs[] = {"VBR", "CBR", "Constant quality"};
+    static const char *rc_notes[] = {"peaks allowed", "fixed bitrate", "the bitrate is a cap"};
     static const char *rc_keys[] = {"vbr", "cbr", "cq"};
     i32 rc = !strcmp(c.rate_control.s, "cbr") ? 1 : !strcmp(c.rate_control.s, "cq") ? 2 : 0;
-    opt_label("Rate control");
-    if (opt_combo("##rc", rcs, COUNT(rcs), &rc, dp(300))) {
+    if (opt_row_combo("Rate control", 0, "##rc", rcs, rc_notes, COUNT(rcs), &rc, wide)) {
         str_set(c.rate_control.s, rc_keys[rc]);
         log_line("options: rate control %s", c.rate_control.s);
         options_apply(APPLY_RECORDER);
@@ -1561,33 +1909,26 @@ static void options_advanced()
     bool peak_on = rc != 1 && !(vendor == VENDOR_AMF && rc == 2) && !(vendor == VENDOR_CPU && av1 && rc != 2);
     bool aq_on = vendor < 0 || vendor == VENDOR_NVENC || vendor == VENDOR_AMF;
 
-    opt_label("Quality level");
     ImGui::BeginDisabled(!cq_on);
-    if (opt_i32("##cq", &c.cq, 0, 51, dp(90))) {
+    if (opt_row_i32("Quality level", "0 to 51, lower is better. Constant quality only", "##cq", &c.cq, 0, 51, "")) {
         log_line("options: quality level %d", c.cq);
         options_apply(APPLY_RECORDER);
     }
-    opt_unit("0 to 51, lower is better (constant quality only)");
     ImGui::EndDisabled();
-
-    opt_label("Peak bitrate");
     ImGui::BeginDisabled(!peak_on);
-    if (opt_f32("##peak", &c.peak_factor, 1, 4, dp(90))) {
+    if (opt_row_f32("Peak bitrate", "Times the bitrate, 1 to 4. Not with CBR", "##peak", &c.peak_factor, 1, 4, "\xC3\x97")) {
         log_line("options: peak %g times the bitrate", c.peak_factor);
         options_apply(APPLY_RECORDER);
     }
-    opt_unit("\xC3\x97 the bitrate, 1 to 4 (not with CBR)");
     ImGui::EndDisabled();
-
-    opt_label("Adaptive quantisation");
     ImGui::BeginDisabled(!aq_on);
-    if (ImGui::Checkbox("##aq", &c.spatial_aq)) {
+    if (opt_row_toggle("Adaptive quantisation", "Fewer bands in flat areas. NVENC and AMF only", "##aq", &c.spatial_aq)) {
         log_line("options: adaptive quantisation %s", c.spatial_aq ? "on" : "off");
         options_apply(APPLY_RECORDER);
     }
-    opt_unit("spends bits on flat areas that would band (NVENC and AMF only)");
     ImGui::EndDisabled();
     ImGui::EndDisabled();
+    opt_card_end();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1597,59 +1938,56 @@ static void options_sessions()
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    opt_title("Sessions", "A game session lasts from when the game starts being played until it has been gone longer "
-                          "than the gap. When a long enough session ends, clipback asks whether to save it.");
-
-    opt_label("Gap that ends a session");
-    if (opt_f32("##gap", &c.session_gap_min, 0.5, 600, dp(90))) {
+    opt_card_begin();
+    if (opt_row_f32("Gap that ends a session", "How long a game can be away before its session ends", "##gap",
+                    &c.session_gap_min, 0.5, 600, "min")) {
         log_line("options: session gap %g min", c.session_gap_min);
         options_apply(0);
     }
-    opt_unit("minutes");
-    opt_label("Shortest session to offer");
-    if (opt_f32("##minlen", &c.session_min_length_min, 0, 1440, dp(90))) {
+    if (opt_row_f32("Shortest session to offer", 0, "##minlen", &c.session_min_length_min, 0, 1440, "min")) {
         log_line("options: shortest session %g min", c.session_min_length_min);
         options_apply(0);
     }
-    opt_unit("minutes");
-    ImGui::Spacing();
+    opt_card_end();
 
-    static const char *modes[] = {"Ask when it ends", "Always save it", "Never: no sessions"};
+    static const char *modes[] = {"Ask when it ends", "Always save", "Never"};
+    static const char *mode_notes[] = {0, 0, "no sessions"};
     static i16 games[512];
     i32 n = options_games(games, COUNT(games));
-    i32 rows = opt_rows_fit(opt_pager_height());
-    f32 rh = opt_row_height();
-    if (ImGui::BeginTable("modes", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit,
-                          ImVec2(0, rh * (rows + 1)))) {
-        ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Its sessions", ImGuiTableColumnFlags_WidthFixed, dp(260));
-        ImGui::TableHeadersRow();
-        for (i32 r = 0; r < rows; r++) {
-            ImGui::TableNextRow(0, rh);
-            i32 k = o.sessions_page * rows + r;
-            ImGui::TableSetColumnIndex(0);
-            if (k >= n) {
-                if (n == 0 && r == 0) {
-                    ImGui::AlignTextToFramePadding();
-                    ImGui::TextDisabled("No games yet. Sort apps as Game under Apps.");
-                } else ImGui::Dummy(ImVec2(0, ImGui::GetFrameHeight()));
-                continue;
-            }
-            AppInfo &a = c.apps[games[k]];
-            ImGui::PushID(games[k]);
-            game_name_cell(a);
-            ImGui::TableSetColumnIndex(1);
-            i32 m = a.session_mode;
-            if (opt_combo("##mode", modes, COUNT(modes), &m, -FLT_MIN)) {
-                a.session_mode = (SessionMode)m;
-                log_line("options: %s sessions: %s", a.exe.s, session_mode_name(a.session_mode));
-                options_apply(0);
-            }
-            ImGui::PopID();
+    f32 rh = dp(50), head_h = dp(34), combo_w = dp(200);
+    i32 rows = opt_rows_fit(rh, head_h + opt_pager_h());
+    opt_card_begin();
+    opt_row_begin(0, 0, 0, head_h);
+    opt_caption(g_row.x0, "GAME");
+    opt_caption(g_row.x1 - combo_w + ImGui::GetStyle().FramePadding.x, "ITS SESSIONS");
+    opt_row_end();
+    for (i32 r = 0; r < rows; r++) {
+        i32 k = o.sessions_page * rows + r;
+        opt_row_begin(0, 0, combo_w, rh, k < n);
+        if (k >= n) {
+            if (n == 0 && r == 0) opt_empty_row("No games yet. Mark apps as Game under Apps.");
+            opt_row_end();
+            continue;
         }
-        ImGui::EndTable();
+        AppInfo &a = c.apps[games[k]];
+        ImGui::PushID(games[k]);
+        opt_row_hover();
+        ImVec2 at = ImGui::GetCursorScreenPos();
+        game_cell(a, at.x - dp(20));
+        ImGui::SetCursorScreenPos(at);
+        i32 m = a.session_mode;
+        if (opt_combo("##mode", modes, mode_notes, COUNT(modes), &m, combo_w)) {
+            a.session_mode = (SessionMode)m;
+            log_line("options: %s sessions: %s", a.exe.s, session_mode_name(a.session_mode));
+            options_apply(0);
+        }
+        ImGui::PopID();
+        opt_row_end();
     }
-    opt_pager("modes", &o.sessions_page, n, rows);
+    opt_card_end(10);
+    char left[48];
+    snprintf(left, sizeof left, "%d game%s", n, n == 1 ? "" : "s");
+    opt_pager("modes", &o.sessions_page, n, rows, left);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1686,15 +2024,17 @@ static bool pick_folder(const Path &start, Path *out)
     return ok;
 }
 
-// A folder row: the path in a box (edits count when finished) and a Choose button.
-static bool folder_row(const char *label, const char *id, Path *p)
+// A folder row: the path in a box (edits count when finished) and a button that opens the folder picker.
+static bool opt_row_folder(const char *name, const char *sub, const char *id, Path *p)
 {
-    opt_label(label);
+    f32 fh = ImGui::GetFrameHeight();
+    f32 field_w = fmaxf(dp(220), fminf(dp(420), (g_card.w - 2 * dp(OPT_PAD)) * 0.55f));
+    opt_row_begin(name, sub, field_w + dp(8) + fh);
     char cur[MAX_PATH * 3], text[MAX_PATH * 3];
     wide_to_utf8(p->s, cur, sizeof cur);
     bool changed = false;
     ImGui::PushID(id);
-    if (opt_text("##path", cur, dp(440), 0, 0, text, sizeof text) && trim(text)[0]) {
+    if (opt_text("##path", cur, field_w, 0, 0, text, sizeof text) && trim(text)[0]) {
         wchar_t wide[MAX_PATH];
         utf8_to_wide(trim(text), wide, MAX_PATH);
         if (wcscmp(wide, p->s)) {
@@ -1702,16 +2042,17 @@ static bool folder_row(const char *label, const char *id, Path *p)
             changed = true;
         }
     }
-    ImGui::SameLine();
+    ImGui::SameLine(0, dp(8));
     Path picked = {};
-    if (ImGui::Button("Choose", ImVec2(dp(90), 0)) && pick_folder(*p, &picked) && wcscmp(picked.s, p->s)) {
+    if (kit_icon_button(ICON_FOLDER, "##choose", KIT_SECONDARY) && pick_folder(*p, &picked) && wcscmp(picked.s, p->s)) {
         *p = picked;
         changed = true;
     }
     ImGui::PopID();
+    opt_row_end();
     if (changed) {
         wide_to_utf8(p->s, cur, sizeof cur);
-        log_line("options: %s %s", label, cur);
+        log_line("options: %s %s", name, cur);
     }
     return changed;
 }
@@ -1720,53 +2061,45 @@ static void options_storage()
 {
     Config &c = g_app.config;
     const Recorder &rec = g_app.recorder;
-    opt_title("Storage", "Where clips and the buffer go, and how much the buffer keeps. Clips and sessions are saved "
-                         "in a folder per year inside the save folder.");
 
-    if (folder_row("Save clips and sessions in", "save", &c.save_dir)) options_apply(0);
-    if (folder_row("Buffer folder", "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
+    opt_section("FOLDERS");
+    opt_card_begin();
+    if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
+    if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
+    opt_card_end();
 
-    opt_label("Keep in the buffer");
-    if (opt_f32("##hours", &c.buffer_hours, 0.1, 24 * 14, dp(90))) {
+    opt_section("BUFFER");
+    opt_card_begin();
+    char size[32], line[128];
+    bytes_text((i64)(c.buffer_hours * 3600.0 * c.bitrate_mbps / 8.0 * 1e6), size, sizeof size);
+    snprintf(line, sizeof line, "About %s at %g Mbps", size, c.bitrate_mbps);
+    if (opt_row_f32("Buffer length", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
         log_line("options: buffer keeps %g h", c.buffer_hours);
         options_apply(APPLY_RECORDER);
     }
-    char size[32], line[128];
-    bytes_text((i64)(c.buffer_hours * 3600.0 * c.bitrate_mbps / 8.0 * 1e6), size, sizeof size);
-    snprintf(line, sizeof line, "hours of footage (about %s at %g Mbps)", size, c.bitrate_mbps);
-    opt_unit(line);
-
-    opt_label("Keep free on the buffer's drive");
-    if (opt_f32("##free", &c.min_free_gb, 0, 100000, dp(90))) {
+    if (opt_row_f32("Keep free on its drive", "The oldest footage goes early rather than fill the drive", "##free",
+                    &c.min_free_gb, 0, 100000, "GB")) {
         log_line("options: keep %g GB free", c.min_free_gb);
         options_apply(APPLY_RECORDER);
     }
-    opt_unit("GB (the oldest footage goes early rather than fill the drive)");
+    char used[32], free_text[32], holds[96];
+    bytes_text((i64)rec.buffer_bytes, used, sizeof used);
+    bytes_text(rec.free_bytes, free_text, sizeof free_text);
+    if (rec.oldest_us) {
+        i64 mins = (now_us() - rec.oldest_us) / 60000000;
+        snprintf(holds, sizeof holds, "%s, the last %lld h %02lld min", used, mins / 60, mins % 60);
+    } else snprintf(holds, sizeof holds, "%s", rec.buffer_bytes ? used : "Nothing yet");
+    opt_row_value("Holds now", 0, holds, rec.oldest_us ? COL_TEXT : COL_DIM);
+    opt_row_value("Free on its drive", 0, free_text);
+    opt_card_end();
 
-    opt_label("Keep share copies for");
-    if (opt_f32("##share", &c.share_keep_days, 0.1, 365, dp(90))) {
+    opt_section("SHARING");
+    opt_card_begin();
+    if (opt_row_f32("Keep share copies for", 0, "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);
     }
-    opt_unit("days");
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    char used[32], free_text[32];
-    bytes_text((i64)rec.buffer_bytes, used, sizeof used);
-    bytes_text(rec.free_bytes, free_text, sizeof free_text);
-    opt_label("The buffer now holds");
-    ImGui::AlignTextToFramePadding();
-    if (rec.oldest_us) {
-        i64 mins = (now_us() - rec.oldest_us) / 60000000;
-        ImGui::Text("%s, from %lld h %02lld min ago", used, mins / 60, mins % 60);
-    } else {
-        ImGui::TextDisabled("%s", rec.buffer_bytes ? used : "nothing yet");
-    }
-    opt_label("Free on the buffer's drive");
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(free_text);
+    opt_card_end();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1775,8 +2108,6 @@ static void options_storage()
 static void options_startup()
 {
     Config &c = g_app.config;
-    opt_title("Start with Windows", "clipback starts hidden in the tray when you sign in, so the buffer is always "
-                                    "recording.");
     wchar_t now_value[MAX_PATH + 8], cmd[MAX_PATH + 8];
     bool set = startup_read(now_value, COUNT(now_value));
     startup_command(cmd, COUNT(cmd));
@@ -1785,21 +2116,20 @@ static void options_startup()
         g_app.options.startup_logged = true;
     }
 
-    opt_label("Start clipback with Windows");
-    if (ImGui::Checkbox("##startup", &c.start_with_windows)) {
+    opt_card_begin();
+    if (opt_row_toggle("Start with Windows", "Starts hidden in the tray when you sign in", "##startup", &c.start_with_windows)) {
         startup_set(c.start_with_windows);
         options_apply(0);
     }
-    opt_label("Windows runs at sign-in");
-    ImGui::AlignTextToFramePadding();
     char u[MAX_PATH * 3];
     wide_to_utf8(now_value, u, sizeof u);
-    if (!set) ImGui::TextDisabled("nothing (clipback isn't in the Run list)");
-    else if (!_wcsicmp(now_value, cmd)) ImGui::TextUnformatted("this clipback");
-    else ImGui::TextDisabled("%s", u);
+    if (!set) opt_row_value("Runs at sign-in", 0, "Nothing", COL_DIM);
+    else if (!_wcsicmp(now_value, cmd)) opt_row_value("Runs at sign-in", 0, "This clipback");
+    else opt_row_value("Runs at sign-in", 0, u, COL_DIM);
+    opt_card_end();
     if (options_test_copy()) {
-        ImGui::Spacing();
-        ImGui::TextDisabled("This is a test copy (CLIPBACK_HOME): the setting is saved, but the Run list is left alone.");
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
+        kit_dim("Test copy: the setting is saved, the Run list is left alone.");
     }
 }
 
@@ -1816,33 +2146,63 @@ static void screen_options()
     }
     o.last_frame = frame;
 
-    static const char *tabs[OPT_TAB_COUNT] = {"Apps", "Hotkeys", "Recording", "Game bitrates", "Advanced",
-                                              "Sessions", "Storage", "Start with Windows"};
-    static const bool sub[OPT_TAB_COUNT] = {false, false, false, true, true, false, false, false};
+    kit_title("Options");
+    ImGui::Dummy(ImVec2(0, dp(2)));
+
+    // The sections as a row of text tabs over a hairline, the current one underlined in the accent. Each tab's
+    // width is fixed (its bold label, and room for the new-apps count on Apps), so none moves.
+    static const char *names[OPT_TAB_COUNT] = {"Apps", "Hotkeys", "Recording", "Game bitrates", "Advanced",
+                                               "Sessions", "Storage", "Startup"};
+    static const i32 order[OPT_TAB_COUNT] = {OPT_APPS, OPT_HOTKEYS, OPT_RECORDING, OPT_GAME_BITRATES, OPT_SESSIONS,
+                                             OPT_STORAGE, OPT_STARTUP, OPT_ADVANCED};
+    if (o.tab < 0 || o.tab >= OPT_TAB_COUNT) o.tab = OPT_APPS;
     i32 new_apps = 0;
     for (i32 i = 0; i < g_app.config.app_count; i++) new_apps += g_app.config.apps[i].category == CAT_NONE;
+    char count[8];
+    snprintf(count, sizeof count, new_apps > 99 ? "99+" : "%d", new_apps);
+    f32 pill_room = opt_pill_w("99") + dp(8);
 
-    ImGui::BeginChild("nav", ImVec2(dp(190), 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 avail = ImGui::GetContentRegionAvail().x, tab_h = dp(40);
+    f32 widths[OPT_TAB_COUNT], sum = 0;
     for (i32 i = 0; i < OPT_TAB_COUNT; i++) {
-        bool active = o.tab == i;
-        char label[64];
-        if (i == OPT_APPS && new_apps) snprintf(label, sizeof label, "Apps (%d new)###tab%d", new_apps, i);
-        else snprintf(label, sizeof label, "%s###tab%d", tabs[i], i);
-        if (sub[i]) ImGui::Indent(dp(16));
-        ImGui::PushStyleColor(ImGuiCol_Button, active ? rgb(COL_PANEL2) : ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_Text, active ? rgb(COL_TEXT) : rgb(COL_DIM));
-        ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0, 0.5f));
-        ImGui::BeginDisabled(o.capture_slot != 0 && !active); // finish setting the hotkey first
-        if (ImGui::Button(label, ImVec2(-FLT_MIN, 0))) o.tab = i;
-        ImGui::EndDisabled();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(2);
-        if (sub[i]) ImGui::Unindent(dp(16));
+        widths[i] = text_w(g_font_bold, names[order[i]]) + (order[i] == OPT_APPS ? pill_room : 0);
+        sum += widths[i];
     }
-    ImGui::EndChild();
-    ImGui::SameLine(0, dp(16));
+    f32 gap = fmaxf(dp(12), fminf(dp(30), (avail - sum) / (OPT_TAB_COUNT - 1)));
+    dl->AddLine(ImVec2(a.x, a.y + tab_h - 0.5f), ImVec2(a.x + avail, a.y + tab_h - 0.5f), col32(COL_LINE));
+    f32 x = a.x;
+    for (i32 i = 0; i < OPT_TAB_COUNT; i++) {
+        i32 t = order[i];
+        bool active = o.tab == t;
+        ImGui::SetCursorScreenPos(ImVec2(x - gap / 2, a.y));
+        ImGui::PushID(t);
+        ImGui::BeginDisabled(o.capture_slot != 0 && !active); // finish setting the hotkey first
+        if (ImGui::InvisibleButton("##tab", ImVec2(widths[i] + gap, tab_h))) o.tab = t;
+        bool hot = ImGui::IsItemHovered();
+        ImFont *font = active ? g_font_bold : g_font;
+        f32 ty = floorf(a.y + (tab_h - dp(4) - font->FontSize) / 2);
+        opt_text_at(dl, font, ImVec2(x, ty), active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM, names[t], x + widths[i] + 1);
+        f32 line_w = text_w(font, names[t]);
+        if (t == OPT_APPS && new_apps) {
+            f32 px = x + line_w + dp(8);
+            opt_pill(dl, ImVec2(px, ty + font->FontSize / 2 + dp(1)), count, COL_ACCENT, 0xffffff);
+            line_w += dp(8) + opt_pill_w(count);
+        }
+        if (active) dl->AddRectFilled(ImVec2(x, a.y + tab_h - dp(2)), ImVec2(x + line_w, a.y + tab_h), col32(COL_ACCENT), dp(1));
+        ImGui::EndDisabled();
+        ImGui::PopID();
+        x += widths[i] + gap;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + tab_h));
+    ImGui::Dummy(ImVec2(avail, dp(14)));
 
-    ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    // List pages fit their page and turn pages; the others scroll if the window is short.
+    bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS || o.tab == OPT_GAME_BITRATES || o.tab == OPT_SESSIONS;
+    g_card_max_w = list ? FLT_MAX : dp(860);
+    ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_None,
+                      list ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
     switch (o.tab) {
     case OPT_APPS: options_apps(); break;
     case OPT_HOTKEYS: options_hotkeys(); break;
@@ -1852,7 +2212,7 @@ static void screen_options()
     case OPT_SESSIONS: options_sessions(); break;
     case OPT_STORAGE: options_storage(); break;
     case OPT_STARTUP: options_startup(); break;
-    default: o.tab = OPT_APPS; break;
+    default: break;
     }
     ImGui::EndChild();
     if (o.capture_slot) ui_wake(); // keep drawing while waiting for keys
