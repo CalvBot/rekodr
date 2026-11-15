@@ -57,7 +57,8 @@ static void handle_event(const Event &e)
     case EV_LOG: log_line("%s", e.text); break;
     case EV_RECORDER: recorder_on_event(e); break;
     case EV_AUDIO: audio_on_event(e); break;
-    case EV_SAVE: save_on_event(e); break;
+    case EV_SAVE: save_on_event(e); editor_on_save_event(e); break;
+    case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
     default: break;
     }

@@ -428,9 +428,9 @@ static void tl_check_job()
     if (v && v->state < SAVE_DONE) return;
     tl.job_edit = false;
     if (v && v->state == SAVE_DONE) {
-        // TODO editor_open(v->path) once the editor is in; until then this only switches to its screen.
         log_line("timeline: opening the editor on %s", v->path);
         ui_show(SCREEN_EDITOR);
+        editor_open_file(v->path);
     }
 }
 
