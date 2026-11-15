@@ -240,8 +240,9 @@ static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, u32 pid
         "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
         "-c:a", "libopus", "-b:a", "128k", "-application", "audio",
         "-f", "segment", "-segment_time", "10", "-segment_format", "matroska",
-        // Small clusters, flushed: a clip can read the segment still being written.
-        "-segment_format_options", "cluster_time_limit=1000", "-flush_packets", "1",
+        // Small clusters, flushed, so a clip can read the segment still being written. flush_packets has to be
+        // given to the inner Matroska muxer too; on the segment muxer alone the open file stays empty.
+        "-segment_format_options", "cluster_time_limit=1000:flush_packets=1", "-flush_packets", "1",
         "-reset_timestamps", "0", "-segment_list_type", "csv", "-segment_list",
     };
     wchar_t args[4096] = {};
@@ -887,6 +888,7 @@ static void audio_tick_activity()
     if (g_aw.activity_started && str_eq(game.s, g_aw.game.s) && !wcscmp(file.s, g_aw.activity_file.s)) return;
 
     SHCreateDirectoryExW(0, cfg.buffer_dir.s, 0);
+    AcquireSRWLockExclusive(&g_activity_lock);
     HANDLE f = CreateFileW(file.s, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, 0);
     if (f != INVALID_HANDLE_VALUE) {
@@ -898,6 +900,7 @@ static void audio_tick_activity()
     } else {
         log_line("couldn't write %ls (%d)", file.s, (int)GetLastError());
     }
+    ReleaseSRWLockExclusive(&g_activity_lock);
     if (g_aw.activity_started) {
         if (game.s[0]) {
             char name[128];

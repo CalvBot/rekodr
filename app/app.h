@@ -241,3 +241,6 @@ struct App {
 };
 
 static App g_app;
+
+// activity.tsv is appended by the audio watcher and rewritten by the pruner, on different threads; both hold this.
+static SRWLOCK g_activity_lock = SRWLOCK_INIT;

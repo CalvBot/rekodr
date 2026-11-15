@@ -203,7 +203,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     if (!ui_init()) log_line("the window couldn't be created; clipback keeps recording without it");
     tray_init(g_app.msg_hwnd);
-    hotkeys_apply(g_app.config, g_app.msg_hwnd);
+    // Test copies (CLIPBACK_HOME) leave the hotkeys to the real clipback.
+    if (!home[0]) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
     audio_start();
     if (command[0]) run_command(command);

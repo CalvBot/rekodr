@@ -898,9 +898,10 @@ static Path prune_dir_path(const RecSettings &s, const PruneDir &d)
 static void prune_activity(const RecSettings &s, i64 oldest_us)
 {
     Path path = path_join(s.buffer_dir, L"activity.tsv");
+    AcquireSRWLockExclusive(&g_activity_lock);
     i64 size = 0;
     char *text = read_file(path.s, &size);
-    if (!text) return;
+    if (!text) { ReleaseSRWLockExclusive(&g_activity_lock); return; }
     // The start of the last line at or before oldest_us
     char *keep = 0;
     i32 index = 0, keep_index = 0;
@@ -931,6 +932,7 @@ static void prune_activity(const RecSettings &s, i64 oldest_us)
         }
     }
     HeapFree(GetProcessHeap(), 0, text);
+    ReleaseSRWLockExclusive(&g_activity_lock);
 }
 
 static void prune_pass()
