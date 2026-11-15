@@ -17,7 +17,7 @@ call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 
 set FLAGS=/nologo /std:c++20 /utf-8 /W4 /wd4100 /wd4505 /GR- /EHs-c- /D_HAS_EXCEPTIONS=0 /Zi /FS
 if "%1"=="debug" (set FLAGS=%FLAGS% /Od /MTd /DDEBUG) else (set FLAGS=%FLAGS% /O2 /MT)
-set LIBS=user32.lib gdi32.lib shell32.lib ole32.lib advapi32.lib d3d11.lib dxgi.lib dwmapi.lib dbghelp.lib imm32.lib
+set LIBS=user32.lib gdi32.lib shell32.lib ole32.lib advapi32.lib d3d11.lib dxgi.lib dwmapi.lib dbghelp.lib imm32.lib mmdevapi.lib
 
 rc /nologo /fo build\clipback.res clipback.rc || exit /b 1
 cl %FLAGS% clipback.cpp build\clipback.res /Fobuild\ /Fdbuild\ /Febuild\clipback.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS% || exit /b 1

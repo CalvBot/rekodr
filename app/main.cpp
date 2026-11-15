@@ -30,6 +30,7 @@ static void run_command(const char *text)
     } else if (!strcmp(cmd, "pause") || !strcmp(cmd, "resume") || !strcmp(cmd, "toggle")) {
         bool pause = !strcmp(cmd, "pause") ? true : !strcmp(cmd, "resume") ? false : !g_app.recorder.paused;
         recorder_set_paused(pause);
+        audio_set_paused(pause);
         tray_update(g_app.msg_hwnd, false);
         ui_wake();
     } else if (!strcmp(cmd, "folder")) {
@@ -171,7 +172,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         u32 h = 2166136261u;
         for (wchar_t *c = home; *c; c++) h = (h ^ (u32)towlower(*c)) * 16777619u;
         swprintf(mutex_name, COUNT(mutex_name), L"Local\\clipback.native.%08x", h);
-        MSG_CLASS = L"clipback.msg.dev";
+        // Per home too, so a command (quit) from one test copy never reaches another test copy.
+        static wchar_t dev_class[64];
+        swprintf(dev_class, COUNT(dev_class), L"clipback.msg.dev.%08x", h);
+        MSG_CLASS = dev_class;
     }
     HANDLE single = CreateMutexW(0, TRUE, mutex_name);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
