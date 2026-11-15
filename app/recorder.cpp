@@ -1,5 +1,5 @@
-// Recording: the capture ffmpeg, the audio streams and the buffer. Not written yet; these are the functions the
-// rest of the program calls.
+// Video: the capture ffmpeg (ddagrab → GPU encoder → 2 s segments in the buffer), finding a working encoder, and
+// pruning the buffer to buffer_hours and the free-space floor. Not written yet.
 
 static void recorder_start()
 {
@@ -14,8 +14,4 @@ static void recorder_set_paused(bool paused)
     log_line(paused ? "paused" : "resumed");
 }
 
-// Saves the last `secs` seconds of the buffer as a clip in <save_dir>\<year>\Clips.
-static void save_last(i64 secs)
-{
-    log_line("save last %lld s: not implemented yet", secs);
-}
+static void recorder_on_event(const Event &e) {}

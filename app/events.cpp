@@ -7,6 +7,10 @@ enum EventKind : u8 {
     EV_NONE,
     EV_COMMAND, // text: a command line from a second launch, a hotkey or the tray ("save 30s", "open" …)
     EV_LOG,     // text: a message to show in the status line
+    // One kind per module; `a` is the module's own sub-kind and the module's *_on_event handles it.
+    EV_RECORDER,
+    EV_AUDIO,
+    EV_SAVE,
 };
 
 struct Event {

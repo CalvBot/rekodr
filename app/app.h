@@ -94,11 +94,25 @@ struct Ui {
     bool   animating;   // something moves on its own (playback, progress): keep drawing
 };
 
+// Each module below owns one struct. Only the main thread changes it; the module's worker threads keep their own
+// data and report through events (EV_RECORDER, EV_AUDIO, EV_SAVE).
+
+// recorder.cpp: video capture into the buffer, and pruning the buffer.
 struct Recorder {
     bool  paused;
     bool  recording;    // ffmpeg is capturing right now
     Str64 encoder_used; // "h264_nvenc"
     Str256 last_error;
+};
+
+// audio.cpp: one stream per app playing sound, plus the mic.
+struct Audio {
+    i32 stream_count;
+};
+
+// save.cpp: reading the buffer and turning ranges of it into files (clips, sessions, Keep, Share).
+struct Saving {
+    i32 jobs_running;
 };
 
 struct Paths {
@@ -112,6 +126,8 @@ struct App {
     Paths    paths;
     Config   config;
     Recorder recorder;
+    Audio    audio;
+    Saving   saving;
     Ui       ui;
     HWND     msg_hwnd;  // hidden message window: tray, hotkeys, commands, worker events
     bool     quitting;

@@ -52,6 +52,9 @@ static void handle_event(const Event &e)
     switch (e.kind) {
     case EV_COMMAND: run_command(e.text); break;
     case EV_LOG: log_line("%s", e.text); break;
+    case EV_RECORDER: recorder_on_event(e); break;
+    case EV_AUDIO: audio_on_event(e); break;
+    case EV_SAVE: save_on_event(e); break;
     default: break;
     }
     ui_wake();
@@ -180,6 +183,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     }
 
     paths_init(&g_app.paths);
+    proc_init();
     SetUnhandledExceptionFilter(on_crash);
     RegisterApplicationRestart(L"", RESTART_NO_REBOOT);
     if (!config_load(&g_app.config, g_app.paths)) config_save(g_app.config, g_app.paths);
@@ -197,6 +201,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     tray_init(g_app.msg_hwnd);
     hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
+    audio_start();
     if (command[0]) run_command(command);
 
     // The main loop. While the window is hidden or idle it sleeps in GetMessage; it only draws while shown, for a
@@ -223,7 +228,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     }
 
     log_line("clipback (native) quitting");
+    audio_stop();
     recorder_stop();
+    save_stop();
     tray_remove(g_app.msg_hwnd);
     ReleaseMutex(single);
     return 0;
