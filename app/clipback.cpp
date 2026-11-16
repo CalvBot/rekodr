@@ -30,6 +30,9 @@
 // so the crash handler writes a minidump (main.cpp).
 static void imgui_assert_failed(const char *expr, const char *file, int line);
 #define IM_ASSERT(e) ((e) ? (void)0 : imgui_assert_failed(#e, __FILE__, __LINE__))
+// ImGui's own debug log (errors always; popups and focus in dev mode, see ui_frame) goes to clipback's log.
+static void imgui_debug_print(const char *fmt, ...);
+#define IMGUI_DEBUG_PRINTF(_FMT, ...) imgui_debug_print(_FMT, __VA_ARGS__)
 
 #include "vendor/imgui/imgui.cpp"
 #include "vendor/imgui/imgui_draw.cpp"
@@ -46,6 +49,18 @@ static void imgui_assert_failed(const char *expr, const char *file, int line)
     log_line("ImGui assert failed at %s:%d: %s", file, line, expr);
     __debugbreak();
 }
+
+static void imgui_debug_print(const char *fmt, ...)
+{
+    char msg[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof msg, fmt, args);
+    va_end(args);
+    size_t n = strlen(msg);
+    while (n && (msg[n - 1] == '\n' || msg[n - 1] == '\r')) msg[--n] = 0;
+    log_line("imgui: %s", msg);
+}
 #include "events.cpp"
 #include "config.cpp"
 #include "proc.cpp"
@@ -55,5 +70,6 @@ static void imgui_assert_failed(const char *expr, const char *file, int line)
 #include "save.cpp"
 #include "hotkeys.cpp"
 #include "tray.cpp"
+#include "diag.cpp"
 #include "ui.cpp"
 #include "main.cpp"

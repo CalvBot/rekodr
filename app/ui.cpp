@@ -125,6 +125,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_START     "\xEE\xA2\x92" // E892
 #define ICON_CALENDAR "\xEE\x9E\x87" // E787
+#define ICON_BUG      "\xEE\xAF\xA8" // EBE8
 #define ICON_LIST      "\xEE\xA3\xBD" // E8FD
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
@@ -311,7 +312,7 @@ static void ui_set_scale(f32 scale)
     ui_style(scale);
 }
 
-static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) {
         ui_wake();
@@ -323,6 +324,7 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ui_wake();
         return 0;
     case WM_CLOSE:
+        DEV_LOG("window closed (hidden)");
         ShowWindow(hwnd, SW_HIDE);
         g_app.ui.shown = false;
         library_window_shown(false);
@@ -351,7 +353,7 @@ static bool ui_init()
     HINSTANCE inst = GetModuleHandleW(0);
     WNDCLASSEXW wc = {sizeof wc};
     wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = ui_wndproc;
+    wc.lpfnWndProc = diag_wndproc<ui_wndproc>;
     wc.hInstance = inst;
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.hCursor = LoadCursorW(0, IDC_ARROW);
@@ -389,6 +391,7 @@ static bool ui_init()
 static void ui_show(Screen screen)
 {
     Ui &ui = g_app.ui;
+    DEV_LOG("show window, screen %d (was %s)", (int)screen, ui.shown ? "shown" : "hidden");
     ui.screen = screen;
     if (!ui.shown) {
         ShowWindow(ui.hwnd, IsZoomed(ui.hwnd) ? SW_SHOWMAXIMIZED : SW_SHOW);
@@ -413,6 +416,22 @@ enum KitKind { KIT_SECONDARY, KIT_PRIMARY, KIT_GHOST, KIT_DANGER };
 
 static f32 kit_px(f32 v) { return v * g_dpi_scale; }
 
+static const char *const SCREEN_NAMES[] = {"library", "timeline", "editor", "options"};
+static const char *screen_name(Screen s) { return (u32)s < COUNT(SCREEN_NAMES) ? SCREEN_NAMES[s] : "?"; }
+
+// Dev mode: a control was used. label is a widget label or id: its icon and "##..." are left out ("##play" = "play").
+static void dev_click(const char *what, const char *label, const char *extra = "")
+{
+    if (!g_dev) return;
+    if (!label) label = "";
+    while ((u8)label[0] == 0xEE || (u8)label[0] == 0xEF || label[0] == ' ') label += (u8)label[0] == ' ' ? 1 : 3;
+    char text[160];
+    const char *hash = strstr(label, "##");
+    if (hash == label) str_set(text, label + 2);
+    else snprintf(text, sizeof text, "%.*s", hash ? (int)(hash - label) : (int)strlen(label), label);
+    log_line("%s: %s \"%s\"%s%s", screen_name(g_app.ui.screen), what, text, extra[0] ? " " : "", extra);
+}
+
 // A text button. size 0 = fit the label.
 static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 size = ImVec2(0, 0), bool enabled = true)
 {
@@ -432,6 +451,7 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     if (!enabled) ImGui::BeginDisabled();
     bool clicked = ImGui::Button(label, size);
     if (!enabled) ImGui::EndDisabled();
+    if (clicked && enabled) dev_click("button", label);
     if (kind == KIT_PRIMARY) ImGui::PopFont();
     ImGui::PopStyleColor(4);
     return clicked && enabled;
@@ -446,6 +466,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     if (!enabled) ImGui::BeginDisabled();
     bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size));
     if (!enabled) ImGui::EndDisabled();
+    if (clicked && enabled) dev_click("button", id);
     bool hot = enabled && ImGui::IsItemHovered(), held = hot && ImGui::IsItemActive();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 z(a.x + size, a.y + size);
@@ -491,7 +512,11 @@ static bool kit_segmented(const char *id, const char *const *labels, i32 n, i32 
         bool clicked = ImGui::InvisibleButton("##seg", ImVec2(item_w, h - 2 * pad));
         bool hot = ImGui::IsItemHovered();
         ImGui::PopID();
-        if (clicked && *sel != i) { *sel = i; changed = true; }
+        if (clicked && *sel != i) {
+            *sel = i;
+            changed = true;
+            dev_click(id, labels[i]);
+        }
         bool on = *sel == i;
         if (on) dl->AddRectFilled(p, ImVec2(p.x + item_w, p.y + h - 2 * pad), col32(0x3a3d44), st.FrameRounding - 2);
         else if (hot) dl->AddRectFilled(p, ImVec2(p.x + item_w, p.y + h - 2 * pad), col32(COL_HOVER), st.FrameRounding - 2);
@@ -514,6 +539,7 @@ static bool kit_chip(const char *id_label, bool active, const char *count = 0, f
     if (w <= 0) w = ls.x + (count ? gap + cs.x : 0) + 2 * padx;
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton(id_label, ImVec2(w, h));
+    if (clicked) dev_click("chip", id_label, active ? "(was on)" : "");
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     u32 fill = active ? COL_TEXT : hot ? COL_HOVER : COL_PANEL2;
@@ -533,7 +559,10 @@ static bool kit_toggle(const char *id, bool *v)
     a.y += (fh - h) / 2;
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y - (fh - h) / 2));
     bool clicked = ImGui::InvisibleButton(id, ImVec2(w, fh));
-    if (clicked) *v = !*v;
+    if (clicked) {
+        *v = !*v;
+        dev_click("switch", id, *v ? "on" : "off");
+    }
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(*v ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : (hot ? 0x45484f : 0x3a3d44)), h / 2);
@@ -798,6 +827,7 @@ static bool top_tab(const char *icon, const char *label, bool active, f32 h)
     f32 padx = kit_px(16), w = slot + ts.x + 2 * padx;
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton(label, ImVec2(w, h));
+    if (clicked) dev_click("tab", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     if (hot && !active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(10)), ImVec2(a.x + w, a.y + h - kit_px(10)), col32(COL_PANEL), kit_px(7));
@@ -866,11 +896,41 @@ static void top_bar(f32 h)
     ImGui::Dummy(ImVec2(w, h));
 }
 
+// Dev mode: keys pressed, mouse clicks (where, and over which window and item), and screen changes.
+static void dev_input()
+{
+    ImGuiContext &g = *ImGui::GetCurrentContext();
+    ImGuiIO &io = ImGui::GetIO();
+    for (i32 k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) {
+        ImGuiKey key = (ImGuiKey)k;
+        if (ImGui::IsMouseKey(key) || ImGui::IsLRModKey(key) || ImGui::IsAliasKey(key) || (k >= ImGuiKey_ReservedForModCtrl && k <= ImGuiKey_ReservedForModSuper)) continue;
+        if (!ImGui::IsKeyPressed(key, false)) continue;
+        log_line("%s: key %s%s%s%s", screen_name(g_app.ui.screen), io.KeyCtrl ? "Ctrl+" : "", io.KeyShift ? "Shift+" : "",
+                 io.KeyAlt ? "Alt+" : "", ImGui::GetKeyName(key));
+    }
+    static const char *const buttons[] = {"left", "right", "middle", "x1", "x2"};
+    for (i32 b = 0; b < 5; b++) {
+        if (!ImGui::IsMouseClicked(b)) continue;
+        log_line("%s: %s click at %.0f,%.0f over \"%s\" (item %08x)%s", screen_name(g_app.ui.screen), buttons[b],
+                 io.MousePos.x, io.MousePos.y, g.HoveredWindow ? g.HoveredWindow->Name : "nothing",
+                 g.HoveredIdPreviousFrame, ImGui::IsMouseDoubleClicked(b) ? ", double" : "");
+    }
+    static i32 last_screen = -1;
+    if (last_screen != (i32)g_app.ui.screen) {
+        if (last_screen >= 0) log_line("screen %s -> %s", screen_name((Screen)last_screen), screen_name(g_app.ui.screen));
+        last_screen = (i32)g_app.ui.screen;
+    }
+}
+
 static void ui_frame()
 {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    ImGuiContext &g = *ImGui::GetCurrentContext();
+    g.DebugLogFlags = ImGuiDebugLogFlags_EventError | ImGuiDebugLogFlags_OutputToTTY |
+                      (g_dev ? ImGuiDebugLogFlags_EventPopup | ImGuiDebugLogFlags_EventFocus : 0);
+    if (g_dev) dev_input();
 
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::IsPopupOpen("Help")) {
         g_app.ui.help_open = true;
@@ -912,4 +972,6 @@ static void ui_frame()
     g_gpu.context->ClearRenderTargetView(g_gpu.target, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     g_gpu.swapchain->Present(1, 0);
+    g.DebugLogBuf.clear(); // already in our log (imgui_debug_print); don't let it grow
+    g.DebugLogIndex.clear();
 }

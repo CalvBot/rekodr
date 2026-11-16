@@ -989,6 +989,7 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
     char id[64];
     snprintf(id, sizeof id, "##%s", label);
     bool clicked = ImGui::Selectable(id, false, 0, ImVec2(w, h));
+    if (clicked) dev_click("menu", label);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     u32 ink = danger ? 0xff8a92 : COL_TEXT;
     ImGui::PushFont(g_font_icon);

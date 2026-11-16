@@ -4,7 +4,7 @@
 // `clipback.exe <command>` hands the command to the running copy as WM_COPYDATA and exits; Stream Deck keys use
 // this. With no running copy it starts clipback and runs the command there.
 //
-// Commands: open | timeline | options | save <length> | pause | resume | toggle | folder | quit
+// Commands: open | timeline | options | save <length> | pause | resume | toggle | folder | quit | dev [off]
 
 #define COPYDATA_COMMAND 0x4B424C43 // "CLBK"
 
@@ -21,6 +21,7 @@ static void run_command(const char *text)
     if (arg) *arg++ = 0;
     else arg = cmd + strlen(cmd);
     arg = trim(arg);
+    DEV_LOG("command \"%s\"", text);
 
     if (!*cmd || !strcmp(cmd, "open")) ui_show(SCREEN_LIBRARY);
     else if (!strcmp(cmd, "timeline")) ui_show(SCREEN_TIMELINE);
@@ -42,6 +43,13 @@ static void run_command(const char *text)
         swprintf(dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, t.wYear);
         if (GetFileAttributesW(dir.s) == INVALID_FILE_ATTRIBUTES) dir = g_app.config.save_dir;
         ShellExecuteW(0, L"open", dir.s, 0, 0, SW_SHOWNORMAL);
+    } else if (!strcmp(cmd, "dev")) { // the detailed log on (`dev`) or off (`dev off`), kept in the settings
+        bool on = strcmp(arg, "off") != 0;
+        g_app.config.dev_log = on;
+        g_dev = on || dev_env();
+        config_save(g_app.config, g_app.paths);
+        log_line("detailed log %s", g_dev ? "on" : "off");
+        ui_wake();
     } else if (!strcmp(cmd, "quit")) {
         g_app.quitting = true;
         PostQuitMessage(0);
@@ -52,6 +60,9 @@ static void run_command(const char *text)
 
 static void handle_event(const Event &e)
 {
+    static const char *const kinds[] = {"none", "command", "log", "recorder", "audio", "save", "library", "timeline"};
+    if (e.kind != EV_LOG && e.kind != EV_COMMAND)
+        DEV_LOG("event %s %lld %lld", (u32)e.kind < (u32)COUNT(kinds) ? kinds[e.kind] : "?", e.a, e.b);
     switch (e.kind) {
     case EV_COMMAND: run_command(e.text); break;
     case EV_LOG: log_line("%s", e.text); break;
@@ -65,7 +76,7 @@ static void handle_event(const Event &e)
     ui_wake();
 }
 
-static LRESULT CALLBACK msg_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_TIMER:
@@ -89,6 +100,7 @@ static LRESULT CALLBACK msg_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_HOTKEY: {
         i32 i = (i32)wp - 1;
+        DEV_LOG("hotkey %d", i);
         if (i >= 0 && i < g_app.config.hotkey_count) run_command(g_app.config.hotkeys[i].action.s);
         return 0;
     }
@@ -118,19 +130,14 @@ static LRESULT CALLBACK msg_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static LONG WINAPI on_crash(EXCEPTION_POINTERS *info)
 {
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    wchar_t name[64];
-    swprintf(name, 64, L"crash-%04d%02d%02d-%02d%02d%02d.dmp", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
-    Path dump = path_join(g_app.paths.local_dir, name);
-    HANDLE f = CreateFileW(dump.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
-    if (f != INVALID_HANDLE_VALUE) {
-        MINIDUMP_EXCEPTION_INFORMATION mei = {GetCurrentThreadId(), info, FALSE};
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, MiniDumpWithThreadInfo, &mei, 0, 0);
-        CloseHandle(f);
+    u32 code = (u32)info->ExceptionRecord->ExceptionCode;
+    log_line("crashed (0x%08x at %p) on thread %lu", code, info->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+    Path dump = diag_dump(info, L"crash");
+    log_line("dump: %ls", dump.s);
+    if (code != EXCEPTION_STACK_OVERFLOW) { // no stack left to walk with
+        log_line("it was at:");
+        diag_log_stack(GetCurrentThread(), *info->ContextRecord, false);
     }
-    log_line("crashed (0x%08x at %p); dump: %ls", (u32)info->ExceptionRecord->ExceptionCode,
-             info->ExceptionRecord->ExceptionAddress, dump.s);
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
@@ -198,6 +205,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     paths_init(&g_app.paths);
     proc_init();
+    diag_init();
     SetUnhandledExceptionFilter(on_crash);
     // The C runtime's own fatal errors (abort, a bad argument to a CRT function, a pure virtual call) would end
     // the process with no log line and no dump: turn them into a crash the handler sees.
@@ -213,10 +221,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         options_first_run(&g_app.config, g_app.paths);
         config_save(g_app.config, g_app.paths);
     }
-    log_line("clipback (native) starting");
+    g_dev = g_app.config.dev_log || dev_env();
+    {
+        wchar_t exe[MAX_PATH];
+        GetModuleFileNameW(0, exe, MAX_PATH);
+        log_line("clipback (native) starting: %ls, built %s %s, pid %lu%s", exe, __DATE__, __TIME__,
+                 GetCurrentProcessId(), g_dev ? ", detailed log on" : "");
+    }
+    diag_watchdog_start();
 
     WNDCLASSEXW wc = {sizeof wc};
-    wc.lpfnWndProc = msg_wndproc;
+    wc.lpfnWndProc = diag_wndproc<msg_wndproc_body>;
     wc.hInstance = inst;
     wc.lpszClassName = MSG_CLASS;
     RegisterClassExW(&wc);
@@ -238,8 +253,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     while (!g_app.quitting) {
         Ui &ui = g_app.ui;
         bool draw = ui.shown && (ui.frames_left > 0 || ui.animating);
+        diag_beat();
         if (!draw) {
-            if (GetMessageW(&msg, 0, 0, 0) <= 0) break;
+            g_diag.waiting = 1; // idle, not stuck
+            BOOL got = GetMessageW(&msg, 0, 0, 0);
+            g_diag.waiting = 0;
+            diag_beat();
+            if (got <= 0) break;
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -250,7 +270,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         }
         if (g_app.quitting) break;
         if (ui.shown && (ui.frames_left > 0 || ui.animating)) {
+            u64 t0 = GetTickCount64();
             ui_frame();
+            u64 took = GetTickCount64() - t0;
+            if (took > 100) DEV_LOG("slow frame: %llu ms", took);
             if (ui.frames_left > 0) ui.frames_left--;
         }
     }

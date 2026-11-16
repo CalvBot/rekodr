@@ -22,6 +22,11 @@ typedef double   f64;
 static SRWLOCK g_log_lock;
 static wchar_t g_log_path[MAX_PATH];
 
+// Dev mode: a detailed log (every click, key, screen change, command and event) for finding what led up to a
+// problem. On with Options > General > Detailed log, `clipback.exe dev`, or CLIPBACK_DEV=1.
+static volatile bool g_dev;
+#define DEV_LOG(...) do { if (g_dev) log_line(__VA_ARGS__); } while (0)
+
 static void log_line(const char *fmt, ...)
 {
     char msg[2048];
@@ -32,9 +37,10 @@ static void log_line(const char *fmt, ...)
 
     SYSTEMTIME t;
     GetLocalTime(&t);
-    char line[2200];
-    int n = snprintf(line, sizeof line, "[%04d-%02d-%02d %02d:%02d:%02d] %s\r\n", t.wYear, t.wMonth, t.wDay, t.wHour,
-                     t.wMinute, t.wSecond, msg);
+    char line[2200], thread[16] = "";
+    if (g_dev) snprintf(thread, sizeof thread, " t%lu", GetCurrentThreadId()); // which thread, in dev mode
+    int n = snprintf(line, sizeof line, "[%04d-%02d-%02d %02d:%02d:%02d.%03d%s] %s\r\n", t.wYear, t.wMonth, t.wDay,
+                     t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, thread, msg);
     if (n < 0) return;
     if (n >= (int)sizeof line) n = (int)sizeof line - 1;
     OutputDebugStringA(line);

@@ -27,6 +27,10 @@ static void paths_init(Paths *p)
     SHCreateDirectoryExW(0, p->config_dir.s, 0);
     SHCreateDirectoryExW(0, p->local_dir.s, 0);
     Path log = path_join(p->local_dir, L"clipback-native.log");
+    // Past 10 MB the log starts again; the previous one is kept as clipback-native.old.log.
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (GetFileAttributesExW(log.s, GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 10u << 20))
+        MoveFileExW(log.s, path_join(p->local_dir, L"clipback-native.old.log").s, MOVEFILE_REPLACE_EXISTING);
     wcscpy_s(g_log_path, log.s);
 }
 
@@ -243,6 +247,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "session_min_length_min")) real(&c->session_min_length_min);
     else if (!strcmp(key, "share_keep_days")) real(&c->share_keep_days);
     else if (!strcmp(key, "start_with_windows")) boolean(&c->start_with_windows);
+    else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
         // hotkey = Alt+F10 | save 30s
         char *f[2];
@@ -383,6 +388,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,
             c.session_min_length_min, c.share_keep_days);
     boolean("start_with_windows", c.start_with_windows);
+    boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %d\nthumb_size = %d\n", c.accent, c.thumb_size);
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);

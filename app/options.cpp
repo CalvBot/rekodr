@@ -974,6 +974,7 @@ static bool opt_combo(const char *id, const char *const *items, const char *cons
             if (opt_combo_item(items[i], notes ? notes[i] : 0, i == *index, (disabled >> i) & 1) && i != *index) {
                 *index = i;
                 changed = true;
+                dev_click(id, items[i]);
             }
         }
         opt_combo_end();
@@ -2770,6 +2771,24 @@ static void options_general()
         options_apply(0);
     }
     opt_card_end();
+
+    opt_section(ICON_BUG "  DEVELOPER");
+    opt_card_begin();
+    if (opt_row_toggle(ICON_BUG "Detailed log", "Every click, key, screen and event, for finding what went wrong",
+                       "##devlog", &c.dev_log)) {
+        g_dev = c.dev_log || dev_env();
+        log_line("detailed log %s", g_dev ? "on" : "off");
+        options_apply(0);
+    }
+    f32 bw = text_w(g_font, ICON_FILE "  Show the log") + dp(32);
+    opt_row_begin(ICON_FILE "Log and crash dumps", "clipback-native.log, and crash-*.dmp after a crash", bw);
+    if (kit_button(ICON_FILE "  Show the log##showlog", KIT_SECONDARY, ImVec2(bw, 0))) {
+        Path log = {};
+        wcscpy_s(log.s, g_log_path);
+        reveal_file(log);
+    }
+    opt_row_end();
+    opt_card_end();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2808,7 +2827,10 @@ static void screen_options()
         ImGui::SetCursorScreenPos(ImVec2(x - gap / 2, a.y));
         ImGui::PushID(t);
         ImGui::BeginDisabled(o.capture_slot != 0 && !active); // finish setting the hotkey first
-        if (ImGui::InvisibleButton("##tab", ImVec2(w + gap, tab_h))) o.tab = t;
+        if (ImGui::InvisibleButton("##tab", ImVec2(w + gap, tab_h))) {
+            o.tab = t;
+            dev_click("tab", names[t]);
+        }
         bool hot = ImGui::IsItemHovered();
         ImFont *font = active ? g_font_bold : g_font;
         f32 ty = floorf(a.y + (tab_h - dp(4) - font->FontSize) / 2);

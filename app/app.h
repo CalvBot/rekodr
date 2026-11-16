@@ -92,6 +92,7 @@ struct Config {
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
 
     bool start_with_windows;
+    bool dev_log;      // the detailed log (dev mode, see base.h)
 
     // Look
     i32 accent;     // index into ACCENTS (ui.cpp)
