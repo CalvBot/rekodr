@@ -288,6 +288,8 @@ static void ui_set_scale(f32 scale)
     ui_style(scale);
 }
 
+static void ui_frame();
+
 static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) {
@@ -295,10 +297,20 @@ static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 1;
     }
     switch (msg) {
-    case WM_SIZE:
+    case WM_SIZE: {
         gpu_resize(LOWORD(lp), HIWORD(lp));
         ui_wake();
+        // While an edge is dragged Windows runs its own loop and ours never gets to draw, so the old picture was
+        // stretched until the mouse let go. Draw here, at the new size.
+        static bool drawing;
+        if (!drawing && g_app.ui.shown && g_gpu.target && wp != SIZE_MINIMIZED && ImGui::GetCurrentContext() &&
+            !ImGui::GetCurrentContext()->WithinFrameScope) {
+            drawing = true;
+            ui_frame();
+            drawing = false;
+        }
         return 0;
+    }
     case WM_CLOSE:
         DEV_LOG("window closed (hidden)");
         ShowWindow(hwnd, SW_HIDE);

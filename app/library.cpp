@@ -1620,7 +1620,8 @@ static void screen_library()
     if (kit_segmented("##views", views, 2, &sel, kit_px(96))) lib_set_view((LibView)sel);
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
     static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
-    f32 range_w = kit_px(124), game_w = kit_px(150), sort_w = kit_px(108), hgap = kit_px(8);
+    // The three are one width and sit together; the search is on the right
+    f32 drop_w = kit_px(124), range_w = drop_w, game_w = drop_w, sort_w = drop_w, hgap = kit_px(8);
     ImVec2 range_at(h0.x + 2 * kit_px(96) + kit_px(22), h0.y);
     ImGui::SetCursorScreenPos(range_at);
     char range_label[64];
@@ -1656,8 +1657,8 @@ static void screen_library()
     ImGui::SetCursorScreenPos(game_at);
     char game_label[96];
     if (!lib.game[0]) snprintf(game_label, sizeof game_label, "All games   " ICON_DOWN "##game");
-    else if (strlen(lib.game) <= 14) snprintf(game_label, sizeof game_label, "%s   " ICON_DOWN "##game", lib.game);
-    else snprintf(game_label, sizeof game_label, "%.12s\xE2\x80\xA6   " ICON_DOWN "##game", lib.game);
+    else if (strlen(lib.game) <= 11) snprintf(game_label, sizeof game_label, "%s   " ICON_DOWN "##game", lib.game);
+    else snprintf(game_label, sizeof game_label, "%.9s\xE2\x80\xA6   " ICON_DOWN "##game", lib.game);
     if (kit_button(game_label, KIT_SECONDARY, ImVec2(game_w, 0))) ImGui::OpenPopup("game");
     ImGui::SetNextWindowPos(ImVec2(game_at.x, game_at.y + fh + kit_px(6)));
     ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, kit_px(430)));
@@ -1684,9 +1685,10 @@ static void screen_library()
     }
 
     // The search takes what the row has left, between a narrowest and a widest.
-    f32 search_w = full_w - (game_at.x - h0.x) - game_w - kit_px(12) - sort_w - hgap;
+    ImVec2 sort_pos(game_at.x + game_w + hgap, h0.y);
+    f32 search_w = full_w - (sort_pos.x - h0.x) - sort_w - kit_px(12);
     search_w = search_w < kit_px(110) ? kit_px(110) : search_w > kit_px(240) ? kit_px(240) : search_w;
-    ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w - hgap - sort_w, h0.y));
+    ImGui::SetCursorScreenPos(sort_pos);
     char sort_label[48];
     snprintf(sort_label, sizeof sort_label, "%s   " ICON_DOWN "##sort", sorts[lib.sort]);
     ImVec2 sort_at = ImGui::GetCursorScreenPos();
