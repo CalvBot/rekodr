@@ -1,5 +1,8 @@
 # Folder rules: a proposal for clipback
 
+> Some of this is out of date. [FOLDER-RULES-UPDATE.md](FOLDER-RULES-UPDATE.md) has what changed
+> since.
+
 lifelog can now include or exclude a whole folder of apps. This note explains how that works and
 how clipback could use the same idea. The main reason is the VoiceStreams plugin, which now sorts
 people in a Discord call by whether they allow clips.
