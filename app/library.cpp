@@ -201,6 +201,48 @@ static void lib_publish(const LibItem *items, i32 n)
     event_post(e);
 }
 
+// Games given by hand, for files that carry no tag of their own (clips from before clipback, renamed ones):
+// <config_dir>\games.txt, a line each of "<key in hex> | <game> | <file name>". The key is the item's (its size and
+// time), so a rename keeps the game; the name is only there for people reading the file. Read at every scan, by
+// the scan's thread.
+struct GameOverride {
+    u64  key;
+    char game[64];
+};
+static GameOverride g_game_overrides[LIB_MAX_ITEMS];
+static i32          g_game_override_count;
+
+static void lib_overrides_load()
+{
+    g_game_override_count = 0;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"games.txt").s, L"rb");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof line, f) && g_game_override_count < LIB_MAX_ITEMS) {
+        GameOverride o = {};
+        char game[64] = "";
+        if (sscanf(line, "%llx | %63[^|\r\n]", &o.key, game) != 2) continue;
+        char *g = trim(game);
+        if (!*g || !o.key) continue;
+        snprintf(o.game, sizeof o.game, "%s", g);
+        g_game_overrides[g_game_override_count++] = o;
+    }
+    fclose(f);
+}
+
+// A file's game: the one given by hand, else its own tag, else what its name says.
+static bool lib_set_game(LibItem *it, const char *tagged)
+{
+    for (i32 i = 0; i < g_game_override_count; i++) {
+        if (g_game_overrides[i].key != it->key) continue;
+        str_set(it->info.game, g_game_overrides[i].game);
+        return true;
+    }
+    if (tagged[0]) str_set(it->info.game, tagged);
+    else game_from_name(it->name, it->info.game, sizeof it->info.game);
+    return false;
+}
+
 // Where an item is: <save_dir>\<year>\{Clips,Sessions}\<name><ext>, or straight in <save_dir>\<year>\ for clips
 // saved by the Rust version, which are listed where they are rather than moved.
 static Path lib_file_path(const Path &save_dir, const LibItem &it)
@@ -217,7 +259,8 @@ static Path lib_file_path(const Path &save_dir, const LibItem &it)
 static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg)
 {
     LibItem *items = g_scan_items;
-    i32 n = 0;
+    i32 n = 0, by_hand = 0;
+    lib_overrides_load();
     WIN32_FIND_DATAW fd;
     HANDLE years = FindFirstFileW(path_join(save_dir, L"*").s, &fd);
     if (years != INVALID_HANDLE_VALUE) {
@@ -251,8 +294,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     it->key = fnv64(&it->mtime_us, sizeof it->mtime_us, k);
                     char tagged[64];
                     it->probed = lib_cache_read(cache, it->key, &it->info, tagged, sizeof tagged);
-                    if (it->probed && tagged[0]) str_set(it->info.game, tagged);
-                    else game_from_name(it->name, it->info.game, sizeof it->info.game);
+                    by_hand += lib_set_game(it, it->probed ? tagged : "");
                 } while (FindNextFileW(h, &f));
                 FindClose(h);
             }
@@ -261,6 +303,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
     }
     qsort(items, n, sizeof items[0], lib_item_newer);
     lib_publish(items, n);
+    if (g_game_override_count) DEV_LOG("library: games.txt names %d files, %d of them here", g_game_override_count, by_hand);
 
     // Files not seen before: ffprobe them, newest first, showing them as they come.
     if (!ffmpeg.s[0]) return;
@@ -279,8 +322,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
             it->info.duration = 0; // shown without a length rather than asked again and again this scan
         }
         it->probed = true;
-        if (tagged[0]) str_set(it->info.game, tagged);
-        else game_from_name(it->name, it->info.game, sizeof it->info.game);
+        lib_set_game(it, tagged);
         probed++;
         if (GetTickCount64() - last > 400) {
             lib_publish(items, n);

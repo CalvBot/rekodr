@@ -54,6 +54,8 @@ It needs Stream Deck 6.5 or later and has no dependencies. The plugin talks to c
 ## Files
 - Settings: `%APPDATA%\clipback\settings.txt`. Options writes it; there is no need to edit it by hand.
 - Clips: `<Videos>\Clips\<year>\` unless changed in Options.
+- Games given by hand: `%APPDATA%\clipback\games.txt`, for clips that don't carry a game of their own (older or renamed
+  files). A line each of `<key> | <game> | <file name>`.
 - Log: `%LOCALAPPDATA%\clipback\clipback-native.log`. Crash and hang dumps (`crash-*.dmp`, `hang-*.dmp`) are
   written next to it.
 
