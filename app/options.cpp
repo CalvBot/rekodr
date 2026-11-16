@@ -2118,13 +2118,6 @@ static void options_general()
         options_apply(0);
     }
     opt_row_end();
-    static const char *sizes[] = {"Small", "Medium", "Large"};
-    opt_row_begin("Thumbnails in the Library", 0, 3 * dp(84) + 2 * dp(4));
-    if (kit_segmented("##thumbs", sizes, 3, &c.thumb_size, dp(84))) {
-        log_line("options: %s thumbnails", sizes[c.thumb_size]);
-        options_apply(0);
-    }
-    opt_row_end();
     opt_card_end();
 
     opt_section("SESSIONS");

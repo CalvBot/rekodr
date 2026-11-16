@@ -74,7 +74,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
     c->accent = 0;
-    c->thumb_size = 1;
+    c->card_width = 270;
     // One hotkey, the same keys as NVIDIA's instant replay, so it's where hands already go.
     str_set(c->hotkeys[0].keys.s, "Alt+F10");
     str_set(c->hotkeys[0].action.s, "save 30s");
@@ -231,7 +231,12 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "buffer_by_size")) boolean(&c->buffer_by_size);
     else if (!strcmp(key, "desktop_bitrate_mbps")) real(&c->desktop_bitrate_mbps);
     else if (!strcmp(key, "accent")) c->accent = atoi(value);
-    else if (!strcmp(key, "thumb_size")) c->thumb_size = atoi(value);
+    else if (!strcmp(key, "card_width")) c->card_width = atoi(value);
+    else if (!strcmp(key, "thumb_size")) { // the three sizes there used to be: small, medium, large
+        static const i32 widths[] = {200, 270, 380};
+        i32 v = atoi(value);
+        c->card_width = widths[v < 0 || v > 2 ? 1 : v];
+    }
     else if (!strcmp(key, "min_free_gb")) real(&c->min_free_gb);
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
@@ -397,7 +402,7 @@ static bool config_save(const Config &c, const Paths &paths)
             c.session_min_length_min, c.share_keep_days);
     boolean("start_with_windows", c.start_with_windows);
     boolean("dev_log", c.dev_log);
-    fprintf(f, "accent = %d\nthumb_size = %d\n", c.accent, c.thumb_size);
+    fprintf(f, "accent = %d\ncard_width = %d\n", c.accent, c.card_width);
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"

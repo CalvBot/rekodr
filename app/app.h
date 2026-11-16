@@ -96,7 +96,7 @@ struct Config {
 
     // Look
     i32 accent;     // index into ACCENTS (ui.cpp)
-    i32 thumb_size; // Library cards: 0 small, 1 medium, 2 large
+    i32 card_width; // Library cards: about how wide, in pixels at 100% (Ctrl + wheel over the grid changes it)
 
     Hotkey hotkeys[16];
     i32    hotkey_count;

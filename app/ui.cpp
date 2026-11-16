@@ -762,7 +762,8 @@ static void help_window()
                                          {"[Esc]", "Options, setting a hotkey's keys: cancel"}};
         static const HelpRow library[] = {
             {"[Ctrl]+[F]", "Search"},
-            {"[Page Up] / [Page Down]", "Previous / next page (or the mouse wheel)"},
+            {"Mouse wheel", "Scroll ([Page Up] / [Page Down], [Home] / [End] too)"},
+            {"[Ctrl]+wheel", "Bigger or smaller cards"},
             {"Point at a thumbnail", "Scrub through it; click to play from there"},
             {"Right-click a card", "Edit, rename, delete and more"},
         };

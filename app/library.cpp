@@ -1814,17 +1814,34 @@ static void screen_library()
 
 
     // The grid fills what's left above the footer and scrolls: the wheel, Page Up / Page Down, Home / End, or the
-    // bar on its right. The cards are as wide as fit between the size's widest and narrowest.
+    // bar on its right.
     f32 foot_h = fh;
     ImVec2 g0 = ImGui::GetCursorScreenPos();
     f32 grid_h = ImGui::GetContentRegionAvail().y - foot_h - kit_px(8);
     if (grid_h < 1) grid_h = 1;
-    static const f32 widest[] = {230, 300, 440}, narrowest[] = {160, 200, 300};
-    i32 tsz = g_app.config.thumb_size < 0 || g_app.config.thumb_size > 2 ? 1 : g_app.config.thumb_size;
+    // As many columns as bring the cards nearest the width asked for; Ctrl + wheel asks for one column fewer or
+    // more (never cards under 140 wide), keeping the row that was at the top there.
+    const f32 narrowest = kit_px(140);
     f32 gap = kit_px(20), day_h = kit_px(36);
-    i32 c_lo = (i32)((full_w + gap) / (kit_px(widest[tsz]) + gap)), c_hi = (i32)((full_w + gap) / (kit_px(narrowest[tsz]) + gap));
-    i32 cols = c_lo + 1 > c_hi ? c_hi : c_lo + 1;
-    if (cols < 1) cols = 1;
+    i32 &want_w = g_app.config.card_width;
+    if (want_w < 140) want_w = 140;
+    i32 cols = (i32)((full_w + gap) / (kit_px((f32)want_w) + gap) + 0.5f);
+    i32 most = (i32)((full_w + gap) / (narrowest + gap));
+    if (most < 1) most = 1;
+    cols = cols < 1 ? 1 : cols > most ? most : cols;
+    bool over_grid = ImGui::IsMouseHoveringRect(g0, ImVec2(g0.x + full_w, g0.y + grid_h)), ctrl = io.KeyCtrl;
+    if (ctrl && io.MouseWheel != 0 && over_grid && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {
+        i32 to = cols + (io.MouseWheel > 0 ? -1 : 1);
+        if (to >= 1 && to <= most) {
+            f32 old_h = day_h + floorf(floorf((full_w - (cols - 1) * gap) / cols) * 9 / 16) + lib_meta_h();
+            i32 first = (i32)(lib.scroll / old_h) * cols; // the first card of the top row
+            cols = to;
+            f32 w = floorf((full_w - (cols - 1) * gap) / cols);
+            want_w = (i32)(w / g_dpi_scale + 0.5f);
+            lib.scroll = lib.scroll_to = (first / cols) * (day_h + floorf(w * 9 / 16) + lib_meta_h());
+            config_save(g_app.config, g_app.paths);
+        }
+    }
     f32 card_w = floorf((full_w - (cols - 1) * gap) / cols), thumb_h = floorf(card_w * 9 / 16);
     f32 card_h = day_h + thumb_h + lib_meta_h();
     i32 rows = (lib.shown_count + cols - 1) / cols;
@@ -1835,7 +1852,7 @@ static void screen_library()
     ImGui::BeginChild("##grid", ImVec2(full_w + bar_w, grid_h), 0,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
     dl = ImGui::GetWindowDrawList();
-    if (!popup && io.MouseWheel != 0 && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+    if (!popup && !ctrl && io.MouseWheel != 0 && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
         lib.scroll_to -= io.MouseWheel * floorf(card_h * 0.6f);
     if (!popup && !io.WantTextInput) {
         if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) lib.scroll_to += floorf(grid_h * 0.9f);
