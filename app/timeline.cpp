@@ -465,7 +465,7 @@ static void tl_save(SaveKind kind, bool edit)
     if (!tl_has_video(*tl.idx, tl.sel_in, tl.sel_out)) return;
     u32 id = 0;
     if (kind == SAVE_SESSION) {
-        // Through sessions.cpp, so the session gets its record in Data and shows under Not saved if the save fails.
+        // Through sessions.cpp, so the session gets its record in Data and shows under unsaved sessions if the save fails.
         // No name typed: the game played most in the range, as an automatic session would be named.
         char name[128];
         str_set(name, tl.session_name);

@@ -24,8 +24,8 @@ static ImVec4 rgb(u32 c, f32 a = 1) { return ImVec4(((c >> 16) & 255) / 255.f, (
 static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, a)); }
 static const u32 COL_BG = 0x101114,      // the page
                  COL_SIDEBAR = 0x0b0c0e, // the top bar
-                 COL_PANEL = 0x18191d,   // cards, the timeline, popups
-                 COL_PANEL2 = 0x222429,  // fields, secondary buttons
+                 COL_PANEL = 0x18191d,   // cards, the timeline
+                 COL_PANEL2 = 0x222429,  // fields, secondary buttons, popups
                  COL_HOVER = 0x2c2f35,   // anything under the mouse
                  COL_LINE = 0x2a2c32,    // hairlines
                  COL_TEXT = 0xeceef1, COL_DIM = 0x8e939c, COL_FAINT = 0x5d626b,
@@ -78,6 +78,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_CLOSE    "\xEE\x9C\x91" // E711
 #define ICON_LEFT     "\xEE\x9D\xAB" // E76B chevron
 #define ICON_RIGHT    "\xEE\x9D\xAC" // E76C chevron
+#define ICON_DOWN     "\xEE\x9C\x8D" // E70D chevron
 #define ICON_BACK     "\xEE\x9C\xAB" // E72B arrow
 #define ICON_ZOOM_IN  "\xEE\xA2\xA3" // E8A3
 #define ICON_ZOOM_OUT "\xEE\x9C\x9F" // E71F
@@ -234,7 +235,7 @@ static void ui_style(f32 scale)
     s.ItemSpacing = ImVec2(10, 10);
     s.ItemInnerSpacing = ImVec2(8, 6);
     s.WindowPadding = ImVec2(20, 18);
-    s.PopupBorderSize = 0;
+    s.PopupBorderSize = 1; // popups sit over cards of the same colour
     s.WindowBorderSize = 0;
     s.ChildBorderSize = 0;
     s.FrameBorderSize = 0;
@@ -244,7 +245,7 @@ static void ui_style(f32 scale)
     ImVec4 *c = s.Colors;
     c[ImGuiCol_WindowBg] = rgb(COL_BG);
     c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_PopupBg] = rgb(COL_PANEL);
+    c[ImGuiCol_PopupBg] = rgb(COL_PANEL2);
     c[ImGuiCol_Border] = rgb(COL_LINE);
     c[ImGuiCol_Text] = rgb(COL_TEXT);
     c[ImGuiCol_TextDisabled] = rgb(COL_DIM);

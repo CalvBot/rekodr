@@ -327,7 +327,7 @@ struct Player {
     bool              set_animating; // this player asked ui.animating to keep the frames coming
 };
 
-enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS, LIB_NOT_SAVED }; // the last is a view only: sessions.cpp's list
+enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS };
 enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 64 };
 
 struct LibItem {
@@ -356,6 +356,11 @@ struct Library {
     i32      page;
     char     search[128];
     char     game[64];             // the game chip picked; empty = all
+    i32      range;                // LibRange (library.cpp): all, today, this week, this month, custom
+    i64      range_from, range_to; // the custom range, in local days (local_day)
+    i32      sort;                 // LibSort: newest, oldest, longest, biggest
+    i32      cal_month;            // the calendar's month, year * 12 + month - 1
+    bool     cal_picking;          // the range's start is picked; the next click is its end
     i32      chip_page;
     LibItem  items[LIB_MAX_ITEMS]; // both views, newest first (handed over by the scan worker)
     i32      item_count;
@@ -368,6 +373,7 @@ struct Library {
     i32      game_items[LIB_MAX_GAMES];
     i32      game_count;
     i32      view_count;           // items in this view
+    i32      range_count;          // of those, items in the date range
     LibThumb thumbs[LIB_THUMBS];
     u32      thumb_clock;
     // The hovered card's whole scrub strip (each is a few MB, so only one is kept). The editor's timeline uses it too.
@@ -453,15 +459,15 @@ struct Timeline {
     u32           job;          // the last save started here
     bool          job_edit;     // open the editor when it's done
 };
-// sessions.cpp: detecting sessions, the save popup, Not saved (SPEC.md, "1. Whole sessions").
+// sessions.cpp: detecting sessions, the save popup, unsaved sessions (SPEC.md, "1. Whole sessions").
 enum SessionState : u8 {
     SES_FREE,      // empty slot
     SES_OPEN,      // its game is being played, or was less than the session gap ago
     SES_ASKING,    // ended; the popup asks whether to save it
-    SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Not saved list
+    SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Library's unsaved sessions
     SES_SAVING,    // a save job is copying it
     SES_SAVED,
-    SES_DISMISSED, // taken off the Not saved list; kept until its footage is gone so it's never found again
+    SES_DISMISSED, // taken off the unsaved sessions; kept until its footage is gone so it's never found again
 };
 
 struct Session {
@@ -486,7 +492,7 @@ struct Sessions {
     i64     written_us;     // when sessions.txt was last written
     i64     woke_minute;    // the minute the window was last redrawn for the countdowns
     u32     waiting_logged; // the session whose popup waits on a game in front (logged once)
-    // The Not saved list: its rows stay put while it's on screen, so a click never moves the others.
+    // The unsaved sessions in the Library: their tiles stay put while on screen, so a click never moves the others.
     u32     rows[256];
     i32     row_count;
     i32     page;

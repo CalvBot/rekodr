@@ -520,18 +520,56 @@ static bool lib_matches(const char *hay, const char *needle)
     return false;
 }
 
-// The view's game chips and the cards that match the chip and the search.
+enum LibRange : i32 { RANGE_ALL, RANGE_TODAY, RANGE_WEEK, RANGE_MONTH, RANGE_CUSTOM };
+enum LibSort : i32 { SORT_NEWEST, SORT_OLDEST, SORT_LONGEST, SORT_BIGGEST };
+
+static i64 local_day(i64 us, SYSTEMTIME *out);
+
+// Whether a file's time is in the chosen range, by local days. 1601-01-01 (day 0) was a Monday, so a week
+// starts on a day that's a multiple of 7.
+static bool lib_in_range(i64 us)
+{
+    const Library &lib = g_app.library;
+    if (lib.range == RANGE_ALL) return true;
+    SYSTEMTIME t;
+    i64 today = local_day(now_us(), &t), day = local_day(us, 0);
+    switch (lib.range) {
+    case RANGE_TODAY: return day == today;
+    case RANGE_WEEK: return day >= today - today % 7;
+    case RANGE_MONTH: return day >= today - (t.wDay - 1);
+    case RANGE_CUSTOM: return day >= lib.range_from && day <= lib.range_to;
+    default: return true;
+    }
+}
+
+static int lib_sort_cmp(const void *pa, const void *pb)
+{
+    const Library &lib = g_app.library;
+    const LibItem &a = lib.items[*(const i32 *)pa], &b = lib.items[*(const i32 *)pb];
+    switch (lib.sort) {
+    case SORT_OLDEST: if (a.mtime_us != b.mtime_us) return a.mtime_us < b.mtime_us ? -1 : 1; break;
+    case SORT_LONGEST: if (a.info.duration != b.info.duration) return a.info.duration > b.info.duration ? -1 : 1; break;
+    case SORT_BIGGEST: if (a.size != b.size) return a.size > b.size ? -1 : 1; break;
+    default: break;
+    }
+    return a.mtime_us > b.mtime_us ? -1 : a.mtime_us < b.mtime_us ? 1 : 0;
+}
+
+// The view's game chips and the cards that match the date range, the chip and the search, in the chosen order.
 static void lib_refilter()
 {
     Library &lib = g_app.library;
     lib.game_count = 0;
     lib.view_count = 0;
+    lib.range_count = 0;
     lib.shown_count = 0;
     i32 desktop = 0, other = 0;
     for (i32 i = 0; i < lib.item_count; i++) {
         const LibItem &it = lib.items[i];
         if (it.kind != lib.view) continue;
         lib.view_count++;
+        if (!lib_in_range(it.mtime_us)) continue;
+        lib.range_count++;
         const char *g = it.info.game;
         if (!strcmp(g, "Desktop")) desktop++;
         else if (!strcmp(g, "Other")) other++;
@@ -552,6 +590,7 @@ static void lib_refilter()
     // Games most recent first, then Desktop, then files not ours.
     if (desktop) { str_set(lib.games[lib.game_count], "Desktop"); lib.game_items[lib.game_count++] = desktop; }
     if (other) { str_set(lib.games[lib.game_count], "Other"); lib.game_items[lib.game_count++] = other; }
+    if (lib.sort != SORT_NEWEST) qsort(lib.shown, lib.shown_count, sizeof lib.shown[0], lib_sort_cmp);
 }
 
 static void lib_free_textures()
@@ -1133,7 +1172,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     Library &lib = g_app.library;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 meta_h = lib_meta_h();
-    if (show_day) {
+    if (show_day && (lib.sort == SORT_NEWEST || lib.sort == SORT_OLDEST)) {
         char day[64];
         fmt_day(it.mtime_us, day, sizeof day);
         ImGui::PushFont(g_font_bold);
@@ -1358,6 +1397,228 @@ static void lib_chip_label(const char *name, char *out, i32 cap)
     else snprintf(out, cap, "%.20s\xE2\x80\xA6", name); // cut by bytes; game names are mostly ASCII
 }
 
+// A local day number (local_day's) for a date.
+static i64 day_number(i32 y, i32 m, i32 d)
+{
+    SYSTEMTIME t = {};
+    t.wYear = (WORD)y;
+    t.wMonth = (WORD)m;
+    t.wDay = (WORD)d;
+    FILETIME ft;
+    SystemTimeToFileTime(&t, &ft);
+    return (i64)((((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 864000000000ull);
+}
+
+// "3 Nov", from a day number.
+static void fmt_day_short(i64 day, char *out, i32 cap)
+{
+    u64 v = (u64)day * 864000000000ull;
+    FILETIME ft = {(DWORD)v, (DWORD)(v >> 32)};
+    SYSTEMTIME t;
+    FileTimeToSystemTime(&ft, &t);
+    snprintf(out, cap, "%d %.3s", t.wDay, LIB_MONTHS[(t.wMonth + 11) % 12]);
+}
+
+// Custom range: a month calendar. The first click picks the first day, the second the last.
+static void lib_calendar()
+{
+    Library &lib = g_app.library;
+    lib_popup_style_push(14);
+    bool open = ImGui::BeginPopup("calendar");
+    lib_popup_style_pop();
+    if (!open) return;
+    SYSTEMTIME now;
+    i64 today = local_day(now_us(), &now);
+    if (lib.cal_month <= 0) lib.cal_month = now.wYear * 12 + now.wMonth - 1;
+    i32 y = lib.cal_month / 12, m = lib.cal_month % 12 + 1;
+    f32 cell = kit_px(36), w = 7 * cell, fh = ImGui::GetFrameHeight();
+
+    // ‹  November 2026  ›
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    if (kit_icon_button(ICON_LEFT, "##prevm")) lib.cal_month--;
+    char title[32];
+    snprintf(title, sizeof title, "%s %d", LIB_MONTHS[m - 1], y);
+    ImGui::PushFont(g_font_bold);
+    ImVec2 ts = ImGui::CalcTextSize(title);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(floorf(a.x + (w - ts.x) / 2), floorf(a.y + (fh - ts.y) / 2)), col32(COL_TEXT), title);
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(a.x + w - fh, a.y));
+    if (kit_icon_button(ICON_RIGHT, "##nextm")) lib.cal_month++;
+
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 y0 = a.y + fh + kit_px(8);
+    static const char *wd[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
+    ImGui::PushFont(g_font_small);
+    for (i32 c = 0; c < 7; c++) {
+        ImVec2 ws = ImGui::CalcTextSize(wd[c]);
+        dl->AddText(ImVec2(floorf(a.x + c * cell + (cell - ws.x) / 2), y0), col32(COL_FAINT), wd[c]);
+    }
+    ImGui::PopFont();
+    y0 += g_font_small->FontSize + kit_px(6);
+    i64 first = day_number(y, m, 1);
+    i32 ny = m == 12 ? y + 1 : y, nm = m == 12 ? 1 : m + 1;
+    i32 days = (i32)(day_number(ny, nm, 1) - first), lead = (i32)(first % 7);
+    for (i32 k = 0; k < 42; k++) { // always six weeks, so the popup keeps its size
+        i32 d = k - lead + 1;
+        ImVec2 p(a.x + (k % 7) * cell, y0 + (k / 7) * cell);
+        if (d < 1 || d > days) continue;
+        i64 day = first + d - 1;
+        ImGui::SetCursorScreenPos(p);
+        ImGui::PushID(k);
+        bool clicked = ImGui::InvisibleButton("##d", ImVec2(cell, cell));
+        bool hot = ImGui::IsItemHovered();
+        ImGui::PopID();
+        bool set = lib.range == RANGE_CUSTOM || lib.cal_picking;
+        bool end = set && (day == lib.range_from || (!lib.cal_picking && day == lib.range_to));
+        bool inside = set && !lib.cal_picking && day > lib.range_from && day < lib.range_to;
+        ImVec2 c(p.x + cell / 2, p.y + cell / 2);
+        if (inside) dl->AddRectFilled(ImVec2(p.x, p.y + kit_px(3)), ImVec2(p.x + cell, p.y + cell - kit_px(3)), col32(COL_ACCENT_SOFT));
+        if (end) dl->AddCircleFilled(c, cell / 2 - kit_px(3), col32(COL_ACCENT));
+        else if (hot) dl->AddCircleFilled(c, cell / 2 - kit_px(3), col32(COL_HOVER));
+        if (day == today && !end) dl->AddCircle(c, cell / 2 - kit_px(3), col32(COL_DIM), 0, kit_px(1));
+        char n[4];
+        snprintf(n, sizeof n, "%d", d);
+        ImVec2 ns = ImGui::CalcTextSize(n);
+        dl->AddText(ImVec2(floorf(c.x - ns.x / 2), floorf(c.y - ns.y / 2)), col32(end ? 0xffffff : day > today ? COL_FAINT : COL_TEXT), n);
+        if (clicked) {
+            if (!lib.cal_picking) {
+                lib.range_from = lib.range_to = day;
+                lib.cal_picking = true;
+            } else {
+                if (day < lib.range_from) {
+                    lib.range_to = lib.range_from;
+                    lib.range_from = day;
+                } else lib.range_to = day;
+                lib.cal_picking = false;
+                lib.range = RANGE_CUSTOM;
+                lib.page = 0;
+                lib_refilter();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+    }
+    ImGui::SetCursorScreenPos(ImVec2(a.x, y0 + 6 * cell + kit_px(4)));
+    ImGui::PushFont(g_font_small);
+    kit_dim("%s", lib.cal_picking ? "Now pick the last day" : "Pick the first day");
+    ImGui::PopFont();
+    ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Unsaved sessions: a row of tiles at the top of Sessions, paged when there are more than fit.
+
+static ID3D11ShaderResourceView *app_icon(const char *exe); // options.cpp
+
+static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
+{
+    Sessions &ss = g_app.sessions;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 fh = ImGui::GetFrameHeight(), pad = kit_px(14), is = kit_px(40);
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_PANEL), kit_px(10));
+    Session *s = session_find(id);
+    ImGui::PushID((i32)id);
+    if (!s) {
+        dl->AddText(ImVec2(a.x + pad, floorf(a.y + (h - ImGui::GetFontSize()) / 2)), col32(COL_FAINT), "Gone from the buffer");
+        ImGui::PopID();
+        return;
+    }
+
+    // The game's icon, or a game tile
+    ImVec2 ip(a.x + pad, floorf(a.y + (h - is) / 2));
+    ID3D11ShaderResourceView *icon = s->exe[0] ? app_icon(s->exe) : 0;
+    if (icon) dl->AddImage((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is));
+    else {
+        dl->AddRectFilled(ip, ImVec2(ip.x + is, ip.y + is), col32(COL_ACCENT_SOFT), kit_px(8));
+        ImGui::PushFont(g_font_icon);
+        ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
+        dl->AddText(ImVec2(floorf(ip.x + (is - gs.x) / 2), floorf(ip.y + (is - gs.y) / 2)), col32(COL_ACCENT), ICON_GAME);
+        ImGui::PopFont();
+    }
+
+    // Buttons on the right: Save, and Dismiss (Undo once dismissed)
+    f32 bx = a.x + w - pad - fh, by = floorf(a.y + (h - fh) / 2);
+    bool dismissed = s->state == SES_DISMISSED, saved = s->state == SES_SAVED, saving = s->state == SES_SAVING;
+    ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    if (kit_icon_button(dismissed ? ICON_BACK : ICON_CLOSE, "##dismiss", KIT_GHOST, !saving && !saved)) {
+        s->state = dismissed ? SES_NOT_SAVED : SES_DISMISSED;
+        ss.dirty = true;
+        log_line("session %u (%s): %s", s->id, s->name, dismissed ? "back under unsaved sessions" : "dismissed");
+    }
+    bx -= fh + kit_px(6);
+    ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved && !dismissed))
+        session_save(s);
+
+    // Name; length and times; what happens next
+    f32 tx = ip.x + is + kit_px(12), tw = bx - kit_px(10) - tx;
+    f32 lh = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize * 2 + kit_px(2);
+    f32 ty = floorf(a.y + (h - lh) / 2);
+    ImGui::PushFont(g_font_bold);
+    text_clipped(dl, ImVec2(tx, ty), tw, col32(dismissed ? COL_DIM : COL_TEXT), s->name);
+    ImGui::PopFont();
+    ty += g_font_bold->FontSize + kit_px(2);
+    char len[32], from[32], to[32], line[128];
+    fmt_length(s->end_us - s->start_us, len, sizeof len);
+    fmt_clock(s->start_us, from, sizeof from);
+    fmt_clock(s->end_us, to, sizeof to);
+    snprintf(line, sizeof line, "%s  \xC2\xB7  %s \xE2\x80\x93 %s", len, from, to);
+    ImGui::PushFont(g_font_small);
+    text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_DIM), line);
+    ty += g_font_small->FontSize + kit_px(2);
+    u32 col = COL_FAINT;
+    if (dismissed) str_set(line, "Dismissed");
+    else if (saved) str_set(line, "Saved");
+    else if (s->state == SES_ASKING) str_set(line, "Asking in the popup");
+    else if (saving) {
+        const SaveJobView *v = save_view(s->job);
+        if (v && v->state == SAVE_RUNNING) snprintf(line, sizeof line, "Saving %d%%", (int)(v->progress * 100));
+        else str_set(line, "Waiting to save");
+        col = COL_DIM;
+        f32 p = v ? v->progress : 0;
+        dl->AddRectFilled(ImVec2(a.x + kit_px(10), a.y + h - kit_px(4)), ImVec2(a.x + kit_px(10) + p * (w - kit_px(20)), a.y + h - kit_px(2)),
+                          col32(COL_ACCENT), kit_px(1));
+    } else {
+        session_time_left(*s, line, sizeof line);
+        col = COL_WARN;
+    }
+    text_clipped(dl, ImVec2(tx, ty), tw, col32(col), line);
+    ImGui::PopFont();
+    ImGui::PopID();
+}
+
+// The row, drawn from the cursor; returns false (and draws nothing) when there are none.
+static bool lib_unsaved_row(f32 full_w)
+{
+    Sessions &ss = g_app.sessions;
+    sessions_unsaved_take();
+    if (ss.row_count == 0) return false;
+    f32 gap = kit_px(16), tile_h = kit_px(78), fh = ImGui::GetFrameHeight();
+    i32 per = (i32)((full_w + gap) / (kit_px(320) + gap));
+    if (per < 1) per = 1;
+    i32 pages = (ss.row_count + per - 1) / per;
+    if (ss.page >= pages) ss.page = pages - 1;
+    if (ss.page < 0) ss.page = 0;
+    f32 tile_w = floorf((full_w - (per - 1) * gap) / per);
+
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    char head[48];
+    snprintf(head, sizeof head, "UNSAVED SESSIONS  %d", ss.row_count);
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (fh - g_font_small->FontSize) / 2));
+    kit_label(head);
+    if (pages > 1) {
+        ImGui::SetCursorScreenPos(ImVec2(a.x + full_w - lib_pager_w(), a.y));
+        lib_pager("unsaved", &ss.page, pages);
+    }
+    f32 y = a.y + fh + kit_px(6);
+    for (i32 k = 0; k < per; k++) {
+        i32 r = ss.page * per + k;
+        if (r >= ss.row_count) break;
+        lib_unsaved_tile(ss.rows[r], ImVec2(a.x + k * (tile_w + gap), y), tile_w, tile_h);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(a.x, y + tile_h + kit_px(18)));
+    return true;
+}
+
 static void screen_library()
 {
     Library &lib = g_app.library;
@@ -1370,37 +1631,62 @@ static void screen_library()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 full_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
 
-    // Header: the title, the views next to it, and the search on the right.
+    // Header: Clips or Sessions, the date range, and on the right the order and the search.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
-    f32 head_h = fmaxf(g_font_title->FontSize, fh);
-    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - g_font_title->FontSize) / 2));
-    kit_title("Library");
-    ImGui::PushFont(g_font_title);
-    f32 title_w = ImGui::CalcTextSize("Library").x;
-    ImGui::PopFont();
-    ImGui::SetCursorScreenPos(ImVec2(h0.x + title_w + kit_px(28), h0.y + (head_h - fh) / 2));
-    static const char *const views[] = {"Clips", "Sessions", "Not saved"};
+    static const char *const views[] = {"Clips", "Sessions"};
     i32 sel = lib.view;
-    if (kit_segmented("##views", views, 3, &sel, kit_px(96))) lib_set_view((LibView)sel);
-    bool not_saved = lib.view == LIB_NOT_SAVED;
-    if (!not_saved) { // it searches saved files only
-        f32 search_w = kit_px(260);
-        ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w, h0.y + (head_h - fh) / 2));
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
-        if (kit_search("##search", lib.search, sizeof lib.search, "Search", search_w)) {
+    if (kit_segmented("##views", views, 2, &sel, kit_px(96))) lib_set_view((LibView)sel);
+    static const char *const ranges[] = {"All", "Today", "This week", "This month", "Custom"};
+    f32 range_w = kit_px(92);
+    ImVec2 range_at(h0.x + 2 * kit_px(96) + kit_px(28), h0.y);
+    ImGui::SetCursorScreenPos(range_at);
+    i32 range = lib.range;
+    if (kit_segmented("##range", ranges, 5, &range, range_w)) {
+        if (range == RANGE_CUSTOM) {
+            lib.cal_picking = false;
+            ImGui::OpenPopup("calendar");
+        } else {
+            lib.range = range;
             lib.page = 0;
             lib_refilter();
         }
+    } else if (range == RANGE_CUSTOM && ImGui::IsItemClicked()) { // Custom again: pick another range
+        lib.cal_picking = false;
+        ImGui::OpenPopup("calendar");
     }
-    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + head_h + kit_px(20)));
+    ImGui::SetNextWindowPos(ImVec2(range_at.x + 4 * (range_w + kit_px(2)), range_at.y + fh + kit_px(6)));
+    lib_calendar();
 
-    // Not saved: sessions still in the buffer, sessions.cpp's own fixed-size, paged list, with the whole screen.
-    if (not_saved) {
-        ImGui::BeginChild("not_saved", ImVec2(full_w, 0), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
-        sessions_not_saved();
-        ImGui::EndChild();
-        return;
+    f32 search_w = kit_px(240), sort_w = kit_px(140);
+    static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
+    ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w - kit_px(10) - sort_w, h0.y));
+    char sort_label[48];
+    snprintf(sort_label, sizeof sort_label, "%s   " ICON_DOWN, sorts[lib.sort]);
+    ImVec2 sort_at = ImGui::GetCursorScreenPos();
+    if (kit_button(sort_label, KIT_SECONDARY, ImVec2(sort_w, 0))) ImGui::OpenPopup("sort");
+    ImGui::SetNextWindowPos(ImVec2(sort_at.x, sort_at.y + fh + kit_px(6)));
+    ImGui::SetNextWindowSize(ImVec2(sort_w, 0));
+    lib_popup_style_push(8);
+    bool sort_open = ImGui::BeginPopup("sort");
+    lib_popup_style_pop();
+    if (sort_open) {
+        for (i32 i = 0; i < 4; i++)
+            if (lib_menu_item(lib.sort == i ? ICON_CHECK : "", sorts[i]) && lib.sort != i) {
+                lib.sort = i;
+                lib.page = 0;
+                lib_refilter();
+            }
+        ImGui::EndPopup();
     }
+    ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w, h0.y));
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
+    if (kit_search("##search", lib.search, sizeof lib.search, "Search", search_w)) {
+        lib.page = 0;
+        lib_refilter();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(20)));
+
+    if (lib.view == LIB_SESSIONS) lib_unsaved_row(full_w);
 
     // Game chips, fitted to their names, paged when they don't fit on one row (the arrows are then always there).
     i32 chips = lib.game_count + 1;
@@ -1410,7 +1696,7 @@ static void screen_library()
     f32 chip_gap = kit_px(8), total = 0;
     for (i32 c = 0; c < chips; c++) {
         lib_chip_label(c == 0 ? "All" : lib.games[c - 1], chip_text[c], sizeof chip_text[c]);
-        snprintf(chip_count[c], sizeof chip_count[c], "%d", c == 0 ? lib.view_count : lib.game_items[c - 1]);
+        snprintf(chip_count[c], sizeof chip_count[c], "%d", c == 0 ? lib.range_count : lib.game_items[c - 1]);
         chip_w[c] = ImGui::CalcTextSize(chip_text[c]).x + kit_px(8) + ImGui::CalcTextSize(chip_count[c]).x + 2 * kit_px(14);
         total += chip_w[c] + (c ? chip_gap : 0);
     }
@@ -1451,10 +1737,12 @@ static void screen_library()
     ImVec2 g0 = ImGui::GetCursorScreenPos();
     f32 grid_h = ImGui::GetContentRegionAvail().y - foot_h - kit_px(8);
     if (grid_h < 1) grid_h = 1;
-    // As many columns as fill the height best: from the widest cards that fit (300) to the narrowest (200), the
-    // one that leaves the least empty space under the last row, the wider on a near tie.
+    // As many columns as fill the height best: from the widest cards that fit to the narrowest (300 to 200 at
+    // Medium), the one that leaves the least empty space under the last row, the wider on a near tie.
+    static const f32 widest[] = {230, 300, 440}, narrowest[] = {160, 200, 300};
+    i32 tsz = g_app.config.thumb_size < 0 || g_app.config.thumb_size > 2 ? 1 : g_app.config.thumb_size;
     f32 gap = kit_px(20), day_h = kit_px(36);
-    i32 c_lo = (i32)((full_w + gap) / (kit_px(300) + gap)), c_hi = (i32)((full_w + gap) / (kit_px(200) + gap));
+    i32 c_lo = (i32)((full_w + gap) / (kit_px(widest[tsz]) + gap)), c_hi = (i32)((full_w + gap) / (kit_px(narrowest[tsz]) + gap));
     if (c_lo < 1) c_lo = 1;
     if (c_hi < c_lo) c_hi = c_lo;
     i32 cols = c_lo;
@@ -1485,7 +1773,8 @@ static void screen_library()
     if (lib.shown_count == 0) {
         const char *msg = !lib.scanned ? "Looking for saved files..."
                           : lib.view_count == 0 ? (lib.view == LIB_CLIPS ? "No clips yet" : "No sessions yet")
-                                                : "Nothing matches";
+                          : lib.range_count == 0 ? "Nothing in this time"
+                                                 : "Nothing matches";
         f32 cy = floorf(g0.y + grid_h * 0.38f);
         ImGui::PushFont(g_font_title);
         ImVec2 is = ImGui::CalcTextSize(ICON_VIDEO);
@@ -1523,13 +1812,20 @@ static void screen_library()
     // Footer: how many, the last message, and the pager at a fixed place on the right.
     ImGui::SetCursorScreenPos(ImVec2(g0.x, g0.y + grid_h + kit_px(8)));
     ImVec2 f0 = ImGui::GetCursorScreenPos();
-    char count[80];
-    snprintf(count, sizeof count, "%d %s%s", lib.shown_count,
+    char count[120], span[48] = "";
+    if (lib.range == RANGE_CUSTOM) {
+        char d0[16], d1[16];
+        fmt_day_short(lib.range_from, d0, sizeof d0);
+        fmt_day_short(lib.range_to, d1, sizeof d1);
+        if (lib.range_from == lib.range_to) snprintf(span, sizeof span, " on %s", d0);
+        else snprintf(span, sizeof span, " from %s to %s", d0, d1);
+    }
+    snprintf(count, sizeof count, "%d %s%s%s", lib.shown_count,
              lib.view == LIB_CLIPS ? (lib.shown_count == 1 ? "clip" : "clips") : (lib.shown_count == 1 ? "session" : "sessions"),
-             lib.scanning ? ", looking for more" : "");
+             span, lib.scanning ? ", looking for more" : "");
     f32 ty = floorf(f0.y + (fh - ImGui::GetFontSize()) / 2);
     dl->AddText(ImVec2(f0.x, ty), col32(COL_DIM), count);
-    f32 msg_x = f0.x + kit_px(220), pager_x = f0.x + full_w - lib_pager_w();
+    f32 msg_x = f0.x + kit_px(320), pager_x = f0.x + full_w - lib_pager_w();
     text_clipped(dl, ImVec2(msg_x, ty), pager_x - msg_x - kit_px(16), col32(lib.message_error ? 0xff8a92 : COL_DIM),
                  lib.message);
     ImGui::SetCursorScreenPos(ImVec2(pager_x, f0.y));

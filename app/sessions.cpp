@@ -1,5 +1,5 @@
 // Sessions (SPEC.md, "1. Whole sessions"): finding game sessions as they happen, the "save that session?" popup,
-// the Not saved list, and sessions made by hand.
+// the unsaved sessions, and sessions made by hand.
 //
 // Detection runs on the main thread, from the game being played (audio.cpp's watcher calls sessions_on_game when
 // it changes) and the 1 s tick. A session starts when a game whose session mode isn't Never becomes the game being
@@ -13,7 +13,6 @@
 // At start, sessions.txt is read and activity.tsv is replayed to add what the file doesn't know (it may be lost,
 // or out of date after a crash).
 
-static const i32 SESSION_ROWS = 6; // Not saved rows per page
 
 static i64 sessions_gap_us()
 {
@@ -227,7 +226,7 @@ static void sessions_check_saves()
             log_line("session %u (%s): saved", s->id, s->name);
         } else {
             s->state = SES_NOT_SAVED;
-            log_line("session %u (%s): the save %s; it's under Not saved", s->id, s->name,
+            log_line("session %u (%s): the save %s; it's under unsaved sessions", s->id, s->name,
                      !v ? "was lost" : v->state == SAVE_FAILED ? "failed" : "was cancelled");
         }
         s->job = 0;
@@ -434,7 +433,7 @@ static void sessions_replay(i64 alive_until)
         sessions_game_name(g.exe, name);
         Session *s = session_new(g.exe, name, g.start_us, g.end_us);
         if (!s) break;
-        // One that ended while clipback wasn't watching isn't asked about now; it waits under Not saved.
+        // One that ended while clipback wasn't watching isn't asked about now; it waits under unsaved sessions.
         if (!still_open) s->state = SES_NOT_SAVED;
         added++;
     }
@@ -551,7 +550,7 @@ static void sessions_prompt()
         for (i32 i = 0; i < COUNT(ss.items); i++) {
             if (ss.items[i].state != SES_ASKING) continue;
             ss.items[i].state = SES_NOT_SAVED;
-            log_line("session %u (%s): window closed; under Not saved", ss.items[i].id, ss.items[i].name);
+            log_line("session %u (%s): window closed; unsaved", ss.items[i].id, ss.items[i].name);
         }
         ss.dirty = true;
         return;
@@ -591,7 +590,7 @@ static void sessions_tick()
     bool open = false;
     for (i32 i = 0; i < COUNT(ss.items) && !open; i++) open = ss.items[i].state == SES_OPEN;
     if (ss.dirty || (open && now - ss.written_us > 10000000)) sessions_write(); // keeps the last-seen time fresh
-    // The Not saved countdowns are in minutes: one redraw a minute keeps them right without drawing every second.
+    // The unsaved sessions' countdowns are in minutes: one redraw a minute keeps them right without drawing every second.
     if (g_app.ui.shown && now / 60000000 != ss.woke_minute) {
         ss.woke_minute = now / 60000000;
         ui_wake();
@@ -629,7 +628,7 @@ static const AppInfo *sessions_game_named(const char *name)
 
 // A session made by hand (timeline or library): in and out points and a game or a typed name. Its record goes to
 // Data straight away, so it exists before or without its video, and one longer than the buffer keeps its real
-// start and end. If any of it is still in the buffer it's also listed under Not saved, to save from there (or
+// start and end. If any of it is still in the buffer it's also listed as unsaved, to save from there (or
 // with sessions_save). Returns its id, or 0 if it's only a record (none of it is in the buffer).
 static u32 sessions_add_manual(i64 from_us, i64 to_us, const char *name)
 {
@@ -744,7 +743,7 @@ static void sessions_popup()
     ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_FAINT));
     if (waiting == 1) ImGui::TextUnformatted("1 more session is waiting.");
     else if (waiting > 1) ImGui::Text("%d more sessions are waiting.", waiting);
-    else ImGui::TextUnformatted("Not now keeps it in the Library, under Not saved.");
+    else ImGui::TextUnformatted("Not now keeps it in the Library, under Sessions.");
     ImGui::PopStyleColor();
     ImGui::PopFont();
 
@@ -763,14 +762,14 @@ static void sessions_popup()
     if (later && cur) {
         cur->state = SES_NOT_SAVED;
         g_app.sessions.dirty = true;
-        log_line("session %u (%s): not now; under Not saved", cur->id, cur->name);
+        log_line("session %u (%s): not now; unsaved", cur->id, cur->name);
     }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The Not saved list, drawn inside the Library's Sessions view. A fixed-size paged list. Its rows are taken when
-// it comes on screen (or the page changes, or a new session joins), so Save and Dismiss change a row in place
-// instead of closing up the list under the pointer.
+// Unsaved sessions, shown as a row at the top of the Library's Sessions. Its rows are taken when it comes on
+// screen (or a new session joins), so Save and Dismiss change a tile in place instead of closing up the row
+// under the pointer.
 
 static bool session_listed(const Session &s)
 {
@@ -794,9 +793,6 @@ static void sessions_rows_rebuild()
         }
         ss.rows[j] = id;
     }
-    i32 pages = ss.row_count ? (ss.row_count + SESSION_ROWS - 1) / SESSION_ROWS : 1;
-    if (ss.page >= pages) ss.page = pages - 1;
-    if (ss.page < 0) ss.page = 0;
 }
 
 // How long a session stays whole in the buffer, or how long the rest stays once its start has gone.
@@ -815,10 +811,10 @@ static void session_time_left(const Session &s, char *out, i32 cap)
     else snprintf(out, cap, "Start leaves the buffer in %s", left);
 }
 
-static void sessions_not_saved()
+// Takes the rows again when the list comes on screen or a session joins it. The Library draws them.
+static void sessions_unsaved_take()
 {
     Sessions &ss = g_app.sessions;
-    f32 sc = g_dpi_scale;
     i32 frame = ImGui::GetFrameCount();
     bool rebuild = ss.drawn_frame != frame - 1;
     for (i32 i = 0; i < COUNT(ss.items) && !rebuild; i++) {
@@ -829,99 +825,4 @@ static void sessions_not_saved()
     }
     ss.drawn_frame = frame;
     if (rebuild) sessions_rows_rebuild();
-
-    ImGui::PushFont(g_font_bold);
-    ImGui::TextUnformatted("Not saved");
-    ImGui::PopFont();
-    ImGui::TextDisabled("Sessions still in the buffer. Each can be saved until the buffer loses it.");
-
-    const ImGuiStyle &st = ImGui::GetStyle();
-    f32 width = ImGui::GetContentRegionAvail().x, button_w = 110 * sc, status_w = 300 * sc;
-    f32 row_h = st.WindowPadding.y * 2 + ImGui::GetTextLineHeightWithSpacing() * 2;
-    i32 first = ss.page * SESSION_ROWS;
-    for (i32 r = first; r < first + SESSION_ROWS; r++) {
-        ImGui::PushID(r);
-        bool used = r < ss.row_count;
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, used ? rgb(COL_PANEL) : rgb(COL_BG));
-        ImGui::BeginChild("row", ImVec2(width, row_h), ImGuiChildFlags_AlwaysUseWindowPadding,
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        Session *s = used ? session_find(ss.rows[r]) : 0;
-        if (used && !s) {
-            ImGui::TextDisabled("Gone from the buffer.");
-        } else if (!used && r == 0) {
-            ImGui::TextDisabled("Every session in the buffer has been saved or dismissed.");
-        } else if (s) {
-            char len[32], from[32], to[32], left[96];
-            fmt_length(s->end_us - s->start_us, len, sizeof len);
-            fmt_clock(s->start_us, from, sizeof from);
-            fmt_clock(s->end_us, to, sizeof to);
-            ImGui::PushFont(g_font_bold);
-            ImGui::TextUnformatted(s->name);
-            ImGui::PopFont();
-            ImGui::TextDisabled("%s to %s, %s", from, to, len);
-
-            f32 right = ImGui::GetWindowContentRegionMax().x;
-            f32 y = (row_h - ImGui::GetFrameHeight()) / 2;
-            f32 text_y = (row_h - ImGui::GetTextLineHeight()) / 2;
-            ImGui::SetCursorPos(ImVec2(right - 2 * button_w - st.ItemSpacing.x - status_w, text_y));
-            if (s->state == SES_DISMISSED) ImGui::TextDisabled("Dismissed");
-            else if (s->state == SES_SAVED) ImGui::TextDisabled("Saved to Sessions");
-            else if (s->state == SES_ASKING) ImGui::TextDisabled("Asking in the popup");
-            else {
-                session_time_left(*s, left, sizeof left);
-                ImGui::TextDisabled("%s", left);
-            }
-
-            ImGui::SetCursorPos(ImVec2(right - 2 * button_w - st.ItemSpacing.x, y));
-            if (s->state == SES_SAVING) {
-                const SaveJobView *v = save_view(s->job);
-                f32 p = v ? v->progress : 0;
-                char label[32];
-                if (v && v->state == SAVE_RUNNING) snprintf(label, sizeof label, "Saving %d%%", (int)(p * 100));
-                else str_set(label, "Waiting");
-                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, rgb(COL_BLUE));
-                ImGui::ProgressBar(p, ImVec2(button_w, ImGui::GetFrameHeight()), label);
-                ImGui::PopStyleColor();
-            } else {
-                ImGui::BeginDisabled(s->state == SES_SAVED);
-                if (ImGui::Button(s->state == SES_SAVED ? "Saved" : "Save", ImVec2(button_w, 0))) session_save(s);
-                ImGui::EndDisabled();
-            }
-            ImGui::SetCursorPos(ImVec2(right - button_w, y));
-            ImGui::BeginDisabled(s->state == SES_SAVING || s->state == SES_SAVED);
-            bool dismissed = s->state == SES_DISMISSED;
-            if (ImGui::Button(dismissed ? "Undo" : "Dismiss", ImVec2(button_w, 0))) {
-                s->state = dismissed ? SES_NOT_SAVED : SES_DISMISSED;
-                ss.dirty = true;
-                log_line("session %u (%s): %s", s->id, s->name, dismissed ? "back under Not saved" : "dismissed");
-            }
-            ImGui::EndDisabled();
-        }
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-        ImGui::PopID();
-    }
-
-    // The pager is always there, so the list keeps its size from one page to the next.
-    i32 pages = ss.row_count ? (ss.row_count + SESSION_ROWS - 1) / SESSION_ROWS : 1;
-    ImGui::BeginDisabled(ss.page == 0);
-    if (ImGui::Button("Previous", ImVec2(button_w, 0))) {
-        ss.page--;
-        sessions_rows_rebuild();
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    char label[32];
-    snprintf(label, sizeof label, "Page %d of %d", ss.page + 1, pages);
-    f32 label_w = 120 * sc, x = ImGui::GetCursorPosX();
-    ImGui::SetCursorPosX(x + (label_w - ImGui::CalcTextSize(label).x) / 2);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
-    ImGui::SameLine(x + label_w + st.ItemSpacing.x);
-    ImGui::BeginDisabled(ss.page >= pages - 1);
-    if (ImGui::Button("Next", ImVec2(button_w, 0))) {
-        ss.page++;
-        sessions_rows_rebuild();
-    }
-    ImGui::EndDisabled();
 }

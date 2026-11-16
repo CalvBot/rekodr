@@ -677,8 +677,6 @@ static void options_list_monitors()
 // controls fixed widths, so nothing moves when a value changes. The opt_card, opt_row, opt_combo, opt_keycaps,
 // opt_pill and opt_pager helpers are generic and could move to the kit in ui.cpp.
 
-#define ICON_DOWN "\xEE\x9C\x8D" // E70D chevron down
-
 static const f32 OPT_PAD = 20;     // a card's padding left and right
 static const f32 OPT_FIELD_W = 84; // a number box
 static const f32 OPT_UNIT_W = 44;  // the unit after it ("Mbps", "hours")
