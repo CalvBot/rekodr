@@ -697,9 +697,9 @@ static void sessions_popup()
     Session *s = sessions_asking(&waiting);
     if (!s) return;
     f32 sc = g_dpi_scale;
-    f32 pad = 20 * sc, tile = 44 * sc, button_w = 104 * sc, fh = ImGui::GetFrameHeight();
-    // Fixed size: the lines below are always there, whatever they say, so the buttons never move
-    ImVec2 size(420 * sc, pad + 92 * sc + 18 * sc + fh + pad);
+    f32 pad = 18 * sc, tile = 48 * sc, button_w = 96 * sc, fh = ImGui::GetFrameHeight();
+    // Fixed size: every line is always there, whatever it says, so the buttons never move
+    ImVec2 size(400 * sc, pad + tile + 16 * sc + fh + pad);
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - size.x - 20 * sc,
                                    vp->WorkPos.y + vp->WorkSize.y - size.y - 20 * sc));
@@ -718,38 +718,35 @@ static void sessions_popup()
     fmt_clock(s->end_us, to, sizeof to);
     snprintf(when, sizeof when, "%s  \xC2\xB7  %s \xE2\x80\x93 %s", len, from, to);
 
-    // A game tile, then what ended and when
+    // The game's icon (a game tile when it has none), and beside it its name over how long and when
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
-    dl->AddRectFilled(a, ImVec2(a.x + tile, a.y + tile), col32(COL_ACCENT_SOFT), 10 * sc);
-    ImGui::PushFont(g_font_icon);
-    ImVec2 is = ImGui::CalcTextSize(ICON_GAME);
-    dl->AddText(ImVec2(floorf(a.x + (tile - is.x) / 2), floorf(a.y + (tile - is.y) / 2)), col32(COL_ACCENT), ICON_GAME);
-    ImGui::PopFont();
-    f32 tx = a.x + tile + 14 * sc, text_w = a.x + size.x - 2 * pad - tx;
-    ImGui::SetCursorScreenPos(ImVec2(tx, a.y - 2 * sc));
-    kit_label("SESSION ENDED");
-    ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y - 6 * sc));
-    ImGui::PushFont(g_font_big);
-    ImGui::PushClipRect(ImVec2(tx, a.y - 4 * sc), ImVec2(tx + text_w, a.y + 92 * sc), true);
-    ImGui::TextUnformatted(s->name);
-    ImGui::PopClipRect();
-    ImGui::PopFont();
-    ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y - 4 * sc));
-    kit_dim("%s", when);
-    // Always a line here, so nothing moves when the queue empties
-    ImGui::SetCursorScreenPos(ImVec2(tx, ImGui::GetCursorScreenPos().y - 2 * sc));
-    ImGui::PushFont(g_font_small);
-    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_FAINT));
-    if (waiting == 1) ImGui::TextUnformatted("1 more session is waiting.");
-    else if (waiting > 1) ImGui::Text("%d more sessions are waiting.", waiting);
-    else ImGui::TextUnformatted("Not now keeps it in the Library, under Sessions.");
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
+    f32 inner_w = size.x - 2 * pad;
+    ID3D11ShaderResourceView *icon = s->exe[0] ? app_icon(s->exe) : 0;
+    if (icon) {
+        dl->AddImageRounded((ImTextureID)icon, a, ImVec2(a.x + tile, a.y + tile), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 8 * sc);
+    } else {
+        dl->AddRectFilled(a, ImVec2(a.x + tile, a.y + tile), col32(COL_ACCENT_SOFT), 10 * sc);
+        ImGui::PushFont(g_font_icon);
+        ImVec2 is = ImGui::CalcTextSize(ICON_GAME);
+        dl->AddText(ImVec2(floorf(a.x + (tile - is.x) / 2), floorf(a.y + (tile - is.y) / 2)), col32(COL_ACCENT), ICON_GAME);
+        ImGui::PopFont();
+    }
+    f32 tx = a.x + tile + 14 * sc, nh = g_font_big->FontSize, wh = g_font->FontSize;
+    f32 ty = floorf(a.y + (tile - nh - 5 * sc - wh) / 2);
+    dl->PushClipRect(ImVec2(tx, a.y), ImVec2(a.x + inner_w, a.y + tile), true);
+    dl->AddText(g_font_big, nh, ImVec2(tx, ty), col32(COL_TEXT), s->name);
+    dl->AddText(g_font, wh, ImVec2(tx, ty + nh + 5 * sc), col32(COL_DIM), when);
+    dl->PopClipRect();
 
-    // Save it? Pinned to the bottom right
+    // Under them: what is being asked (and how many more are waiting), and the answer on the right
+    f32 by = a.y + tile + 16 * sc;
+    char ask[64];
+    if (waiting > 0) snprintf(ask, sizeof ask, "Save this session?  %d more waiting", waiting);
+    else snprintf(ask, sizeof ask, "Save this session?");
+    dl->AddText(g_font, wh, ImVec2(a.x, floorf(by + (fh - wh) / 2)), col32(COL_DIM), ask);
     u32 id = s->id;
-    ImGui::SetCursorScreenPos(ImVec2(a.x + size.x - 2 * pad - 2 * button_w - 8 * sc, ImGui::GetWindowPos().y + size.y - pad - fh));
+    ImGui::SetCursorScreenPos(ImVec2(a.x + inner_w - 2 * button_w - 8 * sc, by));
     bool later = kit_button("Not now", KIT_GHOST, ImVec2(button_w, 0));
     ImGui::SameLine(0, 8 * sc);
     bool save = kit_button("Save", KIT_PRIMARY, ImVec2(button_w, 0));

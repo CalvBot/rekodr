@@ -1612,18 +1612,19 @@ static void screen_library()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 full_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
 
-    // Header: Clips or Sessions, the date range, and on the right the order and the search.
+    // Header: Clips or Sessions, three buttons that each drop a list (the date range, the game, the order), and
+    // the search.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
     static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
     i32 sel = lib.view;
     if (kit_segmented("##views", views, 2, &sel, kit_px(96))) lib_set_view((LibView)sel);
-    // The date range: a button that drops a list; Custom opens the calendar.
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
-    f32 range_w = kit_px(150), sort_w = kit_px(140);
+    static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
+    f32 range_w = kit_px(124), game_w = kit_px(150), sort_w = kit_px(108), hgap = kit_px(8);
     ImVec2 range_at(h0.x + 2 * kit_px(96) + kit_px(22), h0.y);
     ImGui::SetCursorScreenPos(range_at);
     char range_label[64];
-    snprintf(range_label, sizeof range_label, ICON_CALENDAR "  %s   " ICON_DOWN "##range", ranges[lib.range]);
+    snprintf(range_label, sizeof range_label, "%s   " ICON_DOWN "##range", ranges[lib.range]);
     if (kit_button(range_label, KIT_SECONDARY, ImVec2(range_w, 0))) ImGui::OpenPopup("range");
     ImGui::SetNextWindowPos(ImVec2(range_at.x, range_at.y + fh + kit_px(6)));
     lib_popup_style_push(8);
@@ -1650,17 +1651,47 @@ static void screen_library()
     ImGui::SetNextWindowPos(ImVec2(range_at.x, range_at.y + fh + kit_px(6)));
     lib_calendar();
 
+    // The game: every game in this view with how many it has, most recent first
+    ImVec2 game_at(range_at.x + range_w + hgap, h0.y);
+    ImGui::SetCursorScreenPos(game_at);
+    char game_label[96];
+    if (!lib.game[0]) snprintf(game_label, sizeof game_label, "All games   " ICON_DOWN "##game");
+    else if (strlen(lib.game) <= 14) snprintf(game_label, sizeof game_label, "%s   " ICON_DOWN "##game", lib.game);
+    else snprintf(game_label, sizeof game_label, "%.12s\xE2\x80\xA6   " ICON_DOWN "##game", lib.game);
+    if (kit_button(game_label, KIT_SECONDARY, ImVec2(game_w, 0))) ImGui::OpenPopup("game");
+    ImGui::SetNextWindowPos(ImVec2(game_at.x, game_at.y + fh + kit_px(6)));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, kit_px(430)));
+    lib_popup_style_push(8);
+    bool game_open = ImGui::BeginPopup("game");
+    lib_popup_style_pop();
+    if (game_open) {
+        for (i32 c = 0; c <= lib.game_count; c++) {
+            const char *name = c == 0 ? "All games" : lib.games[c - 1];
+            bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
+            char cut_name[64], item[96];
+            lib_chip_label(name, cut_name, sizeof cut_name);
+            snprintf(item, sizeof item, "%s   %d", cut_name, c == 0 ? lib.range_count : lib.game_items[c - 1]);
+            ImGui::PushID(c);
+            if (lib_menu_item(active ? ICON_CHECK : "", item) && !active) {
+                if (c == 0) lib.game[0] = 0;
+                else str_set(lib.game, name);
+                lib.scroll = lib.scroll_to = 0;
+                lib_refilter();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndPopup();
+    }
+
     // The search takes what the row has left, between a narrowest and a widest.
-    f32 search_w = full_w - (range_at.x - h0.x) - range_w - kit_px(16) - sort_w - kit_px(10);
-    search_w = search_w < kit_px(120) ? kit_px(120) : search_w > kit_px(240) ? kit_px(240) : search_w;
-    static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
-    ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w - kit_px(10) - sort_w, h0.y));
+    f32 search_w = full_w - (game_at.x - h0.x) - game_w - kit_px(12) - sort_w - hgap;
+    search_w = search_w < kit_px(110) ? kit_px(110) : search_w > kit_px(240) ? kit_px(240) : search_w;
+    ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w - hgap - sort_w, h0.y));
     char sort_label[48];
-    snprintf(sort_label, sizeof sort_label, ICON_SORT "  %s   " ICON_DOWN, sorts[lib.sort]);
+    snprintf(sort_label, sizeof sort_label, "%s   " ICON_DOWN "##sort", sorts[lib.sort]);
     ImVec2 sort_at = ImGui::GetCursorScreenPos();
     if (kit_button(sort_label, KIT_SECONDARY, ImVec2(sort_w, 0))) ImGui::OpenPopup("sort");
     ImGui::SetNextWindowPos(ImVec2(sort_at.x, sort_at.y + fh + kit_px(6)));
-    ImGui::SetNextWindowSize(ImVec2(sort_w, 0));
     lib_popup_style_push(8);
     bool sort_open = ImGui::BeginPopup("sort");
     lib_popup_style_pop();
@@ -1679,53 +1710,10 @@ static void screen_library()
         lib.scroll = lib.scroll_to = 0;
         lib_refilter();
     }
-    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(20)));
+    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
 
     if (lib.view == LIB_SESSIONS) lib_unsaved_row(full_w);
 
-    // Game chips, fitted to their names, paged when they don't fit on one row (the arrows are then always there).
-    i32 chips = lib.game_count + 1;
-    static f32 chip_w[LIB_MAX_GAMES + 1];
-    static char chip_text[LIB_MAX_GAMES + 1][64];
-    static char chip_count[LIB_MAX_GAMES + 1][16];
-    f32 chip_gap = kit_px(8), total = 0;
-    for (i32 c = 0; c < chips; c++) {
-        lib_chip_label(c == 0 ? "All" : lib.games[c - 1], chip_text[c], sizeof chip_text[c]);
-        snprintf(chip_count[c], sizeof chip_count[c], "%d", c == 0 ? lib.range_count : lib.game_items[c - 1]);
-        chip_w[c] = ImGui::CalcTextSize(chip_text[c]).x + kit_px(8) + ImGui::CalcTextSize(chip_count[c]).x + 2 * kit_px(14);
-        total += chip_w[c] + (c ? chip_gap : 0);
-    }
-    bool chip_paged = total > full_w;
-    f32 row_w = chip_paged ? full_w - lib_pager_w() - kit_px(16) : full_w;
-    static i32 chip_start[LIB_MAX_GAMES + 2];
-    i32 chip_pages = 0;
-    for (i32 c = 0; c < chips;) {
-        chip_start[chip_pages++] = c;
-        f32 x = chip_w[c++];
-        while (c < chips && x + chip_gap + chip_w[c] <= row_w) x += chip_gap + chip_w[c++];
-    }
-    chip_start[chip_pages] = chips;
-    if (lib.chip_page >= chip_pages) lib.chip_page = chip_pages - 1;
-    if (lib.chip_page < 0) lib.chip_page = 0;
-    ImVec2 c0 = ImGui::GetCursorScreenPos();
-    for (i32 c = chip_start[lib.chip_page]; c < chip_start[lib.chip_page + 1]; c++) {
-        if (c > chip_start[lib.chip_page]) ImGui::SameLine(0, chip_gap);
-        const char *name = c == 0 ? "All" : lib.games[c - 1];
-        bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
-        ImGui::PushID(c);
-        if (kit_chip(chip_text[c], active, chip_count[c], chip_w[c])) {
-            if (c == 0) lib.game[0] = 0;
-            else str_set(lib.game, name);
-            lib.scroll = lib.scroll_to = 0;
-            lib_refilter();
-        }
-        ImGui::PopID();
-    }
-    if (chip_paged) {
-        ImGui::SetCursorScreenPos(ImVec2(c0.x + full_w - lib_pager_w(), c0.y));
-        lib_pager("chips", &lib.chip_page, chip_pages);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(c0.x, c0.y + fh + kit_px(4)));
 
     // The grid fills what's left above the footer and scrolls: the wheel, Page Up / Page Down, Home / End, or the
     // bar on its right. The cards are as wide as fit between the size's widest and narrowest.

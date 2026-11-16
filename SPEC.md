@@ -176,7 +176,7 @@ the PC, so this is not a network API.
 ## Screens
 One window with a header (status, pause, Help, Options):
 
-- **Library:** Clips and Sessions, with game chips, search, a scrolling grid and a player.
+- **Library:** Clips and Sessions, with date, game and order dropdowns, search, a scrolling grid and a player.
 - **Sessions *Not saved* list:** sessions still in the buffer, with Save and how long until each is gone.
 - **Timeline:** the buffer, a range selection, Save and Edit.
 - **Editor:** trim, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
