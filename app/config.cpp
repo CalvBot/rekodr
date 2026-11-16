@@ -4,6 +4,14 @@
 // CLIPBACK_HOME (for development and tests) moves every folder clipback uses under that one folder, so a test copy
 // never touches the real settings, buffer or clips.
 
+// A test copy (CLIPBACK_HOME) leaves the hotkeys and Windows' Run list to the real clipback, and reads the first
+// run's import from its own folder.
+static bool is_test_copy()
+{
+    wchar_t home[MAX_PATH] = {};
+    return GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0];
+}
+
 static void paths_init(Paths *p)
 {
     wchar_t home[MAX_PATH] = {};

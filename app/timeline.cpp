@@ -968,7 +968,6 @@ static void tl_pill(ImDrawList *dl, f32 x, f32 y, f32 lo, f32 hi, const char *te
 // Sound groups, collapsible from their header in the track list. Kept for the run, like the view.
 static bool g_tl_closed[3];
 static const char *const TL_GROUP_NAMES[3] = {ICON_MIC "  MICROPHONE", ICON_GAME "  GAMES", ICON_APPS "  APPS"};
-static ID3D11ShaderResourceView *app_icon(const char *exe); // options.cpp
 
 // One line of the sound area: a group's header (row -1) or an app's row.
 struct TlLine { i8 group; i16 row; };

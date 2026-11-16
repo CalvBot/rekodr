@@ -605,26 +605,6 @@ static void lib_free_textures()
     lib.strip_key = lib.strip_want = 0;
 }
 
-static ID3D11ShaderResourceView *lib_texture(const u32 *pixels, i32 w, i32 h)
-{
-    D3D11_TEXTURE2D_DESC d = {};
-    d.Width = (UINT)w;
-    d.Height = (UINT)h;
-    d.MipLevels = 1;
-    d.ArraySize = 1;
-    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    d.SampleDesc.Count = 1;
-    d.Usage = D3D11_USAGE_IMMUTABLE;
-    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA data = {pixels, (UINT)w * 4, 0};
-    ID3D11Texture2D *tex = 0;
-    ID3D11ShaderResourceView *srv = 0;
-    if (FAILED(g_gpu.device->CreateTexture2D(&d, &data, &tex))) return 0;
-    g_gpu.device->CreateShaderResourceView(tex, 0, &srv);
-    tex->Release();
-    return srv;
-}
-
 // The slot holding `key`; with `make`, a free one or the least recently shown is given to it.
 static LibThumb *lib_thumb_slot(u64 key, bool make)
 {
@@ -658,7 +638,7 @@ static void lib_take_results()
         if (r.strip) {
             if (!r.failed && r.key == lib.strip_want && g_app.ui.shown) {
                 if (lib.strip) lib.strip->Release();
-                lib.strip = lib_texture(r.pixels, r.w, r.h);
+                lib.strip = gpu_texture(r.pixels, r.w, r.h);
                 lib.strip_key = r.key;
                 lib.strip_w = r.w;
                 lib.strip_h = r.h;
@@ -669,7 +649,7 @@ static void lib_take_results()
             if (t) {
                 t->pending = false;
                 t->failed = r.failed;
-                if (!r.failed) t->srv = lib_texture(r.pixels, r.w, r.h);
+                if (!r.failed) t->srv = gpu_texture(r.pixels, r.w, r.h);
                 t->w = r.w;
                 t->h = r.h;
                 t->used = ++lib.thumb_clock;
@@ -1508,7 +1488,6 @@ static void lib_calendar()
 // ---------------------------------------------------------------------------------------------------------------
 // Unsaved sessions: a row of tiles at the top of Sessions, paged when there are more than fit.
 
-static ID3D11ShaderResourceView *app_icon(const char *exe); // options.cpp
 
 static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
 {

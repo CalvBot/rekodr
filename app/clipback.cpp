@@ -63,6 +63,7 @@ static void imgui_debug_print(const char *fmt, ...)
 }
 #include "events.cpp"
 #include "config.cpp"
+#include "import.cpp"
 #include "proc.cpp"
 #include "recorder.cpp"
 #include "audio.cpp"

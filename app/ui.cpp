@@ -647,9 +647,31 @@ static void kit_align_right(f32 w)
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - w);
 }
 
+// A texture from BGRA pixels, for ImGui to draw (thumbnails, app icons).
+static ID3D11ShaderResourceView *gpu_texture(const u32 *pixels, i32 w, i32 h)
+{
+    D3D11_TEXTURE2D_DESC d = {};
+    d.Width = (UINT)w;
+    d.Height = (UINT)h;
+    d.MipLevels = 1;
+    d.ArraySize = 1;
+    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    d.SampleDesc.Count = 1;
+    d.Usage = D3D11_USAGE_IMMUTABLE;
+    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data = {pixels, (UINT)w * 4, 0};
+    ID3D11Texture2D *tex = 0;
+    ID3D11ShaderResourceView *srv = 0;
+    if (FAILED(g_gpu.device->CreateTexture2D(&d, &data, &tex))) return 0;
+    g_gpu.device->CreateShaderResourceView(tex, 0, &srv);
+    tex->Release();
+    return srv;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Screens, each in its own file. They can use everything above (theme colours, fonts, ui_wake, the kit).
 
+#include "appicons.cpp"
 #include "sessions.cpp"
 #include "player.cpp"
 #include "library.cpp"
