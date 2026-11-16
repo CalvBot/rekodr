@@ -413,12 +413,21 @@ static f32 opt_combo_popup_w(const char *const *items, const char *const *notes,
 }
 
 // A whole drop-down. Items whose bit is set in `disabled` show greyed out and can't be picked.
+// Off for the rows of the Recording page: it scrolls, and a wheel meant for the page would change the monitor or
+// the encoder and restart the recording.
+static bool g_combo_wheel = true;
+
 static bool opt_combo(const char *id, const char *const *items, const char *const *notes, i32 count, i32 *index,
                       f32 width, u32 disabled = 0, const char *preview = 0, u32 preview_col = COL_TEXT)
 {
     const char *shown = preview ? preview : (*index >= 0 && *index < count ? items[*index] : "");
     bool changed = false;
-    if (opt_combo_begin(id, shown, width, opt_combo_popup_w(items, notes, count), preview_col)) {
+    bool open = opt_combo_begin(id, shown, width, opt_combo_popup_w(items, notes, count), preview_col);
+    if (!open && g_combo_wheel && kit_wheel_step(index, count, disabled)) {
+        changed = true;
+        dev_click(id, items[*index]);
+    }
+    if (open) {
         for (i32 i = 0; i < count; i++) {
             if (opt_combo_item(items[i], notes ? notes[i] : 0, i == *index, (disabled >> i) & 1) && i != *index) {
                 *index = i;
@@ -436,7 +445,9 @@ static bool opt_row_combo(const char *name, const char *sub, const char *id, con
                           const char *preview = 0)
 {
     opt_row_begin(name, sub, width);
+    g_combo_wheel = false;
     bool changed = opt_combo(id, items, notes, count, index, width, disabled, preview);
+    g_combo_wheel = true;
     opt_row_end();
     return changed;
 }
@@ -1301,6 +1312,12 @@ static void options_apps()
     snprintf(filter_label, sizeof filter_label, "%s  %s   %d   " ICON_DOWN "##filter", chip_icons[cur], chips[cur], counts[cur]);
     ImVec2 filter_at = ImGui::GetCursorScreenPos();
     if (kit_button(filter_label, KIT_SECONDARY, ImVec2(filter_w, 0))) ImGui::OpenPopup("filter");
+    if (kit_wheel_step(&cur, COUNT(chips))) {
+        o.filter = chip_filter[cur];
+        o.order_dirty = true;
+        o.apps_page = 0;
+        o.folders_page = 0;
+    }
     ImGui::SetNextWindowPos(ImVec2(filter_at.x, filter_at.y + fh + dp(6)));
     lib_popup_style_push(8);
     bool filter_open = ImGui::BeginPopup("filter");

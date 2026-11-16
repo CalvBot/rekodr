@@ -630,6 +630,21 @@ static void kit_dim_wrapped(const char *text) // one short sentence of explanati
 }
 
 // Places the next item so it ends at the right edge of the content region (w = its width).
+// The wheel over the control just drawn steps its choice (of `count`, skipping the `disabled` bits, stopping at
+// the ends). It takes the wheel while the mouse is there, so the page behind doesn't scroll as well.
+static bool kit_wheel_step(i32 *index, i32 count, u32 disabled = 0)
+{
+    if (!ImGui::IsItemHovered()) return false;
+    ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+    f32 wheel = ImGui::GetIO().MouseWheel;
+    if (wheel == 0 || ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) return false;
+    i32 dir = wheel < 0 ? 1 : -1, i = *index + dir;
+    while (i >= 0 && i < count && ((disabled >> i) & 1)) i += dir;
+    if (i < 0 || i >= count) return false;
+    *index = i;
+    return true;
+}
+
 static void kit_align_right(f32 w)
 {
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - w);

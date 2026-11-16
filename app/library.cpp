@@ -1705,6 +1705,12 @@ static void screen_library()
     char range_label[64];
     snprintf(range_label, sizeof range_label, "%s   " ICON_DOWN "##range", ranges[lib.range]);
     if (kit_button(range_label, KIT_SECONDARY, ImVec2(range_w, 0))) ImGui::OpenPopup("range");
+    i32 step = lib.range;
+    if (kit_wheel_step(&step, RANGE_CUSTOM)) { // every range but Custom, which needs its calendar
+        lib.range = step;
+        lib.scroll = lib.scroll_to = 0;
+        lib_refilter();
+    }
     ImGui::SetNextWindowPos(ImVec2(range_at.x, range_at.y + fh + kit_px(6)));
     lib_popup_style_push(8);
     bool range_open = ImGui::BeginPopup("range");
@@ -1738,6 +1744,15 @@ static void screen_library()
     else if (strlen(lib.game) <= 11) snprintf(game_label, sizeof game_label, "%s   " ICON_DOWN "##game", lib.game);
     else snprintf(game_label, sizeof game_label, "%.9s\xE2\x80\xA6   " ICON_DOWN "##game", lib.game);
     if (kit_button(game_label, KIT_SECONDARY, ImVec2(game_w, 0))) ImGui::OpenPopup("game");
+    step = 0;
+    for (i32 c = 0; c < lib.game_count; c++)
+        if (!strcmp(lib.game, lib.games[c])) step = c + 1;
+    if (kit_wheel_step(&step, lib.game_count + 1)) {
+        if (step == 0) lib.game[0] = 0;
+        else str_set(lib.game, lib.games[step - 1]);
+        lib.scroll = lib.scroll_to = 0;
+        lib_refilter();
+    }
     ImGui::SetNextWindowPos(ImVec2(game_at.x, game_at.y + fh + kit_px(6)));
     ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, kit_px(430)));
     lib_popup_style_push(8);
@@ -1768,6 +1783,12 @@ static void screen_library()
     snprintf(sort_label, sizeof sort_label, "%s   " ICON_DOWN "##sort", sorts[lib.sort]);
     ImVec2 sort_at = ImGui::GetCursorScreenPos();
     if (kit_button(sort_label, KIT_SECONDARY, ImVec2(sort_w, 0))) ImGui::OpenPopup("sort");
+    step = lib.sort;
+    if (kit_wheel_step(&step, 4)) {
+        lib.sort = step;
+        lib.scroll = lib.scroll_to = 0;
+        lib_refilter();
+    }
     ImGui::SetNextWindowPos(ImVec2(sort_at.x, sort_at.y + fh + kit_px(6)));
     lib_popup_style_push(8);
     bool sort_open = ImGui::BeginPopup("sort");
