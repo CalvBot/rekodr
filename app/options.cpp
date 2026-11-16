@@ -2136,8 +2136,14 @@ static void options_general()
     opt_card_end();
 
     opt_section(ICON_POWER "  STARTUP");
-    wchar_t now_value[MAX_PATH + 8], cmd[MAX_PATH + 8];
-    bool set = startup_read(now_value, COUNT(now_value));
+    // The Run value is read when this section comes into view and after the switch is turned, not every frame.
+    static wchar_t now_value[MAX_PATH + 8];
+    static bool set;
+    static i32 read_frame;
+    wchar_t cmd[MAX_PATH + 8];
+    i32 frame_now = ImGui::GetFrameCount();
+    if (!read_frame || frame_now - read_frame > 1) set = startup_read(now_value, COUNT(now_value));
+    read_frame = frame_now;
     startup_command(cmd, COUNT(cmd));
     if (!g_app.options.startup_logged) {
         log_line("start with Windows: the Run value is %ls; on, it would be %ls", set ? now_value : L"not set", cmd);
@@ -2151,6 +2157,7 @@ static void options_general()
     if (opt_row_toggle(ICON_POWER "Start with Windows", runs, "##startup", &c.start_with_windows)) {
         startup_set(c.start_with_windows);
         options_apply(0);
+        read_frame = 0; // read it again
     }
     opt_card_end();
 
