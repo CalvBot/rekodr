@@ -1616,6 +1616,13 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     ImGui::SetCursorScreenPos(ImVec2(bx, by));
     if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved && !dismissed))
         session_save(s);
+    bx -= fh + kit_px(6);
+    ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    if (kit_icon_button(ICON_PLAY, "##review", KIT_GHOST, !saved)) { // look at it on the timeline first
+        timeline_review(s->start_us, s->end_us, s->name);
+        ImGui::PopID();
+        return;
+    }
 
     // Name; length and times; what happens next
     f32 tx = ip.x + is + kit_px(12), tw = bx - kit_px(10) - tx;

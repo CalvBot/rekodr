@@ -254,6 +254,28 @@ static void tl_take_index(i64 ms)
 
 static void tl_play_stop();
 
+// Opens the timeline on a stretch of the buffer, to look at it before saving: the stretch is selected and fills
+// the view, the playhead is at its start, and the session box has its name. The session popup's Review, and the
+// unsaved sessions in the Library.
+static void timeline_review(i64 from_us, i64 to_us, const char *name)
+{
+    Timeline &tl = g_app.timeline;
+    if (to_us <= from_us) return;
+    tl_play_stop();
+    i64 span = to_us - from_us;
+    tl.sel_in = from_us;
+    tl.sel_out = to_us;
+    tl.follow = false;
+    tl.view_span_us = span + span / 5; // a tenth of room each side
+    if (tl.view_span_us < TL_MIN_SPAN) tl.view_span_us = TL_MIN_SPAN;
+    tl.view_end_us = to_us + (tl.view_span_us - span) / 2;
+    tl.playhead_us = from_us;
+    str_set(tl.session_name, name);
+    log_line("timeline: reviewing %s", name);
+    g_app.ui.screen = SCREEN_TIMELINE;
+    ui_wake(4);
+}
+
 // Frees the index blocks and preview textures while the screen isn't shown (SPEC: hidden, the window holds nothing).
 static void tl_release()
 {

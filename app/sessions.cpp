@@ -691,6 +691,8 @@ static void sessions_change(u32 id, i64 from_us, i64 to_us, const char *name)
 // The popup: in the window's corner, over every screen. It doesn't take the keyboard (no nav or focus), and
 // sessions that end while it's up wait behind it.
 
+static void timeline_review(i64 from_us, i64 to_us, const char *name); // timeline.cpp
+
 static void sessions_popup()
 {
     i32 waiting = 0;
@@ -740,13 +742,19 @@ static void sessions_popup()
     dl->AddText(g_font, wh, ImVec2(tx, ty + nh + 5 * sc), col32(COL_DIM), when);
     dl->PopClipRect();
 
-    // Under them: what is being asked (and how many more are waiting), and the answer on the right
+    // How many more are waiting, in the corner (the place is kept when there are none)
+    if (waiting > 0) {
+        char more[32];
+        snprintf(more, sizeof more, "+%d waiting", waiting);
+        f32 mw = g_font_small->CalcTextSizeA(g_font_small->FontSize, FLT_MAX, 0, more).x;
+        dl->AddText(g_font_small, g_font_small->FontSize, ImVec2(a.x + inner_w - mw, a.y), col32(COL_FAINT), more);
+    }
+
+    // Under them: Review opens it on the timeline, to look before answering; the answer is on the right
     f32 by = a.y + tile + 16 * sc;
-    char ask[64];
-    if (waiting > 0) snprintf(ask, sizeof ask, "Save this session?  %d more waiting", waiting);
-    else snprintf(ask, sizeof ask, "Save this session?");
-    dl->AddText(g_font, wh, ImVec2(a.x, floorf(by + (fh - wh) / 2)), col32(COL_DIM), ask);
     u32 id = s->id;
+    ImGui::SetCursorScreenPos(ImVec2(a.x, by));
+    bool review = kit_button("Review", KIT_SECONDARY, ImVec2(button_w, 0));
     ImGui::SetCursorScreenPos(ImVec2(a.x + inner_w - 2 * button_w - 8 * sc, by));
     bool later = kit_button("Not now", KIT_GHOST, ImVec2(button_w, 0));
     ImGui::SameLine(0, 8 * sc);
@@ -756,6 +764,7 @@ static void sessions_popup()
     ImGui::PopStyleColor(2);
 
     Session *cur = session_find(id);
+    if (review && cur) timeline_review(cur->start_us, cur->end_us, cur->name);
     if (save && cur) session_save(cur);
     if (later && cur) {
         cur->state = SES_NOT_SAVED;
