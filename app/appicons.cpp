@@ -69,6 +69,7 @@ struct AppIcon {
     bool tried;
     bool waiting; // its art is being fetched: tried again when it arrives
     i32  w, h;    // a cover's size, to crop it to where it is drawn
+    ID3D11ShaderResourceView *blur; // a cover, blurred: for behind text
 };
 static AppIcon g_app_icons[192];
 static i32 g_app_icon_count;
@@ -187,7 +188,47 @@ static bool installed_icon_path(const char *game, Path *out)
 // A picture file (PNG or JPEG) as a texture. Main thread.
 static u32 *wic_load(IWICImagingFactory *wic, const wchar_t *path, i32 *w, i32 *h); // library.cpp
 
-static ID3D11ShaderResourceView *image_file_texture(const Path &file, i32 *out_w = 0, i32 *out_h = 0)
+// A picture blurred, as a texture: it is shrunk to 48 across (each pixel the average of the ones it covers) and
+// smoothed, and stretching that back out when it is drawn does the rest.
+static ID3D11ShaderResourceView *blurred_texture(const u32 *pixels, i32 w, i32 h)
+{
+    const i32 bw = 48, bh = h * bw / w > 4 ? h * bw / w : 4;
+    if (w < bw || h < bh || bh > 128) return 0;
+    static u32 shrunk[48 * 128], pass[48 * 128];
+    for (i32 y = 0; y < bh; y++) {
+        for (i32 x = 0; x < bw; x++) {
+            i32 x0 = x * w / bw, x1 = (x + 1) * w / bw, y0 = y * h / bh, y1 = (y + 1) * h / bh;
+            u64 b = 0, g = 0, r = 0, n = 0;
+            for (i32 sy = y0; sy < y1; sy += 2) // every other pixel is plenty for an average
+                for (i32 sx = x0; sx < x1; sx += 2) {
+                    u32 p = pixels[sy * w + sx];
+                    b += p & 255; g += (p >> 8) & 255; r += (p >> 16) & 255; n++;
+                }
+            if (!n) n = 1;
+            shrunk[y * bw + x] = 0xff000000u | (u32)(r / n) << 16 | (u32)(g / n) << 8 | (u32)(b / n);
+        }
+    }
+    for (i32 round = 0; round < 3; round++) { // each pixel with its eight neighbours, three times over
+        for (i32 y = 0; y < bh; y++) {
+            for (i32 x = 0; x < bw; x++) {
+                u32 b = 0, g = 0, r = 0, n = 0;
+                for (i32 dy = -1; dy <= 1; dy++)
+                    for (i32 dx = -1; dx <= 1; dx++) {
+                        i32 sx = x + dx, sy = y + dy;
+                        if (sx < 0 || sy < 0 || sx >= bw || sy >= bh) continue;
+                        u32 p = shrunk[sy * bw + sx];
+                        b += p & 255; g += (p >> 8) & 255; r += (p >> 16) & 255; n++;
+                    }
+                pass[y * bw + x] = 0xff000000u | (r / n) << 16 | (g / n) << 8 | (b / n);
+            }
+        }
+        memcpy(shrunk, pass, (size_t)bw * bh * 4);
+    }
+    return gpu_texture(shrunk, bw, bh);
+}
+
+static ID3D11ShaderResourceView *image_file_texture(const Path &file, i32 *out_w = 0, i32 *out_h = 0,
+                                                    ID3D11ShaderResourceView **blur = 0)
 {
     static IWICImagingFactory *wic;
     if (!wic && FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return 0;
@@ -195,6 +236,7 @@ static ID3D11ShaderResourceView *image_file_texture(const Path &file, i32 *out_w
     u32 *pixels = wic_load(wic, file.s, &w, &h);
     if (!pixels) return 0;
     ID3D11ShaderResourceView *srv = gpu_texture(pixels, w, h);
+    if (blur) *blur = blurred_texture(pixels, w, h);
     HeapFree(GetProcessHeap(), 0, pixels);
     if (out_w) *out_w = w;
     if (out_h) *out_h = h;
@@ -242,12 +284,12 @@ static ID3D11ShaderResourceView *game_db_icon(const char *name)
     return slot->srv;
 }
 
-// A game's cover from the games database, by the game's name, and its size. Null if it has none, and while it is
-// being fetched.
+// A game's cover from the games database, by the game's name, its size, and a blurred copy of it. Null if it has
+// none, and while it is being fetched.
 static AppIcon g_db_covers[LIB_MAX_GAMES];
 static i32 g_db_cover_count;
 
-static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h)
+static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h, ID3D11ShaderResourceView **blur = 0)
 {
     AppIcon *slot = icon_slot(g_db_covers, &g_db_cover_count, COUNT(g_db_covers), name);
     if (!slot) return 0;
@@ -257,13 +299,14 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h)
         GameInfo g;
         Path p = {};
         if (gamedb_by_name(name, &g) && (g.cover[0] || g.steam)) {
-            if (gamedb_art(g, ART_COVER, &p)) slot->srv = image_file_texture(p, &slot->w, &slot->h);
+            if (gamedb_art(g, ART_COVER, &p)) slot->srv = image_file_texture(p, &slot->w, &slot->h, &slot->blur);
             else slot->waiting = GetFileAttributesW(gamedb_art_file(g.id, ART_COVER).s) == INVALID_FILE_ATTRIBUTES;
         }
         ui_wake();
     }
     *w = slot->w;
     *h = slot->h;
+    if (blur) *blur = slot->blur;
     return slot->srv;
 }
 

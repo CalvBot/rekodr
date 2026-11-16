@@ -1617,7 +1617,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
 {
     Sessions &ss = g_app.sessions;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 fh = ImGui::GetFrameHeight(), pad = kit_px(14), is = kit_px(40);
+    f32 fh = ImGui::GetFrameHeight(), pad = kit_px(16), is = kit_px(46);
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_PANEL), kit_px(10));
     Session *s = session_find(id);
     ImGui::PushID((i32)id);
@@ -1627,32 +1627,31 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
         return;
     }
 
-    // The game's cover down the left side, cut to fit; without one its icon, or a game tile
-    f32 tx = a.x + pad;
+    // Behind it all, the game's cover blurred and dimmed, cut to the tile's shape about its middle
     i32 cover_w = 0, cover_h = 0;
-    ID3D11ShaderResourceView *cover = game_db_cover(s->name, &cover_w, &cover_h);
-    if (cover && cover_w > 0 && cover_h > 0) {
-        f32 iw = floorf(h * 1.6f), want = iw / h, have = (f32)cover_w / cover_h, u = 0, v = 0;
+    ID3D11ShaderResourceView *blur = 0;
+    if (game_db_cover(s->name, &cover_w, &cover_h, &blur) && blur && cover_w > 0 && cover_h > 0) {
+        f32 want = w / h, have = (f32)cover_w / cover_h, u = 0, v = 0;
         if (have > want) u = (1 - want / have) / 2;
         else v = (1 - have / want) / 2;
-        dl->AddImageRounded((ImTextureID)cover, a, ImVec2(a.x + iw, a.y + h), ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, kit_px(10),
-                            ImDrawFlags_RoundCornersLeft);
-        tx = a.x + iw + pad;
-    } else {
-        ImVec2 ip(a.x + pad, floorf(a.y + (h - is) / 2));
-        ID3D11ShaderResourceView *icon = game_db_icon(s->name);
-        if (!icon && s->exe[0]) icon = app_icon(s->exe);
-        if (icon) {
-            dl->AddImageRounded((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(8));
-        } else {
-            dl->AddRectFilled(ip, ImVec2(ip.x + is, ip.y + is), col32(COL_ACCENT_SOFT), kit_px(8));
-            ImGui::PushFont(g_font_icon);
-            ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
-            dl->AddText(ImVec2(floorf(ip.x + (is - gs.x) / 2), floorf(ip.y + (is - gs.y) / 2)), col32(COL_ACCENT), ICON_GAME);
-            ImGui::PopFont();
-        }
-        tx = ip.x + is + kit_px(12);
+        dl->AddImageRounded((ImTextureID)blur, a, ImVec2(a.x + w, a.y + h), ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, kit_px(10));
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(0x0d0e11, 0.6f), kit_px(10));
     }
+
+    // The game's icon on the left, or a game tile
+    ImVec2 ip(a.x + pad, floorf(a.y + (h - is) / 2));
+    ID3D11ShaderResourceView *icon = game_db_icon(s->name);
+    if (!icon && s->exe[0]) icon = app_icon(s->exe);
+    if (icon) {
+        dl->AddImageRounded((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(8));
+    } else {
+        dl->AddRectFilled(ip, ImVec2(ip.x + is, ip.y + is), col32(COL_ACCENT_SOFT), kit_px(8));
+        ImGui::PushFont(g_font_icon);
+        ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
+        dl->AddText(ImVec2(floorf(ip.x + (is - gs.x) / 2), floorf(ip.y + (is - gs.y) / 2)), col32(COL_ACCENT), ICON_GAME);
+        ImGui::PopFont();
+    }
+    f32 tx = ip.x + is + kit_px(14);
 
     // On the right: Save, and before it a look at it on the timeline. There is nothing to dismiss: an unsaved
     // session just stays here until its footage has left the buffer.
