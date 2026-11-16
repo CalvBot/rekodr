@@ -347,7 +347,7 @@ struct Player {
 };
 
 enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS };
-enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 64 };
+enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 160 };
 
 struct LibItem {
     char      name[256]; // file name without the extension (UTF-8)
@@ -372,7 +372,8 @@ struct LibThumb {
 
 struct Library {
     LibView  view;
-    i32      page;
+    f32      scroll, scroll_to;    // the grid: how far down it is, in pixels, and where it is gliding to
+    bool     open_menu;            // a card asked for its menu (opened outside the grid's own window)
     char     search[128];
     char     game[64];             // the game chip picked; empty = all
     i32      range;                // LibRange (library.cpp): all, today, this week, this month, custom

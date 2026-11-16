@@ -1215,7 +1215,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ImGui::PopID();
     if (menu || more) { // opened outside the card's ID, where card_menu() looks for it
         lib.target = it;
-        ImGui::OpenPopup("card_menu");
+        lib.open_menu = true;
     }
     f32 y = t1.y + kit_px(10);
     ImGui::PushFont(g_font_bold);
@@ -1367,7 +1367,8 @@ static void lib_set_view(LibView v)
     if (lib.view == v) return;
     lib.view = v;
     lib.game[0] = 0;
-    lib.page = lib.chip_page = 0;
+    lib.scroll = lib.scroll_to = 0;
+    lib.chip_page = 0;
     lib_refilter();
 }
 
@@ -1472,7 +1473,7 @@ static void lib_calendar()
                 } else lib.range_to = day;
                 lib.cal_picking = false;
                 lib.range = RANGE_CUSTOM;
-                lib.page = 0;
+                lib.scroll = lib.scroll_to = 0;
                 lib_refilter();
                 ImGui::CloseCurrentPopup();
             }
@@ -1616,28 +1617,42 @@ static void screen_library()
     static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
     i32 sel = lib.view;
     if (kit_segmented("##views", views, 2, &sel, kit_px(96))) lib_set_view((LibView)sel);
-    static const char *const ranges[] = {"All", "Today", "This week", "This month", ICON_CALENDAR "  Custom"};
-    f32 range_w = kit_px(92);
-    ImVec2 range_at(h0.x + 2 * kit_px(96) + kit_px(28), h0.y);
+    // The date range: a button that drops a list; Custom opens the calendar.
+    static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
+    f32 range_w = kit_px(150), sort_w = kit_px(140);
+    ImVec2 range_at(h0.x + 2 * kit_px(96) + kit_px(22), h0.y);
     ImGui::SetCursorScreenPos(range_at);
-    i32 range = lib.range;
-    if (kit_segmented("##range", ranges, 5, &range, range_w)) {
-        if (range == RANGE_CUSTOM) {
-            lib.cal_picking = false;
-            ImGui::OpenPopup("calendar");
-        } else {
-            lib.range = range;
-            lib.page = 0;
-            lib_refilter();
+    char range_label[64];
+    snprintf(range_label, sizeof range_label, ICON_CALENDAR "  %s   " ICON_DOWN "##range", ranges[lib.range]);
+    if (kit_button(range_label, KIT_SECONDARY, ImVec2(range_w, 0))) ImGui::OpenPopup("range");
+    ImGui::SetNextWindowPos(ImVec2(range_at.x, range_at.y + fh + kit_px(6)));
+    lib_popup_style_push(8);
+    bool range_open = ImGui::BeginPopup("range");
+    lib_popup_style_pop();
+    bool open_calendar = false;
+    if (range_open) {
+        for (i32 i = 0; i < 5; i++) {
+            if (!lib_menu_item(lib.range == i ? ICON_CHECK : "", ranges[i])) continue;
+            if (i == RANGE_CUSTOM) {
+                open_calendar = true;
+            } else if (lib.range != i) {
+                lib.range = i;
+                lib.scroll = lib.scroll_to = 0;
+                lib_refilter();
+            }
         }
-    } else if (range == RANGE_CUSTOM && ImGui::IsItemClicked()) { // Custom again: pick another range
+        ImGui::EndPopup();
+    }
+    if (open_calendar) {
         lib.cal_picking = false;
         ImGui::OpenPopup("calendar");
     }
-    ImGui::SetNextWindowPos(ImVec2(range_at.x + 4 * (range_w + kit_px(2)), range_at.y + fh + kit_px(6)));
+    ImGui::SetNextWindowPos(ImVec2(range_at.x, range_at.y + fh + kit_px(6)));
     lib_calendar();
 
-    f32 search_w = kit_px(240), sort_w = kit_px(140);
+    // The search takes what the row has left, between a narrowest and a widest.
+    f32 search_w = full_w - (range_at.x - h0.x) - range_w - kit_px(16) - sort_w - kit_px(10);
+    search_w = search_w < kit_px(120) ? kit_px(120) : search_w > kit_px(240) ? kit_px(240) : search_w;
     static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w - kit_px(10) - sort_w, h0.y));
     char sort_label[48];
@@ -1653,7 +1668,7 @@ static void screen_library()
         for (i32 i = 0; i < 4; i++)
             if (lib_menu_item(lib.sort == i ? ICON_CHECK : "", sorts[i]) && lib.sort != i) {
                 lib.sort = i;
-                lib.page = 0;
+                lib.scroll = lib.scroll_to = 0;
                 lib_refilter();
             }
         ImGui::EndPopup();
@@ -1661,7 +1676,7 @@ static void screen_library()
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w, h0.y));
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
     if (kit_search("##search", lib.search, sizeof lib.search, "Search", search_w)) {
-        lib.page = 0;
+        lib.scroll = lib.scroll_to = 0;
         lib_refilter();
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(20)));
@@ -1701,7 +1716,7 @@ static void screen_library()
         if (kit_chip(chip_text[c], active, chip_count[c], chip_w[c])) {
             if (c == 0) lib.game[0] = 0;
             else str_set(lib.game, name);
-            lib.page = 0;
+            lib.scroll = lib.scroll_to = 0;
             lib_refilter();
         }
         ImGui::PopID();
@@ -1712,44 +1727,71 @@ static void screen_library()
     }
     ImGui::SetCursorScreenPos(ImVec2(c0.x, c0.y + fh + kit_px(4)));
 
-    // The grid fills what's left above the footer.
+    // The grid fills what's left above the footer and scrolls: the wheel, Page Up / Page Down, Home / End, or the
+    // bar on its right. The cards are as wide as fit between the size's widest and narrowest.
     f32 foot_h = fh;
     ImVec2 g0 = ImGui::GetCursorScreenPos();
     f32 grid_h = ImGui::GetContentRegionAvail().y - foot_h - kit_px(8);
     if (grid_h < 1) grid_h = 1;
-    // As many columns as fill the height best: from the widest cards that fit to the narrowest (300 to 200 at
-    // Medium), the one that leaves the least empty space under the last row, the wider on a near tie.
     static const f32 widest[] = {230, 300, 440}, narrowest[] = {160, 200, 300};
     i32 tsz = g_app.config.thumb_size < 0 || g_app.config.thumb_size > 2 ? 1 : g_app.config.thumb_size;
     f32 gap = kit_px(20), day_h = kit_px(36);
     i32 c_lo = (i32)((full_w + gap) / (kit_px(widest[tsz]) + gap)), c_hi = (i32)((full_w + gap) / (kit_px(narrowest[tsz]) + gap));
-    if (c_lo < 1) c_lo = 1;
-    if (c_hi < c_lo) c_hi = c_lo;
-    i32 cols = c_lo;
-    f32 best = 1e9f;
-    for (i32 c = c_lo; c <= c_hi; c++) {
-        f32 cw = floorf((full_w - (c - 1) * gap) / c), ch = day_h + floorf(cw * 9 / 16) + lib_meta_h();
-        i32 r = (i32)(grid_h / ch);
-        f32 left = grid_h - (r < 1 ? 1 : r) * ch;
-        if (left < best - kit_px(8)) {
-            best = left;
-            cols = c;
-        }
-    }
+    i32 cols = c_lo + 1 > c_hi ? c_hi : c_lo + 1;
+    if (cols < 1) cols = 1;
     f32 card_w = floorf((full_w - (cols - 1) * gap) / cols), thumb_h = floorf(card_w * 9 / 16);
     f32 card_h = day_h + thumb_h + lib_meta_h();
-    i32 rows = (i32)(grid_h / card_h);
-    if (rows < 1) rows = 1;
-    i32 per_page = cols * rows;
-    i32 pages = lib.shown_count ? (lib.shown_count + per_page - 1) / per_page : 1;
-    i32 old_page = lib.page;
-    if (lib.page >= pages) lib.page = pages - 1;
-    if (lib.page < 0) lib.page = 0;
+    i32 rows = (lib.shown_count + cols - 1) / cols;
+    f32 content_h = rows * card_h, max_scroll = content_h > grid_h ? content_h - grid_h : 0;
 
-    ImGui::Dummy(ImVec2(full_w, grid_h));
-    ImVec2 after = ImGui::GetCursorScreenPos();
-    bool over_grid = ImGui::IsMouseHoveringRect(g0, ImVec2(g0.x + full_w, g0.y + grid_h)) &&
-                     ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    bool popup = ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
+    f32 bar_w = kit_px(14);
+    ImGui::BeginChild("##grid", ImVec2(full_w + bar_w, grid_h), 0,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+    dl = ImGui::GetWindowDrawList();
+    if (!popup && io.MouseWheel != 0 && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+        lib.scroll_to -= io.MouseWheel * floorf(card_h * 0.6f);
+    if (!popup && !io.WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) lib.scroll_to += floorf(grid_h * 0.9f);
+        if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) lib.scroll_to -= floorf(grid_h * 0.9f);
+        if (ImGui::IsKeyPressed(ImGuiKey_Home)) lib.scroll_to = 0;
+        if (ImGui::IsKeyPressed(ImGuiKey_End)) lib.scroll_to = max_scroll;
+    }
+
+    // The bar: drag its thumb, or click the track to go there.
+    static f32 grab; // where in the thumb the drag took hold
+    if (max_scroll > 0) {
+        f32 thumb = floorf(grid_h * grid_h / content_h);
+        if (thumb < kit_px(36)) thumb = kit_px(36);
+        f32 travel = grid_h - thumb, ty = g0.y + (lib.scroll / max_scroll) * travel;
+        ImGui::SetCursorScreenPos(ImVec2(g0.x + full_w + kit_px(2), g0.y));
+        ImGui::InvisibleButton("##bar", ImVec2(bar_w - kit_px(2), grid_h));
+        bool hot = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+        if (ImGui::IsItemActivated()) grab = io.MousePos.y >= ty && io.MousePos.y <= ty + thumb ? io.MousePos.y - ty : thumb / 2;
+        if (held && travel > 0) lib.scroll = lib.scroll_to = (io.MousePos.y - grab - g0.y) / travel * max_scroll;
+        f32 bx = g0.x + full_w + kit_px(6);
+        dl->AddRectFilled(ImVec2(bx, ty), ImVec2(bx + kit_px(6), ty + thumb), col32(held ? COL_DIM : hot ? COL_FAINT : COL_HOVER), kit_px(3));
+    }
+
+    // Glide to where it was sent
+    if (lib.scroll_to < 0) lib.scroll_to = 0;
+    if (lib.scroll_to > max_scroll) lib.scroll_to = max_scroll;
+    f32 away = lib.scroll_to - lib.scroll;
+    if (fabsf(away) < 0.5f) {
+        lib.scroll = lib.scroll_to;
+    } else {
+        lib.scroll += away * (1 - expf(-io.DeltaTime * 16));
+        ui_wake();
+    }
+    if (lib.scroll < 0) lib.scroll = 0;
+    if (lib.scroll > max_scroll) lib.scroll = max_scroll;
+    // Scrolled well past what was asked for: thumbnails not started are dropped, so the ones in view come first
+    static f32 dropped_at;
+    if (fabsf(lib.scroll - dropped_at) > grid_h) {
+        lib_drop_queued_thumbs();
+        dropped_at = lib.scroll;
+    }
+
     if (lib.shown_count == 0) {
         const char *msg = !lib.scanned ? "Looking for saved files..."
                           : lib.view_count == 0 ? (lib.view == LIB_CLIPS ? "No clips yet" : "No sessions yet")
@@ -1765,31 +1807,31 @@ static void screen_library()
         dl->AddText(ImVec2(floorf(g0.x + (full_w - ts.x) / 2), cy + kit_px(8)), col32(COL_DIM), msg);
         ImGui::PopFont();
     }
-    i64 prev_day = -1;
-    for (i32 k = 0; k < per_page; k++) {
-        i32 idx = lib.page * per_page + k;
-        if (idx >= lib.shown_count) break;
-        const LibItem &it = lib.items[lib.shown[idx]];
-        i32 r = k / cols, c = k % cols;
-        i64 day = local_day(it.mtime_us, 0);
-        bool show_day = c == 0 || day != prev_day;
-        prev_day = day;
-        lib_card(it, ImVec2(g0.x + c * (card_w + gap), g0.y + r * card_h), card_w, thumb_h, day_h, show_day);
+    // Only the rows in view are drawn (and ask for their thumbnails)
+    f32 top = floorf(lib.scroll);
+    i32 r0 = (i32)(top / card_h), r1 = (i32)((top + grid_h) / card_h);
+    for (i32 r = r0; r <= r1 && r < rows; r++) {
+        i64 prev_day = -1;
+        for (i32 c = 0; c < cols; c++) {
+            i32 idx = r * cols + c;
+            if (idx >= lib.shown_count) break;
+            const LibItem &it = lib.items[lib.shown[idx]];
+            i64 day = local_day(it.mtime_us, 0);
+            bool show_day = c == 0 || day != prev_day;
+            prev_day = day;
+            lib_card(it, ImVec2(g0.x + c * (card_w + gap), g0.y + r * card_h - top), card_w, thumb_h, day_h, show_day);
+        }
     }
-    ImGui::SetCursorScreenPos(after);
+    ImGui::SetCursorScreenPos(g0); // the cards above and below the view don't count as this window's content
+    ImGui::EndChild();
+    dl = ImGui::GetWindowDrawList();
+    if (lib.open_menu) ImGui::OpenPopup("card_menu");
+    lib.open_menu = false;
     card_menu();
     rename_modal();
     delete_modal();
 
-    // Pages: the wheel over the grid, Page Up / Page Down.
-    bool popup = ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
-    if (!popup && over_grid && io.MouseWheel != 0) lib.page += io.MouseWheel < 0 ? 1 : -1;
-    if (!popup && !io.WantTextInput) {
-        if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) lib.page++;
-        if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) lib.page--;
-    }
-
-    // Footer: how many, the last message, and the pager at a fixed place on the right.
+    // Footer: how many, and the last message.
     ImGui::SetCursorScreenPos(ImVec2(g0.x, g0.y + grid_h + kit_px(8)));
     ImVec2 f0 = ImGui::GetCursorScreenPos();
     char count[120], span[48] = "";
@@ -1805,14 +1847,8 @@ static void screen_library()
              span, lib.scanning ? ", looking for more" : "");
     f32 ty = floorf(f0.y + (fh - ImGui::GetFontSize()) / 2);
     dl->AddText(ImVec2(f0.x, ty), col32(COL_DIM), count);
-    f32 msg_x = f0.x + kit_px(320), pager_x = f0.x + full_w - lib_pager_w();
-    text_clipped(dl, ImVec2(msg_x, ty), pager_x - msg_x - kit_px(16), col32(lib.message_error ? 0xff8a92 : COL_DIM),
-                 lib.message);
-    ImGui::SetCursorScreenPos(ImVec2(pager_x, f0.y));
-    lib_pager("pages", &lib.page, pages);
-
-    if (lib.page >= pages) lib.page = pages - 1;
-    if (lib.page < 0) lib.page = 0;
-    if (lib.page != old_page) lib_drop_queued_thumbs();
+    f32 msg_x = f0.x + kit_px(320);
+    text_clipped(dl, ImVec2(msg_x, ty), f0.x + full_w - msg_x, col32(lib.message_error ? 0xff8a92 : COL_DIM), lib.message);
+    ImGui::SetCursorScreenPos(ImVec2(f0.x, f0.y + fh));
 }
 

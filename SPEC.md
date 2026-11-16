@@ -47,7 +47,7 @@ Keep a whole session from start to finish.
 
 ### 3. Library, editing and sharing
 - **Library:** clips and sessions, newest first, filtered by game or session name, with search. It's a fixed-size
-  paged grid with hover-scrub and a player.
+  scrolling grid with hover-scrub and a player.
 - **Edits never change the original.** An edit is a small record: trim in/out, zoom keyframes, per-track volume and
   mute. It's saved automatically in the year's `Data` folder and reopens with the clip.
 - **Two ways out of the editor:**
@@ -176,7 +176,7 @@ the PC, so this is not a network API.
 ## Screens
 One window with a header (status, pause, Help, Options):
 
-- **Library:** Clips and Sessions, with game chips, search, a paged grid and a player.
+- **Library:** Clips and Sessions, with game chips, search, a scrolling grid and a player.
 - **Sessions *Not saved* list:** sessions still in the buffer, with Save and how long until each is gone.
 - **Timeline:** the buffer, a range selection, Save and Edit.
 - **Editor:** trim, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
@@ -192,7 +192,7 @@ One window with a header (status, pause, Help, Options):
 
 **UI rules:**
 - No tooltips and no inline key hints.
-- Controls never move after a click; lists are fixed-size and paged.
+- Controls never move after a click; lists are fixed-size and paged (the Library grid scrolls instead).
 - Labels explain themselves.
 - Dark theme, as today.
 

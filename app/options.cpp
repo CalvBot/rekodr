@@ -1275,9 +1275,9 @@ static void options_apps()
     if (o.order_dirty) apps_order_make();
     apps_order_extend();
 
-    // Filter chips with counts; search and Add on the right
-    static const char *chips[] = {ICON_APPS "  All", ICON_STAR "  New",  ICON_GAME "  Games", ICON_WINDOW "  Apps",
-                                  ICON_CHAT "  Chat", ICON_MUTE "  Excluded", ICON_FOLDER "  Folders"};
+    // The filter (a button that drops the list, each with its count); search and Add on the right
+    static const char *chip_icons[] = {ICON_APPS, ICON_STAR, ICON_GAME, ICON_WINDOW, ICON_CHAT, ICON_MUTE, ICON_FOLDER};
+    static const char *chips[] = {"All", "New", "Games", "Apps", "Chat", "Excluded", "Folders"};
     static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED,
                                       FILTER_FOLDERS};
     static const i32 chip_cat[] = {-1, CAT_NONE, CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
@@ -1293,23 +1293,37 @@ static void options_apps()
     counts[6] = c.folder_count;
     bool folders = o.filter == FILTER_FOLDERS;
     f32 fh = ImGui::GetFrameHeight();
-    for (i32 i = 0; i < COUNT(chips); i++) {
-        if (i) ImGui::SameLine(0, dp(6));
-        char n[16];
-        snprintf(n, sizeof n, "%d", counts[i]);
-        // Wide enough for three digits, so a count going up never moves the chips after it
-        f32 w = ImGui::CalcTextSize(chips[i]).x + ImGui::CalcTextSize("000").x + dp(8 + 28);
-        char id[32];
-        snprintf(id, sizeof id, "%s##chip", chips[i]);
-        if (kit_chip(id, o.filter == chip_filter[i], n, w) && o.filter != chip_filter[i]) {
-            o.filter = chip_filter[i];
-            o.order_dirty = true;
-            o.apps_page = 0;
-            o.folders_page = 0;
+    i32 cur = 0;
+    for (i32 i = 0; i < COUNT(chips); i++)
+        if (o.filter == chip_filter[i]) cur = i;
+    f32 filter_w = dp(190), search_w = dp(220), add_w = dp(118);
+    char filter_label[96];
+    snprintf(filter_label, sizeof filter_label, "%s  %s   %d   " ICON_DOWN "##filter", chip_icons[cur], chips[cur], counts[cur]);
+    ImVec2 filter_at = ImGui::GetCursorScreenPos();
+    if (kit_button(filter_label, KIT_SECONDARY, ImVec2(filter_w, 0))) ImGui::OpenPopup("filter");
+    ImGui::SetNextWindowPos(ImVec2(filter_at.x, filter_at.y + fh + dp(6)));
+    lib_popup_style_push(8);
+    bool filter_open = ImGui::BeginPopup("filter");
+    lib_popup_style_pop();
+    if (filter_open) {
+        for (i32 i = 0; i < COUNT(chips); i++) {
+            char item[64];
+            snprintf(item, sizeof item, "%s   %d", chips[i], counts[i]);
+            if (lib_menu_item(chip_icons[i], item) && o.filter != chip_filter[i]) {
+                o.filter = chip_filter[i];
+                o.order_dirty = true;
+                o.apps_page = 0;
+                o.folders_page = 0;
+            }
         }
+        ImGui::EndPopup();
     }
-    f32 search_w = dp(220), add_w = dp(118), right_w = search_w + dp(10) + add_w;
-    if (ImGui::GetContentRegionAvail().x > right_w + dp(24)) kit_align_right(right_w);
+    // The search takes what the row has left, between a narrowest and a widest
+    ImGui::SetCursorScreenPos(ImVec2(filter_at.x + filter_w + dp(10), filter_at.y));
+    f32 room = ImGui::GetContentRegionAvail().x - add_w - dp(10);
+    search_w = room < dp(120) ? dp(120) : room > search_w ? search_w : room;
+    f32 right_w = search_w + dp(10) + add_w;
+    if (ImGui::GetContentRegionAvail().x > right_w) kit_align_right(right_w);
     if (kit_search("##search", o.search, sizeof o.search, "Search", search_w)) {
         o.order_dirty = true;
         o.apps_page = 0;
