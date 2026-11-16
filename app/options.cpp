@@ -366,7 +366,7 @@ static bool opt_combo_begin(const char *id, const char *preview, f32 width, f32 
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
     f32 chev = text_w(g_font_small, ICON_DOWN);
-    opt_text_at(dl, g_font_small, ImVec2(a.x + width - pad - chev, floorf(a.y + (h - g_font_small->FontSize) / 2) - dp(1)),
+    opt_text_at(dl, g_font_small, ImVec2(a.x + width - pad - chev, floorf(a.y + (h - g_font_small->FontSize) / 2)),
                 COL_DIM, ICON_DOWN, a.x + width);
     opt_text_at(dl, g_font, ImVec2(a.x + pad, floorf(a.y + (h - g_font->FontSize) / 2)), preview_col, preview,
                 a.x + width - pad - chev - dp(6));

@@ -171,6 +171,23 @@ static void gpu_resize(u32 w, u32 h)
     g_gpu.height = h;
 }
 
+// The icon font draws each icon somewhere in a square, and no two sit quite alike: a magnifier hangs low, a
+// camera rides high. So that code can centre an icon by its line like any text, every icon's ink is moved to the
+// middle: across, of its own advance; down, of `mid` (the middle of the line for icons alone, and where the
+// middle of the letters is for icons that sit in a line of text).
+static void ui_center_icons(ImFont *font, f32 mid)
+{
+    if (!font) return;
+    for (ImFontGlyph &g : font->Glyphs) {
+        if (g.Codepoint < 0xE700 || g.Codepoint > 0xF8FF) continue;
+        f32 w = g.X1 - g.X0, h = g.Y1 - g.Y0;
+        g.X0 = floorf((g.AdvanceX - w) / 2 + 0.5f);
+        g.X1 = g.X0 + w;
+        g.Y0 = floorf(mid - h / 2 + 0.5f);
+        g.Y1 = g.Y0 + h;
+    }
+}
+
 static void ui_load_fonts(f32 scale)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -196,7 +213,6 @@ static void ui_load_fonts(f32 scale)
     merge.MergeMode = true;
     merge.OversampleH = 2;
     merge.PixelSnapH = true;
-    merge.GlyphOffset = ImVec2(0, 2 * scale); // the icons sit high next to Segoe UI's x-height
     auto add = [&](const char *file, f32 px, f32 icon_px) {
         ImFont *f = io.Fonts->AddFontFromFileTTF(file, px * scale, &cfg, ranges);
         if (f) io.Fonts->AddFontFromFileTTF(icons, icon_px * scale, &merge, icon_ranges);
@@ -218,6 +234,11 @@ static void ui_load_fonts(f32 scale)
     if (!g_font_title) g_font_title = g_font_big;
     if (!g_font_icon) g_font_icon = g_font;
     io.Fonts->Build();
+    // Segoe UI's letters sit a little under the middle of their line: about 0.6 px at 100%
+    ImFont *text_fonts[] = {g_font, g_font_bold, g_font_small, g_font_big, g_font_title};
+    for (ImFont *f : text_fonts)
+        if (f != g_font_icon) ui_center_icons(f, f->FontSize / 2 + 0.6f * scale * f->FontSize / (14 * scale));
+    ui_center_icons(g_font_icon, g_font_icon->FontSize / 2);
     ImGui_ImplDX11_InvalidateDeviceObjects(); // the font texture is remade on the next frame
 }
 
@@ -567,9 +588,10 @@ static bool kit_search(const char *id, char *buf, i32 cap, const char *hint, f32
     ImGui::SetNextItemWidth(w);
     bool changed = ImGui::InputTextWithHint(id, hint, buf, cap);
     ImGui::PopStyleVar();
+    f32 fh = ImGui::GetFrameHeight(); // the field's, so before the icon font (a taller one) is pushed
     ImGui::PushFont(g_font_icon);
     ImVec2 ts = ImGui::CalcTextSize(ICON_SEARCH);
-    ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + kit_px(12), floorf(a.y + (ImGui::GetFrameHeight() - ts.y) / 2) + kit_px(1)),
+    ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + kit_px(12), floorf(a.y + (fh - ts.y) / 2)),
                                         col32(COL_DIM), ICON_SEARCH);
     ImGui::PopFont();
     return changed;
