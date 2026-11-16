@@ -1066,7 +1066,7 @@ static bool lib_pill(const char *id, const char *label, f32 w, bool on, bool dro
 {
     f32 h = ImGui::GetFrameHeight(), round = ImGui::GetStyle().FrameRounding;
     ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + w, a.y + h);
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h)) && !kit_closed_here(ImGui::GetItemID());
     if (clicked) dev_click("pill", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();

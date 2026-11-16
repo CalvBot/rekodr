@@ -362,7 +362,17 @@ static bool opt_combo_begin(const char *id, const char *preview, f32 width, f32 
     ImGui::SetNextWindowSizeConstraints(ImVec2(fmaxf(width, popup_w), 0), ImVec2(FLT_MAX, FLT_MAX));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(6), dp(6)));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    // Clicked while its list was open: the click closed the list (ui_popups_click_through) and must not open it again
+    bool closed_here = kit_closed_here(ImGui::GetID(id));
+    if (closed_here) {
+        ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 1);
+        ImGui::BeginDisabled();
+    }
     bool open = ImGui::BeginCombo(id, "", ImGuiComboFlags_NoArrowButton);
+    if (closed_here) {
+        ImGui::EndDisabled();
+        ImGui::PopStyleVar();
+    }
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
     f32 chev = text_w(g_font_small, ICON_DOWN);

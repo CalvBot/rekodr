@@ -442,6 +442,38 @@ static void dev_click(const char *what, const char *label, const char *extra = "
 }
 
 // A text button. size 0 = fit the label.
+// A click outside an open list or menu closes it and also does what was clicked: ImGui by itself would only close
+// it and make the click be done again. ui_popups_click_through, at the start of a frame, closes the list before
+// anything is drawn, so the click lands as if it had never been open. The one exception is the control the list
+// dropped from: clicking that again only closes it, and kit_closed_here tells that control so.
+static ImGuiID g_popup_opener;      // the control whose click opened the list that is open
+static ImGuiID g_popup_top;         // the list that was on top last frame
+static ImGuiID g_popup_closed_from; // the opener of a list closed by the click that is still held
+
+static void ui_popups_click_through()
+{
+    ImGuiContext &g = *ImGui::GetCurrentContext();
+    // The opener stays told until the button that closed its list is let go: its click is the release
+    if (g_popup_closed_from && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        g_popup_closed_from = 0;
+    ImGuiID top = g.OpenPopupStack.Size ? g.OpenPopupStack.back().PopupId : 0;
+    if (top && top != g_popup_top && g.OpenPopupStack.Size == 1)
+        g_popup_opener = g.LastActiveIdTimer < 0.5f ? g.LastActiveId : 0; // newly open: whatever was just pressed
+    g_popup_top = top;
+    if (!top || !ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::GetTopMostPopupModal()) return;
+    ImGuiWindow *over = g.HoveredWindow;
+    if (over && (over->RootWindow->Flags & ImGuiWindowFlags_Popup)) return; // a click in the list itself
+    ImGui::ClosePopupToLevel(0, true);
+    g_popup_closed_from = g_popup_opener;
+    g_popup_top = 0;
+}
+
+// True for the control (by its id) that the list just closed by this click had dropped from.
+static bool kit_closed_here(ImGuiID id)
+{
+    return id && id == g_popup_closed_from;
+}
+
 static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 size = ImVec2(0, 0), bool enabled = true)
 {
     u32 bg = COL_PANEL2, hover = COL_HOVER, text = COL_TEXT;
@@ -458,7 +490,7 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     ImGui::PushStyleColor(ImGuiCol_Text, rgb(text));
     if (kind == KIT_PRIMARY) ImGui::PushFont(g_font_bold);
     if (!enabled) ImGui::BeginDisabled();
-    bool clicked = ImGui::Button(label, size);
+    bool clicked = ImGui::Button(label, size) && !kit_closed_here(ImGui::GetItemID());
     if (!enabled) ImGui::EndDisabled();
     if (clicked && enabled) dev_click("button", label);
     if (kind == KIT_PRIMARY) ImGui::PopFont();
@@ -473,7 +505,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     if (size <= 0) size = ImGui::GetFrameHeight();
     ImVec2 a = ImGui::GetCursorScreenPos();
     if (!enabled) ImGui::BeginDisabled();
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size));
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size)) && !kit_closed_here(ImGui::GetItemID());
     if (!enabled) ImGui::EndDisabled();
     if (clicked && enabled) dev_click("button", id);
     bool hot = enabled && ImGui::IsItemHovered(), held = hot && ImGui::IsItemActive();
@@ -975,6 +1007,7 @@ static void ui_frame()
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    ui_popups_click_through();
     ImGuiContext &g = *ImGui::GetCurrentContext();
     g.DebugLogFlags = ImGuiDebugLogFlags_EventError | ImGuiDebugLogFlags_OutputToTTY |
                       (g_dev ? ImGuiDebugLogFlags_EventPopup | ImGuiDebugLogFlags_EventFocus : 0);
