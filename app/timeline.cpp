@@ -462,6 +462,56 @@ static bool tl_has_video(const BufferIdx &b, i64 a, i64 z)
     return false;
 }
 
+// The names the session box suggests: the games in the selection first, then the rest of the buffer, the games in
+// Options and the games in the library, so a game that was only watched (not played here) can still be picked.
+// Made when the box opens.
+static char g_tl_games[200][64];
+static i32  g_tl_game_count;
+
+static void tl_games_add(const char *name)
+{
+    if (!name[0] || g_tl_game_count >= (i32)COUNT(g_tl_games)) return;
+    if (!strcmp(name, "Desktop") || !strcmp(name, "Other")) return;
+    for (i32 i = 0; i < g_tl_game_count; i++)
+        if (!_stricmp(g_tl_games[i], name)) return;
+    str_set(g_tl_games[g_tl_game_count++], name);
+}
+
+static void tl_games_make(const BufferIdx &b, i64 now)
+{
+    Timeline &tl = g_app.timeline;
+    const Config &c = g_app.config;
+    g_tl_game_count = 0;
+    GameTime g[64];
+    char name[64];
+    for (i32 pass = 0; pass < 2; pass++) {
+        i32 n = !b.seg_count ? 0 : pass ? games_in(b, b.oldest_us, now, g, COUNT(g))
+                                        : games_in(b, tl.sel_in, tl.sel_out, g, COUNT(g));
+        for (i32 i = 0; i < n; i++) {
+            audio_display_name(c, g[i].exe, name, sizeof name);
+            tl_games_add(name);
+        }
+    }
+    for (i32 i = 0; i < c.app_count; i++)
+        if (c.apps[i].category == CAT_GAME) {
+            audio_display_name(c, c.apps[i].exe.s, name, sizeof name);
+            tl_games_add(name);
+        }
+    const Library &lib = g_app.library;
+    for (i32 i = 0; i < lib.game_count; i++) tl_games_add(lib.games[i]);
+}
+
+// Whether `name` holds `part`, ignoring case.
+static bool tl_has_text(const char *name, const char *part)
+{
+    for (; *name; name++) {
+        i32 k = 0;
+        while (part[k] && name[k] && tolower((u8)name[k]) == tolower((u8)part[k])) k++;
+        if (!part[k]) return true;
+    }
+    return !part[0];
+}
+
 static void tl_save(SaveKind kind, bool edit)
 {
     Timeline &tl = g_app.timeline;
@@ -1487,43 +1537,106 @@ static void screen_timeline()
         ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
         ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(COL_PANEL));
         if (ImGui::BeginPopup("##session")) {
-            f32 fw = 300 * s;
-            ImGui::PushFont(g_font_bold);
-            ImGui::TextUnformatted("Save as a session");
-            ImGui::PopFont();
-            ImGui::Dummy(ImVec2(0, 2 * s));
-            kit_label("NAME");
-            ImGui::SetNextItemWidth(fw);
-            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-            ImGui::InputTextWithHint("##session_name", "The game played most", tl.session_name, sizeof tl.session_name);
-            ImGui::SetNextItemWidth(fw);
-            if (ImGui::BeginCombo("##pick", "Or pick a game", ImGuiComboFlags_HeightRegular)) {
-                // Games in the selection first, then the other games in the buffer
-                GameTime all[64];
-                i32 n = b.seg_count ? games_in(b, b.oldest_us, now, all, COUNT(all)) : 0;
-                for (i32 pass = 0; pass < 2; pass++) {
-                    for (i32 g = 0; g < (pass ? n : game_count); g++) {
-                        const char *exe = pass ? all[g].exe : games[g].exe;
-                        bool dup = false;
-                        for (i32 k = 0; pass && k < game_count; k++) dup |= !strcmp(games[k].exe, exe);
-                        if (dup) continue;
-                        char name[64];
-                        audio_display_name(g_app.config, exe, name, sizeof name);
-                        ImGui::PushID(exe);
-                        if (ImGui::Selectable(name)) str_set(tl.session_name, name);
-                        ImGui::PopID();
-                    }
-                }
-                if (!n) kit_dim("No games in the buffer");
-                ImGui::EndCombo();
+            // One box: the name, filled in with the game played most when there is one (typing replaces it). Typing
+            // suggests games; the arrow lists them all.
+            f32 fw = 300 * s, bh = ImGui::GetFrameHeight(), aw = bh;
+            if (ImGui::IsWindowAppearing()) {
+                tl_games_make(b, now);
+                tl.session_name[0] = 0;
+                if (game_count) audio_display_name(g_app.config, games[0].exe, tl.session_name, sizeof tl.session_name);
+                tl.suggest_pick = -1;
+                tl.suggest_close = tl.suggest_was_open = false;
+                tl.suggest_refocus = true;
             }
-            ImGui::Dummy(ImVec2(0, 4 * s));
-            if (kit_button("Save session", KIT_PRIMARY, ImVec2(130 * s, 0), can)) {
+            i32 match[COUNT(g_tl_games)], match_count = 0;
+            for (i32 i = 0; i < g_tl_game_count; i++)
+                if (tl.suggest_all || tl_has_text(g_tl_games[i], tl.session_name)) match[match_count++] = i;
+            bool suggesting = ImGui::IsPopupOpen("##suggest");
+
+            ImVec2 bp = ImGui::GetCursorScreenPos();
+            ImDrawList *pd = ImGui::GetWindowDrawList();
+            pd->AddRectFilled(bp, ImVec2(bp.x + fw, bp.y + bh), col32(COL_PANEL), ImGui::GetStyle().FrameRounding);
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, 0);
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, 0);
+            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, 0);
+            if (tl.suggest_refocus) ImGui::SetKeyboardFocusHere();
+            tl.suggest_refocus = false;
+            ImGui::SetNextItemWidth(fw - aw);
+            bool enter = ImGui::InputTextWithHint("##session_name", "Name", tl.session_name, sizeof tl.session_name,
+                                                  ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+            bool typing = ImGui::IsItemActive();
+            if (ImGui::IsItemEdited()) {
+                tl.suggest_all = false;
+                tl.suggest_pick = -1;
+                if (tl.session_name[0]) ImGui::OpenPopup("##suggest");
+                else tl.suggest_close = true;
+            }
+            ImGui::PopStyleColor(3);
+
+            // The arrow, inside the same box
+            ImGui::SameLine(0, 0);
+            bool arrow = ImGui::InvisibleButton("##all", ImVec2(aw, bh));
+            if (ImGui::IsItemActivated()) tl.suggest_was_open = suggesting;
+            ImGui::PushFont(g_font_icon);
+            ImVec2 is = ImGui::CalcTextSize(ICON_DOWN);
+            pd->AddText(ImVec2(floorf(bp.x + fw - aw + (aw - is.x) / 2), floorf(bp.y + (bh - is.y) / 2)),
+                        col32(ImGui::IsItemHovered() ? COL_TEXT : COL_DIM), ICON_DOWN);
+            ImGui::PopFont();
+            if (arrow) {
+                if (!tl.suggest_was_open) {
+                    tl.suggest_all = true;
+                    tl.suggest_pick = -1;
+                    ImGui::OpenPopup("##suggest");
+                }
+                tl.suggest_refocus = true;
+            }
+
+            // Up and Down move through the suggestions, Enter takes the highlighted one (or saves when there's none)
+            bool save = false;
+            if (typing && suggesting && match_count) {
+                if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) tl.suggest_pick = (tl.suggest_pick + 1) % match_count;
+                if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) tl.suggest_pick = tl.suggest_pick <= 0 ? match_count - 1 : tl.suggest_pick - 1;
+            }
+            if (enter) {
+                if (suggesting && tl.suggest_pick >= 0 && tl.suggest_pick < match_count) {
+                    str_set(tl.session_name, g_tl_games[match[tl.suggest_pick]]);
+                    tl.suggest_close = tl.suggest_refocus = true;
+                } else save = true;
+            }
+
+            // The suggestions, in a popup of their own under the box that leaves the cursor in it
+            f32 row_h = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
+            ImGui::SetNextWindowPos(ImVec2(bp.x - ImGui::GetStyle().WindowPadding.x, bp.y + bh + 4 * s));
+            ImGui::SetNextWindowSizeConstraints(ImVec2(fw + 2 * ImGui::GetStyle().WindowPadding.x, 0),
+                                                ImVec2(fw + 2 * ImGui::GetStyle().WindowPadding.x, 8 * row_h + 2 * ImGui::GetStyle().WindowPadding.y));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8 * s, 8 * s));
+            if (ImGui::BeginPopup("##suggest", ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+                if (tl.suggest_close || !match_count) ImGui::CloseCurrentPopup();
+                for (i32 m = 0; m < match_count; m++) {
+                    ImGui::PushID(m);
+                    if (ImGui::Selectable(g_tl_games[match[m]], m == tl.suggest_pick)) {
+                        str_set(tl.session_name, g_tl_games[match[m]]);
+                        tl.suggest_refocus = true;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    static i32 scrolled_to = -1; // only when the pick moves, so the wheel still scrolls
+                    if (m == tl.suggest_pick && m != scrolled_to) ImGui::SetScrollHereY();
+                    if (m == tl.suggest_pick) scrolled_to = m;
+                    ImGui::PopID();
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopStyleVar();
+            tl.suggest_close = false;
+
+            ImGui::Dummy(ImVec2(0, 6 * s));
+            f32 hw = (fw - bgap) / 2;
+            if (kit_button("Save session", KIT_PRIMARY, ImVec2(hw, 0), can) || (save && can)) {
                 tl_save(SAVE_SESSION, false);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine(0, bgap);
-            if (kit_button("Cancel", KIT_GHOST, ImVec2(90 * s, 0))) ImGui::CloseCurrentPopup();
+            if (kit_button("Cancel", KIT_SECONDARY, ImVec2(hw, 0))) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
         ImGui::PopStyleColor(2);

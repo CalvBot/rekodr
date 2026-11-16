@@ -778,7 +778,7 @@ static bool top_tab(const char *label, bool active, f32 h)
     return clicked;
 }
 
-// The bar across the top: the name, the three screens as tabs, and on the right what the recorder is doing with
+// The bar across the top: the three screens as tabs, and on the right what the recorder is doing with
 // its Pause / Resume, then Help. The button and Help stay put whatever the status says.
 static void top_bar(f32 h)
 {
@@ -789,16 +789,7 @@ static void top_bar(f32 h)
     dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), col32(COL_SIDEBAR));
     dl->AddRectFilled(ImVec2(o.x, o.y + h - kit_px(1)), ImVec2(o.x + w, o.y + h), col32(COL_LINE));
 
-    // The name, with the record mark
-    f32 r = kit_px(8);
-    ImVec2 c(o.x + kit_px(24) + r, o.y + h / 2);
-    dl->AddCircleFilled(c, r, col32(COL_RED));
-    dl->AddCircleFilled(c, r * 0.42f, col32(COL_SIDEBAR));
-    ImGui::PushFont(g_font_big);
-    dl->AddText(ImVec2(c.x + r + kit_px(10), floorf(c.y - ImGui::GetFontSize() / 2)), col32(COL_TEXT), "clipback");
-    ImGui::PopFont();
-
-    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(170), o.y));
+    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(12), o.y));
     Screen s = g_app.ui.screen;
     if (top_tab("Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR, h)) g_app.ui.screen = SCREEN_LIBRARY;
     ImGui::SameLine(0, kit_px(4));

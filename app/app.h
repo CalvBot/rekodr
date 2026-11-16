@@ -459,6 +459,12 @@ struct Timeline {
     char          session_name[128];
     u32           job;          // the last save started here
     bool          job_edit;     // open the editor when it's done
+    // The session box's game suggestions
+    i32           suggest_pick;     // the highlighted one; -1 = none
+    bool          suggest_all;      // opened from the arrow: every game, not only matches
+    bool          suggest_was_open; // the arrow was pressed while they showed, so it closes them
+    bool          suggest_close;    // close them next frame
+    bool          suggest_refocus;  // put the cursor back in the box next frame
     // Play: a stretch of the buffer rendered with its sound (SAVE_PREVIEW), then played here. The file is the video
     // segments end to end from play_file_start, so gaps in recording are skipped.
     Player        player;          // id 2
