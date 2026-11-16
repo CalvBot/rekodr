@@ -565,30 +565,6 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     return true;
 }
 
-// The one game an exe belongs to in the list, whichever of its entries that is: javaw.exe is only ever listed for
-// Minecraft, so a modpack that names itself something else is still Minecraft underneath. False if the list has
-// the exe under several games, or not at all.
-static bool gamedb_family(const char *exe, GameInfo *out)
-{
-    char file[96];
-    i32 fl = 0;
-    for (; exe[fl] && fl < (i32)sizeof file - 1; fl++) file[fl] = (char)tolower((u8)exe[fl]);
-    file[fl] = 0;
-    u64 hash = gdb_hash(file, fl);
-    i32 row = -1;
-    bool one = true;
-    AcquireSRWLockShared(&g_gamedb.lock);
-    const GameIndex *ix = g_gamedb.index;
-    i32 k = ix && fl ? gdb_find(ix->exes, ix->exe_count, hash) : -1;
-    for (; k >= 0 && k < ix->exe_count && ix->exes[k].hash == hash; k++) {
-        if (row >= 0 && ix->exes[k].row != row) one = false;
-        row = ix->exes[k].row;
-    }
-    if (row >= 0 && one) gdb_fill(ix->rows[row], out);
-    ReleaseSRWLockShared(&g_gamedb.lock);
-    return row >= 0 && one;
-}
-
 // Games whose name has these letters in it, best first: a name that starts with them before one that only has
 // them, one with an icon and a Windows exe before a bare entry (the list has thousands), and of those the
 // shortest name, which is the nearest to what was typed. Returns how many were put in `out`.
@@ -622,149 +598,39 @@ static i32 gamedb_search(const char *query, GameInfo *out, i32 max)
     return n;
 }
 
-// Names that stand for a game in the list: "GT New Horizons" is Minecraft, for its icon and cover. Kept in
-// <config>\game-aliases.txt, a line each of "name<TAB>game". Written when a shared exe names itself by its window,
-// and when a name is typed for an app the list knows as something else. Main thread only.
-struct GameAlias {
-    char name[96], game[128];
-};
-static GameAlias g_game_aliases[256];
-static i32       g_game_alias_count = -1; // -1: not read yet
-
-static void game_aliases_load()
-{
-    g_game_alias_count = 0;
-    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"game-aliases.txt").s, L"rb");
-    if (!f) return;
-    char line[300];
-    while (fgets(line, sizeof line, f) && g_game_alias_count < COUNT(g_game_aliases)) {
-        char *tab = strchr(line, '\t');
-        if (!tab) continue;
-        *tab = 0;
-        char *game = trim(tab + 1), *name = trim(line);
-        if (!*name || !*game) continue;
-        GameAlias *a = &g_game_aliases[g_game_alias_count++];
-        snprintf(a->name, sizeof a->name, "%s", name);
-        snprintf(a->game, sizeof a->game, "%s", game);
-    }
-    fclose(f);
-}
-
-static const char *game_alias(const char *name)
-{
-    if (g_game_alias_count < 0) game_aliases_load();
-    char want[128], have[128];
-    if (!gdb_letters(name, want, sizeof want)) return 0;
-    for (i32 i = 0; i < g_game_alias_count; i++) {
-        gdb_letters(g_game_aliases[i].name, have, sizeof have);
-        if (!strcmp(want, have)) return g_game_aliases[i].game;
-    }
-    return 0;
-}
-
-static void game_alias_set(const char *name, const char *game)
-{
-    const char *now = game_alias(name);
-    if (now && !strcmp(now, game)) return;
-    GameAlias *a = 0;
-    char want[128], have[128];
-    gdb_letters(name, want, sizeof want);
-    for (i32 i = 0; i < g_game_alias_count && !a; i++) {
-        gdb_letters(g_game_aliases[i].name, have, sizeof have);
-        if (!strcmp(want, have)) a = &g_game_aliases[i];
-    }
-    if (!a && g_game_alias_count < COUNT(g_game_aliases)) a = &g_game_aliases[g_game_alias_count++];
-    if (!a) return;
-    snprintf(a->name, sizeof a->name, "%s", name);
-    snprintf(a->game, sizeof a->game, "%s", game);
-    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"game-aliases.txt").s, L"wb");
-    if (!f) return;
-    for (i32 i = 0; i < g_game_alias_count; i++) fprintf(f, "%s\t%s\n", g_game_aliases[i].name, g_game_aliases[i].game);
-    fclose(f);
-    log_line("%s counts as %s for its icon and cover", name, game);
-}
-
-// A game by a name: the list's own, else the game that name stands for. Main thread.
-static bool game_lookup(const char *name, GameInfo *out)
-{
-    if (gamedb_by_name(name, out)) return true;
-    const char *alias = game_alias(name);
-    return alias && gamedb_by_name(alias, out);
-}
-
-// What a window's title says the game is: the title up to its version number or a " - ", so "GT: New Horizons
-// 2.9.0" is "GT: New Horizons" from one release to the next. False if that leaves nothing to call it.
-static bool title_game_name(const char *title, char *out, i32 cap)
-{
-    char t[128];
-    snprintf(t, sizeof t, "%s", title);
-    bool word = false;
-    for (char *c = t; *c; c++) {
-        bool start = c == t || c[-1] == ' ';
-        bool version = start && word && (isdigit((u8)c[0]) || ((c[0] == 'v' || c[0] == 'V') && isdigit((u8)c[1])));
-        bool dash = c[0] == ' ' && (c[1] == '-' || c[1] == '|') && c[2] == ' ';
-        if (version || dash) { *c = 0; break; }
-        if (isalpha((u8)*c)) word = true;
-    }
-    size_t n = strlen(t);
-    while (n && (t[n - 1] == ' ' || t[n - 1] == '-' || t[n - 1] == ':' || t[n - 1] == '*' || t[n - 1] == '|')) t[--n] = 0;
-    i32 alpha = 0;
-    for (char *c = t; *c; c++) {
-        alpha += isalpha((u8)*c) != 0;
-        if (*c == '|') *c = ' '; // | separates fields in settings.txt
-    }
-    if (alpha < 3) return false; // a bare number, or nothing
-    snprintf(out, cap, "%s", t);
-    return true;
-}
-
 static void sessions_game_renamed(const char *exe); // sessions.cpp
 
 // Names an app from the database: its description becomes the game's name, and one that hasn't been sorted yet
 // (and that no folder rule sorts) becomes a Game. An exe several games share is asked about while it runs: its
-// command line decides, else its window naming a game in the list, else its window's own title is its name (a
-// modpack's, say) and it counts as the one game the list has that exe for. Main thread. Returns true if something
-// about it changed.
+// command line decides, else its window naming a game in the list. One the list can't place goes by its exe's
+// name (its File description is the runtime's, not a game's) until it is named by hand. Main thread. Returns true
+// if something about it changed.
 static bool gamedb_name_app(AppInfo *a)
 {
     GameInfo g;
     bool shared = false, known = gamedb_by_exe(a->exe.s, a->path, "", "", &g, &shared);
-    char named[128] = "";
-    a->db_pending = false;
     if (!known && shared) {
-        a->db_tried_us = now_us();
         char cmd[4096], title[256];
-        bool running = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title);
-        if (running) {
+        if (process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title)) {
             DEV_LOG("gamedb: %s is shared; its window is \"%s\", its command line ends \"%s\"", a->exe.s, title,
                     strlen(cmd) > 400 ? cmd + strlen(cmd) - 400 : cmd);
             known = gamedb_by_exe(a->exe.s, a->path, cmd, title, &g);
         }
         if (!known) {
-            GameInfo family;
-            if (running && title_game_name(title, named, sizeof named)) {
-                if (gamedb_family(a->exe.s, &family)) game_alias_set(named, family.name);
-            } else {
-                // No window yet (or it isn't running). Its File description is the runtime's, not a game's, so it
-                // goes by its exe's name until it says more.
-                a->db_pending = running;
-                if (a->desc.s[0]) {
-                    a->desc.s[0] = 0;
-                    return true;
-                }
-                return false;
-            }
+            if (!a->desc.s[0]) return false;
+            a->desc.s[0] = 0;
+            sessions_game_renamed(a->exe.s);
+            return true;
         }
     }
-    if (!known && !named[0]) return false;
-    const char *name = known ? g.name : named;
+    if (!known) return false;
     bool changed = false;
-    if (strcmp(a->desc.s, name)) {
-        snprintf(a->desc.s, sizeof a->desc.s, "%s", name);
+    if (strcmp(a->desc.s, g.name)) {
+        snprintf(a->desc.s, sizeof a->desc.s, "%s", g.name);
         changed = true;
         sessions_game_renamed(a->exe.s);
     }
-    if (known && a->category == CAT_NONE && !g.launcher && app_category(g_app.config, *a) == CAT_NONE) {
+    if (a->category == CAT_NONE && !g.launcher && app_category(g_app.config, *a) == CAT_NONE) {
         a->category = CAT_GAME;
         log_line("%s is %s: sorted as a game", a->exe.s, g.name);
         changed = true;

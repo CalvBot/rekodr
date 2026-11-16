@@ -42,9 +42,7 @@ struct AppInfo {
     i64         last_heard_us;
     char        path[MAX_PATH]; // where its exe was last heard from (UTF-8), for folder rules; "" = not known
     Str64       desc;           // its exe's File description ("sam" for a VoiceStreams player), or the game
-                                // it is by the games database or its window (gamedb.cpp); not saved
-    bool        db_pending;     // an exe several games share that hasn't said which it is yet: asked again
-    i64         db_tried_us;    // when it was last asked
+                                // the games database says it is (gamedb.cpp); not saved
 };
 
 // A folder rule: every exe in `path` or below it gets `category`, unless the exe has a category of its own. The

@@ -1127,11 +1127,6 @@ static void apps_rename_popup()
         for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
         str_set(a.name.s, trim(name));
         log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
-        // A name of its own for a game the list knows (a modpack's): it keeps that game's icon and cover
-        GameInfo own, is_game;
-        if (a.name.s[0] && !gamedb_by_name(a.name.s, &own) &&
-            (gamedb_by_exe(a.exe.s, a.path, "", "", &is_game) || gamedb_family(a.exe.s, &is_game)))
-            game_alias_set(a.name.s, is_game.name);
         sessions_game_renamed(a.exe.s);
         options_apply(APPLY_AUDIO);
         ImGui::CloseCurrentPopup();

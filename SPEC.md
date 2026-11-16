@@ -213,11 +213,9 @@ One window with a header (status, pause, Help, Options):
   the folders they sit in, and the command line that tells apart an exe several games share, such as `javaw.exe`)
   and keeps it under `%LOCALAPPDATA%\clipback\gamedb`, fetching it again after a week. Icons come from Discord's
   image server and covers from Steam's, each the first time something shows it. A known game is named properly and,
-  if it hasn't been sorted, becomes a Game. A shared exe the list can't place (a modpack started by a launcher)
-  takes its name from its window's title, up to the version number, and counts as the one game the list has that
-  exe for, so it gets that game's icon and cover; such stand-in names are kept in `game-aliases.txt` beside the
-  settings. Naming an app in Options searches the list as you type. These are the only web requests clipback
-  makes, and Options › General turns them off.
+  if it hasn't been sorted, becomes a Game. An app the list can't place is named by hand: naming an app in
+  Options searches the list as you type. These are the only web requests clipback makes, and Options › General
+  turns them off.
 - **lifelog:** no code link. Shared data (the game list, app categories, and lifelog's view of what's playing if
   wanted) goes through plain files that both read. clipback has its own small process watcher, icon extraction and
   clipboard code.
