@@ -630,8 +630,8 @@ static void gamedb_fetch_art()
         Path file = gamedb_art_file(w.id, w.kind);
         wchar_t url[256];
         bool ok = false;
-        if (w.kind == ART_COVER && w.steam) { // Steam's tall cover, the art a library shows
-            swprintf(url, COUNT(url), L"/store_item_assets/steam/apps/%u/library_600x900.jpg", w.steam);
+        if (w.kind == ART_COVER && w.steam) { // Steam's wide picture of the game, the shape of a card
+            swprintf(url, COUNT(url), L"/store_item_assets/steam/apps/%u/header.jpg", w.steam);
             ok = http_get_file(L"shared.steamstatic.com", url, file);
         }
         if (!ok && w.hash[0]) {

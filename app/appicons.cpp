@@ -68,6 +68,7 @@ struct AppIcon {
     ID3D11ShaderResourceView *srv;
     bool tried;
     bool waiting; // its art is being fetched: tried again when it arrives
+    i32  w, h;    // a cover's size, to crop it to where it is drawn
 };
 static AppIcon g_app_icons[192];
 static i32 g_app_icon_count;
@@ -186,7 +187,7 @@ static bool installed_icon_path(const char *game, Path *out)
 // A picture file (PNG or JPEG) as a texture. Main thread.
 static u32 *wic_load(IWICImagingFactory *wic, const wchar_t *path, i32 *w, i32 *h); // library.cpp
 
-static ID3D11ShaderResourceView *image_file_texture(const Path &file)
+static ID3D11ShaderResourceView *image_file_texture(const Path &file, i32 *out_w = 0, i32 *out_h = 0)
 {
     static IWICImagingFactory *wic;
     if (!wic && FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return 0;
@@ -195,6 +196,8 @@ static ID3D11ShaderResourceView *image_file_texture(const Path &file)
     if (!pixels) return 0;
     ID3D11ShaderResourceView *srv = gpu_texture(pixels, w, h);
     HeapFree(GetProcessHeap(), 0, pixels);
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
     return srv;
 }
 
@@ -239,6 +242,31 @@ static ID3D11ShaderResourceView *game_db_icon(const char *name)
     return slot->srv;
 }
 
+// A game's cover from the games database, by the game's name, and its size. Null if it has none, and while it is
+// being fetched.
+static AppIcon g_db_covers[LIB_MAX_GAMES];
+static i32 g_db_cover_count;
+
+static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h)
+{
+    AppIcon *slot = icon_slot(g_db_covers, &g_db_cover_count, COUNT(g_db_covers), name);
+    if (!slot) return 0;
+    if (!slot->srv && !slot->tried && icon_lookup_ok()) {
+        slot->tried = true;
+        slot->waiting = false;
+        GameInfo g;
+        Path p = {};
+        if (gamedb_by_name(name, &g) && (g.cover[0] || g.steam)) {
+            if (gamedb_art(g, ART_COVER, &p)) slot->srv = image_file_texture(p, &slot->w, &slot->h);
+            else slot->waiting = GetFileAttributesW(gamedb_art_file(g.id, ART_COVER).s) == INVALID_FILE_ATTRIBUTES;
+        }
+        ui_wake();
+    }
+    *w = slot->w;
+    *h = slot->h;
+    return slot->srv;
+}
+
 // The icon for a game's name: the database's, else the app clipback knows by that name, else the installed
 // program's. Null if none has one (and while it is being looked up: one a frame, like app_icon).
 static AppIcon g_game_icons[LIB_MAX_GAMES];
@@ -280,6 +308,8 @@ static void gamedb_on_event(const Event &e)
     }
     for (i32 i = 0; i < g_db_icon_count; i++)
         if (!g_db_icons[i].srv && (g_db_icons[i].waiting || e.a == GAMEDB_LOADED)) g_db_icons[i].tried = false;
+    for (i32 i = 0; i < g_db_cover_count; i++)
+        if (!g_db_covers[i].srv && (g_db_covers[i].waiting || e.a == GAMEDB_LOADED)) g_db_covers[i].tried = false;
     ui_wake();
 }
 

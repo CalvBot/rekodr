@@ -1254,10 +1254,18 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         frac = frac < 0 ? 0 : frac > 0.999f ? 0.999f : frac;
     }
     bool scrub = over && lib_want_strip(it);
+    i32 cover_w = 0, cover_h = 0;
+    ID3D11ShaderResourceView *cover = it.kind == LIB_SESSIONS ? game_db_cover(it.info.game, &cover_w, &cover_h) : 0;
+    if (cover && (cover_w <= 0 || cover_h <= 0)) cover = 0;
     if (scrub) {
         i32 f = (i32)(frac * lib.strip_frames);
         f32 u0 = (f32)f / lib.strip_frames, u1 = (f32)(f + 1) / lib.strip_frames;
         dl->AddImageRounded((ImTextureID)(intptr_t)lib.strip, t0, t1, ImVec2(u0, 0), ImVec2(u1, 1), IM_COL32_WHITE, round);
+    } else if (cover) { // a session shows its game's cover, cut to the card's shape about its middle
+        f32 want = w / thumb_h, have = (f32)cover_w / cover_h, u = 0, v = 0;
+        if (have > want) u = (1 - want / have) / 2;
+        else v = (1 - have / want) / 2;
+        dl->AddImageRounded((ImTextureID)(intptr_t)cover, t0, t1, ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, round);
     } else if (th && th->srv) {
         dl->AddImageRounded((ImTextureID)(intptr_t)th->srv, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
     } else {
@@ -1584,8 +1592,9 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
 
     // The game's icon, or a game tile
     ImVec2 ip(a.x + pad, floorf(a.y + (h - is) / 2));
-    ID3D11ShaderResourceView *icon = s->exe[0] ? app_icon(s->exe) : 0;
-    if (icon) dl->AddImage((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is));
+    ID3D11ShaderResourceView *icon = game_db_icon(s->name);
+    if (!icon && s->exe[0]) icon = app_icon(s->exe);
+    if (icon) dl->AddImageRounded((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(8));
     else {
         dl->AddRectFilled(ip, ImVec2(ip.x + is, ip.y + is), col32(COL_ACCENT_SOFT), kit_px(8));
         ImGui::PushFont(g_font_icon);
