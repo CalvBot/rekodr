@@ -24,6 +24,12 @@
 #include <ctype.h>
 #include <wchar.h>
 #include <wctype.h>
+#include <signal.h>
+
+// A failed ImGui assert would show a message box and abort with nothing in the log; log it and crash instead,
+// so the crash handler writes a minidump (main.cpp).
+static void imgui_assert_failed(const char *expr, const char *file, int line);
+#define IM_ASSERT(e) ((e) ? (void)0 : imgui_assert_failed(#e, __FILE__, __LINE__))
 
 #include "vendor/imgui/imgui.cpp"
 #include "vendor/imgui/imgui_draw.cpp"
@@ -34,6 +40,12 @@
 
 #include "base.h"
 #include "app.h"
+
+static void imgui_assert_failed(const char *expr, const char *file, int line)
+{
+    log_line("ImGui assert failed at %s:%d: %s", file, line, expr);
+    __debugbreak();
+}
 #include "events.cpp"
 #include "config.cpp"
 #include "proc.cpp"

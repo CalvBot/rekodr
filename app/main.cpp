@@ -199,6 +199,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     paths_init(&g_app.paths);
     proc_init();
     SetUnhandledExceptionFilter(on_crash);
+    // The C runtime's own fatal errors (abort, a bad argument to a CRT function, a pure virtual call) would end
+    // the process with no log line and no dump: turn them into a crash the handler sees.
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    signal(SIGABRT, [](int) { log_line("abort() called"); __debugbreak(); });
+    _set_invalid_parameter_handler([](const wchar_t *, const wchar_t *, const wchar_t *, unsigned, uintptr_t) {
+        log_line("a C runtime function was given a bad argument");
+        __debugbreak();
+    });
+    _set_purecall_handler([] { log_line("pure virtual call"); __debugbreak(); });
     RegisterApplicationRestart(L"", RESTART_NO_REBOOT);
     if (!config_load(&g_app.config, g_app.paths)) { // first run: bring over the Rust version's settings (options.cpp)
         options_first_run(&g_app.config, g_app.paths);
