@@ -38,7 +38,7 @@ static const AppInfo *sessions_app(const char *exe)
 static bool sessions_game_ok(const char *exe)
 {
     const AppInfo *a = exe[0] ? sessions_app(exe) : 0;
-    return a && a->category == CAT_GAME && a->session_mode != SESSION_NEVER;
+    return a && app_category(g_app.config, *a) == CAT_GAME && a->session_mode != SESSION_NEVER;
 }
 
 static void sessions_game_name(const char *exe, char (&out)[128])
@@ -506,7 +506,7 @@ static bool sessions_game_in_front()
             char exe[MAX_PATH * 3];
             wide_to_utf8(base, exe, sizeof exe);
             const AppInfo *a = sessions_app(exe);
-            game = a && a->category == CAT_GAME;
+            game = a && app_category(g_app.config, *a) == CAT_GAME;
         }
         CloseHandle(h);
         if (game) return true;
@@ -618,7 +618,7 @@ static const AppInfo *sessions_game_named(const char *name)
     const Config &c = g_app.config;
     for (i32 i = 0; i < c.app_count; i++) {
         const AppInfo &a = c.apps[i];
-        if (a.category != CAT_GAME) continue;
+        if (app_category(c, a) != CAT_GAME) continue;
         char shown[128];
         sessions_game_name(a.exe.s, shown);
         if (!_stricmp(a.exe.s, name) || !_stricmp(shown, name)) return &a;

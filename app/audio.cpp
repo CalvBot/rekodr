@@ -35,26 +35,73 @@ static const i64 AUDIO_LATE_US   = 40000;    // …and trim audio arriving later
 
 enum AudioEventKind : u8 {
     AE_NONE,
-    AE_STARTED, // b = stream id | kind << 32, text = exe
+    AE_STARTED, // b = stream id | kind << 32, text = "exe	path"
     AE_STOPPED, // b = stream id
-    AE_HEARD,   // b = µs, text = exe: an app played sound (added to Config.apps as new if it isn't known)
+    AE_HEARD,   // b = µs, text = "exe	path": an app played sound (added to Config.apps as new if it isn't known)
     AE_GAME,    // text = the game being played, empty on the desktop
 };
 
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers that only read their inputs (safe on any thread)
 
-static AppCategory audio_category(const Config &c, const char *exe)
+// An app's category: its own, else its folder rule's by `path` (where the process runs from), else new. Without a
+// path, where the app was last heard from.
+static AppCategory audio_category_at(const Config &c, const char *exe, const char *path)
 {
-    for (i32 i = 0; i < c.app_count; i++)
-        if (!strcmp(c.apps[i].exe.s, exe)) return c.apps[i].category;
-    return CAT_NONE;
+    return app_category_in(c.apps, c.app_count, c.folders, c.folder_count, exe, path);
 }
 
-static AudioTrack audio_track(const Config &c, AudioKind kind, const char *exe)
+// Splits an event's "exe	path".
+static void split_exe_path(const char *text, Str64 *exe, char *path, i32 cap)
+{
+    const char *tab = strchr(text, '	');
+    i32 n = tab ? (i32)(tab - text) : (i32)strlen(text);
+    if (n >= (i32)sizeof exe->s) n = (i32)sizeof exe->s - 1;
+    memcpy(exe->s, text, n);
+    exe->s[n] = 0;
+    path[0] = 0;
+    if (tab) snprintf(path, cap, "%s", tab + 1);
+}
+
+// A process's exe path in UTF-8; "" when it can't be opened (elevated, or gone).
+static void proc_image_path(u32 pid, char *out, i32 cap)
+{
+    out[0] = 0;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return;
+    wchar_t w[MAX_PATH];
+    DWORD len = MAX_PATH;
+    if (QueryFullProcessImageNameW(h, 0, w, &len)) wide_to_utf8(w, out, cap);
+    CloseHandle(h);
+}
+
+// Exe paths of processes that played sound, so each is opened once rather than every tick.
+struct SeenProc {
+    u32   pid;
+    Str64 exe;
+    i64   heard_us; // last AE_HEARD posted for it while ignored
+    char  path[MAX_PATH];
+};
+static SeenProc g_seen[32];
+static i32 g_seen_next;
+
+static SeenProc *seen_proc(u32 pid, const char *exe)
+{
+    for (i32 i = 0; i < COUNT(g_seen); i++)
+        if (g_seen[i].pid == pid && str_eq(g_seen[i].exe.s, exe)) return &g_seen[i];
+    SeenProc *s = &g_seen[g_seen_next];
+    g_seen_next = (g_seen_next + 1) % COUNT(g_seen);
+    *s = {};
+    s->pid = pid;
+    str_set(s->exe.s, exe);
+    proc_image_path(pid, s->path, sizeof s->path);
+    return s;
+}
+
+static AudioTrack audio_track(const Config &c, AudioKind kind, const char *exe, const char *path)
 {
     if (kind == AUDIO_MIC) return TRACK_MIC;
-    switch (audio_category(c, exe)) {
+    switch (audio_category_at(c, exe, path)) {
     case CAT_COMMUNICATION: return TRACK_COMMUNICATION;
     case CAT_GAME: return TRACK_GAME;
     default: return TRACK_APP;
@@ -201,7 +248,7 @@ static bool writer_idle(AudioWriter *w)
     return true;
 }
 
-static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, u32 pid, const Path &buffer_dir,
+static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, const char *exe_path, u32 pid, const Path &buffer_dir,
                         const Path &ffmpeg, i64 start_us)
 {
     *w = {};
@@ -219,17 +266,21 @@ static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, u32 pid
         return false;
     }
 
-    char escaped[256];
-    i32 e = 0;
-    for (const char *c = exe; *c && e < (i32)sizeof escaped - 8; c++) {
-        if (*c == '"' || *c == '\\') { escaped[e++] = '\\'; escaped[e++] = *c; }
-        else if ((u8)*c < 0x20) e += snprintf(escaped + e, sizeof escaped - e, "\\u%04x", (u8)*c);
-        else escaped[e++] = *c;
-    }
-    escaped[e] = 0;
-    char meta[512];
-    snprintf(meta, sizeof meta, "{\"kind\":\"%s\",\"exe\":\"%s\",\"pid\":%u,\"start_us\":%lld}",
-             kind == AUDIO_MIC ? "mic" : "app", escaped, pid, (long long)start_us);
+    auto escape = [](const char *in, char *out, i32 cap) {
+        i32 e = 0;
+        for (const char *c = in; *c && e < cap - 8; c++) {
+            if (*c == '"' || *c == '\\') { out[e++] = '\\'; out[e++] = *c; }
+            else if ((u8)*c < 0x20) e += snprintf(out + e, cap - e, "\\u%04x", (u8)*c);
+            else out[e++] = *c;
+        }
+        out[e] = 0;
+    };
+    char escaped[256], escaped_path[MAX_PATH * 2];
+    escape(exe, escaped, sizeof escaped);
+    escape(exe_path, escaped_path, sizeof escaped_path);
+    char meta[1024];
+    snprintf(meta, sizeof meta, "{\"kind\":\"%s\",\"exe\":\"%s\",\"path\":\"%s\",\"pid\":%u,\"start_us\":%lld}",
+             kind == AUDIO_MIC ? "mic" : "app", escaped, escaped_path, pid, (long long)start_us);
     if (!write_whole_file(path_join(dir, L"meta.json").s, meta)) {
         log_line("%s: couldn't write meta.json (%d)", exe, (int)GetLastError());
         return false;
@@ -425,6 +476,7 @@ struct AudioWorker {
     u32       id;
     AudioKind kind;
     Str64     exe;
+    char      path[MAX_PATH]; // its exe's full path (UTF-8): folder rules decide by it
     u32       pid; // the process tree's root (0 for the mic)
     Path      buffer_dir;
     Path      ffmpeg;
@@ -544,7 +596,7 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
             if (!writer.open) {
                 what = "starting the encoder";
                 hr = E_FAIL;
-                if (!writer_open(&writer, w->kind, w->exe.s, w->pid, w->buffer_dir, w->ffmpeg, t_us)) goto done;
+                if (!writer_open(&writer, w->kind, w->exe.s, w->path, w->pid, w->buffer_dir, w->ffmpeg, t_us)) goto done;
                 what = "capturing";
                 hr = S_OK;
             }
@@ -720,7 +772,7 @@ static i32 audio_playing_pids(u32 *out, i32 cap)
     return n;
 }
 
-static AudioWorker *worker_start(AudioKind kind, const char *exe, u32 pid)
+static AudioWorker *worker_start(AudioKind kind, const char *exe, const char *path, u32 pid)
 {
     if (!g_aw.ffmpeg.s[0]) {
         if (!g_aw.ffmpeg_missing_logged) log_line("audio: ffmpeg wasn't found, so audio isn't recorded");
@@ -739,6 +791,7 @@ static AudioWorker *worker_start(AudioKind kind, const char *exe, u32 pid)
     w->id = ++g_aw.next_id;
     w->kind = kind;
     str_set(w->exe.s, exe);
+    str_set(w->path, path);
     w->pid = pid;
     w->buffer_dir = g_aw.config.buffer_dir;
     w->ffmpeg = g_aw.ffmpeg;
@@ -749,7 +802,7 @@ static AudioWorker *worker_start(AudioKind kind, const char *exe, u32 pid)
     e.kind = EV_AUDIO;
     e.a = AE_STARTED;
     e.b = (i64)w->id | ((i64)kind << 32);
-    str_set(e.text, exe);
+    snprintf(e.text, sizeof e.text, "%s	%s", exe, path);
     event_post(e);
     return w;
 }
@@ -780,13 +833,14 @@ static void workers_stop_all()
         if (g_aw.workers[i].used) worker_join(&g_aw.workers[i]);
 }
 
-static void post_heard(const char *exe, i64 us)
+// text = "exe\tpath"
+static void post_heard(const char *exe, const char *path, i64 us)
 {
     Event e = {};
     e.kind = EV_AUDIO;
     e.a = AE_HEARD;
     e.b = us;
-    str_set(e.text, exe);
+    snprintf(e.text, sizeof e.text, "%s\t%s", exe, path);
     event_post(e);
 }
 
@@ -804,7 +858,7 @@ static void audio_tick_streams()
         worker_join(mic);
         mic = 0;
     }
-    if (cfg.mic && !mic) worker_start(AUDIO_MIC, "mic", 0);
+    if (cfg.mic && !mic) worker_start(AUDIO_MIC, "mic", "", 0);
 
     // Close streams whose app exited, is now ignored, failed, or has been quiet too long.
     bool closing[COUNT(g_aw.workers)] = {};
@@ -813,7 +867,7 @@ static void audio_tick_streams()
         if (!w->used || w->kind != AUDIO_APP) continue;
         const AudioProc *p = procs_find(g_aw.procs, w->pid);
         bool alive = p && !strcmp(p->exe.s, w->exe.s);
-        bool keep = alive && audio_category(cfg, w->exe.s) != CAT_IGNORED && !w->finished &&
+        bool keep = alive && audio_category_at(cfg, w->exe.s, w->path) != CAT_IGNORED && !w->finished &&
                     now - w->last_playing_us < AUDIO_LINGER_US;
         if (!keep) {
             log_line("%s audio stream closed", w->exe.s);
@@ -833,7 +887,7 @@ static void audio_tick_streams()
         const AudioProc *p = procs_find(g_aw.procs, pid);
         if (!p || !p->exe.s[0]) continue;
         // clipback's own processes never: its window plays clips back.
-        if (starts_with(p->exe.s, "clipback") || audio_category(cfg, p->exe.s) == CAT_IGNORED) continue;
+        if (starts_with(p->exe.s, "clipback")) continue;
         u32 root = procs_root_of(g_aw.procs, pid);
         AudioWorker *running = 0;
         for (i32 k = 0; k < COUNT(g_aw.workers) && !running; k++) {
@@ -841,15 +895,25 @@ static void audio_tick_streams()
             if (w->used && w->kind == AUDIO_APP && w->pid == root) running = w;
         }
         if (!running) {
+            // Decided by where it runs from, before anything of it is kept: an ignored folder's app is never opened.
+            SeenProc *seen = seen_proc(pid, p->exe.s);
+            if (audio_category_at(cfg, p->exe.s, seen->path) == CAT_IGNORED) {
+                // Not recorded, but still listed in Options with where it runs from
+                if (!seen->heard_us || now - seen->heard_us > 60000000) {
+                    seen->heard_us = now;
+                    post_heard(p->exe.s, seen->path, now);
+                }
+                continue;
+            }
             log_line("recording %s audio (pid %u)", p->exe.s, root);
-            running = worker_start(AUDIO_APP, p->exe.s, root);
+            running = worker_start(AUDIO_APP, p->exe.s, seen->path, root);
             if (!running) continue;
         }
         running->last_playing_us = now;
         // "Last heard" for Options (and new apps for it to list), at most once a minute per stream.
         if (!running->last_heard_us || now - running->last_heard_us > 60000000) {
             running->last_heard_us = now;
-            post_heard(running->exe.s, now);
+            post_heard(running->exe.s, running->path, now);
         }
     }
 }
@@ -865,14 +929,16 @@ static void audio_tick_activity()
     HWND fg = GetForegroundWindow();
     if (fg) GetWindowThreadProcessId(fg, &fg_pid);
     const AudioProc *front = fg_pid ? procs_find(g_aw.procs, fg_pid) : 0;
-    if (front && audio_category(cfg, front->exe.s) == CAT_GAME) {
+    char front_path[MAX_PATH] = "";
+    if (front) proc_image_path(fg_pid, front_path, sizeof front_path);
+    if (front && audio_category_at(cfg, front->exe.s, front_path) == CAT_GAME) {
         game = front->exe;
     } else {
         bool prev_running = false;
         const char *first = 0;
         for (i32 i = 0; i < cfg.app_count; i++) {
             const AppInfo &a = cfg.apps[i];
-            if (a.category != CAT_GAME) continue;
+            if (app_category_in(cfg.apps, cfg.app_count, cfg.folders, cfg.folder_count, a.exe.s, a.path) != CAT_GAME) continue;
             bool running = false;
             for (i32 k = 0; k < g_aw.procs.count && !running; k++) running = !strcmp(g_aw.procs.items[k].exe.s, a.exe.s);
             if (!running) continue;
@@ -964,7 +1030,7 @@ static void audio_config_changed()
     ReleaseSRWLockExclusive(&g_aw.lock);
     Audio &a = g_app.audio;
     for (i32 i = 0; i < a.stream_count; i++)
-        a.streams[i].track = audio_track(g_app.config, a.streams[i].kind, a.streams[i].exe.s);
+        a.streams[i].track = audio_track(g_app.config, a.streams[i].kind, a.streams[i].exe.s, a.streams[i].path);
 }
 
 static void audio_start()
@@ -1003,8 +1069,8 @@ static void audio_on_event(const Event &e)
         *s = {};
         s->id = (u32)(e.b & 0xffffffff);
         s->kind = (AudioKind)(e.b >> 32);
-        str_set(s->exe.s, e.text);
-        s->track = audio_track(g_app.config, s->kind, s->exe.s);
+        split_exe_path(e.text, &s->exe, s->path, sizeof s->path);
+        s->track = audio_track(g_app.config, s->kind, s->exe.s, s->path);
         s->since_us = now_us();
         break;
     }
@@ -1017,14 +1083,22 @@ static void audio_on_event(const Event &e)
         }
         break;
     case AE_HEARD: {
+        Str64 exe;
+        char path[MAX_PATH];
+        split_exe_path(e.text, &exe, path, sizeof path);
         i32 before = g_app.config.app_count;
-        AppInfo *app = config_app(&g_app.config, e.text); // a new one is CAT_NONE: shown as new in Options
+        AppInfo *app = config_app(&g_app.config, exe.s); // a new one is CAT_NONE: shown as new in Options
         if (!app) break; // the table is full
         app->last_heard_us = e.b;
+        bool moved = path[0] && strcmp(app->path, path);
+        if (path[0]) str_set(app->path, path);
         if (g_app.config.app_count != before) {
-            log_line("new app heard: %s", e.text);
+            log_line("new app heard: %s", exe.s);
             audio_config_changed();
+        } else if (moved) {
+            audio_config_changed(); // the watcher detects games by it
         }
+        if (moved) config_save(g_app.config, g_app.paths); // folder rules decide by it, so keep it
         break;
     }
     case AE_GAME:

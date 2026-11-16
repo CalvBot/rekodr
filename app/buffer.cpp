@@ -271,6 +271,7 @@ static void read_audio(const Path &audio_dir, BufferIdx *b, BufferScratch *s)
         st->mic = !strcmp(kind, "mic");
         st->start_us = strtoll(num, 0, 10);
         if (json_field(json, "pid", num, sizeof num)) st->pid = (u32)strtoul(num, 0, 10);
+        json_field(json, "path", st->path, sizeof st->path);
 
         list_media(dir, L"*.mka", s);
         read_list(dir, s);

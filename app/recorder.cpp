@@ -67,6 +67,47 @@ static const char *capture_filter(i32 vendor)
     }
 }
 
+// The same, scaled down to w x h on the way. QSV scales on its own surfaces; the rest scale on the CPU, because
+// this ffmpeg's scale_d3d11 and the D3D11 to CUDA mapping both fail on ddagrab's frames. Bilinear 1440p to 1080p
+// keeps up at 60 fps, and NVENC takes the BGRA frames from memory as they are.
+static void capture_filter_scaled(i32 vendor, i32 w, i32 h, char *out, i32 cap)
+{
+    if (w <= 0 || h <= 0) { snprintf(out, cap, "%s", capture_filter(vendor)); return; }
+    switch (vendor) {
+    case VENDOR_QSV: snprintf(out, cap, ",hwmap=derive_device=qsv,format=qsv,vpp_qsv=format=nv12:w=%d:h=%d", w, h); break;
+    case VENDOR_CPU: snprintf(out, cap, ",hwdownload,format=bgra,scale=%d:%d:flags=bilinear,format=yuv420p", w, h); break;
+    case VENDOR_AMF: snprintf(out, cap, ",hwdownload,format=bgra,scale=%d:%d:flags=bilinear:threads=0,format=nv12", w, h); break;
+    default: snprintf(out, cap, ",hwdownload,format=bgra,scale=%d:%d:flags=bilinear:threads=0", w, h); break;
+    }
+}
+
+// A monitor's size in pixels and refresh rate, by its index on the first GPU (as ddagrab's output_idx counts).
+// False if it isn't there.
+static bool monitor_mode(i32 idx, i32 *w, i32 *h, i32 *hz)
+{
+    *w = *h = *hz = 0;
+    IDXGIFactory1 *factory = 0;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
+    IDXGIAdapter1 *adapter = 0;
+    IDXGIOutput *out = 0;
+    if (SUCCEEDED(factory->EnumAdapters1(0, &adapter))) {
+        if (adapter->EnumOutputs((UINT)idx, &out) == S_OK) {
+            DXGI_OUTPUT_DESC d = {};
+            out->GetDesc(&d);
+            *w = d.DesktopCoordinates.right - d.DesktopCoordinates.left;
+            *h = d.DesktopCoordinates.bottom - d.DesktopCoordinates.top;
+            DEVMODEW mode = {};
+            mode.dmSize = sizeof mode;
+            if (EnumDisplaySettingsW(d.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) *hz = (i32)mode.dmDisplayFrequency;
+            if (*hz > 1 && (*hz + 1) % 10 == 0) (*hz)++; // 59.94 Hz reports as 59: count it as 60
+            out->Release();
+        }
+        adapter->Release();
+    }
+    factory->Release();
+    return *w > 0;
+}
+
 static i64 filetime_us(FILETIME ft)
 {
     i64 t = ((i64)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
@@ -86,7 +127,8 @@ struct RecSettings {
     f32   buffer_gb;
     f32   min_free_gb;
     i32   output_idx;
-    i32   fps;
+    i32   fps;           // never above the monitor's refresh rate
+    i32   width, height; // scaled to this; 0 = the monitor's own size (never scaled up)
     Str64 codec;
     Str64 encoder;
     f32   bitrate_mbps;
@@ -161,10 +203,11 @@ static RecSettings rec_settings_from(const Config &c, const Paths &paths, const 
     s.peak_factor = c.peak_factor > 0 ? c.peak_factor : 2;
     s.spatial_aq = c.spatial_aq;
     f32 rate = c.bitrate_mbps;
+    i32 want_h = c.height;
     const AppInfo *g = 0;
     if (game && game[0]) {
         for (i32 i = 0; i < c.app_count && !g; i++)
-            if (c.apps[i].category == CAT_GAME && !strcmp(c.apps[i].exe.s, game)) g = &c.apps[i];
+            if (app_category(c, c.apps[i]) == CAT_GAME && !strcmp(c.apps[i].exe.s, game)) g = &c.apps[i];
     } else {
         rate = c.desktop_bitrate_mbps;
     }
@@ -172,11 +215,22 @@ static RecSettings rec_settings_from(const Config &c, const Paths &paths, const 
         const RecOverride &o = g->rec;
         if (o.bitrate_mbps > 0) rate = o.bitrate_mbps;
         if (o.fps > 0) s.fps = o.fps;
+        if (o.height) want_h = o.height > 0 ? o.height : 0; // -1 = the monitor's own
         if (o.preset.s[0]) s.preset = o.preset;
         if (o.rate_control.s[0]) s.rate_control = o.rate_control;
         if (o.cq > 0) s.cq = o.cq;
     }
     s.bitrate_mbps = rate > 0 ? rate : 20;
+    // Recording above what the monitor shows only makes bigger files: a 4K setting on a 1440p screen records
+    // 1440p, and 120 fps on a 60 Hz screen records 60.
+    i32 mw, mh, hz;
+    if (monitor_mode(s.output_idx, &mw, &mh, &hz)) {
+        if (hz > 0 && s.fps > hz) s.fps = hz;
+        if (want_h > 0 && want_h < mh) {
+            s.height = want_h & ~1;
+            s.width = (i32)(((i64)mw * want_h / mh + 1) & ~1);
+        }
+    }
     return s;
 }
 
@@ -329,8 +383,10 @@ static void capture_args(Args *a, i32 vendor, const RecSettings &s)
 {
     a->s[0] = 0;
     ADD("-hide_banner", "-nostats", "-loglevel", "info", "-init_hw_device", "d3d11va", "-filter_complex");
+    char filter[160];
+    capture_filter_scaled(vendor, s.width, s.height, filter, sizeof filter);
     addf(a, "ddagrab=output_idx=%d:framerate=%d:draw_mouse=%d,setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'%s",
-         s.output_idx, s.fps, s.draw_mouse ? 1 : 0, capture_filter(vendor));
+         s.output_idx, s.fps, s.draw_mouse ? 1 : 0, filter);
     record_args(a, vendor, s);
     // No B-frames and a keyframe every segment: easy to cut, quick to scrub in an editor.
     ADD("-bf", "0", "-g");

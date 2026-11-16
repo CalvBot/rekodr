@@ -17,7 +17,7 @@ enum : u32 {
     APPLY_HOTKEYS = 4,  // hotkeys_apply
 };
 
-enum AppsFilter : i32 { FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_COMMUNICATION, FILTER_APPS, FILTER_IGNORED };
+enum AppsFilter : i32 { FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_COMMUNICATION, FILTER_APPS, FILTER_IGNORED, FILTER_FOLDERS };
 
 static f32 dp(f32 v) { return v * g_dpi_scale; }
 
@@ -1103,14 +1103,16 @@ static void default_app_name(const char *exe, char *out, i32 cap)
     out[0] = (char)toupper((u8)out[0]);
 }
 
+// Filters go by what an app ends up as, so an app sorted by its folder's rule is under that category, not New.
 static bool app_matches(const AppInfo &a, i32 filter, const char *search)
 {
+    AppCategory cat = app_category(g_app.config, a);
     switch (filter) {
-    case FILTER_NEW: if (a.category != CAT_NONE) return false; break;
-    case FILTER_GAMES: if (a.category != CAT_GAME) return false; break;
-    case FILTER_COMMUNICATION: if (a.category != CAT_COMMUNICATION) return false; break;
-    case FILTER_APPS: if (a.category != CAT_APP) return false; break;
-    case FILTER_IGNORED: if (a.category != CAT_IGNORED) return false; break;
+    case FILTER_NEW: if (cat != CAT_NONE) return false; break;
+    case FILTER_GAMES: if (cat != CAT_GAME) return false; break;
+    case FILTER_COMMUNICATION: if (cat != CAT_COMMUNICATION) return false; break;
+    case FILTER_APPS: if (cat != CAT_APP) return false; break;
+    case FILTER_IGNORED: if (cat != CAT_IGNORED) return false; break;
     default: break;
     }
     char needle[64];
@@ -1128,7 +1130,7 @@ static bool app_matches(const AppInfo &a, i32 filter, const char *search)
 static int app_order_cmp(const void *pa, const void *pb)
 {
     const AppInfo &a = g_app.config.apps[*(const i16 *)pa], &b = g_app.config.apps[*(const i16 *)pb];
-    bool na = a.category == CAT_NONE, nb = b.category == CAT_NONE;
+    bool na = app_category(g_app.config, a) == CAT_NONE, nb = app_category(g_app.config, b) == CAT_NONE;
     if (na != nb) return na ? -1 : 1;
     if (a.last_heard_us != b.last_heard_us) return a.last_heard_us > b.last_heard_us ? -1 : 1;
     return strcmp(a.exe.s, b.exe.s);
@@ -1169,6 +1171,76 @@ static void app_set_category(AppInfo *a, AppCategory cat)
     log_line("options: %s is now %s", a->exe.s, category_name(cat));
     a->category = cat;
     options_apply(APPLY_AUDIO | (cat == CAT_GAME || a->rec.bitrate_mbps ? APPLY_RECORDER : 0));
+}
+
+// Forgets an app: its category, name and settings go, and it comes back as new the next time it plays.
+static void app_dismiss(i32 idx)
+{
+    Config &c = g_app.config;
+    if (idx < 0 || idx >= c.app_count) return;
+    log_line("options: %s dismissed", c.apps[idx].exe.s);
+    memmove(&c.apps[idx], &c.apps[idx + 1], (c.app_count - idx - 1) * sizeof c.apps[0]);
+    c.app_count--;
+    OptionsUi &o = g_app.options;
+    o.menu_app = -1;
+    o.order_dirty = true;
+    options_apply(APPLY_AUDIO | APPLY_RECORDER);
+}
+
+// The folder an exe path is in ("" for none).
+static void path_folder(const char *path, char *out, i32 cap)
+{
+    snprintf(out, cap, "%s", path);
+    char *s = strrchr(out, '\\'), *f = strrchr(out, '/');
+    if (f > s) s = f;
+    if (s) *s = 0;
+    else out[0] = 0;
+}
+
+static i32 folder_find(const char *path)
+{
+    const Config &c = g_app.config;
+    for (i32 i = 0; i < c.folder_count; i++)
+        if (!_stricmp(c.folders[i].path, path)) return i;
+    return -1;
+}
+
+// Adds a rule (or changes the one for that folder). Returns its index, -1 if the list is full.
+static i32 folder_set(const char *path, AppCategory cat)
+{
+    Config &c = g_app.config;
+    i32 i = folder_find(path);
+    if (i < 0) {
+        if (c.folder_count == COUNT(c.folders)) return -1;
+        i = c.folder_count++;
+        str_set(c.folders[i].path, path);
+    }
+    c.folders[i].category = cat;
+    log_line("options: folder %s is %s", path, category_name(cat));
+    g_app.options.order_dirty = true;
+    options_apply(APPLY_AUDIO | APPLY_RECORDER);
+    return i;
+}
+
+static void folder_remove(i32 i)
+{
+    Config &c = g_app.config;
+    if (i < 0 || i >= c.folder_count) return;
+    log_line("options: folder rule %s removed", c.folders[i].path);
+    memmove(&c.folders[i], &c.folders[i + 1], (c.folder_count - i - 1) * sizeof c.folders[0]);
+    c.folder_count--;
+    g_app.options.order_dirty = true;
+    options_apply(APPLY_AUDIO | APPLY_RECORDER);
+}
+
+// How many known apps a rule decides (ones with their own category don't count).
+static i32 folder_app_count(i32 rule)
+{
+    const Config &c = g_app.config;
+    i32 n = 0;
+    for (i32 i = 0; i < c.app_count; i++)
+        n += c.apps[i].category == CAT_NONE && folder_rule_for(c.folders, c.folder_count, c.apps[i].path) == rule;
+    return n;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1285,6 +1357,52 @@ static void game_line(const char *name, f32 x)
     ImGui::SameLine(x);
 }
 
+// Resolutions offered, as output heights. The width follows the monitor's shape.
+static const i32 RES_HEIGHTS[] = {2160, 1440, 1080, 720};
+static const char *RES_LABELS[] = {"2160p", "1440p", "1080p", "720p"};
+
+// The recorded monitor's height, 0 if it isn't known.
+static i32 rec_monitor_h()
+{
+    const OptionsUi &o = g_app.options;
+    i32 i = g_app.config.output_idx;
+    return i >= 0 && i < o.monitor_count ? o.monitors[i].height : 0;
+}
+
+// "Native", or a height ("1080p"); one above the monitor says what it records instead.
+static void res_label(i32 height, char *out, i32 cap)
+{
+    i32 mh = rec_monitor_h();
+    if (height <= 0) snprintf(out, cap, "Native");
+    else if (mh && height >= mh) snprintf(out, cap, "%dp \xC2\xB7 records %dp", height, mh);
+    else snprintf(out, cap, "%dp", height);
+}
+
+// The items after `first` ones: Native, then each height. notes[] says when one is the monitor's own.
+static void res_items(const char **items, const char **notes, char (*buf)[48], i32 first)
+{
+    i32 mh = rec_monitor_h();
+    static char native_note[32];
+    snprintf(native_note, sizeof native_note, mh ? "%dp" : "", mh);
+    items[first] = "Native";
+    notes[first] = mh ? native_note : 0;
+    for (i32 i = 0; i < COUNT(RES_HEIGHTS); i++) {
+        items[first + 1 + i] = RES_LABELS[i];
+        notes[first + 1 + i] = 0;
+        if (mh && RES_HEIGHTS[i] > mh) {
+            snprintf(buf[i], 48, "records %dp", mh);
+            notes[first + 1 + i] = buf[i];
+        }
+    }
+}
+
+static i32 res_index(i32 height)
+{
+    for (i32 i = 0; i < COUNT(RES_HEIGHTS); i++)
+        if (RES_HEIGHTS[i] == height) return i + 1;
+    return 0;
+}
+
 static void game_settings_popup()
 {
     OptionsUi &o = g_app.options;
@@ -1350,6 +1468,22 @@ static void game_settings_popup()
     // Drop-downs: "Default" first, which shows what the default is
     const char *items[8], *notes[8];
     char def[48];
+    game_line("Resolution", x);
+    {
+        char rl[48], rbuf[COUNT(RES_HEIGHTS)][48];
+        res_label(c.height, rl, sizeof rl);
+        snprintf(def, sizeof def, "Default \xC2\xB7 %s", rl);
+        items[0] = def;
+        notes[0] = 0;
+        res_items(items, notes, rbuf, 1);
+        i32 rsel = r.height < 0 ? 1 : r.height ? res_index(r.height) + 1 : 0;
+        if (r.height > 0 && rsel == 1) rsel = 0; // a height not offered: Default
+        if (opt_combo("##res", items, notes, 2 + COUNT(RES_HEIGHTS), &rsel, cw)) {
+            r.height = rsel == 0 ? 0 : rsel == 1 ? -1 : RES_HEIGHTS[rsel - 2];
+            rec_changed = true;
+        }
+    }
+
     game_line("Preset", x);
     snprintf(def, sizeof def, "Default \xC2\xB7 %s", PRESET_LABELS[preset_step(c.preset.s)]);
     items[0] = def;
@@ -1399,8 +1533,8 @@ static void game_settings_popup()
     ImGui::PopStyleColor();
 
     if (rec_changed) {
-        log_line("options: %s records at %g Mbps, %d fps, preset %s, %s, quality %d (0 or empty = the default)", a.exe.s,
-                 r.bitrate_mbps, r.fps, r.preset.s, r.rate_control.s, r.cq);
+        log_line("options: %s records at %g Mbps, %d fps, height %d, preset %s, %s, quality %d (0 or empty = the default)",
+                 a.exe.s, r.bitrate_mbps, r.fps, r.height, r.preset.s, r.rate_control.s, r.cq);
         options_apply(APPLY_RECORDER);
     }
 
@@ -1409,7 +1543,7 @@ static void game_settings_popup()
     kit_dim("Empty uses Recording's. The recording restarts when this game starts.");
     ImGui::PopFont();
     f32 bw = dp(84);
-    bool custom = r.bitrate_mbps || r.fps || r.preset.s[0] || r.rate_control.s[0] || r.cq;
+    bool custom = r.bitrate_mbps || r.fps || r.height || r.preset.s[0] || r.rate_control.s[0] || r.cq;
     ImGui::SetCursorPosX(x + cw - 2 * bw - dp(8));
     if (kit_button("Reset", KIT_GHOST, ImVec2(bw, 0), custom)) {
         r = {};
@@ -1431,6 +1565,7 @@ static void game_summary(const AppInfo &a, char *out, i32 cap)
     auto add = [&](const char *t) { n += snprintf(out + n, cap - n, "%s%s", n ? " \xC2\xB7 " : "", t); };
     char t[32];
     if (r.bitrate_mbps) { snprintf(t, sizeof t, "%g Mbps", r.bitrate_mbps); add(t); }
+    if (r.height) { if (r.height < 0) add("native"); else { snprintf(t, sizeof t, "%dp", r.height); add(t); } }
     if (r.fps) { snprintf(t, sizeof t, "%d fps", r.fps); add(t); }
     if (r.preset.s[0]) add(PRESET_LABELS[preset_step(r.preset.s)]);
     if (r.rate_control.s[0]) add(RC_LABELS[rc_index(r.rate_control.s)]);
@@ -1547,7 +1682,8 @@ static void apps_rename_popup()
 static const AppCategory ROW_CATS[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
 static f32 cat_pill_w() { return dp(74); }
 
-static bool cat_pills(AppInfo *a, f32 x, f32 y)
+// `own` is filled; `inherited` (a folder's rule, when there's no own one) is only outlined.
+static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y, AppCategory *picked)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 w = cat_pill_w(), h = ImGui::GetFrameHeight(), gap = dp(4);
@@ -1559,22 +1695,166 @@ static bool cat_pills(AppInfo *a, f32 x, f32 y)
         ImGui::PushID(i);
         bool clicked = ImGui::InvisibleButton("##cat", ImVec2(w, h));
         ImGui::PopID();
-        bool hot = ImGui::IsItemHovered(), on = a->category == cat;
+        bool hot = ImGui::IsItemHovered(), on = own == cat, via = !on && own == CAT_NONE && inherited == cat;
         u32 col = CATEGORY_COLOURS[cat];
         if (on) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), col32(col, 0.2f), h / 2);
         else if (hot) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), col32(COL_PANEL2), h / 2);
-        if (on) dl->AddRect(p, ImVec2(p.x + w, p.y + h), col32(col, 0.7f), h / 2, 0, dp(1));
+        if (on || via) dl->AddRect(p, ImVec2(p.x + w, p.y + h), col32(col, on ? 0.7f : 0.45f), h / 2, 0, dp(1));
         const char *label = CATEGORY_LABELS[cat];
         ImFont *font = on ? g_font_bold : g_font;
         f32 tw = text_w(font, label);
         opt_text_at(dl, font, ImVec2(floorf(p.x + (w - tw) / 2), floorf(p.y + (h - font->FontSize) / 2)),
-                    on ? col : hot ? COL_TEXT : COL_DIM, label, p.x + w);
+                    on || via ? col : hot ? COL_TEXT : COL_DIM, label, p.x + w);
         if (clicked && !on) {
-            app_set_category(a, cat);
+            *picked = cat;
             changed = true;
         }
     }
     return changed;
+}
+
+static bool cat_pills(AppInfo *a, f32 x, f32 y)
+{
+    AppCategory picked;
+    if (!cat_pills_draw(a->category, app_category(g_app.config, *a), x, y, &picked)) return false;
+    app_set_category(a, picked);
+    return true;
+}
+
+static bool pick_folder(const Path &start, Path *out);
+
+// Editing a folder rule's path, where a * can stand for one folder of any name (VoiceStreams\*\clips-off).
+static void folder_edit_popup()
+{
+    OptionsUi &o = g_app.options;
+    Config &c = g_app.config;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    bool open = ImGui::BeginPopup("edit folder");
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (!open) return;
+    if (o.menu_folder < 0 || o.menu_folder >= c.folder_count) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    FolderRule &r = c.folders[o.menu_folder];
+    f32 w = dp(520);
+    ImGui::PushFont(g_font_bold);
+    ImGui::TextUnformatted("Folder");
+    ImGui::PopFont();
+    if (ImGui::IsWindowAppearing()) {
+        str_set(o.edit, r.path);
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::SetNextItemWidth(w);
+    bool enter = ImGui::InputText("##path", o.edit, sizeof r.path, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopStyleColor();
+    ImGui::PushFont(g_font_small);
+    kit_dim("A * matches any one folder");
+    ImGui::PopFont();
+    f32 bw = dp(84), gap = dp(8);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
+    if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    ImGui::SameLine(0, gap);
+    char path[MAX_PATH * 2];
+    str_set(path, trim(o.edit));
+    for (char *p = path; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
+    i32 other = folder_find(path);
+    bool ok = path[0] && (other < 0 || other == o.menu_folder);
+    if ((kit_button("Save", KIT_PRIMARY, ImVec2(bw, 0), ok) || enter) && ok) {
+        log_line("options: folder rule %s is now %s", r.path, path);
+        str_set(r.path, path);
+        o.order_dirty = true;
+        options_apply(APPLY_AUDIO | APPLY_RECORDER);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// Opens a rule's folder in Explorer (for one with a *, the part above it).
+static void folder_open(const char *path)
+{
+    char u[MAX_PATH * 2];
+    str_set(u, path);
+    char *star = strchr(u, '*');
+    if (star) *star = 0;
+    wchar_t w[MAX_PATH];
+    utf8_to_wide(u, w, MAX_PATH);
+    ShellExecuteW(0, L"open", w, 0, 0, SW_SHOWNORMAL);
+    log_line("showing %s in Explorer", u);
+}
+
+// The Folders list: one row per rule, the same size as an app row.
+static void folders_rows(i32 rows, f32 rh, i32 *open_popup)
+{
+    OptionsUi &o = g_app.options;
+    Config &c = g_app.config;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 fh = ImGui::GetFrameHeight();
+    f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
+    f32 more_x = x1 - fh, gear_x = more_x - dp(4) - fh;
+    f32 pills_w = COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4), pills_x = gear_x - dp(16) - pills_w;
+    f32 is = dp(34), text_x = x0 + is + dp(14), text_max = pills_x - dp(16);
+    i16 shown[COUNT(c.folders)];
+    i32 n = 0;
+    for (i32 i = 0; i < c.folder_count; i++) {
+        char hay[MAX_PATH * 2], needle[64];
+        str_set(hay, c.folders[i].path);
+        str_set(needle, o.search);
+        char *nd = trim(needle);
+        for (char *p = hay; *p; p++) *p = (char)tolower((u8)*p);
+        for (char *p = nd; *p; p++) *p = (char)tolower((u8)*p);
+        if (!nd[0] || strstr(hay, nd)) shown[n++] = (i16)i;
+    }
+    for (i32 r = 0; r < rows; r++) {
+        i32 k = o.folders_page * rows + r;
+        opt_row_begin(0, 0, 0, rh, k < n);
+        if (k >= n) {
+            if (n == 0 && r == 0) opt_empty_row(o.search[0] ? "No match" : "No folder rules. Add one with Add folder.");
+            opt_row_end();
+            continue;
+        }
+        i32 idx = shown[k];
+        FolderRule &f = c.folders[idx];
+        ImGui::PushID(idx);
+        bool hot = opt_row_hover();
+        f32 cy = opt_row_frame_y();
+        ImVec2 ia(x0, floorf(g_row.y + (rh - is) / 2));
+        u32 col = CATEGORY_COLOURS[f.category];
+        dl->AddRectFilled(ia, ImVec2(ia.x + is, ia.y + is), col32(col, 0.18f), dp(8));
+        ImGui::PushFont(g_font_icon);
+        ImVec2 gs = ImGui::CalcTextSize(ICON_FOLDER);
+        dl->AddText(ImVec2(floorf(ia.x + (is - gs.x) / 2), floorf(ia.y + (is - gs.y) / 2)), col32(col), ICON_FOLDER);
+        ImGui::PopFont();
+
+        // Its last folder name, and under it the whole path and how many apps it sorts
+        const char *name = f.path;
+        for (const char *p = f.path; *p; p++)
+            if ((*p == '\\' || *p == '/') && p[1] && p[1] != '\\' && p[1] != '/') name = p + 1;
+        f32 nh = g_font_bold->FontSize, sh = g_font_small->FontSize, ty = floorf(g_row.y + (rh - nh - dp(3) - sh) / 2);
+        opt_text_at(dl, g_font_bold, ImVec2(text_x, ty), COL_TEXT, name, text_max);
+        char line[MAX_PATH * 2 + 32];
+        i32 apps = folder_app_count(idx);
+        snprintf(line, sizeof line, "%s \xC2\xB7 %d app%s", f.path, apps, apps == 1 ? "" : "s");
+        opt_text_at(dl, g_font_small, ImVec2(text_x, ty + nh + dp(3)), COL_DIM, line, text_max);
+
+        AppCategory picked;
+        if (cat_pills_draw(f.category, CAT_NONE, pills_x, cy, &picked)) folder_set(f.path, picked);
+
+        ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
+        bool more = kit_icon_button(ICON_MORE, "##more");
+        if (more || (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+            o.menu_folder = idx;
+            *open_popup = 4;
+        }
+        ImGui::PopID();
+        opt_row_end();
+    }
+    o.folders_shown = n;
 }
 
 static void options_apps()
@@ -1585,12 +1865,17 @@ static void options_apps()
     apps_order_extend();
 
     // Filter chips with counts; search and Add on the right
-    static const char *chips[] = {"All", "New", "Games", "Apps", "Chat", "Ignored"};
-    static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED};
+    static const char *chips[] = {"All", "New", "Games", "Apps", "Chat", "Ignored", "Folders"};
+    static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED,
+                                      FILTER_FOLDERS};
     static const i32 chip_cat[] = {-1, CAT_NONE, CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
-    i32 counts[6] = {c.app_count};
-    for (i32 i = 0; i < c.app_count; i++)
-        for (i32 k = 1; k < 6; k++) counts[k] += c.apps[i].category == chip_cat[k];
+    i32 counts[7] = {c.app_count};
+    for (i32 i = 0; i < c.app_count; i++) {
+        AppCategory cat = app_category(c, c.apps[i]);
+        for (i32 k = 1; k < 6; k++) counts[k] += cat == chip_cat[k];
+    }
+    counts[6] = c.folder_count;
+    bool folders = o.filter == FILTER_FOLDERS;
     f32 fh = ImGui::GetFrameHeight();
     for (i32 i = 0; i < COUNT(chips); i++) {
         if (i) ImGui::SameLine(0, dp(6));
@@ -1604,6 +1889,7 @@ static void options_apps()
             o.filter = chip_filter[i];
             o.order_dirty = true;
             o.apps_page = 0;
+            o.folders_page = 0;
         }
     }
     f32 search_w = dp(220), add_w = dp(118), right_w = search_w + dp(10) + add_w;
@@ -1611,10 +1897,19 @@ static void options_apps()
     if (kit_search("##search", o.search, sizeof o.search, "Search", search_w)) {
         o.order_dirty = true;
         o.apps_page = 0;
+        o.folders_page = 0;
     }
     ImGui::SameLine(0, dp(10));
     ImVec2 add_at = ImGui::GetCursorScreenPos();
-    if (kit_button(ICON_ADD "  Add app", KIT_SECONDARY, ImVec2(add_w, 0), c.app_count < COUNT(c.apps))) {
+    if (folders) {
+        Path start = {}, picked = {};
+        if (kit_button(ICON_ADD "  Add folder##add", KIT_SECONDARY, ImVec2(add_w, 0), c.folder_count < COUNT(c.folders)) &&
+            pick_folder(start, &picked)) {
+            char u[MAX_PATH * 2];
+            wide_to_utf8(picked.s, u, sizeof u);
+            if (folder_find(u) < 0) folder_set(u, CAT_APP);
+        }
+    } else if (kit_button(ICON_ADD "  Add app##add", KIT_SECONDARY, ImVec2(add_w, 0), c.app_count < COUNT(c.apps))) {
         str_set(o.add_exe, o.search);
         ImGui::OpenPopup("add app");
     }
@@ -1622,15 +1917,16 @@ static void options_apps()
 
     f32 rh = dp(58);
     i32 rows = opt_rows_fit(rh, opt_pager_h());
-    i32 open_popup = 0; // 1 the menu, 2 a game's settings, 3 rename: opened outside the rows' ID scopes
+    i32 open_popup = 0; // 1 the menu, 2 a game's settings, 3 rename, 4 a folder's menu: opened outside the rows' ID scopes
     opt_card_begin();
+    if (folders) folders_rows(rows, rh, &open_popup);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
     f32 more_x = x1 - fh, gear_x = more_x - dp(4) - fh;
     f32 pills_w = COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4), pills_x = gear_x - dp(16) - pills_w;
     f32 is = dp(34), text_x = x0 + is + dp(14), text_max = pills_x - dp(16);
 
-    for (i32 r = 0; r < rows; r++) {
+    for (i32 r = 0; r < rows && !folders; r++) {
         i32 k = o.apps_page * rows + r;
         opt_row_begin(0, 0, 0, rh, k < o.order_count);
         if (k >= o.order_count) {
@@ -1654,7 +1950,8 @@ static void options_apps()
         app_icon_draw(dl, ImVec2(x0, floorf(g_row.y + (rh - is) / 2)), is, a, name);
 
         // Name, with a "new" tag; under it the exe, when it was heard, and what a game does differently
-        bool is_new = a.category == CAT_NONE;
+        AppCategory cat = app_category(c, a);
+        bool is_new = cat == CAT_NONE;
         f32 nh = g_font_bold->FontSize, sh = g_font_small->FontSize, ty = floorf(g_row.y + (rh - nh - dp(3) - sh) / 2);
         f32 tag_w = is_new ? opt_pill_w("new") + dp(8) : 0;
         opt_text_at(dl, g_font_bold, ImVec2(text_x, ty), COL_TEXT, name, text_max - tag_w);
@@ -1666,14 +1963,14 @@ static void options_apps()
         bool playing = app_playing(a.exe.s);
         if (playing) str_set(when, "playing now");
         else ago_text(a.last_heard_us, when, sizeof when);
-        if (a.category == CAT_GAME) game_summary(a, summary, sizeof summary);
+        if (cat == CAT_GAME) game_summary(a, summary, sizeof summary);
         snprintf(line, sizeof line, "%s \xC2\xB7 %s%s%s", a.exe.s, when, summary[0] ? " \xC2\xB7 " : "", summary);
         opt_text_at(dl, g_font_small, ImVec2(text_x, ty + nh + dp(3)), playing ? COL_OK : COL_DIM, line, text_max);
 
         cat_pills(&a, pills_x, cy);
 
         // The gear (games only; the slot stays for the others) and the menu
-        if (a.category == CAT_GAME) {
+        if (cat == CAT_GAME) {
             ImGui::SetCursorScreenPos(ImVec2(gear_x, cy));
             if (kit_icon_button(ICON_SETTINGS, "##gear", KIT_GHOST, true, summary[0] != 0)) {
                 o.menu_app = idx;
@@ -1698,7 +1995,7 @@ static void options_apps()
     lib_popup_style_pop();
     if (menu) {
         AppInfo *a = o.menu_app >= 0 && o.menu_app < c.app_count ? &c.apps[o.menu_app] : 0;
-        if (a && a->category == CAT_GAME && lib_menu_item(ICON_SETTINGS, "Recording settings")) open_popup = 2;
+        if (a && app_category(c, *a) == CAT_GAME && lib_menu_item(ICON_SETTINGS, "Recording settings")) open_popup = 2;
         if (a && lib_menu_item(ICON_RENAME, "Rename")) open_popup = 3;
         ImGui::BeginDisabled(!o.menu_path.s[0]);
         if (lib_menu_item(ICON_FOLDER, "Open file location")) reveal_file(o.menu_path);
@@ -1708,8 +2005,38 @@ static void options_apps()
             kit_dim("  Not running, and lifelog hasn't seen where it is");
             ImGui::PopFont();
         }
+        // Its folder: a rule for every app in it (shown under Folders), or back to following the one there is
+        char dir[MAX_PATH * 2] = "";
+        if (a) path_folder(a->path, dir, sizeof dir);
+        i32 rule = a ? folder_rule_for(c.folders, c.folder_count, a->path) : -1;
+        if (a && a->category != CAT_NONE && rule >= 0 && lib_menu_item(ICON_FOLDER, "Follow its folder's rule")) {
+            app_set_category(a, CAT_NONE);
+            o.order_dirty = true;
+        }
+        if (a && dir[0] && folder_find(dir) < 0 && c.folder_count < COUNT(c.folders) &&
+            lib_menu_item(ICON_ADD, "Rule for its folder")) {
+            AppCategory cat = app_category(c, *a);
+            folder_set(dir, cat != CAT_NONE ? cat : CAT_APP);
+            o.filter = FILTER_FOLDERS;
+            o.folders_page = 0;
+            o.search[0] = 0;
+        }
+        if (a && lib_menu_item(ICON_CLOSE, "Dismiss")) app_dismiss(o.menu_app);
         ImGui::EndPopup();
     }
+    if (open_popup == 4) ImGui::OpenPopup("folder menu");
+    lib_popup_style_push(8);
+    bool fmenu = ImGui::BeginPopup("folder menu");
+    lib_popup_style_pop();
+    if (fmenu) {
+        bool have = o.menu_folder >= 0 && o.menu_folder < c.folder_count;
+        if (have && lib_menu_item(ICON_FOLDER, "Open in Explorer")) folder_open(c.folders[o.menu_folder].path);
+        if (have && lib_menu_item(ICON_EDIT, "Edit path")) open_popup = 5;
+        if (have && lib_menu_item(ICON_DELETE, "Remove", true)) folder_remove(o.menu_folder);
+        ImGui::EndPopup();
+    }
+    if (open_popup == 5) ImGui::OpenPopup("edit folder");
+    folder_edit_popup();
     if (open_popup == 2) ImGui::OpenPopup("game settings");
     if (open_popup == 3) ImGui::OpenPopup("rename app");
     game_settings_popup();
@@ -1717,8 +2044,13 @@ static void options_apps()
     apps_add_popup(ImVec2(add_at.x + add_w, add_at.y + fh + dp(6)), rows);
 
     char left[48];
-    snprintf(left, sizeof left, "%d app%s", o.order_count, o.order_count == 1 ? "" : "s");
-    opt_pager("apps", &o.apps_page, o.order_count, rows, left);
+    if (folders) {
+        snprintf(left, sizeof left, "%d folder%s", o.folders_shown, o.folders_shown == 1 ? "" : "s");
+        opt_pager("folders", &o.folders_page, o.folders_shown, rows, left);
+    } else {
+        snprintf(left, sizeof left, "%d app%s", o.order_count, o.order_count == 1 ? "" : "s");
+        opt_pager("apps", &o.apps_page, o.order_count, rows, left);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2048,7 +2380,18 @@ static void options_recording()
         opt_combo_end();
     }
     opt_row_end();
-    if (opt_row_i32("Frame rate", 0, "##fps", &c.fps, 1, 240, "fps")) {
+    {
+        const char *items[1 + COUNT(RES_HEIGHTS)], *notes[1 + COUNT(RES_HEIGHTS)];
+        char buf[COUNT(RES_HEIGHTS)][48];
+        res_items(items, notes, buf, 0);
+        i32 sel = res_index(c.height);
+        if (opt_row_combo("Resolution", "Never above the monitor's", "##res", items, notes, COUNT(items), &sel, wide)) {
+            c.height = sel ? RES_HEIGHTS[sel - 1] : 0;
+            log_line("options: resolution %d (0 = native)", c.height);
+            options_apply(APPLY_RECORDER);
+        }
+    }
+    if (opt_row_i32("Frame rate", "Never above the monitor's refresh rate", "##fps", &c.fps, 1, 240, "fps")) {
         log_line("options: %d fps", c.fps);
         options_apply(APPLY_RECORDER);
     }

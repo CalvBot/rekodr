@@ -187,7 +187,7 @@ static void tl_ask_index()
 static i32 tl_row_group(const TimelineRow &r)
 {
     if (!strcmp(r.exe, "mic")) return 0;
-    return audio_category(g_app.config, r.exe) == CAT_GAME ? 1 : 2;
+    return audio_category_at(g_app.config, r.exe, 0) == CAT_GAME ? 1 : 2;
 }
 
 // One row per exe, by group, and within a group in the order they were first heard.
@@ -201,7 +201,7 @@ static void tl_make_rows()
         const char *exe = st.mic ? "mic" : st.exe;
         tl.stream_row[s] = -1;
         if (!st.seg_count) continue;
-        if (!st.mic && audio_category(g_app.config, exe) == CAT_IGNORED) continue;
+        if (!st.mic && audio_category_at(g_app.config, exe, st.path) == CAT_IGNORED) continue;
         i32 r = 0;
         while (r < tl.row_count && strcmp(tl.rows[r].exe, exe)) r++;
         if (r == tl.row_count) {
@@ -493,7 +493,7 @@ static void tl_games_make(const BufferIdx &b, i64 now)
         }
     }
     for (i32 i = 0; i < c.app_count; i++)
-        if (c.apps[i].category == CAT_GAME) {
+        if (app_category(c, c.apps[i]) == CAT_GAME) {
             audio_display_name(c, c.apps[i].exe.s, name, sizeof name);
             tl_games_add(name);
         }

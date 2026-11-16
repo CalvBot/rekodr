@@ -25,6 +25,7 @@ enum SessionMode : u8 {
 struct RecOverride {
     f32   bitrate_mbps; // 0 = Config.bitrate_mbps
     i32   fps;          // 0 = Config.fps
+    i32   height;       // 0 = Config.height, -1 = the monitor's own
     Str64 preset;       // "" = Config.preset
     Str64 rate_control; // "" = Config.rate_control
     i32   cq;           // 0 = Config.cq
@@ -39,6 +40,14 @@ struct AppInfo {
     SessionMode session_mode; // games only
     RecOverride rec;          // games only
     i64         last_heard_us;
+    char        path[MAX_PATH]; // where its exe was last heard from (UTF-8), for folder rules; "" = not known
+};
+
+// A folder rule: every exe in `path` or below it gets `category`, unless the exe has a category of its own. The
+// deepest folder wins; a `*` part matches any one folder name ("...\VoiceStreams\*\clips-off").
+struct FolderRule {
+    char        path[MAX_PATH * 2]; // UTF-8
+    AppCategory category;
 };
 
 struct Hotkey {
@@ -57,7 +66,8 @@ struct Config {
 
     // Video
     i32   output_idx; // DXGI output index on the capture GPU
-    i32   fps;
+    i32   fps;        // never above the monitor's refresh rate
+    i32   height;     // output height (1080…); 0 = the monitor's own. Never above the monitor's
     Str64 codec;      // "h264" | "hevc" | "av1"
     Str64 encoder;    // "auto" | "nvenc" | "amf" | "qsv" | "cpu"
     f32   bitrate_mbps;         // while a game is played (each game can have its own)
@@ -90,6 +100,9 @@ struct Config {
 
     AppInfo apps[512];
     i32     app_count;
+
+    FolderRule folders[32];
+    i32        folder_count;
 };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -153,6 +166,7 @@ struct AudioLive {
     AudioKind  kind;
     AudioTrack track;
     Str64      exe;      // lower-case exe, "mic" for the mic
+    char       path[MAX_PATH]; // its exe's full path (UTF-8), "" for the mic
     i64        since_us; // when the stream started
 };
 
@@ -183,6 +197,7 @@ struct AudioStreamInfo {
     char exe[64];  // lower case; "mic" for the mic
     bool mic;
     u32  pid;
+    char path[MAX_PATH]; // the exe's full path when it was recorded (meta.json; "" in older buffers)
     i64  start_us; // wall clock of the first sample (meta.json)
     i32  first_seg, seg_count;
 };
@@ -545,6 +560,9 @@ struct OptionsUi {
     i32  apps_page;
     i32  menu_app;        // the app right-clicked
     Path menu_path;       // its exe, empty if it isn't running and lifelog never saw it
+    i32  menu_folder;     // the folder rule whose menu is open
+    i32  folders_page;
+    i32  folders_shown;   // rules the Folders list shows (after the search)
     i32  hotkeys_page;
     // Hotkeys: the one whose keys are being pressed, + 1 (0 = none)
     i32  capture_slot;

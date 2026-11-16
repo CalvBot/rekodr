@@ -351,6 +351,7 @@ static bool ui_init()
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = 0; // nothing to remember: the layout is fixed
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigWindowsMoveFromTitleBarOnly = true; // popups have no title bar, so none of them can be dragged
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_gpu.device, g_gpu.context);
     ui_apply_accent(g_app.config.accent);

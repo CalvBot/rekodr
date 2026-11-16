@@ -111,6 +111,75 @@ static AppInfo *config_app(Config *c, const char *exe)
     return a;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Folder rules (FOLDER-RULES.md). An exe's own category wins; with none (new), the deepest folder rule over its path
+// decides. Paths compare without case, / and \ alike, and a trailing slash doesn't matter.
+
+// The next part of a path from *p ("C:", "Users", …), skipping separators. Returns its length; 0 at the end.
+static i32 path_part(const char **p, const char **part)
+{
+    while (**p == '\\' || **p == '/') (*p)++;
+    *part = *p;
+    while (**p && **p != '\\' && **p != '/') (*p)++;
+    return (i32)(*p - *part);
+}
+
+// How many parts deep `folder` is when `path` (an exe) is inside it or below it; 0 when it isn't. A `*` part of the
+// folder matches any one folder name.
+static i32 path_under(const char *path, const char *folder)
+{
+    const char *p = path, *f = folder, *pp, *fp;
+    i32 depth = 0;
+    for (;;) {
+        i32 fl = path_part(&f, &fp);
+        if (!fl) break;
+        i32 pl = path_part(&p, &pp);
+        if (!pl) return 0;
+        bool any = fl == 1 && fp[0] == '*';
+        if (!any && (fl != pl || _strnicmp(fp, pp, fl))) return 0;
+        depth++;
+    }
+    const char *rest;
+    return depth && path_part(&p, &rest) ? depth : 0; // something (the exe) must be left below it
+}
+
+// The folder rule for `path`: the deepest that holds it, ignored winning a tie. -1 = none.
+static i32 folder_rule_for(const FolderRule *rules, i32 n, const char *path)
+{
+    i32 best = -1, best_depth = 0;
+    if (!path || !path[0]) return -1;
+    for (i32 i = 0; i < n; i++) {
+        i32 d = path_under(path, rules[i].path);
+        if (!d) continue;
+        if (d > best_depth || (d == best_depth && rules[i].category == CAT_IGNORED)) {
+            best = i;
+            best_depth = d;
+        }
+    }
+    return best;
+}
+
+// An app's category: its own, else its folder's (by `path`, or where it was last heard when that's empty), else new.
+static AppCategory app_category_in(const AppInfo *apps, i32 app_count, const FolderRule *rules, i32 rule_count,
+                                   const char *exe, const char *path)
+{
+    const AppInfo *a = 0;
+    for (i32 i = 0; i < app_count && !a; i++)
+        if (!strcmp(apps[i].exe.s, exe)) a = &apps[i];
+    if (a && a->category != CAT_NONE) return a->category;
+    if ((!path || !path[0]) && a) path = a->path;
+    i32 r = folder_rule_for(rules, rule_count, path);
+    return r >= 0 ? rules[r].category : CAT_NONE;
+}
+
+// A known app's category: its own, else its folder's (by where it was last heard from).
+static AppCategory app_category(const Config &c, const AppInfo &a)
+{
+    if (a.category != CAT_NONE) return a.category;
+    i32 r = folder_rule_for(c.folders, c.folder_count, a.path);
+    return r >= 0 ? c.folders[r].category : CAT_NONE;
+}
+
 static char *trim(char *s)
 {
     while (*s == ' ' || *s == '\t') s++;
@@ -155,6 +224,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
     else if (!strcmp(key, "fps")) c->fps = atoi(value);
+    else if (!strcmp(key, "height")) c->height = atoi(value);
     else if (!strcmp(key, "codec")) str_set(c->codec.s, value);
     else if (!strcmp(key, "encoder")) str_set(c->encoder.s, value);
     else if (!strcmp(key, "bitrate_mbps")) real(&c->bitrate_mbps);
@@ -182,9 +252,9 @@ static void config_set(Config *c, const char *key, char *value)
             str_set(h->action.s, f[1]);
         }
     } else if (!strcmp(key, "app")) {
-        // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset
-        char *f[9] = {};
-        i32 n = split_fields(value, f, 9);
+        // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset | height | path
+        char *f[11] = {};
+        i32 n = split_fields(value, f, 11);
         if (n >= 3) {
             AppInfo *a = config_app(c, f[0]);
             if (!a) return;
@@ -196,6 +266,16 @@ static void config_set(Config *c, const char *key, char *value)
             if (n >= 7) str_set(a->rec.rate_control.s, f[6]);
             if (n >= 8) a->rec.cq = atoi(f[7]);
             if (n >= 9) str_set(a->rec.preset.s, f[8]);
+            if (n >= 10) a->rec.height = atoi(f[9]);
+            if (n >= 11) str_set(a->path, f[10]);
+        }
+    } else if (!strcmp(key, "folder")) {
+        // folder = ignored | C:\Users\me\AppData\Local\VoiceStreams\*\clips-off
+        char *f[2] = {};
+        if (split_fields(value, f, 2) == 2 && f[1][0] && c->folder_count < COUNT(c->folders)) {
+            FolderRule *r = &c->folders[c->folder_count++];
+            r->category = category_parse(f[0]);
+            str_set(r->path, f[1]);
         }
     }
 }
@@ -259,8 +339,9 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "buffer_hours = %g\nbuffer_gb = %g\n", c.buffer_hours, c.buffer_gb);
     fprintf(f, "min_free_gb = %g\n", c.min_free_gb);
     path("ffmpeg", c.ffmpeg);
-    fprintf(f, "\noutput_idx = %d\nfps = %d\ncodec = %s\nencoder = %s\nbitrate_mbps = %g\ndesktop_bitrate_mbps = %g\n",
-            c.output_idx, c.fps, c.codec.s, c.encoder.s, c.bitrate_mbps, c.desktop_bitrate_mbps);
+    fprintf(f, "\noutput_idx = %d\nfps = %d\nheight = %d\ncodec = %s\nencoder = %s\nbitrate_mbps = %g\n"
+               "desktop_bitrate_mbps = %g\n",
+            c.output_idx, c.fps, c.height, c.codec.s, c.encoder.s, c.bitrate_mbps, c.desktop_bitrate_mbps);
     boolean("draw_mouse", c.draw_mouse);
     fprintf(f, "preset = %s\nrate_control = %s\ncq = %d\npeak_factor = %g\n", c.preset.s, c.rate_control.s, c.cq,
             c.peak_factor);
@@ -273,14 +354,18 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "accent = %d\nthumb_size = %d\n", c.accent, c.thumb_size);
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
-    fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset\n"
+    fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
+               " | height | where it was last heard\n"
                "# (a game's own recording settings; 0 or empty = the default)\n");
     for (i32 i = 0; i < c.app_count; i++) {
         const AppInfo &a = c.apps[i];
-        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s\n", a.exe.s, a.name.s, category_name(a.category),
-                session_mode_name(a.session_mode), a.rec.bitrate_mbps, a.rec.fps, a.rec.rate_control.s, a.rec.cq,
-                a.rec.preset.s);
+        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s | %d | %s\n", a.exe.s, a.name.s,
+                category_name(a.category), session_mode_name(a.session_mode), a.rec.bitrate_mbps, a.rec.fps,
+                a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path);
     }
+    fprintf(f, "\n# folder = category | path (every app in it or below it, unless the app has its own category)\n");
+    for (i32 i = 0; i < c.folder_count; i++)
+        fprintf(f, "folder = %s | %s\n", category_name(c.folders[i].category), c.folders[i].path);
     bool ok = fclose(f) == 0;
     ok = ok && MoveFileExW(tmp.s, paths.settings.s, MOVEFILE_REPLACE_EXISTING);
     if (!ok) log_line("couldn't save settings (%d)", (int)GetLastError());

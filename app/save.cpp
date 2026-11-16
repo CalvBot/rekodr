@@ -33,6 +33,8 @@ struct SaveSettings {
     u8      vendor; // the H.264 encoder Keep and Share use when they re-encode (Vendor)
     AppInfo apps[512];
     i32     app_count;
+    FolderRule folders[32];
+    i32     folder_count;
 };
 
 struct SaveRequest {
@@ -123,10 +125,10 @@ static const AppInfo *save_app(const SaveSettings &c, const char *exe)
     return 0;
 }
 
-static AppCategory save_category(const SaveSettings &c, const char *exe)
+// By the path it was recorded from, so a folder rule covers it.
+static AppCategory save_category(const SaveSettings &c, const char *exe, const char *path)
 {
-    const AppInfo *a = save_app(c, exe);
-    return a ? a->category : CAT_NONE;
+    return app_category_in(c.apps, c.app_count, c.folders, c.folder_count, exe, path);
 }
 
 // Drops what a file name can't hold.
@@ -230,7 +232,7 @@ static void make_tracks(SaveWork *w)
         const AudioStreamInfo &st = w->buf.streams[w->streams[i]];
         w->stream_track[i] = -1;
         if (st.mic) { w->stream_track[i] = 0; continue; }
-        AppCategory cat = save_category(w->cfg, st.exe);
+        AppCategory cat = save_category(w->cfg, st.exe, st.path);
         if (cat == CAT_COMMUNICATION) { w->stream_track[i] = 1; continue; }
         if (cat == CAT_IGNORED) continue;
         i32 t = 2;
@@ -1053,6 +1055,8 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
             if (ok & (1 << vi)) { s->vendor = (u8)vi; break; }
     memcpy(s->apps, c.apps, c.app_count * sizeof c.apps[0]);
     s->app_count = c.app_count;
+    memcpy(s->folders, c.folders, c.folder_count * sizeof c.folders[0]);
+    s->folder_count = c.folder_count;
     if (!g_save_q.thread) g_save_q.thread = thread_start(save_thread, 0);
     WakeConditionVariable(&g_save_q.wake);
     ReleaseSRWLockExclusive(&g_save_q.lock);
