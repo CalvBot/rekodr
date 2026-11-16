@@ -208,6 +208,13 @@ One window with a header (status, pause, Help, Options):
   hierarchies or RAII wrappers. Data-oriented: fixed arrays where the maximum is known.
 - **Dependencies:** the Windows SDK (D3D11, DXGI, Media Foundation, WASAPI, Shell) and Dear ImGui (vendored
   source). ffmpeg and ffprobe are found on the PATH or set in settings.
+- **Games database** (`gamedb.cpp`): which exe is which game, its proper name, its icon and cover. Nothing is
+  shipped; clipback fetches Discord's public list of detectable games (about 25,000, with each game's exe names,
+  the folders they sit in, and the command line that tells apart an exe several games share, such as `javaw.exe`)
+  and keeps it under `%LOCALAPPDATA%\clipback\gamedb`, fetching it again after a week. Icons come from Discord's
+  image server and covers from Steam's, each the first time something shows it. A known game is named properly and,
+  if it hasn't been sorted, becomes a Game. These are the only web requests clipback makes, and Options › General
+  turns them off.
 - **lifelog:** no code link. Shared data (the game list, app categories, and lifelog's view of what's playing if
   wanted) goes through plain files that both read. clipback has its own small process watcher, icon extraction and
   clipboard code.

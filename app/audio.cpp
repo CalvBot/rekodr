@@ -1097,17 +1097,22 @@ static void audio_on_event(const Event &e)
         if (path[0]) str_set(app->path, path);
         if (moved || (path[0] && g_app.config.app_count != before)) // its name can differ where it runs from now
             exe_description(app->path, app->desc.s, sizeof app->desc.s);
+        bool named = (moved || g_app.config.app_count != before) && gamedb_name_app(app); // a known game: its name, and sorted
         if (g_app.config.app_count != before) {
             log_line("new app heard: %s", exe.s);
             audio_config_changed();
         } else if (moved) {
             audio_config_changed(); // the watcher detects games by it
         }
-        if (moved) config_save(g_app.config, g_app.paths); // folder rules decide by it, so keep it
+        if (named && !moved && g_app.config.app_count == before) audio_config_changed();
+        if (moved || named) config_save(g_app.config, g_app.paths); // folder rules decide by it, so keep it
         break;
     }
     case AE_GAME:
         str_set(a.game.s, e.text);
+        // An exe several games share (javaw.exe) is whichever one is running now, so ask while it is
+        for (i32 i = 0; e.text[0] && i < g_app.config.app_count; i++)
+            if (!strcmp(g_app.config.apps[i].exe.s, e.text) && gamedb_name_app(&g_app.config.apps[i])) config_save(g_app.config, g_app.paths);
         recorder_settings_changed(); // a game can have its own recording settings
         sessions_on_game(e.text);
         break;

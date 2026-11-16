@@ -64,9 +64,10 @@ static void reveal_file(const Path &path)
 // record). One is looked up per frame; an app with none found gets a letter tile until Options is entered again.
 
 struct AppIcon {
-    char exe[64];
+    char exe[64]; // or a game's name
     ID3D11ShaderResourceView *srv;
     bool tried;
+    bool waiting; // its art is being fetched: tried again when it arrives
 };
 static AppIcon g_app_icons[192];
 static i32 g_app_icon_count;
@@ -182,26 +183,74 @@ static bool installed_icon_path(const char *game, Path *out)
     return out->s[0] != 0;
 }
 
-// The icon for a game's name: the app clipback knows by that name, else the installed program's. Null if neither
-// has one (and while it is being looked up: one a frame, like app_icon).
+// A picture file (PNG or JPEG) as a texture. Main thread.
+static u32 *wic_load(IWICImagingFactory *wic, const wchar_t *path, i32 *w, i32 *h); // library.cpp
+
+static ID3D11ShaderResourceView *image_file_texture(const Path &file)
+{
+    static IWICImagingFactory *wic;
+    if (!wic && FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return 0;
+    i32 w = 0, h = 0;
+    u32 *pixels = wic_load(wic, file.s, &w, &h);
+    if (!pixels) return 0;
+    ID3D11ShaderResourceView *srv = gpu_texture(pixels, w, h);
+    HeapFree(GetProcessHeap(), 0, pixels);
+    return srv;
+}
+
+static i32 g_icon_lookups; // this frame's; one a frame, so a screen full of new icons doesn't stall it
+static bool icon_lookup_ok()
+{
+    i32 frame = ImGui::GetFrameCount();
+    if (frame == g_app_icon_frame) { ui_wake(); return false; }
+    g_app_icon_frame = frame;
+    return true;
+}
+
+static AppIcon *icon_slot(AppIcon *slots, i32 *count, i32 cap, const char *key)
+{
+    for (i32 i = 0; i < *count; i++)
+        if (str_eq(slots[i].exe, key)) return &slots[i];
+    if (*count >= cap) return 0;
+    AppIcon *slot = &slots[(*count)++];
+    *slot = {};
+    str_set(slot->exe, key);
+    return slot;
+}
+
+// A game's icon from the games database, by the game's name. Null if it has none, and while it is being fetched.
+static AppIcon g_db_icons[LIB_MAX_GAMES + 64];
+static i32 g_db_icon_count;
+
+static ID3D11ShaderResourceView *game_db_icon(const char *name)
+{
+    AppIcon *slot = icon_slot(g_db_icons, &g_db_icon_count, COUNT(g_db_icons), name);
+    if (!slot) return 0;
+    if (slot->srv || slot->tried) return slot->srv;
+    if (!icon_lookup_ok()) return 0;
+    slot->tried = true;
+    slot->waiting = false;
+    GameInfo g;
+    Path p = {};
+    if (!gamedb_by_name(name, &g) || !g.icon[0]) return 0;
+    if (gamedb_art(g, ART_ICON, &p)) slot->srv = image_file_texture(p);
+    else slot->waiting = GetFileAttributesW(gamedb_art_file(g.id, ART_ICON).s) == INVALID_FILE_ATTRIBUTES;
+    ui_wake();
+    return slot->srv;
+}
+
+// The icon for a game's name: the database's, else the app clipback knows by that name, else the installed
+// program's. Null if none has one (and while it is being looked up: one a frame, like app_icon).
 static AppIcon g_game_icons[LIB_MAX_GAMES];
 static i32 g_game_icon_count;
 
 static ID3D11ShaderResourceView *game_icon(const char *name)
 {
-    AppIcon *slot = 0;
-    for (i32 i = 0; i < g_game_icon_count; i++)
-        if (str_eq(g_game_icons[i].exe, name)) { slot = &g_game_icons[i]; break; }
-    if (!slot) {
-        if (g_game_icon_count >= COUNT(g_game_icons)) return 0;
-        slot = &g_game_icons[g_game_icon_count++];
-        *slot = {};
-        str_set(slot->exe, name);
-    }
+    if (ID3D11ShaderResourceView *art = game_db_icon(name)) return art;
+    AppIcon *slot = icon_slot(g_game_icons, &g_game_icon_count, COUNT(g_game_icons), name);
+    if (!slot) return 0;
     if (slot->srv || slot->tried) return slot->srv;
-    i32 frame = ImGui::GetFrameCount();
-    if (frame == g_app_icon_frame) { ui_wake(); return 0; }
-    g_app_icon_frame = frame;
+    if (!icon_lookup_ok()) return 0;
     slot->tried = true;
     const Config &c = g_app.config;
     Path p = {};
@@ -213,6 +262,25 @@ static ID3D11ShaderResourceView *game_icon(const char *name)
     if (p.s[0] || installed_icon_path(name, &p)) slot->srv = app_icon_load(p);
     ui_wake();
     return slot->srv;
+}
+
+// The games list has loaded, or art has arrived. Main thread.
+static void gamedb_on_event(const Event &e)
+{
+    if (e.a == GAMEDB_LOADED) {
+        Config &c = g_app.config;
+        bool changed = false;
+        for (i32 i = 0; i < c.app_count; i++) changed |= gamedb_name_app(&c.apps[i]);
+        log_line("games list: %lld games", e.b);
+        if (changed) {
+            config_save(c, g_app.paths);
+            audio_config_changed();
+            g_app.options.order_dirty = true;
+        }
+    }
+    for (i32 i = 0; i < g_db_icon_count; i++)
+        if (!g_db_icons[i].srv && (g_db_icons[i].waiting || e.a == GAMEDB_LOADED)) g_db_icons[i].tried = false;
+    ui_wake();
 }
 
 // Entering Options again tries the ones that had no icon (a game may be running now).

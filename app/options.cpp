@@ -732,7 +732,9 @@ static i32 folder_app_count(i32 rule)
 // The icon in a square at a, or a tile with the first letter in the category's colour.
 static void app_icon_draw(ImDrawList *dl, ImVec2 a, f32 size, const AppInfo &info, const char *name)
 {
-    ID3D11ShaderResourceView *srv = app_icon(info.exe.s);
+    // A game shows its art from the games database; anything else (and a game without any) its exe's icon
+    ID3D11ShaderResourceView *srv = app_category(g_app.config, info) == CAT_GAME ? game_db_icon(name) : 0;
+    if (!srv) srv = app_icon(info.exe.s);
     if (srv) {
         dl->AddImage((ImTextureID)srv, a, ImVec2(a.x + size, a.y + size));
         return;
@@ -2140,6 +2142,15 @@ static void options_general()
     if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
     if (opt_row_f32("Keep share copies for", 0, "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
+        options_apply(0);
+    }
+    opt_card_end();
+
+    opt_section("GAMES");
+    opt_card_begin();
+    if (opt_row_toggle("Look up games online", "Names and icons from Discord's public list of games, covers from Steam. Applies from the next start",
+                       "##lookup", &c.game_lookup)) {
+        log_line("options: look up games %s", c.game_lookup ? "on" : "off");
         options_apply(0);
     }
     opt_card_end();

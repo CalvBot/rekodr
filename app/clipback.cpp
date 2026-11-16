@@ -15,6 +15,8 @@
 #include <mfapi.h>
 #include <mfmediaengine.h>
 #include <wincodec.h>
+#include <winhttp.h>
+#include <tlhelp32.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -65,6 +67,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "config.cpp"
 #include "import.cpp"
 #include "proc.cpp"
+#include "gamedb.cpp"
 #include "recorder.cpp"
 #include "audio.cpp"
 #include "pipe.cpp"

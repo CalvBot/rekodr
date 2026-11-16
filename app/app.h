@@ -89,6 +89,7 @@ struct Config {
     f32 session_min_length_min; // shorter sessions aren't offered (15)
 
     // Sharing
+    bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
 
     bool start_with_windows;

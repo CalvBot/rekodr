@@ -13,6 +13,7 @@ enum EventKind : u8 {
     EV_SAVE,
     EV_LIBRARY, // library.cpp and player.cpp: scans, thumbnails, Media Foundation events
     EV_TIMELINE,
+    EV_GAMEDB,  // gamedb.cpp: the games list was loaded (b: how many), or art that was asked for has arrived
 };
 
 struct Event {

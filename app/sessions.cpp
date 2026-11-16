@@ -722,7 +722,8 @@ static void sessions_popup()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
     f32 inner_w = size.x - 2 * pad;
-    ID3D11ShaderResourceView *icon = s->exe[0] ? app_icon(s->exe) : 0;
+    ID3D11ShaderResourceView *icon = game_db_icon(s->name);
+    if (!icon && s->exe[0]) icon = app_icon(s->exe);
     if (icon) {
         dl->AddImageRounded((ImTextureID)icon, a, ImVec2(a.x + tile, a.y + tile), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 8 * sc);
     } else {

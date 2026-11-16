@@ -56,6 +56,8 @@ It needs Stream Deck 6.5 or later and has no dependencies. The plugin talks to c
 - Clips: `<Videos>\Clips\<year>\` unless changed in Options.
 - Games given by hand: `%APPDATA%\clipback\games.txt`, for clips that don't carry a game of their own (older or renamed
   files). A line each of `<key> | <game> | <file name>`.
+- Games list and art: `%LOCALAPPDATA%\clipback\gamedb`. clipback fetches these itself (from Discord's public list of
+  games and Steam's images) so games get their proper names and icons; Options › General turns it off.
 - Log: `%LOCALAPPDATA%\clipback\clipback-native.log`. Crash and hang dumps (`crash-*.dmp`, `hang-*.dmp`) are
   written next to it.
 

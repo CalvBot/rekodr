@@ -61,7 +61,7 @@ static void run_command(const char *text)
 
 static void handle_event(const Event &e)
 {
-    static const char *const kinds[] = {"none", "command", "log", "recorder", "audio", "save", "library", "timeline"};
+    static const char *const kinds[] = {"none", "command", "log", "recorder", "audio", "save", "library", "timeline", "gamedb"};
     if (e.kind != EV_LOG && e.kind != EV_COMMAND)
         DEV_LOG("event %s %lld %lld", (u32)e.kind < (u32)COUNT(kinds) ? kinds[e.kind] : "?", e.a, e.b);
     switch (e.kind) {
@@ -72,6 +72,7 @@ static void handle_event(const Event &e)
     case EV_SAVE: save_on_event(e); editor_on_save_event(e); break;
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
+    case EV_GAMEDB: gamedb_on_event(e); break;
     default: break;
     }
     pipe_publish();
@@ -290,6 +291,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     if (!home[0]) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
     audio_start();
+    gamedb_start(g_app.config.game_lookup);
     pipe_start();
     if (command[0]) run_command(command);
 
@@ -326,6 +328,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     log_line("clipback (native) quitting");
     pipe_stop();
+    gamedb_stop();
     audio_stop();
     recorder_stop();
     save_stop();

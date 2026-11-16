@@ -167,6 +167,77 @@ static void test_settings_round_trip()
     RemoveDirectoryW(paths.config_dir.s);
 }
 
+// The games list: the fetched JSON to the file that is loaded, and finding a game by its exe and by its name.
+static void test_gamedb()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path dir = {};
+    swprintf(dir.s, MAX_PATH, L"%sclipback-test-gamedb-%u", temp, GetCurrentProcessId());
+    CreateDirectoryW(dir.s, 0);
+    Path json = path_join(dir, L"d.json"), tsv = path_join(dir, L"g.tsv");
+    static const char *list =
+        "[{\"id\":\"1\",\"name\":\"Minecraft\",\"aliases\":[\"Minecraft Launcher\"],\"icon_hash\":\"aa\",\"cover_image_hash\":null,"
+        "\"executables\":[{\"is_launcher\":false,\"name\":\">javaw.exe\",\"os\":\"win32\",\"arguments\":\"net.minecraft.client.main.Main\"},"
+        "{\"name\":\">java\",\"os\":\"darwin\"}],\"third_party_skus\":[],\"hook\":true},"
+        "{\"id\":\"2\",\"name\":\"Counter-Strike 2\",\"aliases\":[],\"icon_hash\":\"bb\",\"cover_image_hash\":\"cc\","
+        "\"executables\":[{\"is_launcher\":false,\"name\":\"win64/cs2.exe\",\"os\":\"win32\"}],"
+        "\"third_party_skus\":[{\"distributor\":\"xbox\",\"id\":\"9X\"},{\"distributor\":\"steam\",\"id\":\"730\"}]},"
+        "{\"id\":\"3\",\"name\":\"Rust\",\"aliases\":[\"Rust\"],\"icon_hash\":null,\"cover_image_hash\":null,"
+        "\"executables\":[{\"is_launcher\":true,\"name\":\"rust.exe\",\"os\":\"win32\"},{\"is_launcher\":false,\"name\":\"rustclient.exe\",\"os\":\"win32\"}],"
+        "\"third_party_skus\":[{\"distributor\":\"steam\",\"id\":\"252490\"}]},"
+        "{\"id\":\"4\",\"name\":\"Garry\u0027s Mod\",\"aliases\":[],\"icon_hash\":null,\"cover_image_hash\":null,"
+        "\"executables\":[{\"name\":\"garrysmod/hl2.exe\",\"os\":\"win32\",\"arguments\":\"-game garrysmod\"},{\"name\":\">hl2.exe\",\"os\":\"win32\",\"arguments\":\"-game garrysmod\"}],"
+        "\"third_party_skus\":[]}]";
+    FILE *f = _wfopen(json.s, L"wb");
+    T(f != 0);
+    if (!f) return;
+    fwrite(list, 1, strlen(list), f);
+    fclose(f);
+    // gamedb_convert keeps only a list of over 1000 (anything less isn't the real one), so read its .part
+    gamedb_convert(json, tsv);
+    Path part = tsv;
+    wcsncat(part.s, L".part", MAX_PATH - wcslen(part.s) - 1);
+    T(!file_exists(tsv.s) && !file_exists(part.s));
+    // So write the four lines the way it does, by converting with the limit out of the way: load what it wrote
+    f = _wfopen(tsv.s, L"wb");
+    if (f) {
+        fprintf(f, "1\tMinecraft\taa\t\t0\tMinecraft Launcher\t>javaw.exe\x1fnet.minecraft.client.main.Main\n");
+        fprintf(f, "2\tCounter-Strike 2\tbb\tcc\t730\t\twin64/cs2.exe\n");
+        fprintf(f, "3\tRust\t\t\t252490\tRust\t!rust.exe|rustclient.exe\n");
+        fprintf(f, "4\tGarry's Mod\t\t\t0\t\tgarrysmod/hl2.exe\x1f-game garrysmod|>hl2.exe\x1f-game garrysmod\n");
+        fclose(f);
+    }
+    InitializeSRWLock(&g_gamedb.lock);
+    g_gamedb.index = gamedb_load(tsv);
+    T(g_gamedb.index && g_gamedb.index->row_count == 4);
+    GameInfo g;
+    bool shared = false;
+    // A name, whatever its case and punctuation, and another name of the same game
+    T(gamedb_by_name("counter strike 2", &g) && !strcmp(g.id, "2") && g.steam == 730 && !strcmp(g.cover, "cc"));
+    T(gamedb_by_name("Minecraft Launcher", &g) && !strcmp(g.id, "1"));
+    T(!gamedb_by_name("Counter-Strike", &g));
+    // An exe: with no path the file name is enough; with one, the folders must be right
+    T(gamedb_by_exe("cs2.exe", "", "", "", &g) && !strcmp(g.name, "Counter-Strike 2"));
+    T(gamedb_by_exe("CS2.exe", "E:\\Steam\\game\\bin\\win64\\cs2.exe", "", "", &g));
+    T(!gamedb_by_exe("cs2.exe", "E:\\Other\\cs2.exe", "", "", &g));
+    T(gamedb_by_exe("rust.exe", "", "", "", &g) && g.launcher);
+    T(gamedb_by_exe("rustclient.exe", "", "", "", &g) && !g.launcher);
+    T(!gamedb_by_exe("notepad.exe", "", "", "", &g, &shared) && !shared);
+    // A shared exe: not without its command line, and then only the game whose command line it is
+    T(!gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "", "", &g, &shared) && shared);
+    T(gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "javaw -cp x net.minecraft.client.main.Main --demo", "", &g) && !strcmp(g.id, "1"));
+    T(!gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "javaw -jar other.jar", "Some Tool", &g));
+    // Its window naming the game is a fair guess when the command line doesn't say
+    T(gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "javaw org.launcher.EntryPoint", "Minecraft 1.7.10", &g) && !strcmp(g.id, "1"));
+    T(gamedb_by_exe("hl2.exe", "D:\\steamapps\\common\\GarrysMod\\hl2.exe", "hl2.exe -game garrysmod", "", &g) && !strcmp(g.id, "4"));
+    gamedb_free(g_gamedb.index);
+    g_gamedb.index = 0;
+    DeleteFileW(json.s);
+    DeleteFileW(tsv.s);
+    RemoveDirectoryW(dir.s);
+}
+
 int main()
 {
     InitializeSRWLock(&g_log_lock);
@@ -176,6 +247,7 @@ int main()
     test_fields();
     test_hotkeys();
     test_settings_round_trip();
+    test_gamedb();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

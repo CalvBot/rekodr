@@ -73,6 +73,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_gap_min = 5;
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
+    c->game_lookup = true;
     c->accent = 0;
     c->card_width = 270;
     // One hotkey, the same keys as NVIDIA's instant replay, so it's where hands already go.
@@ -259,6 +260,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "session_gap_min")) real(&c->session_gap_min);
     else if (!strcmp(key, "session_min_length_min")) real(&c->session_min_length_min);
     else if (!strcmp(key, "share_keep_days")) real(&c->share_keep_days);
+    else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "start_with_windows")) boolean(&c->start_with_windows);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
@@ -400,6 +402,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("mic", c.mic);
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,
             c.session_min_length_min, c.share_keep_days);
+    fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("start_with_windows", c.start_with_windows);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %d\ncard_width = %d\n", c.accent, c.card_width);
