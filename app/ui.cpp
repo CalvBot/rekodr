@@ -99,6 +99,8 @@ static f32 g_dpi_scale = 1;
 #define ICON_WARNING  "\xEE\x9E\xBA" // E7BA
 #define ICON_NOW      "\xEE\xA2\x93" // E893 skip to end
 #define ICON_FULLSCREEN "\xEE\x9D\x80" // E740
+#define ICON_APPS     "\xEE\x9C\x9D" // E71D all apps
+#define ICON_SLIDERS  "\xEE\xA7\xA9" // E9E9 equalizer
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
 
@@ -763,17 +765,21 @@ static void help_window()
 }
 
 // A tab in the top bar: a label, white with an accent underline when it's the current screen.
-static bool top_tab(const char *label, bool active, f32 h)
+static bool top_tab(const char *icon, const char *label, bool active, f32 h)
 {
     ImGui::PushFont(g_font_bold);
     ImVec2 ts = ImGui::CalcTextSize(label);
-    f32 padx = kit_px(16), w = ts.x + 2 * padx;
+    f32 slot = g_font_icon->FontSize + kit_px(8); // the icon, then the label
+    f32 padx = kit_px(16), w = slot + ts.x + 2 * padx;
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton(label, ImVec2(w, h));
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     if (hot && !active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(10)), ImVec2(a.x + w, a.y + h - kit_px(10)), col32(COL_PANEL), kit_px(7));
-    dl->AddText(ImVec2(a.x + padx, floorf(a.y + (h - ts.y) / 2)), col32(active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM), label);
+    u32 ink = col32(active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM);
+    dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(a.x + padx, floorf(a.y + (h - g_font_icon->FontSize) / 2)),
+                active ? col32(COL_ACCENT) : ink, icon);
+    dl->AddText(ImVec2(a.x + padx + slot, floorf(a.y + (h - ts.y) / 2)), ink, label);
     if (active) dl->AddRectFilled(ImVec2(a.x + padx, a.y + h - kit_px(3)), ImVec2(a.x + w - padx, a.y + h), col32(COL_ACCENT), kit_px(2));
     ImGui::PopFont();
     return clicked;
@@ -792,11 +798,11 @@ static void top_bar(f32 h)
 
     ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(12), o.y));
     Screen s = g_app.ui.screen;
-    if (top_tab("Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR, h)) g_app.ui.screen = SCREEN_LIBRARY;
+    if (top_tab(ICON_LIBRARY, "Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR, h)) g_app.ui.screen = SCREEN_LIBRARY;
     ImGui::SameLine(0, kit_px(4));
-    if (top_tab("Timeline", s == SCREEN_TIMELINE, h)) g_app.ui.screen = SCREEN_TIMELINE;
+    if (top_tab(ICON_TIMELINE, "Timeline", s == SCREEN_TIMELINE, h)) g_app.ui.screen = SCREEN_TIMELINE;
     ImGui::SameLine(0, kit_px(4));
-    if (top_tab("Options", s == SCREEN_OPTIONS, h)) g_app.ui.screen = SCREEN_OPTIONS;
+    if (top_tab(ICON_SETTINGS, "Options", s == SCREEN_OPTIONS, h)) g_app.ui.screen = SCREEN_OPTIONS;
 
     // Right: the status, Pause / Resume, Help.
     f32 fh = ImGui::GetFrameHeight(), y = o.y + (h - fh) / 2;
