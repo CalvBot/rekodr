@@ -1676,8 +1676,18 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     f32 tw = bx - kit_px(10) - tx;
     f32 lh = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize * 2 + kit_px(2);
     f32 ty = floorf(a.y + (h - lh) / 2);
+    // Over a picture the text has a soft dark edge and is a shade lighter, so it reads whatever is behind it
+    auto put = [&](ImVec2 pos, u32 ink, const char *text) {
+        if (art) {
+            f32 d = kit_px(1);
+            text_clipped(dl, ImVec2(pos.x, pos.y + d), tw, IM_COL32(0, 0, 0, 170), text);
+            text_clipped(dl, ImVec2(pos.x + d, pos.y + d), tw, IM_COL32(0, 0, 0, 110), text);
+            text_clipped(dl, ImVec2(pos.x - d, pos.y), tw, IM_COL32(0, 0, 0, 70), text);
+        }
+        text_clipped(dl, pos, tw, col32(ink), text);
+    };
     ImGui::PushFont(g_font_bold);
-    text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), s->name);
+    put(ImVec2(tx, ty), art ? 0xffffff : COL_TEXT, s->name);
     ImGui::PopFont();
     ty += g_font_bold->FontSize + kit_px(2);
     char len[32], from[32], to[32], line[128];
@@ -1686,23 +1696,23 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     fmt_clock(s->end_us, to, sizeof to);
     snprintf(line, sizeof line, "%s  \xC2\xB7  %s \xE2\x80\x93 %s", len, from, to);
     ImGui::PushFont(g_font_small);
-    text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_DIM), line);
+    put(ImVec2(tx, ty), art ? 0xd4d8de : COL_DIM, line);
     ty += g_font_small->FontSize + kit_px(2);
-    u32 col = art ? COL_DIM : COL_FAINT; // faint is too faint over a picture
+    u32 col = art ? 0xb4bac4 : COL_FAINT;
     if (saved) str_set(line, "Saved");
     else if (s->state == SES_ASKING) str_set(line, "Asking in the popup");
     else if (saving) {
         const SaveJobView *v = save_view(s->job);
         if (v && v->state == SAVE_RUNNING) snprintf(line, sizeof line, "Saving %d%%", (int)(v->progress * 100));
         else str_set(line, "Waiting to save");
-        col = COL_DIM;
+        col = art ? 0xd4d8de : COL_DIM;
         f32 p = v ? v->progress : 0;
         dl->AddRectFilled(ImVec2(a.x + kit_px(10), a.y + h - kit_px(4)), ImVec2(a.x + kit_px(10) + p * (w - kit_px(20)), a.y + h - kit_px(2)),
                           col32(COL_ACCENT), kit_px(1));
     } else {
         session_time_left(*s, line, sizeof line);
     }
-    text_clipped(dl, ImVec2(tx, ty), tw, col32(col), line);
+    put(ImVec2(tx, ty), col, line);
     ImGui::PopFont();
     ImGui::PopID();
 }
