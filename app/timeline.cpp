@@ -967,7 +967,8 @@ static void tl_pill(ImDrawList *dl, f32 x, f32 y, f32 lo, f32 hi, const char *te
 
 // Sound groups, collapsible from their header in the track list. Kept for the run, like the view.
 static bool g_tl_closed[3];
-static const char *const TL_GROUP_NAMES[3] = {"MICROPHONE", "GAMES", "APPS"};
+static const char *const TL_GROUP_NAMES[3] = {ICON_MIC "  MICROPHONE", ICON_GAME "  GAMES", ICON_APPS "  APPS"};
+static ID3D11ShaderResourceView *app_icon(const char *exe); // options.cpp
 
 // One line of the sound area: a group's header (row -1) or an app's row.
 struct TlLine { i8 group; i16 row; };
@@ -1203,7 +1204,19 @@ static void screen_timeline()
             dl->AddText(ImVec2(tx + 22 * s, floorf(y + (line_h - sh) / 2)), col32(hot ? COL_TEXT : COL_FAINT), TL_GROUP_NAMES[ln.group]);
             ImGui::PopFont();
         } else {
-            tl_text_fit(dl, ImVec2(tx + 22 * s, floorf(y + (line_h - th) / 2)), name_w - 22 * s, col32(COL_DIM), tl.rows[ln.row].name);
+            // The app's own icon (the mic's glyph), then its name
+            const TimelineRow &row = tl.rows[ln.row];
+            f32 is = 16 * s, iy = floorf(y + (line_h - is) / 2);
+            ID3D11ShaderResourceView *srv = strcmp(row.exe, "mic") ? app_icon(row.exe) : 0;
+            if (srv) {
+                dl->AddImage((ImTextureID)srv, ImVec2(tx, iy), ImVec2(tx + is, iy + is));
+            } else {
+                ImGui::PushFont(g_font_small);
+                f32 sh = ImGui::GetTextLineHeight();
+                dl->AddText(ImVec2(tx, floorf(y + (line_h - sh) / 2)), col32(COL_FAINT), strcmp(row.exe, "mic") ? ICON_WINDOW : ICON_MIC);
+                ImGui::PopFont();
+            }
+            tl_text_fit(dl, ImVec2(tx + 22 * s, floorf(y + (line_h - th) / 2)), name_w - 22 * s, col32(COL_DIM), row.name);
         }
     }
     // When the lines don't all fit, a thin bar shows where the list is (the wheel scrolls it)
@@ -1631,12 +1644,12 @@ static void screen_timeline()
 
             ImGui::Dummy(ImVec2(0, 6 * s));
             f32 hw = (fw - bgap) / 2;
-            if (kit_button("Save session", KIT_PRIMARY, ImVec2(hw, 0), can) || (save && can)) {
+            if (kit_button(ICON_SAVE "  Save session", KIT_PRIMARY, ImVec2(hw, 0), can) || (save && can)) {
                 tl_save(SAVE_SESSION, false);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine(0, bgap);
-            if (kit_button("Cancel", KIT_SECONDARY, ImVec2(hw, 0))) ImGui::CloseCurrentPopup();
+            if (kit_button(ICON_CLOSE "  Cancel", KIT_SECONDARY, ImVec2(hw, 0))) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
         ImGui::PopStyleColor(2);
@@ -1681,7 +1694,7 @@ static void screen_timeline()
                 if (progress > 0)
                     cd->AddRectFilled(ImVec2(c0.x, by), ImVec2(c0.x + text_w * progress, by + 4 * s), col32(COL_ACCENT), 2 * s);
                 ImGui::SetCursorScreenPos(ImVec2(c0.x + cw - cancel_w, y_status));
-                if (kit_button("Cancel", KIT_GHOST, ImVec2(cancel_w, 0))) save_cancel(v->id);
+                if (kit_button(ICON_CLOSE "  Cancel", KIT_GHOST, ImVec2(cancel_w, 0))) save_cancel(v->id);
             }
         }
     }

@@ -1056,7 +1056,7 @@ static i32 lib_dialog_buttons(const char *action, KitKind kind)
     f32 bw = kit_px(104);
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 2 * bw - ImGui::GetStyle().ItemSpacing.x);
     i32 r = 0;
-    if (kit_button("Cancel", KIT_SECONDARY, ImVec2(bw, 0))) r = -1;
+    if (kit_button(ICON_CLOSE "  Cancel", KIT_SECONDARY, ImVec2(bw, 0))) r = -1;
     ImGui::SameLine();
     if (kit_button(action, kind, ImVec2(bw, 0))) r = 1;
     return r;
@@ -1085,7 +1085,7 @@ static void rename_modal()
     ImGui::TextUnformatted(lib.rename_error[0] ? lib.rename_error : " ");
     ImGui::PopStyleColor();
     ImGui::PopFont();
-    i32 b = lib_dialog_buttons("Rename", KIT_PRIMARY);
+    i32 b = lib_dialog_buttons(ICON_RENAME "  Rename", KIT_PRIMARY);
     bool go = b == 1 || enter;
     bool cancel = b == -1 || ImGui::IsKeyPressed(ImGuiKey_Escape);
     if (go) {
@@ -1135,7 +1135,7 @@ static void delete_modal()
     ImGui::PopFont();
     kit_dim("It goes to the Recycle Bin, with its edit.");
     ImGui::Spacing();
-    i32 b = lib_dialog_buttons("Delete", KIT_PRIMARY);
+    i32 b = lib_dialog_buttons(ICON_DELETE "  Delete", KIT_PRIMARY);
     bool cancel = b == -1 || ImGui::IsKeyPressed(ImGuiKey_Escape);
     if (b == 1) {
         Path path = lib_item_path(lib.target), edit = lib_edit_path(lib.target);
@@ -1633,10 +1633,10 @@ static void screen_library()
 
     // Header: Clips or Sessions, the date range, and on the right the order and the search.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
-    static const char *const views[] = {"Clips", "Sessions"};
+    static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
     i32 sel = lib.view;
     if (kit_segmented("##views", views, 2, &sel, kit_px(96))) lib_set_view((LibView)sel);
-    static const char *const ranges[] = {"All", "Today", "This week", "This month", "Custom"};
+    static const char *const ranges[] = {"All", "Today", "This week", "This month", ICON_CALENDAR "  Custom"};
     f32 range_w = kit_px(92);
     ImVec2 range_at(h0.x + 2 * kit_px(96) + kit_px(28), h0.y);
     ImGui::SetCursorScreenPos(range_at);
@@ -1661,7 +1661,7 @@ static void screen_library()
     static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w - kit_px(10) - sort_w, h0.y));
     char sort_label[48];
-    snprintf(sort_label, sizeof sort_label, "%s   " ICON_DOWN, sorts[lib.sort]);
+    snprintf(sort_label, sizeof sort_label, ICON_SORT "  %s   " ICON_DOWN, sorts[lib.sort]);
     ImVec2 sort_at = ImGui::GetCursorScreenPos();
     if (kit_button(sort_label, KIT_SECONDARY, ImVec2(sort_w, 0))) ImGui::OpenPopup("sort");
     ImGui::SetNextWindowPos(ImVec2(sort_at.x, sort_at.y + fh + kit_px(6)));

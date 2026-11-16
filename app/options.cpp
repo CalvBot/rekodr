@@ -834,11 +834,19 @@ static void opt_row_begin(const char *name, const char *sub, f32 control_w, f32 
     g_row.h = h > 0 ? h : dp(sub ? 64.f : 54.f);
     if (g_card.rows++ && line) dl->AddLine(ImVec2(g_row.x0, g_row.y), ImVec2(g_row.x1, g_row.y), col32(COL_LINE));
     if (name) {
-        f32 max_x = g_row.x1 - control_w - dp(20);
+        f32 max_x = g_row.x1 - control_w - dp(20), nx = g_row.x0;
+        if ((u8)name[0] == 0xEE || (u8)name[0] == 0xEF) { // an ICON_* first: drawn larger, in a slot of its own
+            char icon[4] = {name[0], name[1], name[2], 0};
+            f32 is = g_font_icon->FontSize;
+            opt_text_at(dl, g_font_icon, ImVec2(nx, floorf(g_row.y + (g_row.h - is) / 2)), COL_DIM, icon, nx + is + 1);
+            name += 3;
+            while (*name == ' ') name++;
+            nx += is + dp(16);
+        }
         f32 nh = g_font->FontSize, sh = g_font_small->FontSize, gap = dp(3);
         f32 ty = floorf(g_row.y + (g_row.h - nh - (sub ? gap + sh : 0)) / 2);
-        opt_text_at(dl, g_font, ImVec2(g_row.x0, ty), COL_TEXT, name, max_x);
-        if (sub) opt_text_at(dl, g_font_small, ImVec2(g_row.x0, ty + nh + gap), COL_DIM, sub, max_x);
+        opt_text_at(dl, g_font, ImVec2(nx, ty), COL_TEXT, name, max_x);
+        if (sub) opt_text_at(dl, g_font_small, ImVec2(nx, ty + nh + gap), COL_DIM, sub, max_x);
     }
     ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - control_w, g_row.y + floorf((g_row.h - ImGui::GetFrameHeight()) / 2)));
 }
@@ -1369,6 +1377,13 @@ static i32 rc_index(const char *rc) { return !strcmp(rc, "cbr") ? 1 : !strcmp(rc
 static void game_line(const char *name, f32 x)
 {
     ImGui::AlignTextToFramePadding();
+    if ((u8)name[0] == 0xEE || (u8)name[0] == 0xEF) { // an ICON_* first, dim, then the name
+        char icon[4] = {name[0], name[1], name[2], 0};
+        ImGui::TextColored(rgb(COL_DIM), "%s", icon);
+        ImGui::SameLine(0, dp(10));
+        name += 3;
+        while (*name == ' ') name++;
+    }
     ImGui::TextUnformatted(name);
     ImGui::SameLine(x);
 }
@@ -1463,7 +1478,7 @@ static void game_settings_popup()
     char hint[48];
 
     ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
-    game_line("Bitrate", x);
+    game_line(ICON_SPEED "Bitrate", x);
     f64 v = r.bitrate_mbps;
     snprintf(hint, sizeof hint, "%g", c.bitrate_mbps);
     if (opt_number("##rate", &v, 1, 300, dp(OPT_FIELD_W), true, hint)) {
@@ -1472,7 +1487,7 @@ static void game_settings_popup()
     }
     opt_unit("Mbps");
 
-    game_line("Frame rate", x);
+    game_line(ICON_STOPWATCH "Frame rate", x);
     v = r.fps;
     snprintf(hint, sizeof hint, "%d", c.fps);
     if (opt_number("##fps", &v, 1, 240, dp(OPT_FIELD_W), true, hint)) {
@@ -1484,7 +1499,7 @@ static void game_settings_popup()
     // Drop-downs: "Default" first, which shows what the default is
     const char *items[8], *notes[8];
     char def[48];
-    game_line("Resolution", x);
+    game_line(ICON_ASPECT "Resolution", x);
     {
         char rl[48], rbuf[COUNT(RES_HEIGHTS)][48];
         res_label(c.height, rl, sizeof rl);
@@ -1500,7 +1515,7 @@ static void game_settings_popup()
         }
     }
 
-    game_line("Preset", x);
+    game_line(ICON_SLIDERS "Preset", x);
     snprintf(def, sizeof def, "Default \xC2\xB7 %s", PRESET_LABELS[preset_step(c.preset.s)]);
     items[0] = def;
     notes[0] = 0;
@@ -1514,7 +1529,7 @@ static void game_settings_popup()
         rec_changed = true;
     }
 
-    game_line("Rate control", x);
+    game_line(ICON_SPEED "Rate control", x);
     snprintf(def, sizeof def, "Default \xC2\xB7 %s", RC_LABELS[rc_index(c.rate_control.s)]);
     items[0] = def;
     for (i32 i = 0; i < COUNT(RC_LABELS); i++) {
@@ -1529,7 +1544,7 @@ static void game_settings_popup()
 
     bool cq_on = !strcmp(r.rate_control.s[0] ? r.rate_control.s : c.rate_control.s, "cq");
     ImGui::BeginDisabled(!cq_on);
-    game_line("Quality level", x);
+    game_line(ICON_STAR "Quality level", x);
     v = r.cq;
     snprintf(hint, sizeof hint, "%d", c.cq);
     if (opt_number("##cq", &v, 1, 51, dp(OPT_FIELD_W), true, hint)) {
@@ -1539,7 +1554,7 @@ static void game_settings_popup()
     opt_unit("0\xE2\x80\x93" "51");
     ImGui::EndDisabled();
 
-    game_line("Sessions", x);
+    game_line(ICON_GAME "Sessions", x);
     i32 m = a.session_mode;
     if (opt_combo("##mode", SESSION_LABELS, 0, COUNT(SESSION_LABELS), &m, cw)) {
         a.session_mode = (SessionMode)m;
@@ -1561,13 +1576,13 @@ static void game_settings_popup()
     f32 bw = dp(84);
     bool custom = r.bitrate_mbps || r.fps || r.height || r.preset.s[0] || r.rate_control.s[0] || r.cq;
     ImGui::SetCursorPosX(x + cw - 2 * bw - dp(8));
-    if (kit_button("Reset", KIT_GHOST, ImVec2(bw, 0), custom)) {
+    if (kit_button(ICON_UNDO "  Reset", KIT_GHOST, ImVec2(bw, 0), custom)) {
         r = {};
         log_line("options: %s records with the default settings", a.exe.s);
         options_apply(APPLY_RECORDER);
     }
     ImGui::SameLine(0, dp(8));
-    if (kit_button("Done", KIT_PRIMARY, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    if (kit_button(ICON_CHECK "  Done", KIT_PRIMARY, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
     ImGui::PopStyleVar(2);
 }
@@ -1626,9 +1641,9 @@ static void apps_add_popup(ImVec2 at, i32 rows)
     for (char *p = ex; *p; p++) *p = (char)tolower((u8)*p);
     f32 bw = dp(84), gap = dp(8);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
-    if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    if (kit_button(ICON_CLOSE "  Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
     ImGui::SameLine(0, gap);
-    bool add = kit_button("Add", KIT_PRIMARY, ImVec2(bw, 0), ex[0] && c.app_count < COUNT(c.apps));
+    bool add = kit_button(ICON_ADD "  Add", KIT_PRIMARY, ImVec2(bw, 0), ex[0] && c.app_count < COUNT(c.apps));
     if ((add || enter) && ex[0] && c.app_count < COUNT(c.apps)) {
         char name[64];
         size_t n = strlen(ex);
@@ -1681,9 +1696,9 @@ static void apps_rename_popup()
     ImGui::PopStyleColor();
     f32 bw = dp(84), gap = dp(8);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
-    if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    if (kit_button(ICON_CLOSE "  Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
     ImGui::SameLine(0, gap);
-    if (kit_button("Save", KIT_PRIMARY, ImVec2(bw, 0)) || enter) {
+    if (kit_button(ICON_SAVE "  Save", KIT_PRIMARY, ImVec2(bw, 0)) || enter) {
         char name[64];
         str_set(name, o.edit);
         for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
@@ -1697,7 +1712,7 @@ static void apps_rename_popup()
 
 // The category buttons on an app row: four fixed-size pills, the app's own one filled in its colour.
 static const AppCategory ROW_CATS[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
-static f32 cat_pill_w() { return dp(74); }
+static f32 cat_pill_w() { return dp(96); }
 
 // `own` is filled; `inherited` (a folder's rule, when there's no own one) is only outlined.
 static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y, AppCategory *picked)
@@ -1717,7 +1732,9 @@ static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y,
         if (on) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), col32(col, 0.2f), h / 2);
         else if (hot) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), col32(COL_PANEL2), h / 2);
         if (on || via) dl->AddRect(p, ImVec2(p.x + w, p.y + h), col32(col, on ? 0.7f : 0.45f), h / 2, 0, dp(1));
-        const char *label = CATEGORY_LABELS[cat];
+        static const char *icons[] = {ICON_STAR, ICON_WINDOW, ICON_GAME, ICON_CHAT, ICON_MUTE}; // as CATEGORY_LABELS
+        char label[48];
+        snprintf(label, sizeof label, "%s  %s", icons[cat], CATEGORY_LABELS[cat]);
         ImFont *font = on ? g_font_bold : g_font;
         f32 tw = text_w(font, label);
         opt_text_at(dl, font, ImVec2(floorf(p.x + (w - tw) / 2), floorf(p.y + (h - font->FontSize) / 2)),
@@ -1775,14 +1792,14 @@ static void folder_edit_popup()
     ImGui::PopFont();
     f32 bw = dp(84), gap = dp(8);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
-    if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    if (kit_button(ICON_CLOSE "  Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
     ImGui::SameLine(0, gap);
     char path[MAX_PATH * 2];
     str_set(path, trim(o.edit));
     for (char *p = path; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
     i32 other = folder_find(path);
     bool ok = path[0] && (other < 0 || other == o.menu_folder);
-    if ((kit_button("Save", KIT_PRIMARY, ImVec2(bw, 0), ok) || enter) && ok) {
+    if ((kit_button(ICON_SAVE "  Save", KIT_PRIMARY, ImVec2(bw, 0), ok) || enter) && ok) {
         log_line("options: folder rule %s is now %s", r.path, path);
         str_set(r.path, path);
         o.order_dirty = true;
@@ -1882,7 +1899,8 @@ static void options_apps()
     apps_order_extend();
 
     // Filter chips with counts; search and Add on the right
-    static const char *chips[] = {"All", "New", "Games", "Apps", "Chat", "Ignored", "Folders"};
+    static const char *chips[] = {ICON_APPS "  All", ICON_STAR "  New",  ICON_GAME "  Games", ICON_WINDOW "  Apps",
+                                  ICON_CHAT "  Chat", ICON_MUTE "  Ignored", ICON_FOLDER "  Folders"};
     static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED,
                                       FILTER_FOLDERS};
     static const i32 chip_cat[] = {-1, CAT_NONE, CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
@@ -2071,7 +2089,7 @@ static void options_apps()
     } else {
         snprintf(left, sizeof left, "%d app%s", o.order_count, o.order_count == 1 ? "" : "s");
         bool shown = o.show_folder_apps;
-        opt_pager("apps", &o.apps_page, o.order_count, rows, left, &o.show_folder_apps, "Sorted by a folder", folder_only);
+        opt_pager("apps", &o.apps_page, o.order_count, rows, left, &o.show_folder_apps, ICON_FOLDER "  Sorted by a folder", folder_only);
         if (shown != o.show_folder_apps) {
             o.order_dirty = true;
             o.apps_page = 0;
@@ -2373,7 +2391,7 @@ static void options_recording()
     const Recorder &rec = g_app.recorder;
     f32 wide = dp(320);
 
-    opt_section("VIDEO");
+    opt_section(ICON_VIDEO "  VIDEO");
     opt_card_begin();
     char preview[160], note[64];
     snprintf(preview, sizeof preview, "%d. not connected", c.output_idx + 1);
@@ -2383,7 +2401,7 @@ static void options_recording()
         size_t n = strlen(preview);
         snprintf(preview + n, sizeof preview - n, " \xC2\xB7 %s", note);
     }
-    opt_row_begin("Monitor", 0, wide);
+    opt_row_begin(ICON_MONITOR "Monitor", 0, wide);
     f32 popup_w = 0;
     for (i32 i = 0; i < o.monitor_count; i++) {
         char label[96];
@@ -2411,36 +2429,36 @@ static void options_recording()
         char buf[COUNT(RES_HEIGHTS)][48];
         res_items(items, notes, buf, 0);
         i32 sel = res_index(c.height);
-        if (opt_row_combo("Resolution", "Never above the monitor's", "##res", items, notes, COUNT(items), &sel, wide)) {
+        if (opt_row_combo(ICON_ASPECT "Resolution", "Never above the monitor's", "##res", items, notes, COUNT(items), &sel, wide)) {
             c.height = sel ? RES_HEIGHTS[sel - 1] : 0;
             log_line("options: resolution %d (0 = native)", c.height);
             options_apply(APPLY_RECORDER);
         }
     }
-    if (opt_row_i32("Frame rate", "Never above the monitor's refresh rate", "##fps", &c.fps, 1, 240, "fps")) {
+    if (opt_row_i32(ICON_STOPWATCH "Frame rate", "Never above the monitor's refresh rate", "##fps", &c.fps, 1, 240, "fps")) {
         log_line("options: %d fps", c.fps);
         options_apply(APPLY_RECORDER);
     }
-    if (opt_row_toggle("Show the mouse pointer", 0, "##mouse", &c.draw_mouse)) {
+    if (opt_row_toggle(ICON_MOUSE "Show the mouse pointer", 0, "##mouse", &c.draw_mouse)) {
         log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
         options_apply(APPLY_RECORDER);
     }
     opt_card_end();
 
-    opt_section("BITRATE");
+    opt_section(ICON_SPEED "  BITRATE");
     opt_card_begin();
-    if (opt_row_f32("While playing a game", "A game can have its own: the gear on its row under Apps", "##bitrate",
+    if (opt_row_f32(ICON_GAME "While playing a game", "A game can have its own: the gear on its row under Apps", "##bitrate",
                     &c.bitrate_mbps, 1, 300, "Mbps")) {
         log_line("options: game bitrate %g Mbps", c.bitrate_mbps);
         options_apply(APPLY_RECORDER);
     }
-    if (opt_row_f32("On the desktop", "While no game is being played", "##desktop", &c.desktop_bitrate_mbps, 1, 300, "Mbps")) {
+    if (opt_row_f32(ICON_HOME "On the desktop", "While no game is being played", "##desktop", &c.desktop_bitrate_mbps, 1, 300, "Mbps")) {
         log_line("options: desktop bitrate %g Mbps", c.desktop_bitrate_mbps);
         options_apply(APPLY_RECORDER);
     }
     opt_card_end();
 
-    opt_section("ENCODER");
+    opt_section(ICON_CHIP "  ENCODER");
     opt_card_begin();
     static const char *codecs[CODEC_COUNT] = {"H.264", "HEVC", "AV1"};
     static const char *codec_notes[CODEC_COUNT] = {"plays everywhere", "smaller files", "smallest, not for Premiere"};
@@ -2449,7 +2467,7 @@ static void options_recording()
         for (i32 i = 0; i < CODEC_COUNT; i++)
             if (!rec.encoders_ok[i]) no_codec |= 1u << i;
     i32 codec = codec_index(c.codec.s);
-    if (opt_row_combo("Format", 0, "##codec", codecs, codec_notes, CODEC_COUNT, &codec, wide, no_codec)) {
+    if (opt_row_combo(ICON_PAGE "Format", 0, "##codec", codecs, codec_notes, CODEC_COUNT, &codec, wide, no_codec)) {
         str_set(c.codec.s, CODECS[codec]);
         log_line("options: format %s", c.codec.s);
         options_apply(APPLY_RECORDER);
@@ -2479,7 +2497,7 @@ static void options_recording()
     else if (rec.recording) snprintf(status, sizeof status, "Recording with %s", rec.encoder_used.s);
     else if (rec.last_error.s[0]) snprintf(status, sizeof status, "Not recording: %s", rec.last_error.s);
     else snprintf(status, sizeof status, "Starting");
-    if (opt_row_combo("Encoder", status, "##encoder", items, notes, VENDOR_COUNT + 1, &enc, wide, no_vendor, enc_preview)) {
+    if (opt_row_combo(ICON_CHIP "Encoder", status, "##encoder", items, notes, VENDOR_COUNT + 1, &enc, wide, no_vendor, enc_preview)) {
         str_set(c.encoder.s, enc == 0 ? "auto" : VENDOR_KEYS[enc - 1]);
         log_line("options: encoder %s", c.encoder.s);
         options_apply(APPLY_RECORDER);
@@ -2489,14 +2507,14 @@ static void options_recording()
     static const char *vendor_notes[VENDOR_COUNT] = {"Speed against quality", "AMF has three speeds; P1 to P7 spread over them",
                                                      "Quick Sync's veryfast to veryslow", "CPU: fast presets only"};
     i32 preset = preset_step(c.preset.s);
-    if (opt_row_combo("Preset", vendor >= 0 ? vendor_notes[vendor] : vendor_notes[0], "##preset", PRESET_LABELS, PRESET_NOTES,
+    if (opt_row_combo(ICON_SLIDERS "Preset", vendor >= 0 ? vendor_notes[vendor] : vendor_notes[0], "##preset", PRESET_LABELS, PRESET_NOTES,
                       COUNT(PRESET_LABELS), &preset, wide)) {
         str_set(c.preset.s, PRESET_KEYS[preset]);
         log_line("options: preset %s", c.preset.s);
         options_apply(APPLY_RECORDER);
     }
     i32 rc = rc_index(c.rate_control.s);
-    if (opt_row_combo("Rate control", 0, "##rc", RC_LABELS, RC_NOTES, COUNT(RC_LABELS), &rc, wide)) {
+    if (opt_row_combo(ICON_SPEED "Rate control", 0, "##rc", RC_LABELS, RC_NOTES, COUNT(RC_LABELS), &rc, wide)) {
         str_set(c.rate_control.s, RC_KEYS[rc]);
         log_line("options: rate control %s", c.rate_control.s);
         options_apply(APPLY_RECORDER);
@@ -2508,19 +2526,19 @@ static void options_recording()
     bool peak_on = rc != 1 && !(vendor == VENDOR_AMF && rc == 2) && !(vendor == VENDOR_CPU && av1 && rc != 2);
     bool aq_on = vendor < 0 || vendor == VENDOR_NVENC || vendor == VENDOR_AMF;
     ImGui::BeginDisabled(!cq_on);
-    if (opt_row_i32("Quality level", "0 to 51, lower is better. Constant quality only", "##cq", &c.cq, 0, 51, "")) {
+    if (opt_row_i32(ICON_STAR "Quality level", "0 to 51, lower is better. Constant quality only", "##cq", &c.cq, 0, 51, "")) {
         log_line("options: quality level %d", c.cq);
         options_apply(APPLY_RECORDER);
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!peak_on);
-    if (opt_row_f32("Peak bitrate", "Times the bitrate, 1 to 4. Not with CBR", "##peak", &c.peak_factor, 1, 4, "\xC3\x97")) {
+    if (opt_row_f32(ICON_UP "Peak bitrate", "Times the bitrate, 1 to 4. Not with CBR", "##peak", &c.peak_factor, 1, 4, "\xC3\x97")) {
         log_line("options: peak %g times the bitrate", c.peak_factor);
         options_apply(APPLY_RECORDER);
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!aq_on);
-    if (opt_row_toggle("Adaptive quantisation", "Fewer bands in flat areas. NVENC and AMF only", "##aq", &c.spatial_aq)) {
+    if (opt_row_toggle(ICON_COLOR "Adaptive quantisation", "Fewer bands in flat areas. NVENC and AMF only", "##aq", &c.spatial_aq)) {
         log_line("options: adaptive quantisation %s", c.spatial_aq ? "on" : "off");
         options_apply(APPLY_RECORDER);
     }
@@ -2529,11 +2547,11 @@ static void options_recording()
 
     // The buffer keeps either a length of time or an amount of space, whichever is chosen; the other is shown as
     // an estimate at the game bitrate (the highest a game records at, if one has its own).
-    opt_section("BUFFER");
+    opt_section(ICON_STORAGE "  BUFFER");
     opt_card_begin();
     static const char *limits[] = {"Length", "Size"};
     i32 by = c.buffer_by_size ? 1 : 0;
-    opt_row_begin("Limit the buffer by", 0, dp(200));
+    opt_row_begin(ICON_FILTER "Limit the buffer by", 0, dp(200));
     if (kit_segmented("##by", limits, 2, &by, dp(98))) {
         c.buffer_by_size = by == 1;
         log_line("options: buffer limited by %s", c.buffer_by_size ? "size" : "length");
@@ -2548,19 +2566,19 @@ static void options_recording()
     if (!c.buffer_by_size) {
         bytes_text((i64)(c.buffer_hours * bytes_per_hour), est, sizeof est);
         snprintf(line, sizeof line, "Up to about %s at %g Mbps", est, rate);
-        if (opt_row_f32("Keep the last", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
+        if (opt_row_f32(ICON_CLOCK "Keep the last", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
             log_line("options: buffer keeps %g h", c.buffer_hours);
             options_apply(APPLY_RECORDER);
         }
     } else {
         f64 h = c.buffer_gb * 1e9 / bytes_per_hour;
         snprintf(line, sizeof line, "At least %.0f h %02.0f min at %g Mbps", floor(h), fmod(h * 60, 60), rate);
-        if (opt_row_f32("Keep up to", line, "##gb", &c.buffer_gb, 1, 100000, "GB")) {
+        if (opt_row_f32(ICON_STORAGE "Keep up to", line, "##gb", &c.buffer_gb, 1, 100000, "GB")) {
             log_line("options: buffer keeps %g GB", c.buffer_gb);
             options_apply(APPLY_RECORDER);
         }
     }
-    if (opt_row_f32("Keep free on its drive", "The oldest footage goes early rather than fill the drive", "##free",
+    if (opt_row_f32(ICON_LOCK "Keep free on its drive", "The oldest footage goes early rather than fill the drive", "##free",
                     &c.min_free_gb, 0, 100000, "GB")) {
         log_line("options: keep %g GB free", c.min_free_gb);
         options_apply(APPLY_RECORDER);
@@ -2572,17 +2590,17 @@ static void options_recording()
         i64 mins = (now_us() - rec.oldest_us) / 60000000;
         snprintf(holds, sizeof holds, "%s, the last %lld h %02lld min", used, mins / 60, mins % 60);
     } else snprintf(holds, sizeof holds, "%s", rec.buffer_bytes ? used : "Nothing yet");
-    opt_row_value("Holds now", 0, holds, rec.oldest_us ? COL_TEXT : COL_DIM);
-    opt_row_value("Free on its drive", 0, free_text);
+    opt_row_value(ICON_HISTORY "Holds now", 0, holds, rec.oldest_us ? COL_TEXT : COL_DIM);
+    opt_row_value(ICON_STORAGE "Free on its drive", 0, free_text);
     opt_card_end();
 
-    opt_section("AUDIO");
+    opt_section(ICON_AUDIO "  AUDIO");
     opt_card_begin();
-    if (opt_row_toggle("Record the microphone", "On its own track", "##mic", &c.mic)) {
+    if (opt_row_toggle(ICON_MIC "Record the microphone", "On its own track", "##mic", &c.mic)) {
         log_line("options: mic %s", c.mic ? "on" : "off");
         options_apply(APPLY_AUDIO);
     }
-    opt_row_begin("ffmpeg.exe", 0, wide);
+    opt_row_begin(ICON_FILE "ffmpeg.exe", 0, wide);
     char ff[MAX_PATH * 3], text[MAX_PATH * 3];
     wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
     if (opt_text("##ffmpeg", ff, wide, 0, "Found on the PATH", text, sizeof text)) {
@@ -2692,9 +2710,9 @@ static void options_general()
 {
     Config &c = g_app.config;
 
-    opt_section("LOOK");
+    opt_section(ICON_BRUSH "  LOOK");
     opt_card_begin();
-    opt_row_begin("Accent colour", 0, swatches_w());
+    opt_row_begin(ICON_COLOR "Accent colour", 0, swatches_w());
     if (accent_swatches(&c.accent)) {
         ui_apply_accent(c.accent);
         log_line("options: accent %s", ACCENTS[c.accent].name);
@@ -2702,7 +2720,7 @@ static void options_general()
     }
     opt_row_end();
     static const char *sizes[] = {"Small", "Medium", "Large"};
-    opt_row_begin("Thumbnails in the Library", 0, 3 * dp(84) + 2 * dp(4));
+    opt_row_begin(ICON_PICTURE "Thumbnails in the Library", 0, 3 * dp(84) + 2 * dp(4));
     if (kit_segmented("##thumbs", sizes, 3, &c.thumb_size, dp(84))) {
         log_line("options: %s thumbnails", sizes[c.thumb_size]);
         options_apply(0);
@@ -2710,31 +2728,31 @@ static void options_general()
     opt_row_end();
     opt_card_end();
 
-    opt_section("SESSIONS");
+    opt_section(ICON_GAME "  SESSIONS");
     opt_card_begin();
-    if (opt_row_f32("Gap that ends a session", "How long a game can be away before its session ends", "##gap",
+    if (opt_row_f32(ICON_CLOCK "Gap that ends a session", "How long a game can be away before its session ends", "##gap",
                     &c.session_gap_min, 0.5, 600, "min")) {
         log_line("options: session gap %g min", c.session_gap_min);
         options_apply(0);
     }
-    if (opt_row_f32("Shortest session to offer", "Each game asks, always saves or never: its gear under Apps", "##minlen",
+    if (opt_row_f32(ICON_STOPWATCH "Shortest session to offer", "Each game asks, always saves or never: its gear under Apps", "##minlen",
                     &c.session_min_length_min, 0, 1440, "min")) {
         log_line("options: shortest session %g min", c.session_min_length_min);
         options_apply(0);
     }
     opt_card_end();
 
-    opt_section("FOLDERS");
+    opt_section(ICON_FOLDER "  FOLDERS");
     opt_card_begin();
-    if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
-    if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
-    if (opt_row_f32("Keep share copies for", 0, "##share", &c.share_keep_days, 0.1, 365, "days")) {
+    if (opt_row_folder(ICON_SAVE "Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
+    if (opt_row_folder(ICON_STORAGE "Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
+    if (opt_row_f32(ICON_SHARE "Keep share copies for", 0, "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);
     }
     opt_card_end();
 
-    opt_section("STARTUP");
+    opt_section(ICON_POWER "  STARTUP");
     wchar_t now_value[MAX_PATH + 8], cmd[MAX_PATH + 8];
     bool set = startup_read(now_value, COUNT(now_value));
     startup_command(cmd, COUNT(cmd));
@@ -2747,7 +2765,7 @@ static void options_general()
     const char *runs = !set ? "Nothing runs at sign-in now" : !_wcsicmp(now_value, cmd) ? "This clipback runs at sign-in" : u;
     if (options_test_copy()) runs = "Test copy: the Run list is left alone";
     opt_card_begin();
-    if (opt_row_toggle("Start with Windows", runs, "##startup", &c.start_with_windows)) {
+    if (opt_row_toggle(ICON_POWER "Start with Windows", runs, "##startup", &c.start_with_windows)) {
         startup_set(c.start_with_windows);
         options_apply(0);
     }

@@ -524,7 +524,7 @@ static void ed_edit_tab(f32 w)
     ImGui::SameLine();
     if (kit_button(ICON_DELETE "  Delete", KIT_GHOST, ImVec2(bw, 0), here >= 0)) ed_delete_key(here);
     ImGui::SameLine();
-    if (kit_button("Clear all", KIT_GHOST, ImVec2(bw, 0), ed.edit.key_count > 0)) {
+    if (kit_button(ICON_DELETE "  Clear all", KIT_GHOST, ImVec2(bw, 0), ed.edit.key_count > 0)) {
         ed.edit.key_count = 0;
         ed.dirty = true;
     }
@@ -832,7 +832,7 @@ static void screen_editor()
     f32 time_x = r0.x + pad + fh + kit_px(8);
     ImVec2 ts = ImGui::CalcTextSize(tm);
     dl->AddText(ImVec2(time_x, floorf(y + (fh - ts.y) / 2)), col32(COL_DIM), tm);
-    static const char *const trims[] = {"Set start", "Set end", "Reset"};
+    static const char *const trims[] = {ICON_START "  Set start", ICON_NOW "  Set end", ICON_UNDO "  Reset"};
     f32 bx = time_x + kit_px(170);
     for (i32 i = 0; i < 3; i++) {
         f32 w = ImGui::CalcTextSize(trims[i]).x + 2 * ImGui::GetStyle().FramePadding.x;
