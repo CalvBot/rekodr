@@ -314,8 +314,8 @@ static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_GETMINMAXINFO: {
         MINMAXINFO *m = (MINMAXINFO *)lp;
-        m->ptMinTrackSize.x = (LONG)(900 * g_dpi_scale);
-        m->ptMinTrackSize.y = (LONG)(600 * g_dpi_scale);
+        m->ptMinTrackSize.x = (LONG)(1180 * g_dpi_scale);
+        m->ptMinTrackSize.y = (LONG)(700 * g_dpi_scale);
         return 0;
     }
     }
