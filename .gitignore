@@ -1,2 +1,4 @@
 /target
 /app/build
+# Build output left on disk from the removed Rust and C# version
+/win
