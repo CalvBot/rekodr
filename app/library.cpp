@@ -1059,6 +1059,40 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
     return clicked;
 }
 
+// A pill of the Library's header, all of one height. A plain one (Clips, Sessions) has its label in the middle and
+// is lit when `on`. One that drops a list has an optional picture, its label from the left and an arrow on the
+// right, and is outlined when `on`: when what it is set to narrows what is shown.
+static bool lib_pill(const char *id, const char *label, f32 w, bool on, bool drops, ID3D11ShaderResourceView *picture = 0)
+{
+    f32 h = ImGui::GetFrameHeight(), round = ImGui::GetStyle().FrameRounding;
+    ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + w, a.y + h);
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    if (clicked) dev_click("pill", label);
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, z, col32(!drops && on ? 0x3a3d44 : hot ? COL_HOVER : COL_PANEL2), round);
+    f32 ty = floorf(a.y + (h - g_font->FontSize) / 2);
+    if (!drops) {
+        ImFont *font = on ? g_font_bold : g_font;
+        f32 tw = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, label).x;
+        dl->AddText(font, font->FontSize, ImVec2(floorf(a.x + (w - tw) / 2), ty), col32(on || hot ? COL_TEXT : COL_DIM), label);
+        return clicked;
+    }
+    if (on) dl->AddRect(a, z, col32(COL_ACCENT, 0.7f), round, 0, kit_px(1));
+    f32 x = a.x + kit_px(12), is = kit_px(20);
+    if (picture) {
+        ImVec2 i0(x - kit_px(3), floorf(a.y + (h - is) / 2));
+        dl->AddImageRounded((ImTextureID)picture, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(4));
+        x = i0.x + is + kit_px(8);
+    }
+    f32 cw = g_font_small->CalcTextSizeA(g_font_small->FontSize, FLT_MAX, 0, ICON_DOWN).x, cx = z.x - kit_px(12) - cw;
+    dl->AddText(g_font_small, g_font_small->FontSize, ImVec2(cx, floorf(a.y + (h - g_font_small->FontSize) / 2)), col32(COL_DIM), ICON_DOWN);
+    dl->PushClipRect(ImVec2(x, a.y), ImVec2(cx - kit_px(6), z.y), true);
+    dl->AddText(g_font, g_font->FontSize, ImVec2(x, ty), col32(COL_TEXT), label);
+    dl->PopClipRect();
+    return clicked;
+}
+
 // Popup and dialog looks: roomy, rounded, no title bar.
 static void lib_popup_style_push(f32 pad)
 {
@@ -1706,22 +1740,78 @@ static void screen_library()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 full_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
 
-    // Header: Clips or Sessions, three buttons that each drop a list (the date range, the game, the order), and
-    // the search.
+    // Header: pills of one height. Clips and Sessions, then three that each drop a list (the game, the date range,
+    // the order), and the search on the right. A list that is narrowing what's shown is outlined.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
     static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
-    i32 sel = lib.view;
-    if (kit_segmented("##views", views, 2, &sel, kit_px(96))) lib_set_view((LibView)sel);
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
     static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
-    // The three are one width and sit together; the search is on the right
-    f32 drop_w = kit_px(124), range_w = drop_w, game_w = drop_w, sort_w = drop_w, hgap = kit_px(8);
-    ImVec2 range_at(h0.x + 2 * kit_px(96) + kit_px(22), h0.y);
+    f32 hgap = kit_px(8), view_w = kit_px(104), game_w = kit_px(168), drop_w = kit_px(112);
+    for (i32 v = 0; v < 2; v++) {
+        ImGui::SetCursorScreenPos(ImVec2(h0.x + v * (view_w + kit_px(4)), h0.y));
+        if (lib_pill(v ? "##sessions" : "##clips", views[v], view_w, lib.view == v, false) && lib.view != v) lib_set_view((LibView)v);
+    }
+
+    // The game: every game in this view with how many it has, most recent first, and a box to find one by name
+    ImVec2 game_at(h0.x + 2 * view_w + kit_px(4) + kit_px(16), h0.y);
+    ImGui::SetCursorScreenPos(game_at);
+    static char game_find[64];
+    if (lib_pill("##game", lib.game[0] ? lib.game : "All games", game_w, lib.game[0] != 0, true, lib.game[0] ? game_icon(lib.game) : 0)) {
+        game_find[0] = 0;
+        ImGui::OpenPopup("game");
+    }
+    i32 step = 0;
+    for (i32 c = 0; c < lib.game_count; c++)
+        if (!strcmp(lib.game, lib.games[c])) step = c + 1;
+    if (kit_wheel_step(&step, lib.game_count + 1)) {
+        if (step == 0) lib.game[0] = 0;
+        else str_set(lib.game, lib.games[step - 1]);
+        lib.scroll = lib.scroll_to = 0;
+        lib_refilter();
+    }
+    ImGui::SetNextWindowPos(ImVec2(game_at.x, game_at.y + fh + kit_px(6)));
+    lib_popup_style_push(8);
+    bool game_open = ImGui::BeginPopup("game");
+    lib_popup_style_pop();
+    if (game_open) {
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+        kit_search("##find", game_find, sizeof game_find, "Find a game", kit_px(260));
+        bool enter = ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false);
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, kit_px(2)));
+        // The list scrolls under the box; Enter picks the first one shown
+        i32 shown = 0, pick = -1;
+        for (i32 c = 0; c <= lib.game_count; c++)
+            if (c == 0 ? !game_find[0] : lib_matches(lib.games[c - 1], game_find)) shown++;
+        f32 item_h = kit_px(36) + ImGui::GetStyle().ItemSpacing.y;
+        ImGui::BeginChild("##games", ImVec2(kit_px(260), (shown < 1 ? 1 : shown > 9 ? 9 : shown) * item_h), 0, ImGuiWindowFlags_NoBackground);
+        if (!shown) kit_dim("  No game matches");
+        for (i32 c = 0; c <= lib.game_count; c++) {
+            const char *name = c == 0 ? "All games" : lib.games[c - 1];
+            if (c == 0 ? game_find[0] != 0 : !lib_matches(name, game_find)) continue;
+            bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
+            ImGui::PushID(c);
+            if (lib_game_item(c == 0 ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active) || enter) pick = c;
+            ImGui::PopID();
+            if (pick >= 0) break;
+        }
+        ImGui::EndChild();
+        if (pick >= 0) {
+            if (pick == 0) lib.game[0] = 0;
+            else str_set(lib.game, lib.games[pick - 1]);
+            lib.scroll = lib.scroll_to = 0;
+            lib_refilter();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // The date range; Custom opens the calendar
+    ImVec2 range_at(game_at.x + game_w + hgap, h0.y);
     ImGui::SetCursorScreenPos(range_at);
-    char range_label[64];
-    snprintf(range_label, sizeof range_label, "%s   " ICON_DOWN "##range", ranges[lib.range]);
-    if (kit_button(range_label, KIT_SECONDARY, ImVec2(range_w, 0))) ImGui::OpenPopup("range");
-    i32 step = lib.range;
+    if (lib_pill("##range", ranges[lib.range], drop_w, lib.range != 0, true)) ImGui::OpenPopup("range");
+    step = lib.range;
     if (kit_wheel_step(&step, RANGE_CUSTOM)) { // every range but Custom, which needs its calendar
         lib.range = step;
         lib.scroll = lib.scroll_to = 0;
@@ -1752,53 +1842,12 @@ static void screen_library()
     ImGui::SetNextWindowPos(ImVec2(range_at.x, range_at.y + fh + kit_px(6)));
     lib_calendar();
 
-    // The game: every game in this view with how many it has, most recent first
-    ImVec2 game_at(range_at.x + range_w + hgap, h0.y);
-    ImGui::SetCursorScreenPos(game_at);
-    char game_label[96];
-    if (!lib.game[0]) snprintf(game_label, sizeof game_label, "All games   " ICON_DOWN "##game");
-    else if (strlen(lib.game) <= 11) snprintf(game_label, sizeof game_label, "%s   " ICON_DOWN "##game", lib.game);
-    else snprintf(game_label, sizeof game_label, "%.9s\xE2\x80\xA6   " ICON_DOWN "##game", lib.game);
-    if (kit_button(game_label, KIT_SECONDARY, ImVec2(game_w, 0))) ImGui::OpenPopup("game");
-    step = 0;
-    for (i32 c = 0; c < lib.game_count; c++)
-        if (!strcmp(lib.game, lib.games[c])) step = c + 1;
-    if (kit_wheel_step(&step, lib.game_count + 1)) {
-        if (step == 0) lib.game[0] = 0;
-        else str_set(lib.game, lib.games[step - 1]);
-        lib.scroll = lib.scroll_to = 0;
-        lib_refilter();
-    }
-    ImGui::SetNextWindowPos(ImVec2(game_at.x, game_at.y + fh + kit_px(6)));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, kit_px(430)));
-    lib_popup_style_push(8);
-    bool game_open = ImGui::BeginPopup("game");
-    lib_popup_style_pop();
-    if (game_open) {
-        for (i32 c = 0; c <= lib.game_count; c++) {
-            const char *name = c == 0 ? "All games" : lib.games[c - 1];
-            bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
-            ImGui::PushID(c);
-            if (lib_game_item(c == 0 ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active) && !active) {
-                if (c == 0) lib.game[0] = 0;
-                else str_set(lib.game, name);
-                lib.scroll = lib.scroll_to = 0;
-                lib_refilter();
-            }
-            ImGui::PopID();
-        }
-        ImGui::EndPopup();
-    }
-
-    // The search takes what the row has left, between a narrowest and a widest.
-    ImVec2 sort_pos(game_at.x + game_w + hgap, h0.y);
-    f32 search_w = full_w - (sort_pos.x - h0.x) - sort_w - kit_px(12);
-    search_w = search_w < kit_px(110) ? kit_px(110) : search_w > kit_px(240) ? kit_px(240) : search_w;
-    ImGui::SetCursorScreenPos(sort_pos);
-    char sort_label[48];
-    snprintf(sort_label, sizeof sort_label, "%s   " ICON_DOWN "##sort", sorts[lib.sort]);
-    ImVec2 sort_at = ImGui::GetCursorScreenPos();
-    if (kit_button(sort_label, KIT_SECONDARY, ImVec2(sort_w, 0))) ImGui::OpenPopup("sort");
+    // The order, then the search, which takes what the row has left between a narrowest and a widest
+    ImVec2 sort_at(range_at.x + drop_w + hgap, h0.y);
+    f32 search_w = full_w - (sort_at.x - h0.x) - drop_w - kit_px(12);
+    search_w = search_w < kit_px(100) ? kit_px(100) : search_w > kit_px(240) ? kit_px(240) : search_w;
+    ImGui::SetCursorScreenPos(sort_at);
+    if (lib_pill("##sort", sorts[lib.sort], drop_w, false, true)) ImGui::OpenPopup("sort");
     step = lib.sort;
     if (kit_wheel_step(&step, 4)) {
         lib.sort = step;
@@ -1819,7 +1868,7 @@ static void screen_library()
         ImGui::EndPopup();
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w, h0.y));
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) && !ImGui::IsPopupOpen("game")) ImGui::SetKeyboardFocusHere();
     if (kit_search("##search", lib.search, sizeof lib.search, "Search", search_w)) {
         lib.scroll = lib.scroll_to = 0;
         lib_refilter();
