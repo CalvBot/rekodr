@@ -231,6 +231,21 @@ static void test_gamedb()
     // Its window naming the game is a fair guess when the command line doesn't say
     T(gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "javaw org.launcher.EntryPoint", "Minecraft 1.7.10", &g) && !strcmp(g.id, "1"));
     T(gamedb_by_exe("hl2.exe", "D:\\steamapps\\common\\GarrysMod\\hl2.exe", "hl2.exe -game garrysmod", "", &g) && !strcmp(g.id, "4"));
+    // The one game an exe is listed for, and finding games by part of a name
+    T(gamedb_family("javaw.exe", &g) && !strcmp(g.name, "Minecraft"));
+    T(gamedb_family("rustclient.exe", &g) && !strcmp(g.id, "3"));
+    T(!gamedb_family("notepad.exe", &g));
+    GameInfo hits[4];
+    T(gamedb_search("count", hits, 4) == 1 && !strcmp(hits[0].name, "Counter-Strike 2"));
+    T(gamedb_search("r", hits, 4) == 4); // every one of the four has an r
+    T(gamedb_search("ru", hits, 4) == 1 && !strcmp(hits[0].name, "Rust"));
+    T(gamedb_search("", hits, 4) == 0 && gamedb_search("zzz", hits, 4) == 0);
+    // A window's title as a game's name: up to its version
+    char title[64];
+    T(title_game_name("GT: New Horizons 2.9.0", title, sizeof title) && !strcmp(title, "GT: New Horizons"));
+    T(title_game_name("Minecraft* 1.20.1 - Singleplayer", title, sizeof title) && !strcmp(title, "Minecraft"));
+    T(title_game_name("Some Pack - Main Menu", title, sizeof title) && !strcmp(title, "Some Pack"));
+    T(!title_game_name("", title, sizeof title) && !title_game_name("1.2.3", title, sizeof title));
     gamedb_free(g_gamedb.index);
     g_gamedb.index = 0;
     DeleteFileW(json.s);

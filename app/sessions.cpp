@@ -597,6 +597,22 @@ static void sessions_tick()
     }
 }
 
+// A game's name was found out after its session began (a modpack's window came up): the open session takes it.
+static void sessions_game_renamed(const char *exe)
+{
+    Sessions &ss = g_app.sessions;
+    for (i32 i = 0; i < COUNT(ss.items); i++) {
+        Session *s = &ss.items[i];
+        if (s->state != SES_OPEN || s->custom || strcmp(s->exe, exe)) continue;
+        char name[128];
+        sessions_game_name(exe, name);
+        if (!strcmp(name, s->name)) continue;
+        log_line("session %u: %s is %s", s->id, s->name, name);
+        str_set(s->name, name);
+        ss.dirty = true;
+    }
+}
+
 static void sessions_on_game(const char *exe)
 {
     Sessions &ss = g_app.sessions;

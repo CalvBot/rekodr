@@ -1097,7 +1097,9 @@ static void audio_on_event(const Event &e)
         if (path[0]) str_set(app->path, path);
         if (moved || (path[0] && g_app.config.app_count != before)) // its name can differ where it runs from now
             exe_description(app->path, app->desc.s, sizeof app->desc.s);
-        bool named = (moved || g_app.config.app_count != before) && gamedb_name_app(app); // a known game: its name, and sorted
+        // A known game gets its name and is sorted. A shared exe whose window wasn't up yet is asked again
+        bool ask = moved || g_app.config.app_count != before || (app->db_pending && now_us() - app->db_tried_us > 5000000);
+        bool named = ask && gamedb_name_app(app);
         if (g_app.config.app_count != before) {
             log_line("new app heard: %s", exe.s);
             audio_config_changed();

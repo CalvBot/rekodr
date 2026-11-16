@@ -1085,16 +1085,54 @@ static void apps_rename_popup()
     ImGui::SetNextItemWidth(w);
     bool enter = ImGui::InputTextWithHint("##name", hint, o.edit, 64, ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::PopStyleColor();
+
+    // Games in the list that match what is typed: picking one names it that. Five rows, always, so the buttons
+    // below stay where they are.
+    static GameInfo found[5];
+    i32 n = o.edit[0] ? gamedb_search(o.edit, found, COUNT(found)) : 0;
+    bool picked = false;
+    f32 rh = dp(30), is = dp(20);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 l0 = ImGui::GetCursorScreenPos();
+    if (!n) {
+        ImGui::PushFont(g_font_small);
+        dl->AddText(ImVec2(l0.x + dp(2), l0.y + dp(8)), col32(COL_FAINT), o.edit[0] ? "No game in the list has that name; it is kept as typed"
+                                                                                  : "Type a name, or pick the game it is");
+        ImGui::PopFont();
+    }
+    for (i32 i = 0; i < n; i++) {
+        ImVec2 r0(l0.x, l0.y + i * rh);
+        ImGui::SetCursorScreenPos(r0);
+        ImGui::PushID(i);
+        if (ImGui::Selectable("##pick", false, 0, ImVec2(w, rh - dp(2)))) {
+            snprintf(o.edit, sizeof o.edit, "%s", found[i].name);
+            picked = true;
+        }
+        ImGui::PopID();
+        ImVec2 i0(r0.x + dp(6), floorf(r0.y + (rh - dp(2) - is) / 2));
+        ID3D11ShaderResourceView *icon = game_db_icon(found[i].name);
+        if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, dp(4));
+        else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), dp(4));
+        opt_text_at(dl, g_font, ImVec2(i0.x + is + dp(10), floorf(r0.y + (rh - dp(2) - g_font->FontSize) / 2)), COL_TEXT, found[i].name, r0.x + w - dp(6));
+    }
+    ImGui::SetCursorScreenPos(ImVec2(l0.x, l0.y + COUNT(found) * rh + dp(6)));
+
     f32 bw = dp(84), gap = dp(8);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
     if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
     ImGui::SameLine(0, gap);
-    if (kit_button("Save", KIT_PRIMARY, ImVec2(bw, 0)) || enter) {
+    if (kit_button("Save", KIT_PRIMARY, ImVec2(bw, 0)) || enter || picked) {
         char name[64];
         str_set(name, o.edit);
         for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
         str_set(a.name.s, trim(name));
         log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
+        // A name of its own for a game the list knows (a modpack's): it keeps that game's icon and cover
+        GameInfo own, is_game;
+        if (a.name.s[0] && !gamedb_by_name(a.name.s, &own) &&
+            (gamedb_by_exe(a.exe.s, a.path, "", "", &is_game) || gamedb_family(a.exe.s, &is_game)))
+            game_alias_set(a.name.s, is_game.name);
+        sessions_game_renamed(a.exe.s);
         options_apply(APPLY_AUDIO);
         ImGui::CloseCurrentPopup();
     }
@@ -1446,7 +1484,7 @@ static void options_apps()
     if (menu) {
         AppInfo *a = o.menu_app >= 0 && o.menu_app < c.app_count ? &c.apps[o.menu_app] : 0;
         if (a && app_category(c, *a) == CAT_GAME && lib_menu_item(ICON_SETTINGS, "Recording settings")) open_popup = 2;
-        if (a && lib_menu_item(ICON_RENAME, "Rename")) open_popup = 3;
+        if (a && lib_menu_item(ICON_RENAME, "Name or game")) open_popup = 3;
         ImGui::BeginDisabled(!o.menu_path.s[0]);
         if (lib_menu_item(ICON_FOLDER, "Open file location")) reveal_file(o.menu_path);
         ImGui::EndDisabled();
