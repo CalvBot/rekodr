@@ -280,6 +280,37 @@ static void config_set(Config *c, const char *key, char *value)
     }
 }
 
+#pragma comment(lib, "version.lib")
+
+// An exe's File description (what Task Manager and the volume mixer show), "" if it has none.
+static void exe_description(const char *path, char *out, i32 cap)
+{
+    out[0] = 0;
+    if (!path || !path[0]) return;
+    wchar_t w[MAX_PATH];
+    utf8_to_wide(path, w, MAX_PATH);
+    DWORD size = GetFileVersionInfoSizeW(w, 0);
+    if (!size || size > 1 << 20) return;
+    void *info = malloc(size);
+    if (!info) return;
+    struct Lang { WORD lang, code; } *langs = 0;
+    UINT n = 0;
+    if (GetFileVersionInfoW(w, 0, size, info) && VerQueryValueW(info, L"\\VarFileInfo\\Translation", (void **)&langs, &n) &&
+        n >= sizeof *langs) {
+        wchar_t key[64];
+        swprintf(key, COUNT(key), L"\\StringFileInfo\\%04x%04x\\FileDescription", langs[0].lang, langs[0].code);
+        wchar_t *v = 0;
+        UINT len = 0;
+        if (VerQueryValueW(info, key, (void **)&v, &len) && v && len > 1) {
+            wide_to_utf8(v, out, cap);
+            // trim
+            char *e = out + strlen(out);
+            while (e > out && (e[-1] == ' ' || e[-1] == '|')) *--e = 0;
+        }
+    }
+    free(info);
+}
+
 static bool config_load(Config *c, const Paths &paths)
 {
     config_defaults(c, paths);
@@ -315,6 +346,7 @@ static bool config_load(Config *c, const Paths &paths)
         c->peak_factor = d.peak_factor;
         c->spatial_aq = d.spatial_aq;
     }
+    for (i32 i = 0; i < c->app_count; i++) exe_description(c->apps[i].path, c->apps[i].desc.s, sizeof c->apps[i].desc.s);
     return true;
 }
 

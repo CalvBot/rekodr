@@ -147,8 +147,8 @@ static void clean_name(char *s)
 static void display_name(const SaveSettings &c, const char *exe, char *out, i32 cap)
 {
     const AppInfo *a = save_app(c, exe);
-    if (a && a->name.s[0]) {
-        snprintf(out, cap, "%s", a->name.s);
+    if (a && (a->name.s[0] || a->desc.s[0])) {
+        snprintf(out, cap, "%s", a->name.s[0] ? a->name.s : a->desc.s);
     } else {
         snprintf(out, cap, "%s", exe);
         size_t n = strlen(out);

@@ -1015,7 +1015,8 @@ static i32 opt_rows_fit(f32 rh, f32 below)
 
 // A footer line: `left` dim on the left, and  ‹  2 / 5  ›  on the right, all fixed sizes. The mouse wheel over the
 // page turns pages too.
-static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page, const char *left)
+static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page, const char *left, bool *chip = 0,
+                      const char *chip_label = 0, i32 chip_count = 0)
 {
     i32 pages = total > 0 ? (total + per_page - 1) / per_page : 1;
     if (ImGui::IsWindowHovered() && !ImGui::IsAnyItemActive()) {
@@ -1030,6 +1031,14 @@ static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page, const 
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
     ImGui::AlignTextToFramePadding();
     kit_dim("%s", left);
+    if (chip) { // a switch after the count, a fixed width so nothing moves when it's turned
+        ImGui::SameLine(dp(150));
+        char n[16], cid[64];
+        snprintf(n, sizeof n, "%d", chip_count);
+        snprintf(cid, sizeof cid, "%s##pagerchip", chip_label);
+        f32 w = ImGui::CalcTextSize(chip_label).x + ImGui::CalcTextSize("000").x + dp(36);
+        if (kit_chip(cid, *chip, n, w)) *chip = !*chip;
+    }
     f32 bh = ImGui::GetFrameHeight(), slot = dp(64);
     kit_align_right(2 * bh + slot);
     if (kit_icon_button(ICON_LEFT, "##prev", KIT_GHOST, *page > 0)) (*page)--;
@@ -1104,8 +1113,15 @@ static void default_app_name(const char *exe, char *out, i32 cap)
 }
 
 // Filters go by what an app ends up as, so an app sorted by its folder's rule is under that category, not New.
+// An app with no category of its own that a folder rule sorts: one per person in a VoiceStreams call.
+static bool app_folder_only(const AppInfo &a)
+{
+    return a.category == CAT_NONE && app_category(g_app.config, a) != CAT_NONE;
+}
+
 static bool app_matches(const AppInfo &a, i32 filter, const char *search)
 {
+    if (!g_app.options.show_folder_apps && app_folder_only(a)) return false;
     AppCategory cat = app_category(g_app.config, a);
     switch (filter) {
     case FILTER_NEW: if (cat != CAT_NONE) return false; break;
@@ -1120,8 +1136,8 @@ static bool app_matches(const AppInfo &a, i32 filter, const char *search)
     char *n = trim(needle);
     if (!n[0]) return true;
     for (char *p = n; *p; p++) *p = (char)tolower((u8)*p);
-    char hay[160];
-    snprintf(hay, sizeof hay, "%s %s", a.exe.s, a.name.s);
+    char hay[256];
+    snprintf(hay, sizeof hay, "%s %s %s", a.exe.s, a.name.s, a.desc.s);
     for (char *p = hay; *p; p++) *p = (char)tolower((u8)*p);
     return strstr(hay, n) != 0;
 }
@@ -1653,7 +1669,8 @@ static void apps_rename_popup()
     ImGui::Text("Name for %s", a.exe.s);
     ImGui::PopFont();
     char hint[64];
-    default_app_name(a.exe.s, hint, sizeof hint);
+    if (a.desc.s[0]) str_set(hint, a.desc.s); // what it shows as with no name: its File description
+    else default_app_name(a.exe.s, hint, sizeof hint);
     if (ImGui::IsWindowAppearing()) {
         str_set(o.edit, a.name.s);
         ImGui::SetKeyboardFocusHere();
@@ -1869,9 +1886,13 @@ static void options_apps()
     static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED,
                                       FILTER_FOLDERS};
     static const i32 chip_cat[] = {-1, CAT_NONE, CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
-    i32 counts[7] = {c.app_count};
+    i32 counts[7] = {}, folder_only = 0;
     for (i32 i = 0; i < c.app_count; i++) {
         AppCategory cat = app_category(c, c.apps[i]);
+        bool hidden = app_folder_only(c.apps[i]);
+        folder_only += hidden;
+        if (hidden && !o.show_folder_apps) continue;
+        counts[0]++;
         for (i32 k = 1; k < 6; k++) counts[k] += cat == chip_cat[k];
     }
     counts[6] = c.folder_count;
@@ -2049,7 +2070,12 @@ static void options_apps()
         opt_pager("folders", &o.folders_page, o.folders_shown, rows, left);
     } else {
         snprintf(left, sizeof left, "%d app%s", o.order_count, o.order_count == 1 ? "" : "s");
-        opt_pager("apps", &o.apps_page, o.order_count, rows, left);
+        bool shown = o.show_folder_apps;
+        opt_pager("apps", &o.apps_page, o.order_count, rows, left, &o.show_folder_apps, "Sorted by a folder", folder_only);
+        if (shown != o.show_folder_apps) {
+            o.order_dirty = true;
+            o.apps_page = 0;
+        }
     }
 }
 
@@ -2747,7 +2773,8 @@ static void screen_options()
     static const char *names[OPT_TAB_COUNT] = {"Apps", "Recording", "Hotkeys", "General"};
     if (o.tab < 0 || o.tab >= OPT_TAB_COUNT) o.tab = OPT_APPS;
     i32 new_apps = 0;
-    for (i32 i = 0; i < g_app.config.app_count; i++) new_apps += g_app.config.apps[i].category == CAT_NONE;
+    for (i32 i = 0; i < g_app.config.app_count; i++) // as the New chip counts: not ones a folder rule sorts
+        new_apps += app_category(g_app.config, g_app.config.apps[i]) == CAT_NONE;
     char count[8];
     snprintf(count, sizeof count, new_apps > 99 ? "99+" : "%d", new_apps);
     f32 pill_room = opt_pill_w("99") + dp(8);

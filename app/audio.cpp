@@ -112,8 +112,11 @@ static AudioTrack audio_track(const Config &c, AudioKind kind, const char *exe, 
 static void audio_display_name(const Config &c, const char *exe, char *out, i32 cap)
 {
     for (i32 i = 0; i < c.app_count; i++) {
-        if (!strcmp(c.apps[i].exe.s, exe) && c.apps[i].name.s[0]) {
-            snprintf(out, cap, "%s", c.apps[i].name.s);
+        // A name given in Options, else the exe's File description, else the exe name
+        const AppInfo &a = c.apps[i];
+        if (strcmp(a.exe.s, exe)) continue;
+        if (a.name.s[0] || a.desc.s[0]) {
+            snprintf(out, cap, "%s", a.name.s[0] ? a.name.s : a.desc.s);
             return;
         }
     }
@@ -1092,6 +1095,8 @@ static void audio_on_event(const Event &e)
         app->last_heard_us = e.b;
         bool moved = path[0] && strcmp(app->path, path);
         if (path[0]) str_set(app->path, path);
+        if (moved || (path[0] && g_app.config.app_count != before)) // its name can differ where it runs from now
+            exe_description(app->path, app->desc.s, sizeof app->desc.s);
         if (g_app.config.app_count != before) {
             log_line("new app heard: %s", exe.s);
             audio_config_changed();
