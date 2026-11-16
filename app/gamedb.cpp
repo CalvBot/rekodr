@@ -9,7 +9,7 @@
 //   games.tsv         the same, one game a line, which is what is loaded:
 //                     id, name, icon, cover, Steam id, other names (|), exes (|; "!" first marks a launcher,
 //                     ">" a shared exe; the command line it needs follows a \x1f)
-//   art\<id>-icon.png, art\<id>-cover.jpg     fetched the first time something shows them; an empty file means
+//   art\<id>-icon.png, art\<id>-art.jpg       fetched the first time something shows them; an empty file means
 //                                             there is none
 // One worker thread does the fetching and the loading. The index is never changed once built, only replaced, and
 // readers copy what they find out of it under the lock, so any thread may ask.
@@ -81,7 +81,7 @@ static Path gamedb_dir()
 static Path gamedb_art_file(const char *id, GameArt kind)
 {
     wchar_t name[64];
-    swprintf(name, COUNT(name), L"art\\%hs-%s", id, kind == ART_ICON ? L"icon.png" : L"cover.jpg");
+    swprintf(name, COUNT(name), L"art\\%hs-%s", id, kind == ART_ICON ? L"icon.png" : L"art.jpg");
     return path_join(gamedb_dir(), name);
 }
 
@@ -575,7 +575,8 @@ static bool gamedb_name_app(AppInfo *a)
         if (!shared) return false;
         char cmd[4096], title[256];
         if (!process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title)) return false;
-        DEV_LOG("gamedb: %s is shared; its window is \"%s\"", a->exe.s, title);
+        DEV_LOG("gamedb: %s is shared; its window is \"%s\", its command line ends \"%s\"", a->exe.s, title,
+                strlen(cmd) > 400 ? cmd + strlen(cmd) - 400 : cmd);
         if (!gamedb_by_exe(a->exe.s, a->path, cmd, title, &g)) return false;
     }
     bool changed = false;
@@ -630,9 +631,14 @@ static void gamedb_fetch_art()
         Path file = gamedb_art_file(w.id, w.kind);
         wchar_t url[256];
         bool ok = false;
-        if (w.kind == ART_COVER && w.steam) { // Steam's wide picture of the game, the shape of a card
-            swprintf(url, COUNT(url), L"/store_item_assets/steam/apps/%u/header.jpg", w.steam);
-            ok = http_get_file(L"shared.steamstatic.com", url, file);
+        if (w.kind == ART_COVER && w.steam) {
+            // Steam's library art: a wide picture of the game with no title or season's promotion written across
+            // it. Its store banner has both, so that is only the second choice.
+            static const wchar_t *const kinds[] = {L"library_hero.jpg", L"header.jpg"};
+            for (i32 k = 0; k < COUNT(kinds) && !ok && !g_gamedb.stop; k++) {
+                swprintf(url, COUNT(url), L"/store_item_assets/steam/apps/%u/%s", w.steam, kinds[k]);
+                ok = http_get_file(L"shared.steamstatic.com", url, file);
+            }
         }
         if (!ok && w.hash[0]) {
             swprintf(url, COUNT(url), L"/app-icons/%hs/%hs.png?size=%d", w.id, w.hash, w.kind == ART_ICON ? 128 : 512);
