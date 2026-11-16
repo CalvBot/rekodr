@@ -558,7 +558,7 @@ static void ago_text(i64 us, char *out, i32 cap)
 // Apps
 
 // Each category has a colour and a short name, used for its button on every app row and its filter chip.
-static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Chat", "Ignored"};
+static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Chat", "Excluded"};
 static const u32 CATEGORY_COLOURS[] = {COL_WARN, 0x5b9cff, 0x3fbf74, 0xb07cff, 0x8e939c};
 
 // The name an app gets when it has none of its own: "Overwatch" for overwatch.exe (as audio_display_name).
@@ -736,7 +736,7 @@ static void app_icon_draw(ImDrawList *dl, ImVec2 a, f32 size, const AppInfo &inf
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// A game's own recording settings (the gear on its row). Empty fields use Recording's.
+// A game's own recording settings (Recording settings in its row's menu). Empty fields use Recording's.
 
 static const char *PRESET_LABELS[] = {"P1", "P2", "P3", "P4", "P5", "P6", "P7"};
 static const char *PRESET_NOTES[] = {"fastest", 0, 0, "balanced", 0, 0, "best quality, more GPU"};
@@ -980,7 +980,7 @@ static void apps_add_popup(ImVec2 at, i32 rows)
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    static const char *add_cats[] = {"Game", "App", "Chat", "Ignored"};
+    static const char *add_cats[] = {"Game", "App", "Chat", "Excluded"};
     static const AppCategory add_cat_values[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
     ImGui::SetNextWindowPos(at, ImGuiCond_Appearing, ImVec2(1, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
@@ -1078,16 +1078,28 @@ static void apps_rename_popup()
     ImGui::EndPopup();
 }
 
-// The category buttons on an app row: four fixed-size pills, the app's own one filled in its colour.
-static const AppCategory ROW_CATS[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
-static f32 cat_pill_w() { return dp(96); }
+// The controls on an app row: a switch that includes or excludes it, then the three categories an included app
+// can have, the app's own one filled in its colour. All of it keeps its place whatever is chosen.
+static const AppCategory ROW_CATS[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION};
+static f32 cat_pill_w() { return dp(84); }
+static f32 cat_pills_w() { return kit_px(36) + dp(18) + COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4); }
 
-// `own` is filled; `inherited` (a folder's rule, when there's no own one) is only outlined.
+// `own` is filled; `inherited` (a folder's rule, when there's no own one) is only outlined. Switching it back on
+// makes it an App; picking a category of an excluded one includes it too.
 static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y, AppCategory *picked)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 w = cat_pill_w(), h = ImGui::GetFrameHeight(), gap = dp(4);
     bool changed = false;
+    AppCategory effective = own != CAT_NONE ? own : inherited;
+    bool included = effective != CAT_IGNORED;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    bool inc = included;
+    if (kit_toggle("##include", &inc)) {
+        *picked = inc ? CAT_APP : CAT_IGNORED;
+        changed = true;
+    }
+    x += kit_px(36) + dp(18);
     for (i32 i = 0; i < COUNT(ROW_CATS); i++) {
         AppCategory cat = ROW_CATS[i];
         ImVec2 p(x + i * (w + gap), y);
@@ -1104,7 +1116,7 @@ static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y,
         ImFont *font = on ? g_font_bold : g_font;
         f32 tw = text_w(font, label);
         opt_text_at(dl, font, ImVec2(floorf(p.x + (w - tw) / 2), floorf(p.y + (h - font->FontSize) / 2)),
-                    on || via ? col : hot ? COL_TEXT : COL_DIM, label, p.x + w);
+                    on || via ? col : hot ? COL_TEXT : included ? COL_DIM : 0x4d5059, label, p.x + w);
         if (clicked && !on) {
             *picked = cat;
             changed = true;
@@ -1196,8 +1208,7 @@ static void folders_rows(i32 rows, f32 rh, i32 *open_popup)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight();
     f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
-    f32 more_x = x1 - fh, gear_x = more_x - dp(4) - fh;
-    f32 pills_w = COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4), pills_x = gear_x - dp(16) - pills_w;
+    f32 more_x = x1 - fh, pills_x = more_x - dp(20) - cat_pills_w();
     f32 is = dp(34), text_x = x0 + is + dp(14), text_max = pills_x - dp(16);
     i16 shown[COUNT(c.folders)];
     i32 n = 0;
@@ -1266,7 +1277,7 @@ static void options_apps()
 
     // Filter chips with counts; search and Add on the right
     static const char *chips[] = {ICON_APPS "  All", ICON_STAR "  New",  ICON_GAME "  Games", ICON_WINDOW "  Apps",
-                                  ICON_CHAT "  Chat", ICON_MUTE "  Ignored", ICON_FOLDER "  Folders"};
+                                  ICON_CHAT "  Chat", ICON_MUTE "  Excluded", ICON_FOLDER "  Folders"};
     static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED,
                                       FILTER_FOLDERS};
     static const i32 chip_cat[] = {-1, CAT_NONE, CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
@@ -1327,8 +1338,7 @@ static void options_apps()
     if (folders) folders_rows(rows, rh, &open_popup);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
-    f32 more_x = x1 - fh, gear_x = more_x - dp(4) - fh;
-    f32 pills_w = COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4), pills_x = gear_x - dp(16) - pills_w;
+    f32 more_x = x1 - fh, pills_x = more_x - dp(20) - cat_pills_w();
     f32 is = dp(34), text_x = x0 + is + dp(14), text_max = pills_x - dp(16);
 
     for (i32 r = 0; r < rows && !folders; r++) {
@@ -1374,14 +1384,6 @@ static void options_apps()
 
         cat_pills(&a, pills_x, cy);
 
-        // The gear (games only; the slot stays for the others) and the menu
-        if (cat == CAT_GAME) {
-            ImGui::SetCursorScreenPos(ImVec2(gear_x, cy));
-            if (kit_icon_button(ICON_SETTINGS, "##gear", KIT_GHOST, true, summary[0] != 0)) {
-                o.menu_app = idx;
-                open_popup = 2;
-            }
-        }
         ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
         bool more = kit_icon_button(ICON_MORE, "##more");
         if (more || (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
@@ -1813,7 +1815,7 @@ static void options_recording()
 
     opt_section("BITRATE");
     opt_card_begin();
-    if (opt_row_f32("While playing a game", "A game can have its own: the gear on its row under Apps", "##bitrate",
+    if (opt_row_f32("While playing a game", "A game can have its own: Recording settings in its menu under Apps", "##bitrate",
                     &c.bitrate_mbps, 1, 300, "Mbps")) {
         log_line("options: game bitrate %g Mbps", c.bitrate_mbps);
         options_apply(APPLY_RECORDER);
@@ -2101,7 +2103,7 @@ static void options_general()
         log_line("options: session gap %g min", c.session_gap_min);
         options_apply(0);
     }
-    if (opt_row_f32("Shortest session to offer", "Each game asks, always saves or never: its gear under Apps", "##minlen",
+    if (opt_row_f32("Shortest session to offer", "Each game asks, always saves or never: Recording settings in its menu under Apps", "##minlen",
                     &c.session_min_length_min, 0, 1440, "min")) {
         log_line("options: shortest session %g min", c.session_min_length_min);
         options_apply(0);

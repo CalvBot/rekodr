@@ -99,7 +99,7 @@ This works today and stays the same, including the on-disk buffer format, so swi
 - **Audio:** WASAPI process loopback per app (including its child processes), plus the mic. Each stream is encoded
   to Opus in 10 s segments in `buffer\audio\<stream>\`, timed to the wall clock from WASAPI packet timestamps.
   - A stream starts when an app plays sound and ends 30 s after it goes quiet or exits.
-  - Ignored apps and clipback's own playback are never recorded.
+  - Excluded apps and clipback's own playback are never recorded.
 - **Which game:** every 2 s, the game being played is the game whose window is in front. Failing that, it's the last
   one played if it's still running, then any running game, then the desktop. Changes are logged to
   `buffer\activity.tsv`. This log drives file names, tags, sessions and per-game bitrate.
