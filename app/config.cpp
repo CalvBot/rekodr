@@ -116,7 +116,7 @@ static AppInfo *config_app(Config *c, const char *exe)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Folder rules (FOLDER-RULES.md). An exe's own category wins; with none (new), the deepest folder rule over its path
+// Folder rules. An exe's own category wins; with none (new), the deepest folder rule over its path
 // decides. Paths compare without case, / and \ alike, and a trailing slash doesn't matter.
 
 // The next part of a path from *p ("C:", "Users", …), skipping separators. Returns its length; 0 at the end.
