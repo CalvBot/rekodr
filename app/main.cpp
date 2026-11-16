@@ -259,7 +259,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         __debugbreak();
     });
     _set_purecall_handler([] { log_line("pure virtual call"); __debugbreak(); });
-    if (!config_load(&g_app.config, g_app.paths)) { // first run: bring over the Rust version's settings (options.cpp)
+    if (!config_load(&g_app.config, g_app.paths)) { // first run: bring over the Rust version's settings (import.cpp)
         options_first_run(&g_app.config, g_app.paths);
         config_save(g_app.config, g_app.paths);
     }

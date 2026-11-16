@@ -1,9 +1,9 @@
-# clipback spec (rewrite)
+# clipback spec
 
 clipback records the screen and every app's audio all the time into a long buffer on disk. Later it turns parts of
-that buffer into files worth keeping or sharing. This spec describes the rewrite: one native C++ program plus
-ffmpeg. The current Rust service, C# window and Edge pages serve only as a reference for how things work today. No
-code carries over.
+that buffer into files worth keeping or sharing. This spec describes it: one native C++ program plus
+ffmpeg. It replaced an earlier Rust service with a C# window and Edge pages; no code carried over, and that
+version is in the git history only.
 
 ## The three ways recordings are used
 
@@ -95,7 +95,7 @@ This works today and stays the same, including the on-disk buffer format, so swi
   finished segments in `list.csv`.
 - **Encoder:** at start each encoder gets a one-frame test encode on the capture GPU, in the order NVENC → AMF →
   QSV → CPU. The first that works is used, unless one is forced in settings. The ffmpeg argument sets per vendor
-  are in today's `src/encoders.rs`.
+  are in `app/recorder.cpp`.
 - **Audio:** WASAPI process loopback per app (including its child processes), plus the mic. Each stream is encoded
   to Opus in 10 s segments in `buffer\audio\<stream>\`, timed to the wall clock from WASAPI packet timestamps.
   - A stream starts when an app plays sound and ends 30 s after it goes quiet or exits.
