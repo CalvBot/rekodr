@@ -1630,7 +1630,8 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     // Behind it all, the game's cover blurred and dimmed, cut to the tile's shape about its middle
     i32 cover_w = 0, cover_h = 0;
     ID3D11ShaderResourceView *blur = 0;
-    if (game_db_cover(s->name, &cover_w, &cover_h, &blur) && blur && cover_w > 0 && cover_h > 0) {
+    bool art = game_db_cover(s->name, &cover_w, &cover_h, &blur) && blur && cover_w > 0 && cover_h > 0;
+    if (art) {
         f32 want = w / h, have = (f32)cover_w / cover_h, u = 0, v = 0;
         if (have > want) u = (1 - want / have) / 2;
         else v = (1 - have / want) / 2;
@@ -1687,7 +1688,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_DIM), line);
     ty += g_font_small->FontSize + kit_px(2);
-    u32 col = COL_FAINT;
+    u32 col = art ? COL_DIM : COL_FAINT; // faint is too faint over a picture
     if (saved) str_set(line, "Saved");
     else if (s->state == SES_ASKING) str_set(line, "Asking in the popup");
     else if (saving) {

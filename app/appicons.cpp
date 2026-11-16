@@ -188,13 +188,17 @@ static bool installed_icon_path(const char *game, Path *out)
 // A picture file (PNG or JPEG) as a texture. Main thread.
 static u32 *wic_load(IWICImagingFactory *wic, const wchar_t *path, i32 *w, i32 *h); // library.cpp
 
-// A picture blurred, as a texture: it is shrunk to 48 across (each pixel the average of the ones it covers) and
+// A picture blurred, as a texture: it is shrunk to 160 across, or 128 down (each pixel the average of the ones it covers) and
 // smoothed, and stretching that back out when it is drawn does the rest.
 static ID3D11ShaderResourceView *blurred_texture(const u32 *pixels, i32 w, i32 h)
 {
-    const i32 bw = 48, bh = h * bw / w > 4 ? h * bw / w : 4;
-    if (w < bw || h < bh || bh > 128) return 0;
-    static u32 shrunk[48 * 128], pass[48 * 128];
+    i32 bw = 160, bh = h * bw / w;
+    if (bh > 128) { // a square or tall one: 128 down instead
+        bh = 128;
+        bw = w * bh / h;
+    }
+    if (bw < 4 || bh < 4 || w < bw || h < bh) return 0;
+    static u32 shrunk[160 * 128], pass[160 * 128];
     for (i32 y = 0; y < bh; y++) {
         for (i32 x = 0; x < bw; x++) {
             i32 x0 = x * w / bw, x1 = (x + 1) * w / bw, y0 = y * h / bh, y1 = (y + 1) * h / bh;
@@ -208,7 +212,7 @@ static ID3D11ShaderResourceView *blurred_texture(const u32 *pixels, i32 w, i32 h
             shrunk[y * bw + x] = 0xff000000u | (u32)(r / n) << 16 | (u32)(g / n) << 8 | (u32)(b / n);
         }
     }
-    for (i32 round = 0; round < 3; round++) { // each pixel with its eight neighbours, three times over
+    for (i32 round = 0; round < 2; round++) { // each pixel with its eight neighbours, twice over
         for (i32 y = 0; y < bh; y++) {
             for (i32 x = 0; x < bw; x++) {
                 u32 b = 0, g = 0, r = 0, n = 0;
@@ -227,14 +231,28 @@ static ID3D11ShaderResourceView *blurred_texture(const u32 *pixels, i32 w, i32 h
     return gpu_texture(shrunk, bw, bh);
 }
 
+// `max_side` halves the picture (each pixel the average of four) until it is no bigger than that: an icon drawn
+// much smaller than it is stored would otherwise shimmer, since these textures have no smaller copies of themselves.
 static ID3D11ShaderResourceView *image_file_texture(const Path &file, i32 *out_w = 0, i32 *out_h = 0,
-                                                    ID3D11ShaderResourceView **blur = 0)
+                                                    ID3D11ShaderResourceView **blur = 0, i32 max_side = 0)
 {
     static IWICImagingFactory *wic;
     if (!wic && FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return 0;
     i32 w = 0, h = 0;
     u32 *pixels = wic_load(wic, file.s, &w, &h);
     if (!pixels) return 0;
+    while (max_side > 0 && (w > max_side || h > max_side) && w >= 2 && h >= 2) {
+        i32 hw = w / 2, hh = h / 2;
+        for (i32 y = 0; y < hh; y++)
+            for (i32 x = 0; x < hw; x++) {
+                const u32 *q = pixels + (y * 2) * w + x * 2;
+                u32 p[4] = {q[0], q[1], q[w], q[w + 1]}, out = 0;
+                for (i32 c = 0; c < 32; c += 8) out |= ((((p[0] >> c) & 255) + ((p[1] >> c) & 255) + ((p[2] >> c) & 255) + ((p[3] >> c) & 255) + 2) / 4) << c;
+                pixels[y * hw + x] = out;
+            }
+        w = hw;
+        h = hh;
+    }
     ID3D11ShaderResourceView *srv = gpu_texture(pixels, w, h);
     if (blur) *blur = blurred_texture(pixels, w, h);
     HeapFree(GetProcessHeap(), 0, pixels);
@@ -278,7 +296,7 @@ static ID3D11ShaderResourceView *game_db_icon(const char *name)
     GameInfo g;
     Path p = {};
     if (!gamedb_by_name(name, &g) || !g.icon[0]) return 0;
-    if (gamedb_art(g, ART_ICON, &p)) slot->srv = image_file_texture(p);
+    if (gamedb_art(g, ART_ICON, &p)) slot->srv = image_file_texture(p, 0, 0, 0, 64);
     else slot->waiting = GetFileAttributesW(gamedb_art_file(g.id, ART_ICON).s) == INVALID_FILE_ATTRIBUTES;
     ui_wake();
     return slot->srv;
