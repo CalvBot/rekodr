@@ -1,4 +1,5 @@
-// Timeline: the buffer on a zoomable, pannable bar, a range picked on it, and Save / Edit / Session.
+// Timeline: the buffer on a zoomable, pannable bar, a range picked on it, and Save / Edit / Session. The preview
+// sits top left: a still frame at the playhead, or the footage playing with its sound after Play.
 //
 // Two workers, neither touching g_app:
 // - the index worker reads the buffer (buffer_read) every 3 s while the screen is shown. There are two heap blocks
@@ -251,10 +252,13 @@ static void tl_take_index(i64 ms)
     tl_make_rows();
 }
 
+static void tl_play_stop();
+
 // Frees the index blocks and preview textures while the screen isn't shown (SPEC: hidden, the window holds nothing).
 static void tl_release()
 {
     Timeline &tl = g_app.timeline;
+    tl_play_stop();
     for (i32 i = 0; i < COUNT(tl.frames); i++) {
         if (tl.frames[i].srv) tl.frames[i].srv->Release();
         tl.frames[i] = {};
@@ -488,6 +492,170 @@ static void tl_save(SaveKind kind, bool edit)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Play: the buffer's segments have no sound of their own and are 2 s each, so Play renders a stretch (up to a minute,
+// or to the end of the selection) with its sound mixed, the way a save does, then plays that file. It takes a
+// second or two to start.
+
+static i64 tl_playhead();
+
+static const i64 TL_PLAY_CHUNK = 60 * TL_SEC, TL_PLAY_MAX = 300 * TL_SEC;
+
+// Deletes preview files left in the local folder, except the one being played.
+static void tl_play_sweep()
+{
+    Timeline &tl = g_app.timeline;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(path_join(g_app.paths.local_dir, L"preview-*.mp4").s, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        Path f = path_join(g_app.paths.local_dir, fd.cFileName);
+        if (tl.player.open && !_wcsicmp(f.s, tl.play_path.s)) continue;
+        DeleteFileW(f.s);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+// Stops playing and the render, and deletes the file.
+static void tl_play_stop()
+{
+    Timeline &tl = g_app.timeline;
+    if (tl.play_job) save_cancel(tl.play_job);
+    tl.play_job = 0;
+    bool had = tl.player.open || tl.play_path.s[0];
+    player_close(&tl.player);
+    if (tl.play_path.s[0]) DeleteFileW(tl.play_path.s);
+    tl.play_path = {};
+    if (had) tl_play_sweep();
+}
+
+// Where the file's `pos` seconds are on the wall clock: its segments end to end from play_file_start.
+static i64 tl_play_wall(f64 pos)
+{
+    Timeline &tl = g_app.timeline;
+    const BufferIdx &b = *tl.idx;
+    i64 left = (i64)(pos * 1e6);
+    for (i32 i = tl_seg_after(b, tl.play_file_start); i < b.seg_count && b.segs[i].start_us < tl.play_to; i++) {
+        i64 len = b.segs[i].end_us - b.segs[i].start_us;
+        if (left < len) return b.segs[i].start_us + left;
+        left -= len;
+    }
+    return tl.play_to;
+}
+
+// The other way: the file's time at `t`, the next footage when `t` is in a gap; -1 when the file doesn't reach it.
+static f64 tl_play_pos(i64 t)
+{
+    Timeline &tl = g_app.timeline;
+    const BufferIdx &b = *tl.idx;
+    if (t < tl.play_file_start) return -1;
+    i64 acc = 0;
+    for (i32 i = tl_seg_after(b, tl.play_file_start); i < b.seg_count && b.segs[i].start_us < tl.play_to; i++) {
+        const VideoSeg &g = b.segs[i];
+        if (t < g.start_us) return (f64)acc / 1e6;
+        if (t < g.end_us) return (f64)(acc + t - g.start_us) / 1e6;
+        acc += g.end_us - g.start_us;
+    }
+    return -1;
+}
+
+// Renders from `at`: to the selection's end when `at` is in it (5 min at most), else a minute.
+static void tl_play_render(i64 at)
+{
+    Timeline &tl = g_app.timeline;
+    const BufferIdx &b = *tl.idx;
+    tl_play_stop();
+    tl.play_error[0] = 0;
+    if (!b.seg_count) return;
+    if (at >= b.newest_us - TL_SEC) at = b.newest_us - 30 * TL_SEC; // at the live edge: the last 30 s
+    if (at < b.oldest_us) at = b.oldest_us;
+    i32 first = tl_seg_after(b, at);
+    if (first >= b.seg_count) return;
+    if (at < b.segs[first].start_us) at = b.segs[first].start_us; // in a gap: from the footage after it
+    bool in_sel = tl.sel_in && at >= tl.sel_in && at < tl.sel_out;
+    i64 to = in_sel ? ImMin(tl.sel_out, at + TL_PLAY_MAX) : at + TL_PLAY_CHUNK;
+    if (to > b.newest_us) to = b.newest_us;
+    if (to - at < TL_SEC) return;
+    tl.play_job = save_range(at, to, SAVE_PREVIEW, "");
+    if (!tl.play_job) {
+        str_set(tl.play_error, "Couldn't start the preview");
+        return;
+    }
+    tl.play_file_start = b.segs[first].start_us;
+    tl.play_at = at;
+    tl.play_to = to;
+    tl.playhead_us = tl.play_set_us = at;
+}
+
+// Play or Pause.
+static void tl_play_toggle()
+{
+    Timeline &tl = g_app.timeline;
+    Player &p = tl.player;
+    if (tl.play_job) { // still rendering: Pause gives up on it
+        tl_play_stop();
+        return;
+    }
+    if (p.open && !p.paused) {
+        player_pause(&p);
+        return;
+    }
+    i64 at = tl_playhead();
+    f64 pos = p.open && p.loaded ? tl_play_pos(at) : -1;
+    if (pos >= 0 && pos < p.duration - 0.2) { // the file has it: carry on from there
+        if (fabs(pos - p.pos) > 0.3) player_seek(&p, pos);
+        player_play(&p);
+        return;
+    }
+    tl_play_render(at);
+}
+
+// Every frame: open the render once it's done, and keep the playhead on the playing video.
+static void tl_play_update()
+{
+    Timeline &tl = g_app.timeline;
+    Player &p = tl.player;
+    if (tl.play_job) {
+        SaveJobView *v = save_view(tl.play_job);
+        if (v && v->state < SAVE_DONE) return;
+        tl.play_job = 0;
+        if (!v || v->state != SAVE_DONE) {
+            snprintf(tl.play_error, sizeof tl.play_error, "%s", v && v->state == SAVE_FAILED ? v->error : "The preview stopped");
+            return;
+        }
+        utf8_to_wide(v->path, tl.play_path.s, MAX_PATH);
+        p.id = 2;
+        f64 pos = tl_play_pos(tl.play_at);
+        player_open(&p, tl.play_path, pos > 0 ? pos : 0, true);
+        return;
+    }
+    if (!p.open) return;
+    player_update(&p);
+    if (!p.loaded) return;
+    if (tl.playhead_us != tl.play_set_us) { // moved by hand
+        f64 pos = tl_play_pos(tl.playhead_us);
+        if (pos >= 0 && pos < p.duration) {
+            player_seek(&p, pos);
+            tl.play_set_us = tl.playhead_us;
+        } else {
+            bool was_playing = !p.paused;
+            i64 at = tl.playhead_us;
+            tl_play_stop(); // the still frame shows there instead
+            if (was_playing) tl_play_render(at);
+            else tl.playhead_us = at;
+        }
+        return;
+    }
+    tl.playhead_us = tl.play_set_us = tl_play_wall(p.pos);
+    // At the end of a minute's stretch, the next one (not past a selection's end, and not at the live edge).
+    if (p.ended && p.autoplay) {
+        bool sel_end = tl.sel_in && tl.play_at >= tl.sel_in && tl.play_to >= tl.sel_out;
+        const BufferIdx &b = *tl.idx;
+        if (!sel_end && tl.play_to < b.newest_us - 2 * TL_SEC) tl_play_render(tl.play_to);
+        else p.autoplay = false;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Drawing
 
 static void tl_clock(i64 us, bool secs, char *out, i32 cap)
@@ -639,7 +807,7 @@ static void tl_keys(i64 now)
     if (io.WantTextInput || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) return;
     // Keyboard navigation would act on these too (Enter pressing the focused button), so the timeline owns them.
     static const ImGuiKey owned[] = {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_UpArrow, ImGuiKey_DownArrow,
-                                     ImGuiKey_Enter, ImGuiKey_KeypadEnter};
+                                     ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space};
     ImGuiID owner = ImGui::GetID("timeline keys");
     for (ImGuiKey k : owned) ImGui::SetKeyOwner(k, owner);
 
@@ -651,6 +819,7 @@ static void tl_keys(i64 now)
     if (ImGui::IsKeyPressed(ImGuiKey_O, false)) tl_set_edge(false, at);
     if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
         tl_save(SAVE_CLIP, false);
+    if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) tl_play_toggle();
     i64 centre = tl.view_end_us - tl.view_span_us / 2;
     if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd)) tl_zoom(0.5, centre, now);
     if (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract)) tl_zoom(2, centre, now);
@@ -775,6 +944,7 @@ static void screen_timeline()
     if (!holding) tl_clamp_view(now);
     tl_clamp_selection();
     tl_keys(now);
+    tl_play_update();
     bool has_sel = tl.sel_in && tl.sel_out > tl.sel_in;
     ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -782,7 +952,21 @@ static void screen_timeline()
     ImVec2 top = ImGui::GetCursorScreenPos();
     f32 fh = ImGui::GetFrameHeight();
 
+    // --- Sizes: fixed for a given window size, whatever is shown ---------------------------------------------------
+    // The preview top left with the selection beside it, then the toolbar, then the tracks filling the rest.
+    const f32 gap = 16 * s;
+    const f32 label_w = 176 * s, pad_r = 14 * s, ruler_h = 28 * s, video_h = 40 * s, game_h = 32 * s, line_h = 28 * s;
+    const f32 min_tracks = 8 * s + ruler_h + video_h + game_h + 10 * s + 3 * line_h + 10 * s;
+    f32 top_h = (avail.y - fh - 2 * gap) * 0.55f;
+    if (top_h > avail.y - fh - 2 * gap - min_tracks) top_h = avail.y - fh - 2 * gap - min_tracks;
+    if (top_h > 560 * s) top_h = 560 * s;
+    if (top_h < 260 * s) top_h = 260 * s;
+    f32 y_tools = top.y + top_h + gap;
+    f32 card_h = avail.y - (top_h + gap + fh + gap);
+    if (card_h < min_tracks) card_h = min_tracks;
+
     // --- Toolbar: how much to show, zoom, pan, and the range shown ----------------------------------------------
+    ImGui::SetCursorScreenPos(ImVec2(top.x, y_tools));
     {
         static const char *const labels[] = {"1 min", "10 min", "1 h", "6 h", "All"};
         const i64 spans[] = {60 * TL_SEC, 600 * TL_SEC, 3600 * TL_SEC, 21600 * TL_SEC, tl_max_span(b, now)};
@@ -818,19 +1002,10 @@ static void screen_timeline()
         tl_clock(tl.view_end_us, secs, z, sizeof z);
         snprintf(text, sizeof text, "%s  \xE2\x80\x93  %s", a, z);
         f32 tw = ImGui::CalcTextSize(text).x;
-        dl->AddText(ImVec2(top.x + avail.x - tw - 4 * s, floorf(top.y + (fh - ImGui::GetFontSize()) / 2)), col32(COL_DIM), text);
+        dl->AddText(ImVec2(top.x + avail.x - tw - 4 * s, floorf(y_tools + (fh - ImGui::GetFontSize()) / 2)), col32(COL_DIM), text);
     }
 
-    // --- Sizes: fixed for a given window size, whatever is shown ---------------------------------------------------
-    const f32 gap = 16 * s;
-    f32 bottom_h = (avail.y - fh) * 0.4f;
-    if (bottom_h < 250 * s) bottom_h = 250 * s;
-    if (bottom_h > 340 * s) bottom_h = 340 * s;
-    f32 card_h = avail.y - fh - 2 * gap - bottom_h;
-    const f32 label_w = 176 * s, pad_r = 14 * s, ruler_h = 28 * s, video_h = 40 * s, game_h = 32 * s, line_h = 28 * s;
-    if (card_h < 8 * s + ruler_h + video_h + game_h + 10 * s + 2 * line_h + 10 * s)
-        card_h = 8 * s + ruler_h + video_h + game_h + 10 * s + 2 * line_h + 10 * s;
-    ImVec2 origin(top.x, top.y + fh + gap);
+    ImVec2 origin(top.x, y_tools + fh + gap);
     ImVec2 card_z(origin.x + avail.x, origin.y + card_h);
     TlCanvas c = {};
     c.dl = dl;
@@ -1127,27 +1302,37 @@ static void screen_timeline()
     }
     dl->PopClipRect();
 
-    // --- The preview frame -------------------------------------------------------------------------------------------
-    f32 bottom_y = card_z.y + gap;
-    f32 min_card_w = 430 * s;
-    f32 pw = bottom_h * 16 / 9;
+    // --- The preview, top left: the video playing, or the still frame at the playhead (under the mouse while hovering)
+    f32 transport_h = fh + 12 * s;
+    f32 min_card_w = 450 * s;
+    f32 pw = (top_h - transport_h) * 16 / 9;
     if (pw > avail.x - gap - min_card_w) pw = avail.x - gap - min_card_w;
-    if (pw < 200 * s) pw = 200 * s;
+    if (pw < 240 * s) pw = 240 * s;
     f32 ph = pw * (f32)TL_FRAME_H / (f32)TL_FRAME_W;
-    ImVec2 p0(origin.x, bottom_y), p1(origin.x + pw, bottom_y + ph);
+    ImVec2 p0(top.x, top.y), p1(top.x + pw, top.y + ph);
     f32 pr = 10 * s;
     dl->AddRectFilled(p0, p1, col32(0x000000), pr);
-    // Hovering shows the keyframe under the mouse (quick); otherwise the exact frame at the playhead.
-    bool exact = !tl.hovering;
-    i64 want_t = tl.hovering ? tl.hover_us : play;
-    i64 want_key = b.seg_count && want_t ? tl_want_frame(want_t, exact) : 0;
-    TimelineFrame *frame = tl_frame_find(want_key);
-    if (frame) tl.shown_key = frame->key;
-    else if (want_key) frame = tl_frame_find(tl.shown_key); // the last one shown, until the new one is ready
-    if (frame) dl->AddImageRounded((ImTextureID)(intptr_t)frame->srv, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col32(0xffffff), pr);
-    {
-        char when[16], msg[64] = "";
-        if (!b.seg_count) str_set(msg, "No footage");
+    Player &pl = tl.player;
+    bool playing_view = pl.open && pl.frame_ready && !pl.error[0];
+    if (playing_view) {
+        ImVec2 v0, v1;
+        player_fit(pl, p0, ImVec2(pw, ph), &v0, &v1);
+        dl->AddImage((ImTextureID)(intptr_t)pl.srv, v0, v1);
+    } else {
+        // Hovering shows the keyframe under the mouse (quick); otherwise the exact frame at the playhead. While Play
+        // gets ready the last frame stays.
+        bool busy_play = tl.play_job || pl.open;
+        bool exact = !tl.hovering;
+        i64 want_t = tl.hovering && !busy_play ? tl.hover_us : play;
+        i64 want_key = b.seg_count && want_t && !busy_play ? tl_want_frame(want_t, exact) : 0;
+        TimelineFrame *frame = tl_frame_find(want_key);
+        if (frame) tl.shown_key = frame->key;
+        else if (want_key || busy_play) frame = tl_frame_find(tl.shown_key); // the last one shown, until the new one is ready
+        if (frame) dl->AddImageRounded((ImTextureID)(intptr_t)frame->srv, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col32(0xffffff), pr);
+        char when[16], msg[200] = "";
+        if (pl.error[0]) str_set(msg, "This stretch couldn't be played");
+        else if (!b.seg_count) str_set(msg, "No footage");
+        else if (busy_play) msg[0] = 0;
         else if (!want_key) {
             tl_clock(want_t, true, when, sizeof when);
             snprintf(msg, sizeof msg, "Nothing recorded at %s", when);
@@ -1157,20 +1342,47 @@ static void screen_timeline()
             ImVec2 sz = ImGui::CalcTextSize(msg);
             dl->AddText(ImVec2(floorf((p0.x + p1.x - sz.x) / 2), floorf((p0.y + p1.y - sz.y) / 2)), col32(COL_DIM), msg);
         }
-        if (frame) {
-            // The time of the frame shown, on it, bottom left
-            tl_clock(frame->time_us, true, when, sizeof when);
+        if (busy_play) dl->AddRectFilled(p0, p1, col32(0x000000, 0.45f), pr);
+    }
+
+    // Under it: Play / Pause, the playhead's time, and what Play is doing
+    {
+        f32 ty = p1.y + 12 * s;
+        bool active = tl.play_job || (pl.open && !pl.paused);
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, ty));
+        if (kit_icon_button(active ? ICON_PAUSE : ICON_PLAY, "##play", KIT_PRIMARY, b.seg_count > 0)) tl_play_toggle();
+        char when[16] = "--:--:--";
+        if (play) tl_clock(play, true, when, sizeof when);
+        ImGui::PushFont(g_font_bold);
+        f32 cx = p0.x + fh + 12 * s;
+        dl->AddText(ImVec2(cx, floorf(ty + (fh - ImGui::GetFontSize()) / 2)), col32(COL_TEXT), when);
+        f32 cw = ImGui::CalcTextSize("00:00:00").x;
+        ImGui::PopFont();
+        char status[200] = "";
+        u32 ink = COL_DIM;
+        if (tl.play_job) {
+            SaveJobView *v = save_view(tl.play_job);
+            if (v && v->state == SAVE_RUNNING) snprintf(status, sizeof status, "Getting it ready  %d%%", (int)(v->progress * 100));
+            else str_set(status, "Waiting for a save to finish");
+        } else if (tl.play_error[0]) {
+            str_set(status, tl.play_error);
+            ink = COL_WARN;
+        } else if (pl.error[0]) {
+            str_set(status, pl.error);
+            ink = COL_WARN;
+        } else if (pl.open && !pl.loaded) str_set(status, "Opening\xE2\x80\xA6");
+        else if (!pl.open) str_set(status, b.seg_count ? "Play starts at the playhead" : "");
+        if (status[0]) {
             ImGui::PushFont(g_font_small);
-            ImVec2 ts = ImGui::CalcTextSize(when);
-            f32 x = p0.x + 12 * s + (ts.x + 14 * s) / 2;
-            tl_pill(dl, x, p1.y - ts.y - 16 * s, p0.x, p1.x, when, col32(0x000000, 0.6f), col32(0xffffff));
+            f32 sx = cx + cw + 16 * s;
+            tl_text_fit(dl, ImVec2(sx, floorf(ty + (fh - ImGui::GetFontSize()) / 2)), p1.x - sx, col32(ink), status);
             ImGui::PopFont();
         }
     }
 
-    // --- The selection card ----------------------------------------------------------------------------------------
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + pw + gap, bottom_y));
-    if (kit_card_begin("##selection", ImVec2(avail.x - pw - gap, bottom_h), 20)) {
+    // --- The selection card, beside the preview ---------------------------------------------------------------------
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + pw + gap, top.y));
+    if (kit_card_begin("##selection", ImVec2(avail.x - pw - gap, top_h), 20)) {
         ImDrawList *cd = ImGui::GetWindowDrawList();
         ImVec2 c0 = ImGui::GetCursorScreenPos();
         f32 cw = ImGui::GetContentRegionAvail().x, ch = ImGui::GetContentRegionAvail().y;

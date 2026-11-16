@@ -280,6 +280,11 @@ static void make_graph(SaveWork *w, i64 total_us)
     char a[32], b[32], total[32];
     us_secs(total_us, total);
     for (i32 i = 0; i < w->stream_count; i++) {
+        // An ignored app's stream is on no track: no pieces, or ffmpeg fails on outputs that go nowhere.
+        if (w->stream_track[i] < 0) {
+            w->stream_parts[i] = 0;
+            continue;
+        }
         i64 base, avail_end;
         stream_span(w->buf, w->streams[i], &base, &avail_end);
         i32 n = 0;
@@ -452,7 +457,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     // clip ends at the moment the save was asked for. "Being written" is the recorder saying it's capturing, or a
     // list.csv written moments ago (a recorder outside this process, such as the Rust version).
     u64 deadline = GetTickCount64() + SEGMENT_US / 1000 + 2500;
-    for (;;) {
+    for (bool wait = req.kind != SAVE_PREVIEW; wait;) { // a preview takes what's there
         i64 end = 0, written = 0;
         bool known = buffer_video_newest_end(w->cfg.buffer_dir, &end, &written);
         bool live = req.recording || (known && now_us() - written < SEGMENT_US + 3000000);
@@ -512,10 +517,12 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 
     // <save_dir>\<year>\Clips\<label> 2026-11-15 21-04-10.mp4, or ...\Sessions\<label> 2026-11-15 19-02.mp4. The
     // year is the year the footage starts in.
+    // A preview goes in the local folder as preview-<id>.mp4.
     SYSTEMTIME t = local_time(clip_start);
-    bool session = req.kind == SAVE_SESSION;
+    bool session = req.kind == SAVE_SESSION, preview = req.kind == SAVE_PREVIEW;
     Path dir = {};
-    swprintf(dir.s, MAX_PATH, L"%s\\%d\\%s", w->cfg.save_dir.s, t.wYear, session ? L"Sessions" : L"Clips");
+    if (preview) dir = w->cfg.work_dir;
+    else swprintf(dir.s, MAX_PATH, L"%s\\%d\\%s", w->cfg.save_dir.s, t.wYear, session ? L"Sessions" : L"Clips");
     int made = SHCreateDirectoryExW(0, dir.s, 0);
     if (made != ERROR_SUCCESS && made != ERROR_ALREADY_EXISTS && made != ERROR_FILE_EXISTS) {
         char d[MAX_PATH * 3];
@@ -524,7 +531,8 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         return SAVE_EV_FAILED;
     }
     char stem[400];
-    if (session)
+    if (preview) snprintf(stem, sizeof stem, "preview-%u", req.id);
+    else if (session)
         snprintf(stem, sizeof stem, "%s %04d-%02d-%02d %02d-%02d", label, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
     else
         snprintf(stem, sizeof stem, "%s %04d-%02d-%02d %02d-%02d-%02d", label, t.wYear, t.wMonth, t.wDay, t.wHour,
@@ -1124,7 +1132,7 @@ static void save_on_event(const Event &e)
         v->state = SAVE_DONE;
         v->progress = 1;
         str_set(v->path, e.text);
-        str_set(g_app.saving.last_saved, e.text);
+        if (v->kind != SAVE_PREVIEW) str_set(g_app.saving.last_saved, e.text);
         g_app.saving.jobs_running--;
         log_line("save %u: saved %s", id, e.text);
         break;

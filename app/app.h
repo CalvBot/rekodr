@@ -222,6 +222,7 @@ enum SaveKind : u8 {
     SAVE_SESSION, // a range of the buffer into <year>\Sessions
     SAVE_KEEP,    // the editor's Keep: an edit of a saved file, at full quality, into <year>\Clips
     SAVE_SHARE,   // the editor's Share: a small copy with one stereo mix, into the share folder
+    SAVE_PREVIEW, // a stretch of the buffer into the local folder, for the timeline's Play; not a saved file
 };
 
 enum SaveState : u8 { SAVE_QUEUED, SAVE_RUNNING, SAVE_DONE, SAVE_FAILED, SAVE_CANCELLED };
@@ -458,6 +459,15 @@ struct Timeline {
     char          session_name[128];
     u32           job;          // the last save started here
     bool          job_edit;     // open the editor when it's done
+    // Play: a stretch of the buffer rendered with its sound (SAVE_PREVIEW), then played here. The file is the video
+    // segments end to end from play_file_start, so gaps in recording are skipped.
+    Player        player;          // id 2
+    u32           play_job;        // the render being made; 0 = none
+    i64           play_file_start; // wall clock of the file's first frame (its first segment's start)
+    i64           play_at, play_to; // asked from here (where it starts playing) to here
+    i64           play_set_us;     // the playhead as playing last left it, so a click elsewhere can be told apart
+    Path          play_path;       // the file played, deleted when done with
+    char          play_error[160];
 };
 // sessions.cpp: detecting sessions, the save popup, unsaved sessions (SPEC.md, "1. Whole sessions").
 enum SessionState : u8 {

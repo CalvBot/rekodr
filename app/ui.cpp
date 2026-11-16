@@ -702,7 +702,8 @@ static void help_window()
         };
         static const HelpRow timeline[] = {
             {"Drag across the tracks", "Select a range (drag its edges to adjust)"},
-            {"Click on the tracks", "Move the playhead (the preview frame)"},
+            {"Click on the tracks", "Move the playhead"},
+            {"[Space]", "Play or pause from the playhead"},
             {"Mouse wheel", "Zoom in and out around the mouse"},
             {"Wheel over the names", "Scroll the sound tracks"},
             {"Right or middle drag", "Pan earlier or later"},
