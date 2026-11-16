@@ -56,6 +56,7 @@ static void run_command(const char *text)
     } else {
         log_line("unknown command \"%s\"", text);
     }
+    pipe_publish();
 }
 
 static void handle_event(const Event &e)
@@ -73,6 +74,7 @@ static void handle_event(const Event &e)
     case EV_TIMELINE: timeline_on_event(e); break;
     default: break;
     }
+    pipe_publish();
     ui_wake();
 }
 
@@ -83,6 +85,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == TIMER_TICK) {
             sessions_tick();
             timeline_tick();
+            pipe_publish();
         }
         return 0;
     case WM_APP_EVENT: {
@@ -287,6 +290,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     if (!home[0]) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
     audio_start();
+    pipe_start();
     if (command[0]) run_command(command);
 
     // The main loop. While the window is hidden or idle it sleeps in GetMessage; it only draws while shown, for a
@@ -321,6 +325,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     }
 
     log_line("clipback (native) quitting");
+    pipe_stop();
     audio_stop();
     recorder_stop();
     save_stop();

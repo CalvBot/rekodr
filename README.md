@@ -33,6 +33,24 @@ The whole program is one translation unit, `app\clipback.cpp`, which includes ev
 
 The default hotkey is Alt+F10, which saves the last 30 seconds. Hotkeys are set in Options.
 
+## Stream Deck
+`streamdeck\dev.calvbot.clipback.sdPlugin` is a Stream Deck plugin with three actions:
+
+- **Save clip** saves the last 30 seconds, 2 minutes or any length set on the key. The key shows SAVING, then a
+  tick when the file is written or a cross if the save failed.
+- **Recording** shows whether clipback is recording or paused and how much the buffer holds. A press pauses or
+  resumes.
+- **Open clipback** opens the window on the clips, the timeline or the options.
+
+If clipback isn't running, the keys say so, and a press starts it.
+
+To install it, link the folder into Stream Deck's plugins and restart Stream Deck:
+```
+mklink /J "%APPDATA%\Elgato\StreamDeck\Plugins\dev.calvbot.clipback.sdPlugin" streamdeck\dev.calvbot.clipback.sdPlugin
+```
+It needs Stream Deck 6.5 or later and has no dependencies. The plugin talks to clipback over a named pipe
+(`app\pipe.cpp`), which only programs on this PC can reach. `node streamdeck\make-imgs.mjs` redraws its icons.
+
 ## Files
 - Settings: `%APPDATA%\clipback\settings.txt`. Options writes it; there is no need to edit it by hand.
 - Clips: `<Videos>\Clips\<year>\` unless changed in Options.

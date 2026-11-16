@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  body { font: 13px "Segoe UI", sans-serif; color: #d8d8d8; background: #2d2d2d; margin: 0; padding: 8px 12px; }
+  label { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  label span { flex: 0 0 96px; color: #969696; text-align: right; }
+  input, select { flex: 1; min-width: 0; background: #3d3d3d; color: #d8d8d8; border: 0; border-radius: 3px; padding: 5px 6px; font: inherit; }
+  p { color: #969696; margin: 10px 0 0 104px; font-size: 12px; }
+</style></head>
+<body><div id="form"></div><p id="note"></p>
+<script>
+// One property inspector for every action. A field is [setting, name] for a text box, or [setting, name, choices]
+// for a list.
+const FIELDS = {
+  save: [["length", "Length"]],
+  open: [["screen", "Screen", { library: "Clips", timeline: "Timeline", options: "Options" }]],
+};
+const NOTES = {
+  save: "How much to save: 30s, 2m, 1h and so on.",
+  record: "Shows whether clipback is recording and how much the buffer holds. A press pauses or resumes.",
+};
+let ws, ctx, settings = {};
+function connectElgatoStreamDeckSocket(port, uuid, event, info, actionInfo) {
+  ctx = uuid;
+  const a = JSON.parse(actionInfo);
+  settings = a.payload.settings || {};
+  const kind = a.action.split(".").pop();
+  const form = document.getElementById("form");
+  for (const [k, name, choices] of FIELDS[kind] || []) {
+    const l = document.createElement("label");
+    const span = document.createElement("span");
+    span.textContent = name;
+    const input = document.createElement(choices ? "select" : "input");
+    for (const [value, text] of Object.entries(choices || {})) input.add(new Option(text, value));
+    input.value = settings[k] ?? "";
+    input.addEventListener("change", () => { settings[k] = input.value; save(); });
+    input.dataset.key = k;
+    l.append(span, input);
+    form.append(l);
+  }
+  document.getElementById("note").textContent = NOTES[kind] || "";
+  ws = new WebSocket("ws://127.0.0.1:" + port);
+  ws.onopen = () => ws.send(JSON.stringify({ event, uuid }));
+  ws.onmessage = m => {
+    const e = JSON.parse(m.data);
+    if (e.event !== "didReceiveSettings") return;
+    settings = e.payload.settings || {};
+    for (const input of form.querySelectorAll("input, select")) if (document.activeElement !== input) input.value = settings[input.dataset.key] ?? "";
+  };
+}
+const save = () => ws?.send(JSON.stringify({ event: "setSettings", context: ctx, payload: settings }));
+</script></body></html>

@@ -1139,12 +1139,14 @@ static void save_on_event(const Event &e)
         if (v->kind != SAVE_PREVIEW) str_set(g_app.saving.last_saved, e.text);
         g_app.saving.jobs_running--;
         log_line("save %u: saved %s", id, e.text);
+        pipe_saved(v->kind, true, e.text);
         break;
     case SAVE_EV_FAILED:
         v->state = SAVE_FAILED;
         str_set(v->error, e.text);
         g_app.saving.jobs_running--;
         log_line("save %u: failed: %s", id, e.text);
+        pipe_saved(v->kind, false, e.text);
         break;
     case SAVE_EV_CANCELLED:
         v->state = SAVE_CANCELLED;

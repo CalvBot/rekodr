@@ -1,0 +1,24 @@
+{
+  "Name": "clipback",
+  "Version": "1.0.0.0",
+  "Author": "CalvBot",
+  "Description": "Save clips from clipback's replay buffer, pause and resume recording, and open its window.",
+  "Icon": "imgs/plugin",
+  "Category": "clipback",
+  "CategoryIcon": "imgs/category",
+  "CodePath": "plugin.mjs",
+  "PropertyInspectorPath": "pi.html",
+  "Nodejs": { "Version": "24" },
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.5" },
+  "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
+  "UUID": "dev.calvbot.clipback",
+  "Actions": [
+    { "UUID": "dev.calvbot.clipback.save", "Name": "Save clip", "Tooltip": "Save the last 30 seconds, 2 minutes, an hour: any length",
+      "Icon": "imgs/save", "States": [{ "Image": "imgs/save-key", "ShowTitle": false }], "Controllers": ["Keypad"] },
+    { "UUID": "dev.calvbot.clipback.record", "Name": "Recording", "Tooltip": "Shows whether clipback is recording; press to pause or resume",
+      "Icon": "imgs/record", "States": [{ "Image": "imgs/record-key", "ShowTitle": false }], "Controllers": ["Keypad"] },
+    { "UUID": "dev.calvbot.clipback.open", "Name": "Open clipback", "Tooltip": "Open the window on the clips, the timeline or the options",
+      "Icon": "imgs/open", "States": [{ "Image": "imgs/open-key", "ShowTitle": false }], "Controllers": ["Keypad"] }
+  ]
+}

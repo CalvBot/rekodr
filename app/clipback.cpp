@@ -67,6 +67,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "proc.cpp"
 #include "recorder.cpp"
 #include "audio.cpp"
+#include "pipe.cpp"
 #include "buffer.cpp"
 #include "save.cpp"
 #include "hotkeys.cpp"
