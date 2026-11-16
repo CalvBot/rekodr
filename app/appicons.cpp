@@ -128,6 +128,93 @@ static ID3D11ShaderResourceView *app_icon(const char *exe)
     return slot->srv;
 }
 
+// A game known only by its name ("Rust", from a clip): the icon of the installed program with that name, from
+// Windows' list of installed programs (Steam games are in it, each with its icon). Letters and digits are all
+// that's compared, so "Overwatch(R)" is Overwatch; a longer name is also found inside an installed one ("Rainbow
+// Six Siege" in "Tom Clancy's Rainbow Six Siege"), but a short one never is ("Rust" isn't RustDesk).
+static void name_letters(const wchar_t *in, wchar_t *out, i32 cap)
+{
+    i32 n = 0;
+    for (; *in && n < cap - 1; in++)
+        if (iswalnum(*in) && *in < 128) out[n++] = (wchar_t)towlower(*in);
+    out[n] = 0;
+}
+
+static bool installed_icon_path(const char *game, Path *out)
+{
+    out->s[0] = 0;
+    wchar_t wide[128], want[128];
+    utf8_to_wide(game, wide, COUNT(wide));
+    name_letters(wide, want, COUNT(want));
+    if (!want[0]) return false;
+    static const struct { HKEY root; const wchar_t *path; } places[] = {
+        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall"},
+        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"},
+        {HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall"},
+    };
+    bool exact = false;
+    for (i32 k = 0; k < COUNT(places) && !exact; k++) {
+        HKEY key;
+        if (RegOpenKeyExW(places[k].root, places[k].path, 0, KEY_READ, &key) != ERROR_SUCCESS) continue;
+        wchar_t sub[256];
+        for (DWORD i = 0; !exact; i++) {
+            DWORD len = COUNT(sub);
+            if (RegEnumKeyExW(key, i, sub, &len, 0, 0, 0, 0) != ERROR_SUCCESS) break;
+            wchar_t name[256], letters[256], icon[MAX_PATH];
+            DWORD bytes = sizeof name;
+            if (RegGetValueW(key, sub, L"DisplayName", RRF_RT_REG_SZ, 0, name, &bytes) != ERROR_SUCCESS) continue;
+            name_letters(name, letters, COUNT(letters));
+            bool same = !wcscmp(letters, want), inside = !same && wcslen(want) >= 8 && wcsstr(letters, want);
+            if (!same && !(inside && !out->s[0])) continue;
+            bytes = sizeof icon;
+            if (RegGetValueW(key, sub, L"DisplayIcon", RRF_RT_REG_SZ, 0, icon, &bytes) != ERROR_SUCCESS || !icon[0]) continue;
+            // "C:\path\file.exe",0 -> C:\path\file.exe
+            wchar_t *from = icon[0] == L'"' ? icon + 1 : icon;
+            if (wchar_t *q = wcschr(from, L'"')) *q = 0;
+            if (wchar_t *comma = wcsrchr(from, L','))
+                if (comma > from + 3 && (iswdigit(comma[1]) || comma[1] == L'-')) *comma = 0;
+            if (GetFileAttributesW(from) == INVALID_FILE_ATTRIBUTES) continue;
+            swprintf(out->s, MAX_PATH, L"%s", from);
+            exact = same;
+        }
+        RegCloseKey(key);
+    }
+    return out->s[0] != 0;
+}
+
+// The icon for a game's name: the app clipback knows by that name, else the installed program's. Null if neither
+// has one (and while it is being looked up: one a frame, like app_icon).
+static AppIcon g_game_icons[LIB_MAX_GAMES];
+static i32 g_game_icon_count;
+
+static ID3D11ShaderResourceView *game_icon(const char *name)
+{
+    AppIcon *slot = 0;
+    for (i32 i = 0; i < g_game_icon_count; i++)
+        if (str_eq(g_game_icons[i].exe, name)) { slot = &g_game_icons[i]; break; }
+    if (!slot) {
+        if (g_game_icon_count >= COUNT(g_game_icons)) return 0;
+        slot = &g_game_icons[g_game_icon_count++];
+        *slot = {};
+        str_set(slot->exe, name);
+    }
+    if (slot->srv || slot->tried) return slot->srv;
+    i32 frame = ImGui::GetFrameCount();
+    if (frame == g_app_icon_frame) { ui_wake(); return 0; }
+    g_app_icon_frame = frame;
+    slot->tried = true;
+    const Config &c = g_app.config;
+    Path p = {};
+    for (i32 i = 0; i < c.app_count && !p.s[0]; i++) {
+        char shown[128];
+        audio_display_name(c, c.apps[i].exe.s, shown, sizeof shown);
+        if (!_stricmp(shown, name) && !app_find_path(c.apps[i].exe.s, &p)) p.s[0] = 0;
+    }
+    if (p.s[0] || installed_icon_path(name, &p)) slot->srv = app_icon_load(p);
+    ui_wake();
+    return slot->srv;
+}
+
 // Entering Options again tries the ones that had no icon (a game may be running now).
 static void app_icons_retry()
 {

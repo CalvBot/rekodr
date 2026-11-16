@@ -1023,6 +1023,42 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
     return clicked;
 }
 
+// A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
+// many it has on the right. The picked one is in the accent colour.
+static bool lib_game_item(const char *game, const char *label, i32 count, bool active)
+{
+    f32 w = kit_px(260), h = kit_px(36), is = kit_px(22);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::Selectable("##game", false, 0, ImVec2(w, h));
+    if (clicked) dev_click("menu", label);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 i0(a.x + kit_px(8), floorf(a.y + (h - is) / 2)), i1(i0.x + is, i0.y + is);
+    ID3D11ShaderResourceView *icon = game ? game_icon(game) : 0;
+    if (icon) {
+        dl->AddImageRounded((ImTextureID)icon, i0, i1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(5));
+    } else if (game) {
+        dl->AddRectFilled(i0, i1, col32(COL_HOVER), kit_px(5));
+        char letter[2] = {(char)toupper((u8)game[0]), 0};
+        ImVec2 ls = g_font_bold->CalcTextSizeA(g_font_bold->FontSize, FLT_MAX, 0, letter);
+        dl->AddText(g_font_bold, g_font_bold->FontSize, ImVec2(floorf(i0.x + (is - ls.x) / 2), floorf(i0.y + (is - ls.y) / 2)),
+                    col32(COL_DIM), letter);
+    } else {
+        ImGui::PushFont(g_font_icon);
+        ImVec2 gs = ImGui::CalcTextSize(ICON_APPS);
+        dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), ICON_APPS);
+        ImGui::PopFont();
+    }
+    char n[16];
+    snprintf(n, sizeof n, "%d", count);
+    ImVec2 ts = ImGui::CalcTextSize(label), ns = ImGui::CalcTextSize(n);
+    f32 ty = floorf(a.y + (h - ts.y) / 2), nx = a.x + w - kit_px(10) - ns.x;
+    dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(nx - kit_px(10), a.y + h), true);
+    dl->AddText(ImVec2(i1.x + kit_px(12), ty), col32(active ? COL_ACCENT : COL_TEXT), label);
+    dl->PopClipRect();
+    dl->AddText(ImVec2(nx, ty), col32(COL_DIM), n);
+    return clicked;
+}
+
 // Popup and dialog looks: roomy, rounded, no title bar.
 static void lib_popup_style_push(f32 pad)
 {
@@ -1711,11 +1747,8 @@ static void screen_library()
         for (i32 c = 0; c <= lib.game_count; c++) {
             const char *name = c == 0 ? "All games" : lib.games[c - 1];
             bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
-            char cut_name[64], item[96];
-            lib_chip_label(name, cut_name, sizeof cut_name);
-            snprintf(item, sizeof item, "%s   %d", cut_name, c == 0 ? lib.range_count : lib.game_items[c - 1]);
             ImGui::PushID(c);
-            if (lib_menu_item(active ? ICON_CHECK : "", item) && !active) {
+            if (lib_game_item(c == 0 ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active) && !active) {
                 if (c == 0) lib.game[0] = 0;
                 else str_set(lib.game, name);
                 lib.scroll = lib.scroll_to = 0;
