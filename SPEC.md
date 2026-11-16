@@ -162,7 +162,7 @@ clips and for buffer segments. Scrubbing uses thumbnail strips.
 copy, hands it the command as a `WM_COPYDATA` message and exits. With no running copy, it starts clipback. Hotkeys
 use `RegisterHotKey`.
 
-Programs that also show clipback's state use the named pipe `\.\pipe\clipback` (`app/pipe.cpp`): the same commands
+Programs that also show clipback's state use the named pipe `\\.\pipe\clipback` (`app/pipe.cpp`): the same commands
 go in, a line each, and clipback sends back its state (recording, paused, the game, how far back the buffer goes)
 and the result of each save as lines of JSON. The Stream Deck plugin in `streamdeck/` uses it. A pipe is local to
 the PC, so this is not a network API.
