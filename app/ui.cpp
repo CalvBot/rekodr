@@ -17,19 +17,42 @@ struct Gpu {
 
 static Gpu g_gpu;
 
-// Colours. One dark theme: a near-black page, a darker sidebar, raised surfaces for cards and fields, and one
-// accent (clipback red) for the primary action, the selected item and recording. Blue is for links and focus only.
+// Colours. One dark theme: a near-black page, a darker top bar, raised surfaces for cards and fields, and one
+// accent (clipback red unless Options picks another) for the primary action and the selected item. Recording and
+// deleting stay red whatever the accent. Blue is for zoom keys and focus.
 static ImVec4 rgb(u32 c, f32 a = 1) { return ImVec4(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a); }
 static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, a)); }
 static const u32 COL_BG = 0x101114,      // the page
-                 COL_SIDEBAR = 0x0b0c0e, // the navigation column
+                 COL_SIDEBAR = 0x0b0c0e, // the top bar
                  COL_PANEL = 0x18191d,   // cards, the timeline, popups
                  COL_PANEL2 = 0x222429,  // fields, secondary buttons
                  COL_HOVER = 0x2c2f35,   // anything under the mouse
                  COL_LINE = 0x2a2c32,    // hairlines
                  COL_TEXT = 0xeceef1, COL_DIM = 0x8e939c, COL_FAINT = 0x5d626b,
-                 COL_ACCENT = 0xf0434f, COL_ACCENT_HOVER = 0xff5b66, COL_ACCENT_SOFT = 0x3a1c20,
+                 COL_RED = 0xf0434f, COL_RED_SOFT = 0x3a1c20,
                  COL_BLUE = 0x5b9cff, COL_OK = 0x3fbf74, COL_WARN = 0xe8a33d;
+
+// The accent choices (Options, Look), and the colours in use, set by ui_apply_accent.
+struct Accent { const char *name; u32 base, hover; };
+static const Accent ACCENTS[] = {
+    {"Red", 0xf0434f, 0xff5b66},    {"Orange", 0xf07a2e, 0xff9150}, {"Yellow", 0xe0b31f, 0xf2c642},
+    {"Green", 0x34b36b, 0x49c97f},  {"Teal", 0x1fb0a8, 0x35c8c0},   {"Blue", 0x3d8bfd, 0x5b9cff},
+    {"Purple", 0x8b5cf6, 0xa07cff}, {"Pink", 0xe8509a, 0xf56cad},
+};
+enum { ACCENT_COUNT = sizeof ACCENTS / sizeof ACCENTS[0] };
+static u32 COL_ACCENT = 0xf0434f, COL_ACCENT_HOVER = 0xff5b66, COL_ACCENT_SOFT = 0x3a1c20;
+
+static void ui_apply_accent(i32 i)
+{
+    if (i < 0 || i >= ACCENT_COUNT) i = 0;
+    COL_ACCENT = ACCENTS[i].base;
+    COL_ACCENT_HOVER = ACCENTS[i].hover;
+    // A dark wash of the accent: a quarter of it over a card.
+    u32 r = (((COL_ACCENT >> 16) & 255) + 3 * ((COL_PANEL >> 16) & 255)) / 4;
+    u32 g = (((COL_ACCENT >> 8) & 255) + 3 * ((COL_PANEL >> 8) & 255)) / 4;
+    u32 b = ((COL_ACCENT & 255) + 3 * (COL_PANEL & 255)) / 4;
+    COL_ACCENT_SOFT = (r << 16) | (g << 8) | b;
+}
 
 // Fonts: Segoe UI with the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*).
 // g_font 14 px, g_font_bold 14 px semibold, g_font_small 12.5 px, g_font_big 18 px semibold (card and dialog
@@ -329,6 +352,7 @@ static bool ui_init()
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_gpu.device, g_gpu.context);
+    ui_apply_accent(g_app.config.accent);
     ui_set_scale(GetDpiForWindow(hwnd) / 96.f);
     return true;
 }
@@ -368,7 +392,7 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     switch (kind) {
     case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; text = 0xffffff; break;
     case KIT_GHOST: bg_a = 0; break;
-    case KIT_DANGER: bg = COL_ACCENT_SOFT; hover = 0x4a2025; text = 0xff8a92; break;
+    case KIT_DANGER: bg = COL_RED_SOFT; hover = 0x4a2025; text = 0xff8a92; break;
     default: break;
     }
     ImGui::PushStyleColor(ImGuiCol_Button, rgb(bg, bg_a));
@@ -401,7 +425,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     switch (kind) {
     case KIT_PRIMARY: fill = hot ? COL_ACCENT_HOVER : COL_ACCENT; ink = 0xffffff; break;
     case KIT_SECONDARY: fill = hot ? COL_HOVER : COL_PANEL2; break;
-    case KIT_DANGER: fill = hot ? 0x4a2025 : COL_ACCENT_SOFT; ink = 0xff8a92; break;
+    case KIT_DANGER: fill = hot ? 0x4a2025 : COL_RED_SOFT; ink = 0xff8a92; break;
     default:
         if (active) fill = COL_HOVER;
         else if (hot) fill = COL_PANEL2;
@@ -735,95 +759,86 @@ static void help_window()
     g_app.ui.help_open = false;
 }
 
-// One navigation row in the sidebar: an icon and a label, lifted with an accent bar when it's the current screen.
-static bool nav_item(const char *icon, const char *label, bool active)
+// A tab in the top bar: a label, white with an accent underline when it's the current screen.
+static bool top_tab(const char *label, bool active, f32 h)
 {
-    f32 w = ImGui::GetContentRegionAvail().x, h = kit_px(40);
+    ImGui::PushFont(g_font_bold);
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    f32 padx = kit_px(16), w = ts.x + 2 * padx;
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton(label, ImVec2(w, h));
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    if (active || hot) dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(active ? COL_PANEL2 : COL_PANEL), kit_px(8));
-    if (active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(10)), ImVec2(a.x + kit_px(3), a.y + h - kit_px(10)), col32(COL_ACCENT), kit_px(2));
-    u32 ink = active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM;
-    ImGui::PushFont(g_font_icon);
-    ImVec2 is = ImGui::CalcTextSize(icon);
-    dl->AddText(ImVec2(a.x + kit_px(16), floorf(a.y + (h - is.y) / 2)), col32(active ? COL_ACCENT : ink), icon);
-    ImGui::PopFont();
-    ImGui::PushFont(active ? g_font_bold : g_font);
-    ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(a.x + kit_px(48), floorf(a.y + (h - ts.y) / 2)), col32(ink), label);
+    if (hot && !active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(10)), ImVec2(a.x + w, a.y + h - kit_px(10)), col32(COL_PANEL), kit_px(7));
+    dl->AddText(ImVec2(a.x + padx, floorf(a.y + (h - ts.y) / 2)), col32(active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM), label);
+    if (active) dl->AddRectFilled(ImVec2(a.x + padx, a.y + h - kit_px(3)), ImVec2(a.x + w - padx, a.y + h), col32(COL_ACCENT), kit_px(2));
     ImGui::PopFont();
     return clicked;
 }
 
-// The left column: the name, the three screens, and at the bottom what the recorder is doing with its
-// Pause / Resume, then Help. Fixed width; the status card keeps its size whatever it says.
-static void sidebar(f32 w)
+// The bar across the top: the name, the three screens as tabs, and on the right what the recorder is doing with
+// its Pause / Resume, then Help. The button and Help stay put whatever the status says.
+static void top_bar(f32 h)
 {
     Recorder &rec = g_app.recorder;
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, rgb(COL_SIDEBAR));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(12), kit_px(18)));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0);
-    ImGui::BeginChild("##sidebar", ImVec2(w, 0), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetCursorScreenPos();
+    f32 w = ImGui::GetContentRegionAvail().x;
+    dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), col32(COL_SIDEBAR));
+    dl->AddRectFilled(ImVec2(o.x, o.y + h - kit_px(1)), ImVec2(o.x + w, o.y + h), col32(COL_LINE));
 
     // The name, with the record mark
-    ImVec2 a = ImGui::GetCursorScreenPos();
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 r = kit_px(9);
-    ImVec2 c(a.x + kit_px(16) + r - kit_px(2), a.y + kit_px(16));
-    dl->AddCircleFilled(c, r, col32(COL_ACCENT));
+    f32 r = kit_px(8);
+    ImVec2 c(o.x + kit_px(24) + r, o.y + h / 2);
+    dl->AddCircleFilled(c, r, col32(COL_RED));
     dl->AddCircleFilled(c, r * 0.42f, col32(COL_SIDEBAR));
     ImGui::PushFont(g_font_big);
-    dl->AddText(ImVec2(a.x + kit_px(48), floorf(c.y - ImGui::GetFontSize() / 2)), col32(COL_TEXT), "clipback");
+    dl->AddText(ImVec2(c.x + r + kit_px(10), floorf(c.y - ImGui::GetFontSize() / 2)), col32(COL_TEXT), "clipback");
     ImGui::PopFont();
-    ImGui::Dummy(ImVec2(w, kit_px(32)));
-    ImGui::Dummy(ImVec2(0, kit_px(14)));
 
+    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(170), o.y));
     Screen s = g_app.ui.screen;
-    if (nav_item(ICON_LIBRARY, "Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR)) g_app.ui.screen = SCREEN_LIBRARY;
-    if (nav_item(ICON_TIMELINE, "Timeline", s == SCREEN_TIMELINE)) g_app.ui.screen = SCREEN_TIMELINE;
-    if (nav_item(ICON_SETTINGS, "Options", s == SCREEN_OPTIONS)) g_app.ui.screen = SCREEN_OPTIONS;
+    if (top_tab("Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR, h)) g_app.ui.screen = SCREEN_LIBRARY;
+    ImGui::SameLine(0, kit_px(4));
+    if (top_tab("Timeline", s == SCREEN_TIMELINE, h)) g_app.ui.screen = SCREEN_TIMELINE;
+    ImGui::SameLine(0, kit_px(4));
+    if (top_tab("Options", s == SCREEN_OPTIONS, h)) g_app.ui.screen = SCREEN_OPTIONS;
 
-    // Bottom: status card, then Help
-    f32 card_h = kit_px(108), help_h = kit_px(40);
-    f32 bottom = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y;
-    ImGui::SetCursorPosY(bottom - help_h - card_h - kit_px(8));
+    // Right: the status, Pause / Resume, Help.
+    f32 fh = ImGui::GetFrameHeight(), y = o.y + (h - fh) / 2;
+    f32 help_x = o.x + w - kit_px(16) - fh;
+    const char *btn = rec.paused ? ICON_RECORD "  Resume" : ICON_PAUSE "  Pause";
+    f32 btn_w = kit_px(104), btn_x = help_x - kit_px(8) - btn_w;
+    ImGui::SetCursorScreenPos(ImVec2(btn_x, y));
+    if (kit_button(btn, KIT_SECONDARY, ImVec2(btn_w, 0))) event_post_text(EV_COMMAND, "toggle");
+    ImGui::SetCursorScreenPos(ImVec2(help_x, y));
+    if (kit_icon_button(ICON_HELP, "##help", KIT_GHOST)) g_app.ui.help_open = true;
+
     const char *status = rec.paused ? "Paused" : rec.recording ? "Recording" : "Not recording";
     char detail[64] = "";
-    if (rec.paused) snprintf(detail, sizeof detail, "Nothing is being kept");
+    if (rec.paused) str_set(detail, "nothing kept");
     else if (rec.recording && rec.recording_since_us) {
         SYSTEMTIME t = local_time(rec.recording_since_us);
-        snprintf(detail, sizeof detail, "Since %d:%02d", t.wHour, t.wMinute);
-    } else if (rec.last_error.s[0]) snprintf(detail, sizeof detail, "See Options, Recording");
-    else snprintf(detail, sizeof detail, "Starting");
-    if (kit_card_begin("##status", ImVec2(0, card_h), 14)) {
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        ImDrawList *cd = ImGui::GetWindowDrawList();
-        u32 dot = rec.paused ? COL_WARN : rec.recording ? COL_ACCENT : COL_FAINT;
-        f32 fs = ImGui::GetFontSize();
-        cd->AddCircleFilled(ImVec2(p.x + kit_px(5), p.y + fs / 2 + kit_px(1)), kit_px(4.5f), col32(dot));
-        if (rec.recording && !rec.paused)
-            cd->AddCircle(ImVec2(p.x + kit_px(5), p.y + fs / 2 + kit_px(1)), kit_px(8), col32(COL_ACCENT, 0.35f), 0, kit_px(1.5f));
-        ImGui::SetCursorScreenPos(ImVec2(p.x + kit_px(18), p.y));
-        ImGui::PushFont(g_font_bold);
-        ImGui::TextUnformatted(status);
-        ImGui::PopFont();
-        ImGui::SetCursorScreenPos(ImVec2(p.x + kit_px(18), ImGui::GetCursorScreenPos().y - kit_px(6)));
-        ImGui::PushFont(g_font_small);
-        kit_dim("%s", detail);
-        ImGui::PopFont();
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - kit_px(14) - ImGui::GetFrameHeight());
-        if (kit_button(rec.paused ? ICON_RECORD "  Resume" : ICON_PAUSE "  Pause", KIT_SECONDARY, ImVec2(-1, 0)))
-            event_post_text(EV_COMMAND, "toggle");
-    }
-    kit_card_end();
-    ImGui::SetCursorPosY(bottom - help_h);
-    if (nav_item(ICON_HELP, "Help", false)) g_app.ui.help_open = true;
+        snprintf(detail, sizeof detail, "since %d:%02d", t.wHour, t.wMinute);
+    } else if (rec.last_error.s[0]) str_set(detail, "see Options");
+    else str_set(detail, "starting");
+    ImGui::PushFont(g_font_bold);
+    ImVec2 ss = ImGui::CalcTextSize(status);
+    ImGui::PopFont();
+    ImVec2 ds = ImGui::CalcTextSize(detail);
+    f32 gap = kit_px(8), tx = btn_x - kit_px(16) - ds.x - gap - ss.x;
+    f32 ty = floorf(o.y + (h - ss.y) / 2);
+    u32 dot = rec.paused ? COL_WARN : rec.recording ? COL_RED : COL_FAINT;
+    ImVec2 dc(tx - kit_px(14), o.y + h / 2);
+    dl->AddCircleFilled(dc, kit_px(4.5f), col32(dot));
+    if (rec.recording && !rec.paused) dl->AddCircle(dc, kit_px(8), col32(COL_RED, 0.35f), 0, kit_px(1.5f));
+    ImGui::PushFont(g_font_bold);
+    dl->AddText(ImVec2(tx, ty), col32(COL_TEXT), status);
+    ImGui::PopFont();
+    dl->AddText(ImVec2(tx + ss.x + gap, floorf(o.y + (h - ds.y) / 2)), col32(COL_DIM), detail);
 
-    ImGui::EndChild();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
+    ImGui::SetCursorScreenPos(o);
+    ImGui::Dummy(ImVec2(w, h));
 }
 
 static void ui_frame()
@@ -846,9 +861,9 @@ static void ui_frame()
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PopStyleVar(2);
-    sidebar(kit_px(212));
-    ImGui::SameLine(0, 0);
-    // The screen: padded content area right of the sidebar. Screens lay out inside it with GetContentRegionAvail.
+    top_bar(kit_px(56));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
+    // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(28), kit_px(24)));
     ImGui::BeginChild("##screen", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);

@@ -387,7 +387,6 @@ static void import_rust_item(void *ctx, const TomlItem &it)
         else if (!strcmp(k, "encoder")) str_set(c->encoder.s, v);
         else if (!strcmp(k, "bitrate_mbps")) c->bitrate_mbps = (f32)atof(v);
         else if (!strcmp(k, "draw_mouse")) c->draw_mouse = toml_true(it);
-        else if (!strcmp(k, "advanced")) c->advanced = toml_true(it);
         else if (!strcmp(k, "preset")) str_set(c->preset.s, v);
         else if (!strcmp(k, "rate_control")) str_set(c->rate_control.s, v);
         else if (!strcmp(k, "cq")) c->cq = atoi(v);
@@ -515,7 +514,9 @@ static void options_first_run(Config *c, const Paths &paths)
             import_folder("save folder", save, &c->save_dir);
         }
         if (im->max_buffer_gb > 0) {
-            // The Rust buffer was a size; here it's a length. The same space at the same bitrate:
+            // The Rust buffer was a size: keep it one. The length it would be is set too, for switching over.
+            c->buffer_by_size = true;
+            c->buffer_gb = (f32)im->max_buffer_gb;
             f64 mbps = c->bitrate_mbps > 0 ? c->bitrate_mbps : 20;
             c->buffer_hours = (f32)(floor(im->max_buffer_gb * 8000.0 / mbps / 3600.0 * 10 + 0.5) / 10);
             if (c->buffer_hours < 1) c->buffer_hours = 1;
@@ -550,7 +551,7 @@ static void options_first_run(Config *c, const Paths &paths)
     for (i32 i = 0; i < im->rate_count; i++) {
         AppInfo *a = config_app(c, im->rates[i].exe.s);
         if (!a) continue;
-        a->bitrate_mbps = im->rates[i].mbps;
+        a->rec.bitrate_mbps = im->rates[i].mbps;
         if (a->category == CAT_NONE) a->category = CAT_GAME; // it had a game bitrate, so it's a game
     }
     import_seen_apps(c, seen);
@@ -1091,8 +1092,9 @@ static void ago_text(i64 us, char *out, i32 cap)
 // ---------------------------------------------------------------------------------------------------------------
 // Apps
 
-static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Communication", "Ignored"};
-static const char *CATEGORY_NOTES[] = {0, "own track", "own track, sessions", "shared track", "never recorded"};
+// Each category has a colour and a short name, used for its button on every app row and its filter chip.
+static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Chat", "Ignored"};
+static const u32 CATEGORY_COLOURS[] = {COL_WARN, 0x5b9cff, 0x3fbf74, 0xb07cff, 0x8e939c};
 
 // The name an app gets when it has none of its own: "Overwatch" for overwatch.exe (as audio_display_name).
 static void default_app_name(const char *exe, char *out, i32 cap)
@@ -1168,17 +1170,286 @@ static void app_set_category(AppInfo *a, AppCategory cat)
     if (a->category == cat) return;
     log_line("options: %s is now %s", a->exe.s, category_name(cat));
     a->category = cat;
-    options_apply(APPLY_AUDIO);
+    options_apply(APPLY_AUDIO | (cat == CAT_GAME || a->rec.bitrate_mbps ? APPLY_RECORDER : 0));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// App icons: the exe's own icon, found where "Open file location" finds the exe (a running copy, or lifelog's
+// record). One is looked up per frame; an app with none found gets a letter tile until Options is entered again.
+
+struct AppIcon {
+    char exe[64];
+    ID3D11ShaderResourceView *srv;
+    bool tried;
+};
+static AppIcon g_app_icons[192];
+static i32 g_app_icon_count;
+static i32 g_app_icon_frame; // the frame that last looked one up
+
+static ID3D11ShaderResourceView *app_icon_load(const Path &path)
+{
+    const i32 S = 48;
+    HICON icon = 0;
+    if (SHDefExtractIconW(path.s, 0, 0, &icon, 0, S) != S_OK || !icon) return 0;
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = S;
+    bi.bmiHeader.biHeight = -S; // top down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void *bits = 0;
+    HDC dc = CreateCompatibleDC(0);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, 0, 0);
+    ID3D11ShaderResourceView *srv = 0;
+    if (bmp && bits) {
+        HGDIOBJ old = SelectObject(dc, bmp);
+        memset(bits, 0, S * S * 4);
+        DrawIconEx(dc, 0, 0, icon, S, S, 0, 0, DI_NORMAL);
+        SelectObject(dc, old);
+        u32 *px = (u32 *)bits;
+        bool alpha = false;
+        for (i32 i = 0; i < S * S && !alpha; i++) alpha = (px[i] >> 24) != 0;
+        if (!alpha) // an old icon without alpha: whatever was drawn is opaque
+            for (i32 i = 0; i < S * S; i++)
+                if (px[i] & 0xffffff) px[i] |= 0xff000000u;
+        srv = lib_texture(px, S, S);
+    }
+    if (bmp) DeleteObject(bmp);
+    DeleteDC(dc);
+    DestroyIcon(icon);
+    return srv;
+}
+
+static ID3D11ShaderResourceView *app_icon(const char *exe)
+{
+    AppIcon *slot = 0;
+    for (i32 i = 0; i < g_app_icon_count; i++)
+        if (str_eq(g_app_icons[i].exe, exe)) { slot = &g_app_icons[i]; break; }
+    if (!slot) {
+        if (g_app_icon_count >= COUNT(g_app_icons)) return 0;
+        slot = &g_app_icons[g_app_icon_count++];
+        *slot = {};
+        str_set(slot->exe, exe);
+    }
+    if (slot->srv || slot->tried) return slot->srv;
+    i32 frame = ImGui::GetFrameCount();
+    if (frame == g_app_icon_frame) { ui_wake(); return 0; } // one per frame: the next frame does the next
+    g_app_icon_frame = frame;
+    slot->tried = true;
+    Path p = {};
+    if (app_find_path(exe, &p)) slot->srv = app_icon_load(p);
+    ui_wake();
+    return slot->srv;
+}
+
+// Entering Options again tries the ones that had no icon (a game may be running now).
+static void app_icons_retry()
+{
+    for (i32 i = 0; i < g_app_icon_count; i++)
+        if (!g_app_icons[i].srv) g_app_icons[i].tried = false;
+}
+
+// The icon in a square at a, or a tile with the first letter in the category's colour.
+static void app_icon_draw(ImDrawList *dl, ImVec2 a, f32 size, const AppInfo &info, const char *name)
+{
+    ID3D11ShaderResourceView *srv = app_icon(info.exe.s);
+    if (srv) {
+        dl->AddImage((ImTextureID)srv, a, ImVec2(a.x + size, a.y + size));
+        return;
+    }
+    u32 col = CATEGORY_COLOURS[info.category];
+    dl->AddRectFilled(a, ImVec2(a.x + size, a.y + size), col32(col, 0.18f), dp(8));
+    char letter[2] = {(char)toupper((u8)name[0]), 0};
+    ImGui::PushFont(g_font_big);
+    ImVec2 ls = ImGui::CalcTextSize(letter);
+    dl->AddText(ImVec2(floorf(a.x + (size - ls.x) / 2), floorf(a.y + (size - ls.y) / 2)), col32(col), letter);
+    ImGui::PopFont();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// A game's own recording settings (the gear on its row). Empty fields use Recording's.
+
+static const char *PRESET_LABELS[] = {"P1", "P2", "P3", "P4", "P5", "P6", "P7"};
+static const char *PRESET_NOTES[] = {"fastest", 0, 0, "balanced", 0, 0, "best quality, more GPU"};
+static const char *PRESET_KEYS[] = {"p1", "p2", "p3", "p4", "p5", "p6", "p7"};
+static const char *RC_LABELS[] = {"VBR", "CBR", "Constant quality"};
+static const char *RC_NOTES[] = {"peaks allowed", "fixed bitrate", "the bitrate is a cap"};
+static const char *RC_KEYS[] = {"vbr", "cbr", "cq"};
+static const char *SESSION_LABELS[] = {"Ask when it ends", "Always save", "Never"};
+
+static i32 rc_index(const char *rc) { return !strcmp(rc, "cbr") ? 1 : !strcmp(rc, "cq") ? 2 : 0; }
+
+// A line of the game popup: the name on the left, the cursor at x for the control.
+static void game_line(const char *name, f32 x)
+{
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(name);
+    ImGui::SameLine(x);
+}
+
+static void game_settings_popup()
+{
+    OptionsUi &o = g_app.options;
+    Config &c = g_app.config;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(20), dp(18)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(dp(8), dp(10)));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    bool open = ImGui::BeginPopup("game settings");
+    ImGui::PopStyleColor();
+    if (!open) {
+        ImGui::PopStyleVar(2);
+        return;
+    }
+    if (o.menu_app < 0 || o.menu_app >= c.app_count) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        ImGui::PopStyleVar(2);
+        return;
+    }
+    AppInfo &a = c.apps[o.menu_app];
+    RecOverride &r = a.rec;
+    char name[64];
+    audio_display_name(c, a.exe.s, name, sizeof name);
+
+    // Its icon and name
+    f32 is = dp(36);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    app_icon_draw(ImGui::GetWindowDrawList(), p, is, a, name);
+    ImGui::SetCursorScreenPos(ImVec2(p.x + is + dp(12), p.y + (is - g_font_big->FontSize - g_font_small->FontSize - dp(2)) / 2));
+    ImGui::PushFont(g_font_big);
+    ImGui::TextUnformatted(name);
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(p.x + is + dp(12), ImGui::GetCursorScreenPos().y - dp(8)));
+    ImGui::PushFont(g_font_small);
+    kit_dim("%s", a.exe.s);
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + is + dp(14)));
+
+    f32 x = dp(150), cw = dp(220);
+    bool rec_changed = false;
+    char hint[48];
+
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    game_line("Bitrate", x);
+    f64 v = r.bitrate_mbps;
+    snprintf(hint, sizeof hint, "%g", c.bitrate_mbps);
+    if (opt_number("##rate", &v, 1, 300, dp(OPT_FIELD_W), true, hint)) {
+        r.bitrate_mbps = (f32)v;
+        rec_changed = true;
+    }
+    opt_unit("Mbps");
+
+    game_line("Frame rate", x);
+    v = r.fps;
+    snprintf(hint, sizeof hint, "%d", c.fps);
+    if (opt_number("##fps", &v, 1, 240, dp(OPT_FIELD_W), true, hint)) {
+        r.fps = (i32)floor(v + 0.5);
+        rec_changed = true;
+    }
+    opt_unit("fps");
+
+    // Drop-downs: "Default" first, which shows what the default is
+    const char *items[8], *notes[8];
+    char def[48];
+    game_line("Preset", x);
+    snprintf(def, sizeof def, "Default \xC2\xB7 %s", PRESET_LABELS[preset_step(c.preset.s)]);
+    items[0] = def;
+    notes[0] = 0;
+    for (i32 i = 0; i < COUNT(PRESET_LABELS); i++) {
+        items[i + 1] = PRESET_LABELS[i];
+        notes[i + 1] = PRESET_NOTES[i];
+    }
+    i32 sel = r.preset.s[0] ? preset_step(r.preset.s) + 1 : 0;
+    if (opt_combo("##preset", items, notes, COUNT(PRESET_LABELS) + 1, &sel, cw)) {
+        str_set(r.preset.s, sel ? PRESET_KEYS[sel - 1] : "");
+        rec_changed = true;
+    }
+
+    game_line("Rate control", x);
+    snprintf(def, sizeof def, "Default \xC2\xB7 %s", RC_LABELS[rc_index(c.rate_control.s)]);
+    items[0] = def;
+    for (i32 i = 0; i < COUNT(RC_LABELS); i++) {
+        items[i + 1] = RC_LABELS[i];
+        notes[i + 1] = RC_NOTES[i];
+    }
+    sel = r.rate_control.s[0] ? rc_index(r.rate_control.s) + 1 : 0;
+    if (opt_combo("##rc", items, notes, COUNT(RC_LABELS) + 1, &sel, cw)) {
+        str_set(r.rate_control.s, sel ? RC_KEYS[sel - 1] : "");
+        rec_changed = true;
+    }
+
+    bool cq_on = !strcmp(r.rate_control.s[0] ? r.rate_control.s : c.rate_control.s, "cq");
+    ImGui::BeginDisabled(!cq_on);
+    game_line("Quality level", x);
+    v = r.cq;
+    snprintf(hint, sizeof hint, "%d", c.cq);
+    if (opt_number("##cq", &v, 1, 51, dp(OPT_FIELD_W), true, hint)) {
+        r.cq = (i32)floor(v + 0.5);
+        rec_changed = true;
+    }
+    opt_unit("0\xE2\x80\x93" "51");
+    ImGui::EndDisabled();
+
+    game_line("Sessions", x);
+    i32 m = a.session_mode;
+    if (opt_combo("##mode", SESSION_LABELS, 0, COUNT(SESSION_LABELS), &m, cw)) {
+        a.session_mode = (SessionMode)m;
+        log_line("options: %s sessions: %s", a.exe.s, session_mode_name(a.session_mode));
+        options_apply(0);
+    }
+    ImGui::PopStyleColor();
+
+    if (rec_changed) {
+        log_line("options: %s records at %g Mbps, %d fps, preset %s, %s, quality %d (0 or empty = the default)", a.exe.s,
+                 r.bitrate_mbps, r.fps, r.preset.s, r.rate_control.s, r.cq);
+        options_apply(APPLY_RECORDER);
+    }
+
+    ImGui::Dummy(ImVec2(0, dp(2)));
+    ImGui::PushFont(g_font_small);
+    kit_dim("Empty uses Recording's. The recording restarts when this game starts.");
+    ImGui::PopFont();
+    f32 bw = dp(84);
+    bool custom = r.bitrate_mbps || r.fps || r.preset.s[0] || r.rate_control.s[0] || r.cq;
+    ImGui::SetCursorPosX(x + cw - 2 * bw - dp(8));
+    if (kit_button("Reset", KIT_GHOST, ImVec2(bw, 0), custom)) {
+        r = {};
+        log_line("options: %s records with the default settings", a.exe.s);
+        options_apply(APPLY_RECORDER);
+    }
+    ImGui::SameLine(0, dp(8));
+    if (kit_button("Done", KIT_PRIMARY, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    ImGui::PopStyleVar(2);
+}
+
+// What a game records with, if it differs: "60 Mbps · 120 fps".
+static void game_summary(const AppInfo &a, char *out, i32 cap)
+{
+    const RecOverride &r = a.rec;
+    out[0] = 0;
+    i32 n = 0;
+    auto add = [&](const char *t) { n += snprintf(out + n, cap - n, "%s%s", n ? " \xC2\xB7 " : "", t); };
+    char t[32];
+    if (r.bitrate_mbps) { snprintf(t, sizeof t, "%g Mbps", r.bitrate_mbps); add(t); }
+    if (r.fps) { snprintf(t, sizeof t, "%d fps", r.fps); add(t); }
+    if (r.preset.s[0]) add(PRESET_LABELS[preset_step(r.preset.s)]);
+    if (r.rate_control.s[0]) add(RC_LABELS[rc_index(r.rate_control.s)]);
+    if (a.session_mode == SESSION_ALWAYS) add("sessions saved");
+    else if (a.session_mode == SESSION_NEVER) add("no sessions");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Apps
 
 // "Add app": a small popup under its button with the exe name and its category.
 static void apps_add_popup(ImVec2 at, i32 rows)
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    static const char *add_cats[] = {"Communication", "Game", "App", "Ignored"};
-    static const char *add_notes[] = {"shared track", "own track, sessions", "own track", "never recorded"};
-    static const AppCategory add_cat_values[] = {CAT_COMMUNICATION, CAT_GAME, CAT_APP, CAT_IGNORED};
+    static const char *add_cats[] = {"Game", "App", "Chat", "Ignored"};
+    static const AppCategory add_cat_values[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
     ImGui::SetNextWindowPos(at, ImGuiCond_Appearing, ImVec2(1, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
@@ -1186,7 +1457,7 @@ static void apps_add_popup(ImVec2 at, i32 rows)
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
     if (!open) return;
-    f32 w = dp(280);
+    f32 w = dp(300);
     ImGui::PushFont(g_font_bold);
     ImGui::TextUnformatted("Add an app");
     ImGui::PopFont();
@@ -1195,8 +1466,9 @@ static void apps_add_popup(ImVec2 at, i32 rows)
     ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
     ImGui::SetNextItemWidth(w);
     bool enter = ImGui::InputTextWithHint("##add", "name.exe", o.add_exe, sizeof o.add_exe, ImGuiInputTextFlags_EnterReturnsTrue);
-    opt_combo("##addcat", add_cats, add_notes, COUNT(add_cats), &o.add_category, w);
     ImGui::PopStyleColor();
+    if (o.add_category < 0 || o.add_category >= COUNT(add_cats)) o.add_category = 0;
+    kit_segmented("##addcat", add_cats, COUNT(add_cats), &o.add_category, (w - 3 * dp(4)) / 4);
     ImGui::Dummy(ImVec2(0, dp(2)));
 
     char exe[64];
@@ -1225,6 +1497,88 @@ static void apps_add_popup(ImVec2 at, i32 rows)
     ImGui::EndPopup();
 }
 
+// Renaming an app (the right-click menu): the name it gets in files and on tracks.
+static void apps_rename_popup()
+{
+    OptionsUi &o = g_app.options;
+    Config &c = g_app.config;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    bool open = ImGui::BeginPopup("rename app");
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (!open) return;
+    if (o.menu_app < 0 || o.menu_app >= c.app_count) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    AppInfo &a = c.apps[o.menu_app];
+    f32 w = dp(300);
+    ImGui::PushFont(g_font_bold);
+    ImGui::Text("Name for %s", a.exe.s);
+    ImGui::PopFont();
+    char hint[64];
+    default_app_name(a.exe.s, hint, sizeof hint);
+    if (ImGui::IsWindowAppearing()) {
+        str_set(o.edit, a.name.s);
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::SetNextItemWidth(w);
+    bool enter = ImGui::InputTextWithHint("##name", hint, o.edit, 64, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopStyleColor();
+    f32 bw = dp(84), gap = dp(8);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
+    if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
+    ImGui::SameLine(0, gap);
+    if (kit_button("Save", KIT_PRIMARY, ImVec2(bw, 0)) || enter) {
+        char name[64];
+        str_set(name, o.edit);
+        for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
+        str_set(a.name.s, trim(name));
+        log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
+        options_apply(APPLY_AUDIO);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// The category buttons on an app row: four fixed-size pills, the app's own one filled in its colour.
+static const AppCategory ROW_CATS[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
+static f32 cat_pill_w() { return dp(74); }
+
+static bool cat_pills(AppInfo *a, f32 x, f32 y)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 w = cat_pill_w(), h = ImGui::GetFrameHeight(), gap = dp(4);
+    bool changed = false;
+    for (i32 i = 0; i < COUNT(ROW_CATS); i++) {
+        AppCategory cat = ROW_CATS[i];
+        ImVec2 p(x + i * (w + gap), y);
+        ImGui::SetCursorScreenPos(p);
+        ImGui::PushID(i);
+        bool clicked = ImGui::InvisibleButton("##cat", ImVec2(w, h));
+        ImGui::PopID();
+        bool hot = ImGui::IsItemHovered(), on = a->category == cat;
+        u32 col = CATEGORY_COLOURS[cat];
+        if (on) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), col32(col, 0.2f), h / 2);
+        else if (hot) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), col32(COL_PANEL2), h / 2);
+        if (on) dl->AddRect(p, ImVec2(p.x + w, p.y + h), col32(col, 0.7f), h / 2, 0, dp(1));
+        const char *label = CATEGORY_LABELS[cat];
+        ImFont *font = on ? g_font_bold : g_font;
+        f32 tw = text_w(font, label);
+        opt_text_at(dl, font, ImVec2(floorf(p.x + (w - tw) / 2), floorf(p.y + (h - font->FontSize) / 2)),
+                    on ? col : hot ? COL_TEXT : COL_DIM, label, p.x + w);
+        if (clicked && !on) {
+            app_set_category(a, cat);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 static void options_apps()
 {
     OptionsUi &o = g_app.options;
@@ -1232,23 +1586,30 @@ static void options_apps()
     if (o.order_dirty) apps_order_make();
     apps_order_extend();
 
-    // Filter chips; search and Add on the right (under the chips when the window is narrow)
-    static const char *chips[] = {"All", "New", "Games", "Apps", "Communication", "Ignored"};
+    // Filter chips with counts; search and Add on the right
+    static const char *chips[] = {"All", "New", "Games", "Apps", "Chat", "Ignored"};
     static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED};
-    f32 page_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
-    f32 chips_w = 0;
+    static const i32 chip_cat[] = {-1, CAT_NONE, CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
+    i32 counts[6] = {c.app_count};
+    for (i32 i = 0; i < c.app_count; i++)
+        for (i32 k = 1; k < 6; k++) counts[k] += c.apps[i].category == chip_cat[k];
+    f32 fh = ImGui::GetFrameHeight();
     for (i32 i = 0; i < COUNT(chips); i++) {
         if (i) ImGui::SameLine(0, dp(6));
-        chips_w += ImGui::CalcTextSize(chips[i]).x + dp(28) + (i ? dp(6) : 0);
-        if (kit_chip(chips[i], o.filter == chip_filter[i]) && o.filter != chip_filter[i]) {
+        char n[16];
+        snprintf(n, sizeof n, "%d", counts[i]);
+        // Wide enough for three digits, so a count going up never moves the chips after it
+        f32 w = ImGui::CalcTextSize(chips[i]).x + ImGui::CalcTextSize("000").x + dp(8 + 28);
+        char id[32];
+        snprintf(id, sizeof id, "%s##chip", chips[i]);
+        if (kit_chip(id, o.filter == chip_filter[i], n, w) && o.filter != chip_filter[i]) {
             o.filter = chip_filter[i];
             o.order_dirty = true;
             o.apps_page = 0;
         }
     }
     f32 search_w = dp(220), add_w = dp(118), right_w = search_w + dp(10) + add_w;
-    bool one_line = page_w >= chips_w + dp(24) + right_w;
-    if (one_line) kit_align_right(right_w);
+    if (ImGui::GetContentRegionAvail().x > right_w + dp(24)) kit_align_right(right_w);
     if (kit_search("##search", o.search, sizeof o.search, "Search", search_w)) {
         o.order_dirty = true;
         o.apps_page = 0;
@@ -1256,33 +1617,31 @@ static void options_apps()
     ImGui::SameLine(0, dp(10));
     ImVec2 add_at = ImGui::GetCursorScreenPos();
     if (kit_button(ICON_ADD "  Add app", KIT_SECONDARY, ImVec2(add_w, 0), c.app_count < COUNT(c.apps))) {
-        o.add_exe[0] = 0;
+        str_set(o.add_exe, o.search);
         ImGui::OpenPopup("add app");
     }
     ImGui::Dummy(ImVec2(0, dp(2)));
 
-    f32 rh = dp(50), head_h = dp(34);
-    i32 rows = opt_rows_fit(rh, head_h + opt_pager_h());
-    bool open_menu = false;
+    f32 rh = dp(58);
+    i32 rows = opt_rows_fit(rh, opt_pager_h());
+    i32 open_popup = 0; // 1 the menu, 2 a game's settings, 3 rename: opened outside the rows' ID scopes
     opt_card_begin();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
-    f32 more_x = x1 - fh + dp(6), heard_x1 = more_x - dp(14), heard_w = dp(96);
-    f32 cat_w = dp(170), cat_x = heard_x1 - heard_w - dp(16) - cat_w;
-    f32 name_x = x0 + floorf((cat_x - dp(16) - x0) * 0.48f), name_w = fminf(cat_x - dp(16) - name_x, dp(300));
-    f32 pad = ImGui::GetStyle().FramePadding.x;
+    f32 more_x = x1 - fh, gear_x = more_x - dp(4) - fh;
+    f32 pills_w = COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4), pills_x = gear_x - dp(16) - pills_w;
+    f32 is = dp(34), text_x = x0 + is + dp(14), text_max = pills_x - dp(16);
 
-    opt_row_begin(0, 0, 0, head_h);
-    opt_caption(x0, "APP");
-    opt_caption(name_x + pad, "NAME IN FILES");
-    opt_caption(cat_x + pad, "CATEGORY");
-    opt_caption(heard_x1, "LAST HEARD", true);
-    opt_row_end();
     for (i32 r = 0; r < rows; r++) {
         i32 k = o.apps_page * rows + r;
         opt_row_begin(0, 0, 0, rh, k < o.order_count);
         if (k >= o.order_count) {
-            if (o.order_count == 0 && r == 0) opt_empty_row(o.search[0] || o.filter ? "No apps match" : "No apps have played sound yet");
+            if (o.order_count == 0 && r == 0) {
+                char msg[96];
+                if (o.search[0]) snprintf(msg, sizeof msg, "No match. Add %s with Add app.", o.search);
+                else snprintf(msg, sizeof msg, "%s", o.filter ? "None here" : "No apps have played sound yet");
+                opt_empty_row(msg);
+            }
             opt_row_end();
             continue;
         }
@@ -1292,81 +1651,71 @@ static void options_apps()
         bool hot = opt_row_hover();
         f32 cy = opt_row_frame_y();
 
-        // The exe, bold, with a "new" tag
+        char name[64];
+        audio_display_name(c, a.exe.s, name, sizeof name);
+        app_icon_draw(dl, ImVec2(x0, floorf(g_row.y + (rh - is) / 2)), is, a, name);
+
+        // Name, with a "new" tag; under it the exe, when it was heard, and what a game does differently
         bool is_new = a.category == CAT_NONE;
+        f32 nh = g_font_bold->FontSize, sh = g_font_small->FontSize, ty = floorf(g_row.y + (rh - nh - dp(3) - sh) / 2);
         f32 tag_w = is_new ? opt_pill_w("new") + dp(8) : 0;
-        f32 exe_max = name_x - dp(12) - tag_w;
-        opt_text_at(dl, g_font_bold, ImVec2(x0, opt_row_text_y(g_font_bold)), COL_TEXT, a.exe.s, exe_max);
+        opt_text_at(dl, g_font_bold, ImVec2(text_x, ty), COL_TEXT, name, text_max - tag_w);
         if (is_new) {
-            f32 ew = fminf(text_w(g_font_bold, a.exe.s), exe_max - x0);
-            opt_pill(dl, ImVec2(x0 + ew + dp(8), g_row.y + g_row.h / 2), "new", COL_ACCENT_SOFT, 0xff8a92);
+            f32 nw = fminf(text_w(g_font_bold, name), text_max - tag_w - text_x);
+            opt_pill(dl, ImVec2(text_x + nw + dp(8), ty + nh / 2 + dp(1)), "new", 0x3a2e14, COL_WARN);
         }
-
-        // The name in files: quiet text until it's pointed at or clicked
-        ImGui::SetCursorScreenPos(ImVec2(name_x, cy));
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, rgb(COL_PANEL2));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, rgb(COL_PANEL2));
-        char hint[64], name[64];
-        default_app_name(a.exe.s, hint, sizeof hint);
-        if (opt_text("##name", a.name.s, name_w, 0, hint, name, sizeof name)) {
-            for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
-            str_set(a.name.s, trim(name));
-            log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
-            options_apply(APPLY_AUDIO);
-        }
-        ImGui::PopStyleColor(3);
-
-        ImGui::SetCursorScreenPos(ImVec2(cat_x, cy));
-        i32 cat = a.category;
-        if (opt_combo("##cat", CATEGORY_LABELS, CATEGORY_NOTES, COUNT(CATEGORY_LABELS), &cat, cat_w, 1u << CAT_NONE,
-                      is_new ? "Choose\xE2\x80\xA6" : 0, is_new ? COL_DIM : COL_TEXT))
-            app_set_category(&a, (AppCategory)cat);
-
-        char ago[32];
+        char line[192], when[32], summary[96] = "";
         bool playing = app_playing(a.exe.s);
-        if (!playing) ago_text(a.last_heard_us, ago, sizeof ago);
-        opt_text_right(dl, g_font, heard_x1, opt_row_text_y(g_font), playing ? COL_OK : COL_DIM, playing ? "playing now" : ago,
-                       heard_x1 - heard_w);
+        if (playing) str_set(when, "playing now");
+        else ago_text(a.last_heard_us, when, sizeof when);
+        if (a.category == CAT_GAME) game_summary(a, summary, sizeof summary);
+        snprintf(line, sizeof line, "%s \xC2\xB7 %s%s%s", a.exe.s, when, summary[0] ? " \xC2\xB7 " : "", summary);
+        opt_text_at(dl, g_font_small, ImVec2(text_x, ty + nh + dp(3)), playing ? COL_OK : COL_DIM, line, text_max);
 
-        // Open file location: on the row under the mouse, or with a right-click anywhere on it
-        bool reveal = false;
-        if (hot) {
-            ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
-            reveal = kit_icon_button(ICON_FOLDER, "##reveal");
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        cat_pills(&a, pills_x, cy);
+
+        // The gear (games only; the slot stays for the others) and the menu
+        if (a.category == CAT_GAME) {
+            ImGui::SetCursorScreenPos(ImVec2(gear_x, cy));
+            if (kit_icon_button(ICON_SETTINGS, "##gear", KIT_GHOST, true, summary[0] != 0)) {
                 o.menu_app = idx;
-                app_find_path(a.exe.s, &o.menu_path);
-                open_menu = true; // opened outside the row's ID scope, where BeginPopup looks for it
+                open_popup = 2;
             }
         }
-        if (reveal) {
+        ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
+        bool more = kit_icon_button(ICON_MORE, "##more");
+        if (more || (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
             o.menu_app = idx;
-            if (app_find_path(a.exe.s, &o.menu_path)) reveal_file(o.menu_path);
-            else open_menu = true; // says why it can't
+            app_find_path(a.exe.s, &o.menu_path);
+            open_popup = 1;
         }
         ImGui::PopID();
         opt_row_end();
     }
     opt_card_end(10);
 
-    if (open_menu) ImGui::OpenPopup("app menu");
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(8), dp(8)));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    if (open_popup == 1) ImGui::OpenPopup("app menu");
+    lib_popup_style_push(8);
     bool menu = ImGui::BeginPopup("app menu");
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
+    lib_popup_style_pop();
     if (menu) {
+        AppInfo *a = o.menu_app >= 0 && o.menu_app < c.app_count ? &c.apps[o.menu_app] : 0;
+        if (a && a->category == CAT_GAME && lib_menu_item(ICON_SETTINGS, "Recording settings")) open_popup = 2;
+        if (a && lib_menu_item(ICON_RENAME, "Rename")) open_popup = 3;
         ImGui::BeginDisabled(!o.menu_path.s[0]);
-        if (ImGui::MenuItem(ICON_FOLDER "  Open file location")) reveal_file(o.menu_path);
+        if (lib_menu_item(ICON_FOLDER, "Open file location")) reveal_file(o.menu_path);
         ImGui::EndDisabled();
         if (!o.menu_path.s[0]) {
             ImGui::PushFont(g_font_small);
-            kit_dim("Not running, and lifelog hasn't seen where it is");
+            kit_dim("  Not running, and lifelog hasn't seen where it is");
             ImGui::PopFont();
         }
         ImGui::EndPopup();
     }
+    if (open_popup == 2) ImGui::OpenPopup("game settings");
+    if (open_popup == 3) ImGui::OpenPopup("rename app");
+    game_settings_popup();
+    apps_rename_popup();
     apps_add_popup(ImVec2(add_at.x + add_w, add_at.y + fh + dp(6)), rows);
 
     char left[48];
@@ -1632,7 +1981,7 @@ static void options_hotkeys()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Recording
+// Recording: what's captured, how it's encoded, and how much the buffer keeps.
 
 static const char *VENDOR_LABELS[VENDOR_COUNT] = {"NVIDIA NVENC", "AMD AMF", "Intel Quick Sync", "CPU"};
 
@@ -1701,16 +2050,31 @@ static void options_recording()
         opt_combo_end();
     }
     opt_row_end();
-
     if (opt_row_i32("Frame rate", 0, "##fps", &c.fps, 1, 240, "fps")) {
         log_line("options: %d fps", c.fps);
         options_apply(APPLY_RECORDER);
     }
-    if (opt_row_f32("Bitrate", "Games can have their own under Game bitrates", "##bitrate", &c.bitrate_mbps, 1, 300, "Mbps")) {
-        log_line("options: bitrate %g Mbps", c.bitrate_mbps);
+    if (opt_row_toggle("Show the mouse pointer", 0, "##mouse", &c.draw_mouse)) {
+        log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
         options_apply(APPLY_RECORDER);
     }
+    opt_card_end();
 
+    opt_section("BITRATE");
+    opt_card_begin();
+    if (opt_row_f32("While playing a game", "A game can have its own: the gear on its row under Apps", "##bitrate",
+                    &c.bitrate_mbps, 1, 300, "Mbps")) {
+        log_line("options: game bitrate %g Mbps", c.bitrate_mbps);
+        options_apply(APPLY_RECORDER);
+    }
+    if (opt_row_f32("On the desktop", "While no game is being played", "##desktop", &c.desktop_bitrate_mbps, 1, 300, "Mbps")) {
+        log_line("options: desktop bitrate %g Mbps", c.desktop_bitrate_mbps);
+        options_apply(APPLY_RECORDER);
+    }
+    opt_card_end();
+
+    opt_section("ENCODER");
+    opt_card_begin();
     static const char *codecs[CODEC_COUNT] = {"H.264", "HEVC", "AV1"};
     static const char *codec_notes[CODEC_COUNT] = {"plays everywhere", "smaller files", "smallest, not for Premiere"};
     u32 no_codec = 0;
@@ -1753,152 +2117,20 @@ static void options_recording()
         log_line("options: encoder %s", c.encoder.s);
         options_apply(APPLY_RECORDER);
     }
-    if (opt_row_toggle("Show the mouse pointer", 0, "##mouse", &c.draw_mouse)) {
-        log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
-        options_apply(APPLY_RECORDER);
-    }
-    opt_card_end();
 
-    opt_section("AUDIO");
-    opt_card_begin();
-    if (opt_row_toggle("Record the microphone", "On its own track", "##mic", &c.mic)) {
-        log_line("options: mic %s", c.mic ? "on" : "off");
-        options_apply(APPLY_AUDIO);
-    }
-    opt_card_end();
-
-    opt_section("TOOLS");
-    opt_card_begin();
-    opt_row_begin("ffmpeg.exe", 0, wide);
-    char ff[MAX_PATH * 3], text[MAX_PATH * 3];
-    wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
-    if (opt_text("##ffmpeg", ff, wide, 0, "Found on the PATH", text, sizeof text)) {
-        char *t = trim(text);
-        utf8_to_wide(t, c.ffmpeg.s, MAX_PATH);
-        log_line("options: ffmpeg %s", t[0] ? t : "found on the PATH");
-        options_apply(APPLY_RECORDER);
-    }
-    opt_row_end();
-    opt_card_end();
-}
-
-// The games list behind Game bitrates and Sessions: every app sorted as a game, by exe. Neither page changes
-// what's a game, so the order holds while it's shown.
-static i32 options_games(i16 *out, i32 cap)
-{
-    const Config &c = g_app.config;
-    i32 n = 0;
-    for (i32 i = 0; i < c.app_count && n < cap; i++)
-        if (c.apps[i].category == CAT_GAME) out[n++] = (i16)i;
-    for (i32 i = 1; i < n; i++) // insertion sort by exe: short lists
-        for (i32 k = i; k > 0 && strcmp(c.apps[out[k - 1]].exe.s, c.apps[out[k]].exe.s) > 0; k--) {
-            i16 t = out[k];
-            out[k] = out[k - 1];
-            out[k - 1] = t;
-        }
-    return n;
-}
-
-// A game in a list row: its name, then its exe, dim.
-static void game_cell(const AppInfo &a, f32 max_x)
-{
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    char name[64];
-    audio_display_name(g_app.config, a.exe.s, name, sizeof name);
-    f32 y = opt_row_text_y(g_font), x = g_row.x0;
-    opt_text_at(dl, g_font_bold, ImVec2(x, opt_row_text_y(g_font_bold)), COL_TEXT, name, max_x);
-    f32 nw = text_w(g_font_bold, name);
-    opt_text_at(dl, g_font, ImVec2(x + nw + dp(10), y), COL_DIM, a.exe.s, max_x);
-}
-
-static void options_game_bitrates()
-{
-    OptionsUi &o = g_app.options;
-    Config &c = g_app.config;
-    static i16 games[512];
-    i32 n = options_games(games, COUNT(games));
-
-    f32 rh = dp(50), head_h = dp(34);
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
-    kit_dim("While a game is played, it records at its own bitrate. Empty uses the normal %g Mbps.", c.bitrate_mbps);
-    ImGui::Dummy(ImVec2(0, dp(2)));
-    i32 rows = opt_rows_fit(rh, head_h + opt_pager_h());
-    opt_card_begin();
-    opt_row_begin(0, 0, 0, head_h);
-    opt_caption(g_row.x0, "GAME");
-    opt_caption(g_row.x1 - opt_number_w() + ImGui::GetStyle().FramePadding.x, "BITRATE");
-    opt_row_end();
-    for (i32 r = 0; r < rows; r++) {
-        i32 k = o.bitrates_page * rows + r;
-        opt_row_begin(0, 0, opt_number_w(), rh, k < n);
-        if (k >= n) {
-            if (n == 0 && r == 0) opt_empty_row("No games yet. Mark apps as Game under Apps.");
-            opt_row_end();
-            continue;
-        }
-        AppInfo &a = c.apps[games[k]];
-        ImGui::PushID(games[k]);
-        opt_row_hover();
-        ImVec2 at = ImGui::GetCursorScreenPos();
-        game_cell(a, at.x - dp(20));
-        ImGui::SetCursorScreenPos(at);
-        f64 v = a.bitrate_mbps;
-        char hint[32];
-        snprintf(hint, sizeof hint, "%g", c.bitrate_mbps);
-        if (opt_number("##rate", &v, 1, 300, dp(OPT_FIELD_W), true, hint)) {
-            a.bitrate_mbps = (f32)v;
-            if (v) log_line("options: %s records at %g Mbps", a.exe.s, v);
-            else log_line("options: %s records at the normal bitrate", a.exe.s);
-            options_apply(APPLY_RECORDER);
-        }
-        opt_unit("Mbps");
-        ImGui::PopID();
-        opt_row_end();
-    }
-    opt_card_end(10);
-    char left[48];
-    snprintf(left, sizeof left, "%d game%s", n, n == 1 ? "" : "s");
-    opt_pager("rates", &o.bitrates_page, n, rows, left);
-}
-
-static void options_advanced()
-{
-    Config &c = g_app.config;
     i32 vendor = options_vendor();
-    f32 wide = dp(240);
-    char in_use[96];
-    if (vendor < 0) snprintf(in_use, sizeof in_use, "Off uses clipback's defaults. Encoder in use: not known yet");
-    else snprintf(in_use, sizeof in_use, "Off uses clipback's defaults. Encoder in use: %s", VENDOR_LABELS[vendor]);
-
-    opt_card_begin();
-    if (opt_row_toggle("Custom encoder settings", in_use, "##advanced", &c.advanced)) {
-        log_line("options: advanced encoding %s", c.advanced ? "on" : "off");
-        options_apply(APPLY_RECORDER);
-    }
-    opt_card_end();
-
-    opt_section("ENCODER");
-    opt_card_begin();
-    ImGui::BeginDisabled(!c.advanced);
-    static const char *presets[] = {"P1", "P2", "P3", "P4", "P5", "P6", "P7"};
-    static const char *preset_notes[] = {"fastest", 0, 0, "balanced", 0, 0, "best quality, more GPU"};
-    static const char *preset_keys[] = {"p1", "p2", "p3", "p4", "p5", "p6", "p7"};
     static const char *vendor_notes[VENDOR_COUNT] = {"Speed against quality", "AMF has three speeds; P1 to P7 spread over them",
                                                      "Quick Sync's veryfast to veryslow", "CPU: fast presets only"};
     i32 preset = preset_step(c.preset.s);
-    if (opt_row_combo("Preset", vendor >= 0 ? vendor_notes[vendor] : vendor_notes[0], "##preset", presets, preset_notes,
-                      COUNT(presets), &preset, wide)) {
-        str_set(c.preset.s, preset_keys[preset]);
+    if (opt_row_combo("Preset", vendor >= 0 ? vendor_notes[vendor] : vendor_notes[0], "##preset", PRESET_LABELS, PRESET_NOTES,
+                      COUNT(PRESET_LABELS), &preset, wide)) {
+        str_set(c.preset.s, PRESET_KEYS[preset]);
         log_line("options: preset %s", c.preset.s);
         options_apply(APPLY_RECORDER);
     }
-
-    static const char *rcs[] = {"VBR", "CBR", "Constant quality"};
-    static const char *rc_notes[] = {"peaks allowed", "fixed bitrate", "the bitrate is a cap"};
-    static const char *rc_keys[] = {"vbr", "cbr", "cq"};
-    i32 rc = !strcmp(c.rate_control.s, "cbr") ? 1 : !strcmp(c.rate_control.s, "cq") ? 2 : 0;
-    if (opt_row_combo("Rate control", 0, "##rc", rcs, rc_notes, COUNT(rcs), &rc, wide)) {
-        str_set(c.rate_control.s, rc_keys[rc]);
+    i32 rc = rc_index(c.rate_control.s);
+    if (opt_row_combo("Rate control", 0, "##rc", RC_LABELS, RC_NOTES, COUNT(RC_LABELS), &rc, wide)) {
+        str_set(c.rate_control.s, RC_KEYS[rc]);
         log_line("options: rate control %s", c.rate_control.s);
         options_apply(APPLY_RECORDER);
     }
@@ -1908,7 +2140,6 @@ static void options_advanced()
     bool av1 = !strcmp(c.codec.s, "av1");
     bool peak_on = rc != 1 && !(vendor == VENDOR_AMF && rc == 2) && !(vendor == VENDOR_CPU && av1 && rc != 2);
     bool aq_on = vendor < 0 || vendor == VENDOR_NVENC || vendor == VENDOR_AMF;
-
     ImGui::BeginDisabled(!cq_on);
     if (opt_row_i32("Quality level", "0 to 51, lower is better. Constant quality only", "##cq", &c.cq, 0, 51, "")) {
         log_line("options: quality level %d", c.cq);
@@ -1927,71 +2158,78 @@ static void options_advanced()
         options_apply(APPLY_RECORDER);
     }
     ImGui::EndDisabled();
-    ImGui::EndDisabled();
-    opt_card_end();
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// Sessions
-
-static void options_sessions()
-{
-    OptionsUi &o = g_app.options;
-    Config &c = g_app.config;
-    opt_card_begin();
-    if (opt_row_f32("Gap that ends a session", "How long a game can be away before its session ends", "##gap",
-                    &c.session_gap_min, 0.5, 600, "min")) {
-        log_line("options: session gap %g min", c.session_gap_min);
-        options_apply(0);
-    }
-    if (opt_row_f32("Shortest session to offer", 0, "##minlen", &c.session_min_length_min, 0, 1440, "min")) {
-        log_line("options: shortest session %g min", c.session_min_length_min);
-        options_apply(0);
-    }
     opt_card_end();
 
-    static const char *modes[] = {"Ask when it ends", "Always save", "Never"};
-    static const char *mode_notes[] = {0, 0, "no sessions"};
-    static i16 games[512];
-    i32 n = options_games(games, COUNT(games));
-    f32 rh = dp(50), head_h = dp(34), combo_w = dp(200);
-    i32 rows = opt_rows_fit(rh, head_h + opt_pager_h());
+    // The buffer keeps either a length of time or an amount of space, whichever is chosen; the other is shown as
+    // an estimate at the game bitrate (the highest a game records at, if one has its own).
+    opt_section("BUFFER");
     opt_card_begin();
-    opt_row_begin(0, 0, 0, head_h);
-    opt_caption(g_row.x0, "GAME");
-    opt_caption(g_row.x1 - combo_w + ImGui::GetStyle().FramePadding.x, "ITS SESSIONS");
+    static const char *limits[] = {"Length", "Size"};
+    i32 by = c.buffer_by_size ? 1 : 0;
+    opt_row_begin("Limit the buffer by", 0, dp(200));
+    if (kit_segmented("##by", limits, 2, &by, dp(98))) {
+        c.buffer_by_size = by == 1;
+        log_line("options: buffer limited by %s", c.buffer_by_size ? "size" : "length");
+        options_apply(APPLY_RECORDER);
+    }
     opt_row_end();
-    for (i32 r = 0; r < rows; r++) {
-        i32 k = o.sessions_page * rows + r;
-        opt_row_begin(0, 0, combo_w, rh, k < n);
-        if (k >= n) {
-            if (n == 0 && r == 0) opt_empty_row("No games yet. Mark apps as Game under Apps.");
-            opt_row_end();
-            continue;
+    f32 rate = c.bitrate_mbps;
+    for (i32 i = 0; i < c.app_count; i++)
+        if (c.apps[i].category == CAT_GAME) rate = fmaxf(rate, c.apps[i].rec.bitrate_mbps);
+    f64 bytes_per_hour = 3600.0 * rate / 8.0 * 1e6;
+    char est[32], line[128];
+    if (!c.buffer_by_size) {
+        bytes_text((i64)(c.buffer_hours * bytes_per_hour), est, sizeof est);
+        snprintf(line, sizeof line, "Up to about %s at %g Mbps", est, rate);
+        if (opt_row_f32("Keep the last", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
+            log_line("options: buffer keeps %g h", c.buffer_hours);
+            options_apply(APPLY_RECORDER);
         }
-        AppInfo &a = c.apps[games[k]];
-        ImGui::PushID(games[k]);
-        opt_row_hover();
-        ImVec2 at = ImGui::GetCursorScreenPos();
-        game_cell(a, at.x - dp(20));
-        ImGui::SetCursorScreenPos(at);
-        i32 m = a.session_mode;
-        if (opt_combo("##mode", modes, mode_notes, COUNT(modes), &m, combo_w)) {
-            a.session_mode = (SessionMode)m;
-            log_line("options: %s sessions: %s", a.exe.s, session_mode_name(a.session_mode));
-            options_apply(0);
+    } else {
+        f64 h = c.buffer_gb * 1e9 / bytes_per_hour;
+        snprintf(line, sizeof line, "At least %.0f h %02.0f min at %g Mbps", floor(h), fmod(h * 60, 60), rate);
+        if (opt_row_f32("Keep up to", line, "##gb", &c.buffer_gb, 1, 100000, "GB")) {
+            log_line("options: buffer keeps %g GB", c.buffer_gb);
+            options_apply(APPLY_RECORDER);
         }
-        ImGui::PopID();
-        opt_row_end();
     }
-    opt_card_end(10);
-    char left[48];
-    snprintf(left, sizeof left, "%d game%s", n, n == 1 ? "" : "s");
-    opt_pager("modes", &o.sessions_page, n, rows, left);
+    if (opt_row_f32("Keep free on its drive", "The oldest footage goes early rather than fill the drive", "##free",
+                    &c.min_free_gb, 0, 100000, "GB")) {
+        log_line("options: keep %g GB free", c.min_free_gb);
+        options_apply(APPLY_RECORDER);
+    }
+    char used[32], free_text[32], holds[96];
+    bytes_text((i64)rec.buffer_bytes, used, sizeof used);
+    bytes_text(rec.free_bytes, free_text, sizeof free_text);
+    if (rec.oldest_us) {
+        i64 mins = (now_us() - rec.oldest_us) / 60000000;
+        snprintf(holds, sizeof holds, "%s, the last %lld h %02lld min", used, mins / 60, mins % 60);
+    } else snprintf(holds, sizeof holds, "%s", rec.buffer_bytes ? used : "Nothing yet");
+    opt_row_value("Holds now", 0, holds, rec.oldest_us ? COL_TEXT : COL_DIM);
+    opt_row_value("Free on its drive", 0, free_text);
+    opt_card_end();
+
+    opt_section("AUDIO");
+    opt_card_begin();
+    if (opt_row_toggle("Record the microphone", "On its own track", "##mic", &c.mic)) {
+        log_line("options: mic %s", c.mic ? "on" : "off");
+        options_apply(APPLY_AUDIO);
+    }
+    opt_row_begin("ffmpeg.exe", 0, wide);
+    char ff[MAX_PATH * 3], text[MAX_PATH * 3];
+    wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
+    if (opt_text("##ffmpeg", ff, wide, 0, "Found on the PATH", text, sizeof text)) {
+        char *t = trim(text);
+        utf8_to_wide(t, c.ffmpeg.s, MAX_PATH);
+        log_line("options: ffmpeg %s", t[0] ? t : "found on the PATH");
+        options_apply(APPLY_RECORDER);
+    }
+    opt_row_end();
+    opt_card_end();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Storage
+// General: sessions, folders, sharing, startup and the look.
 
 static bool pick_folder(const Path &start, Path *out)
 {
@@ -2057,57 +2295,79 @@ static bool opt_row_folder(const char *name, const char *sub, const char *id, Pa
     return changed;
 }
 
-static void options_storage()
+// The accent colours as a row of swatches; the one in use has a ring.
+static bool accent_swatches(i32 *sel)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 d = ImGui::GetFrameHeight(), gap = dp(8), r = d / 2 - dp(4);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool changed = false;
+    for (i32 i = 0; i < ACCENT_COUNT; i++) {
+        ImVec2 p(a.x + i * (d + gap), a.y);
+        ImGui::SetCursorScreenPos(p);
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("##accent", ImVec2(d, d)) && *sel != i) {
+            *sel = i;
+            changed = true;
+        }
+        bool hot = ImGui::IsItemHovered();
+        ImGui::PopID();
+        ImVec2 c(p.x + d / 2, p.y + d / 2);
+        dl->AddCircleFilled(c, hot ? r + dp(1) : r, col32(ACCENTS[i].base));
+        if (*sel == i) dl->AddCircle(c, d / 2 - dp(0.5f), col32(COL_TEXT), 0, dp(2));
+    }
+    return changed;
+}
+
+static f32 swatches_w() { return (f32)ACCENT_COUNT * ImGui::GetFrameHeight() + (f32)(ACCENT_COUNT - 1) * dp(8); }
+
+static void options_general()
 {
     Config &c = g_app.config;
-    const Recorder &rec = g_app.recorder;
+
+    opt_section("LOOK");
+    opt_card_begin();
+    opt_row_begin("Accent colour", 0, swatches_w());
+    if (accent_swatches(&c.accent)) {
+        ui_apply_accent(c.accent);
+        log_line("options: accent %s", ACCENTS[c.accent].name);
+        options_apply(0);
+    }
+    opt_row_end();
+    static const char *sizes[] = {"Small", "Medium", "Large"};
+    opt_row_begin("Thumbnails in the Library", 0, 3 * dp(84) + 2 * dp(4));
+    if (kit_segmented("##thumbs", sizes, 3, &c.thumb_size, dp(84))) {
+        log_line("options: %s thumbnails", sizes[c.thumb_size]);
+        options_apply(0);
+    }
+    opt_row_end();
+    opt_card_end();
+
+    opt_section("SESSIONS");
+    opt_card_begin();
+    if (opt_row_f32("Gap that ends a session", "How long a game can be away before its session ends", "##gap",
+                    &c.session_gap_min, 0.5, 600, "min")) {
+        log_line("options: session gap %g min", c.session_gap_min);
+        options_apply(0);
+    }
+    if (opt_row_f32("Shortest session to offer", "Each game asks, always saves or never: its gear under Apps", "##minlen",
+                    &c.session_min_length_min, 0, 1440, "min")) {
+        log_line("options: shortest session %g min", c.session_min_length_min);
+        options_apply(0);
+    }
+    opt_card_end();
 
     opt_section("FOLDERS");
     opt_card_begin();
     if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
     if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
-    opt_card_end();
-
-    opt_section("BUFFER");
-    opt_card_begin();
-    char size[32], line[128];
-    bytes_text((i64)(c.buffer_hours * 3600.0 * c.bitrate_mbps / 8.0 * 1e6), size, sizeof size);
-    snprintf(line, sizeof line, "About %s at %g Mbps", size, c.bitrate_mbps);
-    if (opt_row_f32("Buffer length", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
-        log_line("options: buffer keeps %g h", c.buffer_hours);
-        options_apply(APPLY_RECORDER);
-    }
-    if (opt_row_f32("Keep free on its drive", "The oldest footage goes early rather than fill the drive", "##free",
-                    &c.min_free_gb, 0, 100000, "GB")) {
-        log_line("options: keep %g GB free", c.min_free_gb);
-        options_apply(APPLY_RECORDER);
-    }
-    char used[32], free_text[32], holds[96];
-    bytes_text((i64)rec.buffer_bytes, used, sizeof used);
-    bytes_text(rec.free_bytes, free_text, sizeof free_text);
-    if (rec.oldest_us) {
-        i64 mins = (now_us() - rec.oldest_us) / 60000000;
-        snprintf(holds, sizeof holds, "%s, the last %lld h %02lld min", used, mins / 60, mins % 60);
-    } else snprintf(holds, sizeof holds, "%s", rec.buffer_bytes ? used : "Nothing yet");
-    opt_row_value("Holds now", 0, holds, rec.oldest_us ? COL_TEXT : COL_DIM);
-    opt_row_value("Free on its drive", 0, free_text);
-    opt_card_end();
-
-    opt_section("SHARING");
-    opt_card_begin();
     if (opt_row_f32("Keep share copies for", 0, "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);
     }
     opt_card_end();
-}
 
-// ---------------------------------------------------------------------------------------------------------------
-// Start with Windows
-
-static void options_startup()
-{
-    Config &c = g_app.config;
+    opt_section("STARTUP");
     wchar_t now_value[MAX_PATH + 8], cmd[MAX_PATH + 8];
     bool set = startup_read(now_value, COUNT(now_value));
     startup_command(cmd, COUNT(cmd));
@@ -2115,22 +2375,16 @@ static void options_startup()
         log_line("start with Windows: the Run value is %ls; on, it would be %ls", set ? now_value : L"not set", cmd);
         g_app.options.startup_logged = true;
     }
-
+    char u[MAX_PATH * 3];
+    wide_to_utf8(now_value, u, sizeof u);
+    const char *runs = !set ? "Nothing runs at sign-in now" : !_wcsicmp(now_value, cmd) ? "This clipback runs at sign-in" : u;
+    if (options_test_copy()) runs = "Test copy: the Run list is left alone";
     opt_card_begin();
-    if (opt_row_toggle("Start with Windows", "Starts hidden in the tray when you sign in", "##startup", &c.start_with_windows)) {
+    if (opt_row_toggle("Start with Windows", runs, "##startup", &c.start_with_windows)) {
         startup_set(c.start_with_windows);
         options_apply(0);
     }
-    char u[MAX_PATH * 3];
-    wide_to_utf8(now_value, u, sizeof u);
-    if (!set) opt_row_value("Runs at sign-in", 0, "Nothing", COL_DIM);
-    else if (!_wcsicmp(now_value, cmd)) opt_row_value("Runs at sign-in", 0, "This clipback");
-    else opt_row_value("Runs at sign-in", 0, u, COL_DIM);
     opt_card_end();
-    if (options_test_copy()) {
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
-        kit_dim("Test copy: the setting is saved, the Run list is left alone.");
-    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2142,19 +2396,14 @@ static void screen_options()
     if (!o.last_frame || frame - o.last_frame > 1) { // entered again: new apps may have arrived, monitors may have changed
         o.order_dirty = true;
         options_list_monitors();
+        app_icons_retry();
         if (o.capture_slot) capture_end(true);
     }
     o.last_frame = frame;
 
-    kit_title("Options");
-    ImGui::Dummy(ImVec2(0, dp(2)));
-
-    // The sections as a row of text tabs over a hairline, the current one underlined in the accent. Each tab's
-    // width is fixed (its bold label, and room for the new-apps count on Apps), so none moves.
-    static const char *names[OPT_TAB_COUNT] = {"Apps", "Hotkeys", "Recording", "Game bitrates", "Advanced",
-                                               "Sessions", "Storage", "Startup"};
-    static const i32 order[OPT_TAB_COUNT] = {OPT_APPS, OPT_HOTKEYS, OPT_RECORDING, OPT_GAME_BITRATES, OPT_SESSIONS,
-                                             OPT_STORAGE, OPT_STARTUP, OPT_ADVANCED};
+    // The sections as text tabs over a hairline, the current one underlined in the accent. Each tab's width is
+    // fixed (its bold label, and room for the new-apps count on Apps), so none moves.
+    static const char *names[OPT_TAB_COUNT] = {"Apps", "Recording", "Hotkeys", "General"};
     if (o.tab < 0 || o.tab >= OPT_TAB_COUNT) o.tab = OPT_APPS;
     i32 new_apps = 0;
     for (i32 i = 0; i < g_app.config.app_count; i++) new_apps += g_app.config.apps[i].category == CAT_NONE;
@@ -2164,26 +2413,20 @@ static void screen_options()
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 avail = ImGui::GetContentRegionAvail().x, tab_h = dp(40);
-    f32 widths[OPT_TAB_COUNT], sum = 0;
-    for (i32 i = 0; i < OPT_TAB_COUNT; i++) {
-        widths[i] = text_w(g_font_bold, names[order[i]]) + (order[i] == OPT_APPS ? pill_room : 0);
-        sum += widths[i];
-    }
-    f32 gap = fmaxf(dp(12), fminf(dp(30), (avail - sum) / (OPT_TAB_COUNT - 1)));
+    f32 avail = ImGui::GetContentRegionAvail().x, tab_h = dp(40), gap = dp(30);
     dl->AddLine(ImVec2(a.x, a.y + tab_h - 0.5f), ImVec2(a.x + avail, a.y + tab_h - 0.5f), col32(COL_LINE));
     f32 x = a.x;
-    for (i32 i = 0; i < OPT_TAB_COUNT; i++) {
-        i32 t = order[i];
+    for (i32 t = 0; t < OPT_TAB_COUNT; t++) {
+        f32 w = text_w(g_font_bold, names[t]) + (t == OPT_APPS ? pill_room : 0);
         bool active = o.tab == t;
         ImGui::SetCursorScreenPos(ImVec2(x - gap / 2, a.y));
         ImGui::PushID(t);
         ImGui::BeginDisabled(o.capture_slot != 0 && !active); // finish setting the hotkey first
-        if (ImGui::InvisibleButton("##tab", ImVec2(widths[i] + gap, tab_h))) o.tab = t;
+        if (ImGui::InvisibleButton("##tab", ImVec2(w + gap, tab_h))) o.tab = t;
         bool hot = ImGui::IsItemHovered();
         ImFont *font = active ? g_font_bold : g_font;
         f32 ty = floorf(a.y + (tab_h - dp(4) - font->FontSize) / 2);
-        opt_text_at(dl, font, ImVec2(x, ty), active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM, names[t], x + widths[i] + 1);
+        opt_text_at(dl, font, ImVec2(x, ty), active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM, names[t], x + w + 1);
         f32 line_w = text_w(font, names[t]);
         if (t == OPT_APPS && new_apps) {
             f32 px = x + line_w + dp(8);
@@ -2193,25 +2436,21 @@ static void screen_options()
         if (active) dl->AddRectFilled(ImVec2(x, a.y + tab_h - dp(2)), ImVec2(x + line_w, a.y + tab_h), col32(COL_ACCENT), dp(1));
         ImGui::EndDisabled();
         ImGui::PopID();
-        x += widths[i] + gap;
+        x += w + gap;
     }
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + tab_h));
     ImGui::Dummy(ImVec2(avail, dp(14)));
 
     // List pages fit their page and turn pages; the others scroll if the window is short.
-    bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS || o.tab == OPT_GAME_BITRATES || o.tab == OPT_SESSIONS;
+    bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS;
     g_card_max_w = list ? FLT_MAX : dp(860);
     ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_None,
                       list ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
     switch (o.tab) {
     case OPT_APPS: options_apps(); break;
-    case OPT_HOTKEYS: options_hotkeys(); break;
     case OPT_RECORDING: options_recording(); break;
-    case OPT_GAME_BITRATES: options_game_bitrates(); break;
-    case OPT_ADVANCED: options_advanced(); break;
-    case OPT_SESSIONS: options_sessions(); break;
-    case OPT_STORAGE: options_storage(); break;
-    case OPT_STARTUP: options_startup(); break;
+    case OPT_HOTKEYS: options_hotkeys(); break;
+    case OPT_GENERAL: options_general(); break;
     default: break;
     }
     ImGui::EndChild();

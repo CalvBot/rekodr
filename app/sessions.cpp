@@ -803,7 +803,9 @@ static void sessions_rows_rebuild()
 static void session_time_left(const Session &s, char *out, i32 cap)
 {
     i64 now = now_us(), oldest = g_app.recorder.oldest_us;
+    // By length the buffer keeps buffer_hours; by size, about as long as it holds now.
     i64 keep = (i64)((g_app.config.buffer_hours > 0 ? g_app.config.buffer_hours : 24) * 3600e6);
+    if (g_app.config.buffer_by_size) keep = oldest ? now - oldest : keep;
     bool start_gone = oldest && s.start_us < oldest;
     i64 us = (start_gone ? s.end_us : s.start_us) + keep - now;
     char left[32];

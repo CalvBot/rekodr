@@ -45,11 +45,13 @@ static void config_defaults(Config *c, const Paths &paths)
         c->buffer_dir = path_join(paths.local_dir, L"buffer");
     }
     c->buffer_hours = 24;
+    c->buffer_gb = 100;
     c->min_free_gb = 50;
     c->fps = 60;
     str_set(c->codec.s, "h264");
     str_set(c->encoder.s, "auto");
     c->bitrate_mbps = 20;
+    c->desktop_bitrate_mbps = -1; // not in the file: the game bitrate (fixed up after loading)
     c->draw_mouse = true;
     str_set(c->preset.s, "p4");
     str_set(c->rate_control.s, "vbr");
@@ -59,6 +61,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_gap_min = 5;
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
+    c->accent = 0;
+    c->thumb_size = 1;
     // One hotkey, the same keys as NVIDIA's instant replay, so it's where hands already go.
     str_set(c->hotkeys[0].keys.s, "Alt+F10");
     str_set(c->hotkeys[0].action.s, "save 30s");
@@ -129,6 +133,9 @@ static i32 split_fields(char *s, char **fields, i32 max)
     return n;
 }
 
+// Older files had an "advanced" switch: the encoder settings only applied while it was on.
+static bool g_config_advanced_seen, g_config_advanced;
+
 static void config_set(Config *c, const char *key, char *value)
 {
     wchar_t wide[MAX_PATH];
@@ -139,6 +146,11 @@ static void config_set(Config *c, const char *key, char *value)
     if (!strcmp(key, "save_dir")) path(&c->save_dir);
     else if (!strcmp(key, "buffer_dir")) path(&c->buffer_dir);
     else if (!strcmp(key, "buffer_hours")) real(&c->buffer_hours);
+    else if (!strcmp(key, "buffer_gb")) real(&c->buffer_gb);
+    else if (!strcmp(key, "buffer_by_size")) boolean(&c->buffer_by_size);
+    else if (!strcmp(key, "desktop_bitrate_mbps")) real(&c->desktop_bitrate_mbps);
+    else if (!strcmp(key, "accent")) c->accent = atoi(value);
+    else if (!strcmp(key, "thumb_size")) c->thumb_size = atoi(value);
     else if (!strcmp(key, "min_free_gb")) real(&c->min_free_gb);
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
@@ -147,7 +159,10 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "encoder")) str_set(c->encoder.s, value);
     else if (!strcmp(key, "bitrate_mbps")) real(&c->bitrate_mbps);
     else if (!strcmp(key, "draw_mouse")) boolean(&c->draw_mouse);
-    else if (!strcmp(key, "advanced")) boolean(&c->advanced);
+    else if (!strcmp(key, "advanced")) {
+        g_config_advanced_seen = true;
+        g_config_advanced = !strcmp(value, "true") || !strcmp(value, "1");
+    }
     else if (!strcmp(key, "preset")) str_set(c->preset.s, value);
     else if (!strcmp(key, "rate_control")) str_set(c->rate_control.s, value);
     else if (!strcmp(key, "cq")) c->cq = atoi(value);
@@ -167,16 +182,20 @@ static void config_set(Config *c, const char *key, char *value)
             str_set(h->action.s, f[1]);
         }
     } else if (!strcmp(key, "app")) {
-        // app = overwatch.exe | Overwatch | game | ask | 0
-        char *f[5] = {};
-        i32 n = split_fields(value, f, 5);
+        // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset
+        char *f[9] = {};
+        i32 n = split_fields(value, f, 9);
         if (n >= 3) {
             AppInfo *a = config_app(c, f[0]);
             if (!a) return;
             str_set(a->name.s, f[1]);
             a->category = category_parse(f[2]);
             if (n >= 4) a->session_mode = session_mode_parse(f[3]);
-            if (n >= 5) a->bitrate_mbps = (f32)atof(f[4]);
+            if (n >= 5) a->rec.bitrate_mbps = (f32)atof(f[4]);
+            if (n >= 6) a->rec.fps = atoi(f[5]);
+            if (n >= 7) str_set(a->rec.rate_control.s, f[6]);
+            if (n >= 8) a->rec.cq = atoi(f[7]);
+            if (n >= 9) str_set(a->rec.preset.s, f[8]);
         }
     }
 }
@@ -184,8 +203,12 @@ static void config_set(Config *c, const char *key, char *value)
 static bool config_load(Config *c, const Paths &paths)
 {
     config_defaults(c, paths);
+    g_config_advanced_seen = g_config_advanced = false;
     FILE *f = _wfopen(paths.settings.s, L"rb");
-    if (!f) return false;
+    if (!f) {
+        c->desktop_bitrate_mbps = c->bitrate_mbps;
+        return false;
+    }
     bool hotkeys_seen = false;
     char line[1024];
     while (fgets(line, sizeof line, f)) {
@@ -202,6 +225,16 @@ static bool config_load(Config *c, const Paths &paths)
         config_set(c, key, value);
     }
     fclose(f);
+    if (c->desktop_bitrate_mbps < 0) c->desktop_bitrate_mbps = c->bitrate_mbps;
+    if (g_config_advanced_seen && !g_config_advanced) { // they weren't in use: back to the defaults
+        static Config d; // big (the app table)
+        config_defaults(&d, paths);
+        c->preset = d.preset;
+        c->rate_control = d.rate_control;
+        c->cq = d.cq;
+        c->peak_factor = d.peak_factor;
+        c->spatial_aq = d.spatial_aq;
+    }
     return true;
 }
 
@@ -222,13 +255,13 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "# clipback settings. Options writes this file; it's safe to edit while clipback is closed.\n\n");
     path("save_dir", c.save_dir);
     path("buffer_dir", c.buffer_dir);
-    fprintf(f, "buffer_hours = %g\n", c.buffer_hours);
+    boolean("buffer_by_size", c.buffer_by_size);
+    fprintf(f, "buffer_hours = %g\nbuffer_gb = %g\n", c.buffer_hours, c.buffer_gb);
     fprintf(f, "min_free_gb = %g\n", c.min_free_gb);
     path("ffmpeg", c.ffmpeg);
-    fprintf(f, "\noutput_idx = %d\nfps = %d\ncodec = %s\nencoder = %s\nbitrate_mbps = %g\n", c.output_idx, c.fps,
-            c.codec.s, c.encoder.s, c.bitrate_mbps);
+    fprintf(f, "\noutput_idx = %d\nfps = %d\ncodec = %s\nencoder = %s\nbitrate_mbps = %g\ndesktop_bitrate_mbps = %g\n",
+            c.output_idx, c.fps, c.codec.s, c.encoder.s, c.bitrate_mbps, c.desktop_bitrate_mbps);
     boolean("draw_mouse", c.draw_mouse);
-    boolean("advanced", c.advanced);
     fprintf(f, "preset = %s\nrate_control = %s\ncq = %d\npeak_factor = %g\n", c.preset.s, c.rate_control.s, c.cq,
             c.peak_factor);
     boolean("spatial_aq", c.spatial_aq);
@@ -237,13 +270,16 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,
             c.session_min_length_min, c.share_keep_days);
     boolean("start_with_windows", c.start_with_windows);
+    fprintf(f, "accent = %d\nthumb_size = %d\n", c.accent, c.thumb_size);
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
-    fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps, 0 = normal)\n");
+    fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset\n"
+               "# (a game's own recording settings; 0 or empty = the default)\n");
     for (i32 i = 0; i < c.app_count; i++) {
         const AppInfo &a = c.apps[i];
-        fprintf(f, "app = %s | %s | %s | %s | %g\n", a.exe.s, a.name.s, category_name(a.category),
-                session_mode_name(a.session_mode), a.bitrate_mbps);
+        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s\n", a.exe.s, a.name.s, category_name(a.category),
+                session_mode_name(a.session_mode), a.rec.bitrate_mbps, a.rec.fps, a.rec.rate_control.s, a.rec.cq,
+                a.rec.preset.s);
     }
     bool ok = fclose(f) == 0;
     ok = ok && MoveFileExW(tmp.s, paths.settings.s, MOVEFILE_REPLACE_EXISTING);

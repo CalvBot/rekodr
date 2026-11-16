@@ -1530,7 +1530,7 @@ static void screen_library()
     f32 ty = floorf(f0.y + (fh - ImGui::GetFontSize()) / 2);
     dl->AddText(ImVec2(f0.x, ty), col32(COL_DIM), count);
     f32 msg_x = f0.x + kit_px(220), pager_x = f0.x + full_w - lib_pager_w();
-    text_clipped(dl, ImVec2(msg_x, ty), pager_x - msg_x - kit_px(16), col32(lib.message_error ? COL_ACCENT_HOVER : COL_DIM),
+    text_clipped(dl, ImVec2(msg_x, ty), pager_x - msg_x - kit_px(16), col32(lib.message_error ? 0xff8a92 : COL_DIM),
                  lib.message);
     ImGui::SetCursorScreenPos(ImVec2(pager_x, f0.y));
     lib_pager("pages", &lib.page, pages);

@@ -81,7 +81,9 @@ struct RecSettings {
     Path  ffmpeg;    // as configured; empty = find it
     Path  buffer_dir;
     Path  local_dir; // for ffmpeg-video.log
+    bool  buffer_by_size;
     f32   buffer_hours;
+    f32   buffer_gb;
     f32   min_free_gb;
     i32   output_idx;
     i32   fps;
@@ -136,33 +138,45 @@ static bool rec_sleep(u32 ms, bool wake)
     return WaitForMultipleObjects(wake ? 2 : 1, h, FALSE, ms) == WAIT_OBJECT_0;
 }
 
-static RecSettings rec_settings_from(const Config &c, const Paths &paths)
+// The settings to record with while `game` (lower-case exe, empty = the desktop) is the game being played: the
+// desktop bitrate with no game, else the game bitrate, then whatever that game sets for itself.
+static RecSettings rec_settings_from(const Config &c, const Paths &paths, const char *game)
 {
     RecSettings s = {};
     s.ffmpeg = c.ffmpeg;
     s.buffer_dir = c.buffer_dir;
     s.local_dir = paths.local_dir;
+    s.buffer_by_size = c.buffer_by_size;
     s.buffer_hours = c.buffer_hours;
+    s.buffer_gb = c.buffer_gb;
     s.min_free_gb = c.min_free_gb;
     s.output_idx = c.output_idx;
     s.fps = c.fps > 0 ? c.fps : 60;
     s.codec = c.codec;
     s.encoder = c.encoder;
-    s.bitrate_mbps = c.bitrate_mbps > 0 ? c.bitrate_mbps : 20;
     s.draw_mouse = c.draw_mouse;
-    if (c.advanced) {
-        s.preset = c.preset;
-        s.rate_control = c.rate_control;
-        s.cq = c.cq;
-        s.peak_factor = c.peak_factor;
-        s.spatial_aq = c.spatial_aq;
+    s.preset = c.preset;
+    s.rate_control = c.rate_control;
+    s.cq = c.cq;
+    s.peak_factor = c.peak_factor > 0 ? c.peak_factor : 2;
+    s.spatial_aq = c.spatial_aq;
+    f32 rate = c.bitrate_mbps;
+    const AppInfo *g = 0;
+    if (game && game[0]) {
+        for (i32 i = 0; i < c.app_count && !g; i++)
+            if (c.apps[i].category == CAT_GAME && !strcmp(c.apps[i].exe.s, game)) g = &c.apps[i];
     } else {
-        str_set(s.preset.s, "p4");
-        str_set(s.rate_control.s, "vbr");
-        s.cq = 23;
-        s.peak_factor = 2;
-        s.spatial_aq = false;
+        rate = c.desktop_bitrate_mbps;
     }
+    if (g) {
+        const RecOverride &o = g->rec;
+        if (o.bitrate_mbps > 0) rate = o.bitrate_mbps;
+        if (o.fps > 0) s.fps = o.fps;
+        if (o.preset.s[0]) s.preset = o.preset;
+        if (o.rate_control.s[0]) s.rate_control = o.rate_control;
+        if (o.cq > 0) s.cq = o.cq;
+    }
+    s.bitrate_mbps = rate > 0 ? rate : 20;
     return s;
 }
 
@@ -968,8 +982,16 @@ static void prune_pass()
     qsort(g_prune.files, g_prune.file_count, sizeof(PruneFile), file_cmp);
 
     i64 now = now_us();
+    // One limit: by length, or by size (then footage of any age stays while it fits).
     f64 hours = s.buffer_hours > 0 ? s.buffer_hours : 24;
-    i64 cutoff = now - (i64)(hours * 3600e6);
+    i64 cutoff = s.buffer_by_size ? INT64_MIN : now - (i64)(hours * 3600e6);
+    i64 over = 0;
+    if (s.buffer_by_size) {
+        i64 total = 0;
+        for (i32 i = 0; i < g_prune.file_count; i++) total += g_prune.files[i].size;
+        i64 limit = (i64)((f64)(s.buffer_gb > 0 ? s.buffer_gb : 100) * 1e9);
+        over = total > limit ? total - limit : 0;
+    }
     i64 keep_after = now - 60 * 1000000LL;
     i64 settled = now - 300 * 1000000LL; // unlisted files untouched this long aren't being written
     ULARGE_INTEGER free_bytes = {};
@@ -982,7 +1004,7 @@ static void prune_pass()
         PruneFile *f = &g_prune.files[i];
         if (f->end_us > keep_after) break;
         PruneDir *d = &g_prune.dirs[f->dir];
-        bool old = f->end_us < cutoff;
+        bool old = f->end_us < cutoff || freed < over;
         bool short_on_space = freed < need;
         if (!old && !short_on_space) break; // sorted by end: nothing later is due either
         if (!f->listed && (d->current || f->end_us > settled)) continue; // may be the segment being written
@@ -1056,13 +1078,16 @@ static void recorder_start()
     g_rec.detect_done = CreateEventW(0, TRUE, FALSE, 0);
     CHECK(g_rec.wake && g_rec.stop && g_rec.detect_done, "CreateEvent failed (%d)", (int)GetLastError());
     AcquireSRWLockExclusive(&g_rec.lock);
-    g_rec.settings = rec_settings_from(g_app.config, g_app.paths);
+    g_rec.settings = rec_settings_from(g_app.config, g_app.paths, g_app.audio.game.s);
     g_rec.paused = g_app.recorder.paused;
     ReleaseSRWLockExclusive(&g_rec.lock);
 
     char dir8[MAX_PATH * 3];
     wide_to_utf8(g_app.config.buffer_dir.s, dir8, sizeof dir8);
-    log_line("buffer %s: keeping %g h, at least %g GB free", dir8, g_app.config.buffer_hours, g_app.config.min_free_gb);
+    if (g_app.config.buffer_by_size)
+        log_line("buffer %s: keeping %g GB, at least %g GB free", dir8, g_app.config.buffer_gb, g_app.config.min_free_gb);
+    else
+        log_line("buffer %s: keeping %g h, at least %g GB free", dir8, g_app.config.buffer_hours, g_app.config.min_free_gb);
 
     CloseHandle(thread_start(detect_thread, 0)); // not waited for at exit: the job object ends its ffmpegs
     g_rec.recorder_thread = thread_start(recorder_thread, 0);
@@ -1090,12 +1115,13 @@ static void recorder_set_paused(bool paused)
     if (g_rec.wake) SetEvent(g_rec.wake);
 }
 
-// Call after changing Config: the workers pick up the new settings, and the capture restarts if any change needs
-// a new ffmpeg (monitor, fps, codec, encoder, bitrate and rate control, mouse, buffer folder, ffmpeg path).
+// Call after changing Config, and when the game being played changes: the workers pick up the new settings, and
+// the capture restarts if any change needs a new ffmpeg (monitor, fps, codec, encoder, bitrate and rate control,
+// mouse, buffer folder, ffmpeg path). A game with its own settings starts a new run when it's played.
 static void recorder_settings_changed()
 {
     AcquireSRWLockExclusive(&g_rec.lock);
-    g_rec.settings = rec_settings_from(g_app.config, g_app.paths);
+    g_rec.settings = rec_settings_from(g_app.config, g_app.paths, g_app.audio.game.s);
     g_rec.generation++;
     ReleaseSRWLockExclusive(&g_rec.lock);
     if (g_rec.wake) SetEvent(g_rec.wake);

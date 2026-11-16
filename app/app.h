@@ -19,14 +19,25 @@ enum SessionMode : u8 {
     SESSION_NEVER,  // not detected
 };
 
-// One known app, keyed by its lower-case exe name. Holds the per-app settings too (category, per-game bitrate,
-// session mode), so there's one table instead of several lists of exe names.
+// A game's own recording settings, used while it's the game being played. Every field has a "same as the
+// default" value (0 or empty), so a game only differs where it was set. The codec and the encoder stay the same for
+// every game: saves stream-copy across ffmpeg runs, which needs one codec.
+struct RecOverride {
+    f32   bitrate_mbps; // 0 = Config.bitrate_mbps
+    i32   fps;          // 0 = Config.fps
+    Str64 preset;       // "" = Config.preset
+    Str64 rate_control; // "" = Config.rate_control
+    i32   cq;           // 0 = Config.cq
+};
+
+// One known app, keyed by its lower-case exe name. Holds the per-app settings too (category, a game's recording
+// settings, session mode), so there's one table instead of several lists of exe names.
 struct AppInfo {
     Str64       exe;          // "overwatch.exe"
     Str64       name;         // shown name, "Overwatch"
     AppCategory category;
     SessionMode session_mode; // games only
-    f32         bitrate_mbps; // games only: bitrate while it's the game being played; 0 = the normal bitrate
+    RecOverride rec;          // games only
     i64         last_heard_us;
 };
 
@@ -38,7 +49,9 @@ struct Hotkey {
 struct Config {
     Path save_dir;     // <Videos>\Clips, holding 2026\Clips, 2026\Sessions, 2026\Data
     Path buffer_dir;   // the rolling buffer
+    bool buffer_by_size; // the buffer is limited by buffer_gb, else by buffer_hours; never both
     f32  buffer_hours; // keep this much footage (24)
+    f32  buffer_gb;    // or this much (100)
     f32  min_free_gb;  // delete the oldest footage early rather than go below this much free space (50)
     Path ffmpeg;       // empty = find it
 
@@ -47,9 +60,9 @@ struct Config {
     i32   fps;
     Str64 codec;      // "h264" | "hevc" | "av1"
     Str64 encoder;    // "auto" | "nvenc" | "amf" | "qsv" | "cpu"
-    f32   bitrate_mbps;
+    f32   bitrate_mbps;         // while a game is played (each game can have its own)
+    f32   desktop_bitrate_mbps; // while no game is
     bool  draw_mouse;
-    bool  advanced;   // the settings below only apply when this is on
     Str64 preset;     // "p1".."p7"
     Str64 rate_control; // "vbr" | "cbr" | "cq"
     i32   cq;
@@ -67,6 +80,10 @@ struct Config {
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
 
     bool start_with_windows;
+
+    // Look
+    i32 accent;     // index into ACCENTS (ui.cpp)
+    i32 thumb_size; // Library cards: 0 small, 1 medium, 2 large
 
     Hotkey hotkeys[16];
     i32    hotkey_count;
@@ -481,7 +498,7 @@ static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp t
 // options.cpp: every setting. Lists are paged and their order is frozen while Options is open, so a row never
 // moves under the mouse after a click (sorting a new app doesn't send it to another page).
 enum OptionsTab : u8 {
-    OPT_APPS, OPT_HOTKEYS, OPT_RECORDING, OPT_GAME_BITRATES, OPT_ADVANCED, OPT_SESSIONS, OPT_STORAGE, OPT_STARTUP,
+    OPT_APPS, OPT_RECORDING, OPT_HOTKEYS, OPT_GENERAL,
     OPT_TAB_COUNT,
 };
 
@@ -506,8 +523,7 @@ struct OptionsUi {
     i32  apps_page;
     i32  menu_app;        // the app right-clicked
     Path menu_path;       // its exe, empty if it isn't running and lifelog never saw it
-    // Pages of the other lists
-    i32  hotkeys_page, bitrates_page, sessions_page;
+    i32  hotkeys_page;
     // Hotkeys: the one whose keys are being pressed, + 1 (0 = none)
     i32  capture_slot;
     bool capture_added;   // it was just added, so cancelling removes it again

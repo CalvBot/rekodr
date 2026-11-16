@@ -1029,6 +1029,7 @@ static void audio_on_event(const Event &e)
     }
     case AE_GAME:
         str_set(a.game.s, e.text);
+        recorder_settings_changed(); // a game can have its own recording settings
         sessions_on_game(e.text);
         break;
     default: break;
