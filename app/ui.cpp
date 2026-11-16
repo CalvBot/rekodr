@@ -85,48 +85,24 @@ static f32 g_dpi_scale = 1;
 #define ICON_ADD      "\xEE\x9C\x90" // E710
 #define ICON_MUTE     "\xEE\x9D\x8F" // E74F
 #define ICON_VOLUME   "\xEE\x9D\xA7" // E767
-#define ICON_CUT      "\xEE\xA3\x86" // E8C6
 #define ICON_MORE     "\xEE\x9C\x92" // E712
 #define ICON_COPY     "\xEE\xA3\x88" // E8C8
-#define ICON_CLOCK    "\xEE\xA0\xA3" // E823
 #define ICON_GAME     "\xEE\x9F\xBC" // E7FC
 #define ICON_MIC      "\xEE\x9C\xA0" // E720
 #define ICON_CHECK    "\xEE\x9C\xBE" // E73E
 #define ICON_KEYBOARD "\xEE\x9D\xA5" // E765
-#define ICON_STORAGE  "\xEE\xB6\xA2" // EDA2 hard drive
 #define ICON_VIDEO    "\xEE\x9C\x94" // E714
-#define ICON_POWER    "\xEE\x9F\xA8" // E7E8
 #define ICON_WARNING  "\xEE\x9E\xBA" // E7BA
 #define ICON_NOW      "\xEE\xA2\x93" // E893 skip to end
-#define ICON_FULLSCREEN "\xEE\x9D\x80" // E740
 #define ICON_APPS     "\xEE\x9C\x9D" // E71D all apps
 #define ICON_SLIDERS  "\xEE\xA7\xA9" // E9E9 equalizer
-#define ICON_MONITOR   "\xEE\x9F\xB4" // E7F4
-#define ICON_ASPECT    "\xEE\x9E\x99" // E799
-#define ICON_STOPWATCH "\xEE\xA4\x96" // E916
-#define ICON_MOUSE     "\xEE\xA5\xA2" // E962
-#define ICON_SPEED     "\xEE\xB1\x8A" // EC4A
-#define ICON_HOME      "\xEE\xA0\x8F" // E80F
-#define ICON_CHIP      "\xEE\xA5\x90" // E950
-#define ICON_PAGE      "\xEE\x9F\x83" // E7C3
 #define ICON_STAR      "\xEE\x9C\xB4" // E734
-#define ICON_UP        "\xEE\xA2\x98" // E898
-#define ICON_COLOR     "\xEE\x9E\x90" // E790
-#define ICON_FILTER    "\xEE\x9C\x9C" // E71C
-#define ICON_LOCK      "\xEE\x9C\xAE" // E72E
-#define ICON_HISTORY   "\xEE\xA0\x9C" // E81C
-#define ICON_AUDIO     "\xEE\xA3\x96" // E8D6
-#define ICON_FILE      "\xEE\xA3\xA5" // E8E5
-#define ICON_BRUSH     "\xEE\x9D\xB1" // E771
-#define ICON_PICTURE   "\xEE\xA2\xB9" // E8B9
 #define ICON_UNDO      "\xEE\x9E\xA7" // E7A7
 #define ICON_SORT      "\xEE\xA3\x8B" // E8CB
 #define ICON_WINDOW    "\xEE\x9C\xB7" // E737
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_START     "\xEE\xA2\x92" // E892
 #define ICON_CALENDAR "\xEE\x9E\x87" // E787
-#define ICON_BUG      "\xEE\xAF\xA8" // EBE8
-#define ICON_LIST      "\xEE\xA3\xBD" // E8FD
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
 

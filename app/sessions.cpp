@@ -750,9 +750,9 @@ static void sessions_popup()
     // Save it? Pinned to the bottom right
     u32 id = s->id;
     ImGui::SetCursorScreenPos(ImVec2(a.x + size.x - 2 * pad - 2 * button_w - 8 * sc, ImGui::GetWindowPos().y + size.y - pad - fh));
-    bool later = kit_button(ICON_CLOCK "  Not now", KIT_GHOST, ImVec2(button_w, 0));
+    bool later = kit_button("Not now", KIT_GHOST, ImVec2(button_w, 0));
     ImGui::SameLine(0, 8 * sc);
-    bool save = kit_button(ICON_SAVE "  Save", KIT_PRIMARY, ImVec2(button_w, 0));
+    bool save = kit_button("Save", KIT_PRIMARY, ImVec2(button_w, 0));
     ImGui::End();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(2);
