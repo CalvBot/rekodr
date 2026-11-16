@@ -1004,13 +1004,15 @@ static void lib_pager(const char *id, i32 *page, i32 pages)
 }
 
 // A row in a popup menu: an icon and a label, a fixed width. Closes the menu when clicked.
-static bool lib_menu_item(const char *icon, const char *label, bool danger = false)
+static bool lib_menu_item(const char *icon, const char *label, bool danger = false, f32 w = 0)
 {
-    f32 w = kit_px(230), h = kit_px(34);
+    f32 h = kit_px(28);
+    if (w <= 0) w = kit_px(216);
     ImVec2 a = ImGui::GetCursorScreenPos();
     char id[64];
     snprintf(id, sizeof id, "##%s", label);
     bool clicked = ImGui::Selectable(id, false, 0, ImVec2(w, h));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
     if (clicked) dev_click("menu", label);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     u32 ink = danger ? 0xff8a92 : COL_TEXT;
@@ -1019,7 +1021,7 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
     dl->AddText(ImVec2(a.x + kit_px(10), floorf(a.y + (h - is.y) / 2)), col32(danger ? ink : COL_DIM), icon);
     ImGui::PopFont();
     ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(a.x + kit_px(40), floorf(a.y + (h - ts.y) / 2)), col32(ink), label);
+    dl->AddText(ImVec2(a.x + kit_px(36), floorf(a.y + (h - ts.y) / 2)), col32(ink), label);
     return clicked;
 }
 
@@ -1027,9 +1029,10 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
 // many it has on the right. The picked one is in the accent colour.
 static bool lib_game_item(const char *game, const char *label, i32 count, bool active)
 {
-    f32 w = kit_px(260), h = kit_px(36), is = kit_px(22);
+    f32 w = kit_px(228), h = kit_px(30), is = kit_px(20);
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::Selectable("##game", false, 0, ImVec2(w, h));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
     if (clicked) dev_click("menu", label);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 i0(a.x + kit_px(8), floorf(a.y + (h - is) / 2)), i1(i0.x + is, i0.y + is);
@@ -1053,7 +1056,7 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
     ImVec2 ts = ImGui::CalcTextSize(label), ns = ImGui::CalcTextSize(n);
     f32 ty = floorf(a.y + (h - ts.y) / 2), nx = a.x + w - kit_px(10) - ns.x;
     dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(nx - kit_px(10), a.y + h), true);
-    dl->AddText(ImVec2(i1.x + kit_px(12), ty), col32(active ? COL_ACCENT : COL_TEXT), label);
+    dl->AddText(ImVec2(i1.x + kit_px(10), ty), col32(active ? COL_ACCENT : COL_TEXT), label);
     dl->PopClipRect();
     dl->AddText(ImVec2(nx, ty), col32(COL_DIM), n);
     return clicked;
@@ -1776,7 +1779,7 @@ static void screen_library()
     if (game_open) {
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
-        kit_search("##find", game_find, sizeof game_find, "Find a game", kit_px(260));
+        kit_search("##find", game_find, sizeof game_find, "Find a game", kit_px(228));
         bool enter = ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false);
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, kit_px(2)));
@@ -1784,8 +1787,8 @@ static void screen_library()
         i32 shown = 0, pick = -1;
         for (i32 c = 0; c <= lib.game_count; c++)
             if (c == 0 ? !game_find[0] : lib_matches(lib.games[c - 1], game_find)) shown++;
-        f32 item_h = kit_px(36) + ImGui::GetStyle().ItemSpacing.y;
-        ImGui::BeginChild("##games", ImVec2(kit_px(260), (shown < 1 ? 1 : shown > 9 ? 9 : shown) * item_h), 0, ImGuiWindowFlags_NoBackground);
+        f32 item_h = kit_px(30) + kit_px(2);
+        ImGui::BeginChild("##games", ImVec2(kit_px(228), (shown < 1 ? 1 : shown > 10 ? 10 : shown) * item_h), 0, ImGuiWindowFlags_NoBackground);
         if (!shown) kit_dim("  No game matches");
         for (i32 c = 0; c <= lib.game_count; c++) {
             const char *name = c == 0 ? "All games" : lib.games[c - 1];
@@ -1824,7 +1827,7 @@ static void screen_library()
     bool open_calendar = false;
     if (range_open) {
         for (i32 i = 0; i < 5; i++) {
-            if (!lib_menu_item(lib.range == i ? ICON_CHECK : "", ranges[i])) continue;
+            if (!lib_menu_item(lib.range == i ? ICON_CHECK : "", ranges[i], false, kit_px(132))) continue;
             if (i == RANGE_CUSTOM) {
                 open_calendar = true;
             } else if (lib.range != i) {
@@ -1860,7 +1863,7 @@ static void screen_library()
     lib_popup_style_pop();
     if (sort_open) {
         for (i32 i = 0; i < 4; i++)
-            if (lib_menu_item(lib.sort == i ? ICON_CHECK : "", sorts[i]) && lib.sort != i) {
+            if (lib_menu_item(lib.sort == i ? ICON_CHECK : "", sorts[i], false, kit_px(132)) && lib.sort != i) {
                 lib.sort = i;
                 lib.scroll = lib.scroll_to = 0;
                 lib_refilter();
