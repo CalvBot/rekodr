@@ -1627,46 +1627,57 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
         return;
     }
 
-    // The game's icon, or a game tile
-    ImVec2 ip(a.x + pad, floorf(a.y + (h - is) / 2));
-    ID3D11ShaderResourceView *icon = game_db_icon(s->name);
-    if (!icon && s->exe[0]) icon = app_icon(s->exe);
-    if (icon) dl->AddImageRounded((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(8));
-    else {
-        dl->AddRectFilled(ip, ImVec2(ip.x + is, ip.y + is), col32(COL_ACCENT_SOFT), kit_px(8));
-        ImGui::PushFont(g_font_icon);
-        ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
-        dl->AddText(ImVec2(floorf(ip.x + (is - gs.x) / 2), floorf(ip.y + (is - gs.y) / 2)), col32(COL_ACCENT), ICON_GAME);
-        ImGui::PopFont();
+    // The game's cover down the left side, cut to fit; without one its icon, or a game tile
+    f32 tx = a.x + pad;
+    i32 cover_w = 0, cover_h = 0;
+    ID3D11ShaderResourceView *cover = game_db_cover(s->name, &cover_w, &cover_h);
+    if (cover && cover_w > 0 && cover_h > 0) {
+        f32 iw = floorf(h * 1.6f), want = iw / h, have = (f32)cover_w / cover_h, u = 0, v = 0;
+        if (have > want) u = (1 - want / have) / 2;
+        else v = (1 - have / want) / 2;
+        dl->AddImageRounded((ImTextureID)cover, a, ImVec2(a.x + iw, a.y + h), ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, kit_px(10),
+                            ImDrawFlags_RoundCornersLeft);
+        tx = a.x + iw + pad;
+    } else {
+        ImVec2 ip(a.x + pad, floorf(a.y + (h - is) / 2));
+        ID3D11ShaderResourceView *icon = game_db_icon(s->name);
+        if (!icon && s->exe[0]) icon = app_icon(s->exe);
+        if (icon) {
+            dl->AddImageRounded((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(8));
+        } else {
+            dl->AddRectFilled(ip, ImVec2(ip.x + is, ip.y + is), col32(COL_ACCENT_SOFT), kit_px(8));
+            ImGui::PushFont(g_font_icon);
+            ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
+            dl->AddText(ImVec2(floorf(ip.x + (is - gs.x) / 2), floorf(ip.y + (is - gs.y) / 2)), col32(COL_ACCENT), ICON_GAME);
+            ImGui::PopFont();
+        }
+        tx = ip.x + is + kit_px(12);
     }
 
-    // Buttons on the right: Save, and Dismiss (Undo once dismissed)
-    f32 bx = a.x + w - pad - fh, by = floorf(a.y + (h - fh) / 2);
-    bool dismissed = s->state == SES_DISMISSED, saved = s->state == SES_SAVED, saving = s->state == SES_SAVING;
-    ImGui::SetCursorScreenPos(ImVec2(bx, by));
-    if (kit_icon_button(dismissed ? ICON_BACK : ICON_CLOSE, "##dismiss", KIT_GHOST, !saving && !saved)) {
-        s->state = dismissed ? SES_NOT_SAVED : SES_DISMISSED;
+    // On the right: Save, and before it a look at it on the timeline. There is nothing to dismiss: an unsaved
+    // session just stays here until its footage has left the buffer.
+    if (s->state == SES_DISMISSED) { // from when there was
+        s->state = SES_NOT_SAVED;
         ss.dirty = true;
-        log_line("session %u (%s): %s", s->id, s->name, dismissed ? "back under unsaved sessions" : "dismissed");
     }
+    f32 bx = a.x + w - pad - fh, by = floorf(a.y + (h - fh) / 2);
+    bool saved = s->state == SES_SAVED, saving = s->state == SES_SAVING;
+    ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) session_save(s);
     bx -= fh + kit_px(6);
     ImGui::SetCursorScreenPos(ImVec2(bx, by));
-    if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved && !dismissed))
-        session_save(s);
-    bx -= fh + kit_px(6);
-    ImGui::SetCursorScreenPos(ImVec2(bx, by));
-    if (kit_icon_button(ICON_PLAY, "##review", KIT_GHOST, !saved)) { // look at it on the timeline first
+    if (kit_icon_button(ICON_PLAY, "##review", KIT_GHOST, !saved)) {
         timeline_review(s->start_us, s->end_us, s->name);
         ImGui::PopID();
         return;
     }
 
     // Name; length and times; what happens next
-    f32 tx = ip.x + is + kit_px(12), tw = bx - kit_px(10) - tx;
+    f32 tw = bx - kit_px(10) - tx;
     f32 lh = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize * 2 + kit_px(2);
     f32 ty = floorf(a.y + (h - lh) / 2);
     ImGui::PushFont(g_font_bold);
-    text_clipped(dl, ImVec2(tx, ty), tw, col32(dismissed ? COL_DIM : COL_TEXT), s->name);
+    text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), s->name);
     ImGui::PopFont();
     ty += g_font_bold->FontSize + kit_px(2);
     char len[32], from[32], to[32], line[128];
@@ -1678,8 +1689,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_DIM), line);
     ty += g_font_small->FontSize + kit_px(2);
     u32 col = COL_FAINT;
-    if (dismissed) str_set(line, "Dismissed");
-    else if (saved) str_set(line, "Saved");
+    if (saved) str_set(line, "Saved");
     else if (s->state == SES_ASKING) str_set(line, "Asking in the popup");
     else if (saving) {
         const SaveJobView *v = save_view(s->job);
@@ -1691,7 +1701,6 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
                           col32(COL_ACCENT), kit_px(1));
     } else {
         session_time_left(*s, line, sizeof line);
-        col = COL_WARN;
     }
     text_clipped(dl, ImVec2(tx, ty), tw, col32(col), line);
     ImGui::PopFont();

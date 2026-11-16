@@ -814,8 +814,8 @@ static void session_time_left(const Session &s, char *out, i32 cap)
     char left[32];
     if (us < 60000000) str_set(left, "under a minute");
     else fmt_length(us, left, sizeof left);
-    if (start_gone) snprintf(out, cap, "Start already gone; the rest goes in %s", left);
-    else snprintf(out, cap, "Start leaves the buffer in %s", left);
+    if (start_gone) snprintf(out, cap, "Part of it is in the buffer for %s more", left);
+    else snprintf(out, cap, "In the buffer for %s more", left);
 }
 
 // Takes the rows again when the list comes on screen or a session joins it. The Library draws them.

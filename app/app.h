@@ -503,7 +503,7 @@ enum SessionState : u8 {
     SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Library's unsaved sessions
     SES_SAVING,    // a save job is copying it
     SES_SAVED,
-    SES_DISMISSED, // taken off the unsaved sessions; kept until its footage is gone so it's never found again
+    SES_DISMISSED, // no longer given (there was a button to take one off the unsaved sessions); read as not saved
 };
 
 struct Session {
