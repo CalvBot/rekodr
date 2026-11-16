@@ -125,8 +125,37 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Crashes: a minidump and a log line. Windows restarts clipback (RegisterApplicationRestart) once it has run for
-// a minute.
+// Crashes: a log line, a minidump, the stack, and then clipback starts itself again. (Windows' own restart,
+// RegisterApplicationRestart, only acts on crashes that reach Windows Error Reporting; this handler ends the
+// process first.) The new copy is told the old one's pid in CLIPBACK_AFTER_CRASH and waits for it to be gone. A
+// copy that was itself a restart and crashes within a minute is not restarted, so a crash at startup can't loop.
+
+static u64  g_started_ms;
+static bool g_after_crash; // this copy was started by a crashing one
+
+static void restart_after_crash()
+{
+    static volatile LONG once;
+    if (InterlockedExchange(&once, 1) || g_app.quitting) return;
+    if (g_after_crash && GetTickCount64() - g_started_ms < 60000) {
+        log_line("not restarting: this copy was started after a crash and ran for under a minute");
+        return;
+    }
+    wchar_t exe[MAX_PATH], cmd[MAX_PATH + 16], pid[16];
+    GetModuleFileNameW(0, exe, MAX_PATH);
+    swprintf(pid, COUNT(pid), L"%lu", GetCurrentProcessId());
+    SetEnvironmentVariableW(L"CLIPBACK_AFTER_CRASH", pid);
+    swprintf(cmd, COUNT(cmd), L"\"%s\"%s", exe, g_app.ui.shown ? L" open" : L""); // the window comes back if it was open
+    STARTUPINFOW si = {sizeof si};
+    PROCESS_INFORMATION pi = {};
+    if (CreateProcessW(exe, cmd, 0, 0, FALSE, 0, 0, 0, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        log_line("restarting clipback (pid %lu)", pi.dwProcessId);
+    } else {
+        log_line("couldn't restart clipback (%lu)", GetLastError());
+    }
+}
 
 static LONG WINAPI on_crash(EXCEPTION_POINTERS *info)
 {
@@ -138,6 +167,7 @@ static LONG WINAPI on_crash(EXCEPTION_POINTERS *info)
         log_line("it was at:");
         diag_log_stack(GetCurrentThread(), *info->ContextRecord, false);
     }
+    restart_after_crash();
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
@@ -182,6 +212,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     char command[1024];
     command_from_args(command, sizeof command);
 
+    // Started by a copy that crashed: wait until it has gone, so its mutex, hotkeys and tray icon are free.
+    g_started_ms = GetTickCount64();
+    wchar_t after[16] = {};
+    if (GetEnvironmentVariableW(L"CLIPBACK_AFTER_CRASH", after, COUNT(after)) && after[0]) {
+        g_after_crash = true;
+        SetEnvironmentVariableW(L"CLIPBACK_AFTER_CRASH", 0);
+        HANDLE old = OpenProcess(SYNCHRONIZE, FALSE, wcstoul(after, 0, 10));
+        if (old) {
+            WaitForSingleObject(old, 10000);
+            CloseHandle(old);
+        }
+    }
+
     // One clipback per user (per CLIPBACK_HOME in development, so a test copy can run next to the real one)
     wchar_t mutex_name[MAX_PATH + 32] = L"Local\\clipback.native";
     wchar_t home[MAX_PATH] = {};
@@ -216,7 +259,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         __debugbreak();
     });
     _set_purecall_handler([] { log_line("pure virtual call"); __debugbreak(); });
-    RegisterApplicationRestart(L"", RESTART_NO_REBOOT);
     if (!config_load(&g_app.config, g_app.paths)) { // first run: bring over the Rust version's settings (options.cpp)
         options_first_run(&g_app.config, g_app.paths);
         config_save(g_app.config, g_app.paths);
@@ -225,8 +267,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     {
         wchar_t exe[MAX_PATH];
         GetModuleFileNameW(0, exe, MAX_PATH);
-        log_line("clipback (native) starting: %ls, built %s %s, pid %lu%s", exe, __DATE__, __TIME__,
-                 GetCurrentProcessId(), g_dev ? ", detailed log on" : "");
+        log_line("clipback (native) starting: %ls, built %s %s, pid %lu%s%s", exe, __DATE__, __TIME__,
+                 GetCurrentProcessId(), g_dev ? ", detailed log on" : "", g_after_crash ? ", restarted after a crash" : "");
     }
     diag_watchdog_start();
 

@@ -165,7 +165,7 @@ starts clipback. Hotkeys use `RegisterHotKey`.
 **Crashes:**
 - Asserts state what was expected and what was found, and go to the log.
 - A crash writes a minidump and the log line.
-- The app registers with Windows to restart after a crash.
+- After a crash the app starts itself again (once, if the new copy also crashes within a minute).
 - Video keeps recording in ffmpeg. Audio capture and hotkeys come back with the restart.
 
 ## Screens

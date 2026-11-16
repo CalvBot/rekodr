@@ -59,7 +59,7 @@ static void log_line(const char *fmt, ...)
 }
 
 // CHECK states what was expected and what was found. A failed CHECK logs where and why, then crashes so the
-// crash handler writes a minidump (and Windows restarts clipback, see main.cpp).
+// crash handler writes a minidump and restarts clipback (main.cpp).
 #define CHECK(cond, ...)                                                                                          \
     do {                                                                                                          \
         if (!(cond)) {                                                                                            \
