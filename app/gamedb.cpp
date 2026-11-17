@@ -58,10 +58,11 @@ struct GameDbShared {
     char       service[128]; // the art service's host; "" = don't ask it
     struct { char id[24], hash[40], name[128]; u32 steam; GameArt kind; } want[64]; // art asked for, not fetched yet
     i32        want_count;
-    // Modpacks asked about, by a hash of the clues: being asked (body set) or answered (name; "" = no pack it
-    // could name). The oldest answer makes room for a new question.
-    struct { u64 key; char *body; char name[128]; bool answered; } packs[32];
-    i32        pack_next;
+    // What the art service was asked to name (a modpack, or an exe the list doesn't know), by a key for the
+    // question: being asked (body set) or answered (name; "" = nothing it could name; sure = by a store id or the
+    // exe table, not just a name). The oldest answer makes room for a new question.
+    struct { u64 key; char *body; char name[128]; u8 kind; bool answered, sure; } asks[128];
+    i32        ask_next;
 };
 static GameDbShared g_gamedb;
 
@@ -665,6 +666,58 @@ static i32 gamedb_search(const char *query, GameInfo *out, i32 max)
 static void sessions_game_renamed(const char *exe); // sessions.cpp
 static bool mc_clues(const char *cmdline, char *out, i32 cap); // mcpack.cpp
 
+enum AskKind : u8 { ASK_PACK = 1, ASK_EXE = 2 };
+
+// What the art service said to a question: 1 = it has answered (name "" if it named nothing), 0 = it is being
+// asked, -1 = it hasn't been asked (or its answer made room for others since).
+static i32 gamedb_asked(u64 key, char *name, i32 cap, bool *sure)
+{
+    name[0] = 0;
+    *sure = false;
+    i32 state = -1;
+    AcquireSRWLockShared(&g_gamedb.lock);
+    for (i32 i = 0; i < COUNT(g_gamedb.asks) && state < 0; i++) {
+        auto &q = g_gamedb.asks[i];
+        if (q.key != key || (!q.body && !q.answered)) continue;
+        state = q.answered ? 1 : 0;
+        if (q.answered) {
+            snprintf(name, cap, "%s", q.name);
+            *sure = q.sure;
+        }
+    }
+    ReleaseSRWLockShared(&g_gamedb.lock);
+    return state;
+}
+
+// Asks the art service a question (POST /v1/resolve with body), unless it is being asked already. With no body
+// there is nothing to ask, and that is kept as its answer so the clues aren't looked for again.
+static void gamedb_ask(u64 key, u8 kind, const char *body)
+{
+    AcquireSRWLockExclusive(&g_gamedb.lock);
+    i32 at = -1;
+    for (i32 i = 0; i < COUNT(g_gamedb.asks) && at < 0; i++)
+        if (g_gamedb.asks[i].key == key && (g_gamedb.asks[i].body || g_gamedb.asks[i].answered)) at = i;
+    bool ask = false;
+    if (at < 0) {
+        for (i32 tries = 0; tries < COUNT(g_gamedb.asks) && at < 0; tries++) { // one being asked keeps its place
+            i32 i = g_gamedb.ask_next++ % COUNT(g_gamedb.asks);
+            if (!g_gamedb.asks[i].body) at = i;
+        }
+        if (at >= 0) {
+            auto &q = g_gamedb.asks[at];
+            q.key = key;
+            q.kind = kind;
+            q.name[0] = 0;
+            q.sure = false;
+            q.body = body ? _strdup(body) : 0;
+            q.answered = !q.body;
+            ask = q.body != 0;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_gamedb.lock);
+    if (ask) SetEvent(g_gamedb.wake);
+}
+
 // The modpack a running Minecraft is, from its command line: true with its name once the art service has named
 // it. Until then it is asked (GAMEDB_RESOLVED says when it has answered) and this is false, as it is for a
 // Minecraft with no pack the service could name. Main thread.
@@ -675,30 +728,35 @@ static bool gamedb_pack_name(const char *cmdline, char *name, i32 cap)
     static char body[12288];
     if (!mc_clues(cmdline, body, sizeof body)) return false;
     u64 key = fnv64(body, strlen(body));
-    AcquireSRWLockExclusive(&g_gamedb.lock);
-    i32 at = -1;
-    for (i32 i = 0; i < COUNT(g_gamedb.packs) && at < 0; i++)
-        if (g_gamedb.packs[i].key == key) at = i;
-    bool ask = false;
-    if (at >= 0) {
-        if (g_gamedb.packs[at].answered) snprintf(name, cap, "%s", g_gamedb.packs[at].name);
-    } else {
-        for (i32 tries = 0; tries < COUNT(g_gamedb.packs) && at < 0; tries++) { // one being asked keeps its place
-            i32 i = g_gamedb.pack_next++ % COUNT(g_gamedb.packs);
-            if (!g_gamedb.packs[i].body) at = i;
-        }
-        if (at >= 0) {
-            auto &p = g_gamedb.packs[at];
-            p.key = key;
-            p.name[0] = 0;
-            p.answered = false;
-            p.body = _strdup(body);
-            ask = true;
-        }
+    bool sure;
+    i32 state = gamedb_asked(key, name, cap, &sure);
+    if (state < 0) gamedb_ask(key, ASK_PACK, body);
+    return state > 0 && name[0];
+}
+
+static bool exe_clues(const char *exe, const char *path, const char *name, bool game, char *out, i32 cap); // storeids.cpp
+
+// The game an exe the list doesn't know is, from the art service: true with its name once it has answered.
+// *sure is set when it went by a store id or the exe table rather than a name. Only a game is asked about (one
+// sorted as a Game, or installed by Steam or GOG), and only once for where it is installed. Main thread.
+static bool gamedb_exe_name(const AppInfo &a, bool game, char *name, i32 cap, bool *sure)
+{
+    name[0] = 0;
+    *sure = false;
+    if (!g_gamedb.online || !g_gamedb.service[0] || !a.path[0]) return false;
+    char where[MAX_PATH + 8];
+    i32 n = snprintf(where, sizeof where, "exe:%d:", game);
+    for (const char *p = a.path; *p && n < (i32)sizeof where - 1; p++) where[n++] = (char)tolower((u8)*p);
+    where[n] = 0;
+    u64 key = fnv64(where, n);
+    i32 state = gamedb_asked(key, name, cap, sure);
+    if (state < 0) {
+        static char body[2048];
+        // The name it was given by hand, else its exe's File description (a Unity game's is the game's name)
+        const char *shown = a.name.s[0] && _stricmp(a.name.s, a.exe.s) ? a.name.s : a.desc.s;
+        gamedb_ask(key, ASK_EXE, exe_clues(a.exe.s, a.path, shown, game, body, sizeof body) ? body : 0);
     }
-    ReleaseSRWLockExclusive(&g_gamedb.lock);
-    if (ask) SetEvent(g_gamedb.wake);
-    return name[0] != 0;
+    return state > 0 && name[0];
 }
 
 // Names an app from the database: its description becomes the game's name, and one that hasn't been sorted yet
@@ -729,6 +787,17 @@ static bool gamedb_name_app(AppInfo *a)
             a->desc.s[0] = 0;
             sessions_game_renamed(a->exe.s);
             return true;
+        }
+    }
+    // One the list doesn't have at all: the art service's name for it. What it found by a store id or the exe table
+    // is a game; what it found only by a name is only used for one already sorted as a Game.
+    if (!known && !shared) {
+        bool game = app_category(g_app.config, *a) == CAT_GAME, sure;
+        char named[128];
+        if (gamedb_exe_name(*a, game, named, sizeof named, &sure) && (sure || game)) {
+            g = {};
+            str_set(g.name, named);
+            known = true;
         }
     }
     if (!known) return false;
@@ -1060,20 +1129,16 @@ static void gamedb_fetch_art()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Modpacks: the clues mcpack.cpp gathered go to the service's POST /v1/resolve, which answers
+// Naming by the art service: the clues mcpack.cpp gathers for a modpack, and storeids.cpp for an exe the list
+// doesn't know, go to the service's POST /v1/resolve, which answers
 //   {"game":{"id","name","year"}|null, "pack":{"platform","project","name","version"}?, "matched_by",
 //    "confidence", "art":{"grid","hero","logo","icon"}}
 
-// From a resolve answer, the pack's name and where its art is in the text. False unless it names a pack its
-// launcher installed: plain Minecraft stays Minecraft.
-static bool pack_from_answer(const char *json, i64 len, char *name, i32 cap, const char **art, i64 *art_len)
+// Where the art is in a resolve answer's text.
+static void answer_art(const char *json, i64 len, const char **art, i64 *art_len)
 {
-    name[0] = 0;
     *art = 0;
     *art_len = 0;
-    char how[32];
-    if (!j_get(json, len, "matched_by", how, sizeof how) || strcmp(how, "launcher_record")) return false;
-    if (!j_get(json, len, "pack.name", name, cap)) return false;
     Json j = {json, json + len};
     if (j_find(&j, "art") && j.p < j.end && *j.p == '{') {
         const char *start = j.p;
@@ -1081,20 +1146,47 @@ static bool pack_from_answer(const char *json, i64 len, char *name, i32 cap, con
         *art = start;
         *art_len = j.p - start;
     }
-    return true;
 }
 
-// Asks about the modpacks gamedb_pack_name wants named. What the service said is kept for a month, and the pack's
+// From a resolve answer, the pack's name and where its art is in the text. False unless it names a pack its
+// launcher installed: plain Minecraft stays Minecraft.
+static bool pack_from_answer(const char *json, i64 len, char *name, i32 cap, const char **art, i64 *art_len)
+{
+    name[0] = 0;
+    answer_art(json, len, art, art_len);
+    char how[32];
+    if (!j_get(json, len, "matched_by", how, sizeof how) || strcmp(how, "launcher_record")) return false;
+    return j_get(json, len, "pack.name", name, cap);
+}
+
+// From a resolve answer about an exe, the game's name and where its art is. Sure if it went by a store id or the
+// exe table; one found by a name is only taken when the name was the game's exactly. False if it named none.
+static bool exe_from_answer(const char *json, i64 len, char *name, i32 cap, bool *sure, const char **art, i64 *art_len)
+{
+    name[0] = 0;
+    *sure = false;
+    answer_art(json, len, art, art_len);
+    char how[32], conf[16];
+    if (!j_get(json, len, "matched_by", how, sizeof how) || !j_get(json, len, "game.name", name, cap)) return false;
+    *sure = !strcmp(how, "store_id") || !strcmp(how, "exe_table");
+    if (*sure) return true;
+    if (!strcmp(how, "name_search") && j_get(json, len, "confidence", conf, sizeof conf) && atof(conf) >= 0.9) return true;
+    name[0] = 0;
+    return false;
+}
+
+// Asks what gamedb_pack_name and gamedb_exe_name want named. What the service said is kept for a month, and the
 // art goes where art_service_find looks for it, so the icon and the cover take no more questions.
-static void gamedb_fetch_packs()
+static void gamedb_fetch_asks()
 {
     for (;;) {
         AcquireSRWLockExclusive(&g_gamedb.lock);
         i32 at = -1;
-        for (i32 i = 0; i < COUNT(g_gamedb.packs) && at < 0; i++)
-            if (g_gamedb.packs[i].body && !g_gamedb.packs[i].answered) at = i;
-        u64 key = at >= 0 ? g_gamedb.packs[at].key : 0;
-        const char *body = at >= 0 ? g_gamedb.packs[at].body : 0; // its slot isn't reused while it has a body
+        for (i32 i = 0; i < COUNT(g_gamedb.asks) && at < 0; i++)
+            if (g_gamedb.asks[i].body && !g_gamedb.asks[i].answered) at = i;
+        u64 key = at >= 0 ? g_gamedb.asks[at].key : 0;
+        u8 kind = at >= 0 ? g_gamedb.asks[at].kind : 0;
+        const char *body = at >= 0 ? g_gamedb.asks[at].body : 0; // its slot isn't reused while it has a body
         ReleaseSRWLockExclusive(&g_gamedb.lock);
         if (at < 0) return;
 
@@ -1127,7 +1219,13 @@ static void gamedb_fetch_packs()
         char name[128] = "";
         const char *art = 0;
         i64 art_len = 0;
-        if (text && pack_from_answer(text, len, name, sizeof name, &art, &art_len) && art) {
+        bool sure = false, named = false;
+        if (text) {
+            named = kind == ASK_PACK ? pack_from_answer(text, len, name, sizeof name, &art, &art_len)
+                                     : exe_from_answer(text, len, name, sizeof name, &sure, &art, &art_len);
+            if (kind == ASK_PACK) sure = named;
+        }
+        if (named && art) {
             GameInfo g;
             if (gamedb_for_art(name, &g) && g.id[0] == 'n') { // one the games list has gets its art from there
                 wchar_t fn[64];
@@ -1142,12 +1240,14 @@ static void gamedb_fetch_packs()
                 }
             }
         }
-        DEV_LOG("gamedb: modpack %016llx is %s", (unsigned long long)key, name[0] ? name : "none the service could name");
+        DEV_LOG("gamedb: %s %016llx is %s%s", kind == ASK_PACK ? "modpack" : "exe", (unsigned long long)key,
+                name[0] ? name : "none the service could name", name[0] && !sure ? " (by its name)" : "");
         free(text);
 
         AcquireSRWLockExclusive(&g_gamedb.lock);
-        auto &p = g_gamedb.packs[at];
+        auto &p = g_gamedb.asks[at];
         str_set(p.name, name);
+        p.sure = sure;
         p.answered = true;
         free(p.body);
         p.body = 0;
@@ -1197,7 +1297,7 @@ static DWORD WINAPI gamedb_thread(void *)
         }
     }
     while (!g_gamedb.stop) {
-        gamedb_fetch_packs();
+        gamedb_fetch_asks();
         gamedb_fetch_art();
         WaitForSingleObject(g_gamedb.wake, INFINITE);
     }

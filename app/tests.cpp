@@ -459,6 +459,103 @@ static void test_mcpack()
     RemoveDirectoryW(root.s);
 }
 
+static void make_dirs(const char *utf8)
+{
+    Path p = {};
+    utf8_to_wide(utf8, p.s, MAX_PATH);
+    for (wchar_t *c = p.s + 3; *c; c++)
+        if (*c == L'/') {
+            *c = 0;
+            CreateDirectoryW(p.s, 0);
+            *c = L'/';
+        }
+    CreateDirectoryW(p.s, 0);
+}
+
+static void put_text(const char *utf8, const char *text)
+{
+    Path p = {};
+    utf8_to_wide(utf8, p.s, MAX_PATH);
+    put_file(p, text);
+}
+
+// Games the list doesn't know: their folder, the store id their launcher left, and what goes to the art service
+static void test_storeids()
+{
+    char f[MAX_PATH];
+    bool steam;
+    T(game_folder("D:/Lib/steamapps/common/Satisfactory/FactoryGame/Binaries/Win64/FactoryGame-Win64-Shipping.exe", f, sizeof f, &steam) &&
+      !strcmp(f, "Satisfactory") && steam);
+    T(game_folder("C:/Games/Celeste/Celeste.exe", f, sizeof f, &steam) && !strcmp(f, "Celeste") && !steam);
+    T(game_folder("C:/Games/Foo Bar/bin/x64/foo.exe", f, sizeof f, &steam) && !strcmp(f, "Foo Bar"));
+    T(!game_folder("C:/foo.exe", f, sizeof f, &steam) && !game_folder("C:/bin/foo.exe", f, sizeof f, &steam));
+    T(!game_folder("D:/Lib/steamapps/common/x.exe", f, sizeof f, &steam));
+
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    char root[MAX_PATH * 2], p[MAX_PATH * 3], body[2048];
+    wide_to_utf8(tmp, root, sizeof root);
+    for (char *c = root; *c; c++)
+        if (*c == '\\') *c = '/';
+    snprintf(root + strlen(root), sizeof root - strlen(root), "clipback-stores-%lu", GetCurrentProcessId());
+    snprintf(p, sizeof p, "%s/Lib/steamapps/common/Hollow Knight", root);
+    make_dirs(p);
+    snprintf(p, sizeof p, "%s/Lib/steamapps/appmanifest_367520.acf", root);
+    put_text(p, "\"AppState\"\n{\n\t\"appid\"\t\t\"367520\"\n\t\"name\"\t\t\"Hollow Knight\"\n\t\"installdir\"\t\t\"Hollow Knight\"\n}\n");
+    snprintf(p, sizeof p, "%s/Lib/steamapps/appmanifest_10.acf", root);
+    put_text(p, "\"AppState\"\n{\n\t\"installdir\"\t\t\"Hollow\"\n}\n");
+    snprintf(p, sizeof p, "%s/Lib/steamapps/common/Hollow Knight/hollow_knight.exe", root);
+    T(steam_app_for(p, "Hollow Knight") == 367520 && steam_app_for(p, "hollow knight") == 367520 && !steam_app_for(p, "Silksong"));
+    T(exe_clues("hollow_knight.exe", p, "Hollow Knight", false, body, sizeof body) &&
+      !strcmp(body, "{\"exe\":\"hollow_knight.exe\",\"folder\":\"Hollow Knight\",\"name\":\"Hollow Knight\",\"steam\":367520}"));
+    T(!strstr(body, "clipback-stores"));
+
+    snprintf(p, sizeof p, "%s/GOG/Witcher 3/bin/x64", root);
+    make_dirs(p);
+    snprintf(p, sizeof p, "%s/GOG/Witcher 3/goggame-1207664643.info", root);
+    put_text(p, "{}");
+    snprintf(p, sizeof p, "%s/GOG/Witcher 3/bin/x64/witcher3.exe", root);
+    T(gog_game_for(p) == 1207664643ull);
+    T(exe_clues("witcher3.exe", p, "", false, body, sizeof body) &&
+      !strcmp(body, "{\"exe\":\"witcher3.exe\",\"folder\":\"Witcher 3\",\"gog\":\"1207664643\"}"));
+
+    // Not a game and not from a store: not asked about. Sorted as a Game: asked about with what there is.
+    snprintf(p, sizeof p, "%s/Tools/Thing/thing.exe", root);
+    T(!exe_clues("thing.exe", p, "Thing", false, body, sizeof body));
+    T(exe_clues("thing.exe", p, "Thing", true, body, sizeof body) && !strcmp(body, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"name\":\"Thing\"}"));
+
+    // The answer: a store id or the exe table is sure; a name only when it was the game's exactly
+    char name[128];
+    bool sure;
+    const char *art;
+    i64 art_len;
+    static const char by_id[] = "{\"game\":{\"id\":\"s1\",\"name\":\"Hollow Knight\",\"year\":2017},\"matched_by\":\"store_id\",\"confidence\":0.99,\"art\":{\"grid\":null}}";
+    T(exe_from_answer(by_id, sizeof by_id - 1, name, sizeof name, &sure, &art, &art_len) && sure && !strcmp(name, "Hollow Knight") &&
+      art_len == 13);
+    static const char by_name[] = "{\"game\":{\"id\":\"s2\",\"name\":\"Thing\"},\"matched_by\":\"name_search\",\"confidence\":0.9,\"art\":{}}";
+    T(exe_from_answer(by_name, sizeof by_name - 1, name, sizeof name, &sure, &art, &art_len) && !sure && !strcmp(name, "Thing"));
+    static const char close_by[] = "{\"game\":{\"id\":\"s3\",\"name\":\"Thing 2\"},\"matched_by\":\"name_search\",\"confidence\":0.6,\"art\":{}}";
+    T(!exe_from_answer(close_by, sizeof close_by - 1, name, sizeof name, &sure, &art, &art_len) && !name[0]);
+    static const char none[] = "{\"game\":null,\"matched_by\":\"none\",\"confidence\":0,\"art\":{}}";
+    T(!exe_from_answer(none, sizeof none - 1, name, sizeof name, &sure, &art, &art_len));
+
+    const char *files[] = {"Lib/steamapps/appmanifest_367520.acf", "Lib/steamapps/appmanifest_10.acf", "GOG/Witcher 3/goggame-1207664643.info"};
+    for (auto file : files) {
+        snprintf(p, sizeof p, "%s/%s", root, file);
+        Path w = {};
+        utf8_to_wide(p, w.s, MAX_PATH);
+        DeleteFileW(w.s);
+    }
+    const char *dirs[] = {"Lib/steamapps/common/Hollow Knight", "Lib/steamapps/common", "Lib/steamapps", "Lib", "GOG/Witcher 3/bin/x64",
+                          "GOG/Witcher 3/bin", "GOG/Witcher 3", "GOG", ""};
+    for (auto d : dirs) {
+        snprintf(p, sizeof p, "%s/%s", root, d);
+        Path w = {};
+        utf8_to_wide(p, w.s, MAX_PATH);
+        RemoveDirectoryW(w.s);
+    }
+}
+
 int main()
 {
     InitializeSRWLock(&g_log_lock);
@@ -471,6 +568,7 @@ int main()
     test_edit_volumes();
     test_gamedb();
     test_mcpack();
+    test_storeids();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

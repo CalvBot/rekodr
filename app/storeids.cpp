@@ -1,0 +1,125 @@
+// What a store's install says about a game, for exes the games list doesn't know. The art service is sent only:
+// the exe's file name, the name of the game's own folder (never a path), the name clipback has for it, and the
+// store id its launcher left by it:
+//   Steam   <library>\steamapps\appmanifest_<appid>.acf, whose "installdir" is the folder under steamapps\common
+//   GOG     goggame-<id>.info in the game's folder
+// Only a game is asked about: one sorted as a Game, or one a store installed. No launcher's account files are
+// ever opened.
+
+// The folder a game is installed in, from its exe's path: the one under steamapps\common if it is there, else the
+// exe's own, leaving out the folders engines put exes in ("Binaries\Win64"). False if there is no folder.
+static bool game_folder(const char *path, char *out, i32 cap, bool *steam)
+{
+    out[0] = 0;
+    *steam = false;
+    char low[MAX_PATH * 3];
+    i32 n = 0;
+    for (; path[n] && n < (i32)sizeof low - 1; n++) low[n] = (char)tolower((u8)(path[n] == '/' ? '\\' : path[n]));
+    low[n] = 0;
+    const char *common = strstr(low, "\\steamapps\\common\\");
+    if (common) {
+        const char *s = path + (common - low) + 18, *e = s;
+        while (*e && *e != '\\' && *e != '/') e++;
+        if (!*e || e == s) return false; // the exe is right in common: no game's folder
+        snprintf(out, cap, "%.*s", (i32)(e - s), s);
+        *steam = true;
+        return true;
+    }
+    static const char *const generic[] = {"bin", "binaries", "win64", "win32", "x64", "x86", "x86_64", "game",
+                                          "retail", "release", "shipping", "client", "windows", "windowsnoeditor"};
+    i32 end = n;
+    while (end > 0 && low[end - 1] != '\\') end--; // past the exe's own name
+    for (i32 depth = 0; depth < 4 && end > 0; depth++) {
+        i32 e = end - 1, s = e; // the folder is low[s..e)
+        while (s > 0 && low[s - 1] != '\\') s--;
+        if (s == 0 || e <= s || low[e - 1] == ':') return false; // up to the drive
+        bool skip = false;
+        for (auto g : generic) skip |= (i32)strlen(g) == e - s && !strncmp(low + s, g, e - s);
+        if (!skip) {
+            snprintf(out, cap, "%.*s", e - s, path + s);
+            return true;
+        }
+        end = s;
+    }
+    return false;
+}
+
+// The Steam app a folder under steamapps\common belongs to, from its library's appmanifests. 0 if none says so.
+static u32 steam_app_for(const char *path, const char *folder)
+{
+    char low[MAX_PATH * 3];
+    i32 n = 0;
+    for (; path[n] && n < (i32)sizeof low - 1; n++) low[n] = (char)tolower((u8)(path[n] == '/' ? '\\' : path[n]));
+    low[n] = 0;
+    const char *at = strstr(low, "\\steamapps\\common\\");
+    if (!at) return 0;
+    char lib[MAX_PATH * 3];
+    snprintf(lib, sizeof lib, "%.*s\\steamapps", (i32)(at - low), path);
+    Path dir = {};
+    utf8_to_wide(lib, dir.s, MAX_PATH);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(path_join(dir, L"appmanifest_*.acf").s, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    u32 found = 0;
+    do {
+        u32 id = (u32)wcstoul(fd.cFileName + 12, 0, 10);
+        if (!id || fd.nFileSizeLow > 256 * 1024) continue;
+        i64 len = 0;
+        char *t = read_file(path_join(dir, fd.cFileName).s, &len);
+        if (!t) continue;
+        // "installdir"		"Hollow Knight"
+        const char *k = len > 0 ? strstr(t, "\"installdir\"") : 0;
+        if (k) {
+            const char *q = strchr(k + 12, '"'), *e = q ? strchr(q + 1, '"') : 0;
+            if (e && (size_t)(e - q - 1) == strlen(folder) && !_strnicmp(q + 1, folder, e - q - 1)) found = id;
+        }
+        free(t);
+    } while (!found && FindNextFileW(h, &fd));
+    FindClose(h);
+    return found;
+}
+
+// The GOG game installed in the folder an exe is in or above (up to three), from its goggame-<id>.info. 0 if none.
+static u64 gog_game_for(const char *path)
+{
+    Path dir = {};
+    utf8_to_wide(path, dir.s, MAX_PATH);
+    for (i32 depth = 0; depth < 4; depth++) {
+        wchar_t *cut = wcsrchr(dir.s, L'\\'), *cut2 = wcsrchr(dir.s, L'/');
+        if (cut2 > cut) cut = cut2;
+        if (!cut || cut - dir.s < 3) return 0;
+        *cut = 0;
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(path_join(dir, L"goggame-*.info").s, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            u64 id = wcstoull(fd.cFileName + 8, 0, 10);
+            FindClose(h);
+            if (id) return id;
+        }
+    }
+    return 0;
+}
+
+// The art service's clues for an exe: {"exe","folder","name","steam","gog"}. False if it isn't to be asked about:
+// not a game (game false, and no store installed it), or no folder to go by.
+static bool exe_clues(const char *exe, const char *path, const char *name, bool game, char *out, i32 cap)
+{
+    char folder[MAX_PATH];
+    bool in_steam;
+    if (!game_folder(path, folder, sizeof folder, &in_steam)) return false;
+    u32 steam = in_steam ? steam_app_for(path, folder) : 0;
+    u64 gog = steam ? 0 : gog_game_for(path);
+    if (!game && !in_steam && !gog) return false;
+    i32 n = snprintf(out, cap, "{\"exe\":");
+    mc_put(out, cap, &n, exe);
+    n += snprintf(out + n, cap - n, ",\"folder\":");
+    mc_put(out, cap, &n, folder);
+    if (name && name[0]) {
+        n += snprintf(out + n, cap - n, ",\"name\":");
+        mc_put(out, cap, &n, name);
+    }
+    if (steam) n += snprintf(out + n, cap - n, ",\"steam\":%u", steam);
+    if (gog) n += snprintf(out + n, cap - n, ",\"gog\":\"%llu\"", (unsigned long long)gog);
+    n += snprintf(out + n, cap - n, "}");
+    return n > 0 && n < cap - 1;
+}

@@ -69,6 +69,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "proc.cpp"
 #include "gamedb.cpp"
 #include "mcpack.cpp"
+#include "storeids.cpp"
 #include "recorder.cpp"
 #include "audio.cpp"
 #include "pipe.cpp"
