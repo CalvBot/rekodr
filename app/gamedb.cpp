@@ -14,6 +14,8 @@
 //   art\<id>-icon.png, art\<id>-art.jpg       fetched the first time something shows them; an empty file means
 //                                             there is none, and it is asked for again after a week
 //   art\<id>-found.json                       what the art service has for the game; empty = it has nothing
+//   resolved\<hash>.json                      what the art service said a running Minecraft's modpack is, by a
+//                                             hash of the clues sent (mcpack.cpp)
 // A game the list doesn't have goes by "n" and a hash of its name's letters as its id.
 // One worker thread does the fetching and the loading. The index is never changed once built, only replaced, and
 // readers copy what they find out of it under the lock, so any thread may ask.
@@ -44,7 +46,7 @@ struct GameIndex {
     i32      name_count;
 };
 
-enum { GAMEDB_LOADED = 1, GAMEDB_ART = 2 };
+enum { GAMEDB_LOADED = 1, GAMEDB_ART = 2, GAMEDB_RESOLVED = 3 };
 enum GameArt { ART_ICON, ART_COVER };
 
 struct GameDbShared {
@@ -56,6 +58,10 @@ struct GameDbShared {
     char       service[128]; // the art service's host; "" = don't ask it
     struct { char id[24], hash[40], name[128]; u32 steam; GameArt kind; } want[64]; // art asked for, not fetched yet
     i32        want_count;
+    // Modpacks asked about, by a hash of the clues: being asked (body set) or answered (name; "" = no pack it
+    // could name). The oldest answer makes room for a new question.
+    struct { u64 key; char *body; char name[128]; bool answered; } packs[32];
+    i32        pack_next;
 };
 static GameDbShared g_gamedb;
 
@@ -73,6 +79,7 @@ static Path gamedb_dir()
 {
     Path d = path_join(g_app.paths.local_dir, L"gamedb");
     SHCreateDirectoryExW(0, path_join(d, L"art").s, 0);
+    SHCreateDirectoryExW(0, path_join(d, L"resolved").s, 0);
     return d;
 }
 
@@ -84,12 +91,13 @@ static Path gamedb_art_file(const char *id, GameArt kind)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Fetching: one GET over https. The answer goes to a file (through a .part, so a half-fetched file is never read)
-// or, with no file, into memory: *body, malloc'd and 0-terminated, which the caller frees. `headers` are sent with
-// it ("" = none). Returns the status, 0 if there was no answer; the body is only kept for a 200.
+// Fetching: one GET over https, or a POST of `post` when it is given. The answer goes to a file (through a .part,
+// so a half-fetched file is never read) or, with no file, into memory: *body, malloc'd and 0-terminated, which the
+// caller frees. `headers` are sent with it ("" = none). Returns the status, 0 if there was no answer; the body is
+// only kept for a 200.
 
 static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *headers, const Path *file,
-                    char **body = 0, i64 *body_len = 0)
+                    char **body = 0, i64 *body_len = 0, const char *post = 0)
 {
     bool ok = false;
     u32 answer = 0;
@@ -102,13 +110,15 @@ static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *hea
     i64 mem_len = 0, mem_cap = 0;
     HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
-    HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, post ? L"POST" : L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
+    DWORD post_len = post ? (DWORD)strlen(post) : 0;
     if (req) {
         DWORD unzip = WINHTTP_DECOMPRESSION_FLAG_ALL;
         WinHttpSetOption(req, WINHTTP_OPTION_DECOMPRESSION, &unzip, sizeof unzip);
         WinHttpSetTimeouts(req, 10000, 10000, 20000, 30000);
         DWORD status = 0, len = sizeof status;
-        if (WinHttpSendRequest(req, headers && headers[0] ? headers : 0, headers && headers[0] ? (DWORD)-1L : 0, 0, 0, 0, 0) &&
+        if (WinHttpSendRequest(req, headers && headers[0] ? headers : 0, headers && headers[0] ? (DWORD)-1L : 0,
+                               (void *)post, post_len, post_len, 0) &&
             WinHttpReceiveResponse(req, 0) &&
             WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &status, &len, 0))
             answer = status;
@@ -219,6 +229,41 @@ static void j_skip(Json *j)
         return;
     }
     while (j->p < j->end && *j->p != ',' && *j->p != '}' && *j->p != ']') j->p++; // a number, true, false, null
+}
+
+// To the value at a path of keys through objects ("modpack.project_id"). False if there is none.
+static bool j_find(Json *j, const char *path)
+{
+    for (const char *part = path;;) {
+        const char *dot = strchr(part, '.');
+        size_t pl = dot ? (size_t)(dot - part) : strlen(part);
+        if (!j_eat(j, '{')) return false;
+        bool found = false;
+        while (!found && !j_eat(j, '}') && j->p < j->end) {
+            char k[64];
+            if (!j_string(j, k, sizeof k)) return false;
+            j_eat(j, ':');
+            if (strlen(k) == pl && !strncmp(k, part, pl)) found = true;
+            else { j_skip(j); j_eat(j, ','); }
+        }
+        if (!found) return false;
+        if (!dot) { j_ws(j); return true; }
+        part = dot + 1;
+    }
+}
+
+// A string or a number at a path, as text. False if there is none, or it is null or an object.
+static bool j_get(const char *text, i64 len, const char *path, char *out, i32 cap)
+{
+    Json j = {text, text + len};
+    out[0] = 0;
+    if (!j_find(&j, path) || j.p >= j.end) return false;
+    if (*j.p == '"') return j_string(&j, out, cap) && out[0];
+    if (*j.p == '{' || *j.p == '[') return false;
+    i32 n = 0;
+    while (j.p < j.end && *j.p != ',' && *j.p != '}' && *j.p != ']' && (u8)*j.p > ' ' && n < cap - 1) out[n++] = *j.p++;
+    out[n] = 0;
+    return n > 0 && strcmp(out, "null");
 }
 
 // Nothing in a field may be one of the file's own separators.
@@ -459,7 +504,8 @@ static bool gamedb_by_name(const char *name, GameInfo *out)
 static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline, const char *title, GameInfo *out,
                           bool *shared = 0)
 {
-    char file[96], where[MAX_PATH * 2], cmd[4096], seen[512];
+    char file[96], where[MAX_PATH * 2], seen[512];
+    static thread_local char cmd[32768]; // a modded Minecraft's is long: every library is on it
     i32 fl = 0;
     for (; exe[fl] && fl < (i32)sizeof file - 1; fl++) file[fl] = (char)tolower((u8)exe[fl]);
     file[fl] = 0;
@@ -554,12 +600,12 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     static QueryFn query = (QueryFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
     HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (p && query) {
-        static thread_local u8 buf[16384];
+        static thread_local u8 buf[65552]; // the most a UNICODE_STRING holds, and itself
         ULONG got = 0;
         if (query(p, 60, buf, sizeof buf, &got) >= 0) {
             struct { USHORT len, max; wchar_t *text; } *us = (decltype(us))buf;
             if (us->text && us->len) {
-                static thread_local wchar_t wide[8192];
+                static thread_local wchar_t wide[32768];
                 i32 n = us->len / 2 < COUNT(wide) - 1 ? us->len / 2 : COUNT(wide) - 1;
                 memcpy(wide, us->text, n * sizeof(wchar_t));
                 wide[n] = 0;
@@ -617,6 +663,43 @@ static i32 gamedb_search(const char *query, GameInfo *out, i32 max)
 }
 
 static void sessions_game_renamed(const char *exe); // sessions.cpp
+static bool mc_clues(const char *cmdline, char *out, i32 cap); // mcpack.cpp
+
+// The modpack a running Minecraft is, from its command line: true with its name once the art service has named
+// it. Until then it is asked (GAMEDB_RESOLVED says when it has answered) and this is false, as it is for a
+// Minecraft with no pack the service could name. Main thread.
+static bool gamedb_pack_name(const char *cmdline, char *name, i32 cap)
+{
+    name[0] = 0;
+    if (!g_gamedb.online || !g_gamedb.service[0]) return false;
+    static char body[12288];
+    if (!mc_clues(cmdline, body, sizeof body)) return false;
+    u64 key = fnv64(body, strlen(body));
+    AcquireSRWLockExclusive(&g_gamedb.lock);
+    i32 at = -1;
+    for (i32 i = 0; i < COUNT(g_gamedb.packs) && at < 0; i++)
+        if (g_gamedb.packs[i].key == key) at = i;
+    bool ask = false;
+    if (at >= 0) {
+        if (g_gamedb.packs[at].answered) snprintf(name, cap, "%s", g_gamedb.packs[at].name);
+    } else {
+        for (i32 tries = 0; tries < COUNT(g_gamedb.packs) && at < 0; tries++) { // one being asked keeps its place
+            i32 i = g_gamedb.pack_next++ % COUNT(g_gamedb.packs);
+            if (!g_gamedb.packs[i].body) at = i;
+        }
+        if (at >= 0) {
+            auto &p = g_gamedb.packs[at];
+            p.key = key;
+            p.name[0] = 0;
+            p.answered = false;
+            p.body = _strdup(body);
+            ask = true;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_gamedb.lock);
+    if (ask) SetEvent(g_gamedb.wake);
+    return name[0] != 0;
+}
 
 // Names an app from the database: its description becomes the game's name, and one that hasn't been sorted yet
 // (and that no folder rule sorts) becomes a Game. An exe several games share is asked about while it runs: its
@@ -628,11 +711,18 @@ static bool gamedb_name_app(AppInfo *a)
     GameInfo g;
     bool shared = false, known = gamedb_by_exe(a->exe.s, a->path, "", "", &g, &shared);
     if (!known && shared) {
-        char cmd[4096], title[256];
+        static char cmd[32768];
+        char title[256], pack[128];
         if (process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title)) {
             DEV_LOG("gamedb: %s is shared; its window is \"%s\", its command line ends \"%s\"", a->exe.s, title,
                     strlen(cmd) > 400 ? cmd + strlen(cmd) - 400 : cmd);
             known = gamedb_by_exe(a->exe.s, a->path, cmd, title, &g);
+            // A Minecraft whose launcher installed a modpack is that pack, once the art service has named it
+            if (gamedb_pack_name(cmd, pack, sizeof pack)) {
+                g = {};
+                str_set(g.name, pack);
+                known = true;
+            }
         }
         if (!known) {
             if (!a->desc.s[0]) return false;
@@ -685,11 +775,13 @@ static bool hmac_sha256_hex(const char *key, const char *msg, char out[65])
     return ok;
 }
 
-// The x-clipback header for a path (with its query, as sent): "<unix seconds>.<hmac of "seconds\npath">".
-static void art_service_sign(const char *path, i64 seconds, char *out, i32 cap)
+// The x-clipback header for a path (with its query, as sent): "<unix seconds>.<hmac of "seconds\npath">", and
+// for a POST "seconds\npath\nbody".
+static void art_service_sign(const char *path, i64 seconds, char *out, i32 cap, const char *post = 0)
 {
-    char msg[1024], mac[65];
-    snprintf(msg, sizeof msg, "%lld\n%s", seconds, path);
+    static thread_local char msg[16384];
+    char mac[65];
+    snprintf(msg, sizeof msg, post ? "%lld\n%s\n%s" : "%lld\n%s", seconds, path, post ? post : "");
     hmac_sha256_hex(ART_SERVICE_KEY, msg, mac);
     snprintf(out, cap, "%lld.%s", seconds, mac);
 }
@@ -706,10 +798,11 @@ static void url_encode(const char *in, char *out, i32 cap)
     out[n] = 0;
 }
 
-// A signed GET to the service. Returns the status (0 = no answer); the body, for a 200, in *body.
-static u32 art_service_get(const char *path, char **body, i64 *len)
+// A signed GET to the service, or a POST of the JSON `post`. Returns the status (0 = no answer); the body, for a
+// 200, in *body.
+static u32 art_service_get(const char *path, char **body, i64 *len, const char *post = 0)
 {
-    wchar_t host[128], wpath[1024], header[256];
+    wchar_t host[128], wpath[1024], header[320];
     utf8_to_wide(g_gamedb.service, host, COUNT(host));
     utf8_to_wide(path, wpath, COUNT(wpath));
     for (i32 attempt = 0;; attempt++) {
@@ -717,9 +810,9 @@ static u32 art_service_get(const char *path, char **body, i64 *len)
         FILETIME now;
         GetSystemTimeAsFileTime(&now);
         i64 unix_seconds = (((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - 116444736000000000ll) / 10000000;
-        art_service_sign(path, unix_seconds, sig, sizeof sig);
-        swprintf(header, COUNT(header), L"x-clipback: %hs\r\n", sig);
-        u32 status = http_get(host, wpath, header, 0, body, len);
+        art_service_sign(path, unix_seconds, sig, sizeof sig, post);
+        swprintf(header, COUNT(header), L"x-clipback: %hs\r\n%s", sig, post ? L"content-type: application/json\r\n" : L"");
+        u32 status = http_get(host, wpath, header, 0, body, len, post);
         if (status != 429 || attempt || g_gamedb.stop) return status;
         // Asked too often (it allows 30 a minute): wait the minute out, once
         for (i32 s = 0; s < 61 && !g_gamedb.stop; s++) Sleep(1000);
@@ -967,6 +1060,107 @@ static void gamedb_fetch_art()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Modpacks: the clues mcpack.cpp gathered go to the service's POST /v1/resolve, which answers
+//   {"game":{"id","name","year"}|null, "pack":{"platform","project","name","version"}?, "matched_by",
+//    "confidence", "art":{"grid","hero","logo","icon"}}
+
+// From a resolve answer, the pack's name and where its art is in the text. False unless it names a pack its
+// launcher installed: plain Minecraft stays Minecraft.
+static bool pack_from_answer(const char *json, i64 len, char *name, i32 cap, const char **art, i64 *art_len)
+{
+    name[0] = 0;
+    *art = 0;
+    *art_len = 0;
+    char how[32];
+    if (!j_get(json, len, "matched_by", how, sizeof how) || strcmp(how, "launcher_record")) return false;
+    if (!j_get(json, len, "pack.name", name, cap)) return false;
+    Json j = {json, json + len};
+    if (j_find(&j, "art") && j.p < j.end && *j.p == '{') {
+        const char *start = j.p;
+        j_skip(&j);
+        *art = start;
+        *art_len = j.p - start;
+    }
+    return true;
+}
+
+// Asks about the modpacks gamedb_pack_name wants named. What the service said is kept for a month, and the pack's
+// art goes where art_service_find looks for it, so the icon and the cover take no more questions.
+static void gamedb_fetch_packs()
+{
+    for (;;) {
+        AcquireSRWLockExclusive(&g_gamedb.lock);
+        i32 at = -1;
+        for (i32 i = 0; i < COUNT(g_gamedb.packs) && at < 0; i++)
+            if (g_gamedb.packs[i].body && !g_gamedb.packs[i].answered) at = i;
+        u64 key = at >= 0 ? g_gamedb.packs[at].key : 0;
+        const char *body = at >= 0 ? g_gamedb.packs[at].body : 0; // its slot isn't reused while it has a body
+        ReleaseSRWLockExclusive(&g_gamedb.lock);
+        if (at < 0) return;
+
+        wchar_t fname[64];
+        swprintf(fname, COUNT(fname), L"resolved\\%016llx.json", (unsigned long long)key);
+        Path file = path_join(gamedb_dir(), fname);
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        char *text = 0;
+        i64 len = 0;
+        if (GetFileAttributesExW(file.s, GetFileExInfoStandard, &fa) && !file_older_than(fa, 30 * 24 * 3600))
+            text = read_file(file.s, &len);
+        bool asked = false;
+        if (!text || len <= 0) {
+            free(text);
+            text = 0;
+            u32 status = art_service_get("/v1/resolve", &text, &len, body);
+            if (status == 200 && text) {
+                asked = true;
+                FILE *f = _wfopen(file.s, L"wb");
+                if (f) {
+                    fwrite(text, 1, (size_t)len, f);
+                    fclose(f);
+                }
+            } else {
+                DEV_LOG("gamedb: art service resolve answered %u", status);
+                free(text);
+                text = 0;
+            }
+        }
+        char name[128] = "";
+        const char *art = 0;
+        i64 art_len = 0;
+        if (text && pack_from_answer(text, len, name, sizeof name, &art, &art_len) && art) {
+            GameInfo g;
+            if (gamedb_for_art(name, &g) && g.id[0] == 'n') { // one the games list has gets its art from there
+                wchar_t fn[64];
+                swprintf(fn, COUNT(fn), L"art\\%hs-found.json", g.id);
+                Path found = path_join(gamedb_dir(), fn);
+                if (asked || GetFileAttributesW(found.s) == INVALID_FILE_ATTRIBUTES) {
+                    FILE *f = _wfopen(found.s, L"wb");
+                    if (f) {
+                        fwrite(art, 1, (size_t)art_len, f);
+                        fclose(f);
+                    }
+                }
+            }
+        }
+        DEV_LOG("gamedb: modpack %016llx is %s", (unsigned long long)key, name[0] ? name : "none the service could name");
+        free(text);
+
+        AcquireSRWLockExclusive(&g_gamedb.lock);
+        auto &p = g_gamedb.packs[at];
+        str_set(p.name, name);
+        p.answered = true;
+        free(p.body);
+        p.body = 0;
+        ReleaseSRWLockExclusive(&g_gamedb.lock);
+        if (g_gamedb.stop) return;
+        Event e = {};
+        e.kind = EV_GAMEDB;
+        e.a = GAMEDB_RESOLVED;
+        event_post(e);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // The worker: load what is on disk, fetch the list if there is none or it is a week old, then fetch art as asked.
 
 static void gamedb_publish(GameIndex *ix)
@@ -1003,6 +1197,7 @@ static DWORD WINAPI gamedb_thread(void *)
         }
     }
     while (!g_gamedb.stop) {
+        gamedb_fetch_packs();
         gamedb_fetch_art();
         WaitForSingleObject(g_gamedb.wake, INFINITE);
     }

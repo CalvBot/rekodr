@@ -354,14 +354,14 @@ static ID3D11ShaderResourceView *game_icon(const char *name)
     return slot->srv;
 }
 
-// The games list has loaded, or art has arrived. Main thread.
+// The games list has loaded, art has arrived, or a modpack has been named. Main thread.
 static void gamedb_on_event(const Event &e)
 {
-    if (e.a == GAMEDB_LOADED) {
+    if (e.a == GAMEDB_LOADED || e.a == GAMEDB_RESOLVED) {
         Config &c = g_app.config;
         bool changed = false;
         for (i32 i = 0; i < c.app_count; i++) changed |= gamedb_name_app(&c.apps[i]);
-        log_line("games list: %lld games", e.b);
+        if (e.a == GAMEDB_LOADED) log_line("games list: %lld games", e.b);
         if (changed) {
             config_save(c, g_app.paths);
             audio_config_changed();

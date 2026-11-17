@@ -302,6 +302,118 @@ static void test_gamedb()
     RemoveDirectoryW(dir.s);
 }
 
+static void put_file(const Path &p, const char *text)
+{
+    FILE *f = _wfopen(p.s, L"wb");
+    if (f) {
+        fputs(text, f);
+        fclose(f);
+    }
+}
+
+// Minecraft's modpacks: what is read from a game's folder, and what goes to the art service
+static void test_mcpack()
+{
+    char v[256];
+    T(mc_arg("java -cp x --gameDir \"C:/My Packs/inst/.minecraft\" --version 1.20.1", "--gameDir", v, sizeof v) &&
+      !strcmp(v, "C:/My Packs/inst/.minecraft"));
+    T(mc_arg("java --gameDirX no --gameDir D:/mc --width 854", "--gameDir", v, sizeof v) && !strcmp(v, "D:/mc"));
+    T(!mc_arg("java --version 1.20.1", "--gameDir", v, sizeof v));
+
+    char m[48];
+    mc_mod_name("jei-1.20.1-forge-15.2.0.27.jar", m, sizeof m);
+    T(!strcmp(m, "jei"));
+    mc_mod_name("[1.12.2]Botania r1.10.jar", m, sizeof m);
+    T(!strcmp(m, "botania"));
+    mc_mod_name("sodium-fabric-mc1.20.1-0.5.3.jar", m, sizeof m);
+    T(!strcmp(m, "sodium-fabric"));
+    mc_mod_name("fabric-api-0.92.0+1.20.1.jar", m, sizeof m);
+    T(!strcmp(m, "fabric-api"));
+    mc_mod_name("Xaeros_Minimap_23.9.7_Forge_1.20.jar", m, sizeof m);
+    T(!strcmp(m, "xaeros_minimap"));
+
+    T(ini_get("a=1\r\nManagedPackID=abc\r\nb=2", "ManagedPackID", v, sizeof v) && !strcmp(v, "abc"));
+    T(!ini_get("XManagedPackID=abc\n", "ManagedPackID", v, sizeof v));
+    static const char nested[] = "{\"a\":{\"b\":[1,2],\"c\":{\"d\":42}},\"e\":\"x\"}";
+    T(j_get(nested, sizeof nested - 1, "a.c.d", v, sizeof v) && !strcmp(v, "42"));
+    T(j_get(nested, sizeof nested - 1, "e", v, sizeof v) && !strcmp(v, "x"));
+    T(!j_get(nested, sizeof nested - 1, "a.b", v, sizeof v) && !j_get(nested, sizeof nested - 1, "a.z", v, sizeof v));
+
+    // Each launcher's record, in folders made here
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    Path root = {};
+    swprintf(root.s, MAX_PATH, L"%sclipback-mcpack-%lu", tmp, GetCurrentProcessId());
+    CreateDirectoryW(root.s, 0);
+    Path prism = path_join(root, L"prism"), pgame = path_join(prism, L".minecraft"), pmods = path_join(pgame, L"mods");
+    CreateDirectoryW(prism.s, 0);
+    CreateDirectoryW(pgame.s, 0);
+    CreateDirectoryW(pmods.s, 0);
+    put_file(path_join(prism, L"instance.cfg"), "name=My Own Pack Name\r\nManagedPack=true\r\nManagedPackType=modrinth\r\n"
+                                                "ManagedPackID=1KVo5zza\r\nManagedPackVersionID=vXyZ\r\n");
+    put_file(path_join(pmods, L"jei-1.20.1-forge-15.2.0.27.jar"), "");
+    put_file(path_join(pmods, L"create-1.20.1-0.5.1.f.jar"), "");
+    put_file(path_join(pmods, L"notes.txt"), "");
+    char dir[MAX_PATH * 2];
+    wide_to_utf8(pgame.s, dir, sizeof dir);
+    static McClues c;
+    T(mc_read_record(dir, &c) && !strcmp(c.launcher, "prism") && !strcmp(c.platform, "modrinth") &&
+      !strcmp(c.project, "1KVo5zza") && !strcmp(c.version, "vXyZ") && c.mod_count == 2);
+
+    Path cf = path_join(root, L"cf");
+    CreateDirectoryW(cf.s, 0);
+    put_file(path_join(cf, L"minecraftinstance.json"), "{\"name\":\"x\",\"projectID\":285109,\"fileID\":4567}");
+    wide_to_utf8(cf.s, dir, sizeof dir);
+    T(mc_read_record(dir, &c) && !strcmp(c.launcher, "curseforge") && !strcmp(c.platform, "curseforge") &&
+      !strcmp(c.project, "285109") && !strcmp(c.version, "4567"));
+    put_file(path_join(cf, L"minecraftinstance.json"), "{\"projectID\":0,\"fileID\":0}"); // imported from a zip
+    T(mc_read_record(dir, &c) && !strcmp(c.launcher, "curseforge") && !c.platform[0] && !c.project[0]);
+
+    Path ftb = path_join(root, L"ftb");
+    CreateDirectoryW(ftb.s, 0);
+    put_file(path_join(ftb, L"instance.json"), "{\"id\":79,\"versionId\":12345,\"name\":\"x\"}");
+    wide_to_utf8(ftb.s, dir, sizeof dir);
+    T(mc_read_record(dir, &c) && !strcmp(c.launcher, "ftb") && !strcmp(c.project, "79") && !strcmp(c.version, "12345"));
+    T(!mc_read_record("Z:/no/such/folder", &c));
+
+    // The clues: launcher, versions, loader and mods; never the path or the instance's name
+    char cmd[1024], body[4096];
+    wide_to_utf8(pgame.s, dir, sizeof dir);
+    snprintf(cmd, sizeof cmd, "javaw -cp net/minecraftforge/x.jar cpw.mods.bootstraplauncher.BootstrapLauncher "
+                              "--gameDir \"%s\" --version 1.20.1-forge-47.2.0", dir);
+    T(mc_clues(cmd, body, sizeof body));
+    T(!strcmp(body, "{\"mc\":{\"launcher\":\"prism\",\"mc\":\"1.20.1\",\"loader\":\"forge\",\"pack\":{\"platform\":\"modrinth\","
+                    "\"project\":\"1KVo5zza\",\"version\":\"vXyZ\"},\"mods\":[\"create\",\"jei\"]}}") ||
+      !strcmp(body, "{\"mc\":{\"launcher\":\"prism\",\"mc\":\"1.20.1\",\"loader\":\"forge\",\"pack\":{\"platform\":\"modrinth\","
+                    "\"project\":\"1KVo5zza\",\"version\":\"vXyZ\"},\"mods\":[\"jei\",\"create\"]}}"));
+    T(!strstr(body, "My Own") && !strstr(body, "clipback-mcpack"));
+    T(!mc_clues("javaw -jar notagame.jar --gameDir C:/x", body, sizeof body));
+
+    // The service's answer: a pack its launcher named is that pack, with its art; plain Minecraft is not a pack
+    static const char answer[] = "{\"game\":{\"id\":\"s5\",\"name\":\"Minecraft\"},\"pack\":{\"platform\":\"modrinth\",\"project\":\"1KVo5zza\","
+                                 "\"name\":\"Fabulously Optimized\",\"version\":\"5.0\"},\"matched_by\":\"launcher_record\",\"confidence\":0.95,"
+                                 "\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"icon\":null}}";
+    const char *art;
+    i64 art_len;
+    char name[128];
+    T(pack_from_answer(answer, sizeof answer - 1, name, sizeof name, &art, &art_len) && !strcmp(name, "Fabulously Optimized") &&
+      art && art_len == 46 && !strncmp(art, "{\"grid\"", 7) && art[art_len - 1] == '}');
+    static const char plain[] = "{\"game\":{\"id\":\"s5\",\"name\":\"Minecraft\"},\"matched_by\":\"store_id\",\"art\":{}}";
+    T(!pack_from_answer(plain, sizeof plain - 1, name, sizeof name, &art, &art_len) && !name[0]);
+
+    // A POST is signed with its body (worked out with Python's hmac)
+    char sig[128];
+    art_service_sign("/v1/resolve", 1763500000, sig, sizeof sig, "{\"mc\":{\"launcher\":\"prism\"}}");
+    T(!strcmp(sig, "1763500000.2aa819f4a85e9589f05f8bc1abf247b9027dc889fa57f073bb1926bb86d4905e"));
+
+    const wchar_t *files[] = {L"prism/.minecraft/mods/jei-1.20.1-forge-15.2.0.27.jar", L"prism/.minecraft/mods/create-1.20.1-0.5.1.f.jar",
+                              L"prism/.minecraft/mods/notes.txt", L"prism/instance.cfg", L"cf/minecraftinstance.json", L"ftb/instance.json"};
+    for (auto f : files) DeleteFileW(path_join(root, f).s);
+    const wchar_t *dirs[] = {L"prism/.minecraft/mods", L"prism/.minecraft", L"prism", L"cf", L"ftb"};
+    for (auto d : dirs) RemoveDirectoryW(path_join(root, d).s);
+    RemoveDirectoryW(root.s);
+}
+
 int main()
 {
     InitializeSRWLock(&g_log_lock);
@@ -312,6 +424,7 @@ int main()
     test_hotkeys();
     test_settings_round_trip();
     test_gamedb();
+    test_mcpack();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }
