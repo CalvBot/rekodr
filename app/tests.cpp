@@ -148,6 +148,8 @@ static void test_settings_round_trip()
     a.dev_log = true;
     a.clock_24h = !a.clock_24h; // the other way from Windows' format, so loading it can't pass by default
     a.voice_mono = false;        // the default is on
+    a.timeline_top = 0.4f;
+    a.timeline_names = 220;
     str_set(a.codec.s, "hevc");
     a.hotkey_count = 1;
     str_set(a.hotkeys[0].keys.s, "Alt+F10");
@@ -178,6 +180,8 @@ static void test_settings_round_trip()
     }
     T(b.clock_24h == a.clock_24h);
     T(!b.voice_mono);
+    T(b.timeline_top == 0.4f);
+    T(b.timeline_names == 220);
     T(b.input_count == 1 && !strcmp(b.inputs[0].id, "{0.0.1.00000000}.{a}") &&
       !strcmp(b.inputs[0].name, "Line (RODE AI-1)") && b.inputs[0].mode == INPUT_STEREO);
     char short_name[64];

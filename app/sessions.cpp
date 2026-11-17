@@ -303,18 +303,6 @@ static void sessions_observe(i64 now, const char *game)
     }
 }
 
-// Splits on tabs, keeping empty fields. Returns how many.
-static i32 split_tabs(char *s, char **fields, i32 max)
-{
-    i32 n = 0;
-    fields[n++] = s;
-    while (n < max && (s = strchr(s, '\t')) != 0) {
-        *s++ = 0;
-        fields[n++] = s;
-    }
-    return n;
-}
-
 static const char *STATE_NAMES[] = {"free", "open", "asking", "not_saved", "saving", "saved", "dismissed"};
 
 // sessions.txt is written by a thread of its own, so a slow disk never holds up the window. The main thread

@@ -114,6 +114,8 @@ struct Config {
     // Look
     i32 accent;     // index into ACCENTS (ui.cpp)
     i32 card_width; // Library cards: about how wide, in pixels at 100% (Ctrl + wheel over the grid changes it)
+    f32 timeline_top;   // Timeline: the share of its height above the tracks (the splitter); 0 = the default
+    i32 timeline_names; // Timeline: the track names' column, in pixels at 100% (its edge is dragged); 0 = the default
 
     Hotkey hotkeys[16];
     i32    hotkey_count;
@@ -312,7 +314,20 @@ struct SaveJobView {
     char      error[512];
 };
 
+// A clip or session saved from the buffer: the stretch it came from, so the timeline can show what's been saved.
+// Kept in <local_dir>\saved.tsv (save.cpp).
+struct SavedRange {
+    i64      from_us, to_us; // wall clock
+    SaveKind kind;           // SAVE_CLIP or SAVE_SESSION
+    bool     gone;           // the file isn't there any more (deleted or renamed)
+    char     path[512];      // UTF-8
+};
+
 struct Saving {
+    SavedRange  saved[256];      // oldest first
+    i32         saved_count;
+    bool        saved_loaded;
+    u64         saved_checked;   // GetTickCount64 of the last look for files that have gone
     SaveJobView jobs[32];        // a new job takes the oldest finished slot nothing still follows
     i32         jobs_running;    // queued or running
     u32         next_id;

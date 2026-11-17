@@ -1213,6 +1213,112 @@ static void save_stop()
     g_save_q.thread = 0;
 }
 
+// Splits on tabs, keeping empty fields (saved.tsv here, sessions.txt in sessions.cpp). Returns how many.
+static i32 split_tabs(char *s, char **fields, i32 max)
+{
+    i32 n = 0;
+    fields[n++] = s;
+    while (n < max && (s = strchr(s, '	')) != 0) {
+        *s++ = 0;
+        fields[n++] = s;
+    }
+    return n;
+}
+
+// What's been saved from the buffer, for the timeline: <local_dir>\saved.tsv, a line per clip or session,
+// "from_us <tab> to_us <tab> clip|session <tab> path". Appended as saves finish; lines older than 30 days are dropped
+// when it's read.
+static const i64 SAVED_KEEP_US = 30LL * 86400 * 1000000;
+
+static void saved_write_all()
+{
+    const Saving &sv = g_app.saving;
+    FILE *f = _wfopen(path_join(g_app.paths.local_dir, L"saved.tsv").s, L"wb");
+    if (!f) return;
+    for (i32 i = 0; i < sv.saved_count; i++) {
+        const SavedRange &r = sv.saved[i];
+        fprintf(f, "%lld\t%lld\t%s\t%s\n", (long long)r.from_us, (long long)r.to_us,
+                r.kind == SAVE_SESSION ? "session" : "clip", r.path);
+    }
+    fclose(f);
+}
+
+static void saved_load()
+{
+    Saving &sv = g_app.saving;
+    if (sv.saved_loaded) return;
+    sv.saved_loaded = true;
+    FILE *f = _wfopen(path_join(g_app.paths.local_dir, L"saved.tsv").s, L"rb");
+    if (!f) return;
+    i64 oldest = now_us() - SAVED_KEEP_US;
+    bool dropped = false;
+    char line[700];
+    while (fgets(line, sizeof line, f)) {
+        size_t len = strlen(line);
+        while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
+        char *fl[4];
+        if (split_tabs(line, fl, COUNT(fl)) != 4) continue;
+        SavedRange r = {};
+        r.from_us = strtoll(fl[0], 0, 10);
+        r.to_us = strtoll(fl[1], 0, 10);
+        r.kind = !strcmp(fl[2], "session") ? SAVE_SESSION : SAVE_CLIP;
+        str_set(r.path, fl[3]);
+        if (r.to_us <= r.from_us || r.to_us < oldest) {
+            dropped = true;
+            continue;
+        }
+        if (sv.saved_count == COUNT(sv.saved)) { // full: the oldest goes
+            memmove(sv.saved, sv.saved + 1, (COUNT(sv.saved) - 1) * sizeof sv.saved[0]);
+            sv.saved_count--;
+            dropped = true;
+        }
+        sv.saved[sv.saved_count++] = r;
+    }
+    fclose(f);
+    if (dropped) saved_write_all();
+}
+
+static void saved_add(SaveKind kind, i64 from_us, i64 to_us, const char *path)
+{
+    if (kind != SAVE_CLIP && kind != SAVE_SESSION) return;
+    Saving &sv = g_app.saving;
+    saved_load();
+    bool full = sv.saved_count == COUNT(sv.saved);
+    if (full) {
+        memmove(sv.saved, sv.saved + 1, (COUNT(sv.saved) - 1) * sizeof sv.saved[0]);
+        sv.saved_count--;
+    }
+    SavedRange &r = sv.saved[sv.saved_count++];
+    r = {};
+    r.from_us = from_us;
+    r.to_us = to_us;
+    r.kind = kind;
+    str_set(r.path, path);
+    if (full) {
+        saved_write_all();
+        return;
+    }
+    FILE *f = _wfopen(path_join(g_app.paths.local_dir, L"saved.tsv").s, L"ab");
+    if (!f) return;
+    fprintf(f, "%lld\t%lld\t%s\t%s\n", (long long)from_us, (long long)to_us, kind == SAVE_SESSION ? "session" : "clip", path);
+    fclose(f);
+}
+
+// Marks the saves whose file has been deleted or renamed, at most every few seconds (the timeline calls it).
+static void saved_check()
+{
+    Saving &sv = g_app.saving;
+    saved_load();
+    u64 t = GetTickCount64();
+    if (sv.saved_checked && t - sv.saved_checked < 3000) return;
+    sv.saved_checked = t;
+    for (i32 i = 0; i < sv.saved_count; i++) {
+        wchar_t w[MAX_PATH * 2];
+        utf8_to_wide(sv.saved[i].path, w, COUNT(w));
+        sv.saved[i].gone = GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES;
+    }
+}
+
 static void save_on_event(const Event &e)
 {
     u32 id = (u32)(e.b & 0xffffffff);
@@ -1230,6 +1336,7 @@ static void save_on_event(const Event &e)
         if (v->kind != SAVE_PREVIEW) str_set(g_app.saving.last_saved, e.text);
         g_app.saving.jobs_running--;
         log_line("save %u: saved %s", id, e.text);
+        saved_add(v->kind, v->from_us, v->to_us, e.text);
         pipe_saved(v->kind, true, e.text, v);
         break;
     case SAVE_EV_FAILED:
