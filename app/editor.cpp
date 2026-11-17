@@ -894,9 +894,10 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
     f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(8), video_y = ruler_y + ruler_h;
-    f32 zoom_y = video_y + video_h + gap, area0 = zoom_y + lane_h + gap;
+    f32 zoom_y = video_y + video_h + gap, mix_y = zoom_y + lane_h + gap;
+    f32 area0 = nt ? mix_y + lane_h + gap : mix_y;
     f32 content = nt * (lane_h + gap);
-    f32 area1 = o.y + h - (nt ? lane_h : 0);
+    f32 area1 = o.y + h;
     if (area1 > area0 + content) area1 = area0 + content;
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
@@ -1105,16 +1106,16 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         dl->PopClipRect();
     }
 
-    // The lanes, top to bottom: the zoom, the sound tracks (scrolled), the mix.
+    // The lanes, top to bottom: the zoom, the mix, the sound tracks (scrolled).
     EdRow rows[MEDIA_MAX_TRACKS + 2];
     i32 nr = 0;
     rows[nr++] = {0, -1, -1, zoom_y, zoom_y + lane_h, false, "Zoom"};
+    if (nt) rows[nr++] = {1 + EDIT_MASTER, -1, EDIT_MASTER, mix_y, mix_y + lane_h, false, "Mix"};
     for (i32 i = 0; i < nt; i++) {
         f32 ry = area0 + i * (lane_h + gap) - ed.lane_scroll;
         rows[nr++] = {1 + tracks[i], i, tracks[i], ry, ry + lane_h, true, ed.item.info.tracks[tracks[i]]};
     }
-    if (nt) rows[nr++] = {1 + EDIT_MASTER, -1, EDIT_MASTER, area1, area1 + lane_h, false, "Mix"};
-    f32 lanes_y1 = rows[nr - 1].y1;
+    f32 lanes_y1 = nt ? area1 : zoom_y + lane_h;
 
     auto row_at = [&](f32 y) -> i32 {
         for (i32 r = 0; r < nr; r++) {
