@@ -902,19 +902,15 @@ static void badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const 
 // ---------------------------------------------------------------------------------------------------------------
 // Controls the library, the player and the editor share. Generic enough to move to the kit in ui.cpp.
 
-// A round dark button floating over a picture, with one icon; white under the mouse.
-static bool lib_float_button(const char *icon, const char *id, ImVec2 center, f32 r)
+// A dark rounded chip floating over a picture, with one icon; darker under the mouse. Drawn only: the caller hit-tests.
+static void lib_float_chip(ImDrawList *dl, const char *icon, ImVec2 c, f32 r, bool hot)
 {
-    ImGui::SetCursorScreenPos(ImVec2(center.x - r, center.y - r));
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(2 * r, 2 * r));
-    bool hot = ImGui::IsItemHovered();
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddCircleFilled(center, r, hot ? IM_COL32(255, 255, 255, 240) : IM_COL32(0, 0, 0, 160));
+    dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), IM_COL32(0, 0, 0, hot ? 220 : 140), kit_px(8));
     ImGui::PushFont(g_font_icon);
     ImVec2 ts = ImGui::CalcTextSize(icon);
-    dl->AddText(ImVec2(floorf(center.x - ts.x / 2), floorf(center.y - ts.y / 2)), hot ? col32(COL_BG) : IM_COL32_WHITE, icon);
+    dl->AddText(ImVec2(floorf(c.x - ts.x / 2), floorf(c.y - ts.y / 2)), hot ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 200),
+                icon);
     ImGui::PopFont();
-    return clicked;
 }
 
 // A play triangle on a dark disc.
@@ -1260,7 +1256,6 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ImVec2 t0(a.x, a.y + day_h), t1(a.x + w, a.y + day_h + thumb_h);
     ImGui::SetCursorScreenPos(t0);
     ImGui::PushID((const void *)(uintptr_t)it.key);
-    ImGui::SetNextItemAllowOverlap(); // the "more" button sits on top
     ImGui::InvisibleButton("card", ImVec2(w, thumb_h + meta_h));
     bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
     bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right);
@@ -1312,7 +1307,16 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             snprintf(text, sizeof text, "%d tracks", it.info.track_count);
             badge(dl, ImVec2(t0.x + in, t0.y + in), false, false, text);
         }
-        more = lib_float_button(ICON_MORE, "##more", ImVec2(t1.x - kit_px(24), t0.y + kit_px(24)), kit_px(16));
+        // The "more" chip is part of the card's own button rather than an item on top of it, so a click on it can't
+        // fall through to play (an overlapping item only wins once it has been hovered for a frame).
+        ImVec2 mc(t1.x - kit_px(24), t0.y + kit_px(24));
+        f32 mr = kit_px(14);
+        bool on_more = ImGui::IsMouseHoveringRect(ImVec2(mc.x - mr, mc.y - mr), ImVec2(mc.x + mr, mc.y + mr));
+        lib_float_chip(dl, ICON_MORE, mc, mr, on_more);
+        if (on_more && clicked) {
+            more = true;
+            clicked = false;
+        }
     } else if (it.info.duration > 0) {
         fmt_time(it.info.duration, text, sizeof text);
         badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, text);
