@@ -317,32 +317,89 @@ static i32 split_tabs(char *s, char **fields, i32 max)
 
 static const char *STATE_NAMES[] = {"free", "open", "asking", "not_saved", "saving", "saved", "dismissed"};
 
+// sessions.txt is written by a thread of its own, so a slow disk never holds up the window. The main thread
+// formats the file into a buffer and hands it over; a newer one replaces one not written yet.
+static struct {
+    SRWLOCK lock;
+    HANDLE  wake, thread;
+    char   *pending; // malloc'd text the thread hasn't taken yet; 0 = none
+    i32     pending_len;
+    bool    stop;
+    Path    file;
+} g_ses_writer = {SRWLOCK_INIT};
+
+static DWORD WINAPI sessions_writer_main(void *)
+{
+    for (;;) {
+        WaitForSingleObject(g_ses_writer.wake, INFINITE);
+        AcquireSRWLockExclusive(&g_ses_writer.lock);
+        char *text = g_ses_writer.pending;
+        i32 len = g_ses_writer.pending_len;
+        bool stop = g_ses_writer.stop;
+        g_ses_writer.pending = 0;
+        ReleaseSRWLockExclusive(&g_ses_writer.lock);
+        if (text) {
+            Path tmp = g_ses_writer.file;
+            wcscat_s(tmp.s, L".tmp");
+            FILE *f = _wfopen(tmp.s, L"wb");
+            bool ok = f && fwrite(text, 1, len, f) == (size_t)len;
+            if (f) ok = fclose(f) == 0 && ok;
+            ok = ok && MoveFileExW(tmp.s, g_ses_writer.file.s, MOVEFILE_REPLACE_EXISTING);
+            if (!ok) log_line("sessions: couldn't save sessions.txt (%d)", (int)GetLastError());
+            free(text);
+        }
+        if (stop) return 0;
+    }
+}
+
 static void sessions_write()
 {
     Sessions &ss = g_app.sessions;
-    Path file = path_join(g_app.paths.local_dir, L"sessions.txt"), tmp = file;
-    wcscat_s(tmp.s, L".tmp");
-    FILE *f = _wfopen(tmp.s, L"wb");
-    if (!f) {
-        log_line("sessions: couldn't write sessions.txt (%d)", (int)GetLastError());
-        return;
-    }
+    i32 cap = 512 + COUNT(ss.items) * (64 + (i32)sizeof(Session)), len = 0;
+    char *text = (char *)malloc(cap);
+    if (!text) return;
     i64 now = now_us();
-    fprintf(f, "# clipback's open sessions and the ones still in the buffer. Rewritten by clipback.\n");
-    fprintf(f, "written_us\t%lld\nnext_id\t%u\n", (long long)now, ss.next_id);
-    fprintf(f, "# session  id  state  custom  start_us  end_us  exe  name  video  record\n");
+    len += snprintf(text + len, cap - len, "# clipback's open sessions and the ones still in the buffer. Rewritten by clipback.\n");
+    len += snprintf(text + len, cap - len, "written_us\t%lld\nnext_id\t%u\n", (long long)now, ss.next_id);
+    len += snprintf(text + len, cap - len, "# session  id  state  custom  start_us  end_us  exe  name  video  record\n");
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         const Session &s = ss.items[i];
         if (s.state == SES_FREE) continue;
         // A save in progress dies with clipback: it comes back as not saved.
         SessionState st = s.state == SES_SAVING ? SES_NOT_SAVED : s.state;
-        fprintf(f, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\n", s.id, STATE_NAMES[st], s.custom ? 1 : 0,
-                (long long)s.start_us, (long long)s.end_us, s.exe, s.name, s.video, s.record);
+        len += snprintf(text + len, cap - len, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\n", s.id,
+                        STATE_NAMES[st], s.custom ? 1 : 0, (long long)s.start_us, (long long)s.end_us, s.exe, s.name,
+                        s.video, s.record);
     }
-    bool ok = fclose(f) == 0 && MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
-    if (!ok) log_line("sessions: couldn't save sessions.txt (%d)", (int)GetLastError());
+    CHECK(len < cap, "sessions.txt fits its buffer; %d of %d", len, cap);
+
+    if (!g_ses_writer.thread) {
+        g_ses_writer.file = path_join(g_app.paths.local_dir, L"sessions.txt");
+        g_ses_writer.wake = CreateEventW(0, FALSE, FALSE, 0);
+        g_ses_writer.thread = CreateThread(0, 0, sessions_writer_main, 0, 0, 0);
+    }
+    AcquireSRWLockExclusive(&g_ses_writer.lock);
+    free(g_ses_writer.pending); // never written: this one is newer
+    g_ses_writer.pending = text;
+    g_ses_writer.pending_len = len;
+    ReleaseSRWLockExclusive(&g_ses_writer.lock);
+    SetEvent(g_ses_writer.wake);
     ss.dirty = false;
     ss.written_us = now;
+}
+
+// On quit: writes what changed since the last write and waits for the file to be on disk.
+static void sessions_stop()
+{
+    if (g_app.sessions.loaded && g_app.sessions.dirty) sessions_write();
+    if (!g_ses_writer.thread) return;
+    AcquireSRWLockExclusive(&g_ses_writer.lock);
+    g_ses_writer.stop = true;
+    ReleaseSRWLockExclusive(&g_ses_writer.lock);
+    SetEvent(g_ses_writer.wake);
+    if (WaitForSingleObject(g_ses_writer.thread, 5000) != WAIT_OBJECT_0) log_line("sessions: sessions.txt still writing at quit");
+    CloseHandle(g_ses_writer.thread);
+    g_ses_writer.thread = 0;
 }
 
 // What activity.tsv says happened before this run, worked out with the same rules as live detection.

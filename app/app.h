@@ -298,7 +298,7 @@ struct SaveJobView {
 };
 
 struct Saving {
-    SaveJobView jobs[32];        // a new job takes the oldest finished slot
+    SaveJobView jobs[32];        // a new job takes the oldest finished slot nothing still follows
     i32         jobs_running;    // queued or running
     u32         next_id;
     char        last_saved[512]; // path of the last file saved

@@ -333,6 +333,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     log_line("clipback (native) quitting");
     pipe_stop();
+    sessions_stop();
     gamedb_stop();
     audio_stop();
     recorder_stop();

@@ -1007,9 +1007,21 @@ static SaveJobView *save_view(u32 id)
     return 0;
 }
 
+// A finished job whose result something on screen or a session still follows (by id). Its slot isn't reused, or
+// that reader would find the job gone and take it as failed.
+static bool save_job_held(u32 id)
+{
+    if (id == g_app.editor.keep_job || id == g_app.editor.share_job) return true;
+    if (id == g_app.timeline.job || id == g_app.timeline.play_job) return true;
+    const Sessions &ss = g_app.sessions;
+    for (i32 i = 0; i < COUNT(ss.items); i++)
+        if (ss.items[i].state == SES_SAVING && ss.items[i].job == id) return true;
+    return false;
+}
+
 // Queues a save of the wall-clock range [from_us, to_us]: a clip into <year>\Clips, or a session into
 // <year>\Sessions. An empty `name` names it after the game played most. Returns the job id, or 0 if it couldn't be
-// queued (32 saves already waiting).
+// queued (no free slot).
 static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, const EditJob *edit)
 {
     Saving &sv = g_app.saving;
@@ -1018,10 +1030,10 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     for (i32 i = 0; i < COUNT(sv.jobs); i++) {
         SaveJobView *j = &sv.jobs[i];
         if (!j->id) { v = j; break; }
-        if (j->state >= SAVE_DONE && (!v || j->id < v->id)) v = j;
+        if (j->state >= SAVE_DONE && (!v || j->id < v->id) && !save_job_held(j->id)) v = j;
     }
     if (!v) {
-        log_line("save: %d saves already waiting; not queued", COUNT(sv.jobs));
+        log_line("save: no free save slot (%d saves waiting or still followed); not queued", COUNT(sv.jobs));
         return 0;
     }
     *v = {};
