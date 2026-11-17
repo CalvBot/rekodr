@@ -262,6 +262,35 @@ static void test_gamedb()
     T(gamedb_search("r", hits, 4) == 4); // every one of the four has an r
     T(gamedb_search("ru", hits, 4) == 1 && !strcmp(hits[0].name, "Rust"));
     T(gamedb_search("", hits, 4) == 0 && gamedb_search("zzz", hits, 4) == 0);
+    // A game the list doesn't have still gets an id for its art, the same for the same letters
+    GameInfo h;
+    T(gamedb_for_art("Hollow Knight", &g) && g.id[0] == 'n' && !strcmp(g.name, "Hollow Knight"));
+    T(gamedb_for_art("hollow-knight", &h) && !strcmp(g.id, h.id));
+    T(gamedb_for_art("Counter-Strike 2", &g) && !strcmp(g.id, "2"));
+
+    // The art service: signed as clipback-api checks it (this one worked out with node's crypto)
+    char sig[128], enc[64];
+    art_service_sign("/v1/search?q=Hollow%20Knight", 1763500000, sig, sizeof sig);
+    T(!strcmp(sig, "1763500000.0e4bec4a258ac83ea7eba9a7894e6108f90447c9686e2c93ba2305e3e0d1efef"));
+    url_encode("Garry's Mod: 2 & co~", enc, sizeof enc);
+    T(!strcmp(enc, "Garry%27s%20Mod%3A%202%20%26%20co~"));
+    // Its search: the game named so, else one whose name holds the name or is held in it, else none
+    static const char search[] = "{\"games\":[{\"id\":\"s1\",\"name\":\"Hollow Knight: Silksong\",\"year\":2025},"
+                                 "{\"id\":\"s2\",\"name\":\"Hollow Knight\",\"year\":2017},{\"id\":\"s3\",\"name\":\"X\"}]}";
+    char id[24];
+    T(art_pick_search(search, sizeof search - 1, "hollow knight", id, sizeof id) && !strcmp(id, "s2"));
+    T(art_pick_search(search, sizeof search - 1, "Hollow", id, sizeof id) && !strcmp(id, "s1"));
+    T(!art_pick_search(search, sizeof search - 1, "Celeste", id, sizeof id));
+    T(!art_pick_search("{\"games\":[]}", 12, "Celeste", id, sizeof id));
+    // Its art: the icon for an icon; the hero for a cover, else the grid; nothing that isn't https
+    static const char art[] = "{\"id\":\"s2\",\"grid\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"thumb\":\"t\",\"w\":920,\"h\":430},"
+                              "\"hero\":null,\"logo\":{\"url\":\"https://x/l.png\"},\"icon\":{\"thumb\":\"http://x/i.png\"}}";
+    char url[512];
+    T(art_pick_url(art, sizeof art - 1, ART_COVER, url, sizeof url) && !strcmp(url, "https://cdn2.steamgriddb.com/grid/g.png"));
+    T(!art_pick_url(art, sizeof art - 1, ART_ICON, url, sizeof url));
+    static const char art2[] = "{\"grid\":{\"url\":\"https://a/g.png\"},\"hero\":{\"url\":\"https://a/h.png\",\"w\":1920},\"icon\":{\"url\":\"https://a/i.ico\",\"thumb\":\"https://a/i.png\"}}";
+    T(art_pick_url(art2, sizeof art2 - 1, ART_COVER, url, sizeof url) && !strcmp(url, "https://a/h.png"));
+    T(art_pick_url(art2, sizeof art2 - 1, ART_ICON, url, sizeof url) && !strcmp(url, "https://a/i.png"));
     gamedb_free(g_gamedb.index);
     g_gamedb.index = 0;
     DeleteFileW(json.s);

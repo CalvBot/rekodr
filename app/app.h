@@ -66,6 +66,8 @@ struct Hotkey {
     Str64 action; // "save 30s" | "timeline" | "open" | "pause"
 };
 
+static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev"; // clipback-api, its own repo
+
 struct Config {
     Path save_dir;     // <Videos>\Clips, holding 2026\Clips, 2026\Sessions, 2026\Data
     Path buffer_dir;   // the rolling buffer
@@ -101,6 +103,7 @@ struct Config {
 
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
+    Str64 art_service;   // host of the art service gamedb.cpp asks for the art Discord and Steam don't have; "" = none
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
