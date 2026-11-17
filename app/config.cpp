@@ -187,6 +187,14 @@ static i32 folder_rule_for(const FolderRule *rules, i32 n, const char *path)
 }
 
 // An app's category: its own, else its folder's (by `path`, or where it was last heard when that's empty), else new.
+// One person in a Discord call, as vencord-voicestreams plays them: "discord-sam-1234...exe". Chat unless set
+// otherwise, so each person gets a track of their own without sorting every new one by hand. (Discord's own exes
+// have no dash: discordptb.exe, discordcanary.exe.)
+static AppCategory voice_stream_category(const char *exe)
+{
+    return !strncmp(exe, "discord-", 8) ? CAT_COMMUNICATION : CAT_NONE;
+}
+
 static AppCategory app_category_in(const AppInfo *apps, i32 app_count, const FolderRule *rules, i32 rule_count,
                                    const char *exe, const char *path)
 {
@@ -196,7 +204,7 @@ static AppCategory app_category_in(const AppInfo *apps, i32 app_count, const Fol
     if (a && a->category != CAT_NONE) return a->category;
     if ((!path || !path[0]) && a) path = a->path;
     i32 r = folder_rule_for(rules, rule_count, path);
-    return r >= 0 ? rules[r].category : CAT_NONE;
+    return r >= 0 ? rules[r].category : voice_stream_category(exe);
 }
 
 // A known app's category: its own, else its folder's (by where it was last heard from).
@@ -204,7 +212,7 @@ static AppCategory app_category(const Config &c, const AppInfo &a)
 {
     if (a.category != CAT_NONE) return a.category;
     i32 r = folder_rule_for(c.folders, c.folder_count, a.path);
-    return r >= 0 ? c.folders[r].category : CAT_NONE;
+    return r >= 0 ? c.folders[r].category : voice_stream_category(a.exe.s);
 }
 
 static char *trim(char *s)

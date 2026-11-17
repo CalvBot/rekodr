@@ -7,8 +7,9 @@
 //
 // A save stream-copies the video segments covering the range (gaps such as the lock screen are cut out) and lays
 // every audio stream overlapping it onto the SPEC's tracks, cut to match:
-//   1. Mix (everything)   2. Mic   3. Communication   4+. one per other app, games first
-// Tracks 1 to 3 are always there, silent if nothing played, so an editing layout never shifts.
+//   1. Mix (everything)   2. Mic   3+. one per chat app or person, then one per game, then one per other app
+// Tracks 1 and 2 are always there, silent if nothing played. A file has at most MEDIA_MAX_TRACKS tracks (what the
+// editor reads); apps past that share a last "Other" track.
 
 // EV_SAVE: `a` is one of these, `b` is the job id in the low 32 bits and a value in the high 32.
 enum SaveEventKind : i64 {
@@ -71,6 +72,7 @@ struct Piece {
 struct Track {
     char title[128];
     char exe[64]; // app tracks
+    bool chat;    // a Chat app (each Discord person is an exe of their own)
     bool game;
     i32  rank;    // position in time played (most first); INT32_MAX for apps
 };
@@ -224,37 +226,36 @@ static void stream_span(const BufferIdx &b, i32 s, i64 *start, i64 *end)
 
 static bool track_before(const Track &a, const Track &b)
 {
+    if (a.chat != b.chat) return a.chat;
     if (a.game != b.game) return a.game;
     return a.rank < b.rank;
 }
 
-// Mic, Communication, then one track per app: games first (the one played most first), then the rest in order of
-// first sound. Every stream of one exe goes on its track.
+// Mic, then one track per app: chat apps and people first (in order of first sound), then games (the one played
+// most first), then the rest in order of first sound. Every stream of one exe goes on its track.
 static void make_tracks(SaveWork *w)
 {
-    w->track_count = 2;
+    w->track_count = 1;
     w->tracks[0] = {};
     str_set(w->tracks[0].title, "Mic");
-    w->tracks[1] = {};
-    str_set(w->tracks[1].title, "Communication");
     for (i32 i = 0; i < w->stream_count; i++) {
         const AudioStreamInfo &st = w->buf.streams[w->streams[i]];
         w->stream_track[i] = -1;
         if (st.mic) { w->stream_track[i] = 0; continue; }
         AppCategory cat = save_category(w->cfg, st.exe, st.path);
-        if (cat == CAT_COMMUNICATION) { w->stream_track[i] = 1; continue; }
         if (cat == CAT_IGNORED) continue;
-        i32 t = 2;
+        i32 t = 1;
         while (t < w->track_count && strcmp(w->tracks[t].exe, st.exe)) t++;
         if (t == w->track_count) {
             if (t == COUNT(w->tracks)) continue;
             Track *tr = &w->tracks[w->track_count++];
             *tr = {};
             str_set(tr->exe, st.exe);
+            tr->chat = cat == CAT_COMMUNICATION;
             tr->game = cat == CAT_GAME;
             char name[96];
             display_name(w->cfg, st.exe, name, sizeof name);
-            snprintf(tr->title, sizeof tr->title, tr->game ? "%s (game)" : "%s", name);
+            snprintf(tr->title, sizeof tr->title, tr->game ? "%s (game)" : tr->chat ? "%s (chat)" : "%s", name);
             tr->rank = INT32_MAX;
             for (i32 g = 0; g < w->game_count; g++)
                 if (!strcmp(w->games[g].exe, st.exe)) { tr->rank = g; break; }
@@ -264,11 +265,11 @@ static void make_tracks(SaveWork *w)
     // Insertion sort (stable) of the app tracks, remembering where each one went.
     i32 order[COUNT(w->tracks)]; // order[new] = old
     for (i32 t = 0; t < w->track_count; t++) order[t] = t;
-    for (i32 i = 3; i < w->track_count; i++) {
+    for (i32 i = 2; i < w->track_count; i++) {
         Track tr = w->tracks[i];
         i32 old = order[i];
         i32 j = i;
-        for (; j > 2 && track_before(tr, w->tracks[j - 1]); j--) {
+        for (; j > 1 && track_before(tr, w->tracks[j - 1]); j--) {
             w->tracks[j] = w->tracks[j - 1];
             order[j] = order[j - 1];
         }
@@ -279,6 +280,16 @@ static void make_tracks(SaveWork *w)
     for (i32 t = 0; t < w->track_count; t++) moved_to[order[t]] = t;
     for (i32 i = 0; i < w->stream_count; i++)
         if (w->stream_track[i] >= 0) w->stream_track[i] = moved_to[w->stream_track[i]];
+    // Past what the editor reads (the Mix is one of them), the last tracks share one: other apps go first.
+    const i32 max = MEDIA_MAX_TRACKS - 1;
+    if (w->track_count > max) {
+        for (i32 i = 0; i < w->stream_count; i++)
+            if (w->stream_track[i] > max - 1) w->stream_track[i] = max - 1;
+        Track *last = &w->tracks[max - 1];
+        *last = {};
+        str_set(last->title, "Other");
+        w->track_count = max;
+    }
 }
 
 // The filter graph for the audio tracks. Input 0 is the video; stream i is input i + 1. A stream's concat input

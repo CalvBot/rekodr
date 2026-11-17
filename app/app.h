@@ -9,7 +9,7 @@ enum AppCategory : u8 {
     CAT_NONE,          // heard but not sorted yet (shown as new in Options)
     CAT_APP,           // its own track
     CAT_GAME,          // its own track, games first; found as "the game being played"; can start sessions
-    CAT_COMMUNICATION, // mixed onto the Communication track
+    CAT_COMMUNICATION, // Chat: a track of its own, before the games
     CAT_IGNORED,       // never recorded
 };
 
@@ -256,7 +256,7 @@ struct MediaInfo {
     i32  width, height;
     f64  fps;
     i32  track_count;                  // audio tracks
-    char tracks[MEDIA_MAX_TRACKS][32]; // their titles: "Mix", "Mic", "Communication", "Overwatch (game)" ...
+    char tracks[MEDIA_MAX_TRACKS][32]; // their titles: "Mix", "Mic", "sam (chat)", "Overwatch (game)" ...
     char game[64];                     // what it's of: the tagged game, "Desktop", or "Other" for files not ours
 };
 
