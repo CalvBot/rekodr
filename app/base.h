@@ -134,3 +134,26 @@ static i64 parse_length_secs(const char *s)
     default: return 0;
     }
 }
+
+// Parses a range "<from> <to>" in Unix seconds, each with an optional fraction, into µs on now_us()'s clock.
+// Returns 1 for a range, 0 for a single word (not a range: a length, say) and -1 for two words that aren't one.
+static i32 parse_range_us(const char *s, i64 *from_us, i64 *to_us)
+{
+    while (*s == ' ') s++;
+    const char *gap = strchr(s, ' ');
+    if (!gap) return 0;
+    double v[2];
+    const char *at = s;
+    for (i32 i = 0; i < 2; i++) {
+        while (*at == ' ') at++;
+        char *end = 0;
+        v[i] = strtod(at, &end);
+        if (end == at || v[i] <= 0 || (*end && *end != ' ')) return -1;
+        at = end;
+    }
+    while (*at == ' ') at++;
+    if (*at) return -1;
+    *from_us = (i64)llround(v[0] * 1e6);
+    *to_us = (i64)llround(v[1] * 1e6);
+    return *to_us > *from_us ? 1 : -1;
+}

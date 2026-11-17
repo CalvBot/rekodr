@@ -26,6 +26,7 @@ The whole program is one translation unit, `app\clipback.cpp`, which includes ev
 |---|---|
 | `open`, `timeline`, `options` | Opens the window on that screen |
 | `save 30s` | Saves the last 30 seconds (`2m`, `1h` and so on) |
+| `save <from> <to>` | Saves an exact stretch, given in Unix seconds (lifelog's voice commands use this) |
 | `pause`, `resume`, `toggle` | Pauses or resumes recording |
 | `folder` | Opens this year's clips folder |
 | `dev`, `dev off` | Turns the detailed log on or off |

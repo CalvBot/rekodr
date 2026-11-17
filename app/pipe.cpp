@@ -3,13 +3,17 @@
 // programs on this PC can reach it.
 //
 // A client sends commands, one per line, the same ones `clipback.exe <command>` takes ("save 30s", "toggle",
-// "open"). clipback sends lines of JSON:
+// "open"), plus "save <from> <to>", an exact stretch in Unix seconds (with an optional fraction) that lifelog's voice
+// commands use. clipback sends lines of JSON:
 //   {"type":"state","paused":false,"recording":true,"game":"Overwatch","oldest_us":…,"saving":0,"error":""}
 //       when a client connects and whenever any of it changes. oldest_us is the oldest footage in the buffer
 //       (0 = none), so a client can show how much the buffer holds.
-//   {"type":"saved","ok":true,"kind":"clip","file":"C:\\…\\Overwatch 2026-11-16 21-04-10.mp4"}
+//   {"type":"saved","ok":true,"kind":"clip","file":"C:\\…\\Overwatch 2026-11-16 21-04-10.mp4",
+//    "from_us":…,"to_us":…,"trimmed":false}
 //   {"type":"saved","ok":false,"kind":"clip","error":"…"}
-//       when a save finishes. kind is clip, session, keep or share.
+//       when a save finishes, or when a range can't be saved at all. kind is clip, session, keep or share. A clip's
+//       line says the range it saved (µs since 1970), so a client can match it to what it asked for; trimmed means
+//       the buffer didn't reach back to the start asked for.
 //
 // One thread waits for clients and each client has a thread reading its commands, which go to the main thread as
 // EV_COMMAND events. Lines are written by the main thread (and the first state line by the accepting thread), all
@@ -95,14 +99,18 @@ static void pipe_publish()
 }
 
 // Main thread: a save has finished.
-static void pipe_saved(SaveKind kind, bool ok, const char *file_or_error)
+// v is the job, or 0 for a clip that failed before it was queued.
+static void pipe_saved(SaveKind kind, bool ok, const char *file_or_error, const SaveJobView *v = 0)
 {
     if (kind == SAVE_PREVIEW) return;
     static const char *const kinds[] = {"clip", "session", "keep", "share"};
-    char text[1100], line[1300];
+    char text[1100], range[128] = "", line[1400];
     json_escape(file_or_error, text, sizeof text);
-    snprintf(line, sizeof line, "{\"type\":\"saved\",\"ok\":%s,\"kind\":\"%s\",\"%s\":\"%s\"}\n", ok ? "true" : "false",
-             kinds[kind], ok ? "file" : "error", text);
+    if (kind == SAVE_CLIP && v)
+        snprintf(range, sizeof range, ",\"from_us\":%lld,\"to_us\":%lld,\"trimmed\":%s", v->from_us, v->to_us,
+                 v->trimmed ? "true" : "false");
+    snprintf(line, sizeof line, "{\"type\":\"saved\",\"ok\":%s,\"kind\":\"%s\",\"%s\":\"%s\"%s}\n", ok ? "true" : "false",
+             kinds[kind], ok ? "file" : "error", text, range);
     pipe_send(line);
 }
 

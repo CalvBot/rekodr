@@ -1078,12 +1078,44 @@ static u32 save_edit(SaveKind kind, const EditJob &job)
     return save_queue(kind, 0, 0, job.stem, &job);
 }
 
-// Saves the last `secs` seconds of the buffer as a clip in <save_dir>\<year>\Clips.
+// Saves the last `secs` seconds of the buffer as a clip in <save_dir>\<year>\Clips. A start before the oldest
+// footage is moved up to it, so the saved line says what the clip holds.
 static void save_last(i64 secs)
 {
-    i64 to = now_us();
-    u32 id = save_range(to - secs * 1000000, to, SAVE_CLIP, "");
-    if (id) log_line("save %u: last %lld s queued", id, secs);
+    i64 to = now_us(), from = to - secs * 1000000, oldest = g_app.recorder.oldest_us;
+    bool trimmed = oldest && from < oldest && oldest < to;
+    u32 id = save_range(trimmed ? oldest : from, to, SAVE_CLIP, "");
+    if (!id) return;
+    save_view(id)->trimmed = trimmed;
+    log_line("save %u: last %lld s queued", id, secs);
+}
+
+// Saves the wall-clock stretch [from_us, to_us] as a clip: "save <from> <to>" from the pipe or the command line.
+// An end in the future is cut to now, and a start before the oldest footage is moved up to it (trimmed).
+static void save_exact(i64 from_us, i64 to_us)
+{
+    i64 now = now_us(), oldest = g_app.recorder.oldest_us;
+    if (to_us > now) {
+        log_line("save: the range ends %.1f s from now; it ends now instead", (to_us - now) / 1e6);
+        to_us = now;
+    }
+    if (to_us <= from_us || (oldest && to_us <= oldest)) {
+        log_line("save: range is no longer in the buffer");
+        pipe_saved(SAVE_CLIP, false, "range is no longer in the buffer");
+        return;
+    }
+    bool trimmed = oldest && from_us < oldest;
+    if (trimmed) from_us = oldest;
+    u32 id = save_range(from_us, to_us, SAVE_CLIP, "");
+    if (!id) {
+        pipe_saved(SAVE_CLIP, false, "the clip couldn't be queued");
+        return;
+    }
+    save_view(id)->trimmed = trimmed;
+    SYSTEMTIME a = local_time(from_us), b = local_time(to_us);
+    log_line("save %u: range %02d:%02d:%02d.%03d to %02d:%02d:%02d.%03d queued%s", id, a.wHour, a.wMinute, a.wSecond,
+             a.wMilliseconds, b.wHour, b.wMinute, b.wSecond, b.wMilliseconds,
+             trimmed ? " (the buffer starts later, so from there)" : "");
 }
 
 // Cancels a queued or running job. A cancelled save leaves no file behind.
@@ -1139,14 +1171,14 @@ static void save_on_event(const Event &e)
         if (v->kind != SAVE_PREVIEW) str_set(g_app.saving.last_saved, e.text);
         g_app.saving.jobs_running--;
         log_line("save %u: saved %s", id, e.text);
-        pipe_saved(v->kind, true, e.text);
+        pipe_saved(v->kind, true, e.text, v);
         break;
     case SAVE_EV_FAILED:
         v->state = SAVE_FAILED;
         str_set(v->error, e.text);
         g_app.saving.jobs_running--;
         log_line("save %u: failed: %s", id, e.text);
-        pipe_saved(v->kind, false, e.text);
+        pipe_saved(v->kind, false, e.text, v);
         break;
     case SAVE_EV_CANCELLED:
         v->state = SAVE_CANCELLED;

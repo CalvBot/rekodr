@@ -291,6 +291,7 @@ struct SaveJobView {
     SaveKind  kind;
     SaveState state;
     i64       from_us, to_us;
+    bool      trimmed;   // from_us was moved later because the buffer didn't reach back that far
     f32       progress;  // 0..1 while running
     char      name[256]; // the name asked for; empty = named after the game played most
     char      path[512]; // the output file once known (UTF-8)

@@ -30,6 +30,17 @@ static void test_lengths()
     T(parse_length_secs("abc") == 0);
     T(parse_length_secs("-5s") == 0);
     T(parse_length_secs("10x") == 0);
+
+    // An exact range in Unix seconds; one word is a length instead
+    i64 rf = 0, rt = 0;
+    T(parse_range_us("1794901560 1794901860", &rf, &rt) == 1 && rf == 1794901560000000LL && rt == 1794901860000000LL);
+    T(parse_range_us("1794901560.250 1794901860.5", &rf, &rt) == 1 && rf == 1794901560250000LL &&
+      rt == 1794901860500000LL);
+    T(parse_range_us("1794901860 1794901560", &rf, &rt) == -1);
+    T(parse_range_us("1794901560", &rf, &rt) == 0);
+    T(parse_range_us("abc 1794901860", &rf, &rt) == -1);
+    T(parse_range_us("1794901560 x", &rf, &rt) == -1);
+    T(parse_range_us("30s", &rf, &rt) == 0);
 }
 
 static void test_buffer_names()

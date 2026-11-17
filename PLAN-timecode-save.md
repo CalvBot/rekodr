@@ -1,6 +1,6 @@
 # Plan: saving a clip by timecode
 
-**Status:** to build. Only the clipback part ("What to build" below) is meant for this repo. The lifelog part is
+**Status:** the clipback part is built. Only the clipback part ("What to build" below) is meant for this repo. The lifelog part is
 here for context.
 
 ## Why lifelog needs exact times

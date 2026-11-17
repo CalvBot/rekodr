@@ -27,9 +27,17 @@ static void run_command(const char *text)
     else if (!strcmp(cmd, "timeline")) ui_show(SCREEN_TIMELINE);
     else if (!strcmp(cmd, "options")) ui_show(SCREEN_OPTIONS);
     else if (!strcmp(cmd, "save")) {
-        i64 secs = parse_length_secs(*arg ? arg : "30s");
-        if (secs <= 0) log_line("save: \"%s\" isn't a length (try 30s, 2m, 1h)", arg);
-        else save_last(secs);
+        i64 from_us, to_us;
+        i32 range = parse_range_us(arg, &from_us, &to_us);
+        if (range > 0) save_exact(from_us, to_us);
+        else if (range < 0) {
+            log_line("save: \"%s\" isn't a range (try save <from> <to> in Unix seconds)", arg);
+            pipe_saved(SAVE_CLIP, false, "that isn't a range (try save <from> <to> in Unix seconds)");
+        } else {
+            i64 secs = parse_length_secs(*arg ? arg : "30s");
+            if (secs <= 0) log_line("save: \"%s\" isn't a length (try 30s, 2m, 1h)", arg);
+            else save_last(secs);
+        }
     } else if (!strcmp(cmd, "pause") || !strcmp(cmd, "resume") || !strcmp(cmd, "toggle")) {
         bool pause = !strcmp(cmd, "pause") ? true : !strcmp(cmd, "resume") ? false : !g_app.recorder.paused;
         recorder_set_paused(pause);

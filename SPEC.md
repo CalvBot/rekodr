@@ -167,6 +167,12 @@ go in, a line each, and clipback sends back its state (recording, paused, the ga
 and the result of each save as lines of JSON. The Stream Deck plugin in `streamdeck/` uses it. A pipe is local to
 the PC, so this is not a network API.
 
+`save <from> <to>` saves an exact stretch, given as two Unix times in seconds with an optional fraction, so a
+program that asks late (lifelog's voice commands) still gets the moment it meant. One number is still a length. An
+end in the future is cut to now; a start older than the buffer is moved up to its oldest footage; a stretch that has
+left the buffer fails. Every clip's `saved` line carries `from_us`, `to_us` (what was saved) and `trimmed` (the start
+was moved), and a range that can't be saved still gets a failed `saved` line.
+
 **Crashes:**
 - Asserts state what was expected and what was found, and go to the log.
 - A crash writes a minidump and the log line.
