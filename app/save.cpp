@@ -728,12 +728,65 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 // Whether a file has the clipback layout: track 1 is a Mix of the tracks after it.
 static bool edit_has_mix(const MediaInfo &m) { return m.track_count >= 2 && !strcmp(m.tracks[0], "Mix"); }
 
+// Eases (Ease in app.h): how far along (0..1) a value is, a fraction f of the way in time from one key to the next.
+static bool ease_slow_leaving(u8 e) { return e == EASE_SMOOTH || e == EASE_OUT; }
+static bool ease_slow_arriving(u8 e) { return e == EASE_SMOOTH || e == EASE_IN; }
+
+static f64 ease_curve(u8 from, u8 to, f64 f)
+{
+    f = f < 0 ? 0 : f > 1 ? 1 : f;
+    if (from == EASE_HOLD) return 0;
+    bool l = ease_slow_leaving(from), a = ease_slow_arriving(to);
+    if (l && a) return f * f * (3 - 2 * f);
+    if (l) return f * f;
+    if (a) return f * (2 - f);
+    return f;
+}
+
+// The same curve as an ffmpeg expression of u (already 0..1); false for Hold (the value stays put).
+static bool ease_expr(u8 from, u8 to, const char *u, char *out, i32 cap)
+{
+    if (from == EASE_HOLD) return false;
+    bool l = ease_slow_leaving(from), a = ease_slow_arriving(to);
+    if (l && a) snprintf(out, cap, "%s*%s*(3-2*%s)", u, u, u);
+    else if (l) snprintf(out, cap, "%s*%s", u, u);
+    else if (a) snprintf(out, cap, "%s*(2-%s)", u, u);
+    else snprintf(out, cap, "%s", u);
+    return true;
+}
+
+// A track's volume (or the mix's, at EDIT_MASTER) at `t`, before muting: its keys, holding before the first and
+// after the last, or its one level when it has none.
+static f64 vol_at(const EditRecord &e, i32 track, f64 t)
+{
+    i32 n = e.vol_count[track];
+    const VolKey *k = e.vol[track];
+    if (!n) return 1.0 + e.boost[track];
+    if (t <= k[0].t) return k[0].v;
+    for (i32 i = 1; i < n; i++)
+        if (t < k[i].t) {
+            f64 span = k[i].t - k[i - 1].t;
+            return k[i - 1].v + (k[i].v - k[i - 1].v) * ease_curve(k[i - 1].ease, k[i].ease, (t - k[i - 1].t) / (span > 0.001 ? span : 0.001));
+        }
+    return k[n - 1].v;
+}
+
+// What's heard of a track at `t`: its volume, 0 when muted.
+static f64 vol_heard(const EditRecord &e, i32 track, f64 t) { return e.muted[track] ? 0 : vol_at(e, track, t); }
+
+// Whether a track's volume is anything but as recorded.
+static bool vol_touched(const EditRecord &e, i32 track)
+{
+    if (e.muted[track] || e.vol_count[track]) return true;
+    return e.boost[track] > 0.005f || e.boost[track] < -0.005f;
+}
+
 // Whether the edit changes what's heard.
 static bool edit_audio_touched(const EditRecord &e, const MediaInfo &m)
 {
     for (i32 t = 0; t < m.track_count && t < MEDIA_MAX_TRACKS; t++)
-        if (e.muted[t] || e.boost[t] > 0.005f || e.boost[t] < -0.005f) return true;
-    return false;
+        if (vol_touched(e, t)) return true;
+    return vol_touched(e, EDIT_MASTER);
 }
 
 static bool edit_zoomed(const EditRecord &e)
@@ -751,12 +804,40 @@ static void smooth_expr(SaveWork *w, const EditRecord &e, i32 field, const char 
     for (i32 k = 0; k + 1 < n; k++) {
         f64 ta = e.keys[k].t, tb = e.keys[k + 1].t, a = val(k), b = val(k + 1);
         f64 span = tb - ta > 0.001 ? tb - ta : 0.001;
-        char u[160];
+        char u[160], c[560];
         snprintf(u, sizeof u, "clip((%s-%.4f)/%.4f,0,1)", t, ta, span);
-        graph_add(w, "if(lt(%s,%.4f),(%.5f+(%.5f)*%s*%s*(3-2*%s)),", t, tb, a, b - a, u, u, u);
+        if (ease_expr(e.keys[k].ease, e.keys[k + 1].ease, u, c, sizeof c))
+            graph_add(w, "if(lt(%s,%.4f),(%.5f+(%.5f)*(%s)),", t, tb, a, b - a, c);
+        else graph_add(w, "if(lt(%s,%.4f),%.5f,", t, tb, a);
     }
     graph_add(w, "%.5f", val(n - 1));
     for (i32 k = 0; k + 1 < n; k++) graph_add(w, ")");
+}
+
+// A volume filter for a track (or the mix at EDIT_MASTER) cut from `start` seconds: a plain level, or a ramp
+// between its keys evaluated every frame (ffmpeg's t starts at 0 at the cut).
+static void vol_filter(SaveWork *w, const EditRecord &e, i32 track, f64 start)
+{
+    i32 n = e.vol_count[track];
+    const VolKey *k = e.vol[track];
+    if (!n) {
+        graph_add(w, "volume=%.4f", 1.0 + e.boost[track]);
+        return;
+    }
+    char t[48];
+    snprintf(t, sizeof t, "(t+%.4f)", start);
+    graph_add(w, "volume='if(lt(%s,%.4f),%.4f,", t, k[0].t, k[0].v);
+    for (i32 i = 1; i < n; i++) {
+        f64 span = k[i].t - k[i - 1].t;
+        char u[128], c[480];
+        snprintf(u, sizeof u, "clip((%s-%.4f)/%.4f,0,1)", t, k[i - 1].t, span > 0.001 ? span : 0.001);
+        if (span < 0.001 || !ease_expr(k[i - 1].ease, k[i].ease, u, c, sizeof c))
+            graph_add(w, "if(lt(%s,%.4f),%.4f,", t, k[i].t, span < 0.001 ? k[i].v : k[i - 1].v);
+        else graph_add(w, "if(lt(%s,%.4f),%.4f+(%.4f)*(%s),", t, k[i].t, k[i - 1].v, k[i].v - k[i - 1].v, c);
+    }
+    graph_add(w, "%.4f", k[n - 1].v);
+    for (i32 i = 0; i < n; i++) graph_add(w, ")");
+    graph_add(w, "':eval=frame");
 }
 
 // The zoom as a perspective filter that crops the view and stretches it to the whole frame, each frame.
@@ -798,18 +879,24 @@ static bool edit_audio_graph(SaveWork *w, const EditJob &j)
         return true;
     }
     i32 first = edit_has_mix(m) ? 1 : 0, n = 0;
+    f64 start = j.edit.in_s > 0 ? j.edit.in_s : 0;
     for (i32 t = first; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
         if (j.edit.muted[t]) continue;
-        graph_add(w, "[0:a:%d]volume=%.3f,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[s%d];\n", t,
-                  1.0 + j.edit.boost[t], n);
+        graph_add(w, "[0:a:%d]", t);
+        vol_filter(w, j.edit, t, start);
+        graph_add(w, ",aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[s%d];\n", n);
         n++;
     }
-    if (!n) {
+    if (!n || j.edit.muted[EDIT_MASTER]) {
         graph_add(w, "anullsrc=r=48000:cl=stereo[a];\n");
         return true;
     }
     for (i32 i = 0; i < n; i++) graph_add(w, "[s%d]", i);
-    graph_add(w, "amix=inputs=%d:normalize=0:dropout_transition=0,alimiter=limit=0.98:level=0[a];\n", n);
+    // The whole mix's volume goes on after the tracks are mixed, before the limiter.
+    if (n > 1) graph_add(w, "amix=inputs=%d:normalize=0:dropout_transition=0,", n);
+    else graph_add(w, "anull,");
+    vol_filter(w, j.edit, EDIT_MASTER, start);
+    graph_add(w, ",alimiter=limit=0.98:level=0[a];\n");
     return true;
 }
 

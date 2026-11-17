@@ -277,19 +277,36 @@ struct MediaInfo {
     char game[64];                     // what it's of: the tagged game, "Desktop", or "Other" for files not ours
 };
 
+// How a keyframed value moves away from a key and into the next (as in Compress for Discord): Smooth and EaseOut
+// leave a key slowly, Smooth and EaseIn arrive slowly, Hold keeps the value until the next key.
+enum Ease : u8 { EASE_LINEAR, EASE_SMOOTH, EASE_IN, EASE_OUT, EASE_HOLD, EASE_COUNT };
+
 struct ZoomKey {
     f64 t;    // seconds into the video
     f64 z;    // 1 = no zoom
     f64 x, y; // centre of the view, 0..1 across and down
+    u8  ease;
 };
+
+// A volume key: 1 = as recorded, 0 = silent, 2 = double.
+struct VolKey {
+    f64 t;
+    f32 v;
+    u8  ease;
+};
+enum { EDIT_MAX_VOL_KEYS = 48, EDIT_MASTER = MEDIA_MAX_TRACKS }; // volume slot EDIT_MASTER is the whole mix
 
 // An edit never changes the original: it's this small record, kept in <year>\Data\<video name>.edit.txt.
 struct EditRecord {
     f64     in_s, out_s;             // trim, seconds into the video; out_s 0 = to the end
     ZoomKey keys[EDIT_MAX_KEYS];     // sorted by t
     i32     key_count;
-    f32     boost[MEDIA_MAX_TRACKS]; // per audio track: volume - 1, so zero is as recorded (-1 .. +1)
-    bool    muted[MEDIA_MAX_TRACKS];
+    // Per audio track, and the whole mix at EDIT_MASTER: the volume while there are no keys (volume - 1, so zero
+    // is as recorded, -1 .. +1), muted, and the keys (sorted by t) when the volume changes over time.
+    f32     boost[MEDIA_MAX_TRACKS + 1];
+    bool    muted[MEDIA_MAX_TRACKS + 1];
+    VolKey  vol[MEDIA_MAX_TRACKS + 1][EDIT_MAX_VOL_KEYS];
+    i32     vol_count[MEDIA_MAX_TRACKS + 1];
 };
 
 // A Keep or Share job: everything the save worker needs, copied with the request.
@@ -458,6 +475,8 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     i32        aim_key;
     f64        aim_mx, aim_my, aim_kx, aim_ky;
     bool       tracks_ready;    // the player's per-track engines are set up for this file
+    f32        heard[MEDIA_MAX_TRACKS]; // the volume each track's engine was last given
+    bool       heard_set;       // heard holds something (cleared when engines change)
     char       pending[MAX_PATH * 3]; // a file to open once the library's scan has it (Timeline's "Save and edit")
     u64        pending_since;   // GetTickCount64 when it was asked for
     i32        share_size;      // 0 = 50 MB, 1 = 10 MB, 2 = custom

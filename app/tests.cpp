@@ -196,6 +196,51 @@ static void test_settings_round_trip()
     RemoveDirectoryW(paths.config_dir.s);
 }
 
+// The editor's volume keys and eases: the curve, the volume at a time, and the edit file round trip.
+static void test_edit_volumes()
+{
+    T(ease_curve(EASE_LINEAR, EASE_LINEAR, 0.25) == 0.25);
+    T(ease_curve(EASE_HOLD, EASE_LINEAR, 0.9) == 0);
+    T(fabs(ease_curve(EASE_SMOOTH, EASE_SMOOTH, 0.5) - 0.5) < 1e-9);
+    T(ease_curve(EASE_OUT, EASE_LINEAR, 0.5) == 0.25);   // slow leaving: f^2
+    T(ease_curve(EASE_LINEAR, EASE_IN, 0.5) == 0.75);    // slow arriving: f(2 - f)
+
+    static EditRecord e;
+    e = {};
+    T(vol_at(e, 2, 5) == 1);
+    e.boost[2] = 0.5f;
+    T(fabs(vol_at(e, 2, 5) - 1.5) < 1e-6);
+    e.vol[2][0] = {1.0, 0.0f, EASE_LINEAR};
+    e.vol[2][1] = {3.0, 2.0f, EASE_LINEAR};
+    e.vol_count[2] = 2;
+    T(vol_at(e, 2, 0) == 0);               // holds before the first key
+    T(fabs(vol_at(e, 2, 2) - 1) < 1e-6);   // halfway
+    T(vol_at(e, 2, 9) == 2);               // and after the last
+    e.muted[2] = true;
+    T(vol_heard(e, 2, 2) == 0);
+    e.muted[2] = false;
+    e.vol[EDIT_MASTER][0] = {4.0, 0.5f, EASE_HOLD};
+    e.vol_count[EDIT_MASTER] = 1;
+    e.keys[0] = {2.0, 2.0, 0.25, 0.75, EASE_OUT};
+    e.key_count = 1;
+    e.in_s = 1.5;
+
+    wchar_t dir[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    Path file = {};
+    swprintf(file.s, MAX_PATH, L"%sclipback-test-%u.edit.txt", dir, GetCurrentProcessId());
+    edit_write(file, e);
+    static EditRecord r;
+    edit_read(file, &r);
+    DeleteFileW(file.s);
+    T(r.in_s == 1.5);
+    T(r.vol_count[2] == 2 && r.vol[2][1].t == 3.0 && r.vol[2][1].v == 2.0f);
+    T(fabs(r.boost[2] - 0.5f) < 1e-4f);
+    T(r.vol_count[EDIT_MASTER] == 1 && r.vol[EDIT_MASTER][0].ease == EASE_HOLD && r.vol[EDIT_MASTER][0].v == 0.5f);
+    T(r.key_count == 1 && r.keys[0].ease == EASE_OUT && r.keys[0].x == 0.25);
+    T(edit_is_default(EditRecord{}));
+}
+
 // The games list: the fetched JSON to the file that is loaded, and finding a game by its exe and by its name.
 static void test_gamedb()
 {
@@ -423,6 +468,7 @@ int main()
     test_fields();
     test_hotkeys();
     test_settings_round_trip();
+    test_edit_volumes();
     test_gamedb();
     test_mcpack();
     printf("%d checks, %d failed\n", g_checked, g_failed);

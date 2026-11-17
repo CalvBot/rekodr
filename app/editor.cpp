@@ -19,8 +19,8 @@ static i32 ed_tracks(const MediaInfo &m, i32 *out, i32 cap)
 static bool edit_is_default(const EditRecord &e)
 {
     if (e.in_s > 0 || e.out_s > 0 || e.key_count) return false;
-    for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++)
-        if (e.muted[t] || e.boost[t] != 0) return false;
+    for (i32 t = 0; t <= EDIT_MASTER; t++)
+        if (e.muted[t] || e.boost[t] != 0 || e.vol_count[t]) return false;
     return true;
 }
 
@@ -39,13 +39,35 @@ static void edit_read(const Path &file, EditRecord *e)
         else if (!strcmp(k, "out")) e->out_s = atof(v);
         else if (!strcmp(k, "key") && e->key_count < EDIT_MAX_KEYS) {
             ZoomKey z = {};
-            if (sscanf_s(v, "%lf %lf %lf %lf", &z.t, &z.z, &z.x, &z.y) == 4) e->keys[e->key_count++] = z;
-        } else if (!strcmp(k, "volume")) {
-            i32 t = 0, muted = 0;
-            f32 vol = 1;
-            if (sscanf_s(v, "%d %f %d", &t, &vol, &muted) >= 2 && t >= 0 && t < MEDIA_MAX_TRACKS) {
-                e->boost[t] = vol - 1;
-                e->muted[t] = muted != 0;
+            i32 ease = EASE_SMOOTH; // keys from before eases were all smooth
+            if (sscanf_s(v, "%lf %lf %lf %lf %d", &z.t, &z.z, &z.x, &z.y, &ease) >= 4) {
+                z.ease = (u8)(ease >= 0 && ease < EASE_COUNT ? ease : EASE_SMOOTH);
+                e->keys[e->key_count++] = z;
+            }
+        } else if (!strcmp(k, "volume") || !strcmp(k, "vkey")) {
+            // The track's number, or "m" for the whole mix.
+            i32 t = *v == 'm' ? EDIT_MASTER : atoi(v);
+            while (*v && *v != ' ') v++;
+            if (t < 0 || t > EDIT_MASTER) continue;
+            if (!strcmp(k, "volume")) {
+                i32 muted = 0;
+                f32 vol = 1;
+                if (sscanf_s(v, "%f %d", &vol, &muted) >= 1) {
+                    e->boost[t] = vol - 1;
+                    e->muted[t] = muted != 0;
+                }
+            } else if (e->vol_count[t] < EDIT_MAX_VOL_KEYS) {
+                VolKey vk = {};
+                i32 ease = EASE_LINEAR;
+                if (sscanf_s(v, "%lf %f %d", &vk.t, &vk.v, &ease) >= 2) {
+                    vk.v = vk.v < 0 ? 0 : vk.v > 2 ? 2 : vk.v;
+                    vk.ease = (u8)(ease >= 0 && ease < EASE_COUNT ? ease : EASE_LINEAR);
+                    i32 n = e->vol_count[t], at = n;
+                    while (at > 0 && e->vol[t][at - 1].t > vk.t) at--; // kept sorted whatever the file's order
+                    memmove(e->vol[t] + at + 1, e->vol[t] + at, (n - at) * sizeof vk);
+                    e->vol[t][at] = vk;
+                    e->vol_count[t] = n + 1;
+                }
             }
         }
     }
@@ -69,12 +91,19 @@ static void edit_write(const Path &file, const EditRecord &e)
         log_line("editor: couldn't write the edit");
         return;
     }
-    fprintf(f, "# clipback edit: trim in seconds, zoom keys (time zoom x y), volumes (track volume muted)\n");
+    fprintf(f, "# clipback edit: trim in seconds, zoom keys (time zoom x y ease), volumes (track volume muted),\n"
+               "# volume keys (track time volume ease); track m is the whole mix; eases 0 linear 1 smooth 2 in 3 out 4 hold\n");
     fprintf(f, "in = %.3f\nout = %.3f\n", e.in_s, e.out_s);
     for (i32 k = 0; k < e.key_count; k++)
-        fprintf(f, "key = %.3f %.3f %.4f %.4f\n", e.keys[k].t, e.keys[k].z, e.keys[k].x, e.keys[k].y);
-    for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++)
-        if (e.muted[t] || e.boost[t] != 0) fprintf(f, "volume = %d %.3f %d\n", t, 1 + e.boost[t], e.muted[t] ? 1 : 0);
+        fprintf(f, "key = %.3f %.3f %.4f %.4f %d\n", e.keys[k].t, e.keys[k].z, e.keys[k].x, e.keys[k].y, e.keys[k].ease);
+    for (i32 t = 0; t <= EDIT_MASTER; t++) {
+        char id[8];
+        if (t == EDIT_MASTER) str_set(id, "m");
+        else snprintf(id, sizeof id, "%d", t);
+        if (e.muted[t] || e.boost[t] != 0) fprintf(f, "volume = %s %.3f %d\n", id, 1 + e.boost[t], e.muted[t] ? 1 : 0);
+        for (i32 k = 0; k < e.vol_count[t]; k++)
+            fprintf(f, "vkey = %s %.3f %.3f %d\n", id, e.vol[t][k].t, e.vol[t][k].v, e.vol[t][k].ease);
+    }
     fclose(f);
     MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
 }
@@ -92,9 +121,7 @@ static void zoom_at(const EditRecord &e, f64 t, f64 *z, f64 *x, f64 *y)
     else
         for (i32 k = 0; k + 1 < n; k++)
             if (t < e.keys[k + 1].t) { a = &e.keys[k]; b = &e.keys[k + 1]; break; }
-    f64 u = b->t > a->t ? (t - a->t) / (b->t - a->t) : 0;
-    u = u < 0 ? 0 : u > 1 ? 1 : u;
-    u = u * u * (3 - 2 * u);
+    f64 u = b->t > a->t ? ease_curve(a->ease, b->ease, (t - a->t) / (b->t - a->t)) : 0;
     *z = a->z + (b->z - a->z) * u;
     if (*z < 1) *z = 1;
     *x = a->x + (b->x - a->x) * u;
@@ -150,6 +177,7 @@ static i32 ed_add_key(f64 t)
     if (ed.edit.key_count == EDIT_MAX_KEYS) return -1;
     ZoomKey z = {};
     z.t = t;
+    z.ease = EASE_SMOOTH;
     zoom_at(ed.edit, t, &z.z, &z.x, &z.y);
     i32 at = 0;
     while (at < ed.edit.key_count && ed.edit.keys[at].t < t) at++;
@@ -176,14 +204,23 @@ static void ed_apply_volumes()
     if (!p.engine) return;
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
-    if (p.track_engine_count) {
-        for (i32 i = 0; i < n; i++)
-            player_track_volume(&p, tracks[i], 1 + ed.edit.boost[tracks[i]], ed.edit.muted[tracks[i]]);
-    } else if (n == 1) {
-        f32 v = 1 + ed.edit.boost[tracks[0]];
-        p.engine->SetVolume(v < 1 ? v : 1);
-        p.engine->SetMuted(ed.edit.muted[tracks[0]]);
+    // At the playhead: each track's volume times the whole mix's (the engines can't go past 100%). Only what's
+    // changed is handed over, since this runs every frame while playing.
+    f64 master = vol_heard(ed.edit, EDIT_MASTER, p.pos);
+    for (i32 i = 0; i < n; i++) {
+        i32 t = tracks[i];
+        f32 v = (f32)(vol_heard(ed.edit, t, p.pos) * master);
+        if (p.track_engine_count) {
+            if (fabsf(v - ed.heard[t]) < 0.002f && ed.heard_set) continue;
+            player_track_volume(&p, t, v, v <= 0);
+        } else if (n == 1) {
+            if (fabsf(v - ed.heard[t]) < 0.002f && ed.heard_set) continue;
+            p.engine->SetVolume(v < 1 ? v : 1);
+            p.engine->SetMuted(v <= 0);
+        }
+        ed.heard[t] = v;
     }
+    ed.heard_set = true;
 }
 
 static void ed_save_record()
@@ -741,13 +778,17 @@ static void screen_editor()
         i32 tracks[MEDIA_MAX_TRACKS];
         i32 n = ed_tracks(ed.item.info, tracks, PLAYER_MAX_TRACK_ENGINES);
         if (n > 1 && p.audio_count > 1) player_set_tracks(&p, tracks, n);
+        ed.heard_set = false;
         ed_apply_volumes();
         ed.tracks_ready = true;
     }
     p.loop_from = ed.edit.in_s;
     p.stop_at = ed_out();
     player_update(&p);
-    if (p.track_engine_count && ed.tracks_ready) ed_apply_volumes(); // a track engine that's just loaded
+    // Every half second everything is handed over again, for a track engine that's only just loaded.
+    static u64 heard_at;
+    if (GetTickCount64() - heard_at > 500) { heard_at = GetTickCount64(); ed.heard_set = false; }
+    if (ed.tracks_ready) ed_apply_volumes();
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight();
