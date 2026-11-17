@@ -366,6 +366,15 @@ static void test_gamedb()
     T(art_pick_search(search, sizeof search - 1, "Hollow", id, sizeof id) && !strcmp(id, "s1"));
     T(!art_pick_search(search, sizeof search - 1, "Celeste", id, sizeof id));
     T(!art_pick_search("{\"games\":[]}", 12, "Celeste", id, sizeof id));
+    {
+        char names[8][128];
+        i32 years[8];
+        const char games[] = "{\"games\":[{\"id\":\"s9\",\"name\":\"GregTech: New Horizons\",\"year\":2016},{\"id\":\"s8\",\"name\":\"Greg\",\"year\":null}]}";
+        T(art_search_list(games, sizeof games - 1, names, years, 8) == 2);
+        T(!strcmp(names[0], "GregTech: New Horizons") && years[0] == 2016 && !strcmp(names[1], "Greg") && years[1] == 0);
+        T(art_search_list(games, sizeof games - 1, names, years, 1) == 1);
+        T(art_search_list("{\"games\":[]}", 12, names, years, 8) == 0);
+    }
     // Its art: the icon for an icon; the hero for a cover, else the grid; nothing that isn't https
     static const char art[] = "{\"id\":\"s2\",\"grid\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"thumb\":\"t\",\"w\":920,\"h\":430},"
                               "\"hero\":null,\"logo\":{\"url\":\"https://x/l.png\"},\"icon\":{\"thumb\":\"http://x/i.png\"}}";

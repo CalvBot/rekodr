@@ -1052,17 +1052,17 @@ static void apps_add_popup(ImVec2 at, i32 rows)
     ImGui::EndPopup();
 }
 
-// Renaming an app (the right-click menu): the name it gets in files and on tracks.
+// Renaming an app (the right-click menu): the name it gets in files and on tracks. It starts as the app's name, or
+// its exe's, all selected so typing replaces it. What is typed is looked for in the games list and on the art service;
+// picking a game names the app that.
 static void apps_rename_popup()
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    bool open = ImGui::BeginPopup("rename app");
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
+    ImGui::SetNextWindowSize(ImVec2(kit_px(560), 0));
+    lib_popup_style_push(24);
+    bool open = ImGui::BeginPopupModal("rename app", 0, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar);
+    lib_popup_style_pop();
     if (!open) return;
     if (o.menu_app < 0 || o.menu_app >= c.app_count) {
         ImGui::CloseCurrentPopup();
@@ -1070,58 +1070,108 @@ static void apps_rename_popup()
         return;
     }
     AppInfo &a = c.apps[o.menu_app];
-    f32 w = dp(300);
-    ImGui::PushFont(g_font_bold);
-    ImGui::Text("Name for %s", a.exe.s);
-    ImGui::PopFont();
-    char hint[64];
-    if (a.desc.s[0]) str_set(hint, a.desc.s); // what it shows as with no name: its File description
-    else default_app_name(a.exe.s, hint, sizeof hint);
+    char title[160];
+    snprintf(title, sizeof title, "Name for %s", a.exe.s);
+    kit_heading(title);
+
+    // What is looked for: the text once it has stayed the same a moment, so each key typed isn't a lookup
+    static char settled[64];
+    static f64 changed_at;
     if (ImGui::IsWindowAppearing()) {
-        str_set(o.edit, a.name.s);
+        if (a.name.s[0]) str_set(o.edit, a.name.s);
+        else {
+            snprintf(o.edit, 64, "%s", a.exe.s);
+            size_t n = strlen(o.edit);
+            if (n > 4 && !_stricmp(o.edit + n - 4, ".exe")) o.edit[n - 4] = 0;
+        }
+        str_set(settled, o.edit);
         ImGui::SetKeyboardFocusHere();
     }
     ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
-    ImGui::SetNextItemWidth(w);
-    bool enter = ImGui::InputTextWithHint("##name", hint, o.edit, 64, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(dp(12), dp(10)));
+    ImGui::SetNextItemWidth(-1);
+    bool enter = ImGui::InputText("##name", o.edit, 64, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    if (ImGui::IsItemEdited()) changed_at = ImGui::GetTime();
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor();
+    if (strcmp(settled, o.edit) && ImGui::GetTime() - changed_at > 0.35) str_set(settled, o.edit);
 
-    // Games in the list that match what is typed: picking one names it that. Five rows, always, so the buttons
-    // below stay where they are.
-    static GameInfo found[5];
-    i32 n = o.edit[0] ? gamedb_search(o.edit, found, COUNT(found)) : 0;
+    // The games: the list's first, then the art service's, a name that is what was typed going first. Six rows,
+    // always, and the line under them, so the buttons stay where they are.
+    const i32 ROWS = 6;
+    static GameInfo local[ROWS];
+    static char online[8][128], names[ROWS][128];
+    static i32 online_years[8], years[ROWS];
+    i32 nl = settled[0] ? gamedb_search(settled, local, ROWS) : 0;
+    i32 no = settled[0] ? gamedb_find_online(settled, online, online_years, 8) : 0;
+    char want[128], letters[128];
+    gdb_letters(settled, want, sizeof want);
+    i32 n = 0;
+    for (i32 pass = 0; pass < 2; pass++) // pass 0: names that are what was typed; pass 1: the rest
+        for (i32 i = 0; i < nl + (no > 0 ? no : 0) && n < ROWS; i++) {
+            const char *name = i < nl ? local[i].name : online[i - nl];
+            gdb_letters(name, letters, sizeof letters);
+            if ((pass == 0) != !strcmp(letters, want)) continue;
+            bool dup = false;
+            for (i32 d = 0; d < n && !dup; d++) {
+                char seen[128];
+                gdb_letters(names[d], seen, sizeof seen);
+                dup = !strcmp(seen, letters);
+            }
+            if (dup) continue;
+            str_set(names[n], name);
+            years[n++] = i < nl ? 0 : online_years[i - nl];
+        }
+
+    ImGui::Dummy(ImVec2(0, dp(2)));
     bool picked = false;
-    f32 rh = dp(30), is = dp(20);
+    f32 w = ImGui::GetContentRegionAvail().x, rh = dp(46), is = dp(32);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 l0 = ImGui::GetCursorScreenPos();
-    if (!n) {
-        ImGui::PushFont(g_font_small);
-        dl->AddText(ImVec2(l0.x + dp(2), l0.y + dp(8)), col32(COL_FAINT), o.edit[0] ? "No game in the list has that name; it is kept as typed"
-                                                                                  : "Type a name, or pick the game it is");
-        ImGui::PopFont();
-    }
     for (i32 i = 0; i < n; i++) {
         ImVec2 r0(l0.x, l0.y + i * rh);
         ImGui::SetCursorScreenPos(r0);
         ImGui::PushID(i);
         if (ImGui::Selectable("##pick", false, 0, ImVec2(w, rh - dp(2)))) {
-            snprintf(o.edit, sizeof o.edit, "%s", found[i].name);
+            snprintf(o.edit, 64, "%s", names[i]);
             picked = true;
         }
         ImGui::PopID();
-        ImVec2 i0(r0.x + dp(6), floorf(r0.y + (rh - dp(2) - is) / 2));
-        ID3D11ShaderResourceView *icon = game_db_icon(found[i].name);
-        if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, dp(4));
-        else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), dp(4));
-        opt_text_at(dl, g_font, ImVec2(i0.x + is + dp(10), floorf(r0.y + (rh - dp(2) - g_font->FontSize) / 2)), COL_TEXT, found[i].name, r0.x + w - dp(6));
+        ImVec2 i0(r0.x + dp(8), floorf(r0.y + (rh - dp(2) - is) / 2));
+        ID3D11ShaderResourceView *icon = game_db_icon(names[i]);
+        if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, dp(6));
+        else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), dp(6));
+        f32 right = r0.x + w - dp(10);
+        if (years[i]) {
+            char y[8];
+            snprintf(y, sizeof y, "%d", years[i]);
+            ImGui::PushFont(g_font_small);
+            f32 yw = ImGui::CalcTextSize(y).x;
+            ImGui::PopFont();
+            right -= yw;
+            opt_text_at(dl, g_font_small, ImVec2(right, floorf(r0.y + (rh - dp(2) - g_font_small->FontSize) / 2)), COL_FAINT, y, right + yw + 1);
+            right -= dp(12);
+        }
+        opt_text_at(dl, g_font, ImVec2(i0.x + is + dp(12), floorf(r0.y + (rh - dp(2) - g_font->FontSize) / 2)), COL_TEXT, names[i], right);
     }
-    ImGui::SetCursorScreenPos(ImVec2(l0.x, l0.y + COUNT(found) * rh + dp(6)));
+    ImGui::SetCursorScreenPos(ImVec2(l0.x, l0.y + ROWS * rh));
+    bool looking = strcmp(settled, o.edit) || no < 0;
+    const char *status = !o.edit[0] ? "Type a name, or pick the game it is"
+                       : looking   ? "Searching..."
+                       : !n        ? "No game has that name; it is kept as typed"
+                                   : " ";
+    ImGui::PushFont(g_font_small);
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_FAINT));
+    ImGui::TextUnformatted(status);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
 
-    f32 bw = dp(84), gap = dp(8);
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - 2 * bw - gap);
-    if (kit_button("Cancel", KIT_GHOST, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
-    ImGui::SameLine(0, gap);
-    if (kit_button("Save", KIT_PRIMARY, ImVec2(bw, 0)) || enter || picked) {
+    i32 b = lib_dialog_buttons(ICON_RENAME "  Save", KIT_PRIMARY);
+    if (b == -1 || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    else if (b == 1 || enter || picked) {
+        char hint[64];
+        if (a.desc.s[0]) str_set(hint, a.desc.s); // what it shows as with no name: its File description
+        else default_app_name(a.exe.s, hint, sizeof hint);
         char name[64];
         str_set(name, o.edit);
         for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt

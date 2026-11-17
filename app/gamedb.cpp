@@ -63,6 +63,11 @@ struct GameDbShared {
     // exe table, not just a name). The oldest answer makes room for a new question.
     struct { u64 key; char *body; char name[128]; u8 kind; bool answered, sure; } asks[128];
     i32        ask_next;
+    // A name typed when naming an app, looked for on the art service: what to look for (main thread), and what it
+    // found for which (the worker).
+    char       find_q[128], found_q[128];
+    struct { char name[128]; i32 year; } found[8];
+    i32        found_count;
 };
 static GameDbShared g_gamedb;
 
@@ -1067,6 +1072,94 @@ static bool art_service_find(const char *id, const char *name, GameArt kind, cha
     return ok;
 }
 
+// The games in a /v1/search answer, in its order: their names and years (0 = none). How many.
+static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *years, i32 max)
+{
+    i32 n = 0;
+    Json j = {json, json + len};
+    if (!j_eat(&j, '{')) return 0;
+    while (!j_eat(&j, '}') && j.p < j.end) {
+        char key[24];
+        if (!j_string(&j, key, sizeof key)) break;
+        j_eat(&j, ':');
+        if (strcmp(key, "games") || !j_eat(&j, '[')) { j_skip(&j); j_eat(&j, ','); continue; }
+        while (j_eat(&j, '{')) {
+            char gname[128] = "", k[16];
+            i32 year = 0;
+            while (!j_eat(&j, '}') && j.p < j.end) {
+                if (!j_string(&j, k, sizeof k)) break;
+                j_eat(&j, ':');
+                if (!strcmp(k, "name")) j_string(&j, gname, sizeof gname) || (j_skip(&j), 0);
+                else if (!strcmp(k, "year")) { j_ws(&j); year = atoi(j.p); j_skip(&j); }
+                else j_skip(&j);
+                j_eat(&j, ',');
+            }
+            j_eat(&j, ',');
+            if (gname[0] && n < max) {
+                snprintf(names[n], 128, "%s", gname);
+                years[n++] = year > 0 ? year : 0;
+            }
+        }
+        j_eat(&j, ']');
+        j_eat(&j, ',');
+    }
+    return n;
+}
+
+// Looks for the name typed when naming an app (gamedb_find_online asked for it) on the art service. Worker thread.
+static void gamedb_fetch_find()
+{
+    char q[128];
+    AcquireSRWLockShared(&g_gamedb.lock);
+    bool same = !strcmp(g_gamedb.find_q, g_gamedb.found_q);
+    snprintf(q, sizeof q, "%s", g_gamedb.find_q);
+    ReleaseSRWLockShared(&g_gamedb.lock);
+    if (same || !q[0]) return;
+    char enc[400], path[512];
+    url_encode(q, enc, sizeof enc);
+    snprintf(path, sizeof path, "/v1/search?q=%s", enc);
+    char *body = 0;
+    i64 len = 0;
+    u32 status = g_gamedb.online && g_gamedb.service[0] ? art_service_get(path, &body, &len) : 0;
+    char names[8][128];
+    i32 years[8], n = status == 200 && body ? art_search_list(body, len, names, years, 8) : 0;
+    free(body);
+    DEV_LOG("gamedb: art service search for \"%s\" answered %u, %d games", q, status, n);
+    AcquireSRWLockExclusive(&g_gamedb.lock);
+    snprintf(g_gamedb.found_q, sizeof g_gamedb.found_q, "%s", q);
+    g_gamedb.found_count = n;
+    for (i32 i = 0; i < n; i++) {
+        snprintf(g_gamedb.found[i].name, sizeof g_gamedb.found[i].name, "%s", names[i]);
+        g_gamedb.found[i].year = years[i];
+    }
+    ReleaseSRWLockExclusive(&g_gamedb.lock);
+}
+
+// Games the art service has by a name, for naming an app: asks for them (the worker looks while this is called
+// again), and once it has them, copies them out. -1 = still looking, else how many (0 when it couldn't be asked).
+// Main thread.
+static i32 gamedb_find_online(const char *q, char (*names)[128], i32 *years, i32 max)
+{
+    if (!q[0] || !g_gamedb.online || !g_gamedb.service[0] || !g_gamedb.wake) return 0;
+    i32 n = -1;
+    bool ask = false;
+    AcquireSRWLockExclusive(&g_gamedb.lock);
+    if (strcmp(g_gamedb.find_q, q)) {
+        snprintf(g_gamedb.find_q, sizeof g_gamedb.find_q, "%s", q);
+        ask = true;
+    }
+    if (!strcmp(g_gamedb.found_q, q)) {
+        n = 0;
+        for (; n < g_gamedb.found_count && n < max; n++) {
+            snprintf(names[n], 128, "%s", g_gamedb.found[n].name);
+            years[n] = g_gamedb.found[n].year;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_gamedb.lock);
+    if (ask) SetEvent(g_gamedb.wake);
+    return n;
+}
+
 // A game by its name, for its art: the list's entry, else one made up from the name, whose art only the art
 // service can find.
 static bool gamedb_for_art(const char *name, GameInfo *out)
@@ -1351,6 +1444,7 @@ static DWORD WINAPI gamedb_thread(void *)
         }
     }
     while (!g_gamedb.stop) {
+        gamedb_fetch_find();
         gamedb_fetch_asks();
         gamedb_fetch_art();
         WaitForSingleObject(g_gamedb.wake, INFINITE);
