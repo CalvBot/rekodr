@@ -162,6 +162,9 @@ static void test_settings_round_trip()
     a.folder_count = 1;
     str_set(a.folders[0].path, "C:\\V\\*\\off");
     a.folders[0].category = CAT_IGNORED;
+    a.input_count = 2;
+    a.inputs[0] = {"{0.0.1.00000000}.{a}", "Line (RODE AI-1)", INPUT_STEREO};
+    a.inputs[1] = {"{0.0.1.00000000}.{b}", "Off one", INPUT_OFF}; // off isn't saved
 
     T(config_save(a, paths));
     T(config_load(&b, paths));
@@ -175,6 +178,13 @@ static void test_settings_round_trip()
     }
     T(b.clock_24h == a.clock_24h);
     T(!b.voice_mono);
+    T(b.input_count == 1 && !strcmp(b.inputs[0].id, "{0.0.1.00000000}.{a}") &&
+      !strcmp(b.inputs[0].name, "Line (RODE AI-1)") && b.inputs[0].mode == INPUT_STEREO);
+    char short_name[64];
+    input_short_name("Line (RODE AI-1)", short_name, sizeof short_name);
+    T(!strcmp(short_name, "RODE AI-1"));
+    input_short_name("Stereo Mix", short_name, sizeof short_name);
+    T(!strcmp(short_name, "Stereo Mix"));
     T(b.folder_count == 1 && !strcmp(b.folders[0].path, "C:\\V\\*\\off") && b.folders[0].category == CAT_IGNORED);
     T(!wcscmp(a.save_dir.s, b.save_dir.s) && !wcscmp(a.buffer_dir.s, b.buffer_dir.s));
 

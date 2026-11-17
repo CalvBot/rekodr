@@ -52,6 +52,15 @@ struct FolderRule {
     AppCategory category;
 };
 
+// A recording device besides Windows' default input (Config.mic), on a track of its own. Only the ones turned on
+// are kept in the settings.
+enum InputMode : u8 { INPUT_OFF, INPUT_MONO, INPUT_STEREO };
+struct InputDevice {
+    char      id[128];  // the endpoint id, "{0.0.1.00000000}.{...}"
+    char      name[96]; // Windows' name for it: "Line (RODE AI-1)"
+    InputMode mode;
+};
+
 struct Hotkey {
     Str64 keys;   // "Alt+F10"
     Str64 action; // "save 30s" | "timeline" | "open" | "pause"
@@ -82,7 +91,9 @@ struct Config {
     bool  spatial_aq;
 
     // Audio
-    bool mic;
+    bool        mic;        // Windows' default input, on the Mic track
+    InputDevice inputs[16]; // other inputs, each on its own track
+    i32         input_count;
 
     // Sessions
     f32 session_gap_min;      // a game gone this long ends its session (5)
@@ -155,7 +166,7 @@ struct Recorder {
 // audio.cpp: one stream per app playing sound, plus the mic, and the game being played.
 enum AudioKind : u8 {
     AUDIO_APP, // an app's process tree (process loopback)
-    AUDIO_MIC, // the default capture device
+    AUDIO_MIC, // a capture device: Windows' default (path empty) or the one whose endpoint id is the path
 };
 
 // Which track of a saved file a stream ends up on (SPEC.md, "Track layout"). Follows the app's category, so it's
@@ -199,8 +210,8 @@ struct VideoSeg {
 
 struct AudioStreamInfo {
     char dir[128]; // folder under buffer\audio
-    char exe[64];  // lower case; "mic" for the mic
-    bool mic;
+    char exe[64];  // lower case; "mic" for the default input, the device's name for another input
+    bool mic;      // an input; path is the device's endpoint id, empty for the default one
     u32  pid;
     char path[MAX_PATH]; // the exe's full path when it was recorded (meta.json; "" in older buffers)
     i64  start_us; // wall clock of the first sample (meta.json)

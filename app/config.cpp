@@ -187,7 +187,23 @@ static i32 folder_rule_for(const FolderRule *rules, i32 n, const char *path)
     return best;
 }
 
-// An app's category: its own, else its folder's (by `path`, or where it was last heard when that's empty), else new.
+// A configured input by endpoint id, ignoring case (Windows gives ids in lower case, Device Manager in upper).
+static const InputDevice *config_input(const InputDevice *inputs, i32 count, const char *id)
+{
+    for (i32 i = 0; i < count; i++)
+        if (!_stricmp(inputs[i].id, id)) return &inputs[i];
+    return 0;
+}
+
+// A track title for an input: the device inside Windows' name, "RODE AI-1" for "Line (RODE AI-1)".
+static void input_short_name(const char *name, char *out, i32 cap)
+{
+    const char *open = strchr(name, '(');
+    const char *close = open ? strrchr(name, ')') : 0;
+    if (open && close && close > open + 1) snprintf(out, cap, "%.*s", (int)(close - open - 1), open + 1);
+    else snprintf(out, cap, "%s", name);
+}
+
 // One person in a Discord call, as vencord-voicestreams plays them: "discord-sam-1234...exe". Chat unless set
 // otherwise, so each person gets a track of their own without sorting every new one by hand. (Discord's own exes
 // have no dash: discordptb.exe, discordcanary.exe.)
@@ -196,6 +212,7 @@ static AppCategory voice_stream_category(const char *exe)
     return !strncmp(exe, "discord-", 8) ? CAT_COMMUNICATION : CAT_NONE;
 }
 
+// An app's category: its own, else its folder's (by `path`, or where it was last heard when that's empty), else new.
 static AppCategory app_category_in(const AppInfo *apps, i32 app_count, const FolderRule *rules, i32 rule_count,
                                    const char *exe, const char *path)
 {
@@ -313,6 +330,15 @@ static void config_set(Config *c, const char *key, char *value)
             if (n >= 9) str_set(a->rec.preset.s, f[8]);
             if (n >= 10) a->rec.height = atoi(f[9]);
             if (n >= 11) str_set(a->path, f[10]);
+        }
+    } else if (!strcmp(key, "input")) {
+        // input = mono | Line (RODE AI-1) | {0.0.1.00000000}.{...}
+        char *f[3] = {};
+        if (split_fields(value, f, 3) == 3 && f[2][0] && c->input_count < COUNT(c->inputs)) {
+            InputDevice *d = &c->inputs[c->input_count++];
+            d->mode = !strcmp(f[0], "stereo") ? INPUT_STEREO : !strcmp(f[0], "off") ? INPUT_OFF : INPUT_MONO;
+            str_set(d->name, f[1]);
+            str_set(d->id, f[2]);
         }
     } else if (!strcmp(key, "folder")) {
         // folder = ignored | C:\Users\me\AppData\Local\VoiceStreams\*\clips-off
@@ -444,6 +470,11 @@ static bool config_save(const Config &c, const Paths &paths)
                 category_name(a.category), session_mode_name(a.session_mode), a.rec.bitrate_mbps, a.rec.fps,
                 a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path);
     }
+    fprintf(f, "\n# input = mono | stereo, name | endpoint id (a recording device on a track of its own)\n");
+    for (i32 i = 0; i < c.input_count; i++)
+        if (c.inputs[i].mode != INPUT_OFF)
+            fprintf(f, "input = %s | %s | %s\n", c.inputs[i].mode == INPUT_STEREO ? "stereo" : "mono", c.inputs[i].name,
+                    c.inputs[i].id);
     fprintf(f, "\n# folder = category | path (every app in it or below it, unless the app has its own category)\n");
     for (i32 i = 0; i < c.folder_count; i++)
         fprintf(f, "folder = %s | %s\n", category_name(c.folders[i].category), c.folders[i].path);

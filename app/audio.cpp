@@ -1,5 +1,5 @@
-// Audio: a WASAPI capture stream for each app playing sound (process loopback of its whole process tree), plus the
-// mic, each piped as raw PCM into its own small ffmpeg that writes Opus in 10 s segments to the buffer. Also which
+// Audio: a WASAPI capture stream for each app playing sound (process loopback of its whole process tree), plus
+// Windows' default input and any other inputs turned on in Options, each piped as raw PCM into its own small ffmpeg that writes Opus in 10 s segments to the buffer. Also which
 // game is being played (activity.tsv).
 //
 // Threads:
@@ -470,6 +470,45 @@ static void device_name(IMMDevice *dev, char *out, i32 cap)
     props->Release();
 }
 
+static void device_id_utf8(IMMDevice *dev, char *out, i32 cap)
+{
+    out[0] = 0;
+    wchar_t *id = 0;
+    if (SUCCEEDED(dev->GetId(&id))) {
+        wide_to_utf8(id, out, cap);
+        CoTaskMemFree(id);
+    }
+}
+
+// The inputs plugged in now, and which is Windows' default. For Options (main thread) and the watcher.
+static i32 audio_list_inputs(InputDevice *out, i32 cap, char *default_id, i32 default_cap)
+{
+    i32 n = 0;
+    default_id[0] = 0;
+    IMMDeviceEnumerator *en = device_enumerator();
+    if (!en) return 0;
+    IMMDevice *def = 0;
+    if (SUCCEEDED(en->GetDefaultAudioEndpoint(eCapture, eConsole, &def))) {
+        device_id_utf8(def, default_id, default_cap);
+        def->Release();
+    }
+    IMMDeviceCollection *devices = 0;
+    UINT count = 0;
+    if (SUCCEEDED(en->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &devices))) devices->GetCount(&count);
+    for (UINT i = 0; i < count && n < cap; i++) {
+        IMMDevice *dev = 0;
+        if (FAILED(devices->Item(i, &dev))) continue;
+        InputDevice *d = &out[n++];
+        *d = {};
+        device_id_utf8(dev, d->id, sizeof d->id);
+        device_name(dev, d->name, sizeof d->name);
+        dev->Release();
+    }
+    if (devices) devices->Release();
+    en->Release();
+    return n;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Workers: one thread per stream
 
@@ -480,7 +519,7 @@ struct AudioWorker {
     AudioKind kind;
     Str64     exe;
     char      path[MAX_PATH]; // its exe's full path (UTF-8): folder rules decide by it
-    u32       pid; // the process tree's root (0 for the mic)
+    u32       pid; // the process tree's root (0 for an input)
     Path      buffer_dir;
     Path      ffmpeg;
     // Shared between the watcher and the worker.
@@ -519,7 +558,13 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
         what = "opening the mic";
         en = device_enumerator();
         if (!en) { hr = E_FAIL; goto done; }
-        hr = en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev);
+        if (w->path[0]) { // another input, by its endpoint id
+            wchar_t want[256];
+            utf8_to_wide(w->path, want, COUNT(want));
+            hr = en->GetDevice(want, &dev);
+        } else {
+            hr = en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev);
+        }
         if (FAILED(hr)) goto done;
         wchar_t *id = 0;
         if (SUCCEEDED(dev->GetId(&id))) {
@@ -528,7 +573,7 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
         }
         char name[256];
         device_name(dev, name, sizeof name);
-        log_line("mic: %s", name);
+        log_line(w->path[0] ? "input: %s" : "mic: %s", name);
         hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void **)&client);
     } else {
         what = "starting process loopback";
@@ -560,7 +605,7 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
 
     what = "capturing";
     while (!w->stop) {
-        if (w->kind == AUDIO_MIC && GetTickCount64() - mic_checked >= 3000) {
+        if (w->kind == AUDIO_MIC && !w->path[0] && GetTickCount64() - mic_checked >= 3000) {
             mic_checked = GetTickCount64();
             wchar_t now[256];
             default_mic_id(now, COUNT(now));
@@ -855,13 +900,41 @@ static void audio_tick_streams()
 
     AudioWorker *mic = 0;
     for (i32 i = 0; i < COUNT(g_aw.workers); i++)
-        if (g_aw.workers[i].used && g_aw.workers[i].kind == AUDIO_MIC) mic = &g_aw.workers[i];
+        if (g_aw.workers[i].used && g_aw.workers[i].kind == AUDIO_MIC && !g_aw.workers[i].path[0]) mic = &g_aw.workers[i];
     if (mic && (!cfg.mic || mic->finished)) {
         worker_stop_begin(mic);
         worker_join(mic);
         mic = 0;
     }
     if (cfg.mic && !mic) worker_start(AUDIO_MIC, "mic", "", 0);
+
+    // Other inputs turned on, while plugged in. One that is Windows' default is already on the Mic track, so it
+    // waits until it no longer is.
+    InputDevice live[32];
+    char default_id[128];
+    i32 live_count = cfg.input_count ? audio_list_inputs(live, COUNT(live), default_id, sizeof default_id) : 0;
+    auto wanted = [&](const char *id) {
+        const InputDevice *d = config_input(cfg.inputs, cfg.input_count, id);
+        if (!d || d->mode == INPUT_OFF || (cfg.mic && !_stricmp(id, default_id))) return (const InputDevice *)0;
+        for (i32 i = 0; i < live_count; i++)
+            if (!_stricmp(live[i].id, id)) return d;
+        return (const InputDevice *)0;
+    };
+    for (i32 i = 0; i < COUNT(g_aw.workers); i++) {
+        AudioWorker *w = &g_aw.workers[i];
+        if (!w->used || w->kind != AUDIO_MIC || !w->path[0] || (wanted(w->path) && !w->finished)) continue;
+        log_line("input %s closed", w->exe.s);
+        worker_stop_begin(w);
+        worker_join(w);
+    }
+    for (i32 i = 0; i < cfg.input_count; i++) {
+        const InputDevice *d = wanted(cfg.inputs[i].id);
+        if (!d) continue;
+        bool running = false;
+        for (i32 k = 0; k < COUNT(g_aw.workers) && !running; k++)
+            running = g_aw.workers[k].used && g_aw.workers[k].kind == AUDIO_MIC && !_stricmp(g_aw.workers[k].path, d->id);
+        if (!running) worker_start(AUDIO_MIC, d->name, d->id, 0);
+    }
 
     // Close streams whose app exited, is now ignored, failed, or has been quiet too long.
     bool closing[COUNT(g_aw.workers)] = {};

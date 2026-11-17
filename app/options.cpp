@@ -1828,6 +1828,57 @@ static void monitor_note(i32 i, char *out, i32 cap)
     snprintf(out, cap, "%d\xC3\x97%d, %d Hz%s", m.width, m.height, m.hz, m.primary ? ", main" : "");
 }
 
+// The inputs plugged in (listed again every 2 s), then the ones turned on that aren't: each Off, Mono or Stereo.
+// One that isn't off records to a track of its own.
+static void opt_inputs(Config &c)
+{
+    static InputDevice live[16];
+    static i32 live_count;
+    static char default_id[128];
+    static u64 listed;
+    if (!listed || GetTickCount64() - listed > 2000) {
+        live_count = audio_list_inputs(live, COUNT(live), default_id, sizeof default_id);
+        listed = GetTickCount64();
+    }
+    InputDevice rows[COUNT(live) + COUNT(c.inputs)];
+    bool plugged[COUNT(rows)] = {};
+    i32 n = 0;
+    for (i32 i = 0; i < live_count; i++) {
+        plugged[n] = true;
+        rows[n++] = live[i];
+    }
+    for (i32 i = 0; i < c.input_count; i++) {
+        bool found = false;
+        for (i32 k = 0; k < live_count && !found; k++) found = !_stricmp(live[k].id, c.inputs[i].id);
+        if (!found && c.inputs[i].mode != INPUT_OFF) rows[n++] = c.inputs[i];
+    }
+    static const char *const modes[] = {"Off", "Mono", "Stereo"};
+    for (i32 i = 0; i < n; i++) {
+        const InputDevice *set = config_input(c.inputs, c.input_count, rows[i].id);
+        i32 mode = set ? set->mode : INPUT_OFF;
+        const char *sub = !plugged[i]                          ? "Not plugged in"
+                          : _stricmp(rows[i].id, default_id)     ? 0
+                          : c.mic                              ? "Windows' default: on the Mic track while it is"
+                                                               : "Windows' default";
+        ImGui::PushID(i);
+        if (opt_row_combo(rows[i].name, sub, "##input", modes, 0, COUNT(modes), &mode, dp(200))) {
+            InputDevice *d = (InputDevice *)config_input(c.inputs, c.input_count, rows[i].id);
+            if (!d && c.input_count < COUNT(c.inputs)) d = &c.inputs[c.input_count++];
+            if (d) {
+                *d = rows[i];
+                d->mode = (InputMode)mode;
+            }
+            // Turned off: dropped from the settings.
+            for (i32 k = 0; k < c.input_count;)
+                if (c.inputs[k].mode == INPUT_OFF) c.inputs[k] = c.inputs[--c.input_count];
+                else k++;
+            log_line("options: input %s %s", rows[i].name, modes[mode]);
+            options_apply(APPLY_AUDIO);
+        }
+        ImGui::PopID();
+    }
+}
+
 static void options_recording()
 {
     OptionsUi &o = g_app.options;
@@ -2040,10 +2091,11 @@ static void options_recording()
 
     opt_section("AUDIO");
     opt_card_begin();
-    if (opt_row_toggle("Record the microphone", "On its own track", "##mic", &c.mic)) {
+    if (opt_row_toggle("Default input", "Windows' recording device, on the Mic track", "##mic", &c.mic)) {
         log_line("options: mic %s", c.mic ? "on" : "off");
         options_apply(APPLY_AUDIO);
     }
+    opt_inputs(c);
     if (opt_row_toggle("Voices in mono", "The Mic and chat tracks in saves, at half the size", "##voicemono", &c.voice_mono)) {
         log_line("options: voices %s", c.voice_mono ? "mono" : "stereo");
         options_apply(0);

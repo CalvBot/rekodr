@@ -7,7 +7,7 @@
 //
 // A save stream-copies the video segments covering the range (gaps such as the lock screen are cut out) and lays
 // every audio stream overlapping it onto the SPEC's tracks, cut to match:
-//   1. Mix (everything)   2. Mic   3+. one per chat app or person, then one per game, then one per other app
+//   1. Mix (everything)   2. Mic   3+. one per other input, then per chat app or person, per game, per other app
 // Tracks 1 and 2 are always there, silent if nothing played. A file has at most MEDIA_MAX_TRACKS tracks (what the
 // editor reads); apps past that share a last "Other" track. The Mic and chat tracks are mono when Options says so.
 
@@ -33,6 +33,8 @@ struct SaveSettings {
     char    codec[64];
     u8      vendor; // the H.264 encoder Keep and Share use when they re-encode (Vendor)
     bool    voice_mono;
+    InputDevice inputs[16];
+    i32     input_count;
     AppInfo apps[512];
     i32     app_count;
     FolderRule folders[32];
@@ -72,9 +74,10 @@ struct Piece {
 
 struct Track {
     char title[128];
-    char exe[64]; // app tracks
+    char exe[64]; // app tracks: the exe; input tracks: the device's endpoint id
+    bool input;   // an input other than Windows' default
     bool chat;    // a Chat app (each Discord person is an exe of their own)
-    bool voice;   // the Mic or a chat track: mono when Options says so
+    bool mono;    // kept in mono (Options: voices in mono, or the input's own setting)
     bool game;
     i32  rank;    // position in time played (most first); INT32_MAX for apps
 };
@@ -228,36 +231,47 @@ static void stream_span(const BufferIdx &b, i32 s, i64 *start, i64 *end)
 
 static bool track_before(const Track &a, const Track &b)
 {
+    if (a.input != b.input) return a.input;
     if (a.chat != b.chat) return a.chat;
     if (a.game != b.game) return a.game;
     return a.rank < b.rank;
 }
 
-// Mic, then one track per app: chat apps and people first (in order of first sound), then games (the one played
-// most first), then the rest in order of first sound. Every stream of one exe goes on its track.
+// Mic (Windows' default input), then one track per other input, then per app: chat apps and people (in order of
+// first sound), games (the one played most first), then the rest in order of first sound. Every stream of one
+// device or exe goes on its track.
 static void make_tracks(SaveWork *w)
 {
     w->track_count = 1;
     w->tracks[0] = {};
     str_set(w->tracks[0].title, "Mic");
-    w->tracks[0].voice = true;
+    w->tracks[0].mono = w->cfg.voice_mono;
     for (i32 i = 0; i < w->stream_count; i++) {
         const AudioStreamInfo &st = w->buf.streams[w->streams[i]];
         w->stream_track[i] = -1;
-        if (st.mic) { w->stream_track[i] = 0; continue; }
-        AppCategory cat = save_category(w->cfg, st.exe, st.path);
+        if (st.mic && !st.path[0]) { w->stream_track[i] = 0; continue; }
+        AppCategory cat = st.mic ? CAT_NONE : save_category(w->cfg, st.exe, st.path);
         if (cat == CAT_IGNORED) continue;
+        const char *key = st.mic ? st.path : st.exe;
         i32 t = 1;
-        while (t < w->track_count && strcmp(w->tracks[t].exe, st.exe)) t++;
+        while (t < w->track_count && (w->tracks[t].input != st.mic || strcmp(w->tracks[t].exe, key))) t++;
         if (t == w->track_count) {
             if (t == COUNT(w->tracks)) continue;
             Track *tr = &w->tracks[w->track_count++];
             *tr = {};
-            str_set(tr->exe, st.exe);
-            tr->chat = tr->voice = cat == CAT_COMMUNICATION;
+            str_set(tr->exe, key);
+            tr->input = st.mic;
+            tr->chat = cat == CAT_COMMUNICATION;
             tr->game = cat == CAT_GAME;
             char name[96];
-            display_name(w->cfg, st.exe, name, sizeof name);
+            if (tr->input) {
+                const InputDevice *d = config_input(w->cfg.inputs, w->cfg.input_count, st.path);
+                input_short_name(d ? d->name : st.exe, name, sizeof name);
+                tr->mono = !d || d->mode != INPUT_STEREO;
+            } else {
+                display_name(w->cfg, st.exe, name, sizeof name);
+                tr->mono = tr->chat && w->cfg.voice_mono;
+            }
             snprintf(tr->title, sizeof tr->title, tr->game ? "%s (game)" : tr->chat ? "%s (chat)" : "%s", name);
             tr->rank = INT32_MAX;
             for (i32 g = 0; g < w->game_count; g++)
@@ -349,8 +363,8 @@ static void make_graph(SaveWork *w, i64 total_us)
             if (inputs > 1) graph_add(w, "amix=inputs=%d:normalize=0:dropout_transition=0,", inputs);
             graph_add(w, "apad=whole_dur=%s,atrim=duration=%s[t%d];\n", total, total, t);
         }
-        // The Mix takes the track as it is; a mono voice track is only its own copy, both channels averaged.
-        if (w->cfg.voice_mono && w->tracks[t].voice)
+        // The Mix takes the track as it is; a mono track is only its own copy, both channels averaged.
+        if (w->tracks[t].mono)
             graph_add(w, "[t%d]asplit=2[c%d][m%d];\n[c%d]pan=mono|c0=0.5*c0+0.5*c1[o%d];\n", t, t, t, t, t);
         else graph_add(w, "[t%d]asplit=2[o%d][m%d];\n", t, t, t);
     }
@@ -651,7 +665,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     for (i32 i = 0; i <= w->track_count; i++) {
         const char *title = i == 0 ? "Mix" : w->tracks[i - 1].title;
         char key[48];
-        if (i > 0 && w->cfg.voice_mono && w->tracks[i - 1].voice) {
+        if (i > 0 && w->tracks[i - 1].mono) {
             snprintf(key, sizeof key, "-b:a:%d", i);
             arg_pair(a, cap, key, "96k");
         }
@@ -1088,6 +1102,8 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     s->work_dir = g_app.paths.local_dir;
     str_set(s->codec, c.codec.s);
     s->voice_mono = c.voice_mono;
+    memcpy(s->inputs, c.inputs, sizeof s->inputs);
+    s->input_count = c.input_count;
     // H.264 for edits: the encoder forced in Options if it's set, else the first whose test encode worked.
     i32 forced = vendor_parse(c.encoder.s);
     u8 ok = g_app.recorder.encoders_ok[0];
