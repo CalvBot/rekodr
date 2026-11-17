@@ -4,13 +4,8 @@
 // CLIPBACK_HOME (for development and tests) moves every folder clipback uses under that one folder, so a test copy
 // never touches the real settings, buffer or clips.
 
-// A test copy (CLIPBACK_HOME) leaves the hotkeys and Windows' Run list to the real clipback, and reads the first
-// run's import from its own folder.
-static bool is_test_copy()
-{
-    wchar_t home[MAX_PATH] = {};
-    return GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0];
-}
+// A test copy (CLIPBACK_HOME) leaves the hotkeys and Windows' Run list to the real clipback.
+static bool is_test_copy() { return test_home_hash() != 0; }
 
 static void paths_init(Paths *p)
 {
@@ -122,6 +117,22 @@ static AppInfo *config_app(Config *c, const char *exe)
     *a = {};
     str_set(a->exe.s, exe);
     return a;
+}
+
+// The first settings, when there's no settings.txt yet: the defaults, with the usual chat apps sorted as Chat. The
+// caller saves them.
+static void config_first_run(Config *c, const Paths &paths)
+{
+    static const char *const chat[] = {
+        "discord.exe", "discordptb.exe", "discordcanary.exe", "ms-teams.exe", "teams.exe", "zoom.exe", "slack.exe",
+        "ts3client_win64.exe", "teamspeak.exe", "skype.exe", "telegram.exe", "whatsapp.exe", "signal.exe",
+        "mumble.exe", "guilded.exe", "element.exe", "vesktop.exe",
+    };
+    config_defaults(c, paths);
+    for (i32 i = 0; i < COUNT(chat); i++) {
+        AppInfo *a = config_app(c, chat[i]);
+        if (a) a->category = CAT_COMMUNICATION;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-// Options: every setting. (The first-run import from the Rust version is import.cpp.)
+// Options: every setting.
 //
 // Every change applies at once: it's written to settings.txt (config_save) and handed to whatever uses it
 // (options_apply). There's no Save button. Text and number boxes count only when the edit is finished (Enter or

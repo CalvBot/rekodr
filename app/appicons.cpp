@@ -25,12 +25,16 @@ static bool app_find_path(const char *exe, Path *out)
     }
     if (out->s[0]) return true;
 
-    wchar_t *local = 0;
-    SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, &local);
-    Path real = {}, paths = {};
-    swprintf(real.s, MAX_PATH, L"%s\\lifelog\\paths.txt", local ? local : L".");
-    CoTaskMemFree(local);
-    import_path(L"lifelog-paths.txt", real.s, &paths);
+    // lifelog's list of where each exe it saw lives (a test copy reads <home>\\import\\lifelog-paths.txt instead)
+    Path paths = {};
+    wchar_t home[MAX_PATH] = {}, *local = 0;
+    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
+        swprintf(paths.s, MAX_PATH, L"%s\\import\\lifelog-paths.txt", home);
+    } else {
+        SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, &local);
+        swprintf(paths.s, MAX_PATH, L"%s\\lifelog\\paths.txt", local ? local : L".");
+        CoTaskMemFree(local);
+    }
     i64 size = 0;
     char *text = read_file(paths.s, &size);
     if (!text) return false;
