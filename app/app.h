@@ -116,6 +116,8 @@ struct Config {
     i32 card_width; // Library cards: about how wide, in pixels at 100% (Ctrl + wheel over the grid changes it)
     f32 timeline_top;   // Timeline: the share of its height above the tracks (the splitter); 0 = the default
     i32 timeline_names; // Timeline: the track names' column, in pixels at 100% (its edge is dragged); 0 = the default
+    f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default
+    i32 editor_lane;    // Editor: a timeline lane's height, in pixels at 100% (Shift + wheel); 0 = the default
 
     Hotkey hotkeys[16];
     i32    hotkey_count;
@@ -469,8 +471,7 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     bool       dirty;           // the record changed and isn't written yet
     Player     player;
     i32        tab;             // side panel: 0 edit, 1 keep and share
-    i32        key_page, track_page, share_page;
-    i32        drag;            // timeline: 0 none, 1 trim start, 2 trim end, 3 playhead
+    i32        share_page;
     bool       aiming;          // dragging the picture aims the zoom
     i32        aim_key;
     f64        aim_mx, aim_my, aim_kx, aim_ky;
@@ -486,6 +487,25 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     bool       result_error;
     ShareFile  shares[64];      // Recent shares, newest first
     i32        share_count;
+    // The timeline (editor.cpp). Lanes: 0 the zoom, 1 + n volume slot n (EDIT_MASTER = the whole mix).
+    struct WaveData *wave;      // the tracks' waveforms (wave.cpp)
+    f64        view_from, view_span; // seconds shown across the lanes
+    f32        lane_scroll;     // the sound lanes scrolled up by, in pixels
+    u64        sel[EDIT_MASTER + 2]; // selected keys, a bit per key, per lane
+    i32        lane_drag;       // what the mouse is doing on the timeline (ED_DRAG_*)
+    i32        drag_lane, drag_key;
+    f64        drag_t;          // the grabbed key's time (or the level) when the drag began
+    f32        drag_mx, drag_my;
+    bool       drag_moved;
+    u64        drag_sel[EDIT_MASTER + 2];
+    EditRecord drag_from;       // the record when the drag began
+    i32        menu_lane, menu_key; // the right-click menu's target
+    f64        menu_t, menu_v;
+    struct { i32 lane; f64 t, v, x, y; u8 ease; } clip[128]; // copied keys, t from the first
+    i32        clip_count;
+    EditRecord settled;         // the record as of the last settled change (what undo goes back from)
+    EditRecord undo[20], redo[20];
+    i32        undo_count, redo_count;
 };
 // timeline.cpp: the buffer and a range to save. Times are wall-clock µs; 0 = not set.
 struct TimelineRow {   // one audio row: every stream of one exe (or the mic)

@@ -150,6 +150,8 @@ static void test_settings_round_trip()
     a.voice_mono = false;        // the default is on
     a.timeline_top = 0.4f;
     a.timeline_names = 220;
+    a.editor_top = 0.6f;
+    a.editor_lane = 60;
     str_set(a.codec.s, "hevc");
     a.hotkey_count = 1;
     str_set(a.hotkeys[0].keys.s, "Alt+F10");
@@ -182,6 +184,8 @@ static void test_settings_round_trip()
     T(!b.voice_mono);
     T(b.timeline_top == 0.4f);
     T(b.timeline_names == 220);
+    T(b.editor_top == 0.6f);
+    T(b.editor_lane == 60);
     T(b.input_count == 1 && !strcmp(b.inputs[0].id, "{0.0.1.00000000}.{a}") &&
       !strcmp(b.inputs[0].name, "Line (RODE AI-1)") && b.inputs[0].mode == INPUT_STEREO);
     char short_name[64];
@@ -197,6 +201,37 @@ static void test_settings_round_trip()
 }
 
 // The editor's volume keys and eases: the curve, the volume at a time, and the edit file round trip.
+// The editor's lanes: keys go in by time, and a selection stays on the same keys through inserts, erases and sorts.
+static void test_lanes()
+{
+    T(bits_insert(0b101, 1) == 0b1001);
+    T(bits_insert(0b1, 0) == 0b10);
+    T(bits_erase(0b1101, 1) == 0b111);
+    T(bits_erase(0b1, 0) == 0);
+    T(bits_all(3) == 0b111 && bits_all(64) == ~0ull);
+    static EditRecord e;
+    e = {};
+    u64 sel = 0;
+    LaneKey q = {};
+    q.t = 2; q.v = 0.5; T(ln_insert(e, 3, q, &sel) == 0);
+    q.t = 1; q.v = 1.5; T(ln_insert(e, 3, q, &sel) == 0);
+    q.t = 3; q.v = 1.0; T(ln_insert(e, 3, q, &sel) == 2);
+    T(e.vol_count[2] == 3 && e.vol[2][0].t == 1 && e.vol[2][1].t == 2);
+    sel = 0b100; // the key at 3 s
+    e.vol[2][2].t = 0.5; // dragged to the front
+    ln_sort(e, 3, &sel);
+    T(e.vol[2][0].t == 0.5 && e.vol[2][0].v == 1.0f && sel == 0b1);
+    ln_erase(e, 3, 0, &sel);
+    T(e.vol_count[2] == 2 && sel == 0);
+    T(fabs(ln_value_at(e, 3, 1.5) - 1.0) < 1e-6); // linear from 1.5 to 0.5
+    // A zoom key keeps its aim through the lane.
+    q = {};
+    q.t = 4; q.v = 2; q.x = 0.25; q.y = 0.75; q.ease = EASE_HOLD;
+    T(ln_insert(e, 0, q, 0) == 0);
+    LaneKey g = ln_get(e, 0, 0);
+    T(g.v == 2 && g.x == 0.25 && g.y == 0.75 && g.ease == EASE_HOLD);
+}
+
 static void test_edit_volumes()
 {
     T(ease_curve(EASE_LINEAR, EASE_LINEAR, 0.25) == 0.25);
@@ -566,6 +601,7 @@ int main()
     test_hotkeys();
     test_settings_round_trip();
     test_edit_volumes();
+    test_lanes();
     test_gamedb();
     test_mcpack();
     test_storeids();

@@ -26,6 +26,10 @@ static void run_command(const char *text)
     if (!*cmd || !strcmp(cmd, "open")) ui_show(SCREEN_LIBRARY);
     else if (!strcmp(cmd, "timeline")) ui_show(SCREEN_TIMELINE);
     else if (!strcmp(cmd, "options")) ui_show(SCREEN_OPTIONS);
+    else if (!strcmp(cmd, "edit") && *arg) { // edit <path>: a saved file in the editor
+        ui_show(SCREEN_EDITOR);
+        editor_open_file(arg);
+    }
     else if (!strcmp(cmd, "save")) {
         i64 from_us, to_us;
         i32 range = parse_range_us(arg, &from_us, &to_us);

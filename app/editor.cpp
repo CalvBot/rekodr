@@ -140,6 +140,131 @@ static void zoom_uv(const EditRecord &e, f64 t, ImVec2 *uv0, ImVec2 *uv1)
     *uv1 = ImVec2((f32)(ox + w), (f32)(oy + w));
 }
 
+// Lanes: the zoom keys (lane 0) and each volume slot's keys (lane 1 + slot) read and written alike, so the
+// timeline's selecting, dragging, eases, copy and paste work the same on all of them. Values are a zoom (1..4) or a
+// volume (0..2, 1 = as recorded).
+struct LaneKey {
+    f64 t, v, x, y; // x, y: a zoom key's aim
+    u8  ease;
+};
+
+static i32 ln_count(const EditRecord &e, i32 l) { return l ? e.vol_count[l - 1] : e.key_count; }
+static i32 ln_cap(i32 l) { return l ? EDIT_MAX_VOL_KEYS : EDIT_MAX_KEYS; }
+static f64 ln_lo(i32 l) { return l ? 0 : 1; }
+static f64 ln_hi(i32 l) { return l ? 2 : 4; }
+
+static LaneKey ln_get(const EditRecord &e, i32 l, i32 k)
+{
+    LaneKey q = {};
+    if (l) {
+        const VolKey &v = e.vol[l - 1][k];
+        q.t = v.t;
+        q.v = v.v;
+        q.x = q.y = 0.5;
+        q.ease = v.ease;
+    } else {
+        const ZoomKey &z = e.keys[k];
+        q.t = z.t;
+        q.v = z.z;
+        q.x = z.x;
+        q.y = z.y;
+        q.ease = z.ease;
+    }
+    return q;
+}
+
+static void ln_put(EditRecord &e, i32 l, i32 k, const LaneKey &q)
+{
+    if (l) {
+        VolKey &v = e.vol[l - 1][k];
+        v.t = q.t;
+        v.v = (f32)q.v;
+        v.ease = q.ease;
+    } else {
+        ZoomKey &z = e.keys[k];
+        z.t = q.t;
+        z.z = q.v;
+        z.x = q.x;
+        z.y = q.y;
+        z.ease = q.ease;
+    }
+}
+
+static f64 ln_value_at(const EditRecord &e, i32 l, f64 t)
+{
+    if (l) return vol_at(e, l - 1, t);
+    f64 z, x, y;
+    zoom_at(e, t, &z, &x, &y);
+    return z;
+}
+
+// A selection is a bit per key; these keep it on the same keys as one is put in or taken out at i.
+static u64 bits_insert(u64 m, i32 i)
+{
+    u64 low = m & ((1ull << i) - 1);
+    return low | ((m & ~low) << 1);
+}
+
+static u64 bits_erase(u64 m, i32 i)
+{
+    u64 low = m & ((1ull << i) - 1);
+    return low | (i < 63 ? (m >> (i + 1)) << i : 0);
+}
+
+static u64 bits_all(i32 n) { return n >= 64 ? ~0ull : (1ull << n) - 1; }
+
+// Puts a key in its place by time (after any at the same time). Returns where, or -1 when the lane is full.
+static i32 ln_insert(EditRecord &e, i32 l, const LaneKey &q, u64 *sel)
+{
+    i32 n = ln_count(e, l);
+    if (n >= ln_cap(l)) return -1;
+    i32 at = n;
+    while (at > 0 && ln_get(e, l, at - 1).t > q.t) at--;
+    if (l) {
+        memmove(e.vol[l - 1] + at + 1, e.vol[l - 1] + at, (n - at) * sizeof(VolKey));
+        e.vol_count[l - 1]++;
+    } else {
+        memmove(e.keys + at + 1, e.keys + at, (n - at) * sizeof(ZoomKey));
+        e.key_count++;
+    }
+    ln_put(e, l, at, q);
+    if (sel) *sel = bits_insert(*sel, at);
+    return at;
+}
+
+static void ln_erase(EditRecord &e, i32 l, i32 k, u64 *sel)
+{
+    i32 n = ln_count(e, l);
+    if (k < 0 || k >= n) return;
+    if (l) {
+        memmove(e.vol[l - 1] + k, e.vol[l - 1] + k + 1, (n - k - 1) * sizeof(VolKey));
+        e.vol_count[l - 1]--;
+    } else {
+        memmove(e.keys + k, e.keys + k + 1, (n - k - 1) * sizeof(ZoomKey));
+        e.key_count--;
+    }
+    if (sel) *sel = bits_erase(*sel, k);
+}
+
+// Back in time order after keys were moved, the selection going with them.
+static void ln_sort(EditRecord &e, i32 l, u64 *sel)
+{
+    i32 n = ln_count(e, l);
+    for (i32 i = 1; i < n; i++) {
+        LaneKey q = ln_get(e, l, i);
+        u64 bit = (*sel >> i) & 1;
+        i32 j = i;
+        for (; j > 0; j--) {
+            LaneKey b = ln_get(e, l, j - 1);
+            if (b.t <= q.t) break;
+            ln_put(e, l, j, b);
+            *sel = (*sel & ~(1ull << j)) | (((*sel >> (j - 1)) & 1) << j);
+        }
+        ln_put(e, l, j, q);
+        *sel = (*sel & ~(1ull << j)) | (bit << j);
+    }
+}
+
 static f64 ed_duration()
 {
     Editor &ed = g_app.editor;
@@ -158,42 +283,52 @@ static f64 ed_frame()
     return 1 / (fps > 1 ? fps : 60);
 }
 
-// The key at the playhead (within half a frame), or -1.
-static i32 ed_key_at(f64 t)
+// The key on lane l at t (within half a frame), or -1.
+static i32 ln_key_at(const EditRecord &e, i32 l, f64 t)
 {
-    Editor &ed = g_app.editor;
     f64 tol = ed_frame() / 2 + 0.01;
-    for (i32 k = 0; k < ed.edit.key_count; k++)
-        if (ed.edit.keys[k].t > t - tol && ed.edit.keys[k].t < t + tol) return k;
+    for (i32 k = 0; k < ln_count(e, l); k++) {
+        f64 kt = ln_get(e, l, k).t;
+        if (kt > t - tol && kt < t + tol) return k;
+    }
     return -1;
 }
 
-// A key at `t` holding the zoom as it is there now. Returns its index, or -1 if there's no room.
+static i32 ed_key_at(f64 t) { return ln_key_at(g_app.editor.edit, 0, t); }
+
+// A key on lane l at t with value v (a zoom key aims where the zoom aims there now). Returns its index, or -1 if
+// the lane is full.
+static i32 ed_put_key(i32 l, f64 t, f64 v)
+{
+    Editor &ed = g_app.editor;
+    LaneKey q = {};
+    q.t = t;
+    q.v = v;
+    q.x = q.y = 0.5;
+    q.ease = l ? EASE_LINEAR : EASE_SMOOTH;
+    if (!l) {
+        f64 z;
+        zoom_at(ed.edit, t, &z, &q.x, &q.y);
+    }
+    i32 k = ln_insert(ed.edit, l, q, &ed.sel[l]);
+    if (k >= 0) ed.dirty = true;
+    return k;
+}
+
+// A zoom key at `t` holding the zoom as it is there now. Returns its index, or -1 if there's no room.
 static i32 ed_add_key(f64 t)
 {
     Editor &ed = g_app.editor;
     i32 k = ed_key_at(t);
     if (k >= 0) return k;
-    if (ed.edit.key_count == EDIT_MAX_KEYS) return -1;
-    ZoomKey z = {};
-    z.t = t;
-    z.ease = EASE_SMOOTH;
-    zoom_at(ed.edit, t, &z.z, &z.x, &z.y);
-    i32 at = 0;
-    while (at < ed.edit.key_count && ed.edit.keys[at].t < t) at++;
-    memmove(ed.edit.keys + at + 1, ed.edit.keys + at, (ed.edit.key_count - at) * sizeof z);
-    ed.edit.keys[at] = z;
-    ed.edit.key_count++;
-    ed.dirty = true;
-    return at;
+    return ed_put_key(0, t, ln_value_at(ed.edit, 0, t));
 }
 
 static void ed_delete_key(i32 k)
 {
     Editor &ed = g_app.editor;
     if (k < 0 || k >= ed.edit.key_count) return;
-    memmove(ed.edit.keys + k, ed.edit.keys + k + 1, (ed.edit.key_count - k - 1) * sizeof ed.edit.keys[0]);
-    ed.edit.key_count--;
+    ln_erase(ed.edit, 0, k, &ed.sel[0]);
     ed.dirty = true;
 }
 
@@ -278,14 +413,23 @@ static void editor_open(const LibItem &item)
     edit_read(lib_edit_path(item), &ed.edit);
     ed.dirty = false;
     ed.tracks_ready = false;
-    ed.key_page = ed.track_page = 0;
-    ed.drag = 0;
+    ed.lane_drag = 0;
+    ed.lane_scroll = 0;
+    ed.view_from = ed.view_span = 0;
+    memset(ed.sel, 0, sizeof ed.sel);
+    ed.settled = ed.edit;
+    ed.undo_count = ed.redo_count = 0;
     ed.aiming = false;
     ed.result[0] = 0;
     ed.result_error = false;
     ed.player.id = 1;
     player_open(&ed.player, ed.path, ed.edit.in_s, false);
     editor_refresh_shares();
+    // The waveforms of the tracks the timeline shows, measured (or read from the cache) in the background.
+    wave_close(&ed.wave);
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 n = ed_tracks(item.info, tracks, MEDIA_MAX_TRACKS);
+    ed.wave = wave_open(ed.path, item.key, item.info.duration, tracks, n);
     g_app.ui.screen = SCREEN_EDITOR;
     log_line("editor: %s", item.name);
     ui_wake();
@@ -330,6 +474,7 @@ static void editor_close()
     Editor &ed = g_app.editor;
     ed_save_record();
     player_close(&ed.player);
+    wave_close(&ed.wave);
     ed.open = false;
 }
 
@@ -414,88 +559,864 @@ static void ed_start(SaveKind kind)
     }
 }
 
+// ---- The selection, copy and paste, undo ----
+
+enum { ED_LANES = EDIT_MASTER + 2 };
+
+// A lane the timeline shows for this file (copied keys aren't pasted onto a track it doesn't have).
+static bool ed_lane_shown(i32 l)
+{
+    if (l == 0 || l == 1 + EDIT_MASTER) return true;
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 n = ed_tracks(g_app.editor.item.info, tracks, MEDIA_MAX_TRACKS);
+    for (i32 i = 0; i < n; i++)
+        if (tracks[i] == l - 1) return true;
+    return false;
+}
+
+static void ed_sel_clear() { memset(g_app.editor.sel, 0, sizeof g_app.editor.sel); }
+
+static i32 ed_sel_count()
+{
+    i32 n = 0;
+    for (i32 l = 0; l < ED_LANES; l++)
+        for (u64 m = g_app.editor.sel[l]; m; m &= m - 1) n++;
+    return n;
+}
+
+static void ed_select_all()
+{
+    Editor &ed = g_app.editor;
+    for (i32 l = 0; l < ED_LANES; l++) ed.sel[l] = ed_lane_shown(l) ? bits_all(ln_count(ed.edit, l)) : 0;
+}
+
+// The selected keys' ease if they share one, else -1.
+static i32 ed_sel_ease()
+{
+    Editor &ed = g_app.editor;
+    i32 ease = -1;
+    for (i32 l = 0; l < ED_LANES; l++)
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) {
+            if (!((ed.sel[l] >> k) & 1)) continue;
+            i32 e = ln_get(ed.edit, l, k).ease;
+            if (ease == -1) ease = e;
+            else if (ease != e) return -1;
+        }
+    return ease;
+}
+
+static void ed_set_ease(i32 ease)
+{
+    Editor &ed = g_app.editor;
+    for (i32 l = 0; l < ED_LANES; l++)
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) {
+            if (!((ed.sel[l] >> k) & 1)) continue;
+            LaneKey q = ln_get(ed.edit, l, k);
+            q.ease = (u8)ease;
+            ln_put(ed.edit, l, k, q);
+            ed.dirty = true;
+        }
+}
+
+static void ed_delete_selected()
+{
+    Editor &ed = g_app.editor;
+    for (i32 l = 0; l < ED_LANES; l++)
+        for (i32 k = ln_count(ed.edit, l) - 1; k >= 0; k--)
+            if ((ed.sel[l] >> k) & 1) {
+                ln_erase(ed.edit, l, k, &ed.sel[l]);
+                ed.dirty = true;
+            }
+}
+
+static void ed_copy()
+{
+    Editor &ed = g_app.editor;
+    f64 first = 1e300;
+    for (i32 l = 0; l < ED_LANES; l++)
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++)
+            if ((ed.sel[l] >> k) & 1 && ln_get(ed.edit, l, k).t < first) first = ln_get(ed.edit, l, k).t;
+    if (first > 1e299) return;
+    ed.clip_count = 0;
+    for (i32 l = 0; l < ED_LANES; l++)
+        for (i32 k = 0; k < ln_count(ed.edit, l) && ed.clip_count < COUNT(ed.clip); k++) {
+            if (!((ed.sel[l] >> k) & 1)) continue;
+            LaneKey q = ln_get(ed.edit, l, k);
+            auto &c = ed.clip[ed.clip_count++];
+            c.lane = l;
+            c.t = q.t - first;
+            c.v = q.v;
+            c.x = q.x;
+            c.y = q.y;
+            c.ease = q.ease;
+        }
+}
+
+// The copied keys, the first at `at`; they become the selection.
+static void ed_paste(f64 at)
+{
+    Editor &ed = g_app.editor;
+    if (!ed.clip_count) return;
+    ed_sel_clear();
+    f64 dur = ed_duration();
+    for (i32 i = 0; i < ed.clip_count; i++) {
+        const auto &c = ed.clip[i];
+        if (!ed_lane_shown(c.lane) || at + c.t > dur + 1e-6) continue;
+        LaneKey q = {};
+        q.t = at + c.t;
+        q.v = c.v;
+        q.x = c.x;
+        q.y = c.y;
+        q.ease = c.ease;
+        i32 k = ln_insert(ed.edit, c.lane, q, &ed.sel[c.lane]);
+        if (k >= 0) {
+            ed.sel[c.lane] |= 1ull << k;
+            ed.dirty = true;
+        }
+    }
+}
+
+static void ed_push(EditRecord *stack, i32 *count, i32 cap, const EditRecord &r)
+{
+    if (*count == cap) {
+        memmove(stack, stack + 1, (cap - 1) * sizeof r);
+        (*count)--;
+    }
+    stack[(*count)++] = r;
+}
+
+// A change has settled (nothing held): what it was before goes on the undo list.
+static void ed_settle()
+{
+    Editor &ed = g_app.editor;
+    if (!memcmp(&ed.edit, &ed.settled, sizeof ed.edit)) return;
+    ed_push(ed.undo, &ed.undo_count, COUNT(ed.undo), ed.settled);
+    ed.redo_count = 0;
+    ed.settled = ed.edit;
+}
+
+static void ed_undo(bool redo)
+{
+    Editor &ed = g_app.editor;
+    ed_settle();
+    EditRecord *from = redo ? ed.redo : ed.undo, *to = redo ? ed.undo : ed.redo;
+    i32 *from_n = redo ? &ed.redo_count : &ed.undo_count, *to_n = redo ? &ed.undo_count : &ed.redo_count;
+    if (!*from_n) return;
+    ed_push(to, to_n, COUNT(ed.undo), ed.edit);
+    ed.edit = from[--*from_n];
+    ed.settled = ed.edit;
+    ed.dirty = true;
+    ed.heard_set = false;
+    ed_sel_clear();
+}
+
+// ---- The view: which seconds the lanes show ----
+
+static void ed_view_clamp()
+{
+    Editor &ed = g_app.editor;
+    f64 dur = ed_duration();
+    if (dur <= 0) {
+        ed.view_from = 0;
+        ed.view_span = 1;
+        return;
+    }
+    f64 least = dur < 0.5 ? dur : 0.5;
+    if (ed.view_span <= 0 || ed.view_span > dur) ed.view_span = dur;
+    if (ed.view_span < least) ed.view_span = least;
+    if (ed.view_from > dur - ed.view_span) ed.view_from = dur - ed.view_span;
+    if (ed.view_from < 0) ed.view_from = 0;
+}
+
+// Zooms the view by `factor`, keeping time `at` where it is on screen.
+static void ed_view_zoom(f64 factor, f64 at)
+{
+    Editor &ed = g_app.editor;
+    f64 frac = ed.view_span > 0 ? (at - ed.view_from) / ed.view_span : 0.5;
+    ed.view_span *= factor;
+    ed_view_clamp();
+    ed.view_from = at - frac * ed.view_span;
+    ed_view_clamp();
+}
+
+static f32 ed_lane_h()
+{
+    i32 v = g_app.config.editor_lane;
+    if (v <= 0) v = 56;
+    v = v < 36 ? 36 : v > 160 ? 160 : v;
+    return kit_px((f32)v);
+}
+
+// ---- Drawing and reading a lane ----
+
+static f32 ln_pad() { return kit_px(8); }
+
+static f32 ln_y(i32 l, f64 v, f32 y0, f32 y1)
+{
+    f64 f = (ln_hi(l) - v) / (ln_hi(l) - ln_lo(l));
+    return y0 + ln_pad() + (f32)f * (y1 - y0 - 2 * ln_pad());
+}
+
+static f64 ln_v_of(i32 l, f32 y, f32 y0, f32 y1)
+{
+    f64 f = (y - y0 - ln_pad()) / (f64)(y1 - y0 - 2 * ln_pad());
+    return ln_hi(l) - f * (ln_hi(l) - ln_lo(l));
+}
+
+// Kept in range and caught by 100% volume (or a whole zoom) within a few pixels; vh is the lane's value height.
+static f64 ln_snap(i32 l, f64 v, f32 vh)
+{
+    f64 lo = ln_lo(l), hi = ln_hi(l);
+    v = v < lo ? lo : v > hi ? hi : v;
+    f64 tol = vh > 0 ? kit_px(5) / vh * (hi - lo) : 0;
+    f64 r = l ? 1 : floor(v + 0.5);
+    if (fabs(v - r) < tol) v = r;
+    return v;
+}
+
 static void diamond(ImDrawList *dl, ImVec2 c, f32 r, u32 col)
 {
     dl->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), col);
 }
 
-// The timeline: the strip across the whole file, dimmed outside the trim, with accent handles for the trim, the
-// playhead and the zoom keys.
-static void ed_timeline(f32 w, f32 h)
+// A key drawn by its ease: a point where the value moves at full speed, round where it moves slowly (an ease in is
+// round on the side it arrives from, an ease out on the side it leaves by), a square for a hold.
+static void key_shape(ImDrawList *dl, ImVec2 c, f32 r, u8 ease, u32 col)
+{
+    f32 tip = r * 1.25f;
+    switch (ease) {
+    case EASE_LINEAR: diamond(dl, c, tip, col); break;
+    case EASE_SMOOTH: dl->AddCircleFilled(c, r, col, 16); break;
+    case EASE_HOLD: dl->AddRectFilled(ImVec2(c.x - r * 0.9f, c.y - r * 0.9f), ImVec2(c.x + r * 0.9f, c.y + r * 0.9f), col); break;
+    default:
+        dl->PathClear();
+        if (ease == EASE_IN) {
+            dl->PathArcTo(c, r, IM_PI * 0.5f, IM_PI * 1.5f, 10);
+            dl->PathLineTo(ImVec2(c.x + tip, c.y));
+        } else {
+            dl->PathArcTo(c, r, -IM_PI * 0.5f, IM_PI * 0.5f, 10);
+            dl->PathLineTo(ImVec2(c.x - tip, c.y));
+        }
+        dl->PathFillConvex(col);
+        break;
+    }
+}
+
+enum {
+    ED_DRAG_NONE, ED_DRAG_IN, ED_DRAG_OUT, ED_DRAG_SEEK, ED_DRAG_KEYS, ED_DRAG_LEVEL, ED_DRAG_STRETCH, ED_DRAG_PAN,
+    ED_DRAG_BAR, ED_DRAG_BAR_IN, ED_DRAG_BAR_OUT
+};
+
+// The selected keys moved by the drag so far, from where they were when it began. The grabbed key lands on a frame
+// (or the playhead, with Shift) and its value snaps; the rest keep their places relative to it.
+static void ed_drag_keys(f64 dt, f64 dfrac, f32 px_per_s, f32 vh, bool time_only, bool value_only)
+{
+    Editor &ed = g_app.editor;
+    f64 dur = ed_duration();
+    ed.edit = ed.drag_from;
+    memcpy(ed.sel, ed.drag_sel, sizeof ed.sel);
+    LaneKey g = ln_get(ed.drag_from, ed.drag_lane, ed.drag_key);
+    if (value_only) dt = 0;
+    if (time_only) dfrac = 0;
+    f64 nt = g.t + dt, fr = ed_frame();
+    nt = floor(nt / fr + 0.5) * fr;
+    if (time_only && fabs(nt - ed.player.pos) * px_per_s < kit_px(8)) nt = ed.player.pos;
+    if (value_only) nt = g.t;
+    dt = nt - g.t;
+    f64 tmin = 1e300, tmax = -1e300;
+    for (i32 l = 0; l < ED_LANES; l++)
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) {
+            if (!((ed.sel[l] >> k) & 1)) continue;
+            f64 t = ln_get(ed.edit, l, k).t;
+            tmin = t < tmin ? t : tmin;
+            tmax = t > tmax ? t : tmax;
+        }
+    if (tmin > tmax) return;
+    if (tmin + dt < 0) dt = -tmin;
+    if (tmax + dt > dur) dt = dur - tmax;
+    f64 range = ln_hi(ed.drag_lane) - ln_lo(ed.drag_lane);
+    f64 df = (ln_snap(ed.drag_lane, g.v + dfrac * range, vh) - g.v) / range;
+    for (i32 l = 0; l < ED_LANES; l++) {
+        if (!ed.sel[l]) continue;
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) {
+            if (!((ed.sel[l] >> k) & 1)) continue;
+            LaneKey q = ln_get(ed.edit, l, k);
+            q.t += dt;
+            q.v += df * (ln_hi(l) - ln_lo(l));
+            q.v = q.v < ln_lo(l) ? ln_lo(l) : q.v > ln_hi(l) ? ln_hi(l) : q.v;
+            ln_put(ed.edit, l, k, q);
+        }
+        ln_sort(ed.edit, l, &ed.sel[l]);
+    }
+    ed.dirty = true;
+}
+
+struct EdRow {
+    i32         lane;  // 0 zoom, 1 + slot
+    i32         wave;  // the waveform's track, -1 none
+    i32         slot;  // the volume slot, -1 for the zoom
+    f32         y0, y1;
+    bool        scrolls; // one of the sound tracks, in the scrolled area
+    const char *name;
+};
+
+// The timeline: a bar for the view, a ruler, the video with the trim, the zoom's lane, a lane for each sound track
+// (its waveform and its volume) and one for the whole mix. Lanes have their name and buttons on the left.
+static void ed_timeline(ImVec2 o, f32 w, f32 h)
 {
     Editor &ed = g_app.editor;
     Library &lib = g_app.library;
     Player &p = ed.player;
+    ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
+    f32 fh = ImGui::GetFrameHeight();
     f64 dur = ed_duration();
-    ImGui::InvisibleButton("timeline", ImVec2(w, h));
-    bool active = ImGui::IsItemActive();
-    f32 mx = ImGui::GetIO().MousePos.x;
-    f64 mt = dur > 0 ? (f64)((mx - a.x) / w) * dur : 0;
-    mt = mt < 0 ? 0 : mt > dur ? dur : mt;
-    auto x_of = [&](f64 t) { return a.x + (dur > 0 ? (f32)(t / dur) * w : 0); };
-    f32 in_x = x_of(ed.edit.in_s), out_x = x_of(ed_out());
-    if (ImGui::IsItemActivated()) {
-        f32 grab = kit_px(10);
-        if (fabsf(mx - out_x) < grab) ed.drag = 2;
-        else if (fabsf(mx - in_x) < grab) ed.drag = 1;
-        else ed.drag = 3;
+    if (dur <= 0) return;
+    ed_view_clamp();
+    if (!p.paused && ed.lane_drag == ED_DRAG_NONE && (p.pos < ed.view_from || p.pos > ed.view_from + ed.view_span)) {
+        ed.view_from = p.pos - ed.view_span * 0.05; // follow the playhead a page at a time
+        ed_view_clamp();
     }
-    if (active && dur > 0) {
-        f64 minlen = 0.2;
-        if (ed.drag == 1) {
-            f64 t = mt < ed_out() - minlen ? mt : ed_out() - minlen;
-            ed.edit.in_s = t < 0 ? 0 : t;
-            ed.dirty = true;
-            p.scrubbing = true;
-            player_seek(&p, ed.edit.in_s);
-        } else if (ed.drag == 2) {
-            f64 t = mt > ed.edit.in_s + minlen ? mt : ed.edit.in_s + minlen;
-            ed.edit.out_s = t >= dur - 0.01 ? 0 : t;
-            ed.dirty = true;
-            p.scrubbing = true;
-            player_seek(&p, t);
-        } else if (ed.drag == 3) {
-            p.scrubbing = true;
-            if (mt < p.pos - 0.02 || mt > p.pos + 0.02) player_seek(&p, mt);
+    f64 from = ed.view_from, span = ed.view_span;
+
+    f32 gut = kit_px(176), gap = kit_px(3), round = kit_px(6);
+    f32 bx0 = o.x + gut, bx1 = o.x + w, bw = bx1 - bx0;
+    if (bw < kit_px(40)) return;
+    f32 bar_h = kit_px(8), ruler_h = kit_px(22), video_h = kit_px(46), lane_h = ed_lane_h(), vh = lane_h - 2 * ln_pad();
+    auto x_of = [&](f64 t) { return bx0 + (f32)((t - from) / span) * bw; };
+    auto t_of = [&](f32 x) {
+        f64 t = from + (f64)(x - bx0) / bw * span;
+        return t < 0 ? 0 : t > dur ? dur : t;
+    };
+    f32 mx = io.MousePos.x, my = io.MousePos.y;
+    bool over = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h), false);
+
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
+    f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(8), video_y = ruler_y + ruler_h;
+    f32 zoom_y = video_y + video_h + gap, area0 = zoom_y + lane_h + gap;
+    f32 content = nt * (lane_h + gap);
+    f32 area1 = o.y + h - (nt ? lane_h : 0);
+    if (area1 > area0 + content) area1 = area0 + content;
+    if (area1 < area0) area1 = area0;
+    f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
+
+    // The wheel: Ctrl or Alt zooms at the mouse, Shift sets the lanes' height, over the sound tracks it scrolls
+    // them (when they don't all fit), elsewhere it pans.
+    if (over && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
+        f32 wh = io.MouseWheel;
+        if (wh && io.KeyShift) {
+            Config &cfg = g_app.config;
+            i32 v = (i32)(lane_h / kit_px(1) + 0.5f) + (wh > 0 ? 6 : -6);
+            cfg.editor_lane = v < 36 ? 36 : v > 160 ? 160 : v;
+            config_save(cfg, g_app.paths);
+        } else if (wh && (io.KeyCtrl || io.KeyAlt)) {
+            ed_view_zoom(pow(0.8, wh), mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
+        } else if (wh && my >= area0 && my < area1 && max_scroll > 0) {
+            ed.lane_scroll -= wh * lane_h * 0.6f;
+        } else {
+            ed.view_from -= (wh + io.MouseWheelH) * span * 0.1;
+            ed_view_clamp();
         }
-    } else if (ed.drag) {
-        ed.drag = 0;
-        p.scrubbing = false;
-        player_seek(&p, p.pos);
+    }
+    // The middle button pans wherever it's pressed on the timeline.
+    if (over && ImGui::IsMouseClicked(ImGuiMouseButton_Middle) && ed.lane_drag == ED_DRAG_NONE) {
+        ed.lane_drag = ED_DRAG_PAN;
+        ed.drag_mx = mx;
+        ed.drag_t = ed.view_from;
+    }
+    if (ed.lane_drag == ED_DRAG_PAN) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+            ed.view_from = ed.drag_t - (mx - ed.drag_mx) / bw * span;
+            ed_view_clamp();
+        } else {
+            ed.lane_drag = ED_DRAG_NONE;
+        }
+    }
+    ed.lane_scroll = ed.lane_scroll < 0 ? 0 : ed.lane_scroll > max_scroll ? max_scroll : ed.lane_scroll;
+
+    // The view bar: the whole file, with the part shown; drag it to pan, its ends to zoom, double-click for all.
+    ImGui::SetCursorScreenPos(ImVec2(bx0, bar_y - kit_px(3)));
+    ImGui::InvisibleButton("##view", ImVec2(bw, bar_h + kit_px(6)));
+    {
+        f32 tx0 = bx0 + (f32)(ed.view_from / dur) * bw, tx1 = bx0 + (f32)((ed.view_from + ed.view_span) / dur) * bw;
+        if (ImGui::IsItemActivated()) {
+            f32 grip = kit_px(7);
+            ed.drag_mx = mx;
+            if (fabsf(mx - tx0) < grip && ed.view_span < dur) {
+                ed.lane_drag = ED_DRAG_BAR_IN;
+                ed.drag_t = ed.view_from + ed.view_span;
+            } else if (fabsf(mx - tx1) < grip && ed.view_span < dur) {
+                ed.lane_drag = ED_DRAG_BAR_OUT;
+                ed.drag_t = ed.view_from;
+            } else {
+                if (mx < tx0 || mx > tx1) {
+                    ed.view_from = (mx - bx0) / bw * dur - ed.view_span / 2;
+                    ed_view_clamp();
+                }
+                ed.lane_drag = ED_DRAG_BAR;
+                ed.drag_t = ed.view_from;
+            }
+        }
+        if (ImGui::IsItemActive()) {
+            f64 bt = (f64)(mx - bx0) / bw * dur;
+            bt = bt < 0 ? 0 : bt > dur ? dur : bt;
+            if (ed.lane_drag == ED_DRAG_BAR) ed.view_from = ed.drag_t + (mx - ed.drag_mx) / bw * dur;
+            else if (ed.lane_drag == ED_DRAG_BAR_IN && bt < ed.drag_t) {
+                ed.view_from = bt;
+                ed.view_span = ed.drag_t - bt;
+            } else if (ed.lane_drag == ED_DRAG_BAR_OUT && bt > ed.drag_t) {
+                ed.view_span = bt - ed.drag_t;
+            }
+            ed_view_clamp();
+        } else if (ImGui::IsItemDeactivated()) {
+            ed.lane_drag = ED_DRAG_NONE;
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            ed.view_from = 0;
+            ed.view_span = dur;
+        }
+        bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (hot && (fabsf(mx - tx0) < kit_px(7) || fabsf(mx - tx1) < kit_px(7)) && ed.view_span < dur)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        tx0 = bx0 + (f32)(ed.view_from / dur) * bw;
+        tx1 = bx0 + (f32)((ed.view_from + ed.view_span) / dur) * bw;
+        if (tx1 - tx0 < kit_px(12)) {
+            f32 c = (tx0 + tx1) / 2;
+            tx0 = c - kit_px(6);
+            tx1 = c + kit_px(6);
+        }
+        dl->AddRectFilled(ImVec2(bx0, bar_y), ImVec2(bx1, bar_y + bar_h), col32(COL_PANEL), bar_h / 2);
+        dl->AddRectFilled(ImVec2(tx0, bar_y), ImVec2(tx1, bar_y + bar_h), col32(hot ? COL_DIM : COL_HOVER), bar_h / 2);
+        f32 px = bx0 + (f32)(p.pos / dur) * bw;
+        dl->AddRectFilled(ImVec2(px - kit_px(1), bar_y), ImVec2(px + kit_px(1), bar_y + bar_h), IM_COL32(255, 255, 255, 200));
+    }
+    from = ed.view_from;
+    span = ed.view_span;
+
+    // The view's zoom buttons, in the ruler's gutter.
+    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(8), ruler_y + (ruler_h + video_h - fh) / 2));
+    if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, span < dur)) ed_view_zoom(1.6, p.pos);
+    ImGui::SameLine(0, kit_px(2));
+    if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, span > 0.51)) ed_view_zoom(1 / 1.6, p.pos);
+    {
+        char vt[32], vs[48];
+        fmt_time(span, vt, sizeof vt, span < 10);
+        snprintf(vs, sizeof vs, "%s shown", vt);
+        ImGui::PushFont(g_font_small);
+        f32 tx = o.x + kit_px(8) + 2 * fh + kit_px(10);
+        text_clipped(dl, ImVec2(tx, floorf(ruler_y + (ruler_h + video_h - g_font_small->FontSize) / 2)),
+                     bx0 - gap - tx - kit_px(4), col32(COL_FAINT), vs);
+        ImGui::PopFont();
     }
 
-    f32 round = kit_px(8);
-    dl->AddRectFilled(a, b, col32(COL_PANEL2), round);
-    if (lib_want_strip(ed.item))
-        dl->AddImageRounded((ImTextureID)(intptr_t)lib.strip, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
+    // Ruler and video: scrub, or drag the trim's ends.
+    f32 in_x = x_of(ed.edit.in_s), out_x = x_of(ed_out());
+    ImGui::SetCursorScreenPos(ImVec2(bx0, ruler_y));
+    ImGui::InvisibleButton("##scrub", ImVec2(bw, ruler_h + video_h));
+    {
+        f64 mt = t_of(mx);
+        f32 grab = kit_px(9);
+        bool near_in = fabsf(mx - in_x) < grab, near_out = fabsf(mx - out_x) < grab;
+        if (ImGui::IsItemActivated()) ed.lane_drag = near_out ? ED_DRAG_OUT : near_in ? ED_DRAG_IN : ED_DRAG_SEEK;
+        if (ImGui::IsItemActive()) {
+            f64 minlen = 0.2;
+            if (ed.lane_drag == ED_DRAG_IN) {
+                f64 t = mt < ed_out() - minlen ? mt : ed_out() - minlen;
+                ed.edit.in_s = t < 0 ? 0 : t;
+                ed.dirty = true;
+                p.scrubbing = true;
+                player_seek(&p, ed.edit.in_s);
+            } else if (ed.lane_drag == ED_DRAG_OUT) {
+                f64 t = mt > ed.edit.in_s + minlen ? mt : ed.edit.in_s + minlen;
+                ed.edit.out_s = t >= dur - 0.01 ? 0 : t;
+                ed.dirty = true;
+                p.scrubbing = true;
+                player_seek(&p, t);
+            } else if (ed.lane_drag == ED_DRAG_SEEK) {
+                p.scrubbing = true;
+                if (mt < p.pos - 0.02 || mt > p.pos + 0.02) player_seek(&p, mt);
+            }
+        } else if (ImGui::IsItemDeactivated()) {
+            ed.lane_drag = ED_DRAG_NONE;
+            p.scrubbing = false;
+            player_seek(&p, p.pos);
+        }
+        if ((ImGui::IsItemHovered() && (near_in || near_out)) || ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
     in_x = x_of(ed.edit.in_s);
     out_x = x_of(ed_out());
-    // Outside the trim, darkened.
-    if (in_x > a.x) dl->AddRectFilled(a, ImVec2(in_x, b.y), IM_COL32(0, 0, 0, 185), round, ImDrawFlags_RoundCornersLeft);
-    if (out_x < b.x) dl->AddRectFilled(ImVec2(out_x, a.y), b, IM_COL32(0, 0, 0, 185), round, ImDrawFlags_RoundCornersRight);
-    // The kept part: an accent frame with a grip at each end.
-    u32 acc = col32(ed.drag == 1 || ed.drag == 2 ? COL_ACCENT_HOVER : COL_ACCENT);
-    f32 hw = kit_px(7), bw = kit_px(2);
-    dl->AddRectFilled(ImVec2(in_x, a.y), ImVec2(out_x, a.y + bw), acc);
-    dl->AddRectFilled(ImVec2(in_x, b.y - bw), ImVec2(out_x, b.y), acc);
-    dl->AddRectFilled(ImVec2(in_x, a.y), ImVec2(in_x + hw, b.y), acc, kit_px(4), ImDrawFlags_RoundCornersLeft);
-    dl->AddRectFilled(ImVec2(out_x - hw, a.y), ImVec2(out_x, b.y), acc, kit_px(4), ImDrawFlags_RoundCornersRight);
-    f32 gh = kit_px(8), cy = (a.y + b.y) / 2;
-    dl->AddRectFilled(ImVec2(in_x + hw / 2 - kit_px(1), cy - gh), ImVec2(in_x + hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
-    dl->AddRectFilled(ImVec2(out_x - hw / 2 - kit_px(1), cy - gh), ImVec2(out_x - hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
-    // Zoom keys along the top, kept inside the strip so a key at the very start or end is still seen whole.
-    for (i32 k = 0; k < ed.edit.key_count; k++) {
-        f32 kx = x_of(ed.edit.keys[k].t), r = kit_px(6);
-        kx = kx < a.x + r ? a.x + r : kx > b.x - r ? b.x - r : kx;
-        diamond(dl, ImVec2(kx, a.y + kit_px(11)), r + kit_px(1.5f), IM_COL32(0, 0, 0, 160));
-        diamond(dl, ImVec2(kx, a.y + kit_px(11)), r, col32(COL_BLUE));
+
+    // The ruler: a label every 70 px or more, small ticks between.
+    dl->AddRectFilled(ImVec2(bx0, ruler_y), ImVec2(bx1, ruler_y + ruler_h), col32(COL_PANEL), round, ImDrawFlags_RoundCornersTop);
+    {
+        static const f64 steps[] = {0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400};
+        f64 step = steps[COUNT(steps) - 1];
+        for (i32 i = 0; i < COUNT(steps); i++)
+            if (steps[i] / span * bw >= kit_px(70)) { step = steps[i]; break; }
+        f64 minor = step / 5;
+        dl->PushClipRect(ImVec2(bx0, ruler_y), ImVec2(bx1, ruler_y + ruler_h), true);
+        ImGui::PushFont(g_font_small);
+        for (i64 i = (i64)floor(from / minor), last = (i64)ceil((from + span) / minor); i <= last; i++) {
+            f32 x = floorf(x_of(i * minor));
+            bool major = i % 5 == 0;
+            f32 th = major ? ruler_h * 0.42f : ruler_h * 0.2f;
+            dl->AddRectFilled(ImVec2(x, ruler_y + ruler_h - th), ImVec2(x + kit_px(1), ruler_y + ruler_h), col32(major ? COL_DIM : COL_FAINT));
+            if (major) {
+                char lt[32];
+                fmt_time(i * minor, lt, sizeof lt, step < 1);
+                dl->AddText(ImVec2(x + kit_px(4), ruler_y + kit_px(2)), col32(COL_DIM), lt);
+            }
+        }
+        ImGui::PopFont();
+        // The kept part, as a line along the ruler's foot.
+        dl->AddRectFilled(ImVec2(in_x, ruler_y + ruler_h - kit_px(2)), ImVec2(out_x, ruler_y + ruler_h), col32(COL_ACCENT));
+        dl->PopClipRect();
     }
-    // The playhead: a white line with a knob above the strip.
+
+    // The video: frames from the file's strip at the picture's shape, then the trim over them.
+    {
+        f32 y0 = video_y, y1 = video_y + video_h;
+        dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL2));
+        dl->PushClipRect(ImVec2(bx0, y0), ImVec2(bx1, y1), true);
+        if (lib_want_strip(ed.item) && lib.strip_frames > 0) {
+            f32 aspect = ed.item.info.height > 0 ? (f32)ed.item.info.width / ed.item.info.height : 16.f / 9;
+            f32 tile = video_h * (aspect > 0.3f ? aspect : 1.f);
+            for (f32 x = bx0; x < bx1; x += tile) {
+                f64 t = t_of(x + tile / 2);
+                i32 f = (i32)(t / dur * lib.strip_frames);
+                f = f < 0 ? 0 : f >= lib.strip_frames ? lib.strip_frames - 1 : f;
+                f32 u0 = (f32)f / lib.strip_frames, u1 = (f32)(f + 1) / lib.strip_frames;
+                dl->AddImage((ImTextureID)(intptr_t)lib.strip, ImVec2(x, y0), ImVec2(x + tile, y1), ImVec2(u0, 0), ImVec2(u1, 1));
+            }
+        }
+        if (in_x > bx0) dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(in_x, y1), IM_COL32(0, 0, 0, 185));
+        if (out_x < bx1) dl->AddRectFilled(ImVec2(out_x, y0), ImVec2(bx1, y1), IM_COL32(0, 0, 0, 185));
+        bool trimming = ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT;
+        u32 acc = col32(trimming ? COL_ACCENT_HOVER : COL_ACCENT);
+        f32 hw = kit_px(7), bw2 = kit_px(2), cy = (y0 + y1) / 2, gh = kit_px(8);
+        dl->AddRectFilled(ImVec2(in_x, y0), ImVec2(out_x, y0 + bw2), acc);
+        dl->AddRectFilled(ImVec2(in_x, y1 - bw2), ImVec2(out_x, y1), acc);
+        dl->AddRectFilled(ImVec2(in_x, y0), ImVec2(in_x + hw, y1), acc, kit_px(3), ImDrawFlags_RoundCornersLeft);
+        dl->AddRectFilled(ImVec2(out_x - hw, y0), ImVec2(out_x, y1), acc, kit_px(3), ImDrawFlags_RoundCornersRight);
+        dl->AddRectFilled(ImVec2(in_x + hw / 2 - kit_px(1), cy - gh), ImVec2(in_x + hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
+        dl->AddRectFilled(ImVec2(out_x - hw / 2 - kit_px(1), cy - gh), ImVec2(out_x - hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
+        dl->PopClipRect();
+    }
+
+    // The lanes, top to bottom: the zoom, the sound tracks (scrolled), the mix.
+    EdRow rows[MEDIA_MAX_TRACKS + 2];
+    i32 nr = 0;
+    rows[nr++] = {0, -1, -1, zoom_y, zoom_y + lane_h, false, "Zoom"};
+    for (i32 i = 0; i < nt; i++) {
+        f32 ry = area0 + i * (lane_h + gap) - ed.lane_scroll;
+        rows[nr++] = {1 + tracks[i], i, tracks[i], ry, ry + lane_h, true, ed.item.info.tracks[tracks[i]]};
+    }
+    if (nt) rows[nr++] = {1 + EDIT_MASTER, -1, EDIT_MASTER, area1, area1 + lane_h, false, "Mix"};
+    f32 lanes_y1 = rows[nr - 1].y1;
+
+    auto row_at = [&](f32 y) -> i32 {
+        for (i32 r = 0; r < nr; r++) {
+            if (rows[r].scrolls && (y < area0 || y >= area1)) continue;
+            if (y >= rows[r].y0 && y < rows[r].y1) return r;
+        }
+        return -1;
+    };
+    auto key_at = [&](i32 r, f32 x, f32 y) -> i32 {
+        i32 l = rows[r].lane, best = -1;
+        f32 bd = kit_px(8) * kit_px(8);
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) {
+            LaneKey q = ln_get(ed.edit, l, k);
+            f32 dx = x - x_of(q.t), dy = y - ln_y(l, q.v, rows[r].y0, rows[r].y1);
+            if (dx * dx + dy * dy < bd) {
+                bd = dx * dx + dy * dy;
+                best = k;
+            }
+        }
+        return best;
+    };
+
+    // Pressing a lane: on a key, select it (Shift adds or takes it away) and drag the selection; Ctrl or a double-click
+    // off a key adds one; on a flat stretch between two keys, drag its level; on a track with no keys, drag its whole
+    // volume; anywhere else, move the playhead.
+    ImGui::SetCursorScreenPos(ImVec2(bx0, zoom_y));
+    ImGui::InvisibleButton("##lanes", ImVec2(bw, lanes_y1 - zoom_y > 1 ? lanes_y1 - zoom_y : 1));
+    bool lanes_hot = ImGui::IsItemHovered();
+    static bool keep_sel; // the press chose the selection, so letting go without moving leaves it
+    if (ImGui::IsItemActivated()) {
+        i32 r = row_at(my);
+        ed.drag_mx = mx;
+        ed.drag_my = my;
+        ed.drag_moved = false;
+        ed.lane_drag = ED_DRAG_NONE;
+        keep_sel = false;
+        if (r >= 0) {
+            const EdRow &row = rows[r];
+            i32 l = row.lane, k = key_at(r, mx, my);
+            f64 mt = t_of(mx);
+            bool dbl = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+            if (k < 0 && (dbl || io.KeyCtrl)) {
+                f64 v = dbl ? ln_snap(l, ln_v_of(l, my, row.y0, row.y1), vh) : ln_value_at(ed.edit, l, mt);
+                ed_sel_clear();
+                k = ed_put_key(l, floor(mt / ed_frame() + 0.5) * ed_frame(), v);
+                if (k >= 0) ed.sel[l] |= 1ull << k;
+                keep_sel = true;
+            } else if (k >= 0 && io.KeyShift) {
+                ed.sel[l] ^= 1ull << k;
+                keep_sel = true;
+                if (!((ed.sel[l] >> k) & 1)) k = -2; // taken away: nothing to drag
+            } else if (k >= 0 && !((ed.sel[l] >> k) & 1)) {
+                ed_sel_clear();
+                ed.sel[l] |= 1ull << k;
+                keep_sel = true;
+            }
+            if (k >= 0) {
+                ed.lane_drag = ED_DRAG_KEYS;
+                ed.drag_lane = l;
+                ed.drag_key = k;
+                ed.drag_from = ed.edit;
+                memcpy(ed.drag_sel, ed.sel, sizeof ed.sel);
+            } else if (k == -1) {
+                i32 seg = -1, n = ln_count(ed.edit, l);
+                for (i32 i = 0; l && i + 1 < n; i++) {
+                    LaneKey a = ln_get(ed.edit, l, i), b = ln_get(ed.edit, l, i + 1);
+                    if (a.t <= mt && mt <= b.t && fabs(a.v - b.v) < 1e-4 && a.ease != EASE_HOLD &&
+                        fabsf(my - ln_y(l, a.v, row.y0, row.y1)) < kit_px(6)) {
+                        seg = i;
+                        break;
+                    }
+                }
+                ed.drag_lane = l;
+                if (seg >= 0) {
+                    ed.lane_drag = ED_DRAG_STRETCH;
+                    ed.drag_key = seg;
+                    ed.drag_t = ln_get(ed.edit, l, seg).v;
+                } else if (l && !n) {
+                    ed.lane_drag = ED_DRAG_LEVEL;
+                    ed.drag_t = 1 + ed.edit.boost[l - 1];
+                } else {
+                    if (!io.KeyShift) ed_sel_clear();
+                    ed.lane_drag = ED_DRAG_SEEK;
+                    p.scrubbing = true;
+                    player_seek(&p, mt);
+                }
+            }
+        }
+    }
+    if (ImGui::IsItemActive()) {
+        if (fabsf(mx - ed.drag_mx) > kit_px(3) || fabsf(my - ed.drag_my) > kit_px(3)) ed.drag_moved = true;
+        f64 dfrac = -(f64)(my - ed.drag_my) / vh, mt = t_of(mx);
+        i32 l = ed.drag_lane;
+        if (ed.lane_drag == ED_DRAG_KEYS && ed.drag_moved) {
+            ed_drag_keys((mx - ed.drag_mx) / bw * span, dfrac, (f32)(bw / span), vh, io.KeyShift, io.KeyCtrl);
+        } else if (ed.lane_drag == ED_DRAG_LEVEL && ed.drag_moved && l > 0) {
+            ed.edit.boost[l - 1] = (f32)(ln_snap(l, ed.drag_t + dfrac * 2, vh) - 1);
+            ed.dirty = true;
+        } else if (ed.lane_drag == ED_DRAG_STRETCH && ed.drag_moved && l > 0 && ed.drag_key + 1 < ln_count(ed.edit, l)) {
+            f32 v = (f32)ln_snap(l, ed.drag_t + dfrac * 2, vh);
+            ed.edit.vol[l - 1][ed.drag_key].v = ed.edit.vol[l - 1][ed.drag_key + 1].v = v;
+            ed.dirty = true;
+        } else if (ed.lane_drag == ED_DRAG_SEEK) {
+            if (mt < p.pos - 0.02 || mt > p.pos + 0.02) player_seek(&p, mt);
+        }
+    } else if (ImGui::IsItemDeactivated()) {
+        if (ed.lane_drag == ED_DRAG_KEYS && !ed.drag_moved) {
+            if (!keep_sel) {
+                ed_sel_clear();
+                ed.sel[ed.drag_lane] |= 1ull << ed.drag_key;
+            }
+            if (ed.drag_key < ln_count(ed.edit, ed.drag_lane)) player_seek(&p, ln_get(ed.edit, ed.drag_lane, ed.drag_key).t);
+        } else if ((ed.lane_drag == ED_DRAG_LEVEL || ed.lane_drag == ED_DRAG_STRETCH) && !ed.drag_moved) {
+            ed_sel_clear();
+            player_seek(&p, t_of(ed.drag_mx));
+        } else if (ed.lane_drag == ED_DRAG_SEEK) {
+            p.scrubbing = false;
+            player_seek(&p, p.pos);
+        }
+        if (ed.lane_drag != ED_DRAG_PAN) ed.lane_drag = ED_DRAG_NONE;
+    }
+    if (lanes_hot && ed.lane_drag == ED_DRAG_NONE) {
+        i32 r = row_at(my);
+        if (r >= 0 && key_at(r, mx, my) >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+
+    // Right-click: the keys' eases, copy and delete; off a key, add one, paste, select or reset the lane.
+    if (lanes_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ed.lane_drag == ED_DRAG_NONE) {
+        i32 r = row_at(my);
+        if (r >= 0) {
+            i32 l = rows[r].lane, k = key_at(r, mx, my);
+            ed.menu_lane = l;
+            ed.menu_key = k;
+            ed.menu_t = floor(t_of(mx) / ed_frame() + 0.5) * ed_frame();
+            ed.menu_v = ln_snap(l, ln_v_of(l, my, rows[r].y0, rows[r].y1), vh);
+            if (k >= 0 && !((ed.sel[l] >> k) & 1)) {
+                ed_sel_clear();
+                ed.sel[l] |= 1ull << k;
+            }
+            ImGui::OpenPopup("lane_menu");
+        }
+    }
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("lane_menu")) {
+        i32 l = ed.menu_lane;
+        if (ed.menu_key >= 0 && ed_sel_count()) {
+            static const char *const eases[EASE_COUNT] = {"Linear", "Smooth", "Ease in", "Ease out", "Hold"};
+            i32 common = ed_sel_ease();
+            for (i32 i = 0; i < EASE_COUNT; i++)
+                if (lib_menu_item(common == i ? ICON_CHECK : "", eases[i])) ed_set_ease(i);
+            ImGui::Separator();
+            if (lib_menu_item(ICON_COPY, "Copy")) ed_copy();
+            if (lib_menu_item(ICON_DELETE, "Delete", true)) ed_delete_selected();
+        } else {
+            if (ln_count(ed.edit, l) < ln_cap(l) && lib_menu_item(ICON_ADD, "Add a key here")) {
+                ed_sel_clear();
+                i32 k = ed_put_key(l, ed.menu_t, ed.menu_v);
+                if (k >= 0) ed.sel[l] |= 1ull << k;
+            }
+            if (ed.clip_count && lib_menu_item(ICON_COPY, "Paste at the playhead")) ed_paste(p.pos);
+            if (ln_count(ed.edit, l) && lib_menu_item(ICON_CHECK, "Select the lane's keys")) {
+                ed_sel_clear();
+                ed.sel[l] = bits_all(ln_count(ed.edit, l));
+            }
+            ImGui::Separator();
+            if (lib_menu_item(ICON_UNDO, l ? "Reset the volume" : "Reset the zoom", true)) {
+                if (l) {
+                    ed.edit.vol_count[l - 1] = 0;
+                    ed.edit.boost[l - 1] = 0;
+                } else {
+                    ed.edit.key_count = 0;
+                }
+                ed.sel[l] = 0;
+                ed.dirty = true;
+            }
+        }
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+
+    // Each lane: its gutter (mute, a key at the playhead, the name and the value there), then its body.
+    f64 in_s = ed.edit.in_s, out_s = ed_out();
+    static ImVec2 pts[4096];
+    for (i32 r = 0; r < nr; r++) {
+        const EdRow &row = rows[r];
+        if (row.scrolls && (row.y1 <= area0 || row.y0 >= area1)) continue;
+        i32 l = row.lane, s = row.slot;
+        f32 y0 = row.y0, y1 = row.y1;
+        if (row.scrolls) ImGui::PushClipRect(ImVec2(o.x, area0), ImVec2(bx1, area1), true);
+        bool muted = s >= 0 && ed.edit.muted[s];
+        dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(bx0 - gap, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersLeft);
+        dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersRight);
+
+        ImGui::PushID(l);
+        f32 gx = o.x + kit_px(6), by = floorf((y0 + y1 - fh) / 2);
+        if (s >= 0) {
+            ImGui::SetCursorScreenPos(ImVec2(gx, by));
+            if (kit_icon_button(muted ? ICON_MUTE : ICON_VOLUME, "##mute", KIT_GHOST, true, muted)) {
+                ed.edit.muted[s] = !muted;
+                ed.dirty = true;
+                muted = !muted;
+            }
+        }
+        i32 here = ln_key_at(ed.edit, l, p.pos);
+        ImGui::SetCursorScreenPos(ImVec2(gx + fh + kit_px(2), by));
+        if (kit_icon_button(here >= 0 ? ICON_DELETE : ICON_ADD, "##key", KIT_GHOST, here >= 0 || ln_count(ed.edit, l) < ln_cap(l))) {
+            if (here >= 0) {
+                ln_erase(ed.edit, l, here, &ed.sel[l]);
+                ed.dirty = true;
+            } else {
+                ed_sel_clear();
+                i32 k = ed_put_key(l, p.pos, ln_value_at(ed.edit, l, p.pos));
+                if (k >= 0) ed.sel[l] |= 1ull << k;
+            }
+        }
+        ImGui::PopID();
+        {
+            f32 nx = gx + 2 * fh + kit_px(10), nw = bx0 - gap - nx - kit_px(6);
+            f32 lh = ImGui::GetTextLineHeight(), sh = g_font_small->FontSize;
+            f32 ty = floorf((y0 + y1 - lh - sh - kit_px(2)) / 2);
+            text_clipped(dl, ImVec2(nx, ty), nw, col32(muted ? COL_FAINT : COL_TEXT), row.name);
+            char vt[24];
+            f64 v = ln_value_at(ed.edit, l, p.pos);
+            if (muted) str_set(vt, "Muted");
+            else if (l) snprintf(vt, sizeof vt, "%.0f%%", v * 100);
+            else snprintf(vt, sizeof vt, "%.1fx", v);
+            ImGui::PushFont(g_font_small);
+            text_clipped(dl, ImVec2(nx, ty + lh + kit_px(2)), nw, col32(COL_DIM), vt);
+            ImGui::PopFont();
+        }
+
+        dl->PushClipRect(ImVec2(bx0, y0), ImVec2(bx1, y1), true);
+        // The waveform, from the bottom, at the volume it's heard at: a track's own, the mix's the loudest of the
+        // tracks as they're mixed. Not yet measured: a faint stub.
+        if (s >= 0 && ed.wave) {
+            f32 step = floorf(kit_px(2)) > 1 ? floorf(kit_px(2)) : 1, reach = y1 - y0 - kit_px(3);
+            f32 end_x = x_of(dur);
+            for (f32 x = bx0; x < bx1 && x < end_x; x += step) {
+                f64 t0 = t_of(x), t1 = t_of(x + step), tm = (t0 + t1) / 2;
+                f32 pk = 0;
+                bool got = false;
+                if (s == EDIT_MASTER) {
+                    for (i32 i = 0; i < nt; i++) {
+                        f32 q;
+                        if (!wave_peak(ed.wave, i, t0, t1, &q)) continue;
+                        got = true;
+                        q *= (f32)vol_heard(ed.edit, tracks[i], tm);
+                        pk = q > pk ? q : pk;
+                    }
+                } else {
+                    got = wave_peak(ed.wave, row.wave, t0, t1, &pk);
+                }
+                bool kept = t1 > in_s && t0 < out_s;
+                if (!got) {
+                    dl->AddRectFilled(ImVec2(x, y1 - kit_px(2)), ImVec2(x + step, y1), IM_COL32(142, 147, 156, 40));
+                    continue;
+                }
+                f32 g = (f32)vol_heard(ed.edit, s, tm), e = pk * g / 2;
+                f32 hh = sqrtf(e < 1 ? e : 1) * reach;
+                if (hh < 0.5f) continue;
+                u32 col = s == EDIT_MASTER ? IM_COL32(236, 238, 241, kept ? 64 : 24) : IM_COL32(91, 156, 255, kept ? 92 : 30);
+                dl->AddRectFilled(ImVec2(x, y1 - hh), ImVec2(x + step, y1), col);
+            }
+        }
+        // 100% (or no zoom), then the value's line as the render will move it.
+        f32 rest = ln_y(l, 1, y0, y1);
+        dl->AddRectFilled(ImVec2(bx0, rest), ImVec2(bx1, rest + kit_px(1)), col32(COL_LINE));
+        {
+            i32 np = 0;
+            f32 lstep = kit_px(3);
+            for (f32 x = bx0; np < COUNT(pts) - 1; x += lstep) {
+                if (x > bx1) x = bx1;
+                pts[np++] = ImVec2(x, ln_y(l, ln_value_at(ed.edit, l, t_of(x)), y0, y1));
+                if (x >= bx1) break;
+            }
+            u32 lc = !l ? col32(COL_BLUE) : muted ? col32(COL_FAINT) : col32(COL_TEXT);
+            dl->AddPolyline(pts, np, lc, ImDrawFlags_None, kit_px(1.5f));
+        }
+        // The keys.
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) {
+            LaneKey q = ln_get(ed.edit, l, k);
+            f32 kx = x_of(q.t), r0 = kit_px(5);
+            if (kx < bx0 - 2 * r0 || kx > bx1 + 2 * r0) continue;
+            ImVec2 c(kx, ln_y(l, q.v, y0, y1));
+            bool on = (ed.sel[l] >> k) & 1;
+            key_shape(dl, c, r0 + kit_px(2), q.ease, on ? IM_COL32_WHITE : IM_COL32(0, 0, 0, 170));
+            key_shape(dl, c, r0, q.ease, col32(on ? COL_ACCENT : !l ? COL_BLUE : muted ? COL_FAINT : 0xd6d9de));
+        }
+        // Outside the trim, darkened.
+        if (in_x > bx0) dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(in_x, y1), IM_COL32(0, 0, 0, 110));
+        if (out_x < bx1) dl->AddRectFilled(ImVec2(out_x, y0), ImVec2(bx1, y1), IM_COL32(0, 0, 0, 110));
+        dl->PopClipRect();
+        if (row.scrolls) ImGui::PopClipRect();
+    }
+
+    // The playhead, through everything.
     f32 px = x_of(p.pos);
-    dl->AddRectFilled(ImVec2(px - kit_px(1), a.y - kit_px(4)), ImVec2(px + kit_px(1), b.y + kit_px(4)), IM_COL32_WHITE);
-    dl->AddCircleFilled(ImVec2(px, a.y - kit_px(4)), kit_px(5), IM_COL32_WHITE);
+    if (px >= bx0 - 1 && px <= bx1 + 1) {
+        dl->AddRectFilled(ImVec2(px - kit_px(1), ruler_y), ImVec2(px + kit_px(1), lanes_y1), IM_COL32_WHITE);
+        f32 k = kit_px(6);
+        dl->AddTriangleFilled(ImVec2(px - k, ruler_y), ImVec2(px + k, ruler_y), ImVec2(px, ruler_y + k), IM_COL32_WHITE);
+    }
 }
 
 // A group's caption on the left and its page controls on the right, on one row.
@@ -552,109 +1473,31 @@ static void ed_edit_tab(f32 w)
     dl->AddText(ImVec2(zp.x + val_w - zs.x, floorf(zp.y + (fh - zs.y) / 2)), col32(COL_TEXT), zt);
     ImGui::Dummy(ImVec2(val_w, fh));
     kit_dim("Drag the picture to aim");
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
 
-    // Keyframe actions: one filled, two quiet.
-    i32 here = ed_key_at(p.pos);
-    f32 bw = (w - 2 * sp) / 3;
-    if (kit_button(ICON_ADD "  Keyframe", KIT_SECONDARY, ImVec2(bw, 0), here < 0 && ed.edit.key_count < EDIT_MAX_KEYS))
-        ed_add_key(p.pos);
+    // The selected keys: how they ease into and out of the next, then copy and delete.
+    i32 n = ed_sel_count();
+    char cap[48];
+    if (n) snprintf(cap, sizeof cap, "%d KEY%s SELECTED", n, n > 1 ? "S" : "");
+    else str_set(cap, "KEYS");
+    ed_caption(cap);
+    static const char *const eases[EASE_COUNT] = {"Linear", "Smooth", "In", "Out", "Hold"};
+    i32 common = n ? ed_sel_ease() : -1, pick = common;
+    ImGui::BeginDisabled(!n);
+    if (kit_segmented("##ease", eases, EASE_COUNT, &pick, (w - kit_px(6)) / (f32)EASE_COUNT) && pick >= 0) ed_set_ease(pick);
+    f32 bw = (w - sp) / 2;
+    if (kit_button(ICON_COPY "  Copy", KIT_GHOST, ImVec2(bw, 0), n > 0)) ed_copy();
     ImGui::SameLine();
-    if (kit_button(ICON_DELETE "  Delete", KIT_GHOST, ImVec2(bw, 0), here >= 0)) ed_delete_key(here);
+    if (kit_button(ICON_DELETE "  Delete", KIT_GHOST, ImVec2(bw, 0), n > 0)) ed_delete_selected();
+    ImGui::EndDisabled();
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // Undo and redo, as buttons too.
+    ed_caption("CHANGES");
+    if (kit_button(ICON_UNDO "  Undo", KIT_GHOST, ImVec2(bw, 0), ed.undo_count > 0 || memcmp(&ed.edit, &ed.settled, sizeof ed.edit)))
+        ed_undo(false);
     ImGui::SameLine();
-    if (kit_button(ICON_DELETE "  Clear all", KIT_GHOST, ImVec2(bw, 0), ed.edit.key_count > 0)) {
-        ed.edit.key_count = 0;
-        ed.dirty = true;
-    }
-    ImGui::Dummy(ImVec2(1, kit_px(4)));
-
-    // The keys, three to a page.
-    const i32 key_rows = 3;
-    i32 key_pages = ed.edit.key_count ? (ed.edit.key_count + key_rows - 1) / key_rows : 1;
-    ed_group_head("KEYFRAMES", "keys", &ed.key_page, key_pages, w);
-    for (i32 r = 0; r < key_rows; r++) {
-        i32 k = ed.key_page * key_rows + r;
-        ImGui::PushID(r);
-        ImVec2 a = ImGui::GetCursorScreenPos();
-        f32 row_w = w - fh - kit_px(4);
-        if (k < ed.edit.key_count) {
-            const ZoomKey &key = ed.edit.keys[k];
-            if (ImGui::InvisibleButton("##key", ImVec2(row_w, fh))) player_seek(&p, key.t);
-            bool hot = ImGui::IsItemHovered();
-            if (k == here || hot) dl->AddRectFilled(a, ImVec2(a.x + row_w, a.y + fh), col32(k == here ? COL_HOVER : COL_PANEL2), st.FrameRounding);
-            diamond(dl, ImVec2(a.x + kit_px(14), a.y + fh / 2), kit_px(5), col32(COL_BLUE));
-            char t[32], zl[16];
-            fmt_time(key.t, t, sizeof t, true);
-            snprintf(zl, sizeof zl, "%.1fx", key.z);
-            ImVec2 ts = ImGui::CalcTextSize(t), zs2 = ImGui::CalcTextSize(zl);
-            f32 ty = floorf(a.y + (fh - ts.y) / 2);
-            dl->AddText(ImVec2(a.x + kit_px(30), ty), col32(COL_TEXT), t);
-            dl->AddText(ImVec2(a.x + row_w - kit_px(10) - zs2.x, ty), col32(COL_DIM), zl);
-            ImGui::SameLine(0, kit_px(4));
-            if (kit_icon_button(ICON_DELETE, "##del", KIT_GHOST)) ed_delete_key(k);
-        } else {
-            if (k == 0) {
-                ImVec2 ts = ImGui::CalcTextSize("No keyframes");
-                dl->AddText(ImVec2(a.x + kit_px(10), floorf(a.y + (fh - ts.y) / 2)), col32(COL_FAINT), "No keyframes");
-            }
-            ImGui::Dummy(ImVec2(w, fh));
-        }
-        ImGui::PopID();
-    }
-    ImGui::Dummy(ImVec2(1, kit_px(6)));
-
-    // Sound: a mute button, the track's name, its volume.
-    i32 tracks[MEDIA_MAX_TRACKS];
-    i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
-    const i32 track_rows = 5;
-    i32 track_pages = n ? (n + track_rows - 1) / track_rows : 1;
-    ed_group_head("SOUND", "tracks", &ed.track_page, track_pages, w);
-    f32 name_w = kit_px(104), pct_w = kit_px(44), slider_w = w - fh - kit_px(6) - name_w - pct_w;
-    bool changed = false;
-    for (i32 r = 0; r < track_rows; r++) {
-        i32 i = ed.track_page * track_rows + r;
-        ImGui::PushID(100 + r);
-        ImVec2 a = ImGui::GetCursorScreenPos();
-        if (i < n) {
-            i32 t = tracks[i];
-            bool muted = ed.edit.muted[t];
-            if (kit_icon_button(muted ? ICON_MUTE : ICON_VOLUME, "##mute", KIT_GHOST, true, muted)) {
-                ed.edit.muted[t] = !muted;
-                changed = true;
-            }
-            f32 nx = a.x + fh + kit_px(6);
-            ImVec2 ts = ImGui::CalcTextSize("A");
-            text_clipped(dl, ImVec2(nx, floorf(a.y + (fh - ts.y) / 2)), name_w - kit_px(8), col32(muted ? COL_FAINT : COL_TEXT),
-                         ed.item.info.tracks[t]);
-            ImGui::SetCursorScreenPos(ImVec2(nx + name_w, a.y));
-            f32 pct = (1 + ed.edit.boost[t]) * 100;
-            if (lib_slider("##vol", &pct, 0, 200, slider_w, fh, 100, !muted)) {
-                ed.edit.boost[t] = pct / 100 - 1;
-                changed = true;
-            }
-            if (!muted && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                ed.edit.boost[t] = 0;
-                pct = 100;
-                changed = true;
-            }
-            char pt[16];
-            snprintf(pt, sizeof pt, "%.0f%%", pct);
-            ImVec2 ps = ImGui::CalcTextSize(pt);
-            dl->AddText(ImVec2(a.x + w - ps.x, floorf(a.y + (fh - ps.y) / 2)), col32(muted ? COL_FAINT : COL_DIM), pt);
-            ImGui::SetCursorScreenPos(a);
-            ImGui::Dummy(ImVec2(w, fh));
-        } else {
-            if (i == 0) {
-                ImVec2 ts = ImGui::CalcTextSize("No sound");
-                dl->AddText(ImVec2(a.x + kit_px(10), floorf(a.y + (fh - ts.y) / 2)), col32(COL_FAINT), "No sound");
-            }
-            ImGui::Dummy(ImVec2(w, fh));
-        }
-        ImGui::PopID();
-    }
-    if (changed) {
-        ed.dirty = true;
-        ed_apply_volumes();
-    }
+    if (kit_button(ICON_RIGHT "  Redo", KIT_GHOST, ImVec2(bw, 0), ed.redo_count > 0)) ed_undo(true);
 }
 
 static void ed_share_tab(f32 w)
@@ -709,8 +1552,11 @@ static void ed_share_tab(f32 w)
     ImGui::Dummy(ImVec2(w, line_h * 2 + kit_px(4)));
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 
-    // Recent shares, five to a page.
-    const i32 rows = 5;
+    // Recent shares, as many to a page as fit.
+    f32 row_step = fh + st.ItemSpacing.y;
+    i32 rows = (i32)((ImGui::GetContentRegionAvail().y - row_step - kit_px(4)) / row_step);
+    rows = rows < 1 ? 1 : rows > 8 ? 8 : rows;
+    if (ed.share_page * rows >= ed.share_count && ed.share_page > 0) ed.share_page = (ed.share_count - 1) / rows;
     i32 pages = ed.share_count ? (ed.share_count + rows - 1) / rows : 1;
     ed_group_head("RECENT SHARES", "shares", &ed.share_page, pages, w);
     for (i32 r = 0; r < rows; r++) {
@@ -789,10 +1635,13 @@ static void screen_editor()
     static u64 heard_at;
     if (GetTickCount64() - heard_at > 500) { heard_at = GetTickCount64(); ed.heard_set = false; }
     if (ed.tracks_ready) ed_apply_volumes();
+    // While the waveforms are measured, draw again as they come in.
+    if (ed.wave && !ed.wave->state) ui_wake(100);
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight();
     ImVec2 avail = ImGui::GetContentRegionAvail();
+    Config &cfg = g_app.config;
 
     // Header: back, the name, and the game and when under it.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
@@ -812,11 +1661,22 @@ static void screen_editor()
     text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), sub);
     ImGui::PopFont();
 
-    // Body: the picture, the transport bar and the timeline on the left; the panel on the right.
-    f32 body_y = h0.y + head_h + kit_px(18), body_h = h0.y + avail.y - body_y;
+    // Body: the picture with its transport bar and the side panel on top; the timeline across the bottom. The
+    // edge between them is dragged (double-click puts it back).
+    f32 body_y = h0.y + head_h + kit_px(14), body_h = h0.y + avail.y - body_y;
+    f32 split = kit_px(14);
+    auto top_height = [&]() {
+        f32 t = body_h * (cfg.editor_top > 0 ? cfg.editor_top : 0.56f);
+        f32 lo = kit_px(240), hi = body_h - split - kit_px(200);
+        if (t > hi) t = hi;
+        if (t < lo) t = lo;
+        if (t > body_h - split) t = body_h - split;
+        return t > 1 ? t : 1;
+    };
+    f32 top_h = top_height();
     f32 side_w = kit_px(372), gap = kit_px(20), main_w = avail.x - side_w - gap;
-    f32 bar_h = fh + kit_px(16), tl_h = kit_px(64), tl_gap = kit_px(14);
-    f32 video_h = body_h - bar_h - tl_h - kit_px(12) - tl_gap - kit_px(6);
+    f32 bar_h = fh + kit_px(16);
+    f32 video_h = top_h - bar_h - kit_px(10);
     if (video_h < 1) video_h = 1;
 
     // The picture, as it will be rendered (zoomed at the playhead), on black.
@@ -852,7 +1712,7 @@ static void screen_editor()
     ImVec2 uv0, uv1;
     zoom_uv(ed.edit, p.pos, &uv0, &uv1);
     player_draw(p, a, b, uv0, uv1);
-    if (p.loaded && p.paused && !p.error[0] && !ed.aiming && !ed.drag)
+    if (p.loaded && p.paused && !p.error[0] && !ed.aiming && !ed.lane_drag)
         lib_play_mark(dl, ImVec2((a.x + b.x) / 2, (a.y + b.y) / 2), kit_px(34));
     if (z > 1.001) {
         char zt[32];
@@ -861,7 +1721,7 @@ static void screen_editor()
     }
 
     // The transport bar: play, the time, the trim buttons, and how much is kept on the right. Fixed widths.
-    ImVec2 r0(pos.x, pos.y + video_h + kit_px(12));
+    ImVec2 r0(pos.x, pos.y + video_h + kit_px(10));
     dl->AddRectFilled(r0, ImVec2(r0.x + main_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
@@ -893,13 +1753,9 @@ static void screen_editor()
     f32 kx = r0.x + main_w - kit_px(16) - ks.x;
     if (kx > bx + kit_px(8)) dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(COL_TEXT), sel);
 
-    // The timeline under it.
-    ImGui::SetCursorScreenPos(ImVec2(pos.x, r0.y + bar_h + tl_gap + kit_px(6)));
-    ed_timeline(main_w, tl_h);
-
     // The side panel: Edit, or Keep & share.
     ImGui::SetCursorScreenPos(ImVec2(pos.x + main_w + gap, body_y));
-    if (kit_card_begin("ed_side", ImVec2(side_w, body_h))) {
+    if (kit_card_begin("ed_side", ImVec2(side_w, top_h))) {
         f32 cw = ImGui::GetContentRegionAvail().x;
         static const char *const tabs[] = {"Edit", "Keep & share"};
         kit_segmented("##tab", tabs, 2, &ed.tab, (cw - kit_px(6)) / 2);
@@ -909,23 +1765,67 @@ static void screen_editor()
     }
     kit_card_end();
 
-    // Keys (never while typing).
+    // The edge between the top and the timeline.
+    {
+        static f32 grab_dy;
+        f32 sy = body_y + top_h;
+        ImGui::SetCursorScreenPos(ImVec2(h0.x, sy));
+        ImGui::InvisibleButton("##split_editor", ImVec2(avail.x, split));
+        bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (ImGui::IsItemActivated()) grab_dy = io.MousePos.y - sy;
+        if (ImGui::IsItemActive() && ImGui::IsMousePosValid() && body_h > 0) {
+            cfg.editor_top = (io.MousePos.y - grab_dy - body_y) / body_h;
+            if (cfg.editor_top < 0.01f) cfg.editor_top = 0.01f;
+            top_h = top_height();
+            cfg.editor_top = top_h / body_h; // where it stopped, so a drag past the end comes straight back
+        }
+        if (hot && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) cfg.editor_top = 0;
+        if (ImGui::IsItemDeactivated()) config_save(cfg, g_app.paths);
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        f32 s = kit_px(1), mid = h0.x + avail.x / 2, cy2 = floorf(sy + split / 2);
+        dl->AddRectFilled(ImVec2(mid - 22 * s, cy2 - 1.5f * s), ImVec2(mid + 22 * s, cy2 + 1.5f * s), col32(hot ? COL_DIM : COL_PANEL2), 2 * s);
+    }
+
+    // The timeline, across the whole width.
+    f32 tl_y = body_y + top_h + split;
+    ed_timeline(ImVec2(h0.x, tl_y), avail.x, body_y + body_h - tl_y);
+
+    // Keys (never while typing or with a menu open).
     if (!io.WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {
+        bool ctrl = io.KeyCtrl;
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) player_toggle(&p);
-        if (ImGui::IsKeyPressed(ImGuiKey_I, false) && p.pos < ed_out() - 0.2) { ed.edit.in_s = p.pos; ed.dirty = true; }
-        if (ImGui::IsKeyPressed(ImGuiKey_O, false) && p.pos > ed.edit.in_s + 0.2) {
+        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_I, false) && p.pos < ed_out() - 0.2) { ed.edit.in_s = p.pos; ed.dirty = true; }
+        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false) && p.pos > ed.edit.in_s + 0.2) {
             ed.edit.out_s = p.pos >= ed_duration() - 0.01 ? 0 : p.pos;
             ed.dirty = true;
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_K, false)) ed_add_key(p.pos);
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) ed_delete_key(ed_key_at(p.pos));
+        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_K, false)) ed_add_key(p.pos);
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+            if (ed_sel_count()) ed_delete_selected();
+            else ed_delete_key(ed_key_at(p.pos));
+        }
+        for (i32 i = 0; i < EASE_COUNT; i++)
+            if (!ctrl && ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_1 + i), false) && ed_sel_count()) ed_set_ease(i);
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) ed_select_all();
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_C, false)) ed_copy();
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) ed_paste(p.pos);
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) ed_undo(io.KeyShift);
+        if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) ed_undo(true);
+        if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) ed_view_zoom(1 / 1.6, p.pos);
+        if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) ed_view_zoom(1.6, p.pos);
         f64 step = io.KeyShift ? 1.0 : ed_frame();
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) { player_pause(&p); player_seek(&p, p.pos - step); }
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) { player_pause(&p); player_seek(&p, p.pos + step); }
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) back = true;
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            if (ed_sel_count()) ed_sel_clear();
+            else back = true;
+        }
     }
-    // The record is written once a change settles (nothing held).
-    if (ed.dirty && !ImGui::IsAnyItemActive()) ed_save_record();
+    // A change settles once nothing is held: it goes on the undo list and the record is written.
+    if (!ImGui::IsAnyItemActive() && ed.lane_drag == ED_DRAG_NONE) {
+        ed_settle();
+        if (ed.dirty) ed_save_record();
+    }
     if (back) {
         editor_close();
         g_app.ui.screen = SCREEN_LIBRARY;

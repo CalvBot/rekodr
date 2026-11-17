@@ -717,6 +717,7 @@ static ID3D11ShaderResourceView *gpu_texture(const u32 *pixels, i32 w, i32 h)
 #include "sessions.cpp"
 #include "player.cpp"
 #include "library.cpp"
+#include "wave.cpp"
 #include "editor.cpp"
 #include "timeline.cpp"
 #include "options.cpp"
@@ -814,13 +815,27 @@ static void help_window()
         static const HelpRow editor[] = {
             {"[Space]", "Play / pause"},
             {"[I] / [O]", "Trim start / end at the playhead"},
-            {"[K]", "Zoom keyframe at the playhead"},
-            {"[Delete]", "Delete the keyframe at the playhead"},
+            {"[K]", "Zoom key at the playhead"},
+            {"Double-click a lane", "Add a key there"},
+            {"[Ctrl]+click a lane", "Add a key on the line"},
+            {"Drag a key", "Move it in time and level"},
+            {"[Shift]+drag a key", "Time only, catching the playhead"},
+            {"[Ctrl]+drag a key", "Level only"},
+            {"[Shift]+click a key", "Add it to the selection, or take it out"},
+            {"Drag a flat stretch", "Its level, both keys at once"},
+            {"Right-click a key", "Ease, copy, delete"},
+            {"[1] to [5]", "Ease: linear, smooth, in, out, hold"},
+            {"[Delete]", "Delete the selected keys"},
+            {"[Ctrl]+[A]", "Select every key"},
+            {"[Ctrl]+[C] / [Ctrl]+[V]", "Copy keys / paste at the playhead"},
+            {"[Ctrl]+[Z] / [Ctrl]+[Y]", "Undo / redo"},
+            {"[Ctrl]+wheel, [+] / [-]", "Zoom the timeline"},
+            {"Middle-drag, wheel", "Pan the timeline"},
+            {"[Shift]+wheel", "Taller or shorter lanes"},
             {"[\xE2\x86\x90] / [\xE2\x86\x92]", "Step one frame"},
             {"[Shift]+[\xE2\x86\x90] / [\xE2\x86\x92]", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},
-            {"Double-click a volume", "Back to as recorded"},
-            {"[Esc]", "Back to the library"},
+            {"[Esc]", "Clear the selection, then back to the library"},
         };
         static const HelpRow timeline[] = {
             {"Drag across the tracks", "Select a range (drag its edges to adjust)"},
