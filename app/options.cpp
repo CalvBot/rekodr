@@ -2044,6 +2044,10 @@ static void options_recording()
         log_line("options: mic %s", c.mic ? "on" : "off");
         options_apply(APPLY_AUDIO);
     }
+    if (opt_row_toggle("Chat in mono", "Each person's track in saves, at half the size", "##chatmono", &c.chat_mono)) {
+        log_line("options: chat %s", c.chat_mono ? "mono" : "stereo");
+        options_apply(0);
+    }
     opt_row_begin("ffmpeg.exe", 0, wide);
     char ff[MAX_PATH * 3], text[MAX_PATH * 3];
     wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);

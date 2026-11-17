@@ -110,11 +110,11 @@ This works today and stays the same, including the on-disk buffer format, so swi
 - **Track layout in every saved file:**
   1. Mix
   2. Mic
-  3. One track per chat app or person (Discord, each Discord person, Teams and the like)
+  3. One track per chat app or person (Discord, each Discord person, Teams and the like), mono unless set otherwise
   4. One track per game
   5. One track per other app
 
-  Tracks 1 and 2 are always present, silent if unused. A file has at most 16 tracks (what the editor reads); other
+  Tracks 1 and 2 are always present, silent if unused. A file has at most 32 tracks (what the editor reads); other
   apps past that share one last track, "Other".
 
 ## Architecture

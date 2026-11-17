@@ -147,6 +147,7 @@ static void test_settings_round_trip()
     a.buffer_by_size = true;
     a.dev_log = true;
     a.clock_24h = !a.clock_24h; // the other way from Windows' format, so loading it can't pass by default
+    a.chat_mono = false;        // the default is on
     str_set(a.codec.s, "hevc");
     a.hotkey_count = 1;
     str_set(a.hotkeys[0].keys.s, "Alt+F10");
@@ -173,6 +174,7 @@ static void test_settings_round_trip()
         T(g.session_mode == SESSION_ALWAYS && g.rec.fps == 60 && !strcmp(g.path, "C:\\Games\\The Game\\game.exe"));
     }
     T(b.clock_24h == a.clock_24h);
+    T(!b.chat_mono);
     T(b.folder_count == 1 && !strcmp(b.folders[0].path, "C:\\V\\*\\off") && b.folders[0].category == CAT_IGNORED);
     T(!wcscmp(a.save_dir.s, b.save_dir.s) && !wcscmp(a.buffer_dir.s, b.buffer_dir.s));
 
