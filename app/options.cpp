@@ -2163,6 +2163,13 @@ static void options_general()
         options_apply(0);
     }
     opt_row_end();
+    static const char *const clocks[] = {"12-hour", "24-hour"}, *const clock_notes[] = {"9:04 pm", "21:04"};
+    i32 clock = c.clock_24h ? 1 : 0;
+    if (opt_row_combo("Clock", 0, "##clock", clocks, clock_notes, 2, &clock, dp(200))) {
+        c.clock_24h = clock == 1;
+        log_line("options: %s clock", c.clock_24h ? "24-hour" : "12-hour");
+        options_apply(0);
+    }
     opt_card_end();
 
     opt_section("SESSIONS");

@@ -168,6 +168,15 @@ static SYSTEMTIME local_time(i64 us)
     return local;
 }
 
+// A time of day the way Options › General sets it: "9:04 pm" or "21:04" ("9:04:05 pm", "21:04:05" with seconds).
+static void fmt_hm(const SYSTEMTIME &t, char *out, i32 cap, bool secs = false)
+{
+    char sec[8] = "";
+    if (secs) snprintf(sec, sizeof sec, ":%02d", t.wSecond);
+    if (g_app.config.clock_24h) snprintf(out, cap, "%02d:%02d%s", t.wHour, t.wMinute, sec);
+    else snprintf(out, cap, "%d:%02d%s %s", t.wHour % 12 ? t.wHour % 12 : 12, t.wMinute, sec, t.wHour < 12 ? "am" : "pm");
+}
+
 static bool file_exists(const wchar_t *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
 
 static void graph_add(SaveWork *w, const char *fmt, ...)
@@ -632,8 +641,9 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         arg_pair(a, cap, key, i == 0 ? "default" : "0");
     }
     // Genre = the game (Explorer can show, sort and group by it); the exes go in the comment, for icons.
-    arg_pair(a, cap, "-metadata", "title=%s \xC2\xB7 %d %.3s %d %02d:%02d", label, t.wDay, month_name(t.wMonth),
-             t.wYear, t.wHour, t.wMinute);
+    char hm[16];
+    fmt_hm(t, hm, sizeof hm);
+    arg_pair(a, cap, "-metadata", "title=%s \xC2\xB7 %d %.3s %d %s", label, t.wDay, month_name(t.wMonth), t.wYear, hm);
     arg_pair(a, cap, "-metadata", "genre=%s", game);
     arg_pair(a, cap, "-metadata", "description=%s", names[0] ? names : DESKTOP);
     arg_pair(a, cap, "-metadata", "comment=clipback; games=%s", exes);

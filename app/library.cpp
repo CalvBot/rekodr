@@ -860,17 +860,17 @@ static void fmt_day(i64 us, char *out, i32 cap)
     else snprintf(out, cap, "%s %d %s", WEEKDAYS[day % 7], t.wDay, month_name(t.wMonth)); // 1601-01-01 was a Monday
 }
 
-// "today 9:04 pm", "yesterday 9:04 pm", "14 Nov 9:04 pm"
+// "today 9:04 pm", "yesterday 9:04 pm", "14 Nov 9:04 pm" (or 21:04, by the clock setting)
 static void fmt_when(i64 us, char *out, i32 cap)
 {
     SYSTEMTIME t;
     i64 day = local_day(us, &t), today = local_day(now_us(), 0);
-    i32 h = t.wHour % 12 ? t.wHour % 12 : 12;
-    char when[32];
+    char when[32], hm[16];
+    fmt_hm(t, hm, sizeof hm);
     if (day == today) str_set(when, "today");
     else if (day == today - 1) str_set(when, "yesterday");
     else snprintf(when, sizeof when, "%d %.3s", t.wDay, month_name(t.wMonth));
-    snprintf(out, cap, "%s %d:%02d %s", when, h, t.wMinute, t.wHour < 12 ? "am" : "pm");
+    snprintf(out, cap, "%s %s", when, hm);
 }
 
 // Text cut with "..." to fit `width`, in the current font.

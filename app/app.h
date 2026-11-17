@@ -90,6 +90,7 @@ struct Config {
 
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
+    bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
 
     bool start_with_windows;

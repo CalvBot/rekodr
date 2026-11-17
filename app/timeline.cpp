@@ -731,9 +731,7 @@ static void tl_play_update()
 
 static void tl_clock(i64 us, bool secs, char *out, i32 cap)
 {
-    SYSTEMTIME t = local_time(us);
-    if (secs) snprintf(out, cap, "%02d:%02d:%02d", t.wHour, t.wMinute, t.wSecond);
-    else snprintf(out, cap, "%02d:%02d", t.wHour, t.wMinute);
+    fmt_hm(local_time(us), out, cap, secs);
 }
 
 static void tl_length(i64 us, char *out, i32 cap)
@@ -1265,7 +1263,7 @@ static void screen_timeline()
         i64 off = tl_utc_offset(now);
         ImGui::PushFont(g_font_small);
         f32 sh = ImGui::GetTextLineHeight();
-        f32 pill_x = pill_t ? tl_x(c, pill_t) : -1e9f, pill_half = ImGui::CalcTextSize("00:00:00").x / 2 + 10 * s;
+        f32 pill_x = pill_t ? tl_x(c, pill_t) : -1e9f, pill_half = ImGui::CalcTextSize(g_app.config.clock_24h ? "00:00:00" : "00:00:00 pm").x / 2 + 10 * s;
         for (i64 t = ((c.start + off) / step + 1) * step - off; t < view_end; t += step) {
             f32 x = floorf(tl_x(c, t)) + 0.5f;
             dl->AddLine(ImVec2(x, y_ruler + ruler_h - 7 * s), ImVec2(x, y_ruler + ruler_h), col32(COL_FAINT));

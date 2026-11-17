@@ -938,8 +938,9 @@ static void top_bar(f32 h)
     char detail[64] = "";
     if (rec.paused) str_set(detail, "nothing kept");
     else if (rec.recording && rec.recording_since_us) {
-        SYSTEMTIME t = local_time(rec.recording_since_us);
-        snprintf(detail, sizeof detail, "since %d:%02d", t.wHour, t.wMinute);
+        char hm[16];
+        fmt_hm(local_time(rec.recording_since_us), hm, sizeof hm);
+        snprintf(detail, sizeof detail, "since %s", hm);
     } else if (rec.last_error.s[0]) str_set(detail, "see Options");
     else str_set(detail, "starting");
     ImGui::PushFont(g_font_bold);
