@@ -574,6 +574,47 @@ static void test_storeids()
     static const char none[] = "{\"game\":null,\"matched_by\":\"none\",\"confidence\":0,\"art\":{}}";
     T(!exe_from_answer(none, sizeof none - 1, name, sizeof name, &sure, &art, &art_len));
 
+    // "Help name games": a Game the service couldn't place is told what it was named, with the voter id; nothing
+    // is sent without the player's say-so, or for a game a store id decides
+    {
+        static Config saved;
+        saved = g_app.config;
+        bool online = g_gamedb.online;
+        char service[128];
+        str_set(service, g_gamedb.service);
+        g_gamedb.online = true;
+        str_set(g_gamedb.service, "test.invalid");
+        str_set(g_app.config.voter, "0123456789abcdef0123456789abcdef");
+        AppInfo app = {};
+        str_set(app.exe.s, "thing.exe");
+        snprintf(app.path, sizeof app.path, "%s/Tools/Thing/thing.exe", root);
+        app.category = CAT_GAME;
+        auto confirms = [](const char **body) {
+            i32 n = 0;
+            for (auto &q : g_gamedb.asks)
+                if (q.kind == ASK_CONFIRM && q.body) { n++; *body = q.body; }
+            return n;
+        };
+        const char *sent = 0;
+        g_app.config.share_names = false;
+        gamedb_confirm(app, "Thing");
+        T(confirms(&sent) == 0);
+        g_app.config.share_names = true;
+        gamedb_confirm(app, "Thing");
+        T(confirms(&sent) == 1 && !strcmp(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"name\":\"Thing\",\"voter\":\"0123456789abcdef0123456789abcdef\"}"));
+        snprintf(app.path, sizeof app.path, "%s/Lib/steamapps/common/Hollow Knight/hollow_knight.exe", root);
+        str_set(app.exe.s, "hollow_knight.exe");
+        gamedb_confirm(app, "Hollow Knight");
+        T(confirms(&sent) == 1);
+        for (auto &q : g_gamedb.asks) {
+            free(q.body);
+            q = {};
+        }
+        g_gamedb.online = online;
+        str_set(g_gamedb.service, service);
+        g_app.config = saved;
+    }
+
     const char *files[] = {"Lib/steamapps/appmanifest_367520.acf", "Lib/steamapps/appmanifest_10.acf", "GOG/Witcher 3/goggame-1207664643.info"};
     for (auto file : files) {
         snprintf(p, sizeof p, "%s/%s", root, file);

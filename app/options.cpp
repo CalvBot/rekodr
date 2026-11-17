@@ -1127,6 +1127,7 @@ static void apps_rename_popup()
         for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
         str_set(a.name.s, trim(name));
         log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
+        if (a.name.s[0]) gamedb_confirm(a, a.name.s);
         sessions_game_renamed(a.exe.s);
         options_apply(APPLY_AUDIO);
         ImGui::CloseCurrentPopup();
@@ -2257,6 +2258,11 @@ static void options_general()
     if (opt_row_toggle("Look up games online", "Names and icons from Discord's public list of games, covers from Steam, and art for the rest from SteamGridDB and IGDB. Applies from the next start",
                        "##lookup", &c.game_lookup)) {
         log_line("options: look up games %s", c.game_lookup ? "on" : "off");
+        options_apply(0);
+    }
+    if (opt_row_toggle("Help name games", "When you name a game clipback couldn't place, that name helps name it for other players",
+                       "##sharenames", &c.share_names)) {
+        log_line("options: help name games %s", c.share_names ? "on" : "off");
         options_apply(0);
     }
     opt_card_end();

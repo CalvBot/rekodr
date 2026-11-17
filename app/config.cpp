@@ -306,6 +306,8 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "session_min_length_min")) real(&c->session_min_length_min);
     else if (!strcmp(key, "share_keep_days")) real(&c->share_keep_days);
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
+    else if (!strcmp(key, "share_names")) boolean(&c->share_names);
+    else if (!strcmp(key, "voter")) str_set(c->voter, value);
     else if (!strcmp(key, "art_service")) str_set(c->art_service.s, value);
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
@@ -460,6 +462,8 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,
             c.session_min_length_min, c.share_keep_days);
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
+    boolean("share_names", c.share_names);
+    if (c.voter[0]) fprintf(f, "voter = %s\n", c.voter);
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed
     boolean("clock_24h", c.clock_24h);
     boolean("voice_mono", c.voice_mono);

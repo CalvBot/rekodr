@@ -103,6 +103,8 @@ struct Config {
 
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
+    bool share_names;    // "Help name games": naming a game the art service wasn't sure of tells it (gamedb_confirm)
+    char voter[33];      // a random id sent with those, so one player counts once; made when first needed
     Str64 art_service;   // host of the art service gamedb.cpp asks for the art Discord and Steam don't have; "" = none
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)

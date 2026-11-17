@@ -14,8 +14,8 @@
 //   art\<id>-icon.png, art\<id>-art.jpg       fetched the first time something shows them; an empty file means
 //                                             there is none, and it is asked for again after a week
 //   art\<id>-found.json                       what the art service has for the game; empty = it has nothing
-//   resolved\<hash>.json                      what the art service said a running Minecraft's modpack is, by a
-//                                             hash of the clues sent (mcpack.cpp)
+//   resolved\<hash>.json                      what the art service said a running Minecraft's modpack
+//                                             (mcpack.cpp) or an exe the list doesn't know (storeids.cpp) is
 // A game the list doesn't have goes by "n" and a hash of its name's letters as its id.
 // One worker thread does the fetching and the loading. The index is never changed once built, only replaced, and
 // readers copy what they find out of it under the lock, so any thread may ask.
@@ -666,7 +666,7 @@ static i32 gamedb_search(const char *query, GameInfo *out, i32 max)
 static void sessions_game_renamed(const char *exe); // sessions.cpp
 static bool mc_clues(const char *cmdline, char *out, i32 cap); // mcpack.cpp
 
-enum AskKind : u8 { ASK_PACK = 1, ASK_EXE = 2 };
+enum AskKind : u8 { ASK_PACK = 1, ASK_EXE = 2, ASK_CONFIRM = 3 };
 
 // What the art service said to a question: 1 = it has answered (name "" if it named nothing), 0 = it is being
 // asked, -1 = it hasn't been asked (or its answer made room for others since).
@@ -736,6 +736,16 @@ static bool gamedb_pack_name(const char *cmdline, char *name, i32 cap)
 
 static bool exe_clues(const char *exe, const char *path, const char *name, bool game, char *out, i32 cap); // storeids.cpp
 
+// The question asked about an exe where it is installed (and whether it was asked as a Game).
+static u64 exe_ask_key(const AppInfo &a, bool game)
+{
+    char where[MAX_PATH + 8];
+    i32 n = snprintf(where, sizeof where, "exe:%d:", game);
+    for (const char *p = a.path; *p && n < (i32)sizeof where - 1; p++) where[n++] = (char)tolower((u8)*p);
+    where[n] = 0;
+    return fnv64(where, n);
+}
+
 // The game an exe the list doesn't know is, from the art service: true with its name once it has answered.
 // *sure is set when it went by a store id or the exe table rather than a name. Only a game is asked about (one
 // sorted as a Game, or installed by Steam or GOG), and only once for where it is installed. Main thread.
@@ -744,11 +754,7 @@ static bool gamedb_exe_name(const AppInfo &a, bool game, char *name, i32 cap, bo
     name[0] = 0;
     *sure = false;
     if (!g_gamedb.online || !g_gamedb.service[0] || !a.path[0]) return false;
-    char where[MAX_PATH + 8];
-    i32 n = snprintf(where, sizeof where, "exe:%d:", game);
-    for (const char *p = a.path; *p && n < (i32)sizeof where - 1; p++) where[n++] = (char)tolower((u8)*p);
-    where[n] = 0;
-    u64 key = fnv64(where, n);
+    u64 key = exe_ask_key(a, game);
     i32 state = gamedb_asked(key, name, cap, sure);
     if (state < 0) {
         static char body[2048];
@@ -757,6 +763,38 @@ static bool gamedb_exe_name(const AppInfo &a, bool game, char *name, i32 cap, bo
         gamedb_ask(key, ASK_EXE, exe_clues(a.exe.s, a.path, shown, game, body, sizeof body) ? body : 0);
     }
     return state > 0 && name[0];
+}
+
+// "Help name games" (Options): a player named a Game the art service couldn't name by a store id or the exe table,
+// so it is told (POST /v1/confirm), with the player's random voter id so they count once. When enough players name
+// an exe in a folder the same game, the service names it so for everyone. Only with the player's say-so, and never
+// for a game a store id decides. Main thread.
+static void gamedb_confirm(const AppInfo &a, const char *name)
+{
+    Config &c = g_app.config;
+    if (!c.share_names || !g_gamedb.online || !g_gamedb.service[0] || !a.path[0] || !name[0]) return;
+    if (app_category(c, a) != CAT_GAME) return;
+    GameInfo listed;
+    if (gamedb_by_exe(a.exe.s, a.path, "", "", &listed)) return; // the games list has it
+    char said[128];
+    bool sure;
+    if (gamedb_asked(exe_ask_key(a, true), said, sizeof said, &sure) == 1 && sure) return; // the service knows it
+    static char body[2048];
+    if (!exe_clues(a.exe.s, a.path, name, true, body, sizeof body) || strstr(body, "\"steam\":") || strstr(body, "\"gog\":"))
+        return;
+    bool hex = strlen(c.voter) == 32;
+    for (const char *p = c.voter; *p && hex; p++) hex = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f');
+    if (!hex) {
+        u8 r[16];
+        if (BCryptGenRandom(0, r, sizeof r, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return;
+        for (i32 i = 0; i < 16; i++) snprintf(c.voter + 2 * i, 3, "%02x", r[i]);
+        config_save(c, g_app.paths);
+    }
+    size_t n = strlen(body);
+    if (n < 2 || n + 48 >= sizeof body) return;
+    snprintf(body + n - 1, sizeof body - n + 1, ",\"voter\":\"%s\"}", c.voter);
+    gamedb_ask(fnv64(body, strlen(body)), ASK_CONFIRM, body);
+    log_line("games: told the art service %s is %s", a.exe.s, name);
 }
 
 // Names an app from the database: its description becomes the game's name, and one that hasn't been sorted yet
@@ -1189,6 +1227,22 @@ static void gamedb_fetch_asks()
         const char *body = at >= 0 ? g_gamedb.asks[at].body : 0; // its slot isn't reused while it has a body
         ReleaseSRWLockExclusive(&g_gamedb.lock);
         if (at < 0) return;
+
+        if (kind == ASK_CONFIRM) { // a vote: nothing to keep from what it says
+            char *said = 0;
+            i64 said_len = 0;
+            u32 status = art_service_get("/v1/confirm", &said, &said_len, body);
+            DEV_LOG("gamedb: art service confirm answered %u: %.*s", status, said ? (i32)(said_len < 200 ? said_len : 200) : 0, said ? said : "");
+            free(said);
+            AcquireSRWLockExclusive(&g_gamedb.lock);
+            auto &q = g_gamedb.asks[at];
+            q.answered = true;
+            free(q.body);
+            q.body = 0;
+            ReleaseSRWLockExclusive(&g_gamedb.lock);
+            if (g_gamedb.stop) return;
+            continue;
+        }
 
         wchar_t fname[64];
         swprintf(fname, COUNT(fname), L"resolved\\%016llx.json", (unsigned long long)key);
