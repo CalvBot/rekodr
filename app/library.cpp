@@ -47,14 +47,6 @@ struct LibShared {
 static LibShared g_lib;
 static LibItem   g_scan_items[LIB_MAX_ITEMS]; // the scan's own list (one scan runs at a time)
 
-static u64 fnv64(const void *data, size_t n, u64 h = 14695981039346656037ull)
-{
-    const u8 *b = (const u8 *)data;
-    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 1099511628211ull;
-    return h;
-}
-
-
 static Path lib_cache_file(const Path &cache, u64 key, const wchar_t *ext)
 {
     wchar_t name[64];
@@ -682,8 +674,6 @@ static void lib_take_results()
                 if (lib.strip) lib.strip->Release();
                 lib.strip = gpu_texture(r.pixels, r.w, r.h);
                 lib.strip_key = r.key;
-                lib.strip_w = r.w;
-                lib.strip_h = r.h;
                 lib.strip_frames = r.frames;
             }
         } else if (g_app.ui.shown) {
@@ -859,8 +849,6 @@ static i64 local_day(i64 us, SYSTEMTIME *out)
     return (i64)((((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 864000000000ull);
 }
 
-static const char *const LIB_MONTHS[] = {"January", "February", "March", "April", "May", "June", "July", "August",
-                                     "September", "October", "November", "December"};
 static const char *const WEEKDAYS[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
 
 static void fmt_day(i64 us, char *out, i32 cap)
@@ -869,7 +857,7 @@ static void fmt_day(i64 us, char *out, i32 cap)
     i64 day = local_day(us, &t), today = local_day(now_us(), 0);
     if (day == today) snprintf(out, cap, "Today");
     else if (day == today - 1) snprintf(out, cap, "Yesterday");
-    else snprintf(out, cap, "%s %d %s", WEEKDAYS[day % 7], t.wDay, LIB_MONTHS[(t.wMonth + 11) % 12]); // 1601-01-01 was a Monday
+    else snprintf(out, cap, "%s %d %s", WEEKDAYS[day % 7], t.wDay, month_name(t.wMonth)); // 1601-01-01 was a Monday
 }
 
 // "today 9:04 pm", "yesterday 9:04 pm", "14 Nov 9:04 pm"
@@ -881,7 +869,7 @@ static void fmt_when(i64 us, char *out, i32 cap)
     char when[32];
     if (day == today) str_set(when, "today");
     else if (day == today - 1) str_set(when, "yesterday");
-    else snprintf(when, sizeof when, "%d %.3s", t.wDay, LIB_MONTHS[(t.wMonth + 11) % 12]);
+    else snprintf(when, sizeof when, "%d %.3s", t.wDay, month_name(t.wMonth));
     snprintf(out, cap, "%s %d:%02d %s", when, h, t.wMinute, t.wHour < 12 ? "am" : "pm");
 }
 
@@ -909,12 +897,6 @@ static void badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const 
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 0, 0, 180), kit_px(5));
     dl->AddText(ImVec2(a.x + px, a.y + py), IM_COL32(240, 240, 240, 255), text);
     ImGui::PopFont();
-}
-
-// A button that's drawn (and keeps its place) even when it does nothing.
-static bool button_enabled(const char *label, ImVec2 size, bool enabled)
-{
-    return kit_button(label, KIT_SECONDARY, size, enabled);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1491,15 +1473,7 @@ static void lib_set_view(LibView v)
     lib.view = v;
     lib.game[0] = 0;
     lib.scroll = lib.scroll_to = 0;
-    lib.chip_page = 0;
     lib_refilter();
-}
-
-// A game chip's label: the name, cut short when it's long.
-static void lib_chip_label(const char *name, char *out, i32 cap)
-{
-    if (strlen(name) <= 22) snprintf(out, cap, "%s", name);
-    else snprintf(out, cap, "%.20s\xE2\x80\xA6", name); // cut by bytes; game names are mostly ASCII
 }
 
 // A local day number (local_day's) for a date.
@@ -1521,7 +1495,7 @@ static void fmt_day_short(i64 day, char *out, i32 cap)
     FILETIME ft = {(DWORD)v, (DWORD)(v >> 32)};
     SYSTEMTIME t;
     FileTimeToSystemTime(&ft, &t);
-    snprintf(out, cap, "%d %.3s", t.wDay, LIB_MONTHS[(t.wMonth + 11) % 12]);
+    snprintf(out, cap, "%d %.3s", t.wDay, month_name(t.wMonth));
 }
 
 // Custom range: a month calendar. The first click picks the first day, the second the last.
@@ -1542,7 +1516,7 @@ static void lib_calendar()
     ImVec2 a = ImGui::GetCursorScreenPos();
     if (kit_icon_button(ICON_LEFT, "##prevm")) lib.cal_month--;
     char title[32];
-    snprintf(title, sizeof title, "%s %d", LIB_MONTHS[m - 1], y);
+    snprintf(title, sizeof title, "%s %d", month_name(m), y);
     ImGui::PushFont(g_font_bold);
     ImVec2 ts = ImGui::CalcTextSize(title);
     ImGui::GetWindowDrawList()->AddText(ImVec2(floorf(a.x + (w - ts.x) / 2), floorf(a.y + (fh - ts.y) / 2)), col32(COL_TEXT), title);

@@ -240,7 +240,6 @@ static void read_video(const Path &video_dir, BufferIdx *b, BufferScratch *s)
             v->size = file->size;
             v->run = i;
             str_set(v->name, file->name);
-            b->total_bytes += file->size;
         }
         r->seg_count = b->seg_count - r->first_seg;
     }
@@ -288,7 +287,6 @@ static void read_audio(const Path &audio_dir, BufferIdx *b, BufferScratch *s)
             *a = {};
             str_set(a->name, file->name);
             a->size = file->size;
-            b->total_bytes += file->size;
             if (line) {
                 a->start_us = st->start_us + secs_to_us(line->start);
                 a->end_us = st->start_us + secs_to_us(line->end);
@@ -344,7 +342,6 @@ static bool buffer_read(const Path &buffer_dir, BufferIdx *b)
     // Zeroing only the counts and header: the arrays are big and every entry used is written whole.
     b->run_count = b->seg_count = b->stream_count = b->audio_seg_count = b->activity_count = 0;
     b->oldest_us = b->newest_us = b->video_written_us = 0;
-    b->total_bytes = 0;
     BufferScratch *s = (BufferScratch *)VirtualAlloc(0, sizeof(BufferScratch), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!s) {
         log_line("buffer: out of memory reading the index");

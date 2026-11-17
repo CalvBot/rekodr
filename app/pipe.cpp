@@ -216,10 +216,7 @@ static DWORD WINAPI pipe_accept_thread(void *)
 static void pipe_start()
 {
     InitializeSRWLock(&g_pipe.lock);
-    wchar_t home[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
-        u32 h = 2166136261u;
-        for (wchar_t *c = home; *c; c++) h = (h ^ (u32)towlower(*c)) * 16777619u;
+    if (u32 h = test_home_hash()) {
         swprintf(g_pipe.name, COUNT(g_pipe.name), L"\\\\.\\pipe\\clipback-test-%08x", h);
     } else {
         wcscpy_s(g_pipe.name, L"\\\\.\\pipe\\clipback");

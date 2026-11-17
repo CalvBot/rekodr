@@ -54,13 +54,6 @@ struct GameDbShared {
 };
 static GameDbShared g_gamedb;
 
-static u64 gdb_hash(const char *s, size_t n)
-{
-    u64 h = 14695981039346656037ull;
-    for (size_t i = 0; i < n; i++) h = (h ^ (u8)s[i]) * 1099511628211ull;
-    return h;
-}
-
 // The letters and digits of a name, lower case: how names are compared ("Overwatch(R) 2" is "overwatch2").
 static i32 gdb_letters(const char *in, char *out, i32 cap)
 {
@@ -83,23 +76,6 @@ static Path gamedb_art_file(const char *id, GameArt kind)
     wchar_t name[64];
     swprintf(name, COUNT(name), L"art\\%hs-%s", id, kind == ART_ICON ? L"icon.png" : L"art.jpg");
     return path_join(gamedb_dir(), name);
-}
-
-static char *gdb_read(const Path &file, i64 *size)
-{
-    FILE *f = _wfopen(file.s, L"rb");
-    if (!f) return 0;
-    _fseeki64(f, 0, SEEK_END);
-    i64 n = _ftelli64(f);
-    _fseeki64(f, 0, SEEK_SET);
-    char *text = (char *)malloc((size_t)n + 1);
-    if (text) {
-        n = (i64)fread(text, 1, (size_t)n, f);
-        text[n] = 0;
-        *size = n;
-    }
-    fclose(f);
-    return text;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -214,7 +190,7 @@ static void gdb_clean(char *s)
 static i32 gamedb_convert(const Path &json, const Path &tsv)
 {
     i64 size = 0;
-    char *text = gdb_read(json, &size);
+    char *text = read_file(json.s, &size);
     if (!text) return 0;
     Path part = tsv;
     wcsncat(part.s, L".part", MAX_PATH - wcslen(part.s) - 1);
@@ -325,7 +301,7 @@ static const char *gdb_exe_file(const char *e, i32 len, i32 *file_len)
 static GameIndex *gamedb_load(const Path &tsv)
 {
     i64 size = 0;
-    char *text = gdb_read(tsv, &size);
+    char *text = read_file(tsv.s, &size);
     if (!text) return 0;
     i32 lines = 0;
     for (i64 i = 0; i < size; i++) lines += text[i] == '\n';
@@ -355,20 +331,20 @@ static GameIndex *gamedb_load(const Path &tsv)
         const GameRow &r = ix->rows[i];
         char letters[128];
         i32 n = gdb_letters(r.name, letters, sizeof letters);
-        if (n) ix->names[ix->name_count++] = {gdb_hash(letters, n), i};
+        if (n) ix->names[ix->name_count++] = {fnv64(letters, n), i};
         for (const char *a = r.aliases; *a;) {
             const char *e = strchr(a, '|');
             char one[128];
             snprintf(one, sizeof one, "%.*s", (int)(e ? e - a : strlen(a)), a);
             n = gdb_letters(one, letters, sizeof letters);
-            if (n) ix->names[ix->name_count++] = {gdb_hash(letters, n), i};
+            if (n) ix->names[ix->name_count++] = {fnv64(letters, n), i};
             a = e ? e + 1 : a + strlen(a);
         }
         for (const char *x = r.exes; *x;) {
             const char *e = strchr(x, '|');
             i32 len = (i32)(e ? e - x : strlen(x)), fl = 0;
             const char *file = gdb_exe_file(x, len, &fl);
-            if (fl) ix->exes[ix->exe_count++] = {gdb_hash(file, fl), i};
+            if (fl) ix->exes[ix->exe_count++] = {fnv64(file, fl), i};
             x = e ? e + 1 : x + len;
         }
     }
@@ -417,9 +393,9 @@ static bool gamedb_by_name(const char *name, GameInfo *out)
     bool found = false;
     AcquireSRWLockShared(&g_gamedb.lock);
     const GameIndex *ix = g_gamedb.index;
-    i32 k = ix && n ? gdb_find(ix->names, ix->name_count, gdb_hash(letters, n)) : -1;
+    i32 k = ix && n ? gdb_find(ix->names, ix->name_count, fnv64(letters, n)) : -1;
     // The same letters can name a few entries (a game and its test server); the one named exactly so wins
-    for (; k >= 0 && k < ix->name_count && ix->names[k].hash == gdb_hash(letters, n); k++) {
+    for (; k >= 0 && k < ix->name_count && ix->names[k].hash == fnv64(letters, n); k++) {
         const GameRow &r = ix->rows[ix->names[k].row];
         char own[128];
         gdb_letters(r.name, own, sizeof own);
@@ -458,7 +434,7 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
 
     i32 best = 0, best_row = -1, guess_row = -1;
     bool best_launcher = false, wants_more = false;
-    u64 hash = gdb_hash(file, fl);
+    u64 hash = fnv64(file, fl);
     AcquireSRWLockShared(&g_gamedb.lock);
     const GameIndex *ix = g_gamedb.index;
     i32 k = ix && fl ? gdb_find(ix->exes, ix->exe_count, hash) : -1;

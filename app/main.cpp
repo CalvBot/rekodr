@@ -239,10 +239,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     // One clipback per user (per CLIPBACK_HOME in development, so a test copy can run next to the real one)
     wchar_t mutex_name[MAX_PATH + 32] = L"Local\\clipback.native";
-    wchar_t home[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
-        u32 h = 2166136261u;
-        for (wchar_t *c = home; *c; c++) h = (h ^ (u32)towlower(*c)) * 16777619u;
+    if (u32 h = test_home_hash()) {
         swprintf(mutex_name, COUNT(mutex_name), L"Local\\clipback.native.%08x", h);
         // Per home too, so a command (quit) from one test copy never reaches another test copy.
         static wchar_t dev_class[64];
@@ -296,7 +293,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     tray_init(g_app.msg_hwnd);
     SetTimer(g_app.msg_hwnd, TIMER_TICK, 1000, 0);
     // Test copies (CLIPBACK_HOME) leave the hotkeys to the real clipback.
-    if (!home[0]) hotkeys_apply(g_app.config, g_app.msg_hwnd);
+    if (!test_home_hash()) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
     audio_start();
     gamedb_start(g_app.config.game_lookup);

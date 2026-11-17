@@ -361,7 +361,6 @@ static void tl_take_preview()
         if (tl.frames[i].used < slot->used) slot = &tl.frames[i];
     if (slot->srv) slot->srv->Release();
     slot->key = key;
-    slot->time_us = key >> 1;
     slot->srv = srv;
     slot->used = ++tl.frame_clock;
 }
@@ -1262,7 +1261,6 @@ static void screen_timeline()
 
     // Ruler, ticks on round local times, and their lines faintly through the tracks
     {
-        static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
         i64 step = tl_tick_step(c.px_per_us, 96 * s);
         i64 off = tl_utc_offset(now);
         ImGui::PushFont(g_font_small);
@@ -1275,7 +1273,7 @@ static void screen_timeline()
             char label[16];
             SYSTEMTIME lt = local_time(t);
             if (step >= 3600 * TL_SEC && lt.wHour == 0 && lt.wMinute == 0)
-                snprintf(label, sizeof label, "%d %s", lt.wDay, months[(lt.wMonth + 11) % 12]);
+                snprintf(label, sizeof label, "%d %.3s", lt.wDay, month_name(lt.wMonth));
             else tl_clock(t, step < 60 * TL_SEC, label, sizeof label);
             f32 lw = ImGui::CalcTextSize(label).x;
             if (x + 5 * s < pill_x + pill_half && x + 5 * s + lw > pill_x - pill_half) continue; // under the time pill

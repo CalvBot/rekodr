@@ -210,29 +210,6 @@ static void toml_parse(const char *text, i64 size, TomlFn *fn, void *ctx)
     free(t);
 }
 
-// Reads a whole file (null-terminated) into memory from malloc. Returns 0 if it can't be read.
-static char *options_read_file(const Path &path, i64 *size)
-{
-    *size = 0;
-    HANDLE f = CreateFileW(path.s, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
-    if (f == INVALID_HANDLE_VALUE) return 0;
-    LARGE_INTEGER len = {};
-    char *data = 0;
-    if (GetFileSizeEx(f, &len) && len.QuadPart < (16 << 20)) {
-        data = (char *)malloc((size_t)len.QuadPart + 1);
-        DWORD got = 0;
-        if (data && ReadFile(f, data, (DWORD)len.QuadPart, &got, 0)) {
-            data[got] = 0;
-            *size = got;
-        } else {
-            free(data);
-            data = 0;
-        }
-    }
-    CloseHandle(f);
-    return data;
-}
-
 // ---------------------------------------------------------------------------------------------------------------
 // First run: settings from the Rust version (%APPDATA%\clipback\config.toml) and the game list from lifelog's
 // config.toml ([processing] games / not_games). Both are only read. A test copy (CLIPBACK_HOME) reads copies of
@@ -373,7 +350,7 @@ static void import_folder(const char *what, const Path &from, Path *to)
 static void import_seen_apps(Config *c, const Path &path)
 {
     i64 size = 0;
-    char *text = options_read_file(path, &size);
+    char *text = read_file(path.s, &size);
     if (!text) return;
     i32 n = 0;
     char *next = 0;
@@ -416,7 +393,7 @@ static void options_first_run(Config *c, const Paths &paths)
     CoTaskMemFree(local);
 
     i64 size = 0;
-    char *text = options_read_file(rust, &size);
+    char *text = read_file(rust.s, &size);
     if (text) {
         char u[MAX_PATH * 3];
         wide_to_utf8(rust.s, u, sizeof u);
@@ -447,7 +424,7 @@ static void options_first_run(Config *c, const Paths &paths)
         }
     }
 
-    text = options_read_file(lifelog, &size);
+    text = read_file(lifelog.s, &size);
     if (text) {
         toml_parse(text, size, import_lifelog_item, im);
         free(text);

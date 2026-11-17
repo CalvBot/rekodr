@@ -121,6 +121,53 @@ static i64 now_us()
     return (t - 116444736000000000LL) / 10;
 }
 
+// FNV-1a, for cache keys and names made from a path.
+static u64 fnv64(const void *data, size_t n, u64 h = 14695981039346656037ull)
+{
+    const u8 *b = (const u8 *)data;
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+
+// A short name for CLIPBACK_HOME, so a test copy's mutex, window class and pipe are its own. 0 = not a test copy.
+static u32 test_home_hash()
+{
+    wchar_t home[MAX_PATH] = {};
+    if (!GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) || !home[0]) return 0;
+    u32 h = 2166136261u;
+    for (wchar_t *c = home; *c; c++) h = (h ^ (u32)towlower(*c)) * 16777619u;
+    return h ? h : 1;
+}
+
+// Reads a whole file (up to 64 MB) into memory from malloc, zero-terminated; free() it. Other programs may be
+// writing it. Returns 0 if it can't be read.
+static char *read_file(const wchar_t *path, i64 *size_out)
+{
+    if (size_out) *size_out = 0;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER size = {};
+    char *buf = 0;
+    if (GetFileSizeEx(f, &size) && size.QuadPart <= (64 << 20)) {
+        buf = (char *)malloc((size_t)size.QuadPart + 1);
+        DWORD got = 0;
+        if (buf && ReadFile(f, buf, (DWORD)size.QuadPart, &got, 0)) {
+            buf[got] = 0;
+            if (size_out) *size_out = got;
+        } else {
+            free(buf);
+            buf = 0;
+        }
+    }
+    CloseHandle(f);
+    return buf;
+}
+
+static const char *const MONTH_NAMES[] = {"January", "February", "March", "April", "May", "June", "July", "August",
+                                          "September", "October", "November", "December"};
+static const char *month_name(i32 month) { return MONTH_NAMES[(month + 11) % 12]; } // 1 = January; "%.3s" for Jan
+
 // Parses a length like "30s", "2m", "1h", "90" (seconds). Returns 0 if it isn't one.
 static i64 parse_length_secs(const char *s)
 {

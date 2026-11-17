@@ -102,8 +102,6 @@ static void fmt_length(i64 us, char *out, i32 cap)
     else snprintf(out, cap, "%lld h %lld min", (long long)(s / 3600), (long long)((s / 60) % 60));
 }
 
-static const char *MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-
 // "19:02", or "14 Nov 19:02" on another day than today
 static void fmt_clock(i64 us, char *out, i32 cap)
 {
@@ -111,7 +109,7 @@ static void fmt_clock(i64 us, char *out, i32 cap)
     if (t.wYear == today.wYear && t.wMonth == today.wMonth && t.wDay == today.wDay)
         snprintf(out, cap, "%02d:%02d", t.wHour, t.wMinute);
     else
-        snprintf(out, cap, "%d %s %02d:%02d", t.wDay, MONTHS[(t.wMonth + 11) % 12], t.wHour, t.wMinute);
+        snprintf(out, cap, "%d %.3s %02d:%02d", t.wDay, month_name(t.wMonth), t.wHour, t.wMinute);
 }
 
 static void fmt_stamp(i64 us, char *out, i32 cap)

@@ -807,25 +807,6 @@ static i32 media_num_w(const wchar_t *name, bool video)
     return media_num(n8, video);
 }
 
-// Reads a whole small file into a heap buffer, zero-terminated. Returns 0 if it can't.
-static char *read_file(const wchar_t *path, i64 *size_out)
-{
-    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, 0);
-    if (f == INVALID_HANDLE_VALUE) return 0;
-    LARGE_INTEGER size = {};
-    GetFileSizeEx(f, &size);
-    if (size.QuadPart > (64 << 20)) { CloseHandle(f); return 0; }
-    char *buf = (char *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)size.QuadPart + 1);
-    DWORD got = 0;
-    if (!buf || !ReadFile(f, buf, (DWORD)size.QuadPart, &got, 0)) got = 0;
-    CloseHandle(f);
-    if (!buf) return 0;
-    buf[got] = 0;
-    if (size_out) *size_out = got;
-    return buf;
-}
-
 static int list_cmp(const void *a, const void *b)
 {
     i32 x = ((const ListEntry *)a)->num, y = ((const ListEntry *)b)->num;
@@ -870,7 +851,7 @@ static void read_list(const Path &dir, bool video)
         }
         line = next;
     }
-    HeapFree(GetProcessHeap(), 0, text);
+    free(text);
     qsort(g_prune.list, g_prune.list_count, sizeof(ListEntry), list_cmp);
 }
 
@@ -902,7 +883,7 @@ static i64 dir_origin(const Path &dir, bool video)
         if (k) k = strchr(k, ':');
         if (k) us = _strtoi64(k + 1, 0, 10);
     }
-    HeapFree(GetProcessHeap(), 0, text);
+    free(text);
     return us;
 }
 
@@ -1017,7 +998,7 @@ static void prune_activity(const RecSettings &s, i64 oldest_us)
             }
         }
     }
-    HeapFree(GetProcessHeap(), 0, text);
+    free(text);
     ReleaseSRWLockExclusive(&g_activity_lock);
 }
 

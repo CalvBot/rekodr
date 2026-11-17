@@ -32,7 +32,7 @@ static bool app_find_path(const char *exe, Path *out)
     CoTaskMemFree(local);
     import_path(L"lifelog-paths.txt", real.s, &paths);
     i64 size = 0;
-    char *text = options_read_file(paths, &size);
+    char *text = read_file(paths.s, &size);
     if (!text) return false;
     char *next = 0;
     for (char *line = strtok_s(text, "\r\n", &next); line && !out->s[0]; line = strtok_s(0, "\r\n", &next)) {

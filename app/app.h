@@ -171,7 +171,6 @@ struct AudioLive {
     AudioTrack track;
     Str64      exe;      // lower-case exe, "mic" for the mic
     char       path[MAX_PATH]; // its exe's full path (UTF-8), "" for the mic
-    i64        since_us; // when the stream started
 };
 
 struct Audio {
@@ -230,7 +229,6 @@ struct BufferIdx {
     ActivityEntry   activity[4096];
     i32             activity_count;
     i64             oldest_us, newest_us; // video footage span (0 if none)
-    u64             total_bytes;          // video and audio segments
     i64             video_written_us;     // last write of the newest run's list.csv: recent = recording now
 };
 
@@ -383,12 +381,10 @@ struct Library {
     i32      sort;                 // LibSort: newest, oldest, longest, biggest
     i32      cal_month;            // the calendar's month, year * 12 + month - 1
     bool     cal_picking;          // the range's start is picked; the next click is its end
-    i32      chip_page;
     LibItem  items[LIB_MAX_ITEMS]; // both views, newest first (handed over by the scan worker)
     i32      item_count;
     bool     scanned;              // a scan has finished at least once
-    bool     scanning, scan_again;
-    u32      scan_gen;
+    bool     scanning;
     i32      shown[LIB_MAX_ITEMS]; // this view's items that match the chip and the search
     i32      shown_count;
     char     games[LIB_MAX_GAMES][64]; // chips for this view, most recent first
@@ -401,7 +397,7 @@ struct Library {
     // The hovered card's whole scrub strip (each is a few MB, so only one is kept). The editor's timeline uses it too.
     u64                       strip_key, strip_want;
     ID3D11ShaderResourceView *strip;
-    i32                       strip_w, strip_h, strip_frames;
+    i32                       strip_frames;
     LibItem  target;               // the card a menu, rename or delete is about
     char     rename_buf[256];
     char     rename_error[256];
@@ -449,7 +445,6 @@ struct TimelineRow {   // one audio row: every stream of one exe (or the mic)
 
 struct TimelineFrame { // a preview frame uploaded to the GPU
     i64                       key;     // what it shows (see tl_frame_key), 0 = free slot
-    i64                       time_us;
     ID3D11ShaderResourceView *srv;
     u32                       used;    // for evicting the least recently shown
 };

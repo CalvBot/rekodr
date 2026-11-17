@@ -1074,7 +1074,6 @@ static void audio_on_event(const Event &e)
         s->kind = (AudioKind)(e.b >> 32);
         split_exe_path(e.text, &s->exe, s->path, sizeof s->path);
         s->track = audio_track(g_app.config, s->kind, s->exe.s, s->path);
-        s->since_us = now_us();
         break;
     }
     case AE_STOPPED:

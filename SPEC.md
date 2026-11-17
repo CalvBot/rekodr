@@ -235,7 +235,5 @@ One window with a header (status, pause, Help, Options):
 
 ## Open questions
 1. Cuts snap to the 2 s keyframes today. Should they be frame-exact, by re-encoding only the first part?
-2. Settings file format: keep `config.toml` (needs a TOML parser) or switch to a plain `key = value` file
-   (migrated once)?
-3. Audio: keep one ffmpeg per stream for Opus, or link libopus and write the segments directly?
-4. Which files lifelog and clipback share, given lifelog is being rewritten too.
+2. Audio: keep one ffmpeg per stream for Opus, or link libopus and write the segments directly?
+3. Which files lifelog and clipback share, given lifelog is being rewritten too.

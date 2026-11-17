@@ -98,11 +98,9 @@ static f32 g_dpi_scale = 1;
 #define ICON_SLIDERS  "\xEE\xA7\xA9" // E9E9 equalizer
 #define ICON_STAR      "\xEE\x9C\xB4" // E734
 #define ICON_UNDO      "\xEE\x9E\xA7" // E7A7
-#define ICON_SORT      "\xEE\xA3\x8B" // E8CB
 #define ICON_WINDOW    "\xEE\x9C\xB7" // E737
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_START     "\xEE\xA2\x92" // E892
-#define ICON_CALENDAR "\xEE\x9E\x87" // E787
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
 
@@ -645,12 +643,6 @@ static void kit_card_end()
 }
 
 // Text helpers
-static void kit_title(const char *text)
-{
-    ImGui::PushFont(g_font_title);
-    ImGui::TextUnformatted(text);
-    ImGui::PopFont();
-}
 static void kit_heading(const char *text) // a card or section title
 {
     ImGui::PushFont(g_font_big);
@@ -676,14 +668,7 @@ static void kit_dim(const char *fmt, ...)
     ImGui::TextUnformatted(buf);
     ImGui::PopStyleColor();
 }
-static void kit_dim_wrapped(const char *text) // one short sentence of explanation; never a paragraph
-{
-    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
-    ImGui::TextWrapped("%s", text);
-    ImGui::PopStyleColor();
-}
 
-// Places the next item so it ends at the right edge of the content region (w = its width).
 // The wheel over the control just drawn steps its choice (of `count`, skipping the `disabled` bits, stopping at
 // the ends). It takes the wheel while the mouse is there, so the page behind doesn't scroll as well.
 static bool kit_wheel_step(i32 *index, i32 count, u32 disabled = 0)

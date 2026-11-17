@@ -632,8 +632,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         arg_pair(a, cap, key, i == 0 ? "default" : "0");
     }
     // Genre = the game (Explorer can show, sort and group by it); the exes go in the comment, for icons.
-    static const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    arg_pair(a, cap, "-metadata", "title=%s \xC2\xB7 %d %s %d %02d:%02d", label, t.wDay, months[(t.wMonth + 11) % 12],
+    arg_pair(a, cap, "-metadata", "title=%s \xC2\xB7 %d %.3s %d %02d:%02d", label, t.wDay, month_name(t.wMonth),
              t.wYear, t.wHour, t.wMinute);
     arg_pair(a, cap, "-metadata", "genre=%s", game);
     arg_pair(a, cap, "-metadata", "description=%s", names[0] ? names : DESKTOP);
