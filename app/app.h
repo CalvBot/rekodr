@@ -90,7 +90,7 @@ struct Config {
 
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
-    bool chat_mono;      // saves keep each chat track in mono (voices are mono anyway; half the size)
+    bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
 

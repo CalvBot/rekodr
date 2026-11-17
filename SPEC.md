@@ -109,7 +109,7 @@ This works today and stays the same, including the on-disk buffer format, so swi
   at 20 Mbps is about 216 GB.
 - **Track layout in every saved file:**
   1. Mix
-  2. Mic
+  2. Mic, mono unless set otherwise
   3. One track per chat app or person (Discord, each Discord person, Teams and the like), mono unless set otherwise
   4. One track per game
   5. One track per other app

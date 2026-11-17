@@ -69,7 +69,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
     c->game_lookup = true;
-    c->chat_mono = true;
+    c->voice_mono = true;
     wchar_t time_format[80] = L"";
     c->clock_24h = !GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_STIMEFORMAT, time_format, 80) ||
                    wcschr(time_format, L'H') != 0; // "HH:mm:ss" is 24-hour, "h:mm:ss tt" 12-hour
@@ -285,7 +285,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_keep_days")) real(&c->share_keep_days);
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
-    else if (!strcmp(key, "chat_mono")) boolean(&c->chat_mono);
+    else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "start_with_windows")) boolean(&c->start_with_windows);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
@@ -429,7 +429,7 @@ static bool config_save(const Config &c, const Paths &paths)
             c.session_min_length_min, c.share_keep_days);
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("clock_24h", c.clock_24h);
-    boolean("chat_mono", c.chat_mono);
+    boolean("voice_mono", c.voice_mono);
     boolean("start_with_windows", c.start_with_windows);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %d\ncard_width = %d\n", c.accent, c.card_width);
