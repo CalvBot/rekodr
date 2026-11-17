@@ -2202,7 +2202,7 @@ static void options_general()
 
     opt_section("GAMES");
     opt_card_begin();
-    if (opt_row_toggle("Look up games online", "Names and icons from Discord's public list of games, covers from Steam. Applies from the next start",
+    if (opt_row_toggle("Look up games online", "Names and icons from Discord's public list of games, covers from Steam, and art for the rest from SteamGridDB and IGDB. Applies from the next start",
                        "##lookup", &c.game_lookup)) {
         log_line("options: look up games %s", c.game_lookup ? "on" : "off");
         options_apply(0);

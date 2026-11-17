@@ -16,6 +16,7 @@
 #include <mfmediaengine.h>
 #include <wincodec.h>
 #include <winhttp.h>
+#include <bcrypt.h>
 #include <tlhelp32.h>
 
 #include <stdint.h>

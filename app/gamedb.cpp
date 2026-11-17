@@ -3,14 +3,18 @@
 // clipback fetches it itself; nothing is shipped with it. The list is Discord's public list of the games it can
 // detect (about 25,000, each with its exe names, the folders they sit in and, for an exe many programs share, the
 // command line that tells them apart: javaw.exe is Minecraft only when it runs Minecraft's main class). Icons come
-// from Discord's image server and covers from Steam's when the game is on Steam. All of it is kept under
-// <local>\gamedb and the list is fetched again after a week:
+// from Discord's image server and covers from Steam's when the game is on Steam. A game with neither, or one not in
+// the list at all, is looked up by name on clipback's art service (api.clipback.workers.dev, which asks SteamGridDB
+// and IGDB; "art_service" in settings.txt names another, or none). All of it is kept under <local>\gamedb and the
+// list is fetched again after a week:
 //   detectable.json   the list as fetched
 //   games.tsv         the same, one game a line, which is what is loaded:
 //                     id, name, icon, cover, Steam id, other names (|), exes (|; "!" first marks a launcher,
 //                     ">" a shared exe; the command line it needs follows a \x1f)
 //   art\<id>-icon.png, art\<id>-art.jpg       fetched the first time something shows them; an empty file means
-//                                             there is none
+//                                             there is none, and it is asked for again after a week
+//   art\<id>-found.json                       what the art service has for the game; empty = it has nothing
+// A game the list doesn't have goes by "n" and a hash of its name's letters as its id.
 // One worker thread does the fetching and the loading. The index is never changed once built, only replaced, and
 // readers copy what they find out of it under the lock, so any thread may ask.
 
@@ -49,7 +53,8 @@ struct GameDbShared {
     HANDLE     thread, wake;
     volatile LONG stop;
     bool       online;      // may fetch
-    struct { char id[24], hash[40]; u32 steam; GameArt kind; } want[64]; // art asked for, not fetched yet
+    char       service[128]; // the art service's host; "" = don't ask it
+    struct { char id[24], hash[40], name[128]; u32 steam; GameArt kind; } want[64]; // art asked for, not fetched yet
     i32        want_count;
 };
 static GameDbShared g_gamedb;
@@ -79,13 +84,22 @@ static Path gamedb_art_file(const char *id, GameArt kind)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Fetching: one GET over https to a file (through a .part, so a half-fetched file is never read).
+// Fetching: one GET over https. The answer goes to a file (through a .part, so a half-fetched file is never read)
+// or, with no file, into memory: *body, malloc'd and 0-terminated, which the caller frees. `headers` are sent with
+// it ("" = none). Returns the status, 0 if there was no answer; the body is only kept for a 200.
 
-static bool http_get_file(const wchar_t *host, const wchar_t *path, const Path &out)
+static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *headers, const Path *file,
+                    char **body = 0, i64 *body_len = 0)
 {
     bool ok = false;
-    Path part = out;
-    wcsncat(part.s, L".part", MAX_PATH - wcslen(part.s) - 1);
+    u32 answer = 0;
+    Path part = {};
+    if (file) {
+        part = *file;
+        wcsncat(part.s, L".part", MAX_PATH - wcslen(part.s) - 1);
+    }
+    char *mem = 0;
+    i64 mem_len = 0, mem_cap = 0;
     HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
@@ -94,31 +108,59 @@ static bool http_get_file(const wchar_t *host, const wchar_t *path, const Path &
         WinHttpSetOption(req, WINHTTP_OPTION_DECOMPRESSION, &unzip, sizeof unzip);
         WinHttpSetTimeouts(req, 10000, 10000, 20000, 30000);
         DWORD status = 0, len = sizeof status;
-        if (WinHttpSendRequest(req, 0, 0, 0, 0, 0, 0) && WinHttpReceiveResponse(req, 0) &&
-            WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &status, &len, 0) && status == 200) {
-            FILE *f = _wfopen(part.s, L"wb");
-            if (f) {
+        if (WinHttpSendRequest(req, headers && headers[0] ? headers : 0, headers && headers[0] ? (DWORD)-1L : 0, 0, 0, 0, 0) &&
+            WinHttpReceiveResponse(req, 0) &&
+            WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &status, &len, 0))
+            answer = status;
+        if (answer == 200) {
+            FILE *f = file ? _wfopen(part.s, L"wb") : 0;
+            if (f || !file) {
                 static thread_local char buf[65536];
                 ok = true;
                 for (;;) {
                     DWORD got = 0;
                     if (!WinHttpReadData(req, buf, sizeof buf, &got)) { ok = false; break; }
                     if (!got) break;
-                    if (fwrite(buf, 1, got, f) != got) { ok = false; break; }
+                    if (f) {
+                        if (fwrite(buf, 1, got, f) != got) { ok = false; break; }
+                    } else {
+                        if (mem_len + got + 1 > (1 << 20)) { ok = false; break; } // no answer here is that big
+                        if (mem_len + got + 1 > mem_cap) {
+                            mem_cap = (mem_len + got + 1) * 2;
+                            mem = (char *)realloc(mem, (size_t)mem_cap);
+                        }
+                        memcpy(mem + mem_len, buf, got);
+                        mem_len += got;
+                    }
                     if (g_gamedb.stop) { ok = false; break; }
                 }
-                fclose(f);
+                if (f) fclose(f);
             }
         } else {
-            DEV_LOG("gamedb: %ls%ls answered %u (error %d)", host, path, status, (int)GetLastError());
+            DEV_LOG("gamedb: %ls%ls answered %u (error %d)", host, path, answer, (int)GetLastError());
         }
     }
     if (req) WinHttpCloseHandle(req);
     if (conn) WinHttpCloseHandle(conn);
     if (session) WinHttpCloseHandle(session);
-    if (ok) ok = MoveFileExW(part.s, out.s, MOVEFILE_REPLACE_EXISTING) != 0;
-    else DeleteFileW(part.s);
-    return ok;
+    if (file) {
+        if (ok) ok = MoveFileExW(part.s, file->s, MOVEFILE_REPLACE_EXISTING) != 0;
+        else DeleteFileW(part.s);
+    }
+    if (body && ok) {
+        if (!mem) mem = (char *)malloc(1);
+        mem[mem_len] = 0;
+        *body = mem;
+        if (body_len) *body_len = mem_len;
+        mem = 0;
+    }
+    free(mem);
+    return answer == 200 && !ok ? 0 : answer;
+}
+
+static bool http_get_file(const wchar_t *host, const wchar_t *path, const Path &out)
+{
+    return http_get(host, path, L"", &out) == 200;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -615,16 +657,250 @@ static bool gamedb_name_app(AppInfo *a)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// The art service: art for the games Discord's list has none for, from SteamGridDB and IGDB by way of clipback's
+// own Worker (clipback-api), which holds the keys. Two calls, both GET and signed:
+//   /v1/search?q=<name>  -> {"games":[{"id":"s5367951","name":"...","year":2017}, ...]}
+//   /v1/art/<id>         -> {"id":..,"grid":{"url":..,"thumb":..,"w":..,"h":..},"hero":..,"logo":..,"icon":..},
+//                           a kind it has none of being null
+// The signature only keeps the service from being an open relay for its keys, so the key it is made with is no
+// secret.
+
+static const char ART_SERVICE_KEY[] = "REDACTED-OLD-SERVICE-KEY";
+
+// HMAC-SHA256 of msg, in hex.
+static bool hmac_sha256_hex(const char *key, const char *msg, char out[65])
+{
+    BCRYPT_ALG_HANDLE alg = 0;
+    BCRYPT_HASH_HANDLE h = 0;
+    u8 mac[32];
+    bool ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, 0, BCRYPT_ALG_HANDLE_HMAC_FLAG)) &&
+              BCRYPT_SUCCESS(BCryptCreateHash(alg, &h, 0, 0, (PUCHAR)key, (ULONG)strlen(key), 0)) &&
+              BCRYPT_SUCCESS(BCryptHashData(h, (PUCHAR)msg, (ULONG)strlen(msg), 0)) &&
+              BCRYPT_SUCCESS(BCryptFinishHash(h, mac, sizeof mac, 0));
+    if (h) BCryptDestroyHash(h);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    out[0] = 0;
+    if (ok)
+        for (i32 i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", mac[i]);
+    return ok;
+}
+
+// The x-clipback header for a path (with its query, as sent): "<unix seconds>.<hmac of "seconds\npath">".
+static void art_service_sign(const char *path, i64 seconds, char *out, i32 cap)
+{
+    char msg[1024], mac[65];
+    snprintf(msg, sizeof msg, "%lld\n%s", seconds, path);
+    hmac_sha256_hex(ART_SERVICE_KEY, msg, mac);
+    snprintf(out, cap, "%lld.%s", seconds, mac);
+}
+
+// A name made safe for a query: every byte but A-Z a-z 0-9 - _ . ~ as %XX.
+static void url_encode(const char *in, char *out, i32 cap)
+{
+    i32 n = 0;
+    for (; *in && n < cap - 4; in++) {
+        u8 c = (u8)*in;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') out[n++] = (char)c;
+        else n += snprintf(out + n, cap - n, "%%%02X", c);
+    }
+    out[n] = 0;
+}
+
+// A signed GET to the service. Returns the status (0 = no answer); the body, for a 200, in *body.
+static u32 art_service_get(const char *path, char **body, i64 *len)
+{
+    wchar_t host[128], wpath[1024], header[256];
+    utf8_to_wide(g_gamedb.service, host, COUNT(host));
+    utf8_to_wide(path, wpath, COUNT(wpath));
+    for (i32 attempt = 0;; attempt++) {
+        char sig[128];
+        FILETIME now;
+        GetSystemTimeAsFileTime(&now);
+        i64 unix_seconds = (((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - 116444736000000000ll) / 10000000;
+        art_service_sign(path, unix_seconds, sig, sizeof sig);
+        swprintf(header, COUNT(header), L"x-clipback: %hs\r\n", sig);
+        u32 status = http_get(host, wpath, header, 0, body, len);
+        if (status != 429 || attempt || g_gamedb.stop) return status;
+        // Asked too often (it allows 30 a minute): wait the minute out, once
+        for (i32 s = 0; s < 61 && !g_gamedb.stop; s++) Sleep(1000);
+    }
+}
+
+// From a search's answer, the id of the game that is this name: the one whose letters are the name's, else the
+// first whose letters hold the name's or are held in them ("rustclient" finds "Rust"). False if none is.
+static bool art_pick_search(const char *json, i64 len, const char *name, char *id, i32 cap)
+{
+    char want[128];
+    i32 wl = gdb_letters(name, want, sizeof want);
+    id[0] = 0;
+    if (wl < 2) return false;
+    bool exact = false;
+    Json j = {json, json + len};
+    if (!j_eat(&j, '{')) return false;
+    while (!j_eat(&j, '}') && j.p < j.end) {
+        char key[24];
+        if (!j_string(&j, key, sizeof key)) break;
+        j_eat(&j, ':');
+        if (strcmp(key, "games") || !j_eat(&j, '[')) { j_skip(&j); j_eat(&j, ','); continue; }
+        while (j_eat(&j, '{')) {
+            char gid[24] = "", gname[128] = "", k[16];
+            while (!j_eat(&j, '}') && j.p < j.end) {
+                if (!j_string(&j, k, sizeof k)) break;
+                j_eat(&j, ':');
+                if (!strcmp(k, "id")) j_string(&j, gid, sizeof gid) || (j_skip(&j), 0);
+                else if (!strcmp(k, "name")) j_string(&j, gname, sizeof gname) || (j_skip(&j), 0);
+                else j_skip(&j);
+                j_eat(&j, ',');
+            }
+            j_eat(&j, ',');
+            char letters[128];
+            i32 gl = gdb_letters(gname, letters, sizeof letters);
+            if (!gid[0] || gl < 2 || exact) continue;
+            if (!strcmp(letters, want)) { snprintf(id, cap, "%s", gid); exact = true; }
+            else if (!id[0] && (strstr(letters, want) || strstr(want, letters))) snprintf(id, cap, "%s", gid);
+        }
+        j_eat(&j, ']');
+        j_eat(&j, ',');
+    }
+    return id[0] != 0;
+}
+
+// From an art answer, the picture for an icon (its icon's thumb: a PNG, where the icon itself may be an .ico of
+// many sizes) or a cover (its hero, a wide picture with no title on it, else its grid). False if it has neither.
+static bool art_pick_url(const char *json, i64 len, GameArt kind, char *url, i32 cap)
+{
+    char found[2][512] = {"", ""}; // the first choice, the second
+    Json j = {json, json + len};
+    url[0] = 0;
+    if (!j_eat(&j, '{')) return false;
+    while (!j_eat(&j, '}') && j.p < j.end) {
+        char key[16];
+        if (!j_string(&j, key, sizeof key)) break;
+        j_eat(&j, ':');
+        i32 slot = kind == ART_ICON ? (!strcmp(key, "icon") ? 0 : -1)
+                                    : (!strcmp(key, "hero") ? 0 : !strcmp(key, "grid") ? 1 : -1);
+        if (slot < 0 || !j_eat(&j, '{')) { j_skip(&j); j_eat(&j, ','); continue; }
+        while (!j_eat(&j, '}') && j.p < j.end) {
+            char k[16];
+            if (!j_string(&j, k, sizeof k)) break;
+            j_eat(&j, ':');
+            if (!strcmp(k, kind == ART_ICON ? "thumb" : "url")) j_string(&j, found[slot], sizeof found[slot]) || (j_skip(&j), 0);
+            else j_skip(&j);
+            j_eat(&j, ',');
+        }
+        j_eat(&j, ',');
+    }
+    const char *pick = found[0][0] ? found[0] : found[1];
+    if (strncmp(pick, "https://", 8)) return false;
+    snprintf(url, cap, "%s", pick);
+    return true;
+}
+
+// An https address fetched to a file.
+static bool http_get_url(const char *url, const Path &out)
+{
+    if (strncmp(url, "https://", 8)) return false;
+    const char *host = url + 8, *slash = strchr(host, '/');
+    if (!slash || slash == host) return false;
+    wchar_t whost[128], wpath[1024];
+    char h[128];
+    snprintf(h, sizeof h, "%.*s", (int)(slash - host), host);
+    utf8_to_wide(h, whost, COUNT(whost));
+    utf8_to_wide(slash, wpath, COUNT(wpath));
+    return http_get_file(whost, wpath, out);
+}
+
+static bool file_older_than(const WIN32_FILE_ATTRIBUTE_DATA &fa, i64 seconds)
+{
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    i64 age = (((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) -
+               ((i64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime)) / 10000000;
+    return age > seconds;
+}
+
+// Where the service has a game's icon or cover, looked up by its name. What it has is kept in <id>-found.json, so
+// the icon and the cover take one lookup between them. False if it has none, or couldn't be asked.
+static bool art_service_find(const char *id, const char *name, GameArt kind, char *url, i32 cap)
+{
+    if (!g_gamedb.service[0] || !name[0]) return false;
+    wchar_t fname[64];
+    swprintf(fname, COUNT(fname), L"art\\%hs-found.json", id);
+    Path found = path_join(gamedb_dir(), fname);
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    // Nothing found is asked about again after a week, what was found after a month
+    bool have = GetFileAttributesExW(found.s, GetFileExInfoStandard, &fa) &&
+                !file_older_than(fa, (fa.nFileSizeLow ? 30 : 7) * 24 * 3600);
+    if (!have) {
+        // A game clipback only knows by its exe ("someapp.exe") is looked for without the ".exe"
+        char q[128], path[512], enc[400], sid[24] = "";
+        snprintf(q, sizeof q, "%s", name);
+        size_t ql = strlen(q);
+        if (ql > 4 && !_stricmp(q + ql - 4, ".exe")) q[ql - 4] = 0;
+        url_encode(q, enc, sizeof enc);
+        snprintf(path, sizeof path, "/v1/search?q=%s", enc);
+        char *body = 0;
+        i64 len = 0;
+        u32 status = art_service_get(path, &body, &len);
+        if (status != 200) { DEV_LOG("gamedb: art service search for %s answered %u", name, status); return false; }
+        bool match = art_pick_search(body, len, q, sid, sizeof sid);
+        free(body);
+        body = 0;
+        len = 0;
+        if (match) {
+            snprintf(path, sizeof path, "/v1/art/%s", sid);
+            status = art_service_get(path, &body, &len);
+            if (status != 200) { DEV_LOG("gamedb: art service art for %s answered %u", sid, status); return false; }
+        }
+        FILE *f = _wfopen(found.s, L"wb"); // empty: it has nothing by that name
+        if (f) {
+            if (body) fwrite(body, 1, (size_t)len, f);
+            fclose(f);
+        }
+        DEV_LOG("gamedb: art service has %s for %s", match ? sid : "nothing", name);
+        free(body);
+    }
+    i64 size = 0;
+    char *text = read_file(found.s, &size);
+    bool ok = text && size > 0 && art_pick_url(text, size, kind, url, cap);
+    free(text);
+    return ok;
+}
+
+// A game by its name, for its art: the list's entry, else one made up from the name, whose art only the art
+// service can find.
+static bool gamedb_for_art(const char *name, GameInfo *out)
+{
+    if (gamedb_by_name(name, out)) return true;
+    AcquireSRWLockShared(&g_gamedb.lock);
+    bool loaded = g_gamedb.index != 0;
+    ReleaseSRWLockShared(&g_gamedb.lock);
+    if (!loaded) return false; // it may be in the list once the list is there
+    char letters[128];
+    i32 n = gdb_letters(name, letters, sizeof letters);
+    if (n < 2) return false;
+    *out = {};
+    snprintf(out->id, sizeof out->id, "n%016llx", (unsigned long long)fnv64(letters, n));
+    str_set(out->name, name);
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Art. A file that is there is used; one that isn't is asked for and arrives later (GAMEDB_ART).
 
-// Where a game's icon or cover is, if it has been fetched. If it hasn't, it is asked for and false returned.
-static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out)
+// Where a game's icon or cover is, if it has been fetched. If it hasn't, it is asked for, *coming set and false
+// returned. One found to have none is asked for again after a week.
+static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out, bool *coming = 0)
 {
+    if (coming) *coming = false;
     const char *hash = kind == ART_ICON ? g.icon : g.cover;
-    if (!hash[0] && !(kind == ART_COVER && g.steam)) return false;
+    if (!hash[0] && !(kind == ART_COVER && g.steam) && !g_gamedb.service[0]) return false;
     *out = gamedb_art_file(g.id, kind);
     WIN32_FILE_ATTRIBUTE_DATA fa;
-    if (GetFileAttributesExW(out->s, GetFileExInfoStandard, &fa)) return fa.nFileSizeLow > 0; // empty: there is none
+    if (GetFileAttributesExW(out->s, GetFileExInfoStandard, &fa)) {
+        if (fa.nFileSizeLow > 0) return true;
+        if (!file_older_than(fa, 7 * 24 * 3600)) return false; // empty: there is none
+    }
     if (!g_gamedb.online) return false;
     AcquireSRWLockExclusive(&g_gamedb.lock);
     bool queued = false;
@@ -634,11 +910,13 @@ static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out)
         auto &w = g_gamedb.want[g_gamedb.want_count++];
         str_set(w.id, g.id);
         str_set(w.hash, hash);
+        str_set(w.name, g.name);
         w.steam = g.steam;
         w.kind = kind;
     }
     ReleaseSRWLockExclusive(&g_gamedb.lock);
     SetEvent(g_gamedb.wake);
+    if (coming) *coming = true;
     return false;
 }
 
@@ -665,6 +943,10 @@ static void gamedb_fetch_art()
         if (!ok && w.hash[0]) {
             swprintf(url, COUNT(url), L"/app-icons/%hs/%hs.png?size=%d", w.id, w.hash, w.kind == ART_ICON ? 128 : 512);
             ok = http_get_file(L"cdn.discordapp.com", url, file);
+        }
+        if (!ok && !g_gamedb.stop) {
+            char found[512];
+            if (art_service_find(w.id, w.name, w.kind, found, sizeof found)) ok = http_get_url(found, file);
         }
         if (!ok && !g_gamedb.stop) { // none to be had: an empty file says so, and it isn't asked for again
             FILE *f = _wfopen(file.s, L"wb");
@@ -730,6 +1012,7 @@ static DWORD WINAPI gamedb_thread(void *)
 static void gamedb_start(bool online)
 {
     g_gamedb.online = online;
+    str_set(g_gamedb.service, g_app.config.art_service.s);
     g_gamedb.wake = CreateEventW(0, FALSE, FALSE, 0);
     g_gamedb.thread = thread_start(gamedb_thread, 0);
 }

@@ -299,9 +299,8 @@ static ID3D11ShaderResourceView *game_db_icon(const char *name)
     slot->waiting = false;
     GameInfo g;
     Path p = {};
-    if (!gamedb_by_name(name, &g) || !g.icon[0]) return 0;
-    if (gamedb_art(g, ART_ICON, &p)) slot->srv = image_file_texture(p, 0, 0, 0, 64);
-    else slot->waiting = GetFileAttributesW(gamedb_art_file(g.id, ART_ICON).s) == INVALID_FILE_ATTRIBUTES;
+    if (!gamedb_for_art(name, &g)) return 0;
+    if (gamedb_art(g, ART_ICON, &p, &slot->waiting)) slot->srv = image_file_texture(p, 0, 0, 0, 64);
     ui_wake();
     return slot->srv;
 }
@@ -320,10 +319,8 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
         slot->waiting = false;
         GameInfo g;
         Path p = {};
-        if (gamedb_by_name(name, &g) && (g.cover[0] || g.steam)) {
-            if (gamedb_art(g, ART_COVER, &p)) slot->srv = image_file_texture(p, &slot->w, &slot->h, &slot->blur);
-            else slot->waiting = GetFileAttributesW(gamedb_art_file(g.id, ART_COVER).s) == INVALID_FILE_ATTRIBUTES;
-        }
+        if (gamedb_for_art(name, &g) && gamedb_art(g, ART_COVER, &p, &slot->waiting))
+            slot->srv = image_file_texture(p, &slot->w, &slot->h, &slot->blur);
         ui_wake();
     }
     *w = slot->w;
