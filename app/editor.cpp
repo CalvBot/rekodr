@@ -1522,9 +1522,11 @@ static void ed_caption(const char *label)
 }
 
 // Open in Premiere Pro or DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which both import.
-// One video track with the zoom as Basic Motion keys, and one audio track per recorded track (the Mix left out)
-// with its volume times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written
-// as keys a fifth of a second apart. Key times count frames from the start of the file.
+// One video track with the zoom as Basic Motion keys, and each recorded track (the Mix left out) with its volume
+// times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written as keys a fifth
+// of a second apart. Key times count frames from the start of the file.
+// The XML counts the file's audio by channel: a stereo track is a linked pair of channel tracks marked Stereo (one
+// stereo track once in Premiere), a mono Mic or chat one track marked Mono.
 
 static void xml_text(FILE *f, const char *s)
 {
@@ -1611,9 +1613,10 @@ static bool ed_export_xml(Path *out)
     fprintf(f, "<duration>%lld</duration>\n<media><video><samplecharacteristics>", file_len);
     xml_rate(f, fps);
     fprintf(f, "<width>%d</width><height>%d</height></samplecharacteristics></video>", m.width, m.height);
+    auto chans = [&](i32 t) { return m.channels[t] == 1 ? 1 : 2; };
     for (i32 t = 0; t < m.track_count; t++)
-        fputs("<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>"
-              "<channelcount>2</channelcount></audio>", f);
+        fprintf(f, "<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>"
+                "<channelcount>%d</channelcount></audio>", chans(t));
     fputs("</media></file>\n", f);
     if (e.key_count) {
         // Scale in percent; Center moves the picture's middle, in fractions of the frame from the middle
@@ -1640,25 +1643,36 @@ static bool ed_export_xml(Path *out)
     }
     fputs("</clipitem>\n</track>\n</video>\n<audio>\n", f);
 
-    // The audio: a track per recorded track, from the same file
+    // The audio: each recorded track's channels, from the same file
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(m, tracks, MEDIA_MAX_TRACKS);
     bool master_keys = e.vol_count[EDIT_MASTER] > 0;
+    i32 clip_id = 2, seq_track = 1;
     for (i32 i = 0; i < nt; i++) {
-        i32 t = tracks[i];
-        fputs("<track>\n", f);
-        clip_head(2 + i, !e.muted[t] && !e.muted[EDIT_MASTER]);
-        fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
-                t + 1);
-        fputs("<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels"
-              "</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\n<parameter>"
-              "<parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax>", f);
-        fprintf(f, "<value>%.4f</value>\n", vol_at(e, t, in_s) * vol_at(e, EDIT_MASTER, in_s));
-        if (e.vol_count[t] || master_keys)
-            for (i32 k = 0; k < na; k++)
-                fprintf(f, "<keyframe><when>%lld</when><value>%.4f</value></keyframe>\n", fr(at[k]),
-                        vol_at(e, t, at[k]) * vol_at(e, EDIT_MASTER, at[k]));
-        fputs("</parameter></effect></filter>\n</clipitem>\n</track>\n", f);
+        i32 t = tracks[i], first = 1, n = chans(t);
+        for (i32 j = 0; j < t; j++) first += chans(j);
+        for (i32 c = 0; c < n; c++) {
+            fprintf(f, "<track premiereTrackType=\"%s\" currentExplodedTrackIndex=\"%d\" totalExplodedTrackCount=\"%d\">\n",
+                    n == 2 ? "Stereo" : "Mono", c, n);
+            clip_head(clip_id + c, !e.muted[t] && !e.muted[EDIT_MASTER]);
+            fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
+                    first + c);
+            if (n == 2) // the pair stays together
+                for (i32 l = 0; l < 2; l++)
+                    fprintf(f, "<link><linkclipref>clipitem-%d</linkclipref><mediatype>audio</mediatype><trackindex>%d</trackindex>"
+                            "<clipindex>1</clipindex><groupindex>1</groupindex></link>\n", clip_id + l, seq_track + l);
+            fputs("<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels"
+                  "</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\n<parameter>"
+                  "<parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax>", f);
+            fprintf(f, "<value>%.4f</value>\n", vol_at(e, t, in_s) * vol_at(e, EDIT_MASTER, in_s));
+            if (e.vol_count[t] || master_keys)
+                for (i32 k = 0; k < na; k++)
+                    fprintf(f, "<keyframe><when>%lld</when><value>%.4f</value></keyframe>\n", fr(at[k]),
+                            vol_at(e, t, at[k]) * vol_at(e, EDIT_MASTER, at[k]));
+            fputs("</parameter></effect></filter>\n</clipitem>\n</track>\n", f);
+        }
+        clip_id += n;
+        seq_track += n;
     }
     fputs("</audio>\n</media>\n</sequence>\n</xmeml>\n", f);
     bool ok = !ferror(f);

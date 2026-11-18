@@ -85,21 +85,27 @@ static bool lib_cache_read(const Path &cache, u64 key, MediaInfo *m, char *tagge
     *m = {};
     tagged[0] = 0;
     char line[512];
-    bool ok = false;
+    bool ok = false, bad = false;
     while (fgets(line, sizeof line, f)) {
         char *eq = strchr(line, '=');
         if (!eq) continue;
         *eq = 0;
         char *k = trim(line), *v = trim(eq + 1);
-        if (!strcmp(k, "duration")) { m->duration = atof(v); ok = true; }
-        else if (!strcmp(k, "width")) m->width = atoi(v);
+        if (!strcmp(k, "width")) m->width = atoi(v);
         else if (!strcmp(k, "height")) m->height = atoi(v);
         else if (!strcmp(k, "fps")) m->fps = atof(v);
         else if (!strcmp(k, "tagged")) snprintf(tagged, tagged_cap, "%s", v);
-        else if (!strcmp(k, "track") && m->track_count < MEDIA_MAX_TRACKS) str_set(m->tracks[m->track_count++], v);
+        else if (!strcmp(k, "track") && m->track_count < MEDIA_MAX_TRACKS) { // track = <channels> <title>
+            char *title = 0;
+            i32 ch = (i32)strtol(v, &title, 10);
+            if (ch < 1 || ch > 8 || *title != ' ') bad = true; // not this layout: probed again
+            m->channels[m->track_count] = (u8)ch;
+            str_set(m->tracks[m->track_count++], title + (*title == ' '));
+        }
+        else if (!strcmp(k, "duration")) { m->duration = atof(v); ok = true; }
     }
     fclose(f);
-    return ok;
+    return ok && !bad && m->duration > 0;
 }
 
 static void lib_cache_write(const Path &cache, u64 key, const MediaInfo &m, const char *tagged)
@@ -109,7 +115,7 @@ static void lib_cache_write(const Path &cache, u64 key, const MediaInfo &m, cons
     if (!f) return;
     fprintf(f, "duration = %.3f\nwidth = %d\nheight = %d\nfps = %.3f\ntagged = %s\n", m.duration, m.width, m.height,
             m.fps, tagged);
-    for (i32 t = 0; t < m.track_count; t++) fprintf(f, "track = %s\n", m.tracks[t]);
+    for (i32 t = 0; t < m.track_count; t++) fprintf(f, "track = %d %s\n", m.channels[t], m.tracks[t]);
     fclose(f);
     MoveFileExW(tmp.s, final_path.s, MOVEFILE_REPLACE_EXISTING);
 }
@@ -130,7 +136,7 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
     args[0] = 0;
     static const char *const head[] = {"-v", "error", "-show_entries",
                                        "format=duration:format_tags=genre,comment:stream=codec_type,width,height,"
-                                       "avg_frame_rate:stream_tags=title,handler_name",
+                                       "avg_frame_rate,channels:stream_tags=title,handler_name",
                                        "-of", "default"};
     arg_list(args, COUNT(args), head, COUNT(head));
     cmd_arg(args, COUNT(args), file.s);
@@ -141,16 +147,18 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
     char genre[64] = {}, comment[128] = {};
     bool in_audio = false, in_video = false, have_video = false;
     char title[64] = {}, handler[64] = {};
+    i32 channels = 2;
     auto end_stream = [&]() {
         if (in_audio && m->track_count < MEDIA_MAX_TRACKS) {
             char *t = m->tracks[m->track_count];
             if (title[0]) snprintf(t, 32, "%s", title);
             else if (handler[0] && _stricmp(handler, "SoundHandler")) snprintf(t, 32, "%s", handler);
             else snprintf(t, 32, "Track %d", m->track_count + 1);
-            m->track_count++;
+            m->channels[m->track_count++] = (u8)channels;
         }
         in_audio = in_video = false;
         title[0] = handler[0] = 0;
+        channels = 2;
     };
     char *ctx = 0;
     for (char *line = strtok_s(out, "\r\n", &ctx); line; line = strtok_s(0, "\r\n", &ctx)) {
@@ -163,6 +171,7 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
         else if (!strcmp(k, "width") && in_video && !have_video) m->width = atoi(v);
         else if (!strcmp(k, "height") && in_video && !have_video) m->height = atoi(v);
         else if (!strcmp(k, "avg_frame_rate") && in_video && !have_video) { m->fps = parse_rate(v); have_video = true; }
+        else if (!strcmp(k, "channels")) channels = atoi(v) >= 1 && atoi(v) <= 8 ? atoi(v) : 2;
         else if (!strcmp(k, "TAG:title")) snprintf(title, sizeof title, "%s", v);
         else if (!strcmp(k, "TAG:handler_name")) snprintf(handler, sizeof handler, "%s", v);
         else if (!strcmp(k, "duration")) m->duration = atof(v);

@@ -848,6 +848,9 @@ static void test_edit_xml()
     str_set(m.tracks[0], "Mix");
     str_set(m.tracks[1], "Mic");
     str_set(m.tracks[2], "Overwatch (game)");
+    m.channels[0] = 2;
+    m.channels[1] = 1;
+    m.channels[2] = 2;
     EditRecord &e = ed.edit;
     e.in_s = 1;
     e.out_s = 9;
@@ -879,8 +882,15 @@ static void test_edit_xml()
     for (const char *p = text; (p = strstr(p, "<sourcetrack>")); p++) tracks++;
     for (const char *p = text; (p = strstr(p, "<enabled>FALSE</enabled>")); p++) disabled++;
     i32 want[MEDIA_MAX_TRACKS];
-    T(tracks == 2 && ed_tracks(m, want, MEDIA_MAX_TRACKS) == 2);      // Mic and the game; the Mix is left out
+    T(tracks == 3 && ed_tracks(m, want, MEDIA_MAX_TRACKS) == 2);      // Mic and the game's two; the Mix left out
     T(disabled == 1);                                                  // the muted Mic
+    // Channels count across the file: Mix 1-2, Mic 3, the game 4-5 as a linked stereo pair
+    T(strstr(text, "premiereTrackType=\"Mono\" currentExplodedTrackIndex=\"0\" totalExplodedTrackCount=\"1\""));
+    T(strstr(text, "<trackindex>3</trackindex></sourcetrack>"));
+    T(strstr(text, "premiereTrackType=\"Stereo\" currentExplodedTrackIndex=\"1\" totalExplodedTrackCount=\"2\""));
+    T(strstr(text, "<trackindex>4</trackindex></sourcetrack>") && strstr(text, "<trackindex>5</trackindex></sourcetrack>"));
+    T(strstr(text, "<linkclipref>clipitem-4</linkclipref>"));
+    T(strstr(text, "<channelcount>1</channelcount>"));
     ed = blank;
 }
 

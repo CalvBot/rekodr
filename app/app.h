@@ -291,6 +291,7 @@ struct MediaInfo {
     f64  fps;
     i32  track_count;                  // audio tracks
     char tracks[MEDIA_MAX_TRACKS][32]; // their titles: "Mix", "Mic", "sam (chat)", "Overwatch (game)" ...
+    u8   channels[MEDIA_MAX_TRACKS];   // and channel counts: 1 for a mono Mic or chat, 2 for the rest
     char game[64];                     // what it's of: the tagged game, "Desktop", or "Other" for files not ours
 };
 
