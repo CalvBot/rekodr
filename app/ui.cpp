@@ -32,6 +32,12 @@ static const u32 COL_BG = 0x101114,      // the page
                  COL_RED = 0xf0434f, COL_RED_SOFT = 0x3a1c20,
                  COL_BLUE = 0x5b9cff, COL_OK = 0x3fbf74, COL_WARN = 0xe8a33d;
 // What a sound track is, the same colour everywhere it shows (the Apps pills, the editor's lanes).
+// The toasts' sizes at 100%, shared by the desktop ones (toast.cpp) and the session popup (sessions.cpp): a tile
+// beside a title over a line, then a row of buttons; a marker's note field goes between them.
+static const f32 TOAST_W = 400, TOAST_PAD = 16, TOAST_GAP = 12, TOAST_MARGIN = 16, TOAST_ROUND = 8, TOAST_TILE = 40,
+                 TOAST_BUTTON_W = 84, TOAST_BUTTON_H = 30, TOAST_BUTTON_GAP = 8, TOAST_BUTTON_ROUND = 7, TOAST_FIELD_H = 34,
+                 TOAST_DOT = 22, TOAST_DOT_GAP = 10;
+
 static const u32 COL_TRACK_GAME = 0x3fbf74, COL_TRACK_APP = 0x5b9cff, COL_TRACK_CHAT = 0xb07cff, COL_TRACK_MIC = 0xf06fa0;
 
 // The accent choices (Options, Look), and the colours in use, set by ui_apply_accent.

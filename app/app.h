@@ -79,7 +79,7 @@ struct Config {
 
     // Video
     i32   output_idx; // DXGI output index on the capture GPU
-    i32   saved_popup; // the "Clip saved" popup's monitor: an output index, -2 = the one recorded, -1 = no popup
+    i32   popup_monitor; // where the toasts go: an output index, -2 = the one recorded, -1 = no Clip saved
     i32   fps;        // never above the monitor's refresh rate
     i32   height;     // output height (1080...); 0 = the monitor's own. Never above the monitor's
     Str64 codec;      // "h264" | "hevc" | "av1"

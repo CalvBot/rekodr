@@ -2628,30 +2628,31 @@ static void options_general()
         log_line("options: tooltips %s", c.tooltips ? "on" : "off");
         options_apply(0);
     }
-    // The popup after a save made from a game: off, on the monitor recorded, or on another one
+    // Where the toasts go: Clip saved and the marker window, on the monitor recorded or another one. Off keeps
+    // only the marker window, which is asked for by hand.
     {
         OptionsUi &o = g_app.options;
         f32 wide = dp(300);
         char preview[160];
-        if (c.saved_popup == -1) str_set(preview, "Off");
-        else if (c.saved_popup == -2) str_set(preview, "The monitor recorded");
-        else if (c.saved_popup < o.monitor_count) monitor_label(c.saved_popup, preview, sizeof preview);
-        else snprintf(preview, sizeof preview, "%d. not connected", c.saved_popup + 1);
-        opt_row_begin("Saved popup", "Shows Edit and Share in a corner when a save finishes in a game", wide);
-        if (opt_combo_begin("##savedpopup", preview, wide, wide)) {
+        if (c.popup_monitor == -1) str_set(preview, "Markers only");
+        else if (c.popup_monitor == -2) str_set(preview, "The monitor recorded");
+        else if (c.popup_monitor < o.monitor_count) monitor_label(c.popup_monitor, preview, sizeof preview);
+        else snprintf(preview, sizeof preview, "%d. not connected", c.popup_monitor + 1);
+        opt_row_begin("Popups", "Clip saved and the marker window, in a corner of this monitor", wide);
+        if (opt_combo_begin("##popups", preview, wide, wide)) {
             if (ImGui::IsWindowAppearing()) options_list_monitors();
-            i32 pick = c.saved_popup;
-            if (opt_combo_item("Off", "", c.saved_popup == -1)) pick = -1;
-            if (opt_combo_item("The monitor recorded", "", c.saved_popup == -2)) pick = -2;
+            i32 pick = c.popup_monitor;
+            if (opt_combo_item("Markers only", "", c.popup_monitor == -1)) pick = -1;
+            if (opt_combo_item("The monitor recorded", "", c.popup_monitor == -2)) pick = -2;
             for (i32 i = 0; i < o.monitor_count; i++) {
                 char label[96], note[64];
                 monitor_label(i, label, sizeof label);
                 monitor_note(i, note, sizeof note);
-                if (opt_combo_item(label, note, c.saved_popup == i)) pick = i;
+                if (opt_combo_item(label, note, c.popup_monitor == i)) pick = i;
             }
-            if (pick != c.saved_popup) {
-                c.saved_popup = pick;
-                log_line("options: saved popup %d", pick);
+            if (pick != c.popup_monitor) {
+                c.popup_monitor = pick;
+                log_line("options: popups %d", pick);
                 options_apply(0);
             }
             opt_combo_end();

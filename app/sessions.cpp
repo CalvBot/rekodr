@@ -773,18 +773,20 @@ static void sessions_popup()
     i32 waiting = 0;
     Session *s = sessions_asking(&waiting);
     if (!s) return;
+    // Laid out as the desktop toasts are (toast.cpp), from the same TOAST_* sizes
     f32 sc = g_dpi_scale;
-    f32 pad = 18 * sc, tile = 48 * sc, button_w = 96 * sc, fh = ImGui::GetFrameHeight();
+    f32 pad = TOAST_PAD * sc, tile = TOAST_TILE * sc, gap = TOAST_GAP * sc, button_w = TOAST_BUTTON_W * sc;
+    f32 button_h = TOAST_BUTTON_H * sc, margin = TOAST_MARGIN * sc;
     // Fixed size: every line is always there, whatever it says, so the buttons never move
-    ImVec2 size(400 * sc, pad + tile + 16 * sc + fh + pad);
+    ImVec2 size(TOAST_W * sc, pad + tile + gap + button_h + pad);
     const ImGuiViewport *vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - size.x - 20 * sc,
-                                   vp->WorkPos.y + vp->WorkSize.y - size.y - 20 * sc));
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - size.x - margin,
+                                   vp->WorkPos.y + vp->WorkSize.y - size.y - margin));
     ImGui::SetNextWindowSize(size);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, rgb(COL_PANEL));
     ImGui::PushStyleColor(ImGuiCol_Border, rgb(COL_LINE));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12 * sc);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, TOAST_ROUND * sc);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
     ImGui::Begin("##session_popup", 0,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
@@ -802,15 +804,15 @@ static void sessions_popup()
     ID3D11ShaderResourceView *icon = game_db_icon(s->name);
     if (!icon && s->exe[0]) icon = app_icon(s->exe);
     if (icon) {
-        dl->AddImageRounded((ImTextureID)icon, a, ImVec2(a.x + tile, a.y + tile), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 8 * sc);
+        dl->AddImageRounded((ImTextureID)icon, a, ImVec2(a.x + tile, a.y + tile), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, TOAST_ROUND * sc);
     } else {
-        dl->AddRectFilled(a, ImVec2(a.x + tile, a.y + tile), col32(COL_ACCENT_SOFT), 10 * sc);
+        dl->AddRectFilled(a, ImVec2(a.x + tile, a.y + tile), col32(COL_ACCENT_SOFT), TOAST_ROUND * sc);
         ImGui::PushFont(g_font_icon);
         ImVec2 is = ImGui::CalcTextSize(ICON_GAME);
         dl->AddText(ImVec2(floorf(a.x + (tile - is.x) / 2), floorf(a.y + (tile - is.y) / 2)), col32(COL_ACCENT), ICON_GAME);
         ImGui::PopFont();
     }
-    f32 tx = a.x + tile + 14 * sc, nh = g_font_big->FontSize, wh = g_font->FontSize;
+    f32 tx = a.x + tile + gap, nh = g_font_big->FontSize, wh = g_font->FontSize;
     f32 ty = floorf(a.y + (tile - nh - 5 * sc - wh) / 2);
     dl->PushClipRect(ImVec2(tx, a.y), ImVec2(a.x + inner_w, a.y + tile), true);
     dl->AddText(g_font_big, nh, ImVec2(tx, ty), col32(COL_TEXT), s->name);
@@ -826,14 +828,14 @@ static void sessions_popup()
     }
 
     // Under them: Review opens it on the timeline, to look before answering; the answer is on the right
-    f32 by = a.y + tile + 16 * sc;
+    f32 by = a.y + tile + gap;
     u32 id = s->id;
     ImGui::SetCursorScreenPos(ImVec2(a.x, by));
-    bool review = kit_button("Review", KIT_SECONDARY, ImVec2(button_w, 0));
-    ImGui::SetCursorScreenPos(ImVec2(a.x + inner_w - 2 * button_w - 8 * sc, by));
-    bool later = kit_button("Not now", KIT_GHOST, ImVec2(button_w, 0));
-    ImGui::SameLine(0, 8 * sc);
-    bool save = kit_button("Save", KIT_PRIMARY, ImVec2(button_w, 0));
+    bool review = kit_button("Review", KIT_SECONDARY, ImVec2(button_w, button_h));
+    ImGui::SetCursorScreenPos(ImVec2(a.x + inner_w - 2 * button_w - TOAST_BUTTON_GAP * sc, by));
+    bool later = kit_button("Not now", KIT_GHOST, ImVec2(button_w, button_h));
+    ImGui::SameLine(0, TOAST_BUTTON_GAP * sc);
+    bool save = kit_button("Save", KIT_PRIMARY, ImVec2(button_w, button_h));
     ImGui::End();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(2);
