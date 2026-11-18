@@ -1441,10 +1441,23 @@ static void screen_timeline()
     for (i32 k = 0; k < lanes; k++) {
         f32 y = y_lanes + k * line_h;
         if (y + line_h < y_snd || y > y_bottom) continue;
-        ImGui::PushFont(g_font_small);
-        f32 sh = ImGui::GetTextLineHeight();
-        dl->AddText(ImVec2(tx, floorf(y + (line_h - sh) / 2)), col32(COL_FAINT), lane_icon(k));
-        ImGui::PopFont();
+        // An app's lane shows its icon (a game its art from the games database); the mic, the sums and apps without
+        // one show the kind's symbol
+        ID3D11ShaderResourceView *srv = 0;
+        if (!summed && strcmp(tl.rows[k].exe, "mic")) {
+            if (tl_row_group(tl.rows[k]) == 1) srv = game_db_icon(tl.rows[k].name);
+            if (!srv) srv = app_icon(tl.rows[k].exe);
+        }
+        f32 isz = floorf(ImMin(16 * s, line_h - 4 * s));
+        if (srv) {
+            ImVec2 ia(tx, floorf(y + (line_h - isz) / 2));
+            dl->AddImage((ImTextureID)srv, ia, ImVec2(ia.x + isz, ia.y + isz));
+        } else {
+            ImGui::PushFont(g_font_small);
+            f32 sh = ImGui::GetTextLineHeight();
+            dl->AddText(ImVec2(tx, floorf(y + (line_h - sh) / 2)), col32(COL_FAINT), lane_icon(k));
+            ImGui::PopFont();
+        }
         if (compact) ImGui::PushFont(g_font_small);
         f32 nh = ImGui::GetTextLineHeight();
         tl_text_fit(dl, ImVec2(tx + 22 * s, floorf(y + (line_h - nh) / 2)), name_w - 22 * s, col32(COL_DIM), lane_name(k));
