@@ -80,4 +80,5 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "diag.cpp"
 #include "ui.cpp"
 #include "notify.cpp"
+#include "markers.cpp"
 #include "main.cpp"

@@ -51,6 +51,8 @@ static void run_command(const char *text)
         audio_set_paused(pause);
         tray_update(g_app.msg_hwnd, false);
         ui_wake();
+    } else if (!strcmp(cmd, "mark")) { // mark [<colour>] [<note>] | mark ask: a marker at this moment
+        marker_command(arg);
     } else if (!strcmp(cmd, "folder")) {
         SYSTEMTIME t;
         GetLocalTime(&t);

@@ -615,6 +615,43 @@ static void put_text(const char *utf8, const char *text)
     put_file(p, text);
 }
 
+// Markers: what follows `mark`, their line in markers.tsv, and the list kept in time order
+static void test_markers()
+{
+    u8 colour;
+    char note[256];
+    marker_args("", &colour, note);
+    T(colour == 0 && !note[0]);
+    marker_args("nice kill", &colour, note);
+    T(colour == 0 && !strcmp(note, "nice kill"));
+    marker_args("Blue  boss fight\tphase 2 ", &colour, note);
+    T(colour == 5 && !strcmp(note, "boss fight phase 2"));
+    marker_args("red", &colour, note);
+    T(colour == 1 && !note[0]);
+    marker_args("reddish thing", &colour, note); // a word that only starts like a colour is part of the note
+    T(colour == 0 && !strcmp(note, "reddish thing"));
+
+    Marker m = {1763500000000000, 4, "clutch"}, back;
+    char line[512];
+    T(marker_line(m, line, sizeof line) > 0 && !strcmp(line, "1763500000000000\tgreen\tclutch\n"));
+    T(marker_from_line(line, &back) && back.t_us == m.t_us && back.colour == 4 && !strcmp(back.note, "clutch"));
+    char plain[] = "1763500000000001\t\t\r\n", bad[] = "not a marker";
+    T(marker_from_line(plain, &back) && back.colour == 0 && !back.note[0]);
+    T(!marker_from_line(bad, &back));
+
+    static Markers ms;
+    ms = {};
+    Marker a = {300}, b = {100}, c = {200};
+    T(markers_insert(&ms, a) == 300 && markers_insert(&ms, b) == 100 && markers_insert(&ms, c) == 200);
+    T(ms.count == 3 && ms.items[0].t_us == 100 && ms.items[1].t_us == 200 && ms.items[2].t_us == 300);
+    T(markers_insert(&ms, c) == 201 && ms.items[2].t_us == 201); // two at one moment: the second is moved on
+    Marker got[8];
+    T(markers_range(&ms, 150, 250, got, 8) == 2 && got[0].t_us == 200 && got[1].t_us == 201);
+    T(markers_range(&ms, 0, 1000, got, 2) == 2);
+    for (i32 i = 0; i < MARKER_MAX; i++) { Marker x = {1000 + i}; markers_insert(&ms, x); }
+    T(ms.count == MARKER_MAX && ms.items[0].t_us == 1000 && ms.items[MARKER_MAX - 1].t_us == 1000 + MARKER_MAX - 1); // the oldest went
+}
+
 // Games the list doesn't know: their folder, the store id their launcher left, and what goes to the art service
 static void test_storeids()
 {
@@ -844,6 +881,7 @@ int main()
     test_gamedb();
     test_mcpack();
     test_storeids();
+    test_markers();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }
