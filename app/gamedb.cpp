@@ -5,10 +5,10 @@
 // command line that tells them apart: javaw.exe is Minecraft only when it runs Minecraft's main class). Icons come
 // from Discord's image server and covers from Steam's when the game is on Steam. A game with neither, or one not in
 // the list at all, is looked up by name on clipback's art service (api.clipback.workers.dev, which asks SteamGridDB
-// and IGDB; "art_service" in settings.txt names another, or none). Until SteamGridDB agrees to the service handing out
-// its art, the service answers "not shared yet" (403) and only says which game an exe is; the art then comes from
-// SteamGridDB with the player's own key ("sgdb_key" in settings.txt), if they set one. The service is always asked
-// first, so once it shares, it is used. All of it is kept under <local>\gamedb and the list is fetched again after a
+// and IGDB; "art_service" in settings.txt names another, or none). SteamGridDB has agreed to the service handing out its
+// art. If the service is ever switched to not sharing it, it answers "not shared yet" (403) and only says which game
+// an exe is; the art then comes from SteamGridDB with the player's own key ("sgdb_key" in settings.txt), if they set
+// one. The service is always asked first, so once it shares again, it is used. All of it is kept under <local>\gamedb and the list is fetched again after a
 // week:
 //   detectable.json   the list as fetched
 //   games.tsv         the same, one game a line, which is what is loaded:
