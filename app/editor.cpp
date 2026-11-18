@@ -878,10 +878,10 @@ static u32 ed_kind_rgb(EdKind k)
 {
     switch (k) {
     case ED_KIND_MIX: return 0xeceef1;
-    case ED_KIND_MIC: return 0x5b9cff;  // blue
-    case ED_KIND_CHAT: return 0xa98bff; // violet
-    case ED_KIND_GAME: return 0x3fbf74; // green
-    default: return 0xe8a33d;           // amber
+    case ED_KIND_MIC: return COL_TRACK_MIC;
+    case ED_KIND_CHAT: return COL_TRACK_CHAT;
+    case ED_KIND_GAME: return COL_TRACK_GAME;
+    default: return COL_TRACK_APP;
     }
 }
 
@@ -1557,14 +1557,19 @@ static void ed_share_tab(f32 w)
     ed_caption("SHARE");
     kit_dim("A small copy, put on the clipboard");
     static const char *const sizes[] = {"20 MB", "50 MB", "Custom"};
-    f32 mb_w = kit_px(84), seg_w = (w - mb_w - st.ItemSpacing.x - kit_px(6)) / 3;
-    kit_segmented("##size", sizes, 3, &ed.share_size, seg_w);
+    // The size field keeps a fixed width beside the chips, greyed showing the preset's size until Custom.
+    f32 mb_w = kit_px(92);
+    kit_segmented("##size", sizes, 3, &ed.share_size, (w - mb_w - st.ItemSpacing.x - kit_px(6)) / 3);
     ImGui::SameLine();
     if (ed.custom_mb <= 0) ed.custom_mb = 25;
-    ImGui::SetNextItemWidth(w - (3 * seg_w + kit_px(6)) - st.ItemSpacing.x);
-    ImGui::BeginDisabled(ed.share_size != 2);
-    ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
-    ImGui::EndDisabled();
+    ImGui::SetNextItemWidth(mb_w);
+    if (ed.share_size == 2) ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
+    else {
+        f32 shown = ed_share_mb();
+        ImGui::BeginDisabled();
+        ImGui::InputFloat("##mb", &shown, 0, 0, "%.0f MB");
+        ImGui::EndDisabled();
+    }
     if (ed.custom_mb < 1) ed.custom_mb = 1;
     if (ed.custom_mb > 4000) ed.custom_mb = 4000;
 
@@ -1580,7 +1585,7 @@ static void ed_share_tab(f32 w)
     if (plan.fits) {
         char size[24];
         fmt_size((u64)plan.estimate_bytes, size, sizeof size);
-        snprintf(est, sizeof est, "About %s Â· %dp%.0f Â· %.1f Mbps", size, plan.side, plan.fps,
+        snprintf(est, sizeof est, "About %s · %dp%.0f · %.1f Mbps", size, plan.side, plan.fps,
                  plan.video_kbps / 1000.0);
         kit_dim("%s", est);
     } else {
@@ -1804,12 +1809,21 @@ static void screen_editor()
     ImVec2 ts = ImGui::CalcTextSize(tm);
     dl->AddText(ImVec2(time_x, floorf(y + (fh - ts.y) / 2)), col32(COL_DIM), tm);
     static const char *const trims[] = {ICON_START "  Set start", ICON_NOW "  Set end", ICON_UNDO "  Reset"};
+    static const char *const trim_icons[] = {ICON_START "##start", ICON_NOW "##end", ICON_UNDO "##reset"};
+    // Narrow, the trim buttons drop their words; narrower still, the kept length goes. Decided by the width alone
+    // (the widest the texts get), so nothing moves as the time or the trim changes.
+    f32 pad_x = 2 * ImGui::GetStyle().FramePadding.x, words_w = 0;
+    for (i32 i = 0; i < 3; i++) words_w += ImGui::CalcTextSize(trims[i]).x + pad_x + kit_px(4);
+    f32 kept_most = ImGui::CalcTextSize("00:00:00 kept").x + kit_px(24), bar_end = r0.x + main_w;
     f32 bx = time_x + kit_px(170);
+    bool words = bx + words_w + kept_most <= bar_end;
+    bool show_kept = bx + (words ? words_w : 3 * (fh + kit_px(4))) + kept_most <= bar_end;
     for (i32 i = 0; i < 3; i++) {
-        f32 w = ImGui::CalcTextSize(trims[i]).x + 2 * ImGui::GetStyle().FramePadding.x;
+        const char *label = words ? trims[i] : trim_icons[i];
+        f32 w = words ? ImGui::CalcTextSize(trims[i]).x + pad_x : fh;
         ImGui::SetCursorScreenPos(ImVec2(bx, y));
         bool enabled = i < 2 || ed.edit.in_s > 0 || ed.edit.out_s > 0;
-        if (kit_button(trims[i], KIT_GHOST, ImVec2(w, 0), enabled)) {
+        if (kit_button(label, KIT_GHOST, ImVec2(w, 0), enabled)) {
             if (i == 0 && p.pos < ed_out() - 0.2) { ed.edit.in_s = p.pos; ed.dirty = true; }
             if (i == 1 && p.pos > ed.edit.in_s + 0.2) { ed.edit.out_s = p.pos >= ed_duration() - 0.01 ? 0 : p.pos; ed.dirty = true; }
             if (i == 2) { ed.edit.in_s = ed.edit.out_s = 0; ed.dirty = true; }
@@ -1821,7 +1835,7 @@ static void screen_editor()
     snprintf(sel, sizeof sel, "%s kept", kept);
     ImVec2 ks = ImGui::CalcTextSize(sel);
     f32 kx = r0.x + main_w - kit_px(16) - ks.x;
-    if (kx > bx + kit_px(8)) dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(COL_TEXT), sel);
+    if (show_kept) dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(COL_TEXT), sel);
 
     // The side panel: Edit, or Keep & share.
     ImGui::SetCursorScreenPos(ImVec2(pos.x + main_w + gap, body_y));

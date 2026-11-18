@@ -31,6 +31,8 @@ static const u32 COL_BG = 0x101114,      // the page
                  COL_TEXT = 0xeceef1, COL_DIM = 0x8e939c, COL_FAINT = 0x5d626b,
                  COL_RED = 0xf0434f, COL_RED_SOFT = 0x3a1c20,
                  COL_BLUE = 0x5b9cff, COL_OK = 0x3fbf74, COL_WARN = 0xe8a33d;
+// What a sound track is, the same colour everywhere it shows (the Apps pills, the editor's lanes).
+static const u32 COL_TRACK_GAME = 0x3fbf74, COL_TRACK_APP = 0x5b9cff, COL_TRACK_CHAT = 0xb07cff, COL_TRACK_MIC = 0xf06fa0;
 
 // The accent choices (Options, Look), and the colours in use, set by ui_apply_accent.
 struct Accent { const char *name; u32 base, hover; };
@@ -481,6 +483,11 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     case KIT_GHOST: bg_a = 0; break;
     case KIT_DANGER: bg = COL_RED_SOFT; hover = 0x4a2025; text = 0xff8a92; break;
     default: break;
+    }
+    if (!enabled) { // plainly off: a quiet fill and faint text, whatever kind it is
+        bg = hover = COL_PANEL2;
+        text = COL_FAINT;
+        bg_a = kind == KIT_GHOST ? 0.0f : 1.0f;
     }
     ImGui::PushStyleColor(ImGuiCol_Button, rgb(bg, bg_a));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(hover));

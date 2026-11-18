@@ -580,7 +580,7 @@ static void ago_text(i64 us, char *out, i32 cap)
 
 // Each category has a colour and a short name, used for its button on every app row and its filter chip.
 static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Chat", "Excluded"};
-static const u32 CATEGORY_COLOURS[] = {COL_WARN, 0x5b9cff, 0x3fbf74, 0xb07cff, 0x8e939c};
+static const u32 CATEGORY_COLOURS[] = {COL_WARN, COL_TRACK_APP, COL_TRACK_GAME, COL_TRACK_CHAT, 0x8e939c};
 
 // The name an app gets when it has none of its own: "Overwatch" for overwatch.exe (as audio_display_name).
 static void default_app_name(const char *exe, char *out, i32 cap)
@@ -1809,20 +1809,21 @@ static void options_hotkeys()
         i32 unit = 0;
         bool save = act == 0;
         if (save) save_length(h->action.s, &amount, &unit);
-        ImGui::BeginDisabled(!save);
-        ImGui::SetCursorScreenPos(ImVec2(amt_x, cy));
-        if (opt_number("##amount", &amount, 0.1, 100000, amt_w)) {
-            set_save_action(h, amount, unit);
-            log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
-            options_apply(APPLY_HOTKEYS);
+        // Only a save has a length; the other actions leave the column empty (it keeps its place).
+        if (save) {
+            ImGui::SetCursorScreenPos(ImVec2(amt_x, cy));
+            if (opt_number("##amount", &amount, 0.1, 100000, amt_w)) {
+                set_save_action(h, amount, unit);
+                log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
+                options_apply(APPLY_HOTKEYS);
+            }
+            ImGui::SetCursorScreenPos(ImVec2(unit_x, cy));
+            if (opt_combo("##unit", LENGTH_UNITS, 0, COUNT(LENGTH_UNITS), &unit, unit_w)) {
+                set_save_action(h, amount, unit);
+                log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
+                options_apply(APPLY_HOTKEYS);
+            }
         }
-        ImGui::SetCursorScreenPos(ImVec2(unit_x, cy));
-        if (opt_combo("##unit", LENGTH_UNITS, 0, COUNT(LENGTH_UNITS), &unit, unit_w)) {
-            set_save_action(h, amount, unit);
-            log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
-            options_apply(APPLY_HOTKEYS);
-        }
-        ImGui::EndDisabled();
 
         u32 mods, vk;
         bool same = false;
@@ -1845,7 +1846,7 @@ static void options_hotkeys()
     }
     char left[96];
     if (is_test_copy()) snprintf(left, sizeof left, "Test copy: the real clipback keeps the hotkeys");
-    else snprintf(left, sizeof left, "%d of %d", c.hotkey_count, COUNT(c.hotkeys));
+    else snprintf(left, sizeof left, "%d hotkey%s", c.hotkey_count, c.hotkey_count == 1 ? "" : "s");
     opt_pager("hotkeys", &o.hotkeys_page, c.hotkey_count, rows, left);
 }
 
@@ -2097,7 +2098,7 @@ static void options_recording()
     opt_card_begin();
     static const char *limits[] = {"Length", "Size"};
     i32 by = c.buffer_by_size ? 1 : 0;
-    opt_row_begin("Limit the buffer by", 0, dp(200));
+    opt_row_begin("Limit the buffer by", 0, 2 * dp(98) + kit_px(6));
     if (kit_segmented("##by", limits, 2, &by, dp(98))) {
         c.buffer_by_size = by == 1;
         log_line("options: buffer limited by %s", c.buffer_by_size ? "size" : "length");
@@ -2111,14 +2112,16 @@ static void options_recording()
     char est[32], line[128];
     if (!c.buffer_by_size) {
         bytes_text((i64)(c.buffer_hours * bytes_per_hour), est, sizeof est);
-        snprintf(line, sizeof line, "Up to about %s at %g Mbps", est, rate);
+        if (rate > c.bitrate_mbps) snprintf(line, sizeof line, "Up to about %s, at a game's own %g Mbps", est, rate);
+        else snprintf(line, sizeof line, "Up to about %s at %g Mbps", est, rate);
         if (opt_row_f32("Keep the last", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
             log_line("options: buffer keeps %g h", c.buffer_hours);
             options_apply(APPLY_RECORDER);
         }
     } else {
         f64 h = c.buffer_gb * 1e9 / bytes_per_hour;
-        snprintf(line, sizeof line, "At least %.0f h %02.0f min at %g Mbps", floor(h), fmod(h * 60, 60), rate);
+        snprintf(line, sizeof line, "At least %.0f h %02.0f min at %s%g Mbps", floor(h), fmod(h * 60, 60),
+                 rate > c.bitrate_mbps ? "a game's own " : "", rate);
         if (opt_row_f32("Keep up to", line, "##gb", &c.buffer_gb, 1, 100000, "GB")) {
             log_line("options: buffer keeps %g GB", c.buffer_gb);
             options_apply(APPLY_RECORDER);
@@ -2297,7 +2300,7 @@ static void options_general()
     opt_card_begin();
     if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
     if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
-    if (opt_row_f32("Keep share copies for", 0, "##share", &c.share_keep_days, 0.1, 365, "days")) {
+    if (opt_row_f32("Keep share copies for", "The small copies Share makes; older ones are deleted", "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);
     }
@@ -2335,7 +2338,7 @@ static void options_general()
 
     opt_section("GAMES");
     opt_card_begin();
-    if (opt_row_toggle("Look up games online", "Names and icons from Discord's public list of games, covers from Steam, and art for the rest from SteamGridDB and IGDB. Applies from the next start",
+    if (opt_row_toggle("Look up games online", "Names, icons and art from Discord, Steam, SteamGridDB and IGDB. Applies from the next start",
                        "##lookup", &c.game_lookup)) {
         log_line("options: look up games %s", c.game_lookup ? "on" : "off");
         options_apply(0);

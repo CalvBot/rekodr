@@ -210,6 +210,9 @@ static void tl_make_rows()
             str_set(row->exe, exe);
             if (st.mic) str_set(row->name, "Mic");
             else audio_display_name(g_app.config, exe, row->name, sizeof row->name);
+            AppCategory cat = st.mic ? CAT_NONE : audio_category_at(g_app.config, exe, st.path);
+            row->rgb = st.mic ? COL_TRACK_MIC : cat == CAT_GAME ? COL_TRACK_GAME
+                     : cat == CAT_COMMUNICATION ? COL_TRACK_CHAT : COL_TRACK_APP;
         }
         tl.stream_row[s] = (i16)r;
     }
@@ -948,7 +951,7 @@ static void tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h, 
 
 #define TL_ICON_DOWN "\xEE\x9C\x8D" // E70D chevron down
 
-static const u32 TL_COL_VIDEO = 0x5a7fbf, TL_COL_SOUND = 0x35a585, TL_COL_MIC = 0xc9a04a, TL_COL_LANE = 0x131418;
+static const u32 TL_COL_VIDEO = 0x5a7fbf, TL_COL_LANE = 0x131418;
 
 // Text cut to max_w with an ellipsis, so a long name never runs into what's next to it.
 static void tl_text_fit(ImDrawList *dl, ImVec2 p, f32 max_w, ImU32 col, const char *text)
@@ -1479,7 +1482,7 @@ static void screen_timeline()
         if (r < 0 || r >= lines_fit) continue;
         const AudioStreamInfo &info = b.streams[st];
         f32 y = y_snd + r * line_h + bar_in, h = line_h - 2 * bar_in;
-        ImU32 col = col32(info.mic ? TL_COL_MIC : TL_COL_SOUND, 0.9f);
+        ImU32 col = col32(tl.rows[tl.stream_row[st]].rgb, 0.9f);
         TlRun run = {};
         for (i32 k = 0; k < info.seg_count; k++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + k];

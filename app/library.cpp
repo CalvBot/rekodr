@@ -425,11 +425,26 @@ static void lib_picture(IWICImagingFactory *wic, const LibTask &t, const Path &c
         r.w = w;
         r.h = h;
     } else {
-        // The poster: one frame of the strip.
+        // The poster: one frame of the strip, the asked-for one or the next that isn't near black (a fade in, a
+        // loading screen), so a card never shows an empty picture when the file has something to show.
         i32 fw = w / LIB_STRIP_FRAMES;
         if (fw <= 0) fw = w;
-        i32 x0 = fw * t.poster;
-        if (x0 + fw > w) x0 = 0;
+        i32 frames = w / fw, pick = t.poster < frames ? t.poster : 0;
+        for (i32 k = 0; k < frames; k++) {
+            i32 f = (t.poster + k) % frames;
+            u64 sum = 0, n = 0;
+            for (i32 y = 0; y < h; y += 8)
+                for (i32 x = 0; x < fw; x += 8) {
+                    u32 c = px[(size_t)y * w + f * fw + x];
+                    sum += ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
+                    n += 3;
+                }
+            if (n && sum / n > 14) {
+                pick = f;
+                break;
+            }
+        }
+        i32 x0 = fw * pick;
         r.pixels = (u32 *)HeapAlloc(GetProcessHeap(), 0, (size_t)fw * h * 4);
         if (r.pixels)
             for (i32 y = 0; y < h; y++) memcpy(r.pixels + (size_t)y * fw, px + (size_t)y * w + x0, fw * 4);
