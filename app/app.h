@@ -554,6 +554,7 @@ struct Timeline {
     bool          follow;       // the right edge stays at now
     i64           sel_in, sel_out;
     i64           playhead_us;  // 0 = the newest footage
+    i64           marker_pick;  // the marker clicked on (its time), its note shown; 0 = none
     TimelineDrag  drag;
     i64           drag_anchor_us, drag_view_end;
     f32           drag_x;
@@ -695,3 +696,21 @@ static App g_app;
 
 // activity.tsv is appended by the audio watcher and rewritten by the pruner, on different threads; both hold this.
 static SRWLOCK g_activity_lock = SRWLOCK_INIT;
+
+// Markers (markers.cpp): moments marked in the buffer, each with an optional colour and note
+struct Marker {
+    i64  t_us;      // when, on the wall clock; no two markers share one, so it also says which marker
+    u8   colour;    // an index into MARKER_COLOURS; 0 = none
+    char note[256]; // UTF-8, one line
+};
+
+struct MarkerColour {
+    const char *name;
+    u32         rgb;
+};
+static const MarkerColour MARKER_COLOURS[] = {
+    {"", 0x8e939c}, // none: grey
+    {"red", 0xf0434f}, {"orange", 0xf08a3c}, {"yellow", 0xe8c53d}, {"green", 0x3fbf74}, {"blue", 0x5b9cff}, {"purple", 0xb07cff},
+};
+
+static i32 markers_in(i64 from, i64 to, Marker *out, i32 cap); // the ones in [from, to], oldest first; any thread

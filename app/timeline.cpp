@@ -1309,6 +1309,18 @@ static void screen_timeline()
             if (t >= saved[i].a - slack && t <= saved[i].z + slack) saved_hit = i;
     }
 
+    // Markers in view, as flags on the ruler. A click on one puts the playhead there and shows its note.
+    static Marker marks[256];
+    i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
+    i32 mark_hit = -1;
+    if (ImGui::IsWindowHovered() && io.MousePos.y >= y_ruler && io.MousePos.y < y_video && tl.drag == TL_DRAG_NONE) {
+        f32 best = 6 * s;
+        for (i32 i = 0; i < mark_count; i++) {
+            f32 d = fabsf(io.MousePos.x - tl_x(c, marks[i].t_us));
+            if (d <= best) { best = d; mark_hit = i; }
+        }
+    }
+
     dl->AddRectFilled(origin, card_z, col32(COL_PANEL), 10 * s);
     if (names_hot) {
         f32 x = floorf(c.x0 - 3 * s) + 0.5f;
@@ -1363,7 +1375,11 @@ static void screen_timeline()
         }
     }
     if (ImGui::IsItemDeactivated()) {
-        if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && saved_hit >= 0) {
+        if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok) tl.marker_pick = 0;
+        if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && mark_hit >= 0) {
+            tl.playhead_us = marks[mark_hit].t_us;
+            tl.marker_pick = marks[mark_hit].t_us;
+        } else if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && saved_hit >= 0) {
             // A click on something saved: it becomes the selection
             tl.sel_in = tl_whole_sec(saved[saved_hit].a);
             tl.sel_out = tl_whole_sec(saved[saved_hit].z);
@@ -1383,7 +1399,7 @@ static void screen_timeline()
     if (tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT || (bar_hovered && tl.drag == TL_DRAG_NONE && (near_in || near_out)))
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     else if (tl.drag == TL_DRAG_PAN) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-    else if (bar_hovered && saved_hit >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    else if (bar_hovered && (saved_hit >= 0 || mark_hit >= 0)) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     set_view(); // the view may have moved: draw it where it is now
     tl.hovering = bar_hovered && tl.drag == TL_DRAG_NONE && b.seg_count > 0;
     tl.hover_us = tl_t(c, mx);
@@ -1572,6 +1588,16 @@ static void screen_timeline()
         }
     }
 
+    // Markers: a flag on the ruler in the marker's colour and a line down through the tracks; the picked one stronger
+    for (i32 i = 0; i < mark_count; i++) {
+        f32 x = floorf(tl_x(c, marks[i].t_us)) + 0.5f;
+        u32 rgb = MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb;
+        bool picked = marks[i].t_us == tl.marker_pick, hot = i == mark_hit;
+        dl->AddLine(ImVec2(x, y_video), ImVec2(x, y_bottom), col32(rgb, picked ? 0.9f : 0.4f), (picked ? 1.5f : 1) * s);
+        f32 fw = (hot || picked ? 6 : 4.5f) * s, fy = y_ruler + ruler_h;
+        dl->AddTriangleFilled(ImVec2(x - fw, fy - 2 * fw), ImVec2(x + fw, fy - 2 * fw), ImVec2(x, fy), col32(rgb));
+    }
+
     // The playhead (where the preview comes from)
     i64 play = tl_playhead();
     if (play) {
@@ -1589,7 +1615,11 @@ static void screen_timeline()
             if (tl.hovering) dl->AddLine(ImVec2(x, y_video), ImVec2(x, y_bottom), col32(COL_TEXT, 0.3f));
             char when[200];
             tl_clock(t, true, when, sizeof when);
-            if (saved_hit >= 0 && bar_hovered) {
+            if (mark_hit >= 0 && bar_hovered) {
+                tl_clock(marks[mark_hit].t_us, true, when, sizeof when);
+                size_t l = strlen(when);
+                snprintf(when + l, sizeof when - l, "   %s", marks[mark_hit].note[0] ? marks[mark_hit].note : "Marker");
+            } else if (saved_hit >= 0 && bar_hovered) {
                 size_t l = strlen(when);
                 snprintf(when + l, sizeof when - l, "   %s", saved[saved_hit].name);
             }
@@ -1597,6 +1627,14 @@ static void screen_timeline()
             tl_pill(dl, x, y_ruler + 2 * s, c.x0, c.x1, when, col32(COL_HOVER), col32(COL_TEXT));
             ImGui::PopFont();
         }
+    }
+    // The picked marker's note, under the ruler
+    for (i32 i = 0; i < mark_count; i++) {
+        if (marks[i].t_us != tl.marker_pick || (pill_t && mark_hit == i)) continue;
+        ImGui::PushFont(g_font_small);
+        tl_pill(dl, tl_x(c, marks[i].t_us), y_video + 2 * s, c.x0, c.x1, marks[i].note[0] ? marks[i].note : "Marker",
+                col32(MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb, 0.9f), col32(0x000000));
+        ImGui::PopFont();
     }
     if (!tl.loaded || !b.seg_count) {
         const char *msg = !tl.loaded ? "Reading the buffer..." : "Nothing recorded yet";
