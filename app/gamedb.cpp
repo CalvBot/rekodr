@@ -117,7 +117,7 @@ static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *hea
         wcsncat(part.s, L".part", MAX_PATH - wcslen(part.s) - 1);
     }
     char *mem = 0;
-    i64 mem_len = 0, mem_cap = 0;
+    i64 mem_len = 0, mem_cap = 0, file_len = 0;
     HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, post ? L"POST" : L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
@@ -142,6 +142,8 @@ static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *hea
                     if (!WinHttpReadData(req, buf, sizeof buf, &got)) { ok = false; break; }
                     if (!got) break;
                     if (f) {
+                        file_len += got;
+                        if (file_len > (64 << 20)) { ok = false; break; } // no picture or list is that big: not kept
                         if (fwrite(buf, 1, got, f) != got) { ok = false; break; }
                     } else {
                         if (mem_len + got + 1 > (1 << 20)) { ok = false; break; } // no answer here is that big
