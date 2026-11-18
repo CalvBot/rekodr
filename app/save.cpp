@@ -1242,6 +1242,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             arg_pair(a, cap, "-metadata:s:a:0", "handler_name=Mix");
             arg_pair(a, cap, "-disposition:a:0", "default");
         }
+        if (share) arg_pair(a, cap, "-map_chapters", "-1"); // Keep carries the original's chapters; Share has none
         arg_pair(a, cap, "-movflags", "+faststart");
         arg_pair(a, cap, "-f", "mp4");
         cmd_arg(a, cap, part_path.s);
