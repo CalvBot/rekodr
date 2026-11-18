@@ -380,6 +380,7 @@ struct Player {
     IMFMediaEngine   *track_engine[PLAYER_MAX_TRACK_ENGINES];
     i32               track_of_engine[PLAYER_MAX_TRACK_ENGINES]; // the audio track each one plays
     i32               track_engine_count;
+    f64               track_synced[PLAYER_MAX_TRACK_ENGINES]; // ImGui time each was last started or moved
     ID3D11Texture2D          *tex;
     ID3D11ShaderResourceView *srv;
     u32               width, height; // the video's own size, 0 until it's loaded

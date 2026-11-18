@@ -239,7 +239,10 @@ static void player_seek(Player *p, f64 t)
     if (p->scrubbing && p->engine_ex) p->engine_ex->SetCurrentTimeEx(t, MF_MEDIA_ENGINE_SEEK_MODE_APPROXIMATE);
     else p->engine->SetCurrentTime(t);
     for (i32 i = 0; i < p->track_engine_count; i++)
-        if (p->track_engine[i]) p->track_engine[i]->SetCurrentTime(t);
+        if (p->track_engine[i]) {
+            p->track_engine[i]->SetCurrentTime(t);
+            p->track_synced[i] = ImGui::GetTime();
+        }
     ui_wake(6);
 }
 
@@ -384,16 +387,28 @@ static void player_update(Player *p)
                 player_pause(p);
                 player_seek(p, p->stop_at);
             }
-            // The track engines follow the video.
+            // The track engines follow the video. One that's drifted is moved back only once it has settled: a
+            // seek in a long file takes a while, and judging the engine again straight after it only seeks it
+            // again, so on a big file it can keep seeking and never get to play.
+            f64 now = ImGui::GetTime();
             for (i32 i = 0; i < p->track_engine_count; i++) {
                 IMFMediaEngine *te = p->track_engine[i];
                 if (!te || te->GetReadyState() < MF_MEDIA_ENGINE_READY_HAVE_METADATA) continue;
                 bool tp = te->IsPaused() != FALSE;
                 if (p->paused && !tp) te->Pause();
-                if (!p->paused && tp) te->Play();
+                if (!p->paused && tp) {
+                    te->Play();
+                    p->track_synced[i] = now;
+                }
+                if (p->paused || p->engine->IsSeeking() || te->IsSeeking() || now - p->track_synced[i] < 1.0 ||
+                    te->GetReadyState() < MF_MEDIA_ENGINE_READY_HAVE_ENOUGH_DATA)
+                    continue;
                 f64 d = te->GetCurrentTime() - p->pos;
-                if (!p->paused && !p->engine->IsSeeking() && !te->IsSeeking() && (d > 0.12 || d < -0.12))
+                if (d > 0.15 || d < -0.15) {
+                    DEV_LOG("player %d: track engine %d off by %.0f ms; moving it", p->id, i, d * 1000);
                     te->SetCurrentTime(p->pos);
+                    p->track_synced[i] = now;
+                }
             }
         }
         LONGLONG pts = 0;
