@@ -900,16 +900,86 @@ static bool edit_audio_graph(SaveWork *w, const EditJob &j)
     return true;
 }
 
+// How Share fits a size (ported from Compress for Discord's Planner). The size is in MiB, which is what Discord
+// means by MB, less a 3% margin and ~2% for the mp4 container. Audio gets a tier by the bitrate there is; the video
+// gets the rest, never more than the source has (that only makes a bigger file). The picture steps down with the
+// bitrate (1080p, 720p, 480p, and 30 fps under 3 Mbps), and further when there are too few bits for its pixels:
+// below 0.009 bits per pixel the encoder is at its coarsest and ignores a lower bitrate, so the file comes out over.
+enum { SHARE_MIN_VIDEO_KBPS = 80, SHARE_MIN_SIDE = 144, SHARE_ATTEMPTS = 4 };
+static const f64 SHARE_MIB = 1024.0 * 1024.0, SHARE_MIN_BPP = 0.009, SHARE_MARGIN = 0.03;
+
+struct SharePlan {
+    i64  limit_bytes, target_bytes; // what was asked, and what's aimed for
+    i32  video_kbps, audio_kbps;
+    i32  side;           // the picture's short side
+    f64  fps;            // its frame rate
+    bool shrunk;         // smaller than the bitrate tier, for want of bits
+    bool capped;         // held to the source's own bitrate
+    bool fits;           // false: too long for the size even at the lowest quality
+    f64  max_duration;   // the longest that fits at that lowest quality
+    f64  estimate_bytes; // what it should come out at
+};
+
+// `src_kbps` is the source file's whole bitrate (0 = unknown); `w`, `h` and `fps` are its picture.
+static SharePlan share_plan(f64 duration, f64 mb, bool audio, i32 w, i32 h, f64 fps, f64 src_kbps)
+{
+    SharePlan p = {};
+    p.limit_bytes = (i64)(mb * SHARE_MIB);
+    p.target_bytes = (i64)(p.limit_bytes * (1 - SHARE_MARGIN));
+    f64 budget = p.target_bytes * 8 * 0.98 / 1000; // kbits
+    f64 total = budget / (duration > 0.1 ? duration : 0.1);
+    p.audio_kbps = !audio ? 0 : total >= 1500 ? 160 : total >= 600 ? 128 : total >= 250 ? 96 : 64;
+    f64 video = total - p.audio_kbps;
+    if (video > 200000) video = 200000;
+    p.video_kbps = (i32)video;
+    f64 src_video = src_kbps - p.audio_kbps;
+    p.capped = src_video > 0 && p.video_kbps > src_video;
+    if (p.capped) p.video_kbps = (i32)ceil(src_video);
+
+    i32 short_side = w < h ? w : h, long_side = w < h ? h : w;
+    if (short_side <= 0) short_side = 1080, long_side = 1920;
+    f64 aspect = (f64)long_side / short_side;
+    p.fps = fps > 0 ? fps : 30;
+    p.side = short_side;
+    if (!p.capped) {
+        i32 tier = p.video_kbps < 1200 ? 480 : p.video_kbps < 3500 ? 720 : 1080;
+        if (tier < p.side) p.side = tier;
+        if (p.video_kbps < 3000 && p.fps > 31) p.fps = 30;
+        if (p.video_kbps * 1000.0 / ((f64)p.side * p.side * aspect * p.fps) < SHARE_MIN_BPP) {
+            i32 fit = (i32)sqrt(p.video_kbps * 1000.0 / (SHARE_MIN_BPP * aspect * p.fps)) & ~1;
+            if (fit < SHARE_MIN_SIDE) fit = SHARE_MIN_SIDE;
+            if (fit < p.side) { p.side = fit; p.shrunk = true; }
+        }
+    }
+    p.fits = p.capped || p.video_kbps >= SHARE_MIN_VIDEO_KBPS;
+    p.max_duration = budget / (SHARE_MIN_VIDEO_KBPS + (audio ? 64 : 0));
+    p.estimate_bytes = (p.video_kbps + p.audio_kbps) * 125.0 * duration;
+    if (p.estimate_bytes > p.target_bytes) p.estimate_bytes = (f64)p.target_bytes;
+    return p;
+}
+
 // Encoder settings for H.264 on `vendor`: a target bitrate for Share, else a constant quality for Keep.
 static void edit_encoder_args(wchar_t *a, i32 cap, u8 vendor, i32 kbps)
 {
     arg_pair(a, cap, "-c:v", "%s", encoder_name(vendor, "h264"));
     switch (vendor) {
     case VENDOR_NVENC:
+        // For a size, constant bitrate with a one-second buffer: Compress for Discord measured it landing 0-2% over
+        // what's asked at 1440p60, where variable bitrate landed anywhere from 21% under to 58% over.
+        if (kbps) {
+            arg_pair(a, cap, "-preset", "p6");
+            arg_pair(a, cap, "-tune", "hq");
+            arg_pair(a, cap, "-multipass", "fullres");
+            arg_pair(a, cap, "-rc", "cbr");
+            arg_pair(a, cap, "-b:v", "%dk", kbps);
+            arg_pair(a, cap, "-maxrate", "%dk", kbps);
+            arg_pair(a, cap, "-bufsize", "%dk", kbps);
+            return;
+        }
         arg_pair(a, cap, "-preset", "p5");
         arg_pair(a, cap, "-rc", "vbr");
-        if (kbps) arg_pair(a, cap, "-multipass", "fullres");
-        else { arg_pair(a, cap, "-cq", "19"); arg_pair(a, cap, "-b:v", "0"); }
+        arg_pair(a, cap, "-cq", "19");
+        arg_pair(a, cap, "-b:v", "0");
         break;
     case VENDOR_AMF:
         arg_pair(a, cap, "-quality", "quality");
@@ -966,112 +1036,170 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     bool zoom = edit_zoomed(j.edit);
     bool touched = edit_audio_touched(j.edit, m);
     bool reencode = share || zoom;
-    i32 audio_kbps = 0, video_kbps = 0, height = 0;
-    bool fps30 = false;
+    SharePlan plan = {};
+    i32 video_kbps = 0, side = 0;
+    bool reduce_fps = false;
     if (share) {
-        f32 mb = j.share_mb > 1 ? j.share_mb : 1;
-        audio_kbps = mb <= 10.5f ? 96 : 160;
-        if (m.track_count <= 0) audio_kbps = 0;
-        f64 k = mb * 8000.0 * 0.92 / dur - audio_kbps;
-        video_kbps = k < 150 ? 150 : (i32)k;
-        height = video_kbps < 1200 ? 480 : video_kbps < 3500 ? 720 : 1080;
-        fps30 = video_kbps < 3000 && m.fps > 31;
-    }
-
-    // The graph: video (when re-encoded) as [v], audio (when re-mixed, or for a share) as [a].
-    w->graph_len = 0;
-    w->graph_full = false;
-    w->graph[0] = 0;
-    if (reencode) {
-        graph_add(w, "[0:v]");
-        if (zoom) zoom_filter(w, j.edit, m.fps, in_s);
-        if (share) {
-            graph_add(w, "scale=-2:'min(%d,ih)':flags=lanczos,", height);
-            if (fps30) graph_add(w, "fps=30,");
+        WIN32_FILE_ATTRIBUTE_DATA fa = {};
+        f64 src_kbps = 0;
+        if (GetFileAttributesExW(j.src.s, GetFileExInfoStandard, &fa) && m.duration > 0)
+            src_kbps = (f64)(((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow) * 8 / 1000 / m.duration;
+        plan = share_plan(dur, j.share_mb > 1 ? j.share_mb : 1, m.track_count > 0, m.width, m.height, m.fps, src_kbps);
+        if (!plan.fits) {
+            i32 most = (i32)plan.max_duration;
+            snprintf(out, out_cap, "too long for %g MB: trim it to under %d:%02d", j.share_mb, most / 60, most % 60);
+            return SAVE_EV_FAILED;
         }
-        graph_add(w, "format=%s[v];\n", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p");
+        video_kbps = plan.video_kbps;
+        side = plan.side;
+        reduce_fps = plan.fps < m.fps - 0.5;
     }
-    bool mix = (share || touched) && edit_audio_graph(w, j);
-    if (w->graph_full) {
-        snprintf(out, out_cap, "the zoom has too many keyframes");
-        return SAVE_EV_FAILED;
-    }
+    bool portrait = m.height > m.width;
     Path work = work_file(w->cfg.work_dir, L"edit-%d", (i32)req.id);
     SHCreateDirectoryExW(0, work.s, 0);
     Path graph = path_join(work, L"graph.txt");
-    if (w->graph_len) {
-        FILE *f = _wfopen(graph.s, L"wb");
-        if (!f) { snprintf(out, out_cap, "couldn't write the edit's work files"); return SAVE_EV_FAILED; }
-        fwrite(w->graph, 1, w->graph_len, f);
-        fclose(f);
-    }
+    i32 code = 0;
+    i64 last_kbps = 0, last_size = 0;
+    f64 audio_bytes = plan.audio_kbps * 125.0 * dur;
+    for (i32 attempt = 0;; attempt++) {
+        // The graph: video (when re-encoded) as [v], audio (when re-mixed, or for a share) as [a]. Built again for each
+        // attempt at a share, since a retry can make the picture smaller.
+        w->graph_len = 0;
+        w->graph_full = false;
+        w->graph[0] = 0;
+        if (reencode) {
+            graph_add(w, "[0:v]");
+            if (zoom) zoom_filter(w, j.edit, m.fps, in_s);
+            if (share) {
+                if (portrait) graph_add(w, "scale='min(%d,iw)':-2:flags=lanczos,", side);
+                else graph_add(w, "scale=-2:'min(%d,ih)':flags=lanczos,", side);
+                if (reduce_fps) graph_add(w, "fps=%g,", plan.fps);
+            }
+            graph_add(w, "format=%s[v];\n", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p");
+        }
+        bool mix = (share || touched) && edit_audio_graph(w, j);
+        if (w->graph_full) {
+            snprintf(out, out_cap, "the zoom has too many keyframes");
+            RemoveDirectoryW(work.s);
+            return SAVE_EV_FAILED;
+        }
+        if (w->graph_len) {
+            FILE *f = _wfopen(graph.s, L"wb");
+            if (!f) {
+                snprintf(out, out_cap, "couldn't write the edit's work files");
+                RemoveDirectoryW(work.s);
+                return SAVE_EV_FAILED;
+            }
+            fwrite(w->graph, 1, w->graph_len, f);
+            fclose(f);
+        }
 
-    wchar_t *a = w->args;
-    i32 cap = COUNT(w->args);
-    a[0] = 0;
-    static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"};
-    arg_list(a, cap, head, COUNT(head));
-    arg_pair(a, cap, "-ss", "%.3f", in_s);
-    cmd_arg8(a, cap, "-i");
-    cmd_arg(a, cap, j.src.s);
-    arg_pair(a, cap, "-t", "%.3f", dur);
-    if (w->graph_len) {
-        cmd_arg8(a, cap, "-/filter_complex");
-        cmd_arg(a, cap, graph.s);
-    }
-    if (reencode) {
-        arg_pair(a, cap, "-map", "[v]");
-        edit_encoder_args(a, cap, w->cfg.vendor, share ? video_kbps : 0);
-    } else {
-        arg_pair(a, cap, "-map", "0:v:0");
-        arg_pair(a, cap, "-c:v", "copy");
-    }
-    i32 outs = 0; // audio streams written
-    if (share) {
-        if (mix) {
+        wchar_t *a = w->args;
+        i32 cap = COUNT(w->args);
+        a[0] = 0;
+        static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"};
+        arg_list(a, cap, head, COUNT(head));
+        arg_pair(a, cap, "-ss", "%.3f", in_s);
+        cmd_arg8(a, cap, "-i");
+        cmd_arg(a, cap, j.src.s);
+        arg_pair(a, cap, "-t", "%.3f", dur);
+        if (w->graph_len) {
+            cmd_arg8(a, cap, "-/filter_complex");
+            cmd_arg(a, cap, graph.s);
+        }
+        if (reencode) {
+            arg_pair(a, cap, "-map", "[v]");
+            edit_encoder_args(a, cap, w->cfg.vendor, share ? video_kbps : 0);
+        } else {
+            arg_pair(a, cap, "-map", "0:v:0");
+            arg_pair(a, cap, "-c:v", "copy");
+        }
+        i32 outs = 0; // audio streams written
+        if (share) {
+            if (mix) {
+                arg_pair(a, cap, "-map", "[a]");
+                arg_pair(a, cap, "-c:a", "aac");
+                arg_pair(a, cap, "-b:a", "%dk", plan.audio_kbps);
+                arg_pair(a, cap, "-ar", "48000");
+            }
+        } else if (!touched) {
+            if (m.track_count > 0) {
+                arg_pair(a, cap, "-map", "0:a");
+                arg_pair(a, cap, "-c:a", "copy");
+            }
+        } else {
+            // The rebuilt Mix first, then the original tracks as recorded (a clipback file's old Mix is dropped).
             arg_pair(a, cap, "-map", "[a]");
-            arg_pair(a, cap, "-c:a", "aac");
-            arg_pair(a, cap, "-b:a", "%dk", audio_kbps);
-            arg_pair(a, cap, "-ar", "48000");
+            arg_pair(a, cap, "-c:a:0", "aac");
+            arg_pair(a, cap, "-b:a:0", "192k");
+            arg_pair(a, cap, "-ar:a:0", "48000");
+            outs = 1;
+            for (i32 t = edit_has_mix(m) ? 1 : 0; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
+                arg_pair(a, cap, "-map", "0:a:%d", t);
+                char key[32];
+                snprintf(key, sizeof key, "-c:a:%d", outs);
+                arg_pair(a, cap, key, "copy");
+                snprintf(key, sizeof key, "-metadata:s:a:%d", outs);
+                arg_pair(a, cap, key, "title=%s", m.tracks[t]);
+                arg_pair(a, cap, key, "handler_name=%s", m.tracks[t]);
+                snprintf(key, sizeof key, "-disposition:a:%d", outs);
+                arg_pair(a, cap, key, "0");
+                outs++;
+            }
+            arg_pair(a, cap, "-metadata:s:a:0", "title=Mix");
+            arg_pair(a, cap, "-metadata:s:a:0", "handler_name=Mix");
+            arg_pair(a, cap, "-disposition:a:0", "default");
         }
-    } else if (!touched) {
-        if (m.track_count > 0) {
-            arg_pair(a, cap, "-map", "0:a");
-            arg_pair(a, cap, "-c:a", "copy");
-        }
-    } else {
-        // The rebuilt Mix first, then the original tracks as recorded (a clipback file's old Mix is dropped).
-        arg_pair(a, cap, "-map", "[a]");
-        arg_pair(a, cap, "-c:a:0", "aac");
-        arg_pair(a, cap, "-b:a:0", "192k");
-        arg_pair(a, cap, "-ar:a:0", "48000");
-        outs = 1;
-        for (i32 t = edit_has_mix(m) ? 1 : 0; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
-            arg_pair(a, cap, "-map", "0:a:%d", t);
-            char key[32];
-            snprintf(key, sizeof key, "-c:a:%d", outs);
-            arg_pair(a, cap, key, "copy");
-            snprintf(key, sizeof key, "-metadata:s:a:%d", outs);
-            arg_pair(a, cap, key, "title=%s", m.tracks[t]);
-            arg_pair(a, cap, key, "handler_name=%s", m.tracks[t]);
-            snprintf(key, sizeof key, "-disposition:a:%d", outs);
-            arg_pair(a, cap, key, "0");
-            outs++;
-        }
-        arg_pair(a, cap, "-metadata:s:a:0", "title=Mix");
-        arg_pair(a, cap, "-metadata:s:a:0", "handler_name=Mix");
-        arg_pair(a, cap, "-disposition:a:0", "default");
-    }
-    arg_pair(a, cap, "-movflags", "+faststart");
-    arg_pair(a, cap, "-f", "mp4");
-    cmd_arg(a, cap, part_path.s);
+        arg_pair(a, cap, "-movflags", "+faststart");
+        arg_pair(a, cap, "-f", "mp4");
+        cmd_arg(a, cap, part_path.s);
 
-    log_line("%s %u: %.1f s from %.2f s, zoom %d, audio %s, %s -> %s", share ? "share" : "keep", req.id, dur, in_s,
-             zoom ? j.edit.key_count : 0, touched ? "re-mixed" : "as recorded",
-             share ? "re-encoded" : reencode ? "re-encoded" : "copied", final8);
-    if (share) log_line("share %u: %.0f MB asked: video %d kbps at %dp%s, audio %d kbps", req.id, j.share_mb, video_kbps,
-                        height, fps30 ? ", 30 fps" : "", audio_kbps);
-    i32 code = run_ffmpeg(w, (i64)(dur * 1e6), out, out_cap);
+        log_line("%s %u: %.1f s from %.2f s, zoom %d, audio %s, %s -> %s", share ? "share" : "keep", req.id, dur, in_s,
+                 zoom ? j.edit.key_count : 0, touched ? "re-mixed" : "as recorded",
+                 share ? "re-encoded" : reencode ? "re-encoded" : "copied", final8);
+        if (share)
+            log_line("share %u: %g MB asked, attempt %d: video %d kbps at %dp%g%s%s, audio %d kbps", req.id,
+                     j.share_mb, attempt + 1, video_kbps, side, plan.fps, plan.shrunk ? " (shrunk)" : "",
+                     plan.capped ? " (source's rate)" : "", plan.audio_kbps);
+        code = run_ffmpeg(w, (i64)(dur * 1e6), out, out_cap);
+        if (code != 0 || !share) break;
+
+        // Over the size: again at a lower bitrate, by as much as it was over and a little more (ported from Compress for
+        // Discord). When a cut stops helping, or it's far over, the encoder is at its coarsest for this many pixels and
+        // only a smaller picture gets it down; at that floor the size goes with the pixel count.
+        WIN32_FILE_ATTRIBUTE_DATA fa = {};
+        GetFileAttributesExW(part_path.s, GetFileExInfoStandard, &fa);
+        i64 size = (i64)(((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow);
+        log_line("share %u: attempt %d made %.2f MB, aiming for %.2f", req.id, attempt + 1, size / SHARE_MIB,
+                 plan.target_bytes / SHARE_MIB);
+        if (size <= plan.target_bytes) break;
+        if (attempt == SHARE_ATTEMPTS - 1) {
+            if (size <= plan.limit_bytes) break;
+            snprintf(out, out_cap, "couldn't get it under %g MB: trim it shorter", j.share_mb);
+            code = -3;
+            break;
+        }
+        f64 video_made = size - audio_bytes > 1 ? size - audio_bytes : 1;
+        f64 room = plan.target_bytes - audio_bytes > 1 ? plan.target_bytes - audio_bytes : 1;
+        bool stuck = last_kbps > 0 &&
+                     last_size - size < (last_size - audio_bytes) * (1 - (f64)video_kbps / last_kbps) * 0.5;
+        i32 next = (i32)floor(video_kbps * (room / video_made) * (w->cfg.vendor == VENDOR_NVENC ? 0.97 : 0.92));
+        if (next < 50) next = 50;
+        if ((size > plan.target_bytes * 1.4 || stuck || next >= video_kbps) && side > SHARE_MIN_SIDE) {
+            i32 smaller = (i32)(side * sqrt(room / video_made) * 0.9) / 2 * 2;
+            side = smaller > SHARE_MIN_SIDE ? smaller : SHARE_MIN_SIDE;
+            last_kbps = 0;
+        } else {
+            if (next >= video_kbps) {
+                snprintf(out, out_cap, "couldn't get it under %g MB: trim it shorter", j.share_mb);
+                code = -3;
+                break;
+            }
+            last_kbps = video_kbps;
+            last_size = size;
+            video_kbps = next;
+        }
+    }
     i64 result;
     if (code == 0 && MoveFileExW(part_path.s, final_path.s, 0)) {
         snprintf(out, out_cap, "%s", final8);

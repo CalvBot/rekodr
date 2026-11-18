@@ -529,6 +529,14 @@ static bool ed_job_busy(u32 id)
     return v && v->state < SAVE_DONE;
 }
 
+// The size Share aims for, in MiB (what Discord means by MB).
+static f32 ed_share_mb()
+{
+    Editor &ed = g_app.editor;
+    f32 mb = ed.share_size == 0 ? 20.f : ed.share_size == 1 ? 50.f : ed.custom_mb;
+    return mb < 1 ? 1 : mb;
+}
+
 static void ed_start(SaveKind kind)
 {
     Editor &ed = g_app.editor;
@@ -545,8 +553,7 @@ static void ed_start(SaveKind kind)
     } else {
         j.out_dir = g_app.paths.share_dir;
         snprintf(j.stem, sizeof j.stem, "%s", ed.item.name);
-        j.share_mb = ed.share_size == 0 ? 50.f : ed.share_size == 1 ? 10.f : ed.custom_mb;
-        if (j.share_mb < 1) j.share_mb = 1;
+        j.share_mb = ed_share_mb();
     }
     u32 id = save_edit(kind, j);
     if (kind == SAVE_KEEP) ed.keep_job = id;
@@ -1516,7 +1523,7 @@ static void ed_share_tab(f32 w)
 
     ed_caption("SHARE");
     kit_dim("A small copy, put on the clipboard");
-    static const char *const sizes[] = {"50 MB", "10 MB", "Custom"};
+    static const char *const sizes[] = {"20 MB", "50 MB", "Custom"};
     f32 mb_w = kit_px(84), seg_w = (w - mb_w - st.ItemSpacing.x - kit_px(6)) / 3;
     kit_segmented("##size", sizes, 3, &ed.share_size, seg_w);
     ImGui::SameLine();
@@ -1527,7 +1534,29 @@ static void ed_share_tab(f32 w)
     ImGui::EndDisabled();
     if (ed.custom_mb < 1) ed.custom_mb = 1;
     if (ed.custom_mb > 4000) ed.custom_mb = 4000;
-    if (kit_button(ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(w, 0), !sharing)) ed_start(SAVE_SHARE);
+
+    // What the trimmed length comes out as at that size, or how short it has to be: always one line, in its place.
+    const MediaInfo &m = ed.item.info;
+    f64 in_s = ed.edit.in_s > 0 ? ed.edit.in_s : 0, len = m.duration;
+    if (ed.player.duration > 0) len = ed.player.duration;
+    if (ed.edit.out_s > in_s) len = ed.edit.out_s;
+    len -= in_s;
+    f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
+    SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
+    char est[96];
+    if (plan.fits) {
+        char size[24];
+        fmt_size((u64)plan.estimate_bytes, size, sizeof size);
+        snprintf(est, sizeof est, "About %s Â· %dp%.0f Â· %.1f Mbps", size, plan.side, plan.fps,
+                 plan.video_kbps / 1000.0);
+        kit_dim("%s", est);
+    } else {
+        char most[32];
+        fmt_time(plan.max_duration, most, sizeof most);
+        snprintf(est, sizeof est, "Too long for this size: trim to under %s", most);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(col32(0xff8a92)), "%s", est);
+    }
+    if (kit_button(ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(w, 0), !sharing && plan.fits)) ed_start(SAVE_SHARE);
 
     // Progress and the result, always in their places: a status line, a thin bar, two lines for the result.
     SaveJobView *v = save_view(sharing ? ed.share_job : keeping ? ed.keep_job : 0);

@@ -202,6 +202,31 @@ static void test_settings_round_trip()
 
 // The editor's volume keys and eases: the curve, the volume at a time, and the edit file round trip.
 // The editor's lanes: keys go in by time, and a selection stays on the same keys through inserts, erases and sorts.
+// Share's plan (ported from Compress for Discord's Planner): bitrate, audio tier, picture size and what fits.
+static void test_share_plan()
+{
+    // 30 s of 1440p60 into 20 MB: ~5.4 Mbps in all, so the top audio tier, 1080p kept at 60 fps.
+    SharePlan p = share_plan(30, 20, true, 2560, 1440, 60, 0);
+    T(p.fits && p.audio_kbps == 160 && p.side == 1080 && p.fps == 60);
+    T(p.video_kbps > 5000 && p.video_kbps < 5400);
+    T(p.target_bytes < p.limit_bytes && p.estimate_bytes <= p.target_bytes);
+    // Two minutes: under 3 Mbps, so 720p at 30 fps.
+    p = share_plan(120, 20, true, 2560, 1440, 60, 0);
+    T(p.fits && p.side == 720 && p.fps == 30 && p.audio_kbps == 128);
+    // Never more than the source has: a 2 Mbps file stays at its own rate and size.
+    p = share_plan(30, 50, true, 1920, 1080, 30, 2000);
+    T(p.capped && p.video_kbps == 1840 && p.side == 1080);
+    // Too few bits for 480p30: a smaller picture, held to the bits-per-pixel floor.
+    p = share_plan(1000, 20, true, 1920, 1080, 30, 0);
+    T(p.fits && p.shrunk && p.side < 480 && p.side >= 144);
+    // Far too long: doesn't fit, and says how long would.
+    p = share_plan(3600, 20, true, 1920, 1080, 60, 0);
+    T(!p.fits && p.max_duration > 1000 && p.max_duration < 3600);
+    // No audio: all of it to the video. A portrait picture's short side is its width.
+    p = share_plan(30, 20, false, 1080, 1920, 30, 0);
+    T(p.audio_kbps == 0 && p.side == 1080);
+}
+
 static void test_lanes()
 {
     T(bits_insert(0b101, 1) == 0b1001);
@@ -652,6 +677,7 @@ int main()
     test_settings_round_trip();
     test_edit_volumes();
     test_lanes();
+    test_share_plan();
     test_gamedb();
     test_mcpack();
     test_storeids();
