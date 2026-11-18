@@ -5,8 +5,11 @@
 // command line that tells them apart: javaw.exe is Minecraft only when it runs Minecraft's main class). Icons come
 // from Discord's image server and covers from Steam's when the game is on Steam. A game with neither, or one not in
 // the list at all, is looked up by name on clipback's art service (api.clipback.workers.dev, which asks SteamGridDB
-// and IGDB; "art_service" in settings.txt names another, or none). All of it is kept under <local>\gamedb and the
-// list is fetched again after a week:
+// and IGDB; "art_service" in settings.txt names another, or none). Until SteamGridDB agrees to the service handing out
+// its art, the service answers "not shared yet" (403) and only says which game an exe is; the art then comes from
+// SteamGridDB with the player's own key ("sgdb_key" in settings.txt), if they set one. The service is always asked
+// first, so once it shares, it is used. All of it is kept under <local>\gamedb and the list is fetched again after a
+// week:
 //   detectable.json   the list as fetched
 //   games.tsv         the same, one game a line, which is what is loaded:
 //                     id, name, icon, cover, Steam id, other names (|), exes (|; "!" first marks a launcher,
@@ -56,6 +59,7 @@ struct GameDbShared {
     volatile LONG stop;
     bool       online;      // may fetch
     char       service[128]; // the art service's host; "" = don't ask it
+    char       sgdb_key[72]; // the player's own SteamGridDB key; "" = none
     struct { char id[24], hash[40], name[128]; u32 steam; GameArt kind; } want[64]; // art asked for, not fetched yet
     i32        want_count;
     // What the art service was asked to name (a modpack, or an exe the list doesn't know), by a key for the
@@ -1024,11 +1028,133 @@ static bool file_older_than(const WIN32_FILE_ATTRIBUTE_DATA &fa, i64 seconds)
     return age > seconds;
 }
 
-// Where the service has a game's icon or cover, looked up by its name. What it has is kept in <id>-found.json, so
-// the icon and the cover take one lookup between them. False if it has none, or couldn't be asked.
-static bool art_service_find(const char *id, const char *name, GameArt kind, char *url, i32 cap)
+// ---- SteamGridDB with the player's own key, for when the art service doesn't hand out art (403 "not shared yet")
+
+// SteamGridDB's answer to a GET of /api/v2<path>, in *body. Returns the status (0 = none, or no key).
+static u32 sgdb_get(const char *path, char **body, i64 *len)
 {
-    if (!g_gamedb.service[0] || !name[0]) return false;
+    if (!g_gamedb.sgdb_key[0] || !g_gamedb.online) return 0;
+    wchar_t wpath[1024], header[128];
+    char full[1024];
+    snprintf(full, sizeof full, "/api/v2%s", path);
+    utf8_to_wide(full, wpath, COUNT(wpath));
+    swprintf(header, COUNT(header), L"Authorization: Bearer %hs\r\n", g_gamedb.sgdb_key);
+    return http_get(L"www.steamgriddb.com", wpath, header, 0, body, len);
+}
+
+// SteamGridDB's search answer ({"data":[{"id":5,"name":"...","release_date":1500000000}]}) as the art service gives
+// it: {"games":[{"id":"s5","name":"...","year":2017}]}. Into out; false if it has no games list.
+static bool sgdb_games(const char *json, i64 len, char *out, i32 cap)
+{
+    Json j = {json, json + len};
+    if (!j_find(&j, "data") || !j_eat(&j, '[')) return false;
+    i32 n = snprintf(out, cap, "{\"games\":[");
+    bool first = true;
+    while (j_eat(&j, '{') && n < cap - 300) {
+        char name[128] = "", k[24];
+        i64 id = 0, released = 0;
+        while (!j_eat(&j, '}') && j.p < j.end) {
+            if (!j_string(&j, k, sizeof k)) break;
+            j_eat(&j, ':');
+            j_ws(&j);
+            if (!strcmp(k, "id")) id = _atoi64(j.p);
+            else if (!strcmp(k, "release_date")) released = _atoi64(j.p);
+            if (!strcmp(k, "name")) j_string(&j, name, sizeof name) || (j_skip(&j), 0);
+            else j_skip(&j);
+            j_eat(&j, ',');
+        }
+        j_eat(&j, ',');
+        if (id <= 0 || !name[0]) continue;
+        char esc[260];
+        i32 e = 0;
+        for (const char *p = name; *p && e < (i32)sizeof esc - 3; p++) {
+            if (*p == '"' || *p == '\\') esc[e++] = '\\';
+            esc[e++] = *p;
+        }
+        esc[e] = 0;
+        i32 year = released > 0 ? 1970 + (i32)(released / 31556952) : 0;
+        n += snprintf(out + n, cap - n, "%s{\"id\":\"s%lld\",\"name\":\"%s\",\"year\":%d}", first ? "" : ",", id, esc, year);
+        first = false;
+    }
+    snprintf(out + n, cap - n, "]}");
+    return true;
+}
+
+// The first picture in a SteamGridDB list answer ({"data":[{"url":"...","thumb":"..."}]}) as the art service gives
+// one: {"url":"...","thumb":"..."}, or null.
+static void sgdb_first(const char *json, i64 len, char *out, i32 cap)
+{
+    char url[512] = "", thumb[512] = "", k[16];
+    Json j = {json, json + len};
+    if (json && j_find(&j, "data") && j_eat(&j, '[') && j_eat(&j, '{')) {
+        while (!j_eat(&j, '}') && j.p < j.end) {
+            if (!j_string(&j, k, sizeof k)) break;
+            j_eat(&j, ':');
+            if (!strcmp(k, "url")) j_string(&j, url, sizeof url) || (j_skip(&j), 0);
+            else if (!strcmp(k, "thumb")) j_string(&j, thumb, sizeof thumb) || (j_skip(&j), 0);
+            else j_skip(&j);
+            j_eat(&j, ',');
+        }
+    }
+    if (strncmp(url, "https://", 8) || strchr(url, '"') || strchr(thumb, '"')) snprintf(out, cap, "null");
+    else snprintf(out, cap, "{\"url\":\"%s\",\"thumb\":\"%s\"}", url, thumb[0] ? thumb : url);
+}
+
+// What SteamGridDB has for a game ("s5"), as the art service's /v1/art answers: {"id","grid","hero","icon"}, each
+// SteamGridDB's first pick. Into a malloc'd *body; false if it couldn't be asked.
+static bool sgdb_art(const char *sid, char **body, i64 *len)
+{
+    static const char *const kinds[3][2] = {{"grid", "grids"}, {"hero", "heroes"}, {"icon", "icons"}};
+    char parts[3][1100];
+    for (i32 i = 0; i < 3; i++) {
+        char path[96], *text = 0;
+        i64 tl = 0;
+        snprintf(path, sizeof path, "/%s/game/%s", kinds[i][1], sid + 1);
+        u32 status = sgdb_get(path, &text, &tl);
+        if (status != 200 && status != 404) { free(text); return false; }
+        sgdb_first(status == 200 ? text : 0, tl, parts[i], sizeof parts[i]);
+        free(text);
+    }
+    i32 cap = 4096;
+    *body = (char *)malloc(cap);
+    if (!*body) return false;
+    *len = snprintf(*body, cap, "{\"id\":\"%s\",\"grid\":%s,\"hero\":%s,\"icon\":%s}", sid, parts[0], parts[1], parts[2]);
+    return true;
+}
+
+// A search for a name: the art service's, else, when it doesn't hand out art, SteamGridDB's with the player's key.
+// Returns the status (403 with no key: nothing to search with); the answer, as the service gives it, in *body.
+static u32 art_search(const char *q, char **body, i64 *len)
+{
+    char enc[400], path[512];
+    url_encode(q, enc, sizeof enc);
+    snprintf(path, sizeof path, "/v1/search?q=%s", enc);
+    u32 status = g_gamedb.service[0] ? art_service_get(path, body, len) : 403;
+    if (status != 403 || !g_gamedb.sgdb_key[0]) return status;
+    free(*body);
+    *body = 0;
+    char *text = 0;
+    i64 tl = 0;
+    snprintf(path, sizeof path, "/search/autocomplete/%s", enc);
+    status = sgdb_get(path, &text, &tl);
+    if (status == 200) {
+        i32 cap = 8192;
+        *body = (char *)malloc(cap);
+        if (*body && sgdb_games(text, tl, *body, cap)) *len = (i64)strlen(*body);
+        else { free(*body); *body = 0; status = 0; }
+    }
+    free(text);
+    return status;
+}
+
+// Where the service has a game's icon or cover, looked up by its name. What it has is kept in <id>-found.json, so
+// the icon and the cover take one lookup between them. False if it has none, or couldn't be asked; *later is set
+// when the service doesn't hand out art yet and there is no key of the player's to ask SteamGridDB with, so it is
+// asked again next time rather than taken as none.
+static bool art_service_find(const char *id, const char *name, GameArt kind, char *url, i32 cap, bool *later)
+{
+    *later = false;
+    if ((!g_gamedb.service[0] && !g_gamedb.sgdb_key[0]) || !name[0]) return false;
     wchar_t fname[64];
     swprintf(fname, COUNT(fname), L"art\\%hs-found.json", id);
     Path found = path_join(gamedb_dir(), fname);
@@ -1038,24 +1164,28 @@ static bool art_service_find(const char *id, const char *name, GameArt kind, cha
                 !file_older_than(fa, (fa.nFileSizeLow ? 30 : 7) * 24 * 3600);
     if (!have) {
         // A game clipback only knows by its exe ("someapp.exe") is looked for without the ".exe"
-        char q[128], path[512], enc[400], sid[24] = "";
+        char q[128], path[512], sid[24] = "";
         snprintf(q, sizeof q, "%s", name);
         size_t ql = strlen(q);
         if (ql > 4 && !_stricmp(q + ql - 4, ".exe")) q[ql - 4] = 0;
-        url_encode(q, enc, sizeof enc);
-        snprintf(path, sizeof path, "/v1/search?q=%s", enc);
         char *body = 0;
         i64 len = 0;
-        u32 status = art_service_get(path, &body, &len);
-        if (status != 200) { DEV_LOG("gamedb: art service search for %s answered %u", name, status); return false; }
+        u32 status = art_search(q, &body, &len);
+        *later = status == 403;
+        if (status != 200) { DEV_LOG("gamedb: art search for %s answered %u", name, status); free(body); return false; }
         bool match = art_pick_search(body, len, q, sid, sizeof sid);
         free(body);
         body = 0;
         len = 0;
         if (match) {
             snprintf(path, sizeof path, "/v1/art/%s", sid);
-            status = art_service_get(path, &body, &len);
-            if (status != 200) { DEV_LOG("gamedb: art service art for %s answered %u", sid, status); return false; }
+            status = g_gamedb.service[0] ? art_service_get(path, &body, &len) : 403;
+            if (status == 403 && sid[0] == 's') { // not handed out: SteamGridDB's own, with the player's key
+                free(body);
+                body = 0;
+                status = sgdb_art(sid, &body, &len) ? 200 : 0;
+            }
+            if (status != 200) { DEV_LOG("gamedb: art for %s answered %u", sid, status); free(body); return false; }
         }
         FILE *f = _wfopen(found.s, L"wb"); // empty: it has nothing by that name
         if (f) {
@@ -1115,12 +1245,9 @@ static void gamedb_fetch_find()
     snprintf(q, sizeof q, "%s", g_gamedb.find_q);
     ReleaseSRWLockShared(&g_gamedb.lock);
     if (same || !q[0]) return;
-    char enc[400], path[512];
-    url_encode(q, enc, sizeof enc);
-    snprintf(path, sizeof path, "/v1/search?q=%s", enc);
     char *body = 0;
     i64 len = 0;
-    u32 status = g_gamedb.online && g_gamedb.service[0] ? art_service_get(path, &body, &len) : 0;
+    u32 status = g_gamedb.online ? art_search(q, &body, &len) : 0;
     char names[8][128];
     i32 years[8], n = status == 200 && body ? art_search_list(body, len, names, years, 8) : 0;
     free(body);
@@ -1140,7 +1267,7 @@ static void gamedb_fetch_find()
 // Main thread.
 static i32 gamedb_find_online(const char *q, char (*names)[128], i32 *years, i32 max)
 {
-    if (!q[0] || !g_gamedb.online || !g_gamedb.service[0] || !g_gamedb.wake) return 0;
+    if (!q[0] || !g_gamedb.online || (!g_gamedb.service[0] && !g_gamedb.sgdb_key[0]) || !g_gamedb.wake) return 0;
     i32 n = -1;
     bool ask = false;
     AcquireSRWLockExclusive(&g_gamedb.lock);
@@ -1187,7 +1314,7 @@ static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out, bool *coming 
 {
     if (coming) *coming = false;
     const char *hash = kind == ART_ICON ? g.icon : g.cover;
-    if (!hash[0] && !(kind == ART_COVER && g.steam) && !g_gamedb.service[0]) return false;
+    if (!hash[0] && !(kind == ART_COVER && g.steam) && !g_gamedb.service[0] && !g_gamedb.sgdb_key[0]) return false;
     *out = gamedb_art_file(g.id, kind);
     WIN32_FILE_ATTRIBUTE_DATA fa;
     if (GetFileAttributesExW(out->s, GetFileExInfoStandard, &fa)) {
@@ -1223,7 +1350,7 @@ static void gamedb_fetch_art()
 
         Path file = gamedb_art_file(w.id, w.kind);
         wchar_t url[256];
-        bool ok = false;
+        bool ok = false, later = false;
         if (w.kind == ART_COVER && w.steam) {
             // Steam's library art: a wide picture of the game with no title or season's promotion written across
             // it. Its store banner has both, so that is only the second choice.
@@ -1239,9 +1366,9 @@ static void gamedb_fetch_art()
         }
         if (!ok && !g_gamedb.stop) {
             char found[512];
-            if (art_service_find(w.id, w.name, w.kind, found, sizeof found)) ok = http_get_url(found, file);
+            if (art_service_find(w.id, w.name, w.kind, found, sizeof found, &later)) ok = http_get_url(found, file);
         }
-        if (!ok && !g_gamedb.stop) { // none to be had: an empty file says so, and it isn't asked for again
+        if (!ok && !later && !g_gamedb.stop) { // none to be had: an empty file says so, and it isn't asked for again
             FILE *f = _wfopen(file.s, L"wb");
             if (f) fclose(f);
         }
@@ -1264,6 +1391,15 @@ static void gamedb_fetch_art()
 // doesn't know, go to the service's POST /v1/resolve, which answers
 //   {"game":{"id","name","year"}|null, "pack":{"platform","project","name","version"}?, "matched_by",
 //    "confidence", "art":{"grid","hero","logo","icon"}}
+
+// Whether text[0..len) holds what.
+static bool has_text(const char *text, i64 len, const char *what)
+{
+    i64 n = (i64)strlen(what);
+    for (i64 i = 0; i + n <= len; i++)
+        if (!memcmp(text + i, what, (size_t)n)) return true;
+    return false;
+}
 
 // Where the art is in a resolve answer's text.
 static void answer_art(const char *json, i64 len, const char **art, i64 *art_len)
@@ -1372,6 +1508,7 @@ static void gamedb_fetch_asks()
                                      : exe_from_answer(text, len, name, sizeof name, &sure, &art, &art_len);
             if (kind == ASK_PACK) sure = named;
         }
+        if (named && art && strstr(text, "\"shared\":false") && !has_text(art, art_len, "https://")) art = 0; // none handed out
         if (named && art) {
             GameInfo g;
             if (gamedb_for_art(name, &g) && g.id[0] == 'n') { // one the games list has gets its art from there
@@ -1456,6 +1593,7 @@ static void gamedb_start(bool online)
 {
     g_gamedb.online = online;
     str_set(g_gamedb.service, g_app.config.art_service.s);
+    str_set(g_gamedb.sgdb_key, g_app.config.sgdb_key);
     g_gamedb.wake = CreateEventW(0, FALSE, FALSE, 0);
     g_gamedb.thread = thread_start(gamedb_thread, 0);
 }

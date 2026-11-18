@@ -447,6 +447,22 @@ static void test_gamedb()
         T(!strcmp(names[0], "GregTech: New Horizons") && years[0] == 2016 && !strcmp(names[1], "Greg") && years[1] == 0);
         T(art_search_list(games, sizeof games - 1, names, years, 1) == 1);
         T(art_search_list("{\"games\":[]}", 12, names, years, 8) == 0);
+        // SteamGridDB's own answers, with the player's key, made into the service's
+        const char sg[] = "{\"success\":true,\"data\":[{\"id\":5,\"name\":\"Say \\\"Hi\\\"\",\"release_date\":1500000000,\"types\":[\"steam\"]},{\"id\":6,\"name\":\"B\"}]}";
+        static char conv[1024];
+        T(sgdb_games(sg, sizeof sg - 1, conv, sizeof conv));
+        T(!strcmp(conv, "{\"games\":[{\"id\":\"s5\",\"name\":\"Say \\\"Hi\\\"\",\"year\":2017},{\"id\":\"s6\",\"name\":\"B\",\"year\":0}]}"));
+        T(art_search_list(conv, (i64)strlen(conv), names, years, 8) == 2 && !strcmp(names[0], "Say \"Hi\"") && years[0] == 2017);
+        T(!sgdb_games("{\"success\":false}", 17, conv, sizeof conv));
+        char pic[1100];
+        const char grids[] = "{\"success\":true,\"data\":[{\"id\":1,\"url\":\"https://cdn2.steamgriddb.com/a.png\",\"thumb\":\"https://cdn2.steamgriddb.com/t.png\"},{\"url\":\"https://x\"}]}";
+        sgdb_first(grids, sizeof grids - 1, pic, sizeof pic);
+        T(!strcmp(pic, "{\"url\":\"https://cdn2.steamgriddb.com/a.png\",\"thumb\":\"https://cdn2.steamgriddb.com/t.png\"}"));
+        sgdb_first("{\"success\":true,\"data\":[]}", 26, pic, sizeof pic);
+        T(!strcmp(pic, "null"));
+        sgdb_first(0, 0, pic, sizeof pic);
+        T(!strcmp(pic, "null"));
+        T(has_text("abc", 2, "ab") && !has_text("abc", 2, "bc"));
     }
     // Its art: the icon for an icon; the hero for a cover, else the grid; nothing that isn't https
     static const char art[] = "{\"id\":\"s2\",\"grid\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"thumb\":\"t\",\"w\":920,\"h\":430},"
