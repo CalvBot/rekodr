@@ -555,6 +555,7 @@ struct Timeline {
     i64           sel_in, sel_out;
     i64           playhead_us;  // 0 = the newest footage
     i64           marker_pick;  // the marker clicked on (its time), its note shown; 0 = none
+    f32           lane_scroll;  // the main timeline's sound lanes, scrolled down this many pixels
     TimelineDrag  drag;
     i64           drag_anchor_us, drag_view_end;
     f32           drag_x;

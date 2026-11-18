@@ -1161,7 +1161,8 @@ static f32 tl_peak_in(const TlPeaks &p, i64 start_us, i64 a, i64 z)
     return m / 255.f;
 }
 
-// The sound lanes: every app of a kind summed into one, always all four
+// The sound lanes. The quick clip timeline sums every app of a kind into one of four; the main timeline has a lane
+// for each app.
 static const i32 TL_LANES = 4;
 static const char *const TL_LANE_ICON[TL_LANES] = {ICON_MIC, ICON_GAME, ICON_CHAT, ICON_APPS};
 static const char *const TL_LANE_NAME[TL_LANES] = {"Mic", "Game", "Chat", "Apps"};
@@ -1287,12 +1288,25 @@ static void screen_timeline()
     };
     set_view();
 
-    // The sound lanes share what's left below the video
+    // The sound lanes share what's left below the video, scrolled when there are more than fit
+    bool summed = tl.quick || !tl.row_count;
+    i32 lanes = summed ? TL_LANES : tl.row_count;
     i8 row_lane[COUNT(tl.rows)];
-    for (i32 r = 0; r < tl.row_count; r++) row_lane[r] = (i8)tl_row_group(tl.rows[r]);
-    f32 line_h = floorf((y_bottom - y_snd) / TL_LANES);
+    for (i32 r = 0; r < tl.row_count; r++) row_lane[r] = (i8)(summed ? tl_row_group(tl.rows[r]) : r);
+    f32 line_h = floorf((y_bottom - y_snd) / (lanes < TL_LANES ? TL_LANES : lanes));
     if (line_h > line_max) line_h = line_max;
     if (line_h < line_min) line_h = line_min;
+    f32 scroll_most = lanes * line_h - (y_bottom - y_snd);
+    if (summed || scroll_most < 0) scroll_most = 0;
+    if (ImGui::IsWindowHovered() && io.MouseWheel != 0 && io.MousePos.x < c.x0 && io.MousePos.y >= y_snd &&
+        io.MousePos.y < y_bottom) // the wheel on the names scrolls the lanes (on the bars it zooms)
+        tl.lane_scroll -= io.MouseWheel * line_h;
+    if (tl.lane_scroll > scroll_most) tl.lane_scroll = scroll_most;
+    if (tl.lane_scroll < 0) tl.lane_scroll = 0;
+    f32 y_lanes = y_snd - (summed ? 0 : tl.lane_scroll); // where lane 0 is
+    auto lane_icon = [&](i32 k) { return TL_LANE_ICON[summed ? k : tl_row_group(tl.rows[k])]; };
+    auto lane_name = [&](i32 k) { return summed ? TL_LANE_NAME[k] : (const char *)tl.rows[k].name; };
+    auto lane_col = [&](i32 k) { return summed ? TL_LANE_COL[k] : tl.rows[k].rgb; };
     bool compact = line_h < 24 * s; // names in the small font
     f32 lane_in = floorf(line_h * 0.14f), bar_in = floorf(line_h * 0.3f);
 
@@ -1423,16 +1437,24 @@ static void screen_timeline()
         dl->AddText(ImVec2(tx + 22 * s, floorf(y_video + (video_h - th) / 2)), col32(COL_DIM), "Video");
     }
     dl->AddLine(ImVec2(origin.x + 14 * s, y_snd - 5 * s), ImVec2(c.x1, y_snd - 5 * s), col32(COL_LINE));
-    for (i32 k = 0; k < TL_LANES; k++) {
-        f32 y = y_snd + k * line_h;
+    dl->PushClipRect(ImVec2(origin.x, y_snd), ImVec2(c.x0, y_bottom), true);
+    for (i32 k = 0; k < lanes; k++) {
+        f32 y = y_lanes + k * line_h;
+        if (y + line_h < y_snd || y > y_bottom) continue;
         ImGui::PushFont(g_font_small);
         f32 sh = ImGui::GetTextLineHeight();
-        dl->AddText(ImVec2(tx, floorf(y + (line_h - sh) / 2)), col32(COL_FAINT), TL_LANE_ICON[k]);
+        dl->AddText(ImVec2(tx, floorf(y + (line_h - sh) / 2)), col32(COL_FAINT), lane_icon(k));
         ImGui::PopFont();
         if (compact) ImGui::PushFont(g_font_small);
         f32 nh = ImGui::GetTextLineHeight();
-        tl_text_fit(dl, ImVec2(tx + 22 * s, floorf(y + (line_h - nh) / 2)), name_w - 22 * s, col32(COL_DIM), TL_LANE_NAME[k]);
+        tl_text_fit(dl, ImVec2(tx + 22 * s, floorf(y + (line_h - nh) / 2)), name_w - 22 * s, col32(COL_DIM), lane_name(k));
         if (compact) ImGui::PopFont();
+    }
+    dl->PopClipRect();
+    if (scroll_most > 0) { // where the scrolled lanes are: a thin thumb at the names' left edge
+        f32 track = y_bottom - y_snd, thumb = track * track / (lanes * line_h);
+        f32 ty = y_snd + (track - thumb) * tl.lane_scroll / scroll_most;
+        dl->AddRectFilled(ImVec2(origin.x + 6 * s, ty), ImVec2(origin.x + 9 * s, ty + thumb), col32(COL_FAINT), 2 * s);
     }
 
     // --- The bars -------------------------------------------------------------------------------------------------
@@ -1440,11 +1462,13 @@ static void screen_timeline()
     f32 lane_r = 6 * s;
     dl->AddRectFilled(ImVec2(c.x0, y_video + 3 * s), ImVec2(c.x1, y_video + video_h - 3 * s), col32(TL_COL_LANE), lane_r);
     dl->AddRectFilled(ImVec2(c.x0, y_saved + 1 * s), ImVec2(c.x1, y_saved + saved_h - 1 * s), col32(TL_COL_LANE), 3 * s);
-    for (i32 k = 0; k < TL_LANES; k++) {
-        f32 y = y_snd + k * line_h;
+    dl->PushClipRect(ImVec2(c.x0 - 6 * s, y_snd - 4 * s), ImVec2(c.x1 + 6 * s, y_bottom), true);
+    for (i32 k = 0; k < lanes; k++) {
+        f32 y = y_lanes + k * line_h;
         dl->AddRectFilled(ImVec2(c.x0, y + lane_in), ImVec2(c.x1, y + line_h - lane_in), col32(TL_COL_LANE),
                           ImMin(lane_r, (line_h - 2 * lane_in) / 2));
     }
+    dl->PopClipRect();
 
     // Ruler, ticks on round local times, and their lines faintly through the tracks
     {
@@ -1511,11 +1535,12 @@ static void screen_timeline()
 
     // Sound: when each app had a stream open, faintly, and over it the loudest of the lane's apps at each moment
     g_tl_peaks_frame++;
-    static f32 lane_peak[TL_LANES][2048];
+    static f32 lane_peak[COUNT(tl.rows)][2048];
     f32 wstep = floorf(2 * s) > 1 ? floorf(2 * s) : 1;
     i32 columns = (i32)((c.x1 - c.x0) / wstep) + 1;
     if (columns > 2048) columns = 2048;
-    memset(lane_peak, 0, sizeof lane_peak);
+    memset(lane_peak, 0, lanes * sizeof lane_peak[0]);
+    dl->PushClipRect(ImVec2(c.x0 - 6 * s, y_snd - 4 * s), ImVec2(c.x1 + 6 * s, y_bottom), true);
     for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
         if (tl.stream_row[st] < 0) continue;
         const AudioStreamInfo &info = b.streams[st];
@@ -1538,8 +1563,8 @@ static void screen_timeline()
         if (tl.stream_row[st] < 0) continue;
         i32 k = row_lane[tl.stream_row[st]];
         const AudioStreamInfo &info = b.streams[st];
-        f32 y = y_snd + k * line_h + bar_in, h = line_h - 2 * bar_in;
-        ImU32 col = col32(TL_LANE_COL[k], 0.25f);
+        f32 y = y_lanes + k * line_h + bar_in, h = line_h - 2 * bar_in;
+        ImU32 col = col32(lane_col(k), 0.25f);
         TlRun run = {};
         for (i32 j = 0; j < info.seg_count; j++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + j];
@@ -1551,9 +1576,10 @@ static void screen_timeline()
         }
         if (run.a) tl_span(c, run.a, run.z, y, h, col);
     }
-    for (i32 k = 0; k < TL_LANES; k++) {
-        f32 mid = y_snd + k * line_h + line_h / 2, half = line_h / 2 - lane_in - 1 * s;
-        ImU32 col = col32(TL_LANE_COL[k], 0.9f);
+    for (i32 k = 0; k < lanes; k++) {
+        f32 mid = y_lanes + k * line_h + line_h / 2, half = line_h / 2 - lane_in - 1 * s;
+        if (mid + half < y_snd || mid - half > y_bottom) continue;
+        ImU32 col = col32(lane_col(k), 0.9f);
         for (i32 i = 0; i < columns; i++) {
             f32 v = lane_peak[k][i];
             if (v <= 0.02f) continue;
@@ -1561,6 +1587,8 @@ static void screen_timeline()
             dl->AddRectFilled(ImVec2(x, mid - hh), ImVec2(x + wstep - (wstep > 1 ? 1 : 0), mid + hh), col);
         }
     }
+
+    dl->PopClipRect();
 
     // The future, dimmed, and the now edge
     f32 x_now = tl_x(c, now);
