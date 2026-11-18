@@ -746,6 +746,87 @@ static void test_storeids()
     }
 }
 
+// True when every <tag> in the text is closed in order (self-closing and <? ... ?> / <! ... > tags aside)
+static bool xml_balanced(const char *s)
+{
+    static char stack[64][64];
+    i32 depth = 0;
+    for (const char *p = strchr(s, '<'); p; p = strchr(p + 1, '<')) {
+        if (p[1] == '?' || p[1] == '!') continue;
+        const char *end = strchr(p, '>');
+        if (!end) return false;
+        if (end[-1] == '/') continue;
+        bool closing = p[1] == '/';
+        const char *n = p + (closing ? 2 : 1);
+        i32 len = (i32)strcspn(n, " >");
+        if (len >= 64) return false;
+        if (closing) {
+            if (!depth || strncmp(stack[depth - 1], n, len) || stack[depth - 1][len]) return false;
+            depth--;
+        } else {
+            if (depth == 64) return false;
+            memcpy(stack[depth], n, len);
+            stack[depth++][len] = 0;
+        }
+    }
+    return depth == 0;
+}
+
+// The editor's XML for Premiere and DaVinci: well formed, the trim in frames, a track per recorded track
+static void test_edit_xml()
+{
+    Editor &ed = g_app.editor;
+    static const Editor blank = {};
+    ed = blank;
+    wchar_t dir[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    swprintf(ed.path.s, MAX_PATH, L"%sclipback test %u & co.mp4", dir, GetCurrentProcessId());
+    str_set(ed.item.name, "clipback test & co");
+    MediaInfo &m = ed.item.info;
+    m.duration = 10;
+    m.width = 1920;
+    m.height = 1080;
+    m.fps = 59.94;
+    m.track_count = 3;
+    str_set(m.tracks[0], "Mix");
+    str_set(m.tracks[1], "Mic");
+    str_set(m.tracks[2], "Overwatch (game)");
+    EditRecord &e = ed.edit;
+    e.in_s = 1;
+    e.out_s = 9;
+    e.keys[0] = {2.0, 1.0, 0.5, 0.5, EASE_LINEAR};
+    e.keys[1] = {4.0, 2.0, 0.25, 0.75, EASE_SMOOTH};
+    e.key_count = 2;
+    e.muted[1] = true;
+    e.vol[2][0] = {3.0, 0.5f, EASE_LINEAR};
+    e.vol_count[2] = 1;
+
+    Path xml = {};
+    T(ed_export_xml(&xml));
+    FILE *f = _wfopen(xml.s, L"rb");
+    static char text[1 << 20];
+    size_t n = f ? fread(text, 1, sizeof text - 1, f) : 0;
+    if (f) fclose(f);
+    text[n] = 0;
+    DeleteFileW(xml.s);
+    T(n > 0 && wcsstr(xml.s, L".xml"));
+    T(xml_balanced(text));
+    T(strstr(text, "<name>clipback test &amp; co</name>"));
+    T(strstr(text, "<timebase>60</timebase>"));
+    T(strstr(text, "<duration>480</duration>"));                      // 8 s at 60 fps
+    T(strstr(text, "<in>60</in><out>540</out>"));
+    T(strstr(text, "%20%26%20co.mp4</pathurl>"));                     // the space and & escaped in the URL
+    T(strstr(text, "<width>1920</width><height>1080</height>"));
+    T(strstr(text, "<effectid>basic</effectid>") && strstr(text, "<value>200.00</value>")); // the zoom, in percent
+    i32 tracks = 0, disabled = 0;
+    for (const char *p = text; (p = strstr(p, "<sourcetrack>")); p++) tracks++;
+    for (const char *p = text; (p = strstr(p, "<enabled>FALSE</enabled>")); p++) disabled++;
+    i32 want[MEDIA_MAX_TRACKS];
+    T(tracks == 2 && ed_tracks(m, want, MEDIA_MAX_TRACKS) == 2);      // Mic and the game; the Mix is left out
+    T(disabled == 1);                                                  // the muted Mic
+    ed = blank;
+}
+
 int main()
 {
     InitializeSRWLock(&g_log_lock);
@@ -756,6 +837,7 @@ int main()
     test_hotkeys();
     test_settings_round_trip();
     test_edit_volumes();
+    test_edit_xml();
     test_lanes();
     test_share_plan();
     test_wave_chunks();

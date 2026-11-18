@@ -25,6 +25,7 @@ static void run_command(const char *text)
 
     if (!*cmd || !strcmp(cmd, "open")) ui_show(SCREEN_LIBRARY);
     else if (!strcmp(cmd, "timeline")) ui_show(SCREEN_TIMELINE);
+    else if (!strcmp(cmd, "quick")) timeline_quick(); // the live timeline with the last 30 s picked
     else if (!strcmp(cmd, "options")) ui_show(SCREEN_OPTIONS);
     else if (!strcmp(cmd, "edit") && *arg) { // edit <path>: a saved file in the editor
         ui_show(SCREEN_EDITOR);
@@ -148,8 +149,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DEV_LOG("hotkey %d", i);
         if (i >= 0 && i < g_app.config.hotkey_count) {
             const char *action = g_app.config.hotkeys[i].action.s;
-            if (!strcmp(action, "timeline")) timeline_quick(); // from a game: quick save
-            else run_command(action);
+            run_command(!strcmp(action, "timeline") ? "quick" : action); // from a game: quick save
         }
         return 0;
     }
