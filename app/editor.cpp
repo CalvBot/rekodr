@@ -1737,7 +1737,16 @@ static void screen_editor()
         return t > 1 ? t : 1;
     };
     f32 top_h = top_height();
-    f32 side_w = kit_px(372), gap = kit_px(20), main_w = avail.x - side_w - gap;
+    // The side panel's width: the edge between it and the picture is dragged too (double-click puts it back).
+    f32 gap = kit_px(20);
+    auto side_width = [&]() {
+        f32 sw = cfg.editor_side > 0 ? kit_px(cfg.editor_side) : kit_px(372);
+        f32 lo = kit_px(300), hi = avail.x - gap - kit_px(420);
+        if (sw > hi) sw = hi;
+        if (sw < lo) sw = lo;
+        return sw;
+    };
+    f32 side_w = side_width(), main_w = avail.x - side_w - gap;
     f32 bar_h = fh + kit_px(16);
     f32 video_h = top_h - bar_h - kit_px(10);
     if (video_h < 1) video_h = 1;
@@ -1774,9 +1783,7 @@ static void screen_editor()
     }
     ImVec2 uv0, uv1;
     zoom_uv(ed.edit, p.pos, &uv0, &uv1);
-    player_draw(p, a, b, uv0, uv1);
-    if (p.loaded && p.paused && !p.error[0] && !ed.aiming && !ed.lane_drag)
-        lib_play_mark(dl, ImVec2((a.x + b.x) / 2, (a.y + b.y) / 2), kit_px(34));
+    player_draw(p, a, b, uv0, uv1); // nothing drawn over it: an editor needs to see the whole picture
     if (z > 1.001) {
         char zt[32];
         snprintf(zt, sizeof zt, "%.1fx", z);
@@ -1827,6 +1834,26 @@ static void screen_editor()
         else ed_share_tab(cw);
     }
     kit_card_end();
+
+    // The edge between the picture and the side panel, in the gap between them.
+    {
+        static f32 grab_dx;
+        f32 sx = pos.x + main_w;
+        ImGui::SetCursorScreenPos(ImVec2(sx, body_y));
+        ImGui::InvisibleButton("##split_side", ImVec2(gap, top_h));
+        bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (ImGui::IsItemActivated()) grab_dx = io.MousePos.x - sx;
+        if (ImGui::IsItemActive() && ImGui::IsMousePosValid()) {
+            cfg.editor_side = (h0.x + avail.x - (io.MousePos.x - grab_dx) - gap) / kit_px(1);
+            if (cfg.editor_side < 1) cfg.editor_side = 1;
+            cfg.editor_side = side_width() / kit_px(1); // where it stopped, so a drag past the end comes straight back
+        }
+        if (hot && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) cfg.editor_side = 0;
+        if (ImGui::IsItemDeactivated()) config_save(cfg, g_app.paths);
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        f32 s = kit_px(1), cx2 = floorf(sx + gap / 2), mid = body_y + top_h / 2;
+        dl->AddRectFilled(ImVec2(cx2 - 1.5f * s, mid - 22 * s), ImVec2(cx2 + 1.5f * s, mid + 22 * s), col32(hot ? COL_DIM : COL_PANEL2), 2 * s);
+    }
 
     // The edge between the top and the timeline.
     {

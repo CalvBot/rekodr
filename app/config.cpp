@@ -278,6 +278,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "timeline_top")) real(&c->timeline_top);
     else if (!strcmp(key, "timeline_names")) c->timeline_names = atoi(value);
     else if (!strcmp(key, "editor_top")) real(&c->editor_top);
+    else if (!strcmp(key, "editor_side")) real(&c->editor_side);
     else if (!strcmp(key, "editor_lane")) c->editor_lane = atoi(value);
     else if (!strcmp(key, "thumb_size")) { // the three sizes there used to be: small, medium, large
         static const i32 widths[] = {200, 270, 380};
@@ -476,7 +477,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %d\ncard_width = %d\n", c.accent, c.card_width);
     fprintf(f, "timeline_top = %g\ntimeline_names = %d\n", c.timeline_top, c.timeline_names);
-    fprintf(f, "editor_top = %g\neditor_lane = %d\n", c.editor_top, c.editor_lane);
+    fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\n", c.editor_top, c.editor_side, c.editor_lane);
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
