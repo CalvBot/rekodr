@@ -20,6 +20,7 @@ struct LibTask {
     u64         key;
     f64         duration;
     Path        path;
+    i32         poster; // which frame of the strip a card shows
 };
 
 struct LibResult {
@@ -424,12 +425,14 @@ static void lib_picture(IWICImagingFactory *wic, const LibTask &t, const Path &c
         r.w = w;
         r.h = h;
     } else {
-        // The poster: the first frame of the strip.
+        // The poster: one frame of the strip.
         i32 fw = w / LIB_STRIP_FRAMES;
         if (fw <= 0) fw = w;
+        i32 x0 = fw * t.poster;
+        if (x0 + fw > w) x0 = 0;
         r.pixels = (u32 *)HeapAlloc(GetProcessHeap(), 0, (size_t)fw * h * 4);
         if (r.pixels)
-            for (i32 y = 0; y < h; y++) memcpy(r.pixels + (size_t)y * fw, px + (size_t)y * w, fw * 4);
+            for (i32 y = 0; y < h; y++) memcpy(r.pixels + (size_t)y * fw, px + (size_t)y * w + x0, fw * 4);
         HeapFree(GetProcessHeap(), 0, px);
         r.w = fw;
         r.h = h;
@@ -710,6 +713,8 @@ static LibThumb *lib_thumb(const LibItem &it)
     task.key = it.key;
     task.duration = it.info.duration;
     task.path = lib_item_path(it);
+    // A clip starts on the moment; a session often starts on a menu or the desktop, so it shows its middle.
+    task.poster = it.kind == LIB_SESSIONS ? LIB_STRIP_FRAMES / 2 : 0;
     lib_push(task, false);
     return t;
 }
@@ -901,17 +906,6 @@ static void badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const 
 
 // ---------------------------------------------------------------------------------------------------------------
 // Controls the library, the player and the editor share. Generic enough to move to the kit in ui.cpp.
-
-// A dark rounded chip floating over a picture, with one icon; darker under the mouse. Drawn only: the caller hit-tests.
-static void lib_float_chip(ImDrawList *dl, const char *icon, ImVec2 c, f32 r, bool hot)
-{
-    dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), IM_COL32(0, 0, 0, hot ? 220 : 140), kit_px(8));
-    ImGui::PushFont(g_font_icon);
-    ImVec2 ts = ImGui::CalcTextSize(icon);
-    dl->AddText(ImVec2(floorf(c.x - ts.x / 2), floorf(c.y - ts.y / 2)), hot ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 200),
-                icon);
-    ImGui::PopFont();
-}
 
 // A play triangle on a dark disc.
 static void lib_play_mark(ImDrawList *dl, ImVec2 c, f32 r)
@@ -1239,8 +1233,7 @@ static void delete_modal()
 static f32 lib_meta_h() { return kit_px(10) + g_font_bold->FontSize + kit_px(3) + g_font_small->FontSize + kit_px(4); }
 
 // One card: the day above it (on the first card of a day in each row), the picture, the name and one dim line.
-// Under the mouse the picture scrubs through the file (a click plays from there) and a "more" button opens the
-// same menu as a right-click.
+// Under the mouse the picture scrubs through the file (a click plays from there); a right-click opens its menu.
 static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h, bool show_day)
 {
     Library &lib = g_app.library;
@@ -1268,18 +1261,10 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         frac = frac < 0 ? 0 : frac > 0.999f ? 0.999f : frac;
     }
     bool scrub = over && lib_want_strip(it);
-    i32 cover_w = 0, cover_h = 0;
-    ID3D11ShaderResourceView *cover = it.kind == LIB_SESSIONS ? game_db_cover(it.info.game, &cover_w, &cover_h) : 0;
-    if (cover && (cover_w <= 0 || cover_h <= 0)) cover = 0;
     if (scrub) {
         i32 f = (i32)(frac * lib.strip_frames);
         f32 u0 = (f32)f / lib.strip_frames, u1 = (f32)(f + 1) / lib.strip_frames;
         dl->AddImageRounded((ImTextureID)(intptr_t)lib.strip, t0, t1, ImVec2(u0, 0), ImVec2(u1, 1), IM_COL32_WHITE, round);
-    } else if (cover) { // a session shows its game's cover, cut to the card's shape about its middle
-        f32 want = w / thumb_h, have = (f32)cover_w / cover_h, u = 0, v = 0;
-        if (have > want) u = (1 - want / have) / 2;
-        else v = (1 - have / want) / 2;
-        dl->AddImageRounded((ImTextureID)(intptr_t)cover, t0, t1, ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, round);
     } else if (th && th->srv) {
         dl->AddImageRounded((ImTextureID)(intptr_t)th->srv, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
     } else {
@@ -1291,7 +1276,6 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         ImGui::PopFont();
     }
     char text[64];
-    bool more = false;
     if (over) {
         dl->AddRectFilled(t0, t1, IM_COL32(0, 0, 0, 50), round);
         lib_play_mark(dl, ImVec2((t0.x + t1.x) / 2, (t0.y + t1.y) / 2), kit_px(24));
@@ -1307,22 +1291,12 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             snprintf(text, sizeof text, "%d tracks", it.info.track_count);
             badge(dl, ImVec2(t0.x + in, t0.y + in), false, false, text);
         }
-        // The "more" chip is part of the card's own button rather than an item on top of it, so a click on it can't
-        // fall through to play (an overlapping item only wins once it has been hovered for a frame).
-        ImVec2 mc(t1.x - kit_px(24), t0.y + kit_px(24));
-        f32 mr = kit_px(14);
-        bool on_more = ImGui::IsMouseHoveringRect(ImVec2(mc.x - mr, mc.y - mr), ImVec2(mc.x + mr, mc.y + mr));
-        lib_float_chip(dl, ICON_MORE, mc, mr, on_more);
-        if (on_more && clicked) {
-            more = true;
-            clicked = false;
-        }
     } else if (it.info.duration > 0) {
         fmt_time(it.info.duration, text, sizeof text);
         badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, text);
     }
     ImGui::PopID();
-    if (menu || more) { // opened outside the card's ID, where card_menu() looks for it
+    if (menu) { // opened outside the card's ID, where card_menu() looks for it
         lib.target = it;
         lib.open_menu = true;
     }
