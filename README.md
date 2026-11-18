@@ -39,13 +39,14 @@ The default hotkey is Alt+F10, which saves the last 30 seconds. Hotkeys are set 
 
 - **Save clip** saves the last 30 seconds, 2 minutes or any length set on the key. The key shows SAVING, then a
   tick when the file is written or a cross if the save failed.
-- **Recording** shows whether clipback is recording or paused and how much the buffer holds. A press pauses or
-  resumes.
+- **Recording** shows whether clipback is recording and how much the buffer holds. A press turns recording on
+  or off.
 - **Open clipback** opens the window on the clips, the timeline or the options.
 
 If clipback isn't running, the keys say so, and a press starts it.
 
-To install it, link the folder into Stream Deck's plugins and restart Stream Deck:
+Options > Integrations installs it (copying it into Stream Deck's plugins and restarting Stream Deck) and shows
+whether the keys are connected. To work on the plugin, link the folder instead:
 ```
 mklink /J "%APPDATA%\Elgato\StreamDeck\Plugins\dev.calvbot.clipback.sdPlugin" streamdeck\dev.calvbot.clipback.sdPlugin
 ```

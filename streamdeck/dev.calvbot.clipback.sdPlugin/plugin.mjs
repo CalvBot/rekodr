@@ -41,7 +41,7 @@ const clipback = {
     clearTimeout(this.retry);
     const pipe = this.pipe = net.connect(String.raw`\\.\pipe\clipback`);
     pipe.setEncoding("utf8");
-    pipe.on("connect", () => { this.connected = true; renderAll(); });
+    pipe.on("connect", () => { this.connected = true; pipe.write("hello streamdeck\n"); renderAll(); });
     pipe.on("data", d => {
       this.buffer += d;
       let nl;

@@ -92,6 +92,9 @@ struct Config {
     i32   cq;
     f32   peak_factor;
     bool  spatial_aq;
+    char  encoder_args[256]; // the player's own ffmpeg options for the encoder, added after clipback's ("" = none)
+    Path  premiere;   // Adobe Premiere Pro's exe, for "Open in Premiere Pro"; empty = find it
+    Path  resolve;    // DaVinci Resolve's exe; empty = find it
 
     // Audio
     bool        mic;        // Windows' default input, on the Mic track
@@ -629,7 +632,7 @@ static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp t
 // options.cpp: every setting. Lists are paged and their order is frozen while Options is open, so a row never
 // moves under the mouse after a click (sorting a new app doesn't send it to another page).
 enum OptionsTab : u8 {
-    OPT_APPS, OPT_RECORDING, OPT_HOTKEYS, OPT_GENERAL,
+    OPT_APPS, OPT_RECORDING, OPT_HOTKEYS, OPT_INTEGRATIONS, OPT_GENERAL,
     OPT_TAB_COUNT,
 };
 

@@ -260,9 +260,6 @@ static i32 split_fields(char *s, char **fields, i32 max)
     return n;
 }
 
-// Older files had an "advanced" switch: the encoder settings only applied while it was on.
-static bool g_config_advanced_seen, g_config_advanced;
-
 static void config_set(Config *c, const char *key, char *value)
 {
     wchar_t wide[MAX_PATH];
@@ -298,10 +295,9 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "bitrate_mbps")) real(&c->bitrate_mbps);
     else if (!strcmp(key, "draw_mouse")) boolean(&c->draw_mouse);
     else if (!strcmp(key, "capture")) str_set(c->capture.s, value);
-    else if (!strcmp(key, "advanced")) {
-        g_config_advanced_seen = true;
-        g_config_advanced = !strcmp(value, "true") || !strcmp(value, "1");
-    }
+    else if (!strcmp(key, "encoder_args")) str_set(c->encoder_args, value);
+    else if (!strcmp(key, "premiere")) path(&c->premiere);
+    else if (!strcmp(key, "resolve")) path(&c->resolve);
     else if (!strcmp(key, "preset")) str_set(c->preset.s, value);
     else if (!strcmp(key, "rate_control")) str_set(c->rate_control.s, value);
     else if (!strcmp(key, "cq")) c->cq = atoi(value);
@@ -402,7 +398,6 @@ static void exe_description(const char *path, char *out, i32 cap)
 static bool config_load(Config *c, const Paths &paths)
 {
     config_defaults(c, paths);
-    g_config_advanced_seen = g_config_advanced = false;
     FILE *f = _wfopen(paths.settings.s, L"rb");
     if (!f) {
         c->desktop_bitrate_mbps = c->bitrate_mbps;
@@ -425,15 +420,6 @@ static bool config_load(Config *c, const Paths &paths)
     }
     fclose(f);
     if (c->desktop_bitrate_mbps < 0) c->desktop_bitrate_mbps = c->bitrate_mbps;
-    if (g_config_advanced_seen && !g_config_advanced) { // they weren't in use: back to the defaults
-        static Config d; // big (the app table)
-        config_defaults(&d, paths);
-        c->preset = d.preset;
-        c->rate_control = d.rate_control;
-        c->cq = d.cq;
-        c->peak_factor = d.peak_factor;
-        c->spatial_aq = d.spatial_aq;
-    }
     for (i32 i = 0; i < c->app_count; i++) exe_description(c->apps[i].path, c->apps[i].desc.s, sizeof c->apps[i].desc.s);
     return true;
 }
@@ -467,6 +453,9 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "preset = %s\nrate_control = %s\ncq = %d\npeak_factor = %g\n", c.preset.s, c.rate_control.s, c.cq,
             c.peak_factor);
     boolean("spatial_aq", c.spatial_aq);
+    fprintf(f, "encoder_args = %s\n", c.encoder_args);
+    path("premiere", c.premiere);
+    path("resolve", c.resolve);
     fprintf(f, "\n");
     boolean("mic", c.mic);
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,

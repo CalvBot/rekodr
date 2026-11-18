@@ -2145,6 +2145,18 @@ static void options_recording()
         options_apply(APPLY_RECORDER);
     }
     ImGui::EndDisabled();
+    // ffmpeg options of the player's own, added after clipback's; a typo shows as "Not recording" on Encoder
+    {
+        f32 tw = fminf(dp(360), g_card.w * 0.5f);
+        opt_row_begin("Custom encoder options", "ffmpeg options added after clipback's, such as -tune ll", tw);
+        char args[sizeof c.encoder_args];
+        if (opt_text("##encargs", c.encoder_args, tw, 0, "None", args, sizeof args) && strcmp(trim(args), c.encoder_args)) {
+            str_set(c.encoder_args, trim(args));
+            log_line("options: custom encoder options \"%s\"", c.encoder_args);
+            options_apply(APPLY_RECORDER);
+        }
+        opt_row_end();
+    }
     opt_card_end();
 
     opt_section("BUFFER");
@@ -2188,6 +2200,315 @@ static void options_recording()
     }
     opt_row_end();
     opt_card_end();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Integrations: other programs that work with clipback. Stream Deck keys (streamdeck\ in the repo, talking over the
+// pipe) and the video editors a clip opens in.
+
+static void open_url(const char *url); // setup.cpp
+
+static const wchar_t SD_PLUGIN[] = L"dev.calvbot.clipback.sdPlugin";
+
+static bool path_is_file(const wchar_t *p)
+{
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// Stream Deck's exe, from where its installer puts it.
+static bool streamdeck_exe(Path *out)
+{
+    wchar_t pf[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH)) return false;
+    swprintf(out->s, COUNT(out->s), L"%s\\Elgato\\StreamDeck\\StreamDeck.exe", pf);
+    return path_is_file(out->s);
+}
+
+// Where Stream Deck loads plugins from, and the clipback plugin in it.
+static Path streamdeck_plugin_dest()
+{
+    Path p = {};
+    wchar_t ad[MAX_PATH];
+    if (GetEnvironmentVariableW(L"APPDATA", ad, MAX_PATH))
+        swprintf(p.s, COUNT(p.s), L"%s\\Elgato\\StreamDeck\\Plugins\\%s", ad, SD_PLUGIN);
+    return p;
+}
+
+// The plugin that comes with clipback: streamdeck\ next to the exe, or in the source tree (app\build\clipback.exe).
+static bool streamdeck_plugin_source(Path *out)
+{
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(0, exe, MAX_PATH);
+    wchar_t *slash = wcsrchr(exe, L'\\');
+    if (slash) *slash = 0;
+    const wchar_t *tries[] = {L"%s\\streamdeck\\%s\\manifest.json", L"%s\\..\\..\\streamdeck\\%s\\manifest.json"};
+    for (const wchar_t *t : tries) {
+        swprintf(out->s, COUNT(out->s), t, exe, SD_PLUGIN);
+        if (path_is_file(out->s)) {
+            *wcsrchr(out->s, L'\\') = 0;
+            wchar_t full[MAX_PATH];
+            if (GetFullPathNameW(out->s, MAX_PATH, full, 0)) wcscpy_s(out->s, full);
+            return true;
+        }
+    }
+    return false;
+}
+
+static DWORD process_find(const wchar_t *exe_name)
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W e = {sizeof e};
+    DWORD pid = 0;
+    for (BOOL ok = Process32FirstW(snap, &e); ok && !pid; ok = Process32NextW(snap, &e))
+        if (!_wcsicmp(e.szExeFile, exe_name)) pid = e.th32ProcessID;
+    CloseHandle(snap);
+    return pid;
+}
+
+// Copies the plugin into Stream Deck's plugins (replacing an older copy; a link to the source tree is left alone)
+// and restarts Stream Deck so it loads it. Stream Deck ignores a polite close, so it's ended.
+static bool streamdeck_install(char *msg, i32 cap)
+{
+    Path src, sd;
+    if (!streamdeck_plugin_source(&src)) {
+        snprintf(msg, cap, "The plugin isn't next to clipback.exe");
+        return false;
+    }
+    if (!streamdeck_exe(&sd)) {
+        snprintf(msg, cap, "Install Stream Deck first");
+        return false;
+    }
+    Path dest = streamdeck_plugin_dest();
+    DWORD attr = GetFileAttributesW(dest.s);
+    bool linked = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT);
+    if (DWORD pid = process_find(L"StreamDeck.exe")) {
+        if (HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid)) {
+            TerminateProcess(h, 0);
+            WaitForSingleObject(h, 5000);
+            CloseHandle(h);
+        }
+    }
+    if (!linked) {
+        // SHFileOperation wants double-0-terminated lists; copying the folder into Plugins makes Plugins\<id>
+        wchar_t from[MAX_PATH + 2] = {}, to[MAX_PATH + 2] = {};
+        wcscpy_s(from, src.s);
+        wcscpy_s(to, dest.s);
+        *wcsrchr(to, L'\\') = 0;
+        CreateDirectoryW(to, 0);
+        SHFILEOPSTRUCTW op = {};
+        op.wFunc = FO_COPY;
+        op.pFrom = from;
+        op.pTo = to;
+        op.fFlags = FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR | FOF_NOERRORUI | FOF_SILENT;
+        if (SHFileOperationW(&op) != 0 || op.fAnyOperationsAborted) {
+            snprintf(msg, cap, "Couldn't copy the plugin into Stream Deck's folder");
+            log_line("integrations: copying the Stream Deck plugin failed");
+            return false;
+        }
+    }
+    ShellExecuteW(0, L"open", sd.s, 0, 0, SW_SHOWMINNOACTIVE);
+    log_line("integrations: Stream Deck plugin %s, Stream Deck restarted", linked ? "linked already" : "installed");
+    snprintf(msg, cap, "Installed. Stream Deck restarted: drag the clipback keys from its list");
+    return true;
+}
+
+// The newest Premiere Pro in Program Files\Adobe, or DaVinci Resolve where Blackmagic puts it.
+static bool editor_find(bool premiere, Path *out)
+{
+    wchar_t pf[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH)) return false;
+    if (!premiere) {
+        swprintf(out->s, COUNT(out->s), L"%s\\Blackmagic Design\\DaVinci Resolve\\Resolve.exe", pf);
+        return path_is_file(out->s);
+    }
+    wchar_t pattern[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%s\\Adobe\\Adobe Premiere Pro*", pf);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    bool found = false;
+    wchar_t best[MAX_PATH] = L"";
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        wchar_t exe[MAX_PATH];
+        swprintf(exe, MAX_PATH, L"%s\\Adobe\\%s\\Adobe Premiere Pro.exe", pf, fd.cFileName);
+        if (path_is_file(exe) && wcscmp(fd.cFileName, best) > 0) { // "...2026" after "...2025"
+            wcscpy_s(best, fd.cFileName);
+            wcscpy_s(out->s, exe);
+            found = true;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return found;
+}
+
+// The editor's exe: the one set in Options, else the one found.
+static bool editor_exe(bool premiere, Path *out)
+{
+    const Path &set = premiere ? g_app.config.premiere : g_app.config.resolve;
+    if (set.s[0] && path_is_file(set.s)) {
+        *out = set;
+        return true;
+    }
+    return editor_find(premiere, out);
+}
+
+static bool pick_exe(const Path &start, Path *out)
+{
+    IFileOpenDialog *d = 0;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) return false;
+    COMDLG_FILTERSPEC types[] = {{L"Programs", L"*.exe"}};
+    d->SetFileTypes(1, types);
+    DWORD opts = 0;
+    d->GetOptions(&opts);
+    d->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+    if (start.s[0]) {
+        Path dir = start;
+        if (wchar_t *slash = wcsrchr(dir.s, L'\\')) *slash = 0;
+        IShellItem *folder = 0;
+        if (SUCCEEDED(SHCreateItemFromParsingName(dir.s, 0, IID_PPV_ARGS(&folder)))) {
+            d->SetFolder(folder);
+            folder->Release();
+        }
+    }
+    bool ok = false;
+    if (SUCCEEDED(d->Show(g_app.ui.hwnd))) {
+        IShellItem *item = 0;
+        if (SUCCEEDED(d->GetResult(&item))) {
+            wchar_t *p = 0;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+                wcscpy_s(out->s, p);
+                CoTaskMemFree(p);
+                ok = true;
+            }
+            item->Release();
+        }
+    }
+    d->Release();
+    ImGui::GetIO().AddMouseButtonEvent(0, false); // the dialog took the button-up
+    return ok;
+}
+
+// A status line on the right of a row: a dot in the status colour and the text.
+static void opt_status(const char *text, u32 col, f32 right, f32 left)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 y = opt_row_text_y(g_font), tw = text_w(g_font, text), r = dp(4);
+    f32 x = fmaxf(left + 2 * r + dp(8), right - tw);
+    dl->AddCircleFilled(ImVec2(x - dp(8) - r, y + g_font->FontSize / 2), r, col32(col));
+    opt_text_at(dl, g_font, ImVec2(x, y), col == COL_DIM ? COL_DIM : COL_TEXT, text, right);
+}
+
+static void options_integrations()
+{
+    Config &c = g_app.config;
+    static char sd_msg[160];
+    static bool sd_msg_error;
+    // Looking at processes and files costs a little: once a second is plenty for a status
+    static f64 checked;
+    static bool sd_have, sd_running, plugin_in, plugin_with_us;
+    f64 now = ImGui::GetTime();
+    if (now - checked > 1 || !checked) {
+        checked = now;
+        Path p;
+        sd_have = streamdeck_exe(&p);
+        sd_running = process_find(L"StreamDeck.exe") != 0;
+        Path dest = streamdeck_plugin_dest();
+        wchar_t manifest[MAX_PATH];
+        swprintf(manifest, MAX_PATH, L"%s\\manifest.json", dest.s);
+        plugin_in = dest.s[0] && path_is_file(manifest);
+        plugin_with_us = streamdeck_plugin_source(&p);
+    }
+    i32 keys = pipe_clients("streamdeck"), others = pipe_clients(0) - keys;
+    f32 fh = ImGui::GetFrameHeight(), bw = dp(150), sw = fminf(dp(300), g_card_max_w * 0.4f);
+
+    opt_section("STREAM DECK");
+    opt_card_begin();
+    opt_row_begin("Stream Deck", "Elgato's app for its keypads", sw + dp(12) + bw);
+    {
+        f32 x = ImGui::GetCursorScreenPos().x;
+        opt_status(!sd_have ? "Not installed" : sd_running ? "Running" : "Installed, not running",
+                   !sd_have ? COL_DIM : sd_running ? COL_OK : COL_WARN, x + sw, x);
+        ImGui::SetCursorScreenPos(ImVec2(x + sw + dp(12), opt_row_frame_y()));
+        if (!sd_have) {
+            if (kit_button("Get Stream Deck##getsd", KIT_SECONDARY, ImVec2(bw, 0))) open_url("https://www.elgato.com/downloads");
+        } else if (kit_button(sd_running ? "Show##opensd" : "Start##opensd", KIT_SECONDARY, ImVec2(bw, 0))) {
+            Path sd;
+            if (streamdeck_exe(&sd)) ShellExecuteW(0, L"open", sd.s, 0, 0, SW_SHOWNORMAL);
+        }
+    }
+    opt_row_end();
+
+    opt_row_begin("clipback keys", "Save clip, Recording on / off and Open clipback", sw + dp(12) + bw);
+    {
+        f32 x = ImGui::GetCursorScreenPos().x;
+        opt_status(plugin_in ? "Installed" : "Not installed", plugin_in ? COL_OK : COL_DIM, x + sw, x);
+        ImGui::SetCursorScreenPos(ImVec2(x + sw + dp(12), opt_row_frame_y()));
+        if (kit_button(plugin_in ? "Reinstall##sdinstall" : "Install##sdinstall", plugin_in ? KIT_SECONDARY : KIT_PRIMARY,
+                       ImVec2(bw, 0), sd_have && plugin_with_us)) {
+            sd_msg_error = !streamdeck_install(sd_msg, sizeof sd_msg);
+            checked = 0;
+        }
+    }
+    opt_row_end();
+
+    char conn[96];
+    if (keys) snprintf(conn, sizeof conn, "Connected");
+    else snprintf(conn, sizeof conn, "%s", !plugin_in ? "Install the keys first" : !sd_running ? "Stream Deck isn't running" : "Waiting for Stream Deck");
+    opt_row_begin("Connection", sd_msg[0] ? sd_msg : "The keys talk to clipback on this PC only", sw + dp(12) + bw);
+    {
+        f32 x = ImGui::GetCursorScreenPos().x;
+        opt_status(conn, keys ? COL_OK : sd_msg_error ? COL_WARN : COL_DIM, x + sw, x);
+    }
+    opt_row_end();
+    opt_card_end();
+
+    opt_section("VIDEO EDITORS");
+    opt_card_begin();
+    static const char *ed_names[2] = {"Premiere Pro", "DaVinci Resolve"};
+    for (i32 e = 0; e < 2; e++) {
+        bool premiere = e == 0;
+        Path exe = {};
+        bool have = editor_exe(premiere, &exe);
+        Path &set = premiere ? c.premiere : c.resolve;
+        char shown[MAX_PATH * 3] = "Not found";
+        if (have) wide_to_utf8(exe.s, shown, sizeof shown);
+        ImGui::PushID(e);
+        opt_row_begin(ed_names[e], have ? shown : "Not found: pick its exe to open clips in it", bw * 2 + dp(8));
+        if (kit_button(have ? "Change##pick" : "Choose its exe##pick", KIT_SECONDARY, ImVec2(bw, 0))) {
+            Path picked = {};
+            if (pick_exe(exe, &picked)) {
+                set = picked;
+                char u[MAX_PATH * 3];
+                wide_to_utf8(picked.s, u, sizeof u);
+                log_line("options: %s is %s", ed_names[e], u);
+                options_apply(0);
+            }
+        }
+        ImGui::SameLine(0, dp(8));
+        ImGui::BeginDisabled(!set.s[0]);
+        if (kit_button("Find it again##auto", KIT_SECONDARY, ImVec2(bw, 0))) {
+            set.s[0] = 0;
+            log_line("options: %s found by itself", ed_names[e]);
+            options_apply(0);
+        }
+        ImGui::EndDisabled();
+        opt_row_end();
+        ImGui::PopID();
+    }
+    opt_card_end();
+
+    if (others > 0) {
+        opt_section("OTHER PROGRAMS");
+        opt_card_begin();
+        char n[64];
+        snprintf(n, sizeof n, "%d connected", others);
+        opt_row_value("On the pipe", "Programs driving clipback, such as lifelog's voice commands", n, COL_TEXT);
+        opt_card_end();
+    }
+    (void)fh;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2460,8 +2781,8 @@ static void screen_options()
 
     // The sections as an icon and a label over a hairline, the current one underlined in the accent. Each tab is
     // as wide as its bold label, so none moves; the new-apps count sits on the Apps icon and takes no room.
-    static const char *names[OPT_TAB_COUNT] = {"Apps", "Recording", "Hotkeys", "General"};
-    static const char *icons[OPT_TAB_COUNT] = {ICON_APPS, ICON_VIDEO, ICON_KEYBOARD, ICON_SLIDERS};
+    static const char *names[OPT_TAB_COUNT] = {"Apps", "Recording", "Hotkeys", "Integrations", "General"};
+    static const char *icons[OPT_TAB_COUNT] = {ICON_APPS, ICON_VIDEO, ICON_KEYBOARD, ICON_LINK, ICON_SLIDERS};
     if (o.tab < 0 || o.tab >= OPT_TAB_COUNT) o.tab = OPT_APPS;
     i32 new_apps = 0;
     for (i32 i = 0; i < g_app.config.app_count; i++) // as the New chip counts: not ones a folder rule sorts
@@ -2516,6 +2837,7 @@ static void screen_options()
     case OPT_APPS: options_apps(); break;
     case OPT_RECORDING: options_recording(); break;
     case OPT_HOTKEYS: options_hotkeys(); break;
+    case OPT_INTEGRATIONS: options_integrations(); break;
     case OPT_GENERAL: options_general(); break;
     default: break;
     }

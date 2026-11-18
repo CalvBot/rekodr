@@ -138,12 +138,13 @@ struct RecSettings {
     Str64 encoder;
     f32   bitrate_mbps;
     bool  draw_mouse;
-    // The encoder settings in effect: Config's when "advanced" is on, else the defaults.
+    // The encoder settings in effect
     Str64 preset;
     Str64 rate_control;
     i32   cq;
     f32   peak_factor;
     bool  spatial_aq;
+    char  encoder_args[256];
 };
 
 enum { CAPTURE_AUTO, CAPTURE_WGC, CAPTURE_DXGI };
@@ -218,6 +219,7 @@ static RecSettings rec_settings_from(const Config &c, const Paths &paths, const 
     s.cq = c.cq;
     s.peak_factor = c.peak_factor > 0 ? c.peak_factor : 2;
     s.spatial_aq = c.spatial_aq;
+    str_set(s.encoder_args, c.encoder_args);
     f32 rate = c.bitrate_mbps;
     i32 want_h = c.height;
     const AppInfo *g = 0;
@@ -425,6 +427,22 @@ static void capture_args(Args *a, i32 vendor, const RecSettings &s, bool wgc)
     // No B-frames and a keyframe every segment: easy to cut, quick to scrub in an editor.
     ADD("-bf", "0", "-g");
     addf(a, "%d", s.fps * SEGMENT_SECS);
+    // The player's own options last, so they win (ffmpeg takes the last of a repeated option)
+    char custom[256];
+    str_set(custom, s.encoder_args);
+    for (char *p = custom; *p;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        char *start = p;
+        if (*p == '"') {
+            start = ++p;
+            while (*p && *p != '"') p++;
+        } else {
+            while (*p && *p != ' ' && *p != '\t') p++;
+        }
+        if (*p) *p++ = 0;
+        add(a, start);
+    }
     ADD("-f", "segment", "-segment_time");
     addf(a, "%d", SEGMENT_SECS);
     ADD("-segment_format", "matroska", "-reset_timestamps", "0", "-segment_list_type", "csv", "-segment_list");

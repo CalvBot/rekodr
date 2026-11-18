@@ -3,7 +3,7 @@
 // programs on this PC can reach it.
 //
 // A client sends commands, one per line, the same ones `clipback.exe <command>` takes ("save 30s", "toggle",
-// "open"), plus "save <from> <to>", an exact stretch in Unix seconds (with an optional fraction) that lifelog's voice
+// "open"), plus "hello <name>" to say what it is (Options > Integrations shows who is connected) and "save <from> <to>", an exact stretch in Unix seconds (with an optional fraction) that lifelog's voice
 // commands use. clipback sends lines of JSON:
 //   {"type":"state","paused":false,"recording":true,"game":"Overwatch","oldest_us":...,"saving":0,"error":""}
 //       when a client connects and whenever any of it changes. oldest_us is the oldest footage in the buffer
@@ -22,6 +22,7 @@
 struct PipeServer {
     SRWLOCK lock;        // clients and state
     HANDLE  clients[8];  // 0 = free
+    char    names[8][32]; // what each client said it is ("streamdeck"); "" = it hasn't
     HANDLE  stop;        // set when clipback quits
     HANDLE  thread;      // the accepting thread
     HANDLE  write_done;  // for overlapped writes (one at a time, under the lock)
@@ -145,6 +146,13 @@ static DWORD WINAPI pipe_client_thread(void *arg)
             char *line = trim(start);
             if (!*line) continue;
             DEV_LOG("pipe: \"%s\"", line);
+            if (!strncmp(line, "hello ", 6)) {
+                AcquireSRWLockExclusive(&g_pipe.lock);
+                str_set(g_pipe.names[slot], trim(line + 6));
+                ReleaseSRWLockExclusive(&g_pipe.lock);
+                event_post(Event{}); // wakes the window: Integrations shows who is connected
+                continue;
+            }
             event_post_text(EV_COMMAND, line);
         }
         used = (i32)(buf + used - start);
@@ -154,8 +162,10 @@ static DWORD WINAPI pipe_client_thread(void *arg)
     CloseHandle(ov.hEvent);
     AcquireSRWLockExclusive(&g_pipe.lock);
     g_pipe.clients[slot] = 0;
+    g_pipe.names[slot][0] = 0;
     CloseHandle(h);
     ReleaseSRWLockExclusive(&g_pipe.lock);
+    event_post(Event{}); // wakes the window: Integrations shows who is connected
     DEV_LOG("pipe: a client left");
     return 0;
 }
@@ -210,6 +220,17 @@ static DWORD WINAPI pipe_accept_thread(void *)
     }
     CloseHandle(ov.hEvent);
     return 0;
+}
+
+// How many clients are connected that said they are `name` (0 = any client).
+static i32 pipe_clients(const char *name)
+{
+    i32 n = 0;
+    AcquireSRWLockShared(&g_pipe.lock);
+    for (i32 i = 0; i < COUNT(g_pipe.clients); i++)
+        n += g_pipe.clients[i] && (!name || !strcmp(g_pipe.names[i], name));
+    ReleaseSRWLockShared(&g_pipe.lock);
+    return n;
 }
 
 // A test copy (CLIPBACK_HOME) has a pipe of its own, named after its home, so it never answers for the real one.

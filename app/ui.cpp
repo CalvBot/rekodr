@@ -93,6 +93,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_MIC      "\xEE\x9C\xA0" // E720
 #define ICON_CHECK    "\xEE\x9C\xBE" // E73E
 #define ICON_KEYBOARD "\xEE\x9D\xA5" // E765
+#define ICON_LINK     "\xEE\x9C\x9B" // E71B
 #define ICON_VIDEO    "\xEE\x9C\x94" // E714
 #define ICON_WARNING  "\xEE\x9E\xBA" // E7BA
 #define ICON_NOW      "\xEE\xA2\x93" // E893 skip to end

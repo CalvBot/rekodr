@@ -81,7 +81,7 @@ static void run_command(const char *text)
             g_app.ui.setup_step = arg[5] >= '1' && arg[5] <= '9' ? arg[5] - '1' : 0;
         }
         else {
-            static const char *const tabs[] = {"apps", "recording", "hotkeys", "general"};
+            static const char *const tabs[] = {"apps", "recording", "hotkeys", "integrations", "general"};
             i32 t = -1;
             for (i32 i = 0; i < COUNT(tabs); i++)
                 if (!strcmp(arg, tabs[i])) t = i;
