@@ -1525,8 +1525,9 @@ static void ed_caption(const char *label)
 // One video track with the zoom as Basic Motion keys, and each recorded track (the Mix left out) with its volume
 // times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written as keys a fifth
 // of a second apart. Key times count frames from the start of the file.
-// The XML counts the file's audio by channel: a stereo track is a linked pair of channel tracks marked Stereo (one
-// stereo track once in Premiere), a mono Mic or chat one track marked Mono.
+// A stereo track is a linked pair of channel tracks marked Stereo (one stereo track once in Premiere), a mono Mic or
+// chat one track marked Mono. Premiere numbers a file's audio by slot, each track taking as many slots as the widest
+// one has channels: with any stereo track, track t's channel c is slot 2t + c + 1.
 
 static void xml_text(FILE *f, const char *s)
 {
@@ -1594,8 +1595,9 @@ static bool ed_export_xml(Path *out)
     xml_rate(f, fps);
     fprintf(f, "<width>%d</width><height>%d</height><pixelaspectratio>square</pixelaspectratio></samplecharacteristics></format>\n",
             m.width, m.height);
-    auto clip_head = [&](i32 id, bool enabled) {
-        fprintf(f, "<clipitem id=\"clipitem-%d\">\n<name>", id);
+    auto clip_head = [&](i32 id, bool enabled, const char *channel_type) {
+        fprintf(f, "<clipitem id=\"clipitem-%d\"%s%s%s>\n<name>", id, channel_type ? " premiereChannelType=\"" : "",
+                channel_type ? channel_type : "", channel_type ? "\"" : "");
         xml_text(f, file_name);
         fprintf(f, "</name><enabled>%s</enabled><duration>%lld</duration>", enabled ? "TRUE" : "FALSE", file_len);
         xml_rate(f, fps);
@@ -1603,7 +1605,7 @@ static bool ed_export_xml(Path *out)
     };
     // The video, and the file (written in full once, then referred to by its id)
     fputs("<track>\n", f);
-    clip_head(1, true);
+    clip_head(1, true, 0);
     fputs("<file id=\"file-1\"><name>", f);
     xml_text(f, file_name);
     fputs("</name><pathurl>", f);
@@ -1647,16 +1649,16 @@ static bool ed_export_xml(Path *out)
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(m, tracks, MEDIA_MAX_TRACKS);
     bool master_keys = e.vol_count[EDIT_MASTER] > 0;
-    i32 clip_id = 2, seq_track = 1;
+    i32 clip_id = 2, seq_track = 1, slots = 1;
+    for (i32 t = 0; t < m.track_count; t++) slots = ImMax(slots, chans(t));
     for (i32 i = 0; i < nt; i++) {
-        i32 t = tracks[i], first = 1, n = chans(t);
-        for (i32 j = 0; j < t; j++) first += chans(j);
+        i32 t = tracks[i], n = chans(t);
         for (i32 c = 0; c < n; c++) {
             fprintf(f, "<track premiereTrackType=\"%s\" currentExplodedTrackIndex=\"%d\" totalExplodedTrackCount=\"%d\">\n",
                     n == 2 ? "Stereo" : "Mono", c, n);
-            clip_head(clip_id + c, !e.muted[t] && !e.muted[EDIT_MASTER]);
+            clip_head(clip_id + c, !e.muted[t] && !e.muted[EDIT_MASTER], n == 2 ? "stereo" : "mono");
             fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
-                    first + c);
+                    slots * t + c + 1);
             if (n == 2) // the pair stays together
                 for (i32 l = 0; l < 2; l++)
                     fprintf(f, "<link><linkclipref>clipitem-%d</linkclipref><mediatype>audio</mediatype><trackindex>%d</trackindex>"
