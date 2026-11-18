@@ -246,63 +246,73 @@ static void markpop_close(bool keep)
     if (g_markpop.before && IsWindow(g_markpop.before)) SetForegroundWindow(g_markpop.before);
 }
 
+// Shapes are drawn four times the size and scaled down, which smooths their edges (GDI's own are jagged); the
+// text goes on afterwards at its real size.
 static void markpop_paint(HWND hwnd)
 {
+    const i32 SS = 4;
     PAINTSTRUCT ps;
     HDC wdc = BeginPaint(hwnd, &ps);
     RECT r;
     GetClientRect(hwnd, &r);
-    HDC dc = CreateCompatibleDC(wdc); // drawn off screen, then copied, so it never flickers
-    HBITMAP bmp = CreateCompatibleBitmap(wdc, r.right, r.bottom);
-    HGDIOBJ old_bmp = SelectObject(dc, bmp);
-    f32 s = g_markpop.scale;
+    HDC big = CreateCompatibleDC(wdc), dc = CreateCompatibleDC(wdc);
+    HBITMAP big_bmp = CreateCompatibleBitmap(wdc, r.right * SS, r.bottom * SS), bmp = CreateCompatibleBitmap(wdc, r.right, r.bottom);
+    HGDIOBJ old_big = SelectObject(big, big_bmp), old_bmp = SelectObject(dc, bmp);
+    f32 s = g_markpop.scale * SS;
+    auto up = [&](i32 k) {
+        RECT q = markpop_rect(k);
+        return RECT{q.left * SS, q.top * SS, q.right * SS, q.bottom * SS};
+    };
+    auto fill = [&](u32 rgb) {
+        HBRUSH br = CreateSolidBrush(markpop_rgb(rgb));
+        DeleteObject(SelectObject(big, br));
+    };
+    RECT all = {0, 0, r.right * SS, r.bottom * SS};
     HBRUSH bg = CreateSolidBrush(markpop_rgb(COL_PANEL2));
-    FillRect(dc, &r, bg);
+    FillRect(big, &all, bg);
     DeleteObject(bg);
-    SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    HGDIOBJ old_brush = SelectObject(dc, g_markpop.field);
+    HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
+    HGDIOBJ old_brush = SelectObject(big, CreateSolidBrush(markpop_rgb(MARKPOP_FIELD)));
     i32 rr = (i32)(10 * s);
-    RECT f = markpop_rect(0);
-    RoundRect(dc, f.left, f.top, f.right + 1, f.bottom + 1, rr, rr);
+    RECT f = up(0);
+    RoundRect(big, f.left, f.top, f.right + 1, f.bottom + 1, rr, rr);
 
     for (i32 k = 1; k <= 6; k++) {
-        RECT c = markpop_rect(k);
+        RECT c = up(k);
         if (g_markpop.colour == k) { // the one picked: a ring of the text colour around it
-            i32 o = (i32)(3 * s);
-            HBRUSH ring = CreateSolidBrush(markpop_rgb(COL_TEXT));
-            SelectObject(dc, ring);
-            Ellipse(dc, c.left - o, c.top - o, c.right + o + 1, c.bottom + o + 1);
-            HBRUSH gapb = CreateSolidBrush(markpop_rgb(COL_PANEL2));
-            SelectObject(dc, gapb);
-            Ellipse(dc, c.left - o / 2, c.top - o / 2, c.right + o / 2 + 1, c.bottom + o / 2 + 1);
-            SelectObject(dc, g_markpop.field);
-            DeleteObject(ring);
-            DeleteObject(gapb);
+            i32 o = (i32)(4 * s), in = (i32)(2 * s);
+            fill(COL_TEXT);
+            Ellipse(big, c.left - o, c.top - o, c.right + o + 1, c.bottom + o + 1);
+            fill(COL_PANEL2);
+            Ellipse(big, c.left - in, c.top - in, c.right + in + 1, c.bottom + in + 1);
         }
-        HBRUSH dot = CreateSolidBrush(markpop_rgb(MARKER_COLOURS[k].rgb));
-        SelectObject(dc, dot);
+        fill(MARKER_COLOURS[k].rgb);
         i32 grow = g_markpop.hot == k ? (i32)(1 * s) : 0;
-        Ellipse(dc, c.left - grow, c.top - grow, c.right + grow + 1, c.bottom + grow + 1);
-        SelectObject(dc, g_markpop.field);
-        DeleteObject(dot);
+        Ellipse(big, c.left - grow, c.top - grow, c.right + grow + 1, c.bottom + grow + 1);
     }
-
-    RECT b = markpop_rect(7);
-    HBRUSH save = CreateSolidBrush(markpop_rgb(g_markpop.hot == 7 ? COL_ACCENT_HOVER : COL_ACCENT));
-    SelectObject(dc, save);
+    fill(g_markpop.hot == 7 ? COL_ACCENT_HOVER : COL_ACCENT);
+    RECT b = up(7);
     i32 br = (i32)(8 * s);
-    RoundRect(dc, b.left, b.top, b.right + 1, b.bottom + 1, br, br);
-    SelectObject(dc, g_markpop.font);
-    SetTextColor(dc, RGB(255, 255, 255));
-    DrawTextW(dc, L"Save", -1, &b, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    RoundRect(big, b.left, b.top, b.right + 1, b.bottom + 1, br, br);
+    DeleteObject(SelectObject(big, old_brush));
+    SelectObject(big, old_pen);
 
-    SelectObject(dc, old_brush);
-    SelectObject(dc, old_pen);
-    DeleteObject(save);
+    SetStretchBltMode(dc, HALFTONE);
+    SetBrushOrgEx(dc, 0, 0, 0);
+    StretchBlt(dc, 0, 0, r.right, r.bottom, big, 0, 0, r.right * SS, r.bottom * SS, SRCCOPY);
+    SetBkMode(dc, TRANSPARENT);
+    HGDIOBJ old_font = SelectObject(dc, g_markpop.font);
+    SetTextColor(dc, RGB(255, 255, 255));
+    RECT label = markpop_rect(7);
+    DrawTextW(dc, L"Save", -1, &label, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, old_font);
+
     BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(big, old_big);
     SelectObject(dc, old_bmp);
+    DeleteObject(big_bmp);
     DeleteObject(bmp);
+    DeleteDC(big);
     DeleteDC(dc);
     EndPaint(hwnd, &ps);
 }
@@ -382,6 +392,11 @@ static void markpop_show(i64 id)
         g_markpop.hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, L"clipback", WS_POPUP | WS_CLIPCHILDREN,
                                          0, 0, 1, 1, 0, 0, inst, 0);
         if (!g_markpop.hwnd) return;
+        // Corners rounded by Windows 11, which smooths them; a window region's are jagged. Windows 10 leaves them square.
+        i32 round = 2; // DWMWCP_ROUND
+        COLORREF edge = markpop_rgb(COL_LINE);
+        DwmSetWindowAttribute(g_markpop.hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &round, sizeof round);
+        DwmSetWindowAttribute(g_markpop.hwnd, 34 /* DWMWA_BORDER_COLOR */, &edge, sizeof edge);
         g_markpop.field = CreateSolidBrush(markpop_rgb(MARKPOP_FIELD));
         g_markpop.edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 1, 1, g_markpop.hwnd, 0, inst, 0);
         SendMessageW(g_markpop.edit, EM_SETLIMITTEXT, 80, 0);
@@ -412,8 +427,6 @@ static void markpop_show(i64 id)
     }
     i32 w = (i32)(MARKPOP_W * s), h = (i32)(MARKPOP_H * s);
     SetWindowPos(g_markpop.hwnd, HWND_TOPMOST, (work.left + work.right - w) / 2, work.bottom - h - (i32)(96 * s), w, h, SWP_NOACTIVATE);
-    i32 rr = (i32)(14 * s);
-    SetWindowRgn(g_markpop.hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr, rr), TRUE);
     RECT f = markpop_rect(0);
     i32 in = (i32)(12 * s), eh = (i32)(22 * s);
     SetWindowPos(g_markpop.edit, 0, f.left + in, (f.top + f.bottom - eh) / 2, f.right - f.left - 2 * in, eh, SWP_NOZORDER);
