@@ -689,7 +689,7 @@ static void test_storeids()
     static const char none[] = "{\"game\":null,\"matched_by\":\"none\",\"confidence\":0,\"art\":{}}";
     T(!exe_from_answer(none, sizeof none - 1, name, sizeof name, &sure, &art, &art_len));
 
-    // "Help name games": a Game the service couldn't place is told what it was named, with the voter id; nothing
+    // "Help name games": a Game the service couldn't place is told what it was named; nothing
     // is sent without the player's say-so, or for a game a store id decides
     {
         static Config saved;
@@ -699,7 +699,6 @@ static void test_storeids()
         str_set(service, g_gamedb.service);
         g_gamedb.online = true;
         str_set(g_gamedb.service, "test.invalid");
-        str_set(g_app.config.voter, "0123456789abcdef0123456789abcdef");
         AppInfo app = {};
         str_set(app.exe.s, "thing.exe");
         snprintf(app.path, sizeof app.path, "%s/Tools/Thing/thing.exe", root);
@@ -716,7 +715,7 @@ static void test_storeids()
         T(confirms(&sent) == 0);
         g_app.config.share_names = true;
         gamedb_confirm(app, "Thing");
-        T(confirms(&sent) == 1 && !strcmp(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"name\":\"Thing\",\"voter\":\"0123456789abcdef0123456789abcdef\"}"));
+        T(confirms(&sent) == 1 && !strcmp(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"name\":\"Thing\"}"));
         snprintf(app.path, sizeof app.path, "%s/Lib/steamapps/common/Hollow Knight/hollow_knight.exe", root);
         str_set(app.exe.s, "hollow_knight.exe");
         gamedb_confirm(app, "Hollow Knight");

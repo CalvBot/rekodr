@@ -316,7 +316,6 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
     else if (!strcmp(key, "setup_done")) boolean(&c->setup_done);
-    else if (!strcmp(key, "voter")) str_set(c->voter, value);
     else if (!strcmp(key, "sgdb_key")) str_set(c->sgdb_key, value);
     else if (!strcmp(key, "art_service")) str_set(c->art_service.s, value);
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
@@ -477,7 +476,6 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_names", c.share_names);
     boolean("tooltips", c.tooltips);
     boolean("setup_done", c.setup_done);
-    if (c.voter[0]) fprintf(f, "voter = %s\n", c.voter);
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed
     boolean("clock_24h", c.clock_24h);

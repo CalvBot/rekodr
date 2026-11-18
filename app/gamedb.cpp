@@ -776,7 +776,7 @@ static bool gamedb_exe_name(const AppInfo &a, bool game, char *name, i32 cap, bo
 }
 
 // "Help name games" (Options): a player named a Game the art service couldn't name by a store id or the exe table,
-// so it is told (POST /v1/confirm), with the player's random voter id so they count once. When enough players name
+// so it is told (POST /v1/confirm). When enough players name
 // an exe in a folder the same game, the service names it so for everyone. Only with the player's say-so, and never
 // for a game a store id decides. Main thread.
 static void gamedb_confirm(const AppInfo &a, const char *name)
@@ -792,17 +792,6 @@ static void gamedb_confirm(const AppInfo &a, const char *name)
     static char body[2048];
     if (!exe_clues(a.exe.s, a.path, name, true, body, sizeof body) || strstr(body, "\"steam\":") || strstr(body, "\"gog\":"))
         return;
-    bool hex = strlen(c.voter) == 32;
-    for (const char *p = c.voter; *p && hex; p++) hex = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f');
-    if (!hex) {
-        u8 r[16];
-        if (BCryptGenRandom(0, r, sizeof r, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return;
-        for (i32 i = 0; i < 16; i++) snprintf(c.voter + 2 * i, 3, "%02x", r[i]);
-        config_save(c, g_app.paths);
-    }
-    size_t n = strlen(body);
-    if (n < 2 || n + 48 >= sizeof body) return;
-    snprintf(body + n - 1, sizeof body - n + 1, ",\"voter\":\"%s\"}", c.voter);
     gamedb_ask(fnv64(body, strlen(body)), ASK_CONFIRM, body);
     log_line("games: told the art service %s is %s", a.exe.s, name);
 }
