@@ -219,6 +219,59 @@ static void make_pieces(SaveWork *w, i32 first, i32 end)
     }
 }
 
+// A chapter of a saved file: a marker, or (in a session) where a game starts
+struct Chapter { i64 t_us; char title[256]; }; // t_us is wall clock
+
+// Where a wall-clock moment lands in the saved file; -1 when it falls in a recording gap
+static i64 file_time(const Piece *pieces, i32 piece_count, i64 t_us)
+{
+    for (i32 k = 0; k < piece_count; k++)
+        if (t_us >= pieces[k].start_us && t_us < pieces[k].end_us) return pieces[k].offset_us + t_us - pieces[k].start_us;
+    return -1;
+}
+
+// The chapters as an ffmetadata file, each running to the next one (the last to the end). Chapters in a gap and
+// ones on the same millisecond as the one before are left out. MP4 players start the first chapter at 0, so when
+// the first is later, a chapter titled `lead` comes before it. Returns how many were written; 0 = none.
+static i32 chapters_text(const Piece *pieces, i32 piece_count, i64 total_us, Chapter *ch, i32 n, const char *lead,
+                         char *out, i32 cap)
+{
+    for (i32 i = 1; i < n; i++) { // oldest first
+        Chapter c = ch[i];
+        i32 j = i;
+        while (j > 0 && ch[j - 1].t_us > c.t_us) { ch[j] = ch[j - 1]; j--; }
+        ch[j] = c;
+    }
+    i64 at[257];
+    i32 kept[257], m = 0;
+    for (i32 i = 0; i < n && m < COUNT(at) - 1; i++) { // room for the lead
+        i64 t = file_time(pieces, piece_count, ch[i].t_us);
+        if (t < 0 || t / 1000 >= total_us / 1000 || (m && t / 1000 <= at[m - 1] / 1000)) continue;
+        at[m] = t;
+        kept[m++] = i;
+    }
+    if (m && at[0] / 1000 > 0) {
+        memmove(at + 1, at, m * sizeof at[0]);
+        memmove(kept + 1, kept, m * sizeof kept[0]);
+        at[0] = 0;
+        kept[0] = -1;
+        m++;
+    }
+    i32 len = snprintf(out, cap, ";FFMETADATA1\n");
+    for (i32 i = 0; i < m && len < cap; i++) {
+        len += snprintf(out + len, cap - len, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%lld\nEND=%lld\ntitle=", at[i] / 1000,
+                        (i + 1 < m ? at[i + 1] : total_us) / 1000);
+        for (const char *p = kept[i] < 0 ? lead : ch[kept[i]].title; *p && len + 3 < cap; p++) { // ffmetadata escapes these with a backslash
+            if (*p == '\r' || *p == '\n') { out[len++] = ' '; continue; }
+            if (strchr("=;#\\", *p)) out[len++] = '\\';
+            out[len++] = *p;
+        }
+        if (len + 1 < cap) out[len++] = '\n';
+        out[len < cap ? len : cap - 1] = 0;
+    }
+    return len < cap ? m : 0;
+}
+
 // The wall-clock span of a stream's remaining segments; the end is INT64_MAX while it's still recording.
 static void stream_span(const BufferIdx &b, i32 s, i64 *start, i64 *end)
 {
@@ -462,6 +515,7 @@ static void remove_work_files(const Path &dir, i32 streams)
 {
     DeleteFileW(path_join(dir, L"video.txt").s);
     DeleteFileW(path_join(dir, L"graph.txt").s);
+    DeleteFileW(path_join(dir, L"chapters.txt").s);
     for (i32 i = 0; i < streams; i++) DeleteFileW(work_file(dir, L"audio%d.txt", i).s);
     RemoveDirectoryW(dir.s);
 }
@@ -629,6 +683,38 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         }
         fclose(f);
     }
+    // Chapters: the markers in the clip, titled by their notes, and in a session where each game starts.
+    static Chapter chapters[256];
+    static char chapter_meta[1 << 17];
+    i32 chapter_count = 0;
+    {
+        static Marker marks[COUNT(chapters)];
+        i32 mark_count = markers_in(clip_start, clip_end, marks, COUNT(marks));
+        for (i32 i = 0; i < mark_count; i++) {
+            chapters[chapter_count].t_us = marks[i].t_us;
+            str_set(chapters[chapter_count++].title, marks[i].note[0] ? marks[i].note : "Marker");
+        }
+        const char *prev = "";
+        for (i32 i = 0; session && i < b.activity_count && chapter_count < COUNT(chapters); i++) {
+            const ActivityEntry &e = b.activity[i];
+            bool ends_before = i + 1 < b.activity_count && b.activity[i + 1].us <= clip_start;
+            if (e.us >= clip_end) break;
+            if (e.exe[0] && strcmp(e.exe, prev) && !ends_before) {
+                chapters[chapter_count].t_us = e.us > clip_start ? e.us : clip_start;
+                display_name(w->cfg, e.exe, chapters[chapter_count].title, sizeof chapters[0].title);
+                chapter_count++;
+            }
+            prev = e.exe;
+        }
+    }
+    chapter_count = chapters_text(w->pieces, w->piece_count, total_us, chapters, chapter_count, game, chapter_meta,
+                                  sizeof chapter_meta);
+    if (chapter_count) {
+        f = _wfopen(path_join(work, L"chapters.txt").s, L"wb");
+        if (f) { fwrite(chapter_meta, 1, strlen(chapter_meta), f); fclose(f); }
+        else chapter_count = 0;
+    }
+
     make_graph(w, total_us);
     f = w->graph_full ? 0 : _wfopen(path_join(work, L"graph.txt").s, L"wb");
     if (!f) {
@@ -651,6 +737,12 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     for (i32 i = 0; i < w->stream_count; i++) {
         arg_list(a, cap, concat, COUNT(concat));
         cmd_arg(a, cap, work_file(work, L"audio%d.txt", i).s);
+    }
+    if (chapter_count) {
+        arg_pair(a, cap, "-f", "ffmetadata");
+        cmd_arg8(a, cap, "-i");
+        cmd_arg(a, cap, path_join(work, L"chapters.txt").s);
+        arg_pair(a, cap, "-map_chapters", "%d", w->stream_count + 1);
     }
     cmd_arg8(a, cap, "-/filter_complex");
     cmd_arg(a, cap, path_join(work, L"graph.txt").s);
@@ -692,9 +784,9 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         return SAVE_EV_FAILED;
     }
 
-    log_line("save %u: %.1f s from %lld, %d video segments in %d pieces, %d audio streams on %d tracks -> %s",
+    log_line("save %u: %.1f s from %lld, %d video segments in %d pieces, %d audio streams on %d tracks, %d chapters -> %s",
              req.id, (f64)total_us / 1e6, clip_start, end - first, w->piece_count, w->stream_count,
-             w->track_count + 1, final8);
+             w->track_count + 1, chapter_count, final8);
     i32 code = run_ffmpeg(w, total_us, out, out_cap);
     i64 result;
     if (code == 0 && MoveFileExW(part_path.s, final_path.s, 0)) {

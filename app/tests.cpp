@@ -652,6 +652,26 @@ static void test_markers()
     T(ms.count == MARKER_MAX && ms.items[0].t_us == 1000 && ms.items[MARKER_MAX - 1].t_us == 1000 + MARKER_MAX - 1); // the oldest went
 }
 
+// Chapters: wall clock to file time across a gap, sorted, titles escaped
+static void test_chapters()
+{
+    Piece pieces[2] = {{1000000, 5000000, 0}, {9000000, 12000000, 4000000}}; // a 4 s gap; 7 s in all
+    Chapter ch[5] = {{10000000, "second; part=2"}, {2000000, "Marker"}, {6000000, "in the gap"},
+                     {2000000, "same ms"}, {1000000, "a\nb"}};
+    char out[1024];
+    T(chapters_text(pieces, 2, 7000000, ch, 5, "Game", out, sizeof out) == 3);
+    T(!strcmp(out, ";FFMETADATA1\n"
+                   "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=a b\n"
+                   "[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=5000\ntitle=Marker\n"
+                   "[CHAPTER]\nTIMEBASE=1/1000\nSTART=5000\nEND=7000\ntitle=second\\; part\\=2\n"));
+    T(chapters_text(pieces, 2, 7000000, ch, 5, "Game", out, 40) == 0); // doesn't fit: none
+    Chapter late[1] = {{3000000, "Late"}}; // the first after the start: a lead chapter from 0
+    T(chapters_text(pieces, 2, 7000000, late, 1, "Game", out, sizeof out) == 2);
+    T(!strcmp(out, ";FFMETADATA1\n"
+                   "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=2000\ntitle=Game\n"
+                   "[CHAPTER]\nTIMEBASE=1/1000\nSTART=2000\nEND=7000\ntitle=Late\n"));
+}
+
 // Games the list doesn't know: their folder, the store id their launcher left, and what goes to the art service
 static void test_storeids()
 {
@@ -877,6 +897,7 @@ int main()
     test_edit_xml();
     test_lanes();
     test_share_plan();
+    test_chapters();
     test_wave_chunks();
     test_gamedb();
     test_mcpack();
