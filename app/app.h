@@ -149,6 +149,7 @@ struct Ui {
     bool   shown;
     Screen screen;
     bool   help_open;
+    bool   help_close; // a command asked for the help to close
     i32    frames_left; // frames still to draw after the last input or change (ImGui settles over a few)
     bool   animating;   // something moves on its own (playback, progress): keep drawing
 };

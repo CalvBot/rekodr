@@ -62,6 +62,30 @@ static void run_command(const char *text)
         config_save(g_app.config, g_app.paths);
         log_line("detailed log %s", g_dev ? "on" : "off");
         ui_wake();
+    } else if (!strcmp(cmd, "show")) { // show <page>: a page or tab by name, for screenshots and Stream Deck keys
+        Library &lib = g_app.library;
+        g_app.ui.help_close = true;
+        if (!strcmp(arg, "clips") || !strcmp(arg, "sessions")) {
+            library_close_player();
+            ui_show(SCREEN_LIBRARY);
+            lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
+        } else if (!strcmp(arg, "player")) { // the newest clip, playing in the library
+            ui_show(SCREEN_LIBRARY);
+            if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]], 0);
+        } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
+        else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
+        else if (!strcmp(arg, "help")) { g_app.ui.help_open = true; g_app.ui.help_close = false; }
+        else {
+            static const char *const tabs[] = {"apps", "recording", "hotkeys", "general"};
+            i32 t = -1;
+            for (i32 i = 0; i < COUNT(tabs); i++)
+                if (!strcmp(arg, tabs[i])) t = i;
+            if (t >= 0) {
+                ui_show(SCREEN_OPTIONS);
+                g_app.options.tab = t;
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, help, apps, recording, hotkeys, general)", arg);
+        }
+        ui_wake();
     } else if (!strcmp(cmd, "quit")) {
         g_app.quitting = true;
         PostQuitMessage(0);

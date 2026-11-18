@@ -891,11 +891,11 @@ static void help_window()
         help_section("EDITOR", editor, COUNT(editor), col_w);
         ImGui::EndGroup();
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
-        if (!open) ImGui::CloseCurrentPopup();
+        if (!open || g_app.ui.help_close) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
     ImGui::PopStyleVar(2);
-    g_app.ui.help_open = false;
+    g_app.ui.help_open = g_app.ui.help_close = false;
 }
 
 // A tab in the top bar: a label, white with an accent underline when it's the current screen.
