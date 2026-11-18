@@ -52,6 +52,7 @@ static void config_defaults(Config *c, const Paths &paths)
         c->buffer_dir = path_join(paths.local_dir, L"buffer");
     }
     c->buffer_hours = 24;
+    c->saved_popup = -2;
     c->buffer_gb = 100;
     c->min_free_gb = 50;
     c->fps = 60;
@@ -282,6 +283,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "min_free_gb")) real(&c->min_free_gb);
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
+    else if (!strcmp(key, "saved_popup")) c->saved_popup = atoi(value);
     else if (!strcmp(key, "fps")) c->fps = atoi(value);
     else if (!strcmp(key, "height")) c->height = atoi(value);
     else if (!strcmp(key, "codec")) str_set(c->codec.s, value);
@@ -462,6 +464,7 @@ static bool config_save(const Config &c, const Paths &paths)
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed
     boolean("clock_24h", c.clock_24h);
+    fprintf(f, "saved_popup = %d\n", c.saved_popup);
     boolean("voice_mono", c.voice_mono);
     boolean("start_with_windows", c.start_with_windows);
     boolean("dev_log", c.dev_log);

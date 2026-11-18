@@ -337,6 +337,7 @@ static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_CLOSE:
         DEV_LOG("window closed (hidden)");
+        g_app.timeline.quick = false;
         ShowWindow(hwnd, SW_HIDE);
         g_app.ui.shown = false;
         library_window_shown(false);
@@ -405,6 +406,7 @@ static void ui_show(Screen screen)
     Ui &ui = g_app.ui;
     DEV_LOG("show window, screen %d (was %s)", (int)screen, ui.shown ? "shown" : "hidden");
     ui.screen = screen;
+    g_app.timeline.quick = false;
     if (!ui.shown) {
         ShowWindow(ui.hwnd, IsZoomed(ui.hwnd) ? SW_SHOWMAXIMIZED : SW_SHOW);
         ui.shown = true;

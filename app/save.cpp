@@ -1534,6 +1534,8 @@ static void saved_check()
     }
 }
 
+static void notify_saved(SaveKind kind, const char *path); // notify.cpp
+
 static void save_on_event(const Event &e)
 {
     u32 id = (u32)(e.b & 0xffffffff);
@@ -1553,6 +1555,7 @@ static void save_on_event(const Event &e)
         log_line("save %u: saved %s", id, e.text);
         saved_add(v->kind, v->from_us, v->to_us, e.text);
         pipe_saved(v->kind, true, e.text, v);
+        notify_saved(v->kind, e.text);
         break;
     case SAVE_EV_FAILED:
         v->state = SAVE_FAILED;

@@ -146,7 +146,11 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_HOTKEY: {
         i32 i = (i32)wp - 1;
         DEV_LOG("hotkey %d", i);
-        if (i >= 0 && i < g_app.config.hotkey_count) run_command(g_app.config.hotkeys[i].action.s);
+        if (i >= 0 && i < g_app.config.hotkey_count) {
+            const char *action = g_app.config.hotkeys[i].action.s;
+            if (!strcmp(action, "timeline")) timeline_quick(); // from a game: quick save
+            else run_command(action);
+        }
         return 0;
     }
     case WM_APP_TRAY:

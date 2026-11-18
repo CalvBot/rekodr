@@ -79,4 +79,5 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "tray.cpp"
 #include "diag.cpp"
 #include "ui.cpp"
+#include "notify.cpp"
 #include "main.cpp"

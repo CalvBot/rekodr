@@ -901,6 +901,33 @@ static i64 tl_playhead()
     return b.seg_count ? b.segs[b.seg_count - 1].start_us : 0; // the newest footage, at its keyframe
 }
 
+// The timeline hotkey, pressed in a game: the last 2 minutes following now, the last 30 s picked (or the selection
+// left there, if it ended within the minute). Enter saves it and hides the window, Esc just hides it.
+static void timeline_quick()
+{
+    Timeline &tl = g_app.timeline;
+    ui_show(SCREEN_TIMELINE);
+    i64 now = now_us();
+    tl.quick = true;
+    tl.follow = true;
+    tl.view_span_us = 120 * TL_SEC;
+    if (!(tl.sel_in && tl.sel_out > tl.sel_in && now - tl.sel_out < 60 * TL_SEC)) {
+        tl.sel_out = tl_whole_sec(now) - TL_SEC;
+        tl.sel_in = tl.sel_out - 30 * TL_SEC;
+    }
+    tl.playhead_us = tl.sel_in;
+    log_line("timeline: quick save");
+}
+
+// Quick save is done: back to the game
+static void tl_quick_done()
+{
+    Timeline &tl = g_app.timeline;
+    if (!tl.quick) return;
+    tl.quick = false;
+    PostMessageW(g_app.ui.hwnd, WM_CLOSE, 0, 0);
+}
+
 static void tl_keys(i64 now)
 {
     Timeline &tl = g_app.timeline;
@@ -918,8 +945,11 @@ static void tl_keys(i64 now)
     i64 at = tl.hovering ? tl.hover_us : tl_playhead();
     if (ImGui::IsKeyPressed(ImGuiKey_I, false)) tl_set_edge(true, at);
     if (ImGui::IsKeyPressed(ImGuiKey_O, false)) tl_set_edge(false, at);
-    if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) {
         tl_save(SAVE_CLIP, false);
+        tl_quick_done();
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) tl_quick_done();
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) tl_play_toggle();
     i64 centre = tl.view_end_us - tl.view_span_us / 2;
     if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd)) tl_zoom(0.5, centre, now);
@@ -1556,7 +1586,10 @@ static void screen_timeline()
         f32 w1 = 104 * s, w2 = 124 * s, w3 = 108 * s;
         f32 xr = top.x + avail.x - (w1 + w2 + w3 + 2 * bgap);
         ImGui::SetCursorScreenPos(ImVec2(xr, ty));
-        if (kit_button(ICON_SAVE "  Save clip", KIT_PRIMARY, ImVec2(w1, 0), can)) tl_save(SAVE_CLIP, false);
+        if (kit_button(ICON_SAVE "  Save clip", KIT_PRIMARY, ImVec2(w1, 0), can)) {
+            tl_save(SAVE_CLIP, false);
+            tl_quick_done();
+        }
         ImGui::SameLine(0, bgap);
         if (kit_button(ICON_EDIT "  Save and edit", KIT_SECONDARY, ImVec2(w2, 0), can)) tl_save(SAVE_CLIP, true);
         ImGui::SameLine(0, bgap);

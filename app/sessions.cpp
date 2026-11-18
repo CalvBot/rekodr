@@ -516,7 +516,7 @@ static void sessions_load()
                 alive_until = strtoll(fl[1], 0, 10);
             } else if (n == 2 && !strcmp(fl[0], "next_id")) {
                 ss.next_id = (u32)strtoul(fl[1], 0, 10);
-            } else if ((n == 10 || n == 11) && !strcmp(fl[0], "session")) {
+            } else if (n == 11 && !strcmp(fl[0], "session")) {
                 SessionState st = SES_FREE;
                 for (i32 i = 1; i < COUNT(STATE_NAMES); i++)
                     if (!strcmp(fl[2], STATE_NAMES[i])) st = (SessionState)i;
