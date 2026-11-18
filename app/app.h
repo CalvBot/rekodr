@@ -492,6 +492,7 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     bool       dirty;           // the record changed and isn't written yet
     Player     player;
     i32        tab;             // side panel: 0 edit, 1 keep and share
+    i32        solo;            // the track heard alone, -1 = all (for listening only: not saved)
     i32        share_page;
     bool       aiming;          // dragging the picture aims the zoom
     i32        aim_key;
@@ -505,6 +506,8 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     f32        custom_mb;
     u32        keep_job, share_job;
     char       result[300];     // what the last Keep or Share did
+    char       result_path[MAX_PATH * 2]; // the file it made, for Copy, Play and Show; empty when it made none
+    char       out_name[160];   // what Keep and Share call the file
     bool       result_error;
     ShareFile  shares[64];      // Recent shares, newest first
     i32        share_count;

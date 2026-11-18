@@ -106,6 +106,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_START     "\xEE\xA2\x92" // E892
 #define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
 #define ICON_FWD30     "\xEE\xB4\xBD" // ED3D skip forward 30
+#define ICON_SOLO      "\xEE\x9F\xB6" // E7F6 headphone
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
 
@@ -976,10 +977,12 @@ static void help_window()
             {"[Ctrl]+[A]", "Select every key"},
             {"[Ctrl]+[C] / [Ctrl]+[V]", "Copy keys / paste at the playhead"},
             {"[Ctrl]+[Z] / [Ctrl]+[Y]", "Undo / redo"},
-            {"[Ctrl]+wheel, [+] / [-]", "Zoom the timeline"},
-            {"Middle-drag, wheel", "Pan the timeline"},
+            {"Wheel, [+] / [-]", "Zoom the timeline at the mouse"},
+            {"Middle-drag, [Ctrl]+wheel", "Pan the timeline"},
+            {"Wheel over the track names", "Scroll the sound tracks"},
             {"[Shift]+wheel", "Taller or shorter lanes"},
-            {"[Left] / [Right]", "Step one frame"},
+            {"[Left] / [Right]", "Previous / next key or trim end"},
+            {"[,] / [.]", "Step one frame"},
             {"[Shift]+[Left] / [Right]", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},
             {"[Esc]", "Clear the selection, then back to the library"},

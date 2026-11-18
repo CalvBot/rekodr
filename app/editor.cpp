@@ -345,6 +345,7 @@ static void ed_apply_volumes()
     for (i32 i = 0; i < n; i++) {
         i32 t = tracks[i];
         f32 v = (f32)(vol_heard(ed.edit, t, p.pos) * master);
+        if (ed.solo >= 0 && t != ed.solo) v = 0;
         if (p.track_engine_count) {
             if (fabsf(v - ed.heard[t]) < 0.002f && ed.heard_set) continue;
             player_track_volume(&p, t, v, v <= 0);
@@ -415,13 +416,16 @@ static void editor_open(const LibItem &item)
     ed.tracks_ready = false;
     ed.lane_drag = 0;
     ed.lane_scroll = 0;
+    ed.solo = -1;
     ed.view_from = ed.view_span = 0;
     memset(ed.sel, 0, sizeof ed.sel);
     ed.settled = ed.edit;
     ed.undo_count = ed.redo_count = 0;
     ed.aiming = false;
     ed.result[0] = 0;
+    ed.result_path[0] = 0;
     ed.result_error = false;
+    str_set(ed.out_name, ed.item.name);
     ed.player.id = 1;
     player_open(&ed.player, ed.path, ed.edit.in_s, false);
     editor_refresh_shares();
@@ -500,7 +504,9 @@ static void editor_on_save_event(const Event &e)
     bool share = id == ed.share_job;
     const char *name = strrchr(e.text, '\\');
     name = name ? name + 1 : e.text;
+    ed.result_path[0] = 0;
     if (e.a == SAVE_EV_DONE) {
+        str_set(ed.result_path, e.text);
         if (share) {
             wchar_t w[MAX_PATH];
             utf8_to_wide(e.text, w, MAX_PATH);
@@ -510,7 +516,7 @@ static void editor_on_save_event(const Event &e)
             fmt_size(((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow, size, sizeof size);
             bool copied = clipboard_copy_file(w);
             snprintf(ed.result, sizeof ed.result, copied ? "Shared (%s): on the clipboard, ready to paste." :
-                                                           "Shared (%s), but the clipboard was busy: use Copy below.", size);
+                                                           "Shared (%s), but the clipboard was busy: use Copy.", size);
             ed.result_error = !copied;
             editor_refresh_shares();
             ed.share_page = 0;
@@ -553,12 +559,16 @@ static void ed_start(SaveKind kind)
     j.edit = ed.edit;
     if (kind == SAVE_KEEP) {
         swprintf(j.out_dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, ed.item.year);
-        snprintf(j.stem, sizeof j.stem, "%s edit", ed.item.name);
+        // Kept beside clips that may hold the original: its own name, or the original's with " edit"
+        if (ed.out_name[0] && strcmp(ed.out_name, ed.item.name)) snprintf(j.stem, sizeof j.stem, "%s", ed.out_name);
+        else snprintf(j.stem, sizeof j.stem, "%s edit", ed.item.name);
     } else {
         j.out_dir = g_app.paths.share_dir;
-        snprintf(j.stem, sizeof j.stem, "%s", ed.item.name);
+        snprintf(j.stem, sizeof j.stem, "%s", ed.out_name[0] ? ed.out_name : ed.item.name);
         j.share_mb = ed_share_mb();
     }
+    clean_name(j.stem); // the name is typed: drop what a file name can't hold
+    if (!j.stem[0]) snprintf(j.stem, sizeof j.stem, "%s", ed.item.name);
     u32 id = save_edit(kind, j);
     if (kind == SAVE_KEEP) ed.keep_job = id;
     else ed.share_job = id;
@@ -898,6 +908,21 @@ struct EdRow {
 
 // The timeline: a bar for the view, a ruler, the video with the trim, the zoom's lane, a lane for each sound track
 // (its waveform and its volume) and one for the whole mix. Lanes have their name and buttons on the left.
+// Measures the waveforms again, from the file rather than the cache
+static void ed_refresh_wave()
+{
+    Editor &ed = g_app.editor;
+    if (ed.wave) {
+        Path cache = ed.wave->cache;
+        wave_close(&ed.wave);
+        DeleteFileW(cache.s);
+    }
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
+    ed.wave = wave_open(ed.path, ed.item.key, ed.item.info.duration, tracks, n);
+    log_line("editor: audio preview measured again for %s", ed.item.name);
+}
+
 static void ed_timeline(ImVec2 o, f32 w, f32 h)
 {
     Editor &ed = g_app.editor;
@@ -938,8 +963,8 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
 
-    // The wheel: Ctrl or Alt zooms at the mouse, Shift sets the lanes' height, over the sound tracks it scrolls
-    // them (when they don't all fit), elsewhere it pans.
+    // The wheel zooms at the mouse; Shift sets the lanes' height, over the sound tracks' names it scrolls them (when
+    // they don't all fit), and with Ctrl or Alt, or sideways, it pans.
     if (over && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
         f32 wh = io.MouseWheel;
         if (wh && io.KeyShift) {
@@ -947,10 +972,10 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             i32 v = (i32)(lane_h / kit_px(1) + 0.5f) + (wh > 0 ? 6 : -6);
             cfg.editor_lane = v < 36 ? 36 : v > 160 ? 160 : v;
             config_save(cfg, g_app.paths);
-        } else if (wh && (io.KeyCtrl || io.KeyAlt)) {
-            ed_view_zoom(pow(0.8, wh), mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
-        } else if (wh && my >= area0 && my < area1 && max_scroll > 0) {
+        } else if (wh && my >= area0 && my < area1 && mx < bx0 && max_scroll > 0) {
             ed.lane_scroll -= wh * lane_h * 0.6f;
+        } else if (wh && !io.KeyCtrl && !io.KeyAlt) {
+            ed_view_zoom(pow(0.8, wh), mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
         } else {
             ed.view_from -= (wh + io.MouseWheelH) * span * 0.1;
             ed_view_clamp();
@@ -1329,12 +1354,13 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 ed.sel[l] = 0;
                 ed.dirty = true;
             }
+            if (l && lib_menu_item(ICON_VOLUME, "Refresh the audio preview")) ed_refresh_wave();
         }
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
 
-    // Each lane: its gutter (mute, a key at the playhead, the name and the value there), then its body.
+    // Each lane: its gutter (mute, solo, a key at the playhead, the name and the value there), then its body.
     f64 in_s = ed.edit.in_s, out_s = ed_out();
     static ImVec2 pts[4096];
     for (i32 r = 0; r < nr; r++) {
@@ -1361,9 +1387,16 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 ed.dirty = true;
                 muted = !muted;
             }
+            bool solo = ed.solo == s;
+            ImGui::SetCursorScreenPos(ImVec2(gx + fh + kit_px(2), by));
+            kit_next_tip(solo ? "Hear every track" : "Hear only this track");
+            if (kit_icon_button(ICON_SOLO, "##solo", KIT_GHOST, true, solo)) {
+                ed.solo = solo ? -1 : s;
+                log_line("editor: solo %d", ed.solo);
+            }
         }
         i32 here = ln_key_at(ed.edit, l, p.pos);
-        ImGui::SetCursorScreenPos(ImVec2(gx + fh + kit_px(2), by));
+        ImGui::SetCursorScreenPos(ImVec2(gx + 2 * (fh + kit_px(2)), by));
         kit_next_tip(here >= 0 ? "Delete this key" : "Add a key at the playhead");
         if (kit_icon_button(here >= 0 ? ICON_DELETE : ICON_ADD, "##key", KIT_GHOST, here >= 0 || ln_count(ed.edit, l) < ln_cap(l))) {
             if (here >= 0) {
@@ -1377,10 +1410,11 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         }
         ImGui::PopID();
         {
-            f32 nx = gx + 2 * fh + kit_px(10), nw = bx0 - gap - nx - kit_px(6);
+            f32 nx = gx + 3 * fh + kit_px(12), nw = bx0 - gap - nx - kit_px(6);
+            bool unheard = muted || (s >= 0 && ed.solo >= 0 && ed.solo != s);
             f32 lh = ImGui::GetTextLineHeight(), sh = g_font_small->FontSize;
             f32 ty = floorf((y0 + y1 - lh - sh - kit_px(2)) / 2);
-            text_clipped(dl, ImVec2(nx, ty), nw, col32(muted ? COL_FAINT : COL_TEXT), row.name);
+            text_clipped(dl, ImVec2(nx, ty), nw, col32(unheard ? COL_FAINT : COL_TEXT), row.name);
             char vt[24];
             f64 v = ln_value_at(ed.edit, l, p.pos);
             if (muted) str_set(vt, "Muted");
@@ -1487,6 +1521,182 @@ static void ed_caption(const char *label)
     ImGui::PopFont();
 }
 
+// Open in Premiere Pro or DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which both import.
+// One video track with the zoom as Basic Motion keys, and one audio track per recorded track (the Mix left out)
+// with its volume times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written
+// as keys a fifth of a second apart. Key times count frames from the start of the file.
+
+static void xml_text(FILE *f, const char *s)
+{
+    for (; *s; s++) {
+        if (*s == '&') fputs("&amp;", f);
+        else if (*s == '<') fputs("&lt;", f);
+        else if (*s == '>') fputs("&gt;", f);
+        else if (*s == '"') fputs("&quot;", f);
+        else fputc(*s, f);
+    }
+}
+
+// file://localhost/C:/Clips/a%20b.mp4
+static void xml_pathurl(FILE *f, const char *path)
+{
+    fputs("file://localhost/", f);
+    for (const u8 *p = (const u8 *)path; *p; p++) {
+        u8 c = *p == '\\' ? '/' : *p;
+        bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr("/-_.~:", c);
+        if (plain) fputc(c, f);
+        else fprintf(f, "%%%02X", c);
+    }
+}
+
+// The times a curve is written at between the trim's ends, a fifth of a second apart (wider on long files).
+static i32 xml_samples(f64 in_s, f64 out_s, f64 *at, i32 cap)
+{
+    f64 step = (out_s - in_s) / (cap - 1) > 0.2 ? (out_s - in_s) / (cap - 1) : 0.2;
+    i32 n = 0;
+    for (f64 t = in_s; t < out_s && n < cap - 1; t += step) at[n++] = t;
+    at[n++] = out_s;
+    return n;
+}
+
+static void xml_rate(FILE *f, i32 fps) { fprintf(f, "<rate><timebase>%d</timebase><ntsc>FALSE</ntsc></rate>", fps); }
+
+// Writes <video name>.xml next to the video
+static bool ed_export_xml(Path *out)
+{
+    Editor &ed = g_app.editor;
+    const MediaInfo &m = ed.item.info;
+    const EditRecord &e = ed.edit;
+    i32 fps = m.fps > 1 ? (i32)(m.fps + 0.5) : 60;
+    f64 in_s = e.in_s, out_s = ed_out();
+    auto fr = [&](f64 t) { return (i64)(t * fps + 0.5); };
+    *out = ed.path;
+    wchar_t *dot = wcsrchr(out->s, L'.');
+    if (!dot || dot < wcsrchr(out->s, L'\\')) return false;
+    wcscpy_s(dot, MAX_PATH - (dot - out->s), L".xml");
+    FILE *f = _wfopen(out->s, L"wb");
+    if (!f) return false;
+    char src[MAX_PATH * 3], file_name[MAX_PATH * 3];
+    wide_to_utf8(ed.path.s, src, sizeof src);
+    const char *slash = strrchr(src, '\\');
+    str_set(file_name, slash ? slash + 1 : src);
+    i64 len = fr(out_s) - fr(in_s), file_len = fr(m.duration);
+    static f64 at[2000];
+    i32 na = xml_samples(in_s, out_s, at, COUNT(at));
+
+    fputs("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n<xmeml version=\"5\">\n<sequence id=\"sequence-1\">\n<name>", f);
+    xml_text(f, ed.item.name);
+    fprintf(f, "</name>\n<duration>%lld</duration>", len);
+    xml_rate(f, fps);
+    fputs("\n<media>\n<video>\n<format><samplecharacteristics>", f);
+    xml_rate(f, fps);
+    fprintf(f, "<width>%d</width><height>%d</height><pixelaspectratio>square</pixelaspectratio></samplecharacteristics></format>\n",
+            m.width, m.height);
+    auto clip_head = [&](i32 id, bool enabled) {
+        fprintf(f, "<clipitem id=\"clipitem-%d\">\n<name>", id);
+        xml_text(f, file_name);
+        fprintf(f, "</name><enabled>%s</enabled><duration>%lld</duration>", enabled ? "TRUE" : "FALSE", file_len);
+        xml_rate(f, fps);
+        fprintf(f, "<start>0</start><end>%lld</end><in>%lld</in><out>%lld</out>\n", len, fr(in_s), fr(out_s));
+    };
+    // The video, and the file (written in full once, then referred to by its id)
+    fputs("<track>\n", f);
+    clip_head(1, true);
+    fputs("<file id=\"file-1\"><name>", f);
+    xml_text(f, file_name);
+    fputs("</name><pathurl>", f);
+    xml_pathurl(f, src);
+    fputs("</pathurl>", f);
+    xml_rate(f, fps);
+    fprintf(f, "<duration>%lld</duration>\n<media><video><samplecharacteristics>", file_len);
+    xml_rate(f, fps);
+    fprintf(f, "<width>%d</width><height>%d</height></samplecharacteristics></video>", m.width, m.height);
+    for (i32 t = 0; t < m.track_count; t++)
+        fputs("<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>"
+              "<channelcount>2</channelcount></audio>", f);
+    fputs("</media></file>\n", f);
+    if (e.key_count) {
+        // Scale in percent; Center moves the picture's middle, in fractions of the frame from the middle
+        fputs("<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory>"
+              "<effecttype>motion</effecttype><mediatype>video</mediatype>\n"
+              "<parameter><parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax>"
+              "<value>100</value>\n", f);
+        for (i32 i = 0; i < na; i++) {
+            f64 z, x, y;
+            zoom_at(e, at[i], &z, &x, &y);
+            fprintf(f, "<keyframe><when>%lld</when><value>%.2f</value></keyframe>\n", fr(at[i]), z * 100);
+        }
+        fputs("</parameter>\n<parameter><parameterid>center</parameterid><name>Center</name>"
+              "<value><horiz>0</horiz><vert>0</vert></value>\n", f);
+        for (i32 i = 0; i < na; i++) {
+            ImVec2 a, b;
+            zoom_uv(e, at[i], &a, &b);
+            f64 z = b.x - a.x > 0.001f ? 1.0 / (b.x - a.x) : 1;
+            f64 cx = (0.5 - (a.x + b.x) / 2) * z, cy = (0.5 - (a.y + b.y) / 2) * z;
+            fprintf(f, "<keyframe><when>%lld</when><value><horiz>%.4f</horiz><vert>%.4f</vert></value></keyframe>\n",
+                    fr(at[i]), cx, cy);
+        }
+        fputs("</parameter></effect></filter>\n", f);
+    }
+    fputs("</clipitem>\n</track>\n</video>\n<audio>\n", f);
+
+    // The audio: a track per recorded track, from the same file
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 nt = ed_tracks(m, tracks, MEDIA_MAX_TRACKS);
+    bool master_keys = e.vol_count[EDIT_MASTER] > 0;
+    for (i32 i = 0; i < nt; i++) {
+        i32 t = tracks[i];
+        fputs("<track>\n", f);
+        clip_head(2 + i, !e.muted[t] && !e.muted[EDIT_MASTER]);
+        fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
+                t + 1);
+        fputs("<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels"
+              "</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\n<parameter>"
+              "<parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax>", f);
+        fprintf(f, "<value>%.4f</value>\n", vol_at(e, t, in_s) * vol_at(e, EDIT_MASTER, in_s));
+        if (e.vol_count[t] || master_keys)
+            for (i32 k = 0; k < na; k++)
+                fprintf(f, "<keyframe><when>%lld</when><value>%.4f</value></keyframe>\n", fr(at[k]),
+                        vol_at(e, t, at[k]) * vol_at(e, EDIT_MASTER, at[k]));
+        fputs("</parameter></effect></filter>\n</clipitem>\n</track>\n", f);
+    }
+    fputs("</audio>\n</media>\n</sequence>\n</xmeml>\n", f);
+    bool ok = !ferror(f);
+    fclose(f);
+    return ok;
+}
+
+static bool editor_exe(bool premiere, Path *out); // options.cpp
+
+// Writes the XML next to the video and starts the editor; it's brought in there with File > Import.
+static void ed_open_in(bool premiere)
+{
+    Editor &ed = g_app.editor;
+    const char *app = premiere ? "Premiere Pro" : "DaVinci Resolve";
+    Path xml;
+    ed_save_record();
+    if (!ed_export_xml(&xml)) {
+        snprintf(ed.result, sizeof ed.result, "Couldn't write the XML for %s", app);
+        ed.result_error = true;
+        return;
+    }
+    char x8[MAX_PATH * 3];
+    wide_to_utf8(xml.s, x8, sizeof x8);
+    const char *name = strrchr(x8, '\\');
+    name = name ? name + 1 : x8;
+    log_line("editor: wrote %s for %s", x8, app);
+    Path exe;
+    if (!editor_exe(premiere, &exe)) {
+        snprintf(ed.result, sizeof ed.result, "Saved %s next to the video. %s isn't found: pick its exe in Options.", name, app);
+        ed.result_error = true;
+        return;
+    }
+    ShellExecuteW(0, L"open", exe.s, 0, 0, SW_SHOWNORMAL);
+    snprintf(ed.result, sizeof ed.result, "Saved %s next to the video. In %s: File > Import%s.", name, app,
+             premiere ? "" : " > Timeline");
+    ed.result_error = false;
+}
+
 static void ed_edit_tab(f32 w)
 {
     Editor &ed = g_app.editor;
@@ -1583,8 +1793,69 @@ static void ed_edit_tab(f32 w)
         ed_undo(false);
     ImGui::SameLine();
     if (kit_button(ICON_RIGHT "  Redo", KIT_GHOST, ImVec2(bw, 0), ed.redo_count > 0)) ed_undo(true);
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // The edit as an XML sequence, into a full editor
+    ed_caption("OPEN IN");
+    if (kit_button(ICON_VIDEO "  Premiere Pro", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(true);
+    ImGui::SameLine();
+    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(false);
+    if (ed.result[0]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, rgb(ed.result_error ? 0xff8a92 : COL_DIM));
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
+        ImGui::TextUnformatted(ed.result);
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+    }
 }
 
+// A file the tab made or lists: Copy (to paste anywhere), Play, Show in folder. Right-aligned at the cursor's row.
+static void ed_file_actions(const char *path, f32 right, f32 y)
+{
+    Editor &ed = g_app.editor;
+    f32 fh = ImGui::GetFrameHeight(), gap = kit_px(2);
+    wchar_t w[MAX_PATH];
+    utf8_to_wide(path, w, MAX_PATH);
+    const char *name = strrchr(path, '\\');
+    name = name ? name + 1 : path;
+    ImGui::SetCursorScreenPos(ImVec2(right - 3 * fh - 2 * gap, y));
+    kit_next_tip("Copy the file");
+    if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) {
+        bool ok = clipboard_copy_file(w);
+        snprintf(ed.result, sizeof ed.result, ok ? "Copied %s" : "Couldn't copy %s", name);
+        ed.result_error = !ok;
+        str_set(ed.result_path, path);
+    }
+    ImGui::SameLine(0, gap);
+    kit_next_tip("Play");
+    if (kit_icon_button(ICON_PLAY, "##play", KIT_GHOST)) ShellExecuteW(0, L"open", w, 0, 0, SW_SHOWNORMAL);
+    ImGui::SameLine(0, gap);
+    kit_next_tip("Show in folder");
+    if (kit_icon_button(ICON_FOLDER, "##show", KIT_GHOST)) {
+        Path p;
+        wcsncpy(p.s, w, MAX_PATH - 1);
+        p.s[MAX_PATH - 1] = 0;
+        reveal_file(p);
+    }
+}
+
+// A card's title row: icon, title, one dim line under it
+static void ed_card_head(const char *icon, const char *title, const char *line)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 lh = ImGui::GetTextLineHeight();
+    dl->AddText(a, col32(COL_ACCENT), icon);
+    f32 tx = a.x + lh + kit_px(8);
+    dl->AddText(ImVec2(tx, a.y), col32(COL_TEXT), title);
+    ImGui::PushFont(g_font_small);
+    dl->AddText(ImVec2(tx, a.y + lh + kit_px(2)), col32(COL_DIM), line);
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(1, lh + g_font_small->FontSize + kit_px(8)));
+}
+
+// Keep and Share. Keep makes a full-quality copy of the trim in Clips; Share makes a small one in the temp share
+// folder and puts it on the clipboard. Neither touches the original, so a share can be made again at another size.
 static void ed_share_tab(f32 w)
 {
     Editor &ed = g_app.editor;
@@ -1592,79 +1863,111 @@ static void ed_share_tab(f32 w)
     f32 fh = ImGui::GetFrameHeight();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     bool keeping = ed_job_busy(ed.keep_job), sharing = ed_job_busy(ed.share_job);
+    f32 pad = kit_px(12), iw = w - 2 * pad;
 
-    ed_caption("KEEP");
-    kit_dim("Full quality, next to the original");
-    if (kit_button(ICON_SAVE "  Keep", KIT_SECONDARY, ImVec2(w, 0), !keeping)) ed_start(SAVE_KEEP);
-    ImGui::Dummy(ImVec2(1, kit_px(8)));
+    // The name both use
+    ed_caption("NAME");
+    if (!ed.out_name[0]) str_set(ed.out_name, ed.item.name);
+    ImGui::SetNextItemWidth(w);
+    ImGui::InputText("##outname", ed.out_name, sizeof ed.out_name);
+    ImGui::Dummy(ImVec2(1, kit_px(6)));
 
-    ed_caption("SHARE");
-    kit_dim("A small copy, put on the clipboard");
-    static const char *const sizes[] = {"20 MB", "50 MB", "Custom"};
-    // The size field keeps a fixed width beside the chips, greyed showing the preset's size until Custom.
-    f32 mb_w = kit_px(92);
-    kit_segmented("##size", sizes, 3, &ed.share_size, (w - mb_w - st.ItemSpacing.x - kit_px(6)) / 3);
-    ImGui::SameLine();
-    if (ed.custom_mb <= 0) ed.custom_mb = 25;
-    ImGui::SetNextItemWidth(mb_w);
-    if (ed.share_size == 2) ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
-    else {
-        f32 shown = ed_share_mb();
-        ImGui::BeginDisabled();
-        ImGui::InputFloat("##mb", &shown, 0, 0, "%.0f MB");
-        ImGui::EndDisabled();
-    }
-    if (ed.custom_mb < 1) ed.custom_mb = 1;
-    if (ed.custom_mb > 4000) ed.custom_mb = 4000;
-
-    // What the trimmed length comes out as at that size, or how short it has to be: always one line, in its place.
+    // How long the trim is, for both cards
     const MediaInfo &m = ed.item.info;
     f64 in_s = ed.edit.in_s > 0 ? ed.edit.in_s : 0, len = m.duration;
     if (ed.player.duration > 0) len = ed.player.duration;
     if (ed.edit.out_s > in_s) len = ed.edit.out_s;
     len -= in_s;
-    f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
-    SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
-    char est[96];
-    if (plan.fits) {
-        char size[24];
-        fmt_size((u64)plan.estimate_bytes, size, sizeof size);
-        snprintf(est, sizeof est, "About %s - %dp%.0f - %.1f Mbps", size, plan.side, plan.fps,
-                 plan.video_kbps / 1000.0);
-        kit_dim("%s", est);
-    } else {
-        char most[32];
-        fmt_time(plan.max_duration, most, sizeof most);
-        snprintf(est, sizeof est, "Too long for this size: trim to under %s", most);
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(col32(0xff8a92)), "%s", est);
-    }
-    if (kit_button(ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(w, 0), !sharing && plan.fits)) ed_start(SAVE_SHARE);
+    char len_s[32];
+    fmt_time(len, len_s, sizeof len_s);
 
-    // Progress and the result, always in their places: a status line, a thin bar, two lines for the result.
-    SaveJobView *v = save_view(sharing ? ed.share_job : keeping ? ed.keep_job : 0);
-    f32 frac = 0;
-    ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 line_h = ImGui::GetTextLineHeight(), bar_h = kit_px(4);
-    if (v) {
-        char label[64];
-        frac = v->progress;
-        snprintf(label, sizeof label, "%s%s", v->kind == SAVE_SHARE ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
-        char pc[16];
-        snprintf(pc, sizeof pc, "%.0f%%", frac * 100);
-        dl->AddText(a, col32(COL_DIM), label);
-        dl->AddText(ImVec2(a.x + w - ImGui::CalcTextSize(pc).x, a.y), col32(COL_DIM), pc);
-        f32 by = a.y + line_h + kit_px(6);
-        dl->AddRectFilled(ImVec2(a.x, by), ImVec2(a.x + w, by + bar_h), col32(COL_PANEL2), bar_h);
-        if (frac > 0) dl->AddRectFilled(ImVec2(a.x, by), ImVec2(a.x + w * (frac > 1 ? 1 : frac), by + bar_h), col32(COL_ACCENT), bar_h);
-    } else if (ed.result[0]) {
-        ImGui::PushClipRect(a, ImVec2(a.x + w, a.y + line_h * 2 + kit_px(2)), true);
-        dl->AddText(g_font, ImGui::GetFontSize(), a, col32(ed.result_error ? 0xff8a92 : COL_OK), ed.result, 0, w);
-        ImGui::PopClipRect();
+    // Keep
+    f32 keep_h = 2 * pad + ImGui::GetTextLineHeight() + g_font_small->FontSize + kit_px(8) + fh;
+    if (kit_card_begin("##keepcard", ImVec2(w, keep_h), 12)) {
+        char line[96];
+        snprintf(line, sizeof line, "Full quality, %s, saved in Clips", len_s);
+        ed_card_head(ICON_SAVE, "Keep", line);
+        if (kit_button(keeping ? "Keeping..." : "Keep", KIT_SECONDARY, ImVec2(iw, 0), !keeping)) ed_start(SAVE_KEEP);
     }
-    ImGui::Dummy(ImVec2(w, line_h * 2 + kit_px(4)));
+    kit_card_end();
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 
-    // Recent shares, as many to a page as fit.
+    // Share
+    f32 share_h = 2 * pad + ImGui::GetTextLineHeight() + g_font_small->FontSize + kit_px(8) + 3 * fh + 2 * st.ItemSpacing.y;
+    if (kit_card_begin("##sharecard", ImVec2(w, share_h), 12)) {
+        ed_card_head(ICON_SHARE, "Share", "A small copy on the clipboard; the original stays");
+        static const char *const sizes[] = {"20 MB", "50 MB", "Custom"};
+        // The size field keeps its width beside the chips, greyed with the preset's size until Custom.
+        f32 mb_w = kit_px(84);
+        kit_segmented("##size", sizes, 3, &ed.share_size, (iw - mb_w - st.ItemSpacing.x - kit_px(6)) / 3);
+        ImGui::SameLine();
+        if (ed.custom_mb <= 0) ed.custom_mb = 25;
+        ImGui::SetNextItemWidth(mb_w);
+        if (ed.share_size == 2) ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
+        else {
+            f32 shown = ed_share_mb();
+            ImGui::BeginDisabled();
+            ImGui::InputFloat("##mb", &shown, 0, 0, "%.0f MB");
+            ImGui::EndDisabled();
+        }
+        if (ed.custom_mb < 1) ed.custom_mb = 1;
+        if (ed.custom_mb > 4000) ed.custom_mb = 4000;
+
+        // What it comes out as at that size, or how short it has to be: one line, in its place.
+        f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
+        SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
+        char est[96];
+        ImVec2 ea = ImGui::GetCursorScreenPos();
+        f32 ey = floorf(ea.y + (fh - ImGui::GetTextLineHeight()) / 2);
+        if (plan.fits) {
+            char size[24];
+            fmt_size((u64)plan.estimate_bytes, size, sizeof size);
+            snprintf(est, sizeof est, "About %s - %dp%.0f - %.1f Mbps", size, plan.side, plan.fps, plan.video_kbps / 1000.0);
+            dl->AddText(ImVec2(ea.x, ey), col32(COL_DIM), est);
+        } else {
+            char most[32];
+            fmt_time(plan.max_duration, most, sizeof most);
+            snprintf(est, sizeof est, "Too long: trim to under %s", most);
+            dl->AddText(ImVec2(ea.x, ey), col32(0xff8a92), est);
+        }
+        ImGui::Dummy(ImVec2(iw, fh));
+        if (kit_button(sharing ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(iw, 0), !sharing && plan.fits))
+            ed_start(SAVE_SHARE);
+    }
+    kit_card_end();
+    ImGui::Dummy(ImVec2(1, kit_px(4)));
+
+    // Progress, or the last result with its file's actions: always one row, in its place.
+    SaveJobView *v = save_view(sharing ? ed.share_job : keeping ? ed.keep_job : 0);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 line_h = ImGui::GetTextLineHeight(), bar_h = kit_px(4);
+    f32 ty = floorf(a.y + (fh - line_h) / 2);
+    if (v) {
+        char label[64], pc[16];
+        f32 frac = v->progress;
+        snprintf(label, sizeof label, "%s%s", v->kind == SAVE_SHARE ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
+        snprintf(pc, sizeof pc, "%.0f%%", frac * 100);
+        dl->AddText(ImVec2(a.x, a.y), col32(COL_DIM), label);
+        dl->AddText(ImVec2(a.x + w - ImGui::CalcTextSize(pc).x, a.y), col32(COL_DIM), pc);
+        f32 by = a.y + line_h + kit_px(4);
+        dl->AddRectFilled(ImVec2(a.x, by), ImVec2(a.x + w, by + bar_h), col32(COL_PANEL2), bar_h);
+        if (frac > 0) dl->AddRectFilled(ImVec2(a.x, by), ImVec2(a.x + w * (frac > 1 ? 1 : frac), by + bar_h), col32(COL_ACCENT), bar_h);
+        ImGui::Dummy(ImVec2(w, fh));
+    } else if (ed.result[0]) {
+        bool file = ed.result_path[0] && !ed.result_error;
+        f32 text_w = file ? w - 3 * fh - kit_px(12) : w;
+        text_clipped(dl, ImVec2(a.x, ty), text_w, col32(ed.result_error ? 0xff8a92 : COL_OK), ed.result);
+        ImGui::PushID("result");
+        if (file) ed_file_actions(ed.result_path, a.x + w, a.y);
+        else ImGui::Dummy(ImVec2(w, fh));
+        ImGui::PopID();
+        ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + fh + st.ItemSpacing.y));
+    } else {
+        ImGui::Dummy(ImVec2(w, fh));
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(4)));
+
+    // Recent shares, as many to a page as fit: name, age and size, then the file's actions
     f32 row_step = fh + st.ItemSpacing.y;
     i32 rows = (i32)((ImGui::GetContentRegionAvail().y - row_step - kit_px(4)) / row_step);
     rows = rows < 1 ? 1 : rows > 8 ? 8 : rows;
@@ -1679,27 +1982,24 @@ static void ed_share_tab(f32 w)
             const ShareFile &f = ed.shares[i];
             char age[48], size[24], line[96];
             i64 mins = (now_us() - f.mtime_us) / 60000000;
-            if (mins < 1) str_set(age, "just now");
-            else if (mins < 60) snprintf(age, sizeof age, "%lld min ago", mins);
-            else if (mins < 48 * 60) snprintf(age, sizeof age, "%lld h ago", mins / 60);
-            else snprintf(age, sizeof age, "%lld days ago", mins / 1440);
+            if (mins < 1) str_set(age, "now");
+            else if (mins < 60) snprintf(age, sizeof age, "%lldm", mins);
+            else if (mins < 48 * 60) snprintf(age, sizeof age, "%lldh", mins / 60);
+            else snprintf(age, sizeof age, "%lldd", mins / 1440);
             fmt_size(f.size, size, sizeof size);
-            snprintf(line, sizeof line, "%s - %s", age, size);
-            f32 text_w = w - fh - kit_px(8);
+            snprintf(line, sizeof line, "%s - %s", size, age);
+            f32 text_w = w - 3 * fh - kit_px(12);
             ImVec2 ls = ImGui::CalcTextSize(line);
-            f32 ty = floorf(at.y + (fh - ls.y) / 2);
-            text_clipped(dl, ImVec2(at.x, ty), text_w - ls.x - kit_px(10), col32(COL_TEXT), f.name);
-            dl->AddText(ImVec2(at.x + text_w - ls.x, ty), col32(COL_DIM), line);
-            ImGui::SetCursorScreenPos(ImVec2(at.x + w - fh, at.y));
-            kit_next_tip("Copy the file");
-            if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) {
-                wchar_t name[200];
-                utf8_to_wide(f.name, name, COUNT(name));
-                Path pth = path_join(g_app.paths.share_dir, name);
-                bool ok = clipboard_copy_file(pth.s);
-                snprintf(ed.result, sizeof ed.result, ok ? "Copied %s" : "Couldn't copy %s", f.name);
-                ed.result_error = !ok;
-            }
+            f32 ry = floorf(at.y + (fh - ls.y) / 2);
+            text_clipped(dl, ImVec2(at.x, ry), text_w - ls.x - kit_px(8), col32(COL_TEXT), f.name);
+            dl->AddText(ImVec2(at.x + text_w - ls.x, ry), col32(COL_DIM), line);
+            wchar_t name[200];
+            utf8_to_wide(f.name, name, COUNT(name));
+            Path pth = path_join(g_app.paths.share_dir, name);
+            char u[MAX_PATH * 2];
+            wide_to_utf8(pth.s, u, sizeof u);
+            ed_file_actions(u, at.x + w, at.y);
+            ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + fh + st.ItemSpacing.y));
         } else {
             if (i == 0) {
                 char none[64];
@@ -1711,6 +2011,23 @@ static void ed_share_tab(f32 w)
         }
         ImGui::PopID();
     }
+}
+
+// Where Left or Right goes from `at`: the nearest key on a lane shown, or end of the trim, that way.
+static f64 ed_next_stop(f64 at, i32 dir)
+{
+    Editor &ed = g_app.editor;
+    f64 best = dir > 0 ? ed_duration() : 0, eps = ed_frame() * 0.5;
+    auto take = [&](f64 t) {
+        if (dir > 0 ? t > at + eps && t < best : t < at - eps && t > best) best = t;
+    };
+    take(ed.edit.in_s);
+    take(ed_out());
+    for (i32 l = 0; l < ED_LANES; l++) {
+        if (!ed_lane_shown(l)) continue;
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) take(ln_get(ed.edit, l, k).t);
+    }
+    return best;
 }
 
 static void screen_editor()
@@ -1964,9 +2281,17 @@ static void screen_editor()
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) ed_undo(true);
         if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) ed_view_zoom(1 / 1.6, p.pos);
         if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) ed_view_zoom(1.6, p.pos);
-        f64 step = io.KeyShift ? 1.0 : ed_frame();
-        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) { player_pause(&p); player_seek(&p, p.pos - step); }
-        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) { player_pause(&p); player_seek(&p, p.pos + step); }
+        // Left and Right jump between keys and the trim's ends (a second with Shift); comma and period step a frame
+        for (i32 dir = -1; dir <= 1; dir += 2) {
+            if (ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_LeftArrow : ImGuiKey_RightArrow)) {
+                player_pause(&p);
+                player_seek(&p, io.KeyShift ? p.pos + dir : ed_next_stop(p.pos, dir));
+            }
+            if (!ctrl && ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_Comma : ImGuiKey_Period)) {
+                player_pause(&p);
+                player_seek(&p, p.pos + dir * ed_frame());
+            }
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             if (ed_sel_count()) ed_sel_clear();
             else back = true;
