@@ -1839,19 +1839,22 @@ static void ed_file_actions(const char *path, f32 right, f32 y)
     }
 }
 
-// A card's title row: icon, title, one dim line under it
-static void ed_card_head(const char *icon, const char *title, const char *line)
+// The height of a card's title row
+static f32 ed_card_head_h() { return ImGui::GetTextLineHeight() + kit_px(2) + g_font_small->FontSize; }
+
+// A card's title row: icon, title, one dim line under it, kept to width w (its button goes to the right of it)
+static void ed_card_head(const char *icon, const char *title, const char *line, f32 w, u32 line_col = 0)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
     f32 lh = ImGui::GetTextLineHeight();
     dl->AddText(a, col32(COL_ACCENT), icon);
     f32 tx = a.x + lh + kit_px(8);
-    dl->AddText(ImVec2(tx, a.y), col32(COL_TEXT), title);
+    text_clipped(dl, ImVec2(tx, a.y), a.x + w - tx, col32(COL_TEXT), title);
     ImGui::PushFont(g_font_small);
-    dl->AddText(ImVec2(tx, a.y + lh + kit_px(2)), col32(COL_DIM), line);
+    text_clipped(dl, ImVec2(tx, a.y + lh + kit_px(2)), a.x + w - tx, line_col ? line_col : col32(COL_DIM), line);
     ImGui::PopFont();
-    ImGui::Dummy(ImVec2(1, lh + g_font_small->FontSize + kit_px(8)));
+    ImGui::Dummy(ImVec2(1, ed_card_head_h()));
 }
 
 // Keep and Share. Keep makes a full-quality copy of the trim in Clips; Share makes a small one in the temp share
@@ -1863,14 +1866,13 @@ static void ed_share_tab(f32 w)
     f32 fh = ImGui::GetFrameHeight();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     bool keeping = ed_job_busy(ed.keep_job), sharing = ed_job_busy(ed.share_job);
-    f32 pad = kit_px(12), iw = w - 2 * pad;
+    f32 iw = w;
 
     // The name both use
-    ed_caption("NAME");
     if (!ed.out_name[0]) str_set(ed.out_name, ed.item.name);
     ImGui::SetNextItemWidth(w);
-    ImGui::InputText("##outname", ed.out_name, sizeof ed.out_name);
-    ImGui::Dummy(ImVec2(1, kit_px(6)));
+    ImGui::InputTextWithHint("##outname", "Name", ed.out_name, sizeof ed.out_name);
+    ImGui::Dummy(ImVec2(1, kit_px(2)));
 
     // How long the trim is, for both cards
     const MediaInfo &m = ed.item.info;
@@ -1881,21 +1883,43 @@ static void ed_share_tab(f32 w)
     char len_s[32];
     fmt_time(len, len_s, sizeof len_s);
 
-    // Keep
-    f32 keep_h = 2 * pad + ImGui::GetTextLineHeight() + g_font_small->FontSize + kit_px(8) + fh;
-    if (kit_card_begin("##keepcard", ImVec2(w, keep_h), 12)) {
+    // Keep: the title row with its button beside it
+    f32 head_h = ed_card_head_h(), bw = kit_px(120), gap = kit_px(12);
+    f32 keep_row = head_h > fh ? head_h : fh;
+    {
         char line[96];
         snprintf(line, sizeof line, "Full quality, %s, saved in Clips", len_s);
-        ed_card_head(ICON_SAVE, "Keep", line);
-        if (kit_button(keeping ? "Keeping..." : "Keep", KIT_SECONDARY, ImVec2(iw, 0), !keeping)) ed_start(SAVE_KEEP);
+        ImVec2 top = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
+        ed_card_head(ICON_SAVE, "Keep", line, iw - bw - gap);
+        ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
+        if (kit_button(keeping ? "Keeping..." : "Keep", KIT_SECONDARY, ImVec2(bw, 0), !keeping)) ed_start(SAVE_KEEP);
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
     }
-    kit_card_end();
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 
-    // Share
-    f32 share_h = 2 * pad + ImGui::GetTextLineHeight() + g_font_small->FontSize + kit_px(8) + 3 * fh + 2 * st.ItemSpacing.y;
-    if (kit_card_begin("##sharecard", ImVec2(w, share_h), 12)) {
-        ed_card_head(ICON_SHARE, "Share", "A small copy on the clipboard; the original stays");
+    // Share: the title row says what it comes out as, with the button beside it; the size chips under it
+    {
+        f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
+        SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
+        char est[96];
+        if (plan.fits) {
+            char size[24];
+            fmt_size((u64)plan.estimate_bytes, size, sizeof size);
+            snprintf(est, sizeof est, "About %s, %dp%.0f, %.1f Mbps", size, plan.side, plan.fps, plan.video_kbps / 1000.0);
+        } else {
+            char most[32];
+            fmt_time(plan.max_duration, most, sizeof most);
+            snprintf(est, sizeof est, "Too long: trim to under %s", most);
+        }
+        ImVec2 top = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
+        ed_card_head(ICON_SHARE, "Share", est, iw - bw - gap, plan.fits ? 0 : col32(0xff8a92));
+        ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
+        if (kit_button(sharing ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(bw, 0), !sharing && plan.fits))
+            ed_start(SAVE_SHARE);
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
+
         static const char *const sizes[] = {"20 MB", "50 MB", "Custom"};
         // The size field keeps its width beside the chips, greyed with the preset's size until Custom.
         f32 mb_w = kit_px(84);
@@ -1912,29 +1936,7 @@ static void ed_share_tab(f32 w)
         }
         if (ed.custom_mb < 1) ed.custom_mb = 1;
         if (ed.custom_mb > 4000) ed.custom_mb = 4000;
-
-        // What it comes out as at that size, or how short it has to be: one line, in its place.
-        f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
-        SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
-        char est[96];
-        ImVec2 ea = ImGui::GetCursorScreenPos();
-        f32 ey = floorf(ea.y + (fh - ImGui::GetTextLineHeight()) / 2);
-        if (plan.fits) {
-            char size[24];
-            fmt_size((u64)plan.estimate_bytes, size, sizeof size);
-            snprintf(est, sizeof est, "About %s - %dp%.0f - %.1f Mbps", size, plan.side, plan.fps, plan.video_kbps / 1000.0);
-            dl->AddText(ImVec2(ea.x, ey), col32(COL_DIM), est);
-        } else {
-            char most[32];
-            fmt_time(plan.max_duration, most, sizeof most);
-            snprintf(est, sizeof est, "Too long: trim to under %s", most);
-            dl->AddText(ImVec2(ea.x, ey), col32(0xff8a92), est);
-        }
-        ImGui::Dummy(ImVec2(iw, fh));
-        if (kit_button(sharing ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(iw, 0), !sharing && plan.fits))
-            ed_start(SAVE_SHARE);
     }
-    kit_card_end();
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 
     // Progress, or the last result with its file's actions: always one row, in its place.
