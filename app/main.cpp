@@ -66,6 +66,7 @@ static void run_command(const char *text)
     } else if (!strcmp(cmd, "show")) { // show <page>: a page or tab by name, for screenshots and Stream Deck keys
         Library &lib = g_app.library;
         g_app.ui.help_close = true;
+        if (g_app.ui.setup_open && !starts_with(arg, "setup")) setup_finish("left for another page"); // it covers every page
         if (!strcmp(arg, "clips") || !strcmp(arg, "sessions")) {
             library_close_player();
             ui_show(SCREEN_LIBRARY);
