@@ -45,6 +45,10 @@ static void run_command(const char *text)
             if (secs <= 0) log_line("save: \"%s\" isn't a length (try 30s, 2m, 1h)", arg);
             else save_last(secs);
         }
+    } else if (!strcmp(cmd, "session")) { // session <from> <to> in Unix seconds: saved as a session
+        i64 from_us, to_us;
+        if (parse_range_us(arg, &from_us, &to_us) > 0) save_range(from_us, to_us, SAVE_SESSION, "");
+        else log_line("session: \"%s\" isn't a range (try session <from> <to> in Unix seconds)", arg);
     } else if (!strcmp(cmd, "pause") || !strcmp(cmd, "resume") || !strcmp(cmd, "toggle")) {
         bool pause = !strcmp(cmd, "pause") ? true : !strcmp(cmd, "resume") ? false : !g_app.recorder.paused;
         recorder_set_paused(pause);
