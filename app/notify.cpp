@@ -50,29 +50,47 @@ static void notify_fonts(f32 s)
     g_notify.icons = make(18, FW_NORMAL, L"Segoe MDL2 Assets");
 }
 
+// Shapes are drawn four times the size and scaled down, which smooths their edges (GDI's own are jagged); the
+// text and the tick go on afterwards at their real size.
 static void notify_paint(HWND hwnd)
 {
+    const i32 SS = 4;
     PAINTSTRUCT ps;
     HDC wdc = BeginPaint(hwnd, &ps);
     RECT r;
     GetClientRect(hwnd, &r);
-    // Drawn off screen, then copied, so it never flickers
-    HDC dc = CreateCompatibleDC(wdc);
-    HBITMAP bmp = CreateCompatibleBitmap(wdc, r.right, r.bottom);
-    HGDIOBJ old_bmp = SelectObject(dc, bmp);
+    HDC big = CreateCompatibleDC(wdc), dc = CreateCompatibleDC(wdc);
+    HBITMAP big_bmp = CreateCompatibleBitmap(wdc, r.right * SS, r.bottom * SS), bmp = CreateCompatibleBitmap(wdc, r.right, r.bottom);
+    HGDIOBJ old_big = SelectObject(big, big_bmp), old_bmp = SelectObject(dc, bmp);
     f32 s = g_notify.scale;
-    HBRUSH bg = CreateSolidBrush(notify_rgb(COL_PANEL2));
-    FillRect(dc, &r, bg);
-    DeleteObject(bg);
-    SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-
-    // A tick in an accent circle
     i32 pad = (i32)(16 * s), d = (i32)(36 * s), cy = r.bottom / 2;
-    HBRUSH acc = CreateSolidBrush(notify_rgb(COL_ACCENT));
-    HGDIOBJ old_brush = SelectObject(dc, acc);
-    Ellipse(dc, pad, cy - d / 2, pad + d, cy + d / 2);
-    SelectObject(dc, g_notify.icons);
+
+    RECT all = {0, 0, r.right * SS, r.bottom * SS};
+    HBRUSH bg = CreateSolidBrush(notify_rgb(COL_PANEL2));
+    FillRect(big, &all, bg);
+    DeleteObject(bg);
+    HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
+    // The accent circle the tick sits in
+    HGDIOBJ old_brush = SelectObject(big, CreateSolidBrush(notify_rgb(COL_ACCENT)));
+    Ellipse(big, pad * SS, (cy - d / 2) * SS, (pad + d) * SS, (cy + d / 2) * SS);
+    // Edit (grey) and Share (accent)
+    for (i32 k = 1; k <= 2; k++) {
+        RECT q = notify_button(k);
+        bool hot = g_notify.hot == k;
+        u32 fill = k == 2 ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : (hot ? 0x34373e : 0x2c2e34);
+        DeleteObject(SelectObject(big, CreateSolidBrush(notify_rgb(fill))));
+        i32 rr = (i32)(8 * s) * SS;
+        RoundRect(big, q.left * SS, q.top * SS, q.right * SS + 1, q.bottom * SS + 1, rr, rr);
+    }
+    DeleteObject(SelectObject(big, old_brush));
+    SelectObject(big, old_pen);
+
+    SetStretchBltMode(dc, HALFTONE);
+    SetBrushOrgEx(dc, 0, 0, 0);
+    StretchBlt(dc, 0, 0, r.right, r.bottom, big, 0, 0, r.right * SS, r.bottom * SS, SRCCOPY);
+    SetBkMode(dc, TRANSPARENT);
+
+    HGDIOBJ old_font = SelectObject(dc, g_notify.icons);
     SetTextColor(dc, RGB(255, 255, 255));
     RECT ir = {pad, cy - d / 2, pad + d, cy + d / 2};
     const wchar_t tick[] = {0xE73E, 0}; // Segoe MDL2 Assets: CheckMark
@@ -89,27 +107,19 @@ static void notify_paint(HWND hwnd)
     SetTextColor(dc, notify_rgb(COL_DIM));
     RECT t2 = {tx, cy + (i32)(2 * s), tr, cy + (i32)(22 * s)};
     DrawTextW(dc, g_notify.file, -1, &t2, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-
-    // Edit (grey) and Share (accent)
     for (i32 k = 1; k <= 2; k++) {
-        RECT b = notify_button(k);
-        bool hot = g_notify.hot == k;
-        u32 fill = k == 2 ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : (hot ? 0x34373e : 0x2c2e34);
-        HBRUSH br = CreateSolidBrush(notify_rgb(fill));
-        SelectObject(dc, br);
-        i32 rr = (i32)(8 * s);
-        RoundRect(dc, b.left, b.top, b.right + 1, b.bottom + 1, rr, rr);
-        SelectObject(dc, acc);
-        DeleteObject(br);
+        RECT q = notify_button(k);
         SetTextColor(dc, k == 2 ? RGB(255, 255, 255) : notify_rgb(COL_TEXT));
-        DrawTextW(dc, k == 1 ? L"Edit" : L"Share", -1, &b, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(dc, k == 1 ? L"Edit" : L"Share", -1, &q, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
-    SelectObject(dc, old_brush);
-    SelectObject(dc, old_pen);
-    DeleteObject(acc);
+    SelectObject(dc, old_font);
+
     BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(big, old_big);
     SelectObject(dc, old_bmp);
+    DeleteObject(big_bmp);
     DeleteObject(bmp);
+    DeleteDC(big);
     DeleteDC(dc);
     EndPaint(hwnd, &ps);
 }
@@ -200,6 +210,11 @@ static void notify_show(const char *title, const char *path)
         g_notify.hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"clipback",
                                         WS_POPUP, work.right - 1, work.bottom - 1, 1, 1, 0, 0, wc.hInstance, 0);
         if (!g_notify.hwnd) return;
+        // Corners rounded by Windows 11, which smooths them; a window region's are jagged. Windows 10 leaves them square.
+        i32 round = 2; // DWMWCP_ROUND
+        COLORREF edge = notify_rgb(COL_LINE);
+        DwmSetWindowAttribute(g_notify.hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &round, sizeof round);
+        DwmSetWindowAttribute(g_notify.hwnd, 34 /* DWMWA_BORDER_COLOR */, &edge, sizeof edge);
     }
     str_set(g_notify.path, path);
     utf8_to_wide(title, g_notify.title, COUNT(g_notify.title));
@@ -212,8 +227,6 @@ static void notify_show(const char *title, const char *path)
     notify_fonts(s);
     i32 w = (i32)(NOTIFY_W * s), h = (i32)(NOTIFY_H * s), m = (i32)(16 * s);
     SetWindowPos(g_notify.hwnd, HWND_TOPMOST, work.right - w - m, work.bottom - h - m, w, h, SWP_NOACTIVATE);
-    i32 rr = (i32)(14 * s);
-    SetWindowRgn(g_notify.hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr, rr), TRUE);
     InvalidateRect(g_notify.hwnd, 0, FALSE);
     ShowWindow(g_notify.hwnd, SW_SHOWNOACTIVATE);
     SetTimer(g_notify.hwnd, NOTIFY_TIMER, NOTIFY_MS, 0);
