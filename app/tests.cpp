@@ -463,6 +463,9 @@ static void test_gamedb()
         sgdb_first(0, 0, pic, sizeof pic);
         T(!strcmp(pic, "null"));
         T(has_text("abc", 2, "ab") && !has_text("abc", 2, "bc"));
+        // only a plain no is kept as "none": no answer, a busy or broken server, or a refusal is asked again later
+        T(http_later(0) && http_later(429) && http_later(503) && http_later(403) && http_later(404));
+        T(!http_later(200) && !http_later(400));
     }
     // Its art: the icon for an icon; the hero for a cover, else the grid; nothing that isn't https
     static const char art[] = "{\"id\":\"s2\",\"grid\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"thumb\":\"t\",\"w\":920,\"h\":430},"
