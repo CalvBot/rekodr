@@ -17,7 +17,8 @@ enum : u32 {
     APPLY_HOTKEYS = 4,  // hotkeys_apply
 };
 
-enum AppsFilter : i32 { FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_COMMUNICATION, FILTER_APPS, FILTER_IGNORED, FILTER_FOLDERS };
+// The Apps tabs: not sorted yet, recorded (as a game, an app or chat), never recorded, and the folder rules.
+enum AppsFilter : i32 { FILTER_NEW, FILTER_INCLUDED, FILTER_IGNORED, FILTER_FOLDERS };
 
 static f32 dp(f32 v) { return v * g_dpi_scale; }
 
@@ -610,13 +611,11 @@ static bool app_folder_only(const AppInfo &a)
 
 static bool app_matches(const AppInfo &a, i32 filter, const char *search)
 {
-    if (!g_app.options.show_folder_apps && app_folder_only(a)) return false;
+    if (app_folder_only(a)) return false; // its folder's row stands for it (one per person in a call)
     AppCategory cat = app_category(g_app.config, a);
     switch (filter) {
     case FILTER_NEW: if (cat != CAT_NONE) return false; break;
-    case FILTER_GAMES: if (cat != CAT_GAME) return false; break;
-    case FILTER_COMMUNICATION: if (cat != CAT_COMMUNICATION) return false; break;
-    case FILTER_APPS: if (cat != CAT_APP) return false; break;
+    case FILTER_INCLUDED: if (cat == CAT_NONE || cat == CAT_IGNORED) return false; break;
     case FILTER_IGNORED: if (cat != CAT_IGNORED) return false; break;
     default: break;
     }
@@ -1199,10 +1198,10 @@ static void apps_rename_popup()
 // can have, the app's own one filled in its colour. All of it keeps its place whatever is chosen.
 static const AppCategory ROW_CATS[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION};
 static f32 cat_pill_w() { return dp(84); }
-static f32 cat_pills_w() { return kit_px(36) + dp(18) + COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4); }
+static f32 cat_pills_w() { return ImGui::GetFrameHeight() + dp(14) + COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4); }
 
-// `own` is filled; `inherited` (a folder's rule, when there's no own one) is only outlined. Switching it back on
-// makes it an App; picking a category of an excluded one includes it too.
+// A mute button, then the categories. `own` is filled; `inherited` (a folder's rule, when there's no own one) is
+// only outlined. Unmuting makes it an App; picking a category of a muted one includes it too.
 static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y, AppCategory *picked)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1211,12 +1210,12 @@ static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y,
     AppCategory effective = own != CAT_NONE ? own : inherited;
     bool included = effective != CAT_IGNORED;
     ImGui::SetCursorScreenPos(ImVec2(x, y));
-    bool inc = included;
-    if (kit_toggle("##include", &inc)) {
-        *picked = inc ? CAT_APP : CAT_IGNORED;
+    kit_next_tip(included ? "Don't record it" : "Record it");
+    if (kit_icon_button(included ? ICON_VOLUME : ICON_MUTE, "##mute", included ? KIT_GHOST : KIT_DANGER)) {
+        *picked = included ? CAT_IGNORED : CAT_APP;
         changed = true;
     }
-    x += kit_px(36) + dp(18);
+    x += h + dp(14);
     for (i32 i = 0; i < COUNT(ROW_CATS); i++) {
         AppCategory cat = ROW_CATS[i];
         ImVec2 p(x + i * (w + gap), y);
@@ -1393,55 +1392,35 @@ static void options_apps()
     if (o.order_dirty) apps_order_make();
     apps_order_extend();
 
-    // The filter (a button that drops the list, each with its count); search and Add on the right
-    static const char *chip_icons[] = {ICON_APPS, ICON_STAR, ICON_GAME, ICON_WINDOW, ICON_CHAT, ICON_MUTE, ICON_FOLDER};
-    static const char *chips[] = {"All", "New", "Games", "Apps", "Chat", "Excluded", "Folders"};
-    static const i32 chip_filter[] = {FILTER_ALL, FILTER_NEW, FILTER_GAMES, FILTER_APPS, FILTER_COMMUNICATION, FILTER_IGNORED,
-                                      FILTER_FOLDERS};
-    static const i32 chip_cat[] = {-1, CAT_NONE, CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
-    i32 counts[7] = {}, folder_only = 0;
+    // Tabs with their counts (each as wide as the widest can be, so none moves); search and Add on the right
+    static const char *tabs[] = {"New", "Included", "Excluded", "Folders"};
+    i32 counts[4] = {}, folder_only = 0;
     for (i32 i = 0; i < c.app_count; i++) {
         AppCategory cat = app_category(c, c.apps[i]);
-        bool hidden = app_folder_only(c.apps[i]);
-        folder_only += hidden;
-        if (hidden && !o.show_folder_apps) continue;
-        counts[0]++;
-        for (i32 k = 1; k < 6; k++) counts[k] += cat == chip_cat[k];
+        if (app_folder_only(c.apps[i])) {
+            folder_only++;
+            continue;
+        }
+        counts[cat == CAT_NONE ? FILTER_NEW : cat == CAT_IGNORED ? FILTER_IGNORED : FILTER_INCLUDED]++;
     }
-    counts[6] = c.folder_count;
+    counts[FILTER_FOLDERS] = c.folder_count;
     bool folders = o.filter == FILTER_FOLDERS;
     f32 fh = ImGui::GetFrameHeight();
-    i32 cur = 0;
-    for (i32 i = 0; i < COUNT(chips); i++)
-        if (o.filter == chip_filter[i]) cur = i;
-    f32 filter_w = dp(190), search_w = dp(220), add_w = dp(118);
-    char filter_label[96];
-    snprintf(filter_label, sizeof filter_label, "%s  %s   %d   " ICON_DOWN "##filter", chip_icons[cur], chips[cur], counts[cur]);
+    f32 search_w = dp(220), add_w = dp(118), tab_w = text_w(g_font, "Excluded") + text_w(g_font, "999") + kit_px(36);
     ImVec2 filter_at = ImGui::GetCursorScreenPos();
-    if (kit_button(filter_label, KIT_SECONDARY, ImVec2(filter_w, 0))) ImGui::OpenPopup("filter");
-    if (kit_wheel_step(&cur, COUNT(chips))) {
-        o.filter = chip_filter[cur];
-        o.order_dirty = true;
-        o.apps_page = 0;
-        o.folders_page = 0;
-    }
-    ImGui::SetNextWindowPos(ImVec2(filter_at.x, filter_at.y + fh + dp(6)));
-    lib_popup_style_push(8);
-    bool filter_open = ImGui::BeginPopup("filter");
-    lib_popup_style_pop();
-    if (filter_open) {
-        for (i32 i = 0; i < COUNT(chips); i++) {
-            char item[64];
-            snprintf(item, sizeof item, "%s   %d", chips[i], counts[i]);
-            if (lib_menu_item(chip_icons[i], item) && o.filter != chip_filter[i]) {
-                o.filter = chip_filter[i];
-                o.order_dirty = true;
-                o.apps_page = 0;
-                o.folders_page = 0;
-            }
+    for (i32 i = 0; i < COUNT(tabs); i++) {
+        char id[32], n[16];
+        snprintf(id, sizeof id, "%s##tab%d", tabs[i], i);
+        snprintf(n, sizeof n, "%d", counts[i]);
+        if (i) ImGui::SameLine(0, dp(6));
+        if (kit_chip(id, o.filter == i, n, tab_w) && o.filter != i) {
+            o.filter = i;
+            o.order_dirty = true;
+            o.apps_page = 0;
+            o.folders_page = 0;
         }
-        ImGui::EndPopup();
     }
+    f32 filter_w = COUNT(tabs) * tab_w + (COUNT(tabs) - 1) * dp(6);
     // The search takes what the row has left, between a narrowest and a widest
     ImGui::SetCursorScreenPos(ImVec2(filter_at.x + filter_w + dp(10), filter_at.y));
     f32 room = ImGui::GetContentRegionAvail().x - add_w - dp(10);
@@ -1486,7 +1465,9 @@ static void options_apps()
             if (o.order_count == 0 && r == 0) {
                 char msg[96];
                 if (o.search[0]) snprintf(msg, sizeof msg, "No match. Add %s with Add app.", o.search);
-                else snprintf(msg, sizeof msg, "%s", o.filter ? "None here" : "No apps have played sound yet");
+                else snprintf(msg, sizeof msg, "%s", o.filter == FILTER_NEW      ? "Nothing new. Apps show up here when they play sound"
+                                                     : o.filter == FILTER_INCLUDED ? "Nothing recorded yet. Pick Game, App or Chat on a new app"
+                                                                                   : "Nothing excluded. Mute an app to leave it out");
                 opt_empty_row(msg);
             }
             opt_row_end();
@@ -1517,7 +1498,8 @@ static void options_apps()
         if (playing) str_set(when, "playing now");
         else ago_text(a.last_heard_us, when, sizeof when);
         if (cat == CAT_GAME) game_summary(a, summary, sizeof summary);
-        snprintf(line, sizeof line, "%s - %s%s%s", a.exe.s, when, summary[0] ? " - " : "", summary);
+        if (!playing && !a.last_heard_us) when[0] = 0; // added by hand, not heard yet
+        snprintf(line, sizeof line, "%s%s%s%s%s", a.exe.s, when[0] ? " - " : "", when, summary[0] ? " - " : "", summary);
         opt_text_at(dl, g_font_small, ImVec2(text_x, ty + nh + dp(3)), playing ? COL_OK : COL_DIM, line, text_max);
 
         cat_pills(&a, pills_x, cy);
@@ -1594,13 +1576,10 @@ static void options_apps()
         snprintf(left, sizeof left, "%d folder%s", o.folders_shown, o.folders_shown == 1 ? "" : "s");
         opt_pager("folders", &o.folders_page, o.folders_shown, rows, left);
     } else {
-        snprintf(left, sizeof left, "%d app%s", o.order_count, o.order_count == 1 ? "" : "s");
-        bool shown = o.show_folder_apps;
-        opt_pager("apps", &o.apps_page, o.order_count, rows, left, &o.show_folder_apps, ICON_FOLDER "  Sorted by a folder", folder_only);
-        if (shown != o.show_folder_apps) {
-            o.order_dirty = true;
-            o.apps_page = 0;
-        }
+        if (folder_only && o.filter != FILTER_NEW)
+            snprintf(left, sizeof left, "%d app%s, %d more under Folders", o.order_count, o.order_count == 1 ? "" : "s", folder_only);
+        else snprintf(left, sizeof left, "%d app%s", o.order_count, o.order_count == 1 ? "" : "s");
+        opt_pager("apps", &o.apps_page, o.order_count, rows, left);
     }
 }
 
@@ -2470,6 +2449,12 @@ static void screen_options()
         options_list_monitors();
         app_icons_retry();
         if (o.capture_slot) capture_end(true);
+        // Apps opens on New when something's waiting to be sorted, else on what's recorded
+        bool any_new = false;
+        for (i32 i = 0; i < g_app.config.app_count; i++)
+            any_new |= app_category(g_app.config, g_app.config.apps[i]) == CAT_NONE;
+        if (o.filter == FILTER_NEW && !any_new) o.filter = FILTER_INCLUDED;
+        if (o.filter == FILTER_INCLUDED && any_new) o.filter = FILTER_NEW;
     }
     o.last_frame = frame;
 

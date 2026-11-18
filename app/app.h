@@ -657,7 +657,6 @@ struct OptionsUi {
     i32  menu_folder;     // the folder rule whose menu is open
     i32  folders_page;
     i32  folders_shown;   // rules the Folders list shows (after the search)
-    bool show_folder_apps; // list apps whose only category is a folder rule's (hidden by default: one per person called)
     i32  hotkeys_page;
     // Hotkeys: the one whose keys are being pressed, + 1 (0 = none)
     i32  capture_slot;
