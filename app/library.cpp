@@ -1117,14 +1117,16 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
 
 // A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
 // many it has on the right. The picked one is in the accent colour.
-static bool lib_game_item(const char *game, const char *label, i32 count, bool active)
+static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w = 0)
 {
-    f32 w = kit_px(228), h = kit_px(30), is = kit_px(20);
+    if (w <= 0) w = kit_px(228);
+    f32 h = kit_px(30), is = kit_px(20);
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::Selectable("##game", false, 0, ImVec2(w, h));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
     if (clicked) dev_click("menu", label);
     ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (active) dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_HOVER), kit_px(6));
     ImVec2 i0(a.x + kit_px(8), floorf(a.y + (h - is) / 2)), i1(i0.x + is, i0.y + is);
     ID3D11ShaderResourceView *icon = game ? game_icon(game) : 0;
     if (icon) {
@@ -2034,69 +2036,15 @@ static void screen_library()
     static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
     static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
-    f32 hgap = kit_px(8), view_w = kit_px(104), game_w = kit_px(168), drop_w = kit_px(112);
+    f32 hgap = kit_px(8), view_w = kit_px(104), drop_w = kit_px(112);
     for (i32 v = 0; v < 2; v++) {
         ImGui::SetCursorScreenPos(ImVec2(h0.x + v * (view_w + kit_px(4)), h0.y));
         if (lib_pill(v ? "##sessions" : "##clips", views[v], view_w, lib.view == v, false) && lib.view != v) lib_set_view((LibView)v);
     }
 
-    // The game: every game in this view with how many it has, most recent first, and a box to find one by name
-    ImVec2 game_at(h0.x + 2 * view_w + kit_px(4) + kit_px(16), h0.y);
-    ImGui::SetCursorScreenPos(game_at);
-    static char game_find[64];
-    if (lib_pill("##game", lib.game[0] ? lib.game : "All games", game_w, lib.game[0] != 0, true, lib.game[0] ? game_icon(lib.game) : 0)) {
-        game_find[0] = 0;
-        ImGui::OpenPopup("game");
-    }
-    i32 step = 0;
-    for (i32 c = 0; c < lib.game_count; c++)
-        if (!strcmp(lib.game, lib.games[c])) step = c + 1;
-    if (kit_wheel_step(&step, lib.game_count + 1)) {
-        if (step == 0) lib.game[0] = 0;
-        else str_set(lib.game, lib.games[step - 1]);
-        lib.scroll = lib.scroll_to = 0;
-        lib_refilter();
-    }
-    ImGui::SetNextWindowPos(ImVec2(game_at.x, game_at.y + fh + kit_px(6)));
-    lib_popup_style_push(8);
-    bool game_open = ImGui::BeginPopup("game");
-    lib_popup_style_pop();
-    if (game_open) {
-        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
-        kit_search("##find", game_find, sizeof game_find, "Find a game", kit_px(228));
-        bool enter = ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false);
-        ImGui::PopStyleColor();
-        ImGui::Dummy(ImVec2(0, kit_px(2)));
-        // The list scrolls under the box; Enter picks the first one shown
-        i32 shown = 0, pick = -1;
-        for (i32 c = 0; c <= lib.game_count; c++)
-            if (c == 0 ? !game_find[0] : lib_matches(lib.games[c - 1], game_find)) shown++;
-        f32 item_h = kit_px(30) + kit_px(2);
-        ImGui::BeginChild("##games", ImVec2(kit_px(228), (shown < 1 ? 1 : shown > 10 ? 10 : shown) * item_h), 0, ImGuiWindowFlags_NoBackground);
-        if (!shown) kit_dim("  No game matches");
-        for (i32 c = 0; c <= lib.game_count; c++) {
-            const char *name = c == 0 ? "All games" : lib.games[c - 1];
-            if (c == 0 ? game_find[0] != 0 : !lib_matches(name, game_find)) continue;
-            bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
-            ImGui::PushID(c);
-            if (lib_game_item(c == 0 ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active) || enter) pick = c;
-            ImGui::PopID();
-            if (pick >= 0) break;
-        }
-        ImGui::EndChild();
-        if (pick >= 0) {
-            if (pick == 0) lib.game[0] = 0;
-            else str_set(lib.game, lib.games[pick - 1]);
-            lib.scroll = lib.scroll_to = 0;
-            lib_refilter();
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
     // The date range; Custom opens the calendar
-    ImVec2 range_at(game_at.x + game_w + hgap, h0.y);
+    i32 step;
+    ImVec2 range_at(h0.x + 2 * view_w + kit_px(4) + kit_px(16), h0.y);
     ImGui::SetCursorScreenPos(range_at);
     if (lib_pill("##range", ranges[lib.range], drop_w, lib.range != 0, true)) ImGui::OpenPopup("range");
     step = lib.range;
@@ -2162,6 +2110,36 @@ static void screen_library()
         lib_refilter();
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
+
+    // The games down the left: all of them, then each game in this view with how many it has, most recent first.
+    // It scrolls on its own when there are more than fit.
+    {
+        f32 side_w = kit_px(210), side_h = ImGui::GetContentRegionAvail().y;
+        ImVec2 s0 = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL), kit_px(10));
+        ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + kit_px(6)));
+        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12)), 0, ImGuiWindowFlags_NoBackground);
+        i32 pick = -1;
+        for (i32 c = 0; c <= lib.game_count; c++) {
+            const char *name = c == 0 ? "All games" : lib.games[c - 1];
+            bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
+            ImGui::PushID(c);
+            if (lib_game_item(c == 0 ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
+                              side_w - kit_px(12)))
+                pick = c;
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        if (pick >= 0) {
+            if (pick == 0) lib.game[0] = 0;
+            else str_set(lib.game, lib.games[pick - 1]);
+            lib.scroll = lib.scroll_to = 0;
+            lib_refilter();
+        }
+        f32 side_gap = kit_px(16);
+        ImGui::SetCursorScreenPos(ImVec2(s0.x + side_w + side_gap, s0.y));
+        full_w -= side_w + side_gap;
+    }
 
     if (lib.view == LIB_SESSIONS) lib_unsaved_row(full_w);
 
