@@ -623,6 +623,20 @@ static void test_storeids()
     T(game_folder("C:/Games/Foo Bar/bin/x64/foo.exe", f, sizeof f, &steam) && !strcmp(f, "Foo Bar"));
     T(!game_folder("C:/foo.exe", f, sizeof f, &steam) && !game_folder("C:/bin/foo.exe", f, sizeof f, &steam));
     T(!game_folder("D:/Lib/steamapps/common/x.exe", f, sizeof f, &steam));
+    // a folder that could name the player is never sent
+    T(!game_folder("C:/Users/Sam/game.exe", f, sizeof f, &steam));
+    T(!game_folder("C:/Users/Sam/Downloads/game.exe", f, sizeof f, &steam));
+    T(!game_folder("C:/Users/Sam/OneDrive - Acme/Desktop/bin/game.exe", f, sizeof f, &steam));
+    T(game_folder("C:/Users/Sam/AppData/Local/Programs/Foo/foo.exe", f, sizeof f, &steam) && !strcmp(f, "Foo"));
+    {
+        wchar_t me[128];
+        char path[400], mine[384];
+        if (GetEnvironmentVariableW(L"USERNAME", me, COUNT(me))) {
+            wide_to_utf8(me, mine, sizeof mine);
+            snprintf(path, sizeof path, "D:/%s/game.exe", mine);
+            T(!game_folder(path, f, sizeof f, &steam));
+        }
+    }
 
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);

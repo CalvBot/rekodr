@@ -6,8 +6,30 @@
 // Only a game is asked about: one sorted as a Game, or one a store installed. No launcher's account files are
 // ever opened.
 
+// Whether the folder low[s..e) (lower case, in a path with backslashes) could name the player rather than a game:
+// a profile folder (x:\users\<name>), one Windows makes in a profile (Desktop, Downloads, OneDrive - <company>...),
+// or one named like their Windows account. Such a folder is never sent anywhere.
+static bool personal_folder(const char *low, i32 s, i32 e)
+{
+    i32 len = e - s;
+    static const char *const made[] = {"desktop", "downloads", "documents", "pictures", "videos", "music", "users",
+                                       "public", "appdata", "local", "locallow", "roaming", "programs",
+                                       "saved games", "favorites", "links", "contacts", "searches"};
+    for (auto m : made)
+        if ((i32)strlen(m) == len && !strncmp(low + s, m, len)) return true;
+    if (len >= 8 && !strncmp(low + s, "onedrive", 8)) return true;
+    if (s >= 7 && !strncmp(low + s - 7, "\\users\\", 7)) return true; // right in Users: a profile
+    wchar_t wuser[128];
+    char user[384];
+    DWORD n = GetEnvironmentVariableW(L"USERNAME", wuser, COUNT(wuser));
+    if (!n || n >= COUNT(wuser)) return false;
+    wide_to_utf8(wuser, user, sizeof user);
+    return (i32)strlen(user) == len && !_strnicmp(low + s, user, len);
+}
+
 // The folder a game is installed in, from its exe's path: the one under steamapps\common if it is there, else the
-// exe's own, leaving out the folders engines put exes in ("Binaries\Win64"). False if there is no folder.
+// exe's own, leaving out the folders engines put exes in ("Binaries\Win64"). False if there is no folder, or the
+// folder could name the player (personal_folder).
 static bool game_folder(const char *path, char *out, i32 cap, bool *steam)
 {
     out[0] = 0;
@@ -36,6 +58,7 @@ static bool game_folder(const char *path, char *out, i32 cap, bool *steam)
         bool skip = false;
         for (auto g : generic) skip |= (i32)strlen(g) == e - s && !strncmp(low + s, g, e - s);
         if (!skip) {
+            if (personal_folder(low, s, e)) return false;
             snprintf(out, cap, "%.*s", e - s, path + s);
             return true;
         }

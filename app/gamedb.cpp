@@ -1124,11 +1124,12 @@ static bool sgdb_art(const char *sid, char **body, i64 *len)
 
 // A search for a name: the art service's, else, when it doesn't hand out art, SteamGridDB's with the player's key.
 // Returns the status (403 with no key: nothing to search with); the answer, as the service gives it, in *body.
-static u32 art_search(const char *q, char **body, i64 *len)
+// `typing`: the player is still typing it, so the service keeps it in its edge cache only, not its store.
+static u32 art_search(const char *q, char **body, i64 *len, bool typing = false)
 {
     char enc[400], path[512];
     url_encode(q, enc, sizeof enc);
-    snprintf(path, sizeof path, "/v1/search?q=%s", enc);
+    snprintf(path, sizeof path, "/v1/search?q=%s%s", enc, typing ? "&typing=1" : "");
     u32 status = g_gamedb.service[0] ? art_service_get(path, body, len) : 403;
     if (status != 403 || !g_gamedb.sgdb_key[0]) return status;
     free(*body);
@@ -1247,7 +1248,7 @@ static void gamedb_fetch_find()
     if (same || !q[0]) return;
     char *body = 0;
     i64 len = 0;
-    u32 status = g_gamedb.online ? art_search(q, &body, &len) : 0;
+    u32 status = g_gamedb.online ? art_search(q, &body, &len, true) : 0;
     char names[8][128];
     i32 years[8], n = status == 200 && body ? art_search_list(body, len, names, years, 8) : 0;
     free(body);
