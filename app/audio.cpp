@@ -14,10 +14,13 @@
 //   <buffer>\audio\<yyyymmdd_hhmmss_mmm>_<exe>_<pid>\a_00000.mka ...  Opus in Matroska, 10 s segments
 //                                                    list.csv        written by ffmpeg's segment muxer
 //                                                    meta.json       {"kind","exe","pid","start_us"}
+//                                                    peaks.bin       the loudest of each 100 ms, a byte each
 //                                                    ffmpeg.log      ffmpeg's errors
 //   <buffer>\activity.tsv   "<us>\t<exe>" each time the game being played changes (empty exe = the desktop)
 // start_us is the wall-clock time of the first sample, from WASAPI's QPC packet times; gaps are padded with silence
 // and late audio is trimmed, so sample n of a stream is at start_us + n / 48000 s and lines up with the video.
+// peaks.bin is the timeline's waveform, measured as the audio is written: byte n is the loudest sample from
+// start_us + n * 100 ms, as the square root of its level times 255. It's written a second at a time.
 
 #include <mmreg.h>
 #include <mmdeviceapi.h>
@@ -171,13 +174,40 @@ static bool write_whole_file(const wchar_t *path, const char *text)
 // ---------------------------------------------------------------------------------------------------------------
 // Writer: one stream's PCM into its ffmpeg, kept on the wall clock
 
+enum { AUDIO_PEAK_FRAMES = AUDIO_RATE / 10 }; // a peaks.bin byte's worth of audio
+
 struct AudioWriter {
     bool   open;
     Proc   proc;
     HANDLE log;      // ffmpeg.log
+    HANDLE peaks;    // peaks.bin
     i64    start_us; // wall clock of sample 0
     i64    frames;   // written so far
+    f32    peak;     // the loudest so far of the 100 ms being measured
+    u8     pending[10];
+    i32    pending_count;
 };
+
+// Measures what's written into peaks.bin
+static void writer_peaks(AudioWriter *w, const u8 *bytes, u32 n)
+{
+    if (w->peaks == INVALID_HANDLE_VALUE) return;
+    const f32 *s = (const f32 *)bytes;
+    i64 frames = n / AUDIO_FRAME_BYTES, at = w->frames;
+    for (i64 i = 0; i < frames; i++) {
+        f32 l = fabsf(s[2 * i]), r = fabsf(s[2 * i + 1]), m = l > r ? l : r;
+        if (m > w->peak) w->peak = m;
+        if ((at + i + 1) % AUDIO_PEAK_FRAMES) continue;
+        f32 v = w->peak > 1 ? 1 : w->peak;
+        w->pending[w->pending_count++] = (u8)(sqrtf(v) * 255 + 0.5f);
+        w->peak = 0;
+        if (w->pending_count == COUNT(w->pending)) {
+            DWORD written;
+            WriteFile(w->peaks, w->pending, w->pending_count, &written, 0);
+            w->pending_count = 0;
+        }
+    }
+}
 
 static bool pipe_write_all(HANDLE pipe, const u8 *data, u32 n)
 {
@@ -213,6 +243,7 @@ static i64 writer_expected_us(const AudioWriter *w)
 static bool writer_write(AudioWriter *w, const u8 *bytes, u32 n)
 {
     if (!pipe_write_all(w->proc.in, bytes, n)) return false;
+    writer_peaks(w, bytes, n);
     w->frames += n / AUDIO_FRAME_BYTES;
     return true;
 }
@@ -255,7 +286,7 @@ static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, const c
                         const Path &ffmpeg, i64 start_us)
 {
     *w = {};
-    w->log = INVALID_HANDLE_VALUE;
+    w->log = w->peaks = INVALID_HANDLE_VALUE;
     SYSTEMTIME t;
     GetLocalTime(&t);
     wchar_t safe[48];
@@ -309,8 +340,11 @@ static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, const c
     if (!proc_start(ffmpeg.s, args, PROC_STDIN | PROC_STDERR, &w->proc)) {
         if (w->log != INVALID_HANDLE_VALUE) CloseHandle(w->log);
         *w = {};
+        w->log = w->peaks = INVALID_HANDLE_VALUE;
         return false;
     }
+    w->peaks = CreateFileW(path_join(dir, L"peaks.bin").s, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, 0,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
     w->open = true;
     w->start_us = start_us;
     char name[MAX_PATH * 3];
@@ -338,7 +372,13 @@ static void writer_finish(AudioWriter *w, const char *exe)
     }
     proc_close(&w->proc);
     if (w->log != INVALID_HANDLE_VALUE) CloseHandle(w->log);
+    if (w->peaks != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        if (w->pending_count) WriteFile(w->peaks, w->pending, w->pending_count, &written, 0);
+        CloseHandle(w->peaks);
+    }
     *w = {};
+    w->log = w->peaks = INVALID_HANDLE_VALUE;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

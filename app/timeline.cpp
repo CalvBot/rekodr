@@ -1077,6 +1077,90 @@ static i32 tl_saved_make(TlSaved *out, i32 cap, i64 from, i64 to)
 }
 
 // Sound groups, collapsible from their header in the track list. Kept for the run, like the view.
+// The sound lanes' waveforms: each stream's peaks.bin (audio.cpp), read whole once and then as it grows, with a
+// coarse copy (the loudest of each 64) so a long view reads a value or two per pixel. Kept for the streams drawn
+// lately; the rest are let go.
+enum { TL_PEAKS_MAX = 192, TL_PEAK_US = 100000, TL_PEAK_COARSE = 64 };
+struct TlPeaks {
+    char dir[128];
+    u8  *v, *coarse;
+    i32  count, cap;
+    u64  read_tick;  // GetTickCount64 when the file was last read
+    u32  used;       // the frame it was last drawn in
+};
+static TlPeaks g_tl_peaks[TL_PEAKS_MAX];
+static u32 g_tl_peaks_frame;
+
+static const TlPeaks *tl_peaks(const BufferIdx &b, const AudioStreamInfo &info, bool growing)
+{
+    TlPeaks *p = 0, *oldest = &g_tl_peaks[0];
+    for (TlPeaks &q : g_tl_peaks) {
+        if (q.dir[0] && !strcmp(q.dir, info.dir)) { p = &q; break; }
+        if (q.used < oldest->used) oldest = &q;
+    }
+    u64 tick = GetTickCount64();
+    if (!p) {
+        p = oldest;
+        free(p->v);
+        free(p->coarse);
+        *p = {};
+        str_set(p->dir, info.dir);
+    } else if (!growing || tick - p->read_tick < 1000) {
+        p->used = g_tl_peaks_frame;
+        return p;
+    }
+    p->used = g_tl_peaks_frame;
+    p->read_tick = tick;
+    // What's been added since the last read
+    wchar_t wdir[128];
+    utf8_to_wide(info.dir, wdir, COUNT(wdir));
+    Path path = path_join(path_join(path_join(g_tl.buffer_dir, L"audio"), wdir), L"peaks.bin");
+    HANDLE h = CreateFileW(path.s, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) return p;
+    LARGE_INTEGER size;
+    if (GetFileSizeEx(h, &size) && size.QuadPart > p->count && size.QuadPart < (1 << 24)) {
+        i32 n = (i32)size.QuadPart;
+        if (n > p->cap) {
+            i32 cap = n + 6000; // ten minutes to grow into
+            u8 *v = (u8 *)realloc(p->v, cap), *c = (u8 *)realloc(p->coarse, cap / TL_PEAK_COARSE + 1);
+            if (v) p->v = v;
+            if (c) p->coarse = c;
+            if (v && c) p->cap = cap;
+        }
+        LARGE_INTEGER at;
+        at.QuadPart = p->count;
+        DWORD got = 0;
+        if (n <= p->cap && SetFilePointerEx(h, at, 0, FILE_BEGIN) && ReadFile(h, p->v + p->count, n - p->count, &got, 0)) {
+            i32 from = p->count / TL_PEAK_COARSE;
+            p->count += (i32)got;
+            for (i32 k = from; k * TL_PEAK_COARSE < p->count; k++) {
+                u8 m = 0;
+                for (i32 i = k * TL_PEAK_COARSE; i < (k + 1) * TL_PEAK_COARSE && i < p->count; i++) m = p->v[i] > m ? p->v[i] : m;
+                p->coarse[k] = m;
+            }
+        }
+    }
+    CloseHandle(h);
+    (void)b;
+    return p;
+}
+
+// The loudest of a stream's peaks from a to z (wall clock), 0..1 as drawn
+static f32 tl_peak_in(const TlPeaks &p, i64 start_us, i64 a, i64 z)
+{
+    i64 i0 = (a - start_us) / TL_PEAK_US, i1 = (z - start_us) / TL_PEAK_US + 1;
+    if (i0 < 0) i0 = 0;
+    if (i1 > p.count) i1 = p.count;
+    if (i1 <= i0) return 0;
+    u8 m = 0;
+    if (i1 - i0 > 2 * TL_PEAK_COARSE) {
+        for (i64 k = i0 / TL_PEAK_COARSE; k * TL_PEAK_COARSE < i1; k++) m = p.coarse[k] > m ? p.coarse[k] : m;
+    } else {
+        for (i64 i = i0; i < i1; i++) m = p.v[i] > m ? p.v[i] : m;
+    }
+    return m / 255.f;
+}
+
 // The sound lanes: every app of a kind summed into one, always all four
 static const i32 TL_LANES = 4;
 static const char *const TL_LANE_ICON[TL_LANES] = {ICON_MIC, ICON_GAME, ICON_CHAT, ICON_APPS};
@@ -1409,13 +1493,37 @@ static void screen_timeline()
         tl_span(c, v.a, v.z, y_saved + 1 * s, saved_h - 2 * s, col);
     }
 
-    // Sound: when each app had a stream open, summed into its kind's lane
+    // Sound: when each app had a stream open, faintly, and over it the loudest of the lane's apps at each moment
+    g_tl_peaks_frame++;
+    static f32 lane_peak[TL_LANES][2048];
+    f32 wstep = floorf(2 * s) > 1 ? floorf(2 * s) : 1;
+    i32 columns = (i32)((c.x1 - c.x0) / wstep) + 1;
+    if (columns > 2048) columns = 2048;
+    memset(lane_peak, 0, sizeof lane_peak);
+    for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
+        if (tl.stream_row[st] < 0) continue;
+        const AudioStreamInfo &info = b.streams[st];
+        if (!info.seg_count) continue;
+        const AudioSeg &last = b.audio_segs[info.first_seg + info.seg_count - 1];
+        i64 st_end = last.open ? now : last.end_us;
+        if (st_end < c.start || info.start_us > view_end) continue;
+        const TlPeaks *pk = tl_peaks(b, info, last.open);
+        if (!pk->count) continue;
+        i32 k = row_lane[tl.stream_row[st]];
+        for (i32 i = 0; i < columns; i++) {
+            f32 x = c.x0 + i * wstep;
+            i64 a = tl_t(c, x), z = tl_t(c, x + wstep);
+            if (z < info.start_us || a > st_end) continue;
+            f32 v = tl_peak_in(*pk, info.start_us, a, z);
+            if (v > lane_peak[k][i]) lane_peak[k][i] = v;
+        }
+    }
     for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
         if (tl.stream_row[st] < 0) continue;
         i32 k = row_lane[tl.stream_row[st]];
         const AudioStreamInfo &info = b.streams[st];
         f32 y = y_snd + k * line_h + bar_in, h = line_h - 2 * bar_in;
-        ImU32 col = col32(TL_LANE_COL[k], 0.9f);
+        ImU32 col = col32(TL_LANE_COL[k], 0.25f);
         TlRun run = {};
         for (i32 j = 0; j < info.seg_count; j++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + j];
@@ -1426,6 +1534,16 @@ static void screen_timeline()
             tl_run_add(c, &run, seg.start_us, e, y, h, col);
         }
         if (run.a) tl_span(c, run.a, run.z, y, h, col);
+    }
+    for (i32 k = 0; k < TL_LANES; k++) {
+        f32 mid = y_snd + k * line_h + line_h / 2, half = line_h / 2 - lane_in - 1 * s;
+        ImU32 col = col32(TL_LANE_COL[k], 0.9f);
+        for (i32 i = 0; i < columns; i++) {
+            f32 v = lane_peak[k][i];
+            if (v <= 0.02f) continue;
+            f32 x = c.x0 + i * wstep, hh = ImMax(v * half, 1 * s);
+            dl->AddRectFilled(ImVec2(x, mid - hh), ImVec2(x + wstep - (wstep > 1 ? 1 : 0), mid + hh), col);
+        }
     }
 
     // The future, dimmed, and the now edge
