@@ -1132,22 +1132,27 @@ static void screen_timeline()
         if (kit_segmented("##span", labels, COUNT(labels), &sel, 64 * s)) tl_set_span(spans[sel], now);
         i64 centre = tl.view_end_us - tl.view_span_us / 2;
         ImGui::SameLine(0, 18 * s);
+        kit_next_tip("Zoom out", "-");
         if (kit_icon_button(ICON_ZOOM_OUT, "##zoom_out", KIT_GHOST, tl.view_span_us < tl_max_span(b, now)))
             tl_zoom(2, centre, now);
         ImGui::SameLine(0, 2 * s);
+        kit_next_tip("Zoom in", "+");
         if (kit_icon_button(ICON_ZOOM_IN, "##zoom_in", KIT_GHOST, tl.view_span_us > TL_MIN_SPAN)) tl_zoom(0.5, centre, now);
         ImGui::SameLine(0, 14 * s);
+        kit_next_tip("Earlier");
         if (kit_icon_button(ICON_LEFT, "##earlier")) {
             tl.follow = false;
             tl.view_end_us -= tl.view_span_us / 2;
             tl_clamp_view(now);
         }
         ImGui::SameLine(0, 2 * s);
+        kit_next_tip("Later");
         if (kit_icon_button(ICON_RIGHT, "##later", KIT_GHOST, !tl.follow)) {
             tl.view_end_us += tl.view_span_us / 2;
             tl_clamp_view(now);
         }
         ImGui::SameLine(0, 2 * s);
+        kit_next_tip("Back to now", "Home");
         if (kit_icon_button(ICON_NOW, "##now", KIT_GHOST, !tl.follow)) {
             tl.follow = true;
             tl_clamp_view(now);
@@ -1598,6 +1603,7 @@ static void screen_timeline()
         f32 ty = p1.y + 12 * s;
         bool active = tl.play_job || (pl.open && !pl.paused);
         ImGui::SetCursorScreenPos(ImVec2(p0.x, ty));
+        kit_next_tip(active ? "Pause" : "Play", "Space");
         if (kit_icon_button(active ? ICON_PAUSE : ICON_PLAY, "##play", KIT_PRIMARY, b.seg_count > 0)) tl_play_toggle();
         char when[16] = "--:--:--";
         if (play) tl_clock(play, true, when, sizeof when);
@@ -1637,6 +1643,7 @@ static void screen_timeline()
         kit_label("SELECTION");
         f32 ib = 28 * s;
         ImGui::SetCursorScreenPos(ImVec2(c0.x + cw - ib, c0.y - 6 * s));
+        kit_next_tip("Clear the selection");
         if (kit_icon_button(ICON_CLOSE, "##clear", KIT_GHOST, has_sel, false, ib)) tl.sel_in = tl.sel_out = 0;
 
         // Start, end and length, the nudges beside each time
@@ -1672,6 +1679,7 @@ static void screen_timeline()
             ImGui::PushID(k);
             ImGui::SetCursorScreenPos(ImVec2(bx, by));
             bool can_down = k == 0 ? has_sel : longer, can_up = k == 0 ? longer : has_sel;
+            kit_next_tip(k == 0 ? "Start 1 s earlier" : "End 1 s earlier");
             if (kit_icon_button(ICON_LEFT, "##down", KIT_SECONDARY, can_down, false, sb)) {
                 if (k == 0) tl.sel_in -= TL_SEC;
                 else tl.sel_out -= TL_SEC;
@@ -1679,6 +1687,7 @@ static void screen_timeline()
                 tl.playhead_us = k == 0 ? tl.sel_in : tl.sel_out;
             }
             ImGui::SetCursorScreenPos(ImVec2(bx + sb + 3 * s, by));
+            kit_next_tip(k == 0 ? "Start 1 s later" : "End 1 s later");
             if (kit_icon_button(ICON_RIGHT, "##up", KIT_SECONDARY, can_up, false, sb)) {
                 if (k == 0) tl.sel_in += TL_SEC;
                 else tl.sel_out += TL_SEC;

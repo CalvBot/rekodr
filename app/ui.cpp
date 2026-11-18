@@ -503,15 +503,28 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     return clicked && enabled;
 }
 
+static void kit_tip(const char *what, const char *keys = 0);
+
+// The tooltip the next kit_icon_button shows: kit_next_tip("Play", "Space") just before drawing it.
+static const char *g_next_tip, *g_next_tip_keys;
+static void kit_next_tip(const char *what, const char *keys = 0)
+{
+    g_next_tip = what;
+    g_next_tip_keys = keys;
+}
+
 // A square button showing one icon (ICON_*). id must be unique in the window ("##play"). active draws it selected.
 static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT_GHOST, bool enabled = true,
                             bool active = false, f32 size = 0)
 {
+    const char *tip = g_next_tip, *tip_keys = g_next_tip_keys;
+    g_next_tip = g_next_tip_keys = 0;
     if (size <= 0) size = ImGui::GetFrameHeight();
     ImVec2 a = ImGui::GetCursorScreenPos();
     if (!enabled) ImGui::BeginDisabled();
     bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size)) && !kit_closed_here(ImGui::GetItemID());
     if (!enabled) ImGui::EndDisabled();
+    if (tip) kit_tip(tip, tip_keys);
     if (clicked && enabled) dev_click("button", id);
     bool hot = enabled && ImGui::IsItemHovered(), held = hot && ImGui::IsItemActive();
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -536,6 +549,90 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     dl->AddText(ImVec2(floorf(a.x + (size - ts.x) / 2), floorf(a.y + (size - ts.y) / 2)), col32(ink, enabled ? 1 : 0.35f), icon);
     ImGui::PopFont();
     return clicked && enabled;
+}
+
+// Is the key named [s, e) held right now? Names as the Help window writes them: Ctrl, Shift, Space, Page Up, Left,
+// F1, A, 5, + and so on.
+static bool kit_key_held(const char *s, const char *e)
+{
+    i32 n = (i32)(e - s);
+    char k[16];
+    if (n <= 0 || n >= (i32)sizeof k) return false;
+    for (i32 i = 0; i < n; i++) k[i] = (char)tolower((unsigned char)s[i]);
+    k[n] = 0;
+    ImGuiIO &io = ImGui::GetIO();
+    if (!strcmp(k, "ctrl")) return io.KeyCtrl;
+    if (!strcmp(k, "shift")) return io.KeyShift;
+    if (!strcmp(k, "alt")) return io.KeyAlt;
+    if (!strcmp(k, "+")) return ImGui::IsKeyDown(ImGuiKey_Equal) || ImGui::IsKeyDown(ImGuiKey_KeypadAdd);
+    if (!strcmp(k, "-")) return ImGui::IsKeyDown(ImGuiKey_Minus) || ImGui::IsKeyDown(ImGuiKey_KeypadSubtract);
+    if (!strcmp(k, "enter")) return ImGui::IsKeyDown(ImGuiKey_Enter) || ImGui::IsKeyDown(ImGuiKey_KeypadEnter);
+    if (n == 1 && k[0] >= 'a' && k[0] <= 'z') return ImGui::IsKeyDown((ImGuiKey)(ImGuiKey_A + (k[0] - 'a')));
+    if (n == 1 && k[0] >= '0' && k[0] <= '9') return ImGui::IsKeyDown((ImGuiKey)(ImGuiKey_0 + (k[0] - '0')));
+    if (k[0] == 'f' && n <= 3 && atoi(k + 1) >= 1 && atoi(k + 1) <= 24)
+        return ImGui::IsKeyDown((ImGuiKey)(ImGuiKey_F1 + atoi(k + 1) - 1));
+    static const struct { const char *name; ImGuiKey key; } named[] = {
+        {"space", ImGuiKey_Space},   {"esc", ImGuiKey_Escape},          {"delete", ImGuiKey_Delete},
+        {"home", ImGuiKey_Home},     {"end", ImGuiKey_End},             {"page up", ImGuiKey_PageUp},
+        {"page down", ImGuiKey_PageDown}, {"left", ImGuiKey_LeftArrow}, {"right", ImGuiKey_RightArrow},
+        {"up", ImGuiKey_UpArrow},    {"down", ImGuiKey_DownArrow},      {"tab", ImGuiKey_Tab},
+    };
+    for (auto &m : named)
+        if (!strcmp(k, m.name)) return ImGui::IsKeyDown(m.key);
+    return false;
+}
+
+// A key cap with its top-left at (x, y), in the small font: raised, and lit in the accent while the key is held.
+// Returns its width.
+static f32 kit_keycap(ImDrawList *dl, f32 x, f32 y, const char *s, const char *e)
+{
+    ImGui::PushFont(g_font_small);
+    f32 sh = ImGui::GetTextLineHeight(), cap_h = sh + kit_px(6);
+    ImVec2 ts = ImGui::CalcTextSize(s, e);
+    f32 cw = fmaxf(ts.x + kit_px(14), cap_h);
+    bool lit = kit_key_held(s, e);
+    f32 drop = lit ? kit_px(1) : 0; // pressed in a little
+    dl->AddRectFilled(ImVec2(x, y + kit_px(2)), ImVec2(x + cw, y + cap_h + kit_px(2)), col32(0x0c0d10), kit_px(5));
+    dl->AddRectFilled(ImVec2(x, y + drop), ImVec2(x + cw, y + cap_h + drop), col32(lit ? COL_ACCENT : COL_HOVER), kit_px(5));
+    dl->AddText(ImVec2(floorf(x + (cw - ts.x) / 2), floorf(y + drop + (cap_h - sh) / 2)), col32(lit ? 0xffffff : COL_TEXT), s, e);
+    ImGui::PopFont();
+    return cw;
+}
+
+// A tooltip for the item just drawn: what it does and, if it has one, its key ("Space", "Ctrl+F") as caps. Shown only
+// with Options > General > Tooltips on; that switch is the one place tooltips are turned off.
+static void kit_tip(const char *what, const char *keys)
+{
+    if (!g_app.config.tooltips || !ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+        return;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(10), kit_px(7)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kit_px(7));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
+    if (ImGui::BeginTooltip()) {
+        ImGui::PushFont(g_font_small);
+        f32 cap_h = ImGui::GetTextLineHeight() + kit_px(8);
+        ImGui::PopFont();
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        f32 th = ImGui::GetTextLineHeight(), h = keys ? fmaxf(th, cap_h) : th;
+        ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + floorf((h - th) / 2)));
+        ImGui::TextUnformatted(what);
+        f32 x = a.x + ImGui::CalcTextSize(what).x + kit_px(10);
+        if (keys) {
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            for (const char *p = keys; *p;) {
+                const char *q = p;
+                while (*q && !(*q == '+' && q > p)) q++; // "Ctrl++" is Ctrl and +
+                x += kit_keycap(dl, x, a.y, p, q) + kit_px(3);
+                p = *q ? q + 1 : q;
+            }
+        }
+        ImGui::SetCursorScreenPos(a);
+        ImGui::Dummy(ImVec2(x - a.x - (keys ? kit_px(3) : kit_px(10)), h));
+        ImGui::EndTooltip();
+    }
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
 }
 
 // A row of options sharing one rounded track; the chosen one is lifted. Every segment is as wide as the widest
@@ -733,15 +830,38 @@ static ID3D11ShaderResourceView *gpu_texture(const u32 *pixels, i32 w, i32 h)
 struct HelpRow { const char *keys, *what; };
 struct HelpSection { const char *title; const HelpRow *rows; i32 count; };
 
-// One group of the Help window, in a column w wide. A row's keys are written with markup: [Ctrl] is drawn as a key
-// cap, `clipback open` as a command, and anything else (mouse actions, "+", " / ") as plain text.
-static void help_section(const char *title, const HelpRow *rows, i32 count, f32 w)
+// Does text contain q, ignoring case? An empty q is in everything.
+static bool help_has(const char *text, const char *q)
 {
+    if (!*q) return true;
+    for (; *text; text++) {
+        i32 i = 0;
+        while (q[i] && tolower((unsigned char)text[i]) == tolower((unsigned char)q[i])) i++;
+        if (!q[i]) return true;
+    }
+    return false;
+}
+
+// Does a row (or its section) match the Help search?
+static bool help_row_shown(const char *title, const HelpRow &r, const char *q)
+{
+    return help_has(title, q) || help_has(r.keys, q) || help_has(r.what, q);
+}
+
+// One group of the Help window, in a column w wide, with only the rows matching the search find (none: nothing drawn).
+// A row's keys are written with markup: [Ctrl] is drawn as a key cap (lit while held), `clipback open` as a command,
+// and anything else (mouse actions, "+", " / ") as plain text.
+static void help_section(const char *title, const HelpRow *rows, i32 count, f32 w, const char *find)
+{
+    i32 shown = 0;
+    for (i32 i = 0; i < count; i++) shown += help_row_shown(title, rows[i], find);
+    if (!shown) return;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 keys_w = kit_px(168), gap = kit_px(8);
     kit_label(title);
     ImGui::Dummy(ImVec2(0, kit_px(2)));
     for (i32 i = 0; i < count; i++) {
+        if (!help_row_shown(title, rows[i], find)) continue;
         ImVec2 a = ImGui::GetCursorScreenPos();
         ImGui::PushFont(g_font_small);
         f32 sh = ImGui::GetTextLineHeight(), cap_h = sh + kit_px(6);
@@ -755,9 +875,7 @@ static void help_section(const char *title, const HelpRow *rows, i32 count, f32 
                 f32 cw = ts.x + kit_px(14);
                 if (cw < cap_h) cw = cap_h;
                 if (close == ']') {
-                    dl->AddRectFilled(ImVec2(x, y + kit_px(2)), ImVec2(x + cw, y + cap_h + kit_px(2)), col32(0x0c0d10), kit_px(5));
-                    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw, y + cap_h), col32(COL_HOVER), kit_px(5));
-                    dl->AddText(ImVec2(floorf(x + (cw - ts.x) / 2), floorf(y + (cap_h - sh) / 2)), col32(COL_TEXT), p + 1, end);
+                    cw = kit_keycap(dl, x, y, p + 1, end);
                 } else {
                     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw, y + cap_h), col32(COL_BG), kit_px(5));
                     dl->AddText(ImVec2(floorf(x + kit_px(7)), floorf(y + (cap_h - sh) / 2)), col32(0xc4c8cf), p + 1, end);
@@ -791,11 +909,21 @@ static void help_section(const char *title, const HelpRow *rows, i32 count, f32 
 static void help_window()
 {
     if (g_app.ui.help_open) ImGui::OpenPopup("Help");
-    f32 col_w = kit_px(372), col_gap = kit_px(40), pad = kit_px(28);
+    static char q[64]; // the search
+
+    // As many columns as fit (one to three) and the window's height, so it always fits the window; the rows scroll.
+    f32 col_w = kit_px(372), col_gap = kit_px(40), pad = kit_px(28), margin = kit_px(24);
     const ImGuiViewport *vp = ImGui::GetMainViewport();
+    i32 cols = (i32)((vp->WorkSize.x - 2 * margin - 2 * pad + col_gap) / (col_w + col_gap));
+    if (cols > 3) cols = 3;
+    if (cols < 1) {
+        cols = 1;
+        col_w = fmaxf(kit_px(200), vp->WorkSize.x - 2 * margin - 2 * pad);
+    }
+    f32 win_w = cols * col_w + (cols - 1) * col_gap + 2 * pad, win_h = fminf(vp->WorkSize.y - 2 * margin, kit_px(860));
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x / 2, vp->WorkPos.y + vp->WorkSize.y / 2), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(2 * col_w + col_gap + 2 * pad, 0));
+    ImGui::SetNextWindowSize(ImVec2(win_w, win_h));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, kit_px(24)));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kit_px(14));
     bool open = true;
@@ -810,7 +938,9 @@ static void help_window()
                                          {"[Esc]", "Options, setting a hotkey's keys: cancel"}};
         static const HelpRow library[] = {
             {"[Ctrl]+[F]", "Search"},
-            {"Mouse wheel", "Scroll ([Page Up] / [Page Down], [Home] / [End] too)"},
+            {"Mouse wheel", "Scroll"},
+            {"[Page Up] / [Page Down]", "A screen up / down"},
+            {"[Home] / [End]", "To the top / bottom"},
             {"[Ctrl]+wheel", "Bigger or smaller cards"},
             {"Point at a thumbnail", "Scrub through it; click to play from there"},
             {"Right-click a card", "Edit, rename, delete and more"},
@@ -818,6 +948,7 @@ static void help_window()
         static const HelpRow player[] = {
             {"[Space]", "Play / pause"},
             {"[Left] / [Right]", "Back / forward 5 s"},
+            {"[M]", "Mute / unmute"},
             {"[Esc]", "Close the player"},
         };
         static const HelpRow editor[] = {
@@ -879,25 +1010,62 @@ static void help_window()
             hotkeys[hk].what = g_app.config.hotkeys[hk].action.s;
         }
 
-        // Title and close
+        // Title, the search and close
         ImVec2 top = ImGui::GetCursorScreenPos();
+        f32 inner_w = win_w - 2 * pad, fh = ImGui::GetFrameHeight(), search_w = fminf(kit_px(240), inner_w / 2);
         kit_heading("Keyboard and mouse");
-        ImGui::SetCursorScreenPos(ImVec2(top.x + 2 * col_w + col_gap - ImGui::GetFrameHeight() + kit_px(8), top.y - kit_px(6)));
+        ImGui::SetCursorScreenPos(ImVec2(top.x + inner_w - kit_px(8) - fh - kit_px(8) - search_w, top.y - kit_px(6)));
+        if (ImGui::IsWindowAppearing()) q[0] = 0;
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F)) ImGui::SetKeyboardFocusHere();
+        kit_search("##help_search", q, sizeof q, "Search", search_w);
+        ImGui::SetCursorScreenPos(ImVec2(top.x + inner_w - fh + kit_px(8), top.y - kit_px(6)));
+        kit_next_tip("Close", "Esc");
         if (kit_icon_button(ICON_CLOSE, "##help_close")) open = false;
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + kit_px(46)));
 
-        ImGui::BeginGroup();
-        if (hk) help_section("HOTKEYS", hotkeys, hk, col_w);
-        help_section("ANYWHERE (STREAM DECK)", anywhere, COUNT(anywhere), col_w);
-        help_section("LIBRARY", library, COUNT(library), col_w);
-        help_section("PLAYER", player, COUNT(player), col_w);
-        help_section("WINDOW", window, COUNT(window), col_w);
-        ImGui::EndGroup();
-        ImGui::SameLine(0, col_gap);
-        ImGui::BeginGroup();
-        help_section("TIMELINE", timeline, COUNT(timeline), col_w);
-        help_section("EDITOR", editor, COUNT(editor), col_w);
-        ImGui::EndGroup();
+        // The sections in reading order, down one column and on to the next once it holds its share of the rows.
+        // Placed by their full size, so a search only takes rows out and never moves a section to another column.
+        HelpSection all[] = {
+            {"HOTKEYS", hotkeys, hk},
+            {"ANYWHERE (STREAM DECK)", anywhere, COUNT(anywhere)},
+            {"LIBRARY", library, COUNT(library)},
+            {"PLAYER", player, COUNT(player)},
+            {"WINDOW", window, COUNT(window)},
+            {"TIMELINE", timeline, COUNT(timeline)},
+            {"EDITOR", editor, COUNT(editor)},
+        };
+        i32 n = COUNT(all), col_of[COUNT(all)], total = 0;
+        for (i32 i = 0; i < n; i++) total += all[i].count ? all[i].count + 3 : 0; // a heading is about three rows
+        for (i32 i = 0, c = 0, load = 0; i < n; i++) {
+            i32 size = all[i].count ? all[i].count + 3 : 0;
+            if (load > 0 && c < cols - 1 && load + size > (total + cols - 1) / cols) {
+                c++;
+                load = 0;
+            }
+            col_of[i] = c;
+            load += size;
+        }
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::BeginChild("##help_rows", ImVec2(inner_w + pad - kit_px(6), 0), ImGuiChildFlags_None);
+        ImGui::PopStyleVar();
+        i32 shown = 0;
+        for (i32 c = 0; c < cols; c++) {
+            if (c) ImGui::SameLine(0, col_gap);
+            ImGui::BeginGroup();
+            ImGui::Dummy(ImVec2(col_w, 0));
+            for (i32 i = 0; i < n; i++)
+                if (col_of[i] == c && all[i].count) {
+                    for (i32 r = 0; r < all[i].count; r++) shown += help_row_shown(all[i].title, all[i].rows[r], q);
+                    help_section(all[i].title, all[i].rows, all[i].count, col_w, q);
+                }
+            ImGui::EndGroup();
+        }
+        if (!shown) {
+            ImGui::SetCursorPos(ImVec2(0, kit_px(8)));
+            kit_dim("Nothing matches \"%s\"", q);
+        }
+        ImGui::EndChild();
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
         if (!open || g_app.ui.help_close) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -955,6 +1123,7 @@ static void top_bar(f32 h)
     ImGui::SetCursorScreenPos(ImVec2(btn_x, y));
     if (kit_button(btn, KIT_SECONDARY, ImVec2(btn_w, 0))) event_post_text(EV_COMMAND, "toggle");
     ImGui::SetCursorScreenPos(ImVec2(help_x, y));
+    kit_next_tip("Keyboard and mouse", "F1");
     if (kit_icon_button(ICON_HELP, "##help", KIT_GHOST)) g_app.ui.help_open = true;
 
     const char *status = rec.paused ? "Paused" : rec.recording ? "Recording" : "Not recording";

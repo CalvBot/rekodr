@@ -520,6 +520,7 @@ static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page, const 
     }
     f32 bh = ImGui::GetFrameHeight(), slot = dp(64);
     kit_align_right(2 * bh + slot);
+    kit_next_tip("Previous page");
     if (kit_icon_button(ICON_LEFT, "##prev", KIT_GHOST, *page > 0)) (*page)--;
     ImGui::SameLine(0, 0);
     char text[32];
@@ -530,6 +531,7 @@ static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page, const 
                 COL_DIM, text, a.x + slot);
     ImGui::Dummy(ImVec2(slot, bh));
     ImGui::SameLine(0, 0);
+    kit_next_tip("Next page");
     if (kit_icon_button(ICON_RIGHT, "##next", KIT_GHOST, *page < pages - 1)) (*page)++;
     ImGui::PopID();
 }
@@ -1364,6 +1366,7 @@ static void folders_rows(i32 rows, f32 rh, i32 *open_popup)
         if (cat_pills_draw(f.category, CAT_NONE, pills_x, cy, &picked)) folder_set(f.path, picked);
 
         ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
+        kit_next_tip("More");
         bool more = kit_icon_button(ICON_MORE, "##more");
         if (more || (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
             o.menu_folder = idx;
@@ -1512,6 +1515,7 @@ static void options_apps()
         cat_pills(&a, pills_x, cy);
 
         ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
+        kit_next_tip("More");
         bool more = kit_icon_button(ICON_MORE, "##more");
         if (more || (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
             o.menu_app = idx;
@@ -1834,6 +1838,7 @@ static void options_hotkeys()
 
         if (hot && !o.capture_slot) {
             ImGui::SetCursorScreenPos(ImVec2(del_x, cy));
+            kit_next_tip("Remove");
             if (kit_icon_button(ICON_DELETE, "##remove")) remove = i;
         }
         ImGui::PopID();
@@ -2252,6 +2257,7 @@ static bool opt_row_folder(const char *name, const char *sub, const char *id, Pa
     }
     ImGui::SameLine(0, dp(8));
     Path picked = {};
+    kit_next_tip("Choose a folder");
     if (kit_icon_button(ICON_FOLDER, "##choose", KIT_SECONDARY) && pick_folder(*p, &picked) && wcscmp(picked.s, p->s)) {
         *p = picked;
         changed = true;

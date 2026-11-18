@@ -977,6 +977,7 @@ static void lib_pager(const char *id, i32 *page, i32 pages)
     if (*page < 0) *page = 0;
     f32 fh = ImGui::GetFrameHeight(), tw = kit_px(76);
     ImGui::PushID(id);
+    kit_next_tip("Previous page");
     if (kit_icon_button(ICON_LEFT, "##prev", KIT_GHOST, *page > 0)) (*page)--;
     ImGui::SameLine(0, 0);
     ImVec2 p = ImGui::GetCursorScreenPos();
@@ -986,6 +987,7 @@ static void lib_pager(const char *id, i32 *page, i32 pages)
     ImVec2 ts = ImGui::CalcTextSize(t);
     ImGui::GetWindowDrawList()->AddText(ImVec2(floorf(p.x + (tw - ts.x) / 2), floorf(p.y + (fh - ts.y) / 2)), col32(COL_DIM), t);
     ImGui::SameLine(0, 0);
+    kit_next_tip("Next page");
     if (kit_icon_button(ICON_RIGHT, "##next", KIT_GHOST, *page + 1 < pages)) (*page)++;
     ImGui::PopID();
 }
@@ -1349,6 +1351,7 @@ static void lib_player_view()
     f32 head_h = fmaxf(fh, g_font_big->FontSize + g_font_small->FontSize + kit_px(4));
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
     bool close = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
+    kit_tip("Back to the library", "Esc");
     static const char *const actions[] = {ICON_EDIT "  Edit", ICON_FOLDER "  Show in folder"};
     f32 aw[2], acts_w = 0;
     for (i32 i = 0; i < 2; i++) {
@@ -1398,6 +1401,7 @@ static void lib_player_view()
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
     if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_GHOST)) player_toggle(&p);
+    kit_tip(p.paused ? "Play" : "Pause", "Space");
     char t1[32], t2[32], tm[80];
     fmt_time(p.pos, t1, sizeof t1);
     fmt_time(p.duration > 0 ? p.duration : lib.playing.info.duration, t2, sizeof t2);
@@ -1439,6 +1443,7 @@ static void lib_player_view()
         g_lib_muted = !g_lib_muted;
         vol_changed = true;
     }
+    kit_tip(g_lib_muted ? "Unmute" : "Mute", "M");
     ImGui::SetCursorScreenPos(ImVec2(x + fh, y));
     if (lib_slider("##volume", &g_lib_volume, 0, 1, vol_w, fh)) {
         g_lib_muted = false;
@@ -1454,6 +1459,10 @@ static void lib_player_view()
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) player_toggle(&p);
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) player_seek(&p, p.pos - 5);
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) player_seek(&p, p.pos + 5);
+        if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+            g_lib_muted = !g_lib_muted;
+            g_lib_volume_gen--; // applied next frame
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) close = true;
     }
     if (close) library_close_player();
@@ -1507,6 +1516,7 @@ static void lib_calendar()
 
     // <  November 2026  >
     ImVec2 a = ImGui::GetCursorScreenPos();
+    kit_next_tip("Previous month");
     if (kit_icon_button(ICON_LEFT, "##prevm")) lib.cal_month--;
     char title[32];
     snprintf(title, sizeof title, "%s %d", month_name(m), y);
@@ -1515,6 +1525,7 @@ static void lib_calendar()
     ImGui::GetWindowDrawList()->AddText(ImVec2(floorf(a.x + (w - ts.x) / 2), floorf(a.y + (fh - ts.y) / 2)), col32(COL_TEXT), title);
     ImGui::PopFont();
     ImGui::SetCursorScreenPos(ImVec2(a.x + w - fh, a.y));
+    kit_next_tip("Next month");
     if (kit_icon_button(ICON_RIGHT, "##nextm")) lib.cal_month++;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1630,9 +1641,11 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     f32 bx = a.x + w - pad - fh, by = floorf(a.y + (h - fh) / 2);
     bool saved = s->state == SES_SAVED, saving = s->state == SES_SAVING;
     ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    kit_next_tip(saved ? "Saved" : "Save the session");
     if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) session_save(s);
     bx -= fh + kit_px(6);
     ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    kit_next_tip("Look at it on the timeline");
     if (kit_icon_button(ICON_PLAY, "##review", KIT_GHOST, !saved)) {
         timeline_review(s->start_us, s->end_us, s->name);
         ImGui::PopID();

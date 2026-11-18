@@ -1033,8 +1033,10 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
 
     // The view's zoom buttons, in the ruler's gutter.
     ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(8), ruler_y + (ruler_h + video_h - fh) / 2));
+    kit_next_tip("Zoom out", "-");
     if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, span < dur)) ed_view_zoom(1.6, p.pos);
     ImGui::SameLine(0, kit_px(2));
+    kit_next_tip("Zoom in", "+");
     if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, span > 0.51)) ed_view_zoom(1 / 1.6, p.pos);
     {
         char vt[32], vs[48];
@@ -1353,6 +1355,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         f32 gx = o.x + kit_px(6), by = floorf((y0 + y1 - fh) / 2);
         if (s >= 0) {
             ImGui::SetCursorScreenPos(ImVec2(gx, by));
+            kit_next_tip(muted ? "Unmute this track" : "Mute this track");
             if (kit_icon_button(muted ? ICON_MUTE : ICON_VOLUME, "##mute", KIT_GHOST, true, muted)) {
                 ed.edit.muted[s] = !muted;
                 ed.dirty = true;
@@ -1361,6 +1364,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         }
         i32 here = ln_key_at(ed.edit, l, p.pos);
         ImGui::SetCursorScreenPos(ImVec2(gx + fh + kit_px(2), by));
+        kit_next_tip(here >= 0 ? "Delete this key" : "Add a key at the playhead");
         if (kit_icon_button(here >= 0 ? ICON_DELETE : ICON_ADD, "##key", KIT_GHOST, here >= 0 || ln_count(ed.edit, l) < ln_cap(l))) {
             if (here >= 0) {
                 ln_erase(ed.edit, l, here, &ed.sel[l]);
@@ -1647,6 +1651,7 @@ static void ed_share_tab(f32 w)
             text_clipped(dl, ImVec2(at.x, ty), text_w - ls.x - kit_px(10), col32(COL_TEXT), f.name);
             dl->AddText(ImVec2(at.x + text_w - ls.x, ty), col32(COL_DIM), line);
             ImGui::SetCursorScreenPos(ImVec2(at.x + w - fh, at.y));
+            kit_next_tip("Copy the file");
             if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) {
                 wchar_t name[200];
                 utf8_to_wide(f.name, name, COUNT(name));
@@ -1715,6 +1720,7 @@ static void screen_editor()
     ImVec2 h0 = ImGui::GetCursorScreenPos();
     f32 head_h = fmaxf(fh, g_font_big->FontSize + g_font_small->FontSize + kit_px(4));
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
+    kit_next_tip("Back to the library", "Esc");
     bool back = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
     f32 tx = h0.x + fh + kit_px(14), tw = avail.x - (tx - h0.x);
     f32 ty = h0.y + (head_h - g_font_big->FontSize - g_font_small->FontSize - kit_px(4)) / 2;
@@ -1800,6 +1806,7 @@ static void screen_editor()
     dl->AddRectFilled(r0, ImVec2(r0.x + main_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
+    kit_next_tip(p.paused ? "Play" : "Pause", "Space");
     if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_GHOST)) player_toggle(&p);
     char t1[32], t2[32], tm[80];
     fmt_time(p.pos, t1, sizeof t1, true);
