@@ -464,12 +464,49 @@ static void tl_check_job()
 
 static bool tl_visible() { return g_app.ui.shown && g_app.ui.screen == SCREEN_TIMELINE && !IsIconic(g_app.ui.hwnd); }
 
+// The Library's unsaved sessions show the buffer's frames too, so the index is kept while they're on screen.
+static bool tl_wanted_by_library()
+{
+    const Library &lib = g_app.library;
+    return g_app.ui.shown && g_app.ui.screen == SCREEN_LIBRARY && !IsIconic(g_app.ui.hwnd) && lib.view == LIB_SESSIONS &&
+           !lib.player.open && g_app.sessions.row_count > 0;
+}
+
+// A keyframe of the buffer at `t` (the start of its segment, or the next one if `t` falls in a gap) for the
+// Library's session previews. Null until it's been read; `ask` reads it (one at a time).
+static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask)
+{
+    Timeline &tl = g_app.timeline;
+    if (!tl.idx) {
+        tl_ask_index();
+        return 0;
+    }
+    const BufferIdx &b = *tl.idx;
+    i32 s = tl_seg_at(b, t);
+    if (s < 0) {
+        s = tl_seg_after(b, t);
+        if (s >= b.seg_count) return 0;
+        t = b.segs[s].start_us;
+    }
+    TimelineFrame *f = tl_frame_find(tl_frame_key(b.segs[s].start_us, false));
+    if (f) {
+        f->used = ++tl.frame_clock;
+        return f->srv;
+    }
+    if (ask && !tl.pending_key) tl_want_frame(t, false);
+    return 0;
+}
+
 // Main thread, once a second.
 static void timeline_tick()
 {
     Timeline &tl = g_app.timeline;
     tl_check_job();
     if (!tl_visible()) {
+        if (tl_wanted_by_library()) {
+            if (tl.ticks++ % 3 == 0) tl_ask_index();
+            return;
+        }
         tl.ticks = 0;
         tl_release();
         return;

@@ -205,6 +205,14 @@ struct GameOverride {
 static GameOverride g_game_overrides[LIB_MAX_ITEMS];
 static i32          g_game_override_count;
 
+// Comments typed on cards: <config_dir>\comments.txt, lines of "<key in hex> | <comment> | <file name>" like games.txt.
+struct CommentNote {
+    u64  key;
+    char text[128];
+};
+static CommentNote g_comments[LIB_MAX_ITEMS];
+static i32         g_comment_count;
+
 static void lib_overrides_load()
 {
     g_game_override_count = 0;
@@ -221,6 +229,33 @@ static void lib_overrides_load()
         g_game_overrides[g_game_override_count++] = o;
     }
     fclose(f);
+}
+
+static void lib_comments_load()
+{
+    g_comment_count = 0;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"comments.txt").s, L"rb");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof line, f) && g_comment_count < LIB_MAX_ITEMS) {
+        CommentNote c = {};
+        char text[128] = "";
+        if (sscanf(line, "%llx | %127[^|\r\n]", &c.key, text) != 2) continue;
+        char *t = trim(text);
+        if (!*t || !c.key) continue;
+        str_set(c.text, t);
+        g_comments[g_comment_count++] = c;
+    }
+    fclose(f);
+}
+
+static void lib_set_comment(LibItem *it)
+{
+    for (i32 i = 0; i < g_comment_count; i++)
+        if (g_comments[i].key == it->key) {
+            str_set(it->comment, g_comments[i].text);
+            return;
+        }
 }
 
 // A file's game: the one given by hand, else its own tag, else what its name says.
@@ -254,6 +289,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
     LibItem *items = g_scan_items;
     i32 n = 0, by_hand = 0;
     lib_overrides_load();
+    lib_comments_load();
     WIN32_FIND_DATAW fd;
     HANDLE years = FindFirstFileW(path_join(save_dir, L"*").s, &fd);
     if (years != INVALID_HANDLE_VALUE) {
@@ -288,6 +324,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     char tagged[64];
                     it->probed = lib_cache_read(cache, it->key, &it->info, tagged, sizeof tagged);
                     by_hand += lib_set_game(it, it->probed ? tagged : "");
+                    lib_set_comment(it);
                 } while (FindNextFileW(h, &f));
                 FindClose(h);
             }
@@ -573,7 +610,7 @@ static bool lib_matches(const char *hay, const char *needle)
 }
 
 enum LibRange : i32 { RANGE_ALL, RANGE_TODAY, RANGE_WEEK, RANGE_MONTH, RANGE_CUSTOM };
-enum LibSort : i32 { SORT_NEWEST, SORT_OLDEST, SORT_LONGEST, SORT_BIGGEST };
+enum LibSort : i32 { SORT_NEWEST, SORT_OLDEST, SORT_LONGEST, SORT_BIGGEST, SORT_GAME, SORT_COUNT };
 
 static i64 local_day(i64 us, SYSTEMTIME *out);
 
@@ -602,6 +639,14 @@ static int lib_sort_cmp(const void *pa, const void *pb)
     case SORT_OLDEST: if (a.mtime_us != b.mtime_us) return a.mtime_us < b.mtime_us ? -1 : 1; break;
     case SORT_LONGEST: if (a.info.duration != b.info.duration) return a.info.duration > b.info.duration ? -1 : 1; break;
     case SORT_BIGGEST: if (a.size != b.size) return a.size > b.size ? -1 : 1; break;
+    case SORT_GAME: { // by game, A to Z, with no game last; newest first within each
+        bool an = !strcmp(a.info.game, "Desktop") || !strcmp(a.info.game, "Other");
+        bool bn = !strcmp(b.info.game, "Desktop") || !strcmp(b.info.game, "Other");
+        if (an != bn) return an ? 1 : -1;
+        int c = _stricmp(a.info.game, b.info.game);
+        if (c) return c;
+        break;
+    }
     default: break;
     }
     return a.mtime_us > b.mtime_us ? -1 : a.mtime_us < b.mtime_us ? 1 : 0;
@@ -770,16 +815,19 @@ static void lib_drop_queued_thumbs()
 }
 
 static void lib_message(bool error, const char *fmt, ...);
+static void library_rescan();
 
-// Gives a clip or session a game by hand: its line in games.txt (any old one replaced), then a rescan to show it.
-static bool library_set_game(const LibItem &it, const char *game)
+// Sets `key`'s line in a "<key> | <value> | <file name>" file (games.txt, comments.txt): any old line goes, and an
+// empty value leaves none. Then a rescan shows it.
+static bool lib_keyed_write(const wchar_t *file, u64 key, const char *value, const char *name)
 {
-    char g[64];
-    str_set(g, game);
-    char *t = trim(g);
-    if (!*t || strchr(t, '|')) return false;
-    Path path = path_join(g_app.paths.config_dir, L"games.txt");
-    static char old[LIB_MAX_ITEMS * 160];
+    char v[128];
+    str_set(v, value);
+    for (char *c = v; *c; c++)
+        if (*c == '|' || *c == '\t' || *c == '\r' || *c == '\n') *c = c[0] == '|' ? '/' : ' ';
+    char *t = trim(v);
+    Path path = path_join(g_app.paths.config_dir, file);
+    static char old[LIB_MAX_ITEMS * 200];
     size_t n = 0;
     if (FILE *f = _wfopen(path.s, L"rb")) {
         n = fread(old, 1, sizeof old - 1, f);
@@ -788,21 +836,38 @@ static bool library_set_game(const LibItem &it, const char *game)
     old[n] = 0;
     FILE *f = _wfopen(path.s, L"wb");
     if (!f) {
-        lib_message(true, "Couldn't save the game for %s", it.name);
+        lib_message(true, "Couldn't save that for %s", name);
         return false;
     }
     for (char *line = old; *line;) {
         char *end = strchr(line, '\n');
         size_t len = end ? (size_t)(end - line + 1) : strlen(line);
-        unsigned long long key = 0;
-        if (!(sscanf(line, "%llx", &key) == 1 && key == it.key)) fwrite(line, 1, len, f);
+        unsigned long long k = 0;
+        if (!(sscanf(line, "%llx", &k) == 1 && k == key)) fwrite(line, 1, len, f);
         line += len;
     }
-    fprintf(f, "%llx | %s | %s\r\n", (unsigned long long)it.key, t, it.name);
+    if (*t) fprintf(f, "%llx | %s | %s\r\n", (unsigned long long)key, t, name);
     fclose(f);
-    log_line("library: %s is now %s", it.name, t);
     library_rescan();
     return true;
+}
+
+// Gives a clip or session a game by hand.
+static bool library_set_game(const LibItem &it, const char *game)
+{
+    char g[64];
+    str_set(g, game);
+    char *t = trim(g);
+    if (!*t || strchr(t, '|')) return false;
+    log_line("library: %s is now %s", it.name, t);
+    return lib_keyed_write(L"games.txt", it.key, t, it.name);
+}
+
+// A comment on a file (empty takes it off).
+static bool library_set_comment(u64 key, const char *text, const char *name)
+{
+    log_line("library: comment on %s %s", name, text[0] ? "set" : "removed");
+    return lib_keyed_write(L"comments.txt", key, text, name);
 }
 
 static void lib_message(bool error, const char *fmt, ...)
@@ -1141,12 +1206,12 @@ static void library_play(const LibItem &it, f64 from)
     player_open(&lib.player, lib_item_path(it), from, true);
 }
 
-static void lib_rename_start(const LibItem &it);
+static void lib_rename_start(const LibItem &it, bool comment = false);
 
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, del = false;
+    bool rename = false, comment = false, del = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -1161,11 +1226,13 @@ static void card_menu()
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
+        if (lib_menu_item(ICON_CHAT, it.comment[0] ? "Change the comment" : "Add a comment")) comment = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
     if (rename) lib_rename_start(lib.target);
+    if (comment) lib_rename_start(lib.target, true);
     if (del) ImGui::OpenPopup("Delete");
 }
 
@@ -1195,6 +1262,10 @@ static bool lib_dialog_begin(const char *id)
 static bool lib_rename_apply()
 {
     Library &lib = g_app.library;
+    if (lib.rename_comment) {
+        if (strcmp(lib.rename_buf, lib.target.comment)) library_set_comment(lib.target.key, lib.rename_buf, lib.target.name);
+        return true;
+    }
     char name[256], cleaned[256];
     str_set(name, lib.rename_buf);
     char *t = trim(name);
@@ -1227,11 +1298,12 @@ static bool lib_rename_apply()
 }
 
 // Starts editing a card's name where it's shown.
-static void lib_rename_start(const LibItem &it)
+static void lib_rename_start(const LibItem &it, bool comment)
 {
     Library &lib = g_app.library;
     lib.target = it;
-    str_set(lib.rename_buf, it.name);
+    lib.rename_comment = comment;
+    str_set(lib.rename_buf, comment ? it.comment : it.name);
     lib.rename_error[0] = 0;
     lib.rename_key = it.key;
     lib.rename_focus = true;
@@ -1285,9 +1357,10 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     Library &lib = g_app.library;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 meta_h = lib_meta_h();
-    if (show_day && (lib.sort == SORT_NEWEST || lib.sort == SORT_OLDEST)) {
+    if (show_day && (lib.sort == SORT_NEWEST || lib.sort == SORT_OLDEST || lib.sort == SORT_GAME)) {
         char day[64];
-        fmt_day(it.mtime_us, day, sizeof day);
+        if (lib.sort == SORT_GAME) str_set(day, it.info.game);
+        else fmt_day(it.mtime_us, day, sizeof day);
         ImGui::PushFont(g_font_bold);
         dl->AddText(ImVec2(a.x, a.y + day_h - ImGui::GetFontSize() - kit_px(7)), col32(COL_DIM), day);
         ImGui::PopFont();
@@ -1380,8 +1453,9 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             ImGui::SetKeyboardFocusHere();
             lib.rename_focus = false;
         }
-        bool enter = ImGui::InputText("##rename", lib.rename_buf, sizeof lib.rename_buf,
-                                      ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        i32 cap = lib.rename_comment ? (i32)sizeof it.comment : (i32)sizeof lib.rename_buf;
+        bool enter = ImGui::InputTextWithHint("##rename", lib.rename_comment ? "Add a comment" : "", lib.rename_buf, cap,
+                                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
         bool left = ImGui::IsItemDeactivated(), esc = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
         ImGui::PopStyleVar(2);
         ImGui::PopID();
@@ -1390,7 +1464,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             if (lib_rename_apply()) lib.rename_key = 0;
             else lib.rename_focus = true;
         }
-    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.name);
+    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.comment[0] ? it.comment : it.name);
     y += ImGui::GetFontSize() + kit_px(2);
     ImGui::PopFont();
     char when[48], size[24], line[300];
@@ -1398,6 +1472,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     fmt_size(it.size, size, sizeof size);
     bool err = renaming && lib.rename_error[0];
     if (err) str_set(line, lib.rename_error);
+    else if (it.comment[0] || (renaming && lib.rename_comment)) snprintf(line, sizeof line, "%s  -  %s", it.name, size);
     else snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, y), tw, col32(err ? COL_RED : COL_DIM), line);
@@ -1751,108 +1826,152 @@ static void lib_calendar()
 // Unsaved sessions: a row of tiles at the top of Sessions, paged when there are more than fit.
 
 
-static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
+static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask); // timeline.cpp
+static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timeline.cpp
+
+// An unsaved session, drawn like a clip's card: its picture from the buffer (pointing scrubs through it, a click
+// looks at it on the timeline), then its icon, its comment or name, and its length and times. Save and Comment sit
+// on the right of the caption. `ask` lets this one read a frame it hasn't got (one tile asks at a time).
+static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
 {
     Sessions &ss = g_app.sessions;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 fh = ImGui::GetFrameHeight(), pad = kit_px(16), is = kit_px(46);
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_PANEL), kit_px(10));
+    f32 fh = ImGui::GetFrameHeight(), round = kit_px(10);
     Session *s = session_find(id);
     ImGui::PushID((i32)id);
+    ImVec2 t0 = a, t1(a.x + w, a.y + thumb_h);
+    dl->AddRectFilled(t0, t1, col32(COL_PANEL), round);
     if (!s) {
-        dl->AddText(ImVec2(a.x + pad, floorf(a.y + (h - ImGui::GetFontSize()) / 2)), col32(COL_FAINT), "Gone from the buffer");
+        dl->AddText(ImVec2(a.x + kit_px(14), floorf(a.y + (thumb_h - ImGui::GetFontSize()) / 2)), col32(COL_FAINT),
+                    "Gone from the buffer");
         ImGui::PopID();
         return;
     }
-
-    // Behind it all, the game's cover blurred and dimmed, cut to the tile's shape about its middle
-    i32 cover_w = 0, cover_h = 0;
-    ID3D11ShaderResourceView *blur = 0;
-    bool art = game_db_cover(s->name, &cover_w, &cover_h, &blur) && blur && cover_w > 0 && cover_h > 0;
-    if (art) {
-        f32 want = w / h, have = (f32)cover_w / cover_h, u = 0, v = 0;
-        if (have > want) u = (1 - want / have) / 2;
-        else v = (1 - have / want) / 2;
-        dl->AddImageRounded((ImTextureID)blur, a, ImVec2(a.x + w, a.y + h), ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, kit_px(10));
-        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(0x0d0e11, 0.6f), kit_px(10));
-    }
-
-    // The game's icon on the left, or a game tile
-    ImVec2 ip(a.x + pad, floorf(a.y + (h - is) / 2));
-    ID3D11ShaderResourceView *icon = game_db_icon(s->name);
-    if (!icon && s->exe[0]) icon = app_icon(s->exe);
-    if (icon) {
-        dl->AddImageRounded((ImTextureID)icon, ip, ImVec2(ip.x + is, ip.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(8));
-    } else {
-        dl->AddRectFilled(ip, ImVec2(ip.x + is, ip.y + is), col32(COL_ACCENT_SOFT), kit_px(8));
-        ImGui::PushFont(g_font_icon);
-        ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
-        dl->AddText(ImVec2(floorf(ip.x + (is - gs.x) / 2), floorf(ip.y + (is - gs.y) / 2)), col32(COL_ACCENT), ICON_GAME);
-        ImGui::PopFont();
-    }
-    f32 tx = ip.x + is + kit_px(14);
-
-    // On the right: Save, and before it a look at it on the timeline. There is nothing to dismiss: an unsaved
-    // session just stays here until its footage has left the buffer.
-    if (s->state == SES_DISMISSED) { // from when there was
+    if (s->state == SES_DISMISSED) { // from when there was a Dismiss: it just stays here now
         s->state = SES_NOT_SAVED;
         ss.dirty = true;
     }
-    f32 bx = a.x + w - pad - fh, by = floorf(a.y + (h - fh) / 2);
     bool saved = s->state == SES_SAVED, saving = s->state == SES_SAVING;
-    ImGui::SetCursorScreenPos(ImVec2(bx, by));
-    kit_next_tip(saved ? "Saved" : "Save the session");
-    if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) session_save(s);
-    bx -= fh + kit_px(6);
-    ImGui::SetCursorScreenPos(ImVec2(bx, by));
-    kit_next_tip("Look at it on the timeline");
-    if (kit_icon_button(ICON_PLAY, "##review", KIT_GHOST, !saved)) {
+
+    // The picture
+    ImGui::SetCursorScreenPos(t0);
+    ImGui::InvisibleButton("pic", ImVec2(w, thumb_h));
+    bool hover = ImGui::IsItemHovered();
+    kit_tip("Look at it on the timeline");
+    f32 frac = 0.5f;
+    if (hover) {
+        frac = (ImGui::GetIO().MousePos.x - t0.x) / w;
+        frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+    }
+    i64 len = s->end_us - s->start_us, mid = s->start_us + len / 2;
+    i64 t = s->start_us + (i64)(frac * (f64)len);
+    ID3D11ShaderResourceView *pic = timeline_keyframe(t, ask);
+    if (!pic && hover) pic = timeline_keyframe(mid, false); // the poster until the new one's read
+    if (pic) dl->AddImageRounded((ImTextureID)pic, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
+    else {
+        i32 cw = 0, ch = 0;
+        ID3D11ShaderResourceView *blur = 0;
+        if (game_db_cover(s->name, &cw, &ch, &blur) && blur && cw > 0 && ch > 0) {
+            f32 want = w / thumb_h, have = (f32)cw / ch, u = 0, v = 0;
+            if (have > want) u = (1 - want / have) / 2;
+            else v = (1 - have / want) / 2;
+            dl->AddImageRounded((ImTextureID)blur, t0, t1, ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, round);
+        }
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !saved) {
         timeline_review(s->start_us, s->end_us, s->name);
         ImGui::PopID();
         return;
     }
-
-    // Name; length and times; what happens next
-    f32 tw = bx - kit_px(10) - tx;
-    f32 lh = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize * 2 + kit_px(2);
-    f32 ty = floorf(a.y + (h - lh) / 2);
-    // Over a picture the text has a soft dark edge and is a shade lighter, so it reads whatever is behind it
-    auto put = [&](ImVec2 pos, u32 ink, const char *text) {
-        if (art) {
-            f32 d = kit_px(1);
-            text_clipped(dl, ImVec2(pos.x, pos.y + d), tw, IM_COL32(0, 0, 0, 170), text);
-            text_clipped(dl, ImVec2(pos.x + d, pos.y + d), tw, IM_COL32(0, 0, 0, 110), text);
-            text_clipped(dl, ImVec2(pos.x - d, pos.y), tw, IM_COL32(0, 0, 0, 70), text);
-        }
-        text_clipped(dl, pos, tw, col32(ink), text);
-    };
-    ImGui::PushFont(g_font_bold);
-    put(ImVec2(tx, ty), art ? 0xffffff : COL_TEXT, s->name);
-    ImGui::PopFont();
-    ty += g_font_bold->FontSize + kit_px(2);
-    char len[32], from[32], to[32], line[128];
-    fmt_length(s->end_us - s->start_us, len, sizeof len);
-    fmt_clock(s->start_us, from, sizeof from);
-    fmt_clock(s->end_us, to, sizeof to);
-    snprintf(line, sizeof line, "%s  -  %s - %s", len, from, to);
-    ImGui::PushFont(g_font_small);
-    put(ImVec2(tx, ty), art ? 0xd4d8de : COL_DIM, line);
-    ty += g_font_small->FontSize + kit_px(2);
-    u32 col = art ? 0xb4bac4 : COL_FAINT;
-    if (saved) str_set(line, "Saved");
-    else if (s->state == SES_ASKING) str_set(line, "Asking in the popup");
+    char text[64], len_s[32];
+    fmt_length(len, len_s, sizeof len_s);
+    f32 in = kit_px(10);
+    if (hover) { // where it is: a bar along the bottom edge and the clock time
+        f32 bh = kit_px(4), by = t1.y - bh;
+        dl->PushClipRect(ImVec2(t0.x, by), t1, true);
+        dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 70), round);
+        dl->PopClipRect();
+        dl->PushClipRect(ImVec2(t0.x, by), ImVec2(t0.x + frac * w, t1.y), true);
+        dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
+        dl->PopClipRect();
+        fmt_clock(t, text, sizeof text);
+        badge(dl, ImVec2(t1.x - in, by - kit_px(6)), true, true, text);
+    } else badge(dl, ImVec2(t1.x - in, t1.y - in), true, true, len_s);
+    // What happens to it: time left in the buffer, saving, saved
+    if (saved) str_set(text, "Saved");
+    else if (s->state == SES_ASKING) str_set(text, "Asking in the popup");
     else if (saving) {
         const SaveJobView *v = save_view(s->job);
-        if (v && v->state == SAVE_RUNNING) snprintf(line, sizeof line, "Saving %d%%", (int)(v->progress * 100));
-        else str_set(line, "Waiting to save");
-        col = art ? 0xd4d8de : COL_DIM;
+        if (v && v->state == SAVE_RUNNING) snprintf(text, sizeof text, "Saving %d%%", (int)(v->progress * 100));
+        else str_set(text, "Waiting to save");
         f32 p = v ? v->progress : 0;
-        dl->AddRectFilled(ImVec2(a.x + kit_px(10), a.y + h - kit_px(4)), ImVec2(a.x + kit_px(10) + p * (w - kit_px(20)), a.y + h - kit_px(2)),
-                          col32(COL_ACCENT), kit_px(1));
-    } else {
-        session_time_left(*s, line, sizeof line);
+        dl->PushClipRect(ImVec2(t0.x, t1.y - kit_px(4)), ImVec2(t0.x + p * w, t1.y), true);
+        dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
+        dl->PopClipRect();
+    } else session_time_left(*s, text, sizeof text);
+    badge(dl, ImVec2(t0.x + in, t0.y + in), false, false, text);
+
+    // The caption: icon, then the title (its comment, else its name) and a dim line; Save and Comment on the right
+    f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
+    ID3D11ShaderResourceView *icon = game_db_icon(s->name);
+    if (!icon && s->exe[0]) icon = app_icon(s->exe);
+    if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
+                                  IM_COL32_WHITE, kit_px(6));
+    else {
+        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), col32(COL_PANEL), kit_px(6));
+        ImGui::PushFont(g_font_icon);
+        ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
+        dl->AddText(ImVec2(floorf(a.x + (isz - gs.x) / 2), floorf(y + (isz - gs.y) / 2)), col32(COL_FAINT), ICON_GAME);
+        ImGui::PopFont();
     }
-    put(ImVec2(tx, ty), col, line);
+    f32 by = floorf(y + (isz - fh) / 2), bx = a.x + w - fh;
+    ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    kit_next_tip(saved ? "Saved" : "Save the session");
+    if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) session_save(s);
+    bx -= fh + kit_px(4);
+    ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    bool editing = ss.comment_id == s->id;
+    kit_next_tip(s->comment[0] ? "Change the comment" : "Add a comment");
+    if (kit_icon_button(ICON_CHAT, "##comment", KIT_GHOST) && !editing) {
+        ss.comment_id = s->id;
+        ss.comment_focus = true;
+        str_set(ss.comment_buf, s->comment);
+        editing = true;
+    }
+    f32 tx = a.x + isz + kit_px(10), tw = bx - kit_px(8) - tx;
+    ImGui::PushFont(g_font_bold);
+    if (editing) {
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(4), kit_px(1)));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kit_px(4));
+        ImGui::SetCursorScreenPos(ImVec2(tx - kit_px(4), y - kit_px(1)));
+        ImGui::SetNextItemWidth(tw + kit_px(4));
+        if (ss.comment_focus) {
+            ImGui::SetKeyboardFocusHere();
+            ss.comment_focus = false;
+        }
+        bool enter = ImGui::InputTextWithHint("##text", "Add a comment", ss.comment_buf, sizeof ss.comment_buf,
+                                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        bool left = ImGui::IsItemDeactivated(), esc = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        ImGui::PopStyleVar(2);
+        if (esc) ss.comment_id = 0;
+        else if (enter || left) {
+            for (char *c = ss.comment_buf; *c; c++)
+                if (*c == '\t' || *c == '|') *c = ' ';
+            str_set(s->comment, trim(ss.comment_buf));
+            ss.dirty = true;
+            ss.comment_id = 0;
+            log_line("session %u: comment %s", s->id, s->comment[0] ? "set" : "removed");
+        }
+    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), s->comment[0] ? s->comment : s->name);
+    ImGui::PopFont();
+    y += g_font_bold->FontSize + kit_px(2);
+    char from[32], to[32], line[200];
+    fmt_clock(s->start_us, from, sizeof from);
+    fmt_clock(s->end_us, to, sizeof to);
+    if (s->comment[0] || editing) snprintf(line, sizeof line, "%s  -  %s  -  %s - %s", s->name, len_s, from, to);
+    else snprintf(line, sizeof line, "%s  -  %s - %s", len_s, from, to);
+    ImGui::PushFont(g_font_small);
+    text_clipped(dl, ImVec2(tx, y), tw, col32(COL_DIM), line);
     ImGui::PopFont();
     ImGui::PopID();
 }
@@ -1863,13 +1982,13 @@ static bool lib_unsaved_row(f32 full_w)
     Sessions &ss = g_app.sessions;
     sessions_unsaved_take();
     if (ss.row_count == 0) return false;
-    f32 gap = kit_px(16), tile_h = kit_px(78), fh = ImGui::GetFrameHeight();
-    i32 per = (i32)((full_w + gap) / (kit_px(320) + gap));
+    f32 gap = kit_px(14), fh = ImGui::GetFrameHeight();
+    i32 per = (i32)((full_w + gap) / (kit_px(280) + gap));
     if (per < 1) per = 1;
     i32 pages = (ss.row_count + per - 1) / per;
     if (ss.page >= pages) ss.page = pages - 1;
     if (ss.page < 0) ss.page = 0;
-    f32 tile_w = floorf((full_w - (per - 1) * gap) / per);
+    f32 tile_w = floorf((full_w - (per - 1) * gap) / per), thumb_h = floorf(tile_w * 9 / 16);
 
     ImVec2 a = ImGui::GetCursorScreenPos();
     char head[48];
@@ -1881,12 +2000,19 @@ static bool lib_unsaved_row(f32 full_w)
         lib_pager("unsaved", &ss.page, pages);
     }
     f32 y = a.y + fh + kit_px(6);
+    // The tile under the mouse reads its frames first; with none, whichever lacks its poster.
+    ImVec2 m = ImGui::GetIO().MousePos;
+    i32 hovered = -1;
+    for (i32 k = 0; k < per; k++) {
+        f32 x = a.x + k * (tile_w + gap);
+        if (m.x >= x && m.x < x + tile_w && m.y >= y && m.y < y + thumb_h) hovered = k;
+    }
     for (i32 k = 0; k < per; k++) {
         i32 r = ss.page * per + k;
         if (r >= ss.row_count) break;
-        lib_unsaved_tile(ss.rows[r], ImVec2(a.x + k * (tile_w + gap), y), tile_w, tile_h);
+        lib_unsaved_tile(ss.rows[r], ImVec2(a.x + k * (tile_w + gap), y), tile_w, thumb_h, hovered < 0 || hovered == k);
     }
-    ImGui::SetCursorScreenPos(ImVec2(a.x, y + tile_h + kit_px(18)));
+    ImGui::SetCursorScreenPos(ImVec2(a.x, y + thumb_h + lib_meta_h() + kit_px(18)));
     return true;
 }
 
@@ -1907,7 +2033,7 @@ static void screen_library()
     ImVec2 h0 = ImGui::GetCursorScreenPos();
     static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
-    static const char *const sorts[] = {"Newest", "Oldest", "Longest", "Biggest"};
+    static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
     f32 hgap = kit_px(8), view_w = kit_px(104), game_w = kit_px(168), drop_w = kit_px(112);
     for (i32 v = 0; v < 2; v++) {
         ImGui::SetCursorScreenPos(ImVec2(h0.x + v * (view_w + kit_px(4)), h0.y));
@@ -2011,7 +2137,7 @@ static void screen_library()
     ImGui::SetCursorScreenPos(sort_at);
     if (lib_pill("##sort", sorts[lib.sort], drop_w, false, true)) ImGui::OpenPopup("sort");
     step = lib.sort;
-    if (kit_wheel_step(&step, 4)) {
+    if (kit_wheel_step(&step, SORT_COUNT)) {
         lib.sort = step;
         lib.scroll = lib.scroll_to = 0;
         lib_refilter();
@@ -2021,7 +2147,7 @@ static void screen_library()
     bool sort_open = ImGui::BeginPopup("sort");
     lib_popup_style_pop();
     if (sort_open) {
-        for (i32 i = 0; i < 4; i++)
+        for (i32 i = 0; i < SORT_COUNT; i++)
             if (lib_menu_item(lib.sort == i ? ICON_CHECK : "", sorts[i], false, kit_px(132)) && lib.sort != i) {
                 lib.sort = i;
                 lib.scroll = lib.scroll_to = 0;
@@ -2146,7 +2272,7 @@ static void screen_library()
             i32 idx = r * cols + c;
             if (idx >= lib.shown_count) break;
             const LibItem &it = lib.items[lib.shown[idx]];
-            i64 day = local_day(it.mtime_us, 0);
+            i64 day = lib.sort == SORT_GAME ? (i64)fnv64(it.info.game, strlen(it.info.game)) : local_day(it.mtime_us, 0);
             bool show_day = c == 0 || day != prev_day;
             prev_day = day;
             lib_card(it, ImVec2(g0.x + c * (card_w + gap), g0.y + r * card_h - top), card_w, thumb_h, day_h, show_day);

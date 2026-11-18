@@ -165,6 +165,7 @@ static void session_write_record(Session *s, i32 video_year)
             (long long)s->end_us);
     fprintf(f, "footage_start_us = %lld\nfootage_end_us = %lld\n", (long long)foot_from, (long long)foot_to);
     fprintf(f, "video = %s\n", s->video);
+    if (s->comment[0]) fprintf(f, "comment = %s\n", s->comment);
     bool ok = fclose(f) == 0 && MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
     if (!ok) {
         log_line("session %u: couldn't write its record %s (%d)", s->id, rel, (int)GetLastError());
@@ -199,6 +200,8 @@ static bool session_save(Session *s)
     return true;
 }
 
+static bool library_set_comment(u64 key, const char *text, const char *name); // library.cpp
+
 // Follows the save jobs of sessions being saved.
 static void sessions_check_saves()
 {
@@ -222,6 +225,18 @@ static void sessions_check_saves()
             }
             session_write_record(s, year);
             log_line("session %u (%s): saved", s->id, s->name);
+            // Its comment goes with the file, keyed as the Library keys it (its size and time).
+            wchar_t wp[MAX_PATH];
+            WIN32_FILE_ATTRIBUTE_DATA fa;
+            utf8_to_wide(v->path, wp, COUNT(wp));
+            if (s->comment[0] && GetFileAttributesExW(wp, GetFileExInfoStandard, &fa)) {
+                u64 size = ((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+                i64 mt = filetime_us(fa.ftLastWriteTime);
+                char stem[256];
+                str_set(stem, s->video);
+                if (char *dot = strrchr(stem, '.')) *dot = 0;
+                library_set_comment(fnv64(&mt, sizeof mt, fnv64(&size, sizeof size)), s->comment, stem);
+            }
         } else {
             s->state = SES_NOT_SAVED;
             log_line("session %u (%s): the save %s; it's under unsaved sessions", s->id, s->name,
@@ -349,15 +364,15 @@ static void sessions_write()
     i64 now = now_us();
     len += snprintf(text + len, cap - len, "# clipback's open sessions and the ones still in the buffer. Rewritten by clipback.\n");
     len += snprintf(text + len, cap - len, "written_us\t%lld\nnext_id\t%u\n", (long long)now, ss.next_id);
-    len += snprintf(text + len, cap - len, "# session  id  state  custom  start_us  end_us  exe  name  video  record\n");
+    len += snprintf(text + len, cap - len, "# session  id  state  custom  start_us  end_us  exe  name  video  record  comment\n");
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         const Session &s = ss.items[i];
         if (s.state == SES_FREE) continue;
         // A save in progress dies with clipback: it comes back as not saved.
         SessionState st = s.state == SES_SAVING ? SES_NOT_SAVED : s.state;
-        len += snprintf(text + len, cap - len, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\n", s.id,
+        len += snprintf(text + len, cap - len, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\t%s\n", s.id,
                         STATE_NAMES[st], s.custom ? 1 : 0, (long long)s.start_us, (long long)s.end_us, s.exe, s.name,
-                        s.video, s.record);
+                        s.video, s.record, s.comment);
     }
     CHECK(len < cap, "sessions.txt fits its buffer; %d of %d", len, cap);
 
@@ -495,13 +510,13 @@ static void sessions_load()
         while (fgets(line, sizeof line, f)) {
             size_t len = strlen(line);
             while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
-            char *fl[10];
+            char *fl[11];
             i32 n = split_tabs(line, fl, COUNT(fl));
             if (n == 2 && !strcmp(fl[0], "written_us")) {
                 alive_until = strtoll(fl[1], 0, 10);
             } else if (n == 2 && !strcmp(fl[0], "next_id")) {
                 ss.next_id = (u32)strtoul(fl[1], 0, 10);
-            } else if (n == 10 && !strcmp(fl[0], "session")) {
+            } else if ((n == 10 || n == 11) && !strcmp(fl[0], "session")) {
                 SessionState st = SES_FREE;
                 for (i32 i = 1; i < COUNT(STATE_NAMES); i++)
                     if (!strcmp(fl[2], STATE_NAMES[i])) st = (SessionState)i;
@@ -517,6 +532,7 @@ static void sessions_load()
                 str_set(s->name, fl[7]);
                 str_set(s->video, fl[8]);
                 str_set(s->record, fl[9]);
+                if (n == 11) str_set(s->comment, fl[10]);
                 if (s->id > ss.next_id) ss.next_id = s->id;
                 loaded++;
             }
@@ -873,8 +889,8 @@ static void session_time_left(const Session &s, char *out, i32 cap)
     char left[32];
     if (us < 60000000) str_set(left, "under a minute");
     else fmt_length(us, left, sizeof left);
-    if (start_gone) snprintf(out, cap, "Part of it is in the buffer for %s more", left);
-    else snprintf(out, cap, "In the buffer for %s more", left);
+    if (start_gone) snprintf(out, cap, "Partly gone, %s left", left);
+    else snprintf(out, cap, "%s left", left);
 }
 
 // Takes the rows again when the list comes on screen or a session joins it. The Library draws them.

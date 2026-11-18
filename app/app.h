@@ -105,7 +105,6 @@ struct Config {
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
     bool share_names;    // "Help name games": naming a game the art service wasn't sure of tells it (gamedb_confirm)
-    char voter[33];      // a random id sent with those, so one player counts once; made when first needed
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only
     Str64 art_service;   // host of the art service gamedb.cpp asks for the art Discord and Steam don't have; "" = none
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
@@ -425,6 +424,7 @@ struct LibItem {
     i64       mtime_us;
     u64       key;       // thumbnail cache key; changes when the file does, not when it's renamed
     MediaInfo info;
+    char      comment[128]; // typed by hand (comments.txt); shown as its title
 };
 
 struct LibThumb {
@@ -468,6 +468,7 @@ struct Library {
     char     rename_error[256];
     u64      rename_key;           // the card whose name is being edited in place (its key), 0 = none
     bool     rename_focus;         // give the name field the keyboard next frame
+    bool     rename_comment;       // the field edits the card's comment, not its file name
     char     message[256];         // the last result, shown in the pager row ("Copied", "Couldn't rename ...")
     bool     message_error;
     Player   player;
@@ -557,7 +558,7 @@ struct Timeline {
     i32           row_count;
     i32           row_scroll;   // first audio row shown
     i16           stream_row[1024]; // the row of each idx->streams entry, -1 = none
-    TimelineFrame frames[8];
+    TimelineFrame frames[16];
     u32           frame_clock;
     i64           pending_key, failed_key, shown_key;
     char          session_name[128];
@@ -601,6 +602,7 @@ struct Session {
     u32          job;              // the save job while SAVING
     char         video[256];       // the saved file's name once SAVED
     char         record[256];      // its record under save_dir, "2026\Data\<name>.session.txt"; empty = none
+    char         comment[128];     // typed by hand; shown as its title, the name and times kept under it
 };
 
 struct Sessions {
@@ -617,6 +619,9 @@ struct Sessions {
     i32     row_count;
     i32     page;
     i32     drawn_frame;
+    u32     comment_id;        // the unsaved session whose comment is being typed, 0 = none
+    bool    comment_focus;     // give its field the keyboard next frame
+    char    comment_buf[128];
 };
 
 static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp the game being played
