@@ -1,5 +1,4 @@
-// Library: the saved clips and sessions, found under <save_dir>\<year>\{Clips,Sessions} (and loose in <year>\,
-// where the Rust version saved them), and the player.
+// Library: the saved clips and sessions, found under <save_dir>\<year>\{Clips,Sessions}, and the player.
 //
 // Two worker threads do the slow parts: the scan (listing the folders, ffprobe for files not seen before) and the
 // thumbnails (ffmpeg makes a strip of 24 frames per file, cached under local_dir\thumbs, decoded with WIC). They
@@ -194,7 +193,7 @@ static void lib_publish(const LibItem *items, i32 n)
     event_post(e);
 }
 
-// Games given by hand, for files that carry no tag of their own (clips from before clipback, renamed ones):
+// Games given by hand, for files that carry no tag of their own (renamed ones, or videos clipback didn't make):
 // <config_dir>\games.txt, a line each of "<key in hex> | <game> | <file name>". The key is the item's (its size and
 // time), so a rename keeps the game; the name is only there for people reading the file. Read at every scan, by
 // the scan's thread.
@@ -271,16 +270,14 @@ static bool lib_set_game(LibItem *it, const char *tagged)
     return false;
 }
 
-// Where an item is: <save_dir>\<year>\{Clips,Sessions}\<name><ext>, or straight in <save_dir>\<year>\ for clips
-// saved by the Rust version, which are listed where they are rather than moved.
+// Where an item is: <save_dir>\<year>\{Clips,Sessions}\<name><ext>.
 static Path lib_file_path(const Path &save_dir, const LibItem &it)
 {
     Path p = {};
     wchar_t name[256], ext[8];
     utf8_to_wide(it.name, name, COUNT(name));
     utf8_to_wide(it.ext, ext, COUNT(ext));
-    if (it.loose) swprintf(p.s, MAX_PATH, L"%s\\%d\\%s%s", save_dir.s, it.year, name, ext);
-    else swprintf(p.s, MAX_PATH, L"%s\\%d\\%s\\%s%s", save_dir.s, it.year, it.kind ? L"Sessions" : L"Clips", name, ext);
+    swprintf(p.s, MAX_PATH, L"%s\\%d\\%s\\%s%s", save_dir.s, it.year, it.kind ? L"Sessions" : L"Clips", name, ext);
     return p;
 }
 
@@ -298,9 +295,8 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                 continue;
             i16 year = (i16)_wtoi(fd.cFileName);
             Path ydir = path_join(save_dir, fd.cFileName);
-            // 0: Clips, 1: Sessions, 2: loose videos in the year folder itself (the Rust version's layout), as clips.
-            for (i32 kind = 0; kind < 3; kind++) {
-                Path dir = kind == 2 ? ydir : path_join(ydir, kind ? L"Sessions" : L"Clips");
+            for (i32 kind = 0; kind < 2; kind++) { // 0: Clips, 1: Sessions
+                Path dir = path_join(ydir, kind ? L"Sessions" : L"Clips");
                 WIN32_FIND_DATAW f;
                 HANDLE h = FindFirstFileW(path_join(dir, L"*").s, &f);
                 if (h == INVALID_HANDLE_VALUE) continue;
@@ -316,7 +312,6 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     wide_to_utf8(f.cFileName, it->name, sizeof it->name);
                     it->year = year;
                     it->kind = kind == 1 ? LIB_SESSIONS : LIB_CLIPS;
-                    it->loose = kind == 2;
                     it->size = ((u64)f.nFileSizeHigh << 32) | f.nFileSizeLow;
                     it->mtime_us = filetime_us(f.ftLastWriteTime);
                     u64 k = fnv64(&it->size, sizeof it->size);
@@ -1848,10 +1843,6 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
                     "Gone from the buffer");
         ImGui::PopID();
         return;
-    }
-    if (s->state == SES_DISMISSED) { // from when there was a Dismiss: it just stays here now
-        s->state = SES_NOT_SAVED;
-        ss.dirty = true;
     }
     bool saved = s->state == SES_SAVED, saving = s->state == SES_SAVING;
 

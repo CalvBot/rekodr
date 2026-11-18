@@ -421,7 +421,6 @@ struct LibItem {
     char      ext[8];    // ".mp4"
     i16       year;      // the year folder it's in
     LibView   kind;      // in Clips or Sessions
-    bool      loose;     // directly in the year folder (the Rust version's layout), not in its Clips subfolder
     bool      probed;    // `info` is known
     u64       size;
     i64       mtime_us;
@@ -590,7 +589,6 @@ enum SessionState : u8 {
     SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Library's unsaved sessions
     SES_SAVING,    // a save job is copying it
     SES_SAVED,
-    SES_DISMISSED, // no longer given (there was a button to take one off the unsaved sessions); read as not saved
 };
 
 struct Session {

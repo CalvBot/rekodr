@@ -56,8 +56,8 @@ It needs Stream Deck 6.5 or later and has no dependencies. The plugin talks to c
 ## Files
 - Settings: `%APPDATA%\clipback\settings.txt`. Options writes it; there is no need to edit it by hand.
 - Clips: `<Videos>\Clips\<year>\` unless changed in Options.
-- Games given by hand: `%APPDATA%\clipback\games.txt`, for clips that don't carry a game of their own (older or renamed
-  files). A line each of `<key> | <game> | <file name>`.
+- Games given by hand: `%APPDATA%\clipback\games.txt`, for clips that don't carry a game of their own (renamed files, or videos
+  clipback didn't make). A line each of `<key> | <game> | <file name>`.
 - Games list and art: `%LOCALAPPDATA%\clipback\gamedb`. clipback fetches these itself so games get their proper
   names and icons: from Discord's public list of games, Steam's images, and clipback's own service,
   [clipback-api](https://github.com/CalvBot/clipback-api), which names games the list doesn't know and finds their

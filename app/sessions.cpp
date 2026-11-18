@@ -64,7 +64,7 @@ static Session *session_slot()
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         Session *s = &ss.items[i];
         if (s->state == SES_FREE) { *s = {}; return s; }
-        if ((s->state == SES_SAVED || s->state == SES_DISMISSED) && (!old || s->end_us < old->end_us)) old = s;
+        if (s->state == SES_SAVED && (!old || s->end_us < old->end_us)) old = s;
     }
     if (!old) {
         log_line("sessions: all %d slots hold sessions not saved yet; a new one is lost", COUNT(ss.items));
@@ -188,7 +188,7 @@ static bool session_save(Session *s)
     u32 job = save_range(s->start_us, s->end_us, SAVE_SESSION, s->name); // the buffer's own start clips it
     if (!job) {
         log_line("session %u (%s): couldn't queue the save", s->id, s->name);
-        if (s->state == SES_ASKING || s->state == SES_DISMISSED) s->state = SES_NOT_SAVED;
+        if (s->state == SES_ASKING) s->state = SES_NOT_SAVED;
         g_app.sessions.dirty = true;
         return false;
     }
@@ -318,7 +318,7 @@ static void sessions_observe(i64 now, const char *game)
     }
 }
 
-static const char *STATE_NAMES[] = {"free", "open", "asking", "not_saved", "saving", "saved", "dismissed"};
+static const char *STATE_NAMES[] = {"free", "open", "asking", "not_saved", "saving", "saved"};
 
 // sessions.txt is written by a thread of its own, so a slow disk never holds up the window. The main thread
 // formats the file into a buffer and hands it over; a newer one replaces one not written yet.

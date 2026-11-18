@@ -1023,12 +1023,10 @@ struct TlSaved {
     char name[96];
 };
 
-// The saves that reach into [from, to]: sessions first (drawn under), then clips, each oldest first. Saved sessions
-// from before saved.tsv existed come from sessions.txt.
+// The saves that reach into [from, to]: sessions first (drawn under), then clips, each oldest first.
 static i32 tl_saved_make(TlSaved *out, i32 cap, i64 from, i64 to)
 {
     const Saving &sv = g_app.saving;
-    const Sessions &ss = g_app.sessions;
     i32 n = 0;
     for (i32 pass = 0; pass < 2; pass++) {
         bool sessions = pass == 0;
@@ -1043,20 +1041,6 @@ static i32 tl_saved_make(TlSaved *out, i32 cap, i64 from, i64 to)
             str_set(v.name, file ? file + 1 : r.path);
             char *dot = strrchr(v.name, '.');
             if (dot) *dot = 0;
-        }
-        if (!sessions) continue;
-        for (i32 i = 0; i < COUNT(ss.items) && n < cap; i++) {
-            const Session &e = ss.items[i];
-            if (e.state != SES_SAVED || e.end_us < from || e.start_us > to) continue;
-            bool logged = false; // saved.tsv has it already
-            for (i32 k = 0; k < sv.saved_count && !logged; k++)
-                logged = sv.saved[k].kind == SAVE_SESSION && llabs(sv.saved[k].from_us - e.start_us) < 5 * TL_SEC;
-            if (logged) continue;
-            TlSaved &v = out[n++];
-            v.a = e.start_us;
-            v.z = e.end_us;
-            v.session = true;
-            str_set(v.name, e.name);
         }
     }
     return n;
