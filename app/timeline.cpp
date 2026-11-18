@@ -1323,11 +1323,14 @@ static void screen_timeline()
             if (t >= saved[i].a - slack && t <= saved[i].z + slack) saved_hit = i;
     }
 
-    // Markers in view, as flags on the ruler. A click on one puts the playhead there and shows its note.
+    // Markers in view, as flags on the ruler. A click on one puts the playhead there and shows its note; a right
+    // click opens the whole note.
     static Marker marks[256];
+    static Marker mark_open; // the one whose note is open
     i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
     i32 mark_hit = -1;
-    if (ImGui::IsWindowHovered() && io.MousePos.y >= y_ruler && io.MousePos.y < y_video && tl.drag == TL_DRAG_NONE) {
+    if (ImGui::IsWindowHovered() && io.MousePos.y >= y_ruler && io.MousePos.y < y_video &&
+        (tl.drag == TL_DRAG_NONE || !tl.dragged)) {
         f32 best = 6 * s;
         for (i32 i = 0; i < mark_count; i++) {
             f32 d = fabsf(io.MousePos.x - tl_x(c, marks[i].t_us));
@@ -1390,7 +1393,12 @@ static void screen_timeline()
     }
     if (ImGui::IsItemDeactivated()) {
         if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok) tl.marker_pick = 0;
-        if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && mark_hit >= 0) {
+        if (tl.drag == TL_DRAG_PAN && !tl.dragged && mouse_ok && mark_hit >= 0 &&
+            ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+            mark_open = marks[mark_hit];
+            tl.marker_pick = mark_open.t_us;
+            ImGui::OpenPopup("##marknote");
+        } else if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && mark_hit >= 0) {
             tl.playhead_us = marks[mark_hit].t_us;
             tl.marker_pick = marks[mark_hit].t_us;
         } else if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && saved_hit >= 0) {
@@ -1676,6 +1684,26 @@ static void screen_timeline()
         tl_pill(dl, tl_x(c, marks[i].t_us), y_video + 2 * s, c.x0, c.x1, marks[i].note[0] ? marks[i].note : "Marker",
                 col32(MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb, 0.9f), col32(0x000000));
         ImGui::PopFont();
+    }
+    // A marker's whole note, wrapped, with its time
+    ImGui::SetNextWindowSizeConstraints(ImVec2(240 * s, 0), ImVec2(420 * s, 360 * s));
+    if (ImGui::BeginPopup("##marknote")) {
+        char when[64];
+        tl_clock(mark_open.t_us, true, when, sizeof when);
+        u32 mrgb = MARKER_COLOURS[mark_open.colour < COUNT(MARKER_COLOURS) ? mark_open.colour : 0].rgb;
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        f32 lh = ImGui::GetTextLineHeight();
+        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 5 * s, p.y + lh / 2), 5 * s, col32(mrgb));
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 16 * s, p.y));
+        ImGui::TextColored(rgb(COL_DIM), "%s", when);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 400 * s);
+        ImGui::TextUnformatted(mark_open.note[0] ? mark_open.note : "No note");
+        ImGui::PopTextWrapPos();
+        if (mark_open.note[0] && kit_button(ICON_COPY "  Copy", KIT_GHOST)) {
+            ImGui::SetClipboardText(mark_open.note);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
     if (!tl.loaded || !b.seg_count) {
         const char *msg = !tl.loaded ? "Reading the buffer..." : "Nothing recorded yet";
