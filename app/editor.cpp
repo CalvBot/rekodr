@@ -427,6 +427,10 @@ static void editor_open(const LibItem &item)
     editor_refresh_shares();
     // The waveforms of the tracks the timeline shows, measured (or read from the cache) in the background.
     wave_close(&ed.wave);
+    if (g_app.config.wave_keep_days > 0) {
+        i32 gone = wave_cache_clear(g_app.config.wave_keep_days);
+        if (gone) log_line("editor: deleted %d audio previews not opened in %g days", gone, g_app.config.wave_keep_days);
+    }
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 n = ed_tracks(item.info, tracks, MEDIA_MAX_TRACKS);
     ed.wave = wave_open(ed.path, item.key, item.info.duration, tracks, n);
@@ -857,6 +861,31 @@ static void ed_drag_keys(f64 dt, f64 dfrac, f32 px_per_s, f32 vh, bool time_only
     }
     ed.dirty = true;
 }
+
+// A sound lane's colour, by the kind of track its title says it is: chat, game, an app, or the mic.
+enum EdKind { ED_KIND_MIX, ED_KIND_MIC, ED_KIND_CHAT, ED_KIND_GAME, ED_KIND_APP };
+static EdKind ed_track_kind(const char *title, i32 slot)
+{
+    if (slot == EDIT_MASTER) return ED_KIND_MIX;
+    size_t n = strlen(title);
+    if (n >= 6 && !strcmp(title + n - 6, "(chat)")) return ED_KIND_CHAT;
+    if (n >= 6 && !strcmp(title + n - 6, "(game)")) return ED_KIND_GAME;
+    if (!strcmp(title, "Mic")) return ED_KIND_MIC;
+    return ED_KIND_APP;
+}
+
+static u32 ed_kind_rgb(EdKind k)
+{
+    switch (k) {
+    case ED_KIND_MIX: return 0xeceef1;
+    case ED_KIND_MIC: return 0x5b9cff;  // blue
+    case ED_KIND_CHAT: return 0xa98bff; // violet
+    case ED_KIND_GAME: return 0x3fbf74; // green
+    default: return 0xe8a33d;           // amber
+    }
+}
+
+static u32 ed_rgba(u32 rgb, i32 alpha) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, alpha); }
 
 struct EdRow {
     i32         lane;  // 0 zoom, 1 + slot
@@ -1315,6 +1344,10 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         bool muted = s >= 0 && ed.edit.muted[s];
         dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(bx0 - gap, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersLeft);
         dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersRight);
+        u32 kind_rgb = s >= 0 ? ed_kind_rgb(ed_track_kind(row.name, s)) : 0;
+        if (s >= 0) // the kind of track, as a strip down the gutter's left edge
+            dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(o.x + kit_px(3), y1), ed_rgba(kind_rgb, muted ? 70 : 220), round,
+                              ImDrawFlags_RoundCornersLeft);
 
         ImGui::PushID(l);
         f32 gx = o.x + kit_px(6), by = floorf((y0 + y1 - fh) / 2);
@@ -1383,7 +1416,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 f32 g = (f32)vol_heard(ed.edit, s, tm), e = pk * g / 2;
                 f32 hh = sqrtf(e < 1 ? e : 1) * reach;
                 if (hh < 0.5f) continue;
-                u32 col = s == EDIT_MASTER ? IM_COL32(236, 238, 241, kept ? 64 : 24) : IM_COL32(91, 156, 255, kept ? 92 : 30);
+                u32 col = ed_rgba(kind_rgb, s == EDIT_MASTER ? (kept ? 64 : 24) : (kept ? 110 : 34));
                 dl->AddRectFilled(ImVec2(x, y1 - hh), ImVec2(x + step, y1), col);
             }
         }
@@ -1665,8 +1698,8 @@ static void screen_editor()
     static u64 heard_at;
     if (GetTickCount64() - heard_at > 500) { heard_at = GetTickCount64(); ed.heard_set = false; }
     if (ed.tracks_ready) ed_apply_volumes();
-    // While the waveforms are measured, draw again as they come in.
-    if (ed.wave && !ed.wave->state) ui_wake(100);
+    // While the waveforms are measured, what's on screen goes first (each chunk measured wakes the window).
+    if (ed.wave && !ed.wave->state) wave_view(ed.wave, ed.view_from, ed.view_from + ed.view_span);
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight();

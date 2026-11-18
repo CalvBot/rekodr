@@ -2303,6 +2303,36 @@ static void options_general()
     }
     opt_card_end();
 
+    // The editor's waveforms, cached so a file opens with them at once. Counted when the section comes into view
+    // and after a clear, not every frame.
+    opt_section("AUDIO PREVIEWS");
+    static i32 wave_files, wave_read_frame;
+    static u64 wave_bytes;
+    i32 wave_frame = ImGui::GetFrameCount();
+    if (!wave_read_frame || wave_frame - wave_read_frame > 1) wave_cache_stats(&wave_files, &wave_bytes);
+    wave_read_frame = wave_frame;
+    opt_card_begin();
+    {
+        char sub[96], size[24];
+        fmt_size(wave_bytes, size, sizeof size);
+        if (wave_files) snprintf(sub, sizeof sub, "Waveforms of %d file%s, %s", wave_files, wave_files == 1 ? "" : "s", size);
+        else str_set(sub, "None cached");
+        f32 cw = text_w(g_font, "Clear") + dp(32);
+        opt_row_begin("Cached waveforms", sub, cw);
+        if (kit_button("Clear##wavecache", KIT_SECONDARY, ImVec2(cw, 0), wave_files > 0)) {
+            i32 gone = wave_cache_clear(0);
+            log_line("options: cleared %d audio previews", gone);
+            wave_cache_stats(&wave_files, &wave_bytes);
+        }
+        opt_row_end();
+    }
+    if (opt_row_f32("Keep for", "Ones not opened in this long are deleted; 0 keeps them", "##wavekeep",
+                    &c.wave_keep_days, 0, 3650, "days")) {
+        log_line("options: audio previews kept %g days", c.wave_keep_days);
+        options_apply(0);
+    }
+    opt_card_end();
+
     opt_section("GAMES");
     opt_card_begin();
     if (opt_row_toggle("Look up games online", "Names and icons from Discord's public list of games, covers from Steam, and art for the rest from SteamGridDB and IGDB. Applies from the next start",

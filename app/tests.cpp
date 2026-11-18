@@ -227,6 +227,54 @@ static void test_share_plan()
     T(p.audio_kbps == 0 && p.side == 1080);
 }
 
+// The editor's lanes: a track's kind from its title, and waveforms read only where a chunk is measured.
+static void test_wave_chunks()
+{
+    T(ed_track_kind("sam (chat)", 2) == ED_KIND_CHAT && ed_track_kind("Overwatch (game)", 3) == ED_KIND_GAME);
+    T(ed_track_kind("Mic", 1) == ED_KIND_MIC && ed_track_kind("Brave Browser", 4) == ED_KIND_APP);
+    T(ed_track_kind("Mix", EDIT_MASTER) == ED_KIND_MIX);
+
+    // 25 s of one track: three chunks (10, 10 and 5 s), the middle one measured, loud at 15 s.
+    static WaveData w;
+    w = {};
+    InitializeSRWLock(&w.lock);
+    w.refs = 1;
+    w.count = 1;
+    w.slices = 25 * WAVE_RATE;
+    w.chunks = 3;
+    static u8 level_data[2 * 25 * WAVE_RATE + 64];
+    memset(level_data, 0, sizeof level_data);
+    u8 *at = level_data;
+    for (i32 s = w.slices;; s = (s + 1) / 2) {
+        w.size[w.levels] = s;
+        w.lvl[0][w.levels++] = at;
+        at += s;
+        if (s == 1) break;
+    }
+    static volatile u8 known[3];
+    known[0] = known[1] = known[2] = WAVE_UNKNOWN;
+    w.known = known;
+    w.lvl[0][0][15 * WAVE_RATE] = 255;
+    f32 pk;
+    T(!wave_peak(&w, 0, 14, 16, &pk));
+    wave_chunk_done(&w, 1);
+    T(wave_peak(&w, 0, 14.9, 15.1, &pk) && pk > 0.99f);
+    T(wave_peak(&w, 0, 0, 25, &pk) && pk > 0.99f); // the coarse levels see it too
+    T(!wave_peak(&w, 0, 1, 9, &pk));               // chunk 0 isn't measured
+    T(wave_peak(&w, 0, 11, 12, &pk) && pk == 0);
+    T(w.loudest[0] == 255 && w.known_count == 1);
+
+    // Claiming: the view's chunks first, then outwards, never one already taken.
+    known[0] = known[1] = known[2] = WAVE_UNKNOWN;
+    w.view_from = 21;
+    w.view_to = 24;
+    i32 first, end;
+    T(wave_claim(&w, &first, &end) && first == 2 && end == 3);
+    T(wave_claim(&w, &first, &end) && first == 1 && end == 2);
+    T(wave_claim(&w, &first, &end) && first == 0 && end == 1);
+    T(!wave_claim(&w, &first, &end));
+}
+
 static void test_lanes()
 {
     T(bits_insert(0b101, 1) == 0b1001);
@@ -678,6 +726,7 @@ int main()
     test_edit_volumes();
     test_lanes();
     test_share_plan();
+    test_wave_chunks();
     test_gamedb();
     test_mcpack();
     test_storeids();

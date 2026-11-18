@@ -109,6 +109,7 @@ struct Config {
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
+    f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
 
     bool start_with_windows;
     bool dev_log;      // the detailed log (dev mode, see base.h)

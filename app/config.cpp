@@ -68,6 +68,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_gap_min = 5;
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
+    c->wave_keep_days = 30;
     c->game_lookup = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
@@ -305,6 +306,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "session_gap_min")) real(&c->session_gap_min);
     else if (!strcmp(key, "session_min_length_min")) real(&c->session_min_length_min);
     else if (!strcmp(key, "share_keep_days")) real(&c->share_keep_days);
+    else if (!strcmp(key, "wave_keep_days")) real(&c->wave_keep_days);
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "voter")) str_set(c->voter, value);
@@ -461,6 +463,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("mic", c.mic);
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,
             c.session_min_length_min, c.share_keep_days);
+    fprintf(f, "wave_keep_days = %g\n", c.wave_keep_days);
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("share_names", c.share_names);
     if (c.voter[0]) fprintf(f, "voter = %s\n", c.voter);
