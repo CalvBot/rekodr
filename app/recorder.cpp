@@ -9,7 +9,7 @@
 // - the pruner: every 30 s deletes footage older than buffer_hours, or the oldest early when free space is low.
 // The main thread hands them settings through g_rec (under its lock); they report back with EV_RECORDER events.
 //
-// On-disk format, the same as the Rust version so old buffers and the save code keep working:
+// On-disk format:
 //   <buffer>\video\<run>\v_00000.mkv ...   one folder per ffmpeg run, named after its local start time
 //                        list.csv         "v_00000.mkv,0.000000,2.000000" per finished segment (ffmpeg writes it)
 //                        anchor.txt       wall-clock us of the run's first frame, no line ending
@@ -34,7 +34,7 @@ static i32 codec_index(const char *codec)
 {
     for (i32 i = 0; i < CODEC_COUNT; i++)
         if (!strcmp(CODECS[i], codec)) return i;
-    return 0; // anything else records H.264, like the Rust version
+    return 0; // anything else records H.264
 }
 
 static i32 vendor_parse(const char *s)
@@ -688,7 +688,7 @@ static DWORD WINAPI recorder_thread(void *)
         }
         const RecSettings &s = snap.s;
         if (!log_cleared) {
-            // A fresh ffmpeg-video.log each start, like the Rust version.
+            // A fresh ffmpeg-video.log each start.
             Path log = path_join(s.local_dir, L"ffmpeg-video.log");
             FILE *f = _wfopen(log.s, L"wb");
             if (f) fclose(f);

@@ -72,7 +72,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->wave_keep_days = 30;
     c->game_lookup = true;
     c->tooltips = true;
-    c->setup_done = true; // a settings file from before the setup existed: don't ask again
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
     wchar_t time_format[80] = L"";
@@ -280,11 +279,6 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "editor_top")) real(&c->editor_top);
     else if (!strcmp(key, "editor_side")) real(&c->editor_side);
     else if (!strcmp(key, "editor_lane")) c->editor_lane = atoi(value);
-    else if (!strcmp(key, "thumb_size")) { // the three sizes there used to be: small, medium, large
-        static const i32 widths[] = {200, 270, 380};
-        i32 v = atoi(value);
-        c->card_width = widths[v < 0 || v > 2 ? 1 : v];
-    }
     else if (!strcmp(key, "min_free_gb")) real(&c->min_free_gb);
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);

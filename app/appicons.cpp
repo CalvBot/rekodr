@@ -51,7 +51,7 @@ static bool app_find_path(const char *exe, Path *out)
     return out->s[0] != 0;
 }
 
-// explorer /select, as the Rust version did (SHOpenFolderAndSelectItems returned E_ABORT from here).
+// explorer /select (SHOpenFolderAndSelectItems returns E_ABORT from here).
 static void reveal_file(const Path &path)
 {
     wchar_t args[MAX_PATH + 16];

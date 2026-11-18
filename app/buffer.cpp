@@ -1,6 +1,6 @@
 // Reading the buffer's index from disk into a BufferIdx. Saves use it now; the timeline will later.
 //
-// The format is the one the Rust version writes, so switching versions keeps the buffer:
+// The format:
 //
 //   buffer\video\<run>\v_00000.mkv ...  one folder per capture ffmpeg run (restarts after the lock screen etc.)
 //                      list.csv       "v_00000.mkv,0.000000,2.000000" per finished segment (ffmpeg writes it)
@@ -109,7 +109,7 @@ static void read_list(const Path &dir, BufferScratch *s)
     if (!f) return;
     char line[512];
     while (fgets(line, sizeof line, f)) {
-        // Split from the right, like the Rust version: the name could in theory hold a comma.
+        // Split from the right: the name could in theory hold a comma.
         char *c2 = strrchr(line, ',');
         if (!c2) continue;
         *c2 = 0;

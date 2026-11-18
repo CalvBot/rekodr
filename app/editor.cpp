@@ -39,8 +39,8 @@ static void edit_read(const Path &file, EditRecord *e)
         else if (!strcmp(k, "out")) e->out_s = atof(v);
         else if (!strcmp(k, "key") && e->key_count < EDIT_MAX_KEYS) {
             ZoomKey z = {};
-            i32 ease = EASE_SMOOTH; // keys from before eases were all smooth
-            if (sscanf_s(v, "%lf %lf %lf %lf %d", &z.t, &z.z, &z.x, &z.y, &ease) >= 4) {
+            i32 ease = EASE_SMOOTH;
+            if (sscanf_s(v, "%lf %lf %lf %lf %d", &z.t, &z.z, &z.x, &z.y, &ease) == 5) {
                 z.ease = (u8)(ease >= 0 && ease < EASE_COUNT ? ease : EASE_SMOOTH);
                 e->keys[e->key_count++] = z;
             }

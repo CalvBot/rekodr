@@ -497,7 +497,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 
     // The segment covering `to` is still being written: wait for it to finish (a couple of seconds at most), so the
     // clip ends at the moment the save was asked for. "Being written" is the recorder saying it's capturing, or a
-    // list.csv written moments ago (a recorder outside this process, such as the Rust version).
+    // list.csv written moments ago (a recorder outside this process).
     u64 deadline = GetTickCount64() + SEGMENT_US / 1000 + 2500;
     for (bool wait = req.kind != SAVE_PREVIEW; wait;) { // a preview takes what's there
         i64 end = 0, written = 0;
@@ -717,7 +717,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Keep and Share: an edit of a saved file (ported from the Rust version's render.rs).
+// Keep and Share: an edit of a saved file.
 //
 // Keep is the edit at full quality into <year>\Clips, every track kept: the video is stream-copied when there's no
 // zoom (the trim is then cut at the keyframe before the start), else re-encoded at a constant quality; the audio is

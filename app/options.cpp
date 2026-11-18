@@ -32,8 +32,7 @@ static void options_apply(u32 what)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Start with Windows: a "clipback" value under HKCU\...\Run, the same name the Rust version used, so turning it on
-// here replaces the old one.
+// Start with Windows: a "clipback" value under HKCU\...\Run.
 
 static const wchar_t *RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 

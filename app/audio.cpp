@@ -10,7 +10,7 @@
 //   finished flags with the watcher.
 // Neither touches g_app: they post EV_AUDIO events, applied by audio_on_event on the main thread.
 //
-// On disk (the same as the Rust version, so the saving code and old buffers keep working):
+// On disk:
 //   <buffer>\audio\<yyyymmdd_hhmmss_mmm>_<exe>_<pid>\a_00000.mka ...  Opus in Matroska, 10 s segments
 //                                                    list.csv        written by ffmpeg's segment muxer
 //                                                    meta.json       {"kind","exe","pid","start_us"}
