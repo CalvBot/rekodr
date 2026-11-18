@@ -1691,9 +1691,13 @@ static void ed_open_in(bool premiere)
         ed.result_error = true;
         return;
     }
+    // Neither app takes the XML on its command line, so the XML is shown in its folder, ready for File > Open.
     ShellExecuteW(0, L"open", exe.s, 0, 0, SW_SHOWNORMAL);
-    snprintf(ed.result, sizeof ed.result, "Saved %s next to the video. In %s: File > Import%s.", name, app,
-             premiere ? "" : " > Timeline");
+    wchar_t sel[MAX_PATH + 16];
+    swprintf_s(sel, L"/select,\"%s\"", xml.s);
+    ShellExecuteW(0, L"open", L"explorer.exe", sel, 0, SW_SHOWNORMAL);
+    snprintf(ed.result, sizeof ed.result, "Saved %s next to the video. In %s: %s, then pick it.", name, app,
+             premiere ? "File > Open" : "File > Import > Timeline");
     ed.result_error = false;
 }
 
