@@ -75,6 +75,11 @@ static void run_command(const char *text)
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
         else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
         else if (!strcmp(arg, "help")) { g_app.ui.help_open = true; g_app.ui.help_close = false; }
+        else if (starts_with(arg, "setup")) { // setup, setup2 .. setup5: the first-run setup at that step
+            ui_show(SCREEN_LIBRARY);
+            g_app.ui.setup_open = true;
+            g_app.ui.setup_step = arg[5] >= '1' && arg[5] <= '9' ? arg[5] - '1' : 0;
+        }
         else {
             static const char *const tabs[] = {"apps", "recording", "hotkeys", "general"};
             i32 t = -1;
@@ -83,7 +88,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, help, apps, recording, hotkeys, general)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {
@@ -298,8 +303,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     _set_purecall_handler([] { log_line("pure virtual call"); __debugbreak(); });
     if (!config_load(&g_app.config, g_app.paths)) {
         config_first_run(&g_app.config, g_app.paths);
+        g_app.config.setup_done = false;
         config_save(g_app.config, g_app.paths);
     }
+    g_app.ui.setup_open = !g_app.config.setup_done;
     g_dev = g_app.config.dev_log || dev_env();
     {
         wchar_t exe[MAX_PATH];
@@ -324,8 +331,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     if (!test_home_hash()) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
     audio_start();
-    gamedb_start(g_app.config.game_lookup);
+    // On a first start the setup asks how games are looked up first; it starts the look-up when it closes.
+    if (!g_app.ui.setup_open) gamedb_start(g_app.config.game_lookup);
     pipe_start();
+    if (g_app.ui.setup_open) ui_show(SCREEN_LIBRARY);
     if (command[0]) run_command(command);
 
     // The main loop. While the window is hidden or idle it sleeps in GetMessage; it only draws while shown, for a

@@ -728,6 +728,7 @@ static ID3D11ShaderResourceView *gpu_texture(const u32 *pixels, i32 w, i32 h)
 #include "editor.cpp"
 #include "timeline.cpp"
 #include "options.cpp"
+#include "setup.cpp"
 
 struct HelpRow { const char *keys, *what; };
 struct HelpSection { const char *title; const HelpRow *rows; i32 count; };
@@ -1035,6 +1036,12 @@ static void ui_frame()
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PopStyleVar(2);
+    if (g_app.ui.setup_open) {
+        setup_window();
+        help_window();
+        ImGui::End();
+        goto rendered;
+    }
     top_bar(kit_px(56));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
     // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail.
@@ -1054,6 +1061,7 @@ static void ui_frame()
     sessions_popup(); // "Save that session?" when a session has just ended
     ImGui::End();
 
+rendered:
     ImGui::Render();
     const ImVec4 bg = rgb(COL_BG);
     const f32 clear[4] = {bg.x, bg.y, bg.z, 1};

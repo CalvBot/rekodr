@@ -3,6 +3,9 @@
 2 ICON "../assets/tray-recording.ico"
 3 ICON "../assets/tray-paused.ico"
 
+// The first-run setup's begging picture: 15 frames, 5 across and 3 down (setup.cpp).
+10 RCDATA "../assets/setup-beg.jpg"
+
 1 VERSIONINFO
 FILEVERSION 0,2,0,0
 PRODUCTVERSION 0,2,0,0

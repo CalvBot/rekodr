@@ -1931,15 +1931,11 @@ static void opt_inputs(Config &c)
     }
 }
 
-static void options_recording()
+// Monitor, resolution and frame rate: Options > Recording and the first-run setup.
+static void opt_rows_video(f32 wide)
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    const Recorder &rec = g_app.recorder;
-    f32 wide = dp(320);
-
-    opt_section("VIDEO");
-    opt_card_begin();
     char preview[160], note[64];
     snprintf(preview, sizeof preview, "%d. not connected", c.output_idx + 1);
     if (c.output_idx >= 0 && c.output_idx < o.monitor_count) {
@@ -1986,6 +1982,55 @@ static void options_recording()
         log_line("options: %d fps", c.fps);
         options_apply(APPLY_RECORDER);
     }
+}
+
+// How much the buffer keeps, by length or by size: Options > Recording and the first-run setup. The other is
+// shown as an estimate at the game bitrate (the highest a game records at, if one has its own).
+static void opt_rows_buffer()
+{
+    Config &c = g_app.config;
+    static const char *limits[] = {"Length", "Size"};
+    i32 by = c.buffer_by_size ? 1 : 0;
+    opt_row_begin("Limit the buffer by", 0, 2 * dp(98) + kit_px(6));
+    if (kit_segmented("##by", limits, 2, &by, dp(98))) {
+        c.buffer_by_size = by == 1;
+        log_line("options: buffer limited by %s", c.buffer_by_size ? "size" : "length");
+        options_apply(APPLY_RECORDER);
+    }
+    opt_row_end();
+    f32 rate = c.bitrate_mbps;
+    for (i32 i = 0; i < c.app_count; i++)
+        if (c.apps[i].category == CAT_GAME) rate = fmaxf(rate, c.apps[i].rec.bitrate_mbps);
+    f64 bytes_per_hour = 3600.0 * rate / 8.0 * 1e6;
+    char est[32], line[128];
+    if (!c.buffer_by_size) {
+        bytes_text((i64)(c.buffer_hours * bytes_per_hour), est, sizeof est);
+        if (rate > c.bitrate_mbps) snprintf(line, sizeof line, "Up to about %s, at a game's own %g Mbps", est, rate);
+        else snprintf(line, sizeof line, "Up to about %s at %g Mbps", est, rate);
+        if (opt_row_f32("Keep the last", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
+            log_line("options: buffer keeps %g h", c.buffer_hours);
+            options_apply(APPLY_RECORDER);
+        }
+    } else {
+        f64 h = c.buffer_gb * 1e9 / bytes_per_hour;
+        snprintf(line, sizeof line, "At least %.0f h %02.0f min at %s%g Mbps", floor(h), fmod(h * 60, 60),
+                 rate > c.bitrate_mbps ? "a game's own " : "", rate);
+        if (opt_row_f32("Keep up to", line, "##gb", &c.buffer_gb, 1, 100000, "GB")) {
+            log_line("options: buffer keeps %g GB", c.buffer_gb);
+            options_apply(APPLY_RECORDER);
+        }
+    }
+}
+
+static void options_recording()
+{
+    Config &c = g_app.config;
+    const Recorder &rec = g_app.recorder;
+    f32 wide = dp(320);
+
+    opt_section("VIDEO");
+    opt_card_begin();
+    opt_rows_video(wide);
     if (opt_row_toggle("Show the mouse pointer", 0, "##mouse", &c.draw_mouse)) {
         log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
         options_apply(APPLY_RECORDER);
@@ -2110,41 +2155,9 @@ static void options_recording()
     ImGui::EndDisabled();
     opt_card_end();
 
-    // The buffer keeps either a length of time or an amount of space, whichever is chosen; the other is shown as
-    // an estimate at the game bitrate (the highest a game records at, if one has its own).
     opt_section("BUFFER");
     opt_card_begin();
-    static const char *limits[] = {"Length", "Size"};
-    i32 by = c.buffer_by_size ? 1 : 0;
-    opt_row_begin("Limit the buffer by", 0, 2 * dp(98) + kit_px(6));
-    if (kit_segmented("##by", limits, 2, &by, dp(98))) {
-        c.buffer_by_size = by == 1;
-        log_line("options: buffer limited by %s", c.buffer_by_size ? "size" : "length");
-        options_apply(APPLY_RECORDER);
-    }
-    opt_row_end();
-    f32 rate = c.bitrate_mbps;
-    for (i32 i = 0; i < c.app_count; i++)
-        if (c.apps[i].category == CAT_GAME) rate = fmaxf(rate, c.apps[i].rec.bitrate_mbps);
-    f64 bytes_per_hour = 3600.0 * rate / 8.0 * 1e6;
-    char est[32], line[128];
-    if (!c.buffer_by_size) {
-        bytes_text((i64)(c.buffer_hours * bytes_per_hour), est, sizeof est);
-        if (rate > c.bitrate_mbps) snprintf(line, sizeof line, "Up to about %s, at a game's own %g Mbps", est, rate);
-        else snprintf(line, sizeof line, "Up to about %s at %g Mbps", est, rate);
-        if (opt_row_f32("Keep the last", line, "##hours", &c.buffer_hours, 0.1, 24 * 14, "hours")) {
-            log_line("options: buffer keeps %g h", c.buffer_hours);
-            options_apply(APPLY_RECORDER);
-        }
-    } else {
-        f64 h = c.buffer_gb * 1e9 / bytes_per_hour;
-        snprintf(line, sizeof line, "At least %.0f h %02.0f min at %s%g Mbps", floor(h), fmod(h * 60, 60),
-                 rate > c.bitrate_mbps ? "a game's own " : "", rate);
-        if (opt_row_f32("Keep up to", line, "##gb", &c.buffer_gb, 1, 100000, "GB")) {
-            log_line("options: buffer keeps %g GB", c.buffer_gb);
-            options_apply(APPLY_RECORDER);
-        }
-    }
+    opt_rows_buffer();
     if (opt_row_f32("Keep free on its drive", "The oldest footage goes early rather than fill the drive", "##free",
                     &c.min_free_gb, 0, 100000, "GB")) {
         log_line("options: keep %g GB free", c.min_free_gb);
@@ -2298,6 +2311,10 @@ static void options_general()
         log_line("options: %s clock", c.clock_24h ? "24-hour" : "12-hour");
         options_apply(0);
     }
+    if (opt_row_toggle("Tooltips", "Point at a button to see what it does and its key", "##tooltips", &c.tooltips)) {
+        log_line("options: tooltips %s", c.tooltips ? "on" : "off");
+        options_apply(0);
+    }
     opt_card_end();
 
     opt_section("SESSIONS");
@@ -2392,6 +2409,14 @@ static void options_general()
         options_apply(0);
         read_frame = 0; // read it again
     }
+    f32 sw = text_w(g_font, "Run again") + dp(32);
+    opt_row_begin("First-run setup", "Recording, game info, sharing, tooltips and hotkeys", sw);
+    if (kit_button("Run again##setup", KIT_SECONDARY, ImVec2(sw, 0))) {
+        g_app.ui.setup_open = true;
+        g_app.ui.setup_step = 0;
+        log_line("options: setup run again");
+    }
+    opt_row_end();
     opt_card_end();
 
     opt_section("DEVELOPER");
