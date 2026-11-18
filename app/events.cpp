@@ -1,11 +1,11 @@
-// Worker threads → main thread. A worker fills an Event and calls event_post; the main thread is woken by a
+// Worker threads -> main thread. A worker fills an Event and calls event_post; the main thread is woken by a
 // WM_APP_EVENT message and handles every queued event in order (main.cpp, handle_event). Workers never touch App.
 
 #define WM_APP_EVENT (WM_APP + 1)
 
 enum EventKind : u8 {
     EV_NONE,
-    EV_COMMAND, // text: a command line from a second launch, a hotkey or the tray ("save 30s", "open" …)
+    EV_COMMAND, // text: a command line from a second launch, a hotkey or the tray ("save 30s", "open" ...)
     EV_LOG,     // text: a message to show in the status line
     // One kind per module; `a` is the module's own sub-kind and the module's *_on_event handles it.
     EV_RECORDER,

@@ -777,7 +777,7 @@ static void sessions_popup()
     fmt_length(s->end_us - s->start_us, len, sizeof len);
     fmt_clock(s->start_us, from, sizeof from);
     fmt_clock(s->end_us, to, sizeof to);
-    snprintf(when, sizeof when, "%s  \xC2\xB7  %s \xE2\x80\x93 %s", len, from, to);
+    snprintf(when, sizeof when, "%s  -  %s - %s", len, from, to);
 
     // The game's icon (a game tile when it has none), and beside it its name over how long and when
     ImDrawList *dl = ImGui::GetWindowDrawList();

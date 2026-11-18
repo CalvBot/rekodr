@@ -82,7 +82,7 @@ static void options_list_monitors()
     OptionsUi &o = g_app.options;
     o.monitor_count = 0;
 
-    // GDI device name (\\.\DISPLAY1) → monitor name
+    // GDI device name (\\.\DISPLAY1) -> monitor name
     static DISPLAYCONFIG_PATH_INFO paths[32];
     static DISPLAYCONFIG_MODE_INFO modes[64];
     UINT32 np = COUNT(paths), nm = COUNT(modes);
@@ -492,7 +492,7 @@ static i32 opt_rows_fit(f32 rh, f32 below)
     return rows < 3 ? 3 : rows > 30 ? 30 : rows;
 }
 
-// A footer line: `left` dim on the left, and  ‹  2 / 5  ›  on the right, all fixed sizes. The mouse wheel over the
+// A footer line: `left` dim on the left, and  <  2 / 5  >  on the right, all fixed sizes. The mouse wheel over the
 // page turns pages too.
 static void opt_pager(const char *id, i32 *page, i32 total, i32 per_page, const char *left, bool *chip = 0,
                       const char *chip_label = 0, i32 chip_count = 0)
@@ -567,7 +567,7 @@ static void bytes_text(i64 bytes, char *out, i32 cap)
 
 static void ago_text(i64 us, char *out, i32 cap)
 {
-    if (!us) { snprintf(out, cap, "\xE2\x80\x94"); return; } // —: not since clipback started
+    if (!us) { snprintf(out, cap, "-"); return; } // -: not since clipback started
     i64 s = (now_us() - us) / 1000000;
     if (s < 90) snprintf(out, cap, "just now");
     else if (s < 90 * 60) snprintf(out, cap, "%lld min ago", s / 60);
@@ -796,7 +796,7 @@ static void res_label(i32 height, char *out, i32 cap)
 {
     i32 mh = rec_monitor_h();
     if (height <= 0) snprintf(out, cap, "Native");
-    else if (mh && height >= mh) snprintf(out, cap, "%dp \xC2\xB7 records %dp", height, mh);
+    else if (mh && height >= mh) snprintf(out, cap, "%dp - records %dp", height, mh);
     else snprintf(out, cap, "%dp", height);
 }
 
@@ -894,7 +894,7 @@ static void game_settings_popup()
     {
         char rl[48], rbuf[COUNT(RES_HEIGHTS)][48];
         res_label(c.height, rl, sizeof rl);
-        snprintf(def, sizeof def, "Default \xC2\xB7 %s", rl);
+        snprintf(def, sizeof def, "Default - %s", rl);
         items[0] = def;
         notes[0] = 0;
         res_items(items, notes, rbuf, 1);
@@ -907,7 +907,7 @@ static void game_settings_popup()
     }
 
     game_line("Preset", x);
-    snprintf(def, sizeof def, "Default \xC2\xB7 %s", PRESET_LABELS[preset_step(c.preset.s)]);
+    snprintf(def, sizeof def, "Default - %s", PRESET_LABELS[preset_step(c.preset.s)]);
     items[0] = def;
     notes[0] = 0;
     for (i32 i = 0; i < COUNT(PRESET_LABELS); i++) {
@@ -921,7 +921,7 @@ static void game_settings_popup()
     }
 
     game_line("Rate control", x);
-    snprintf(def, sizeof def, "Default \xC2\xB7 %s", RC_LABELS[rc_index(c.rate_control.s)]);
+    snprintf(def, sizeof def, "Default - %s", RC_LABELS[rc_index(c.rate_control.s)]);
     items[0] = def;
     for (i32 i = 0; i < COUNT(RC_LABELS); i++) {
         items[i + 1] = RC_LABELS[i];
@@ -942,7 +942,7 @@ static void game_settings_popup()
         r.cq = (i32)floor(v + 0.5);
         rec_changed = true;
     }
-    opt_unit("0\xE2\x80\x93" "51");
+    opt_unit("0-" "51");
     ImGui::EndDisabled();
 
     game_line("Sessions", x);
@@ -978,13 +978,13 @@ static void game_settings_popup()
     ImGui::PopStyleVar(2);
 }
 
-// What a game records with, if it differs: "60 Mbps · 120 fps".
+// What a game records with, if it differs: "60 Mbps - 120 fps".
 static void game_summary(const AppInfo &a, char *out, i32 cap)
 {
     const RecOverride &r = a.rec;
     out[0] = 0;
     i32 n = 0;
-    auto add = [&](const char *t) { n += snprintf(out + n, cap - n, "%s%s", n ? " \xC2\xB7 " : "", t); };
+    auto add = [&](const char *t) { n += snprintf(out + n, cap - n, "%s%s", n ? " - " : "", t); };
     char t[32];
     if (r.bitrate_mbps) { snprintf(t, sizeof t, "%g Mbps", r.bitrate_mbps); add(t); }
     if (r.height) { if (r.height < 0) add("native"); else { snprintf(t, sizeof t, "%dp", r.height); add(t); } }
@@ -1357,7 +1357,7 @@ static void folders_rows(i32 rows, f32 rh, i32 *open_popup)
         opt_text_at(dl, g_font_bold, ImVec2(text_x, ty), COL_TEXT, name, text_max);
         char line[MAX_PATH * 2 + 32];
         i32 apps = folder_app_count(idx);
-        snprintf(line, sizeof line, "%s \xC2\xB7 %d app%s", f.path, apps, apps == 1 ? "" : "s");
+        snprintf(line, sizeof line, "%s - %d app%s", f.path, apps, apps == 1 ? "" : "s");
         opt_text_at(dl, g_font_small, ImVec2(text_x, ty + nh + dp(3)), COL_DIM, line, text_max);
 
         AppCategory picked;
@@ -1506,7 +1506,7 @@ static void options_apps()
         if (playing) str_set(when, "playing now");
         else ago_text(a.last_heard_us, when, sizeof when);
         if (cat == CAT_GAME) game_summary(a, summary, sizeof summary);
-        snprintf(line, sizeof line, "%s \xC2\xB7 %s%s%s", a.exe.s, when, summary[0] ? " \xC2\xB7 " : "", summary);
+        snprintf(line, sizeof line, "%s - %s%s%s", a.exe.s, when, summary[0] ? " - " : "", summary);
         opt_text_at(dl, g_font_small, ImVec2(text_x, ty + nh + dp(3)), playing ? COL_OK : COL_DIM, line, text_max);
 
         cat_pills(&a, pills_x, cy);
@@ -1611,7 +1611,7 @@ static i32 action_index(const char *action)
     return -1;
 }
 
-// "save 90s" → 90 and seconds; "save 2m" → 2 and minutes.
+// "save 90s" -> 90 and seconds; "save 2m" -> 2 and minutes.
 static void save_length(const char *action, f64 *amount, i32 *unit)
 {
     const char *arg = strchr(action, ' ');
@@ -1776,7 +1776,7 @@ static void options_hotkeys()
         f32 cy = opt_row_frame_y();
         bool capturing = o.capture_slot == i + 1;
 
-        // The keys: caps in a fixed slot; click to press new ones ("Press keys…" in the same slot)
+        // The keys: caps in a fixed slot; click to press new ones ("Press keys..." in the same slot)
         ImGui::SetCursorScreenPos(ImVec2(keys_x, cy));
         ImGui::BeginDisabled(o.capture_slot && !capturing);
         if (ImGui::InvisibleButton("##keys", ImVec2(keys_w, fh))) {
@@ -1788,7 +1788,7 @@ static void options_hotkeys()
         if (capturing) {
             dl->AddRectFilled(ImVec2(keys_x, cy), ImVec2(keys_x + keys_w, cy + fh), col32(COL_ACCENT_SOFT), ImGui::GetStyle().FrameRounding);
             opt_text_at(dl, g_font_bold, ImVec2(x0, floorf(cy + (fh - g_font_bold->FontSize) / 2)), 0xff8a92,
-                        "Press keys\xE2\x80\xA6", keys_x + keys_w);
+                        "Press keys...", keys_x + keys_w);
         } else {
             if (slot_hot) dl->AddRectFilled(ImVec2(keys_x, cy), ImVec2(keys_x + keys_w, cy + fh), col32(COL_PANEL2), ImGui::GetStyle().FrameRounding);
             if (h->keys.s[0]) opt_keycaps(dl, ImVec2(x0, cap_y), cap_h, h->keys.s, keys_x + keys_w - dp(6));
@@ -1877,7 +1877,7 @@ static void monitor_label(i32 i, char *out, i32 cap)
 static void monitor_note(i32 i, char *out, i32 cap)
 {
     const MonitorInfo &m = g_app.options.monitors[i];
-    snprintf(out, cap, "%d\xC3\x97%d, %d Hz%s", m.width, m.height, m.hz, m.primary ? ", main" : "");
+    snprintf(out, cap, "%dx%d, %d Hz%s", m.width, m.height, m.hz, m.primary ? ", main" : "");
 }
 
 // The inputs plugged in (listed again every 2 s), then the ones turned on that aren't: each Off, Mono or Stereo.
@@ -1946,7 +1946,7 @@ static void options_recording()
         monitor_label(c.output_idx, preview, sizeof preview);
         monitor_note(c.output_idx, note, sizeof note);
         size_t n = strlen(preview);
-        snprintf(preview + n, sizeof preview - n, " \xC2\xB7 %s", note);
+        snprintf(preview + n, sizeof preview - n, " - %s", note);
     }
     opt_row_begin("Monitor", 0, wide);
     f32 popup_w = 0;
@@ -2045,7 +2045,7 @@ static void options_recording()
         if (works & (1 << v)) first = v;
     const char *items[VENDOR_COUNT + 1], *notes[VENDOR_COUNT + 1];
     items[0] = "Automatic";
-    notes[0] = !rec.encoders_known ? "testing\xE2\x80\xA6" : first < 0 ? "none works" : VENDOR_LABELS[first];
+    notes[0] = !rec.encoders_known ? "testing..." : first < 0 ? "none works" : VENDOR_LABELS[first];
     u32 no_vendor = 0;
     for (i32 v = 0; v < VENDOR_COUNT; v++) {
         bool ok = !rec.encoders_known || (works & (1 << v));
@@ -2055,7 +2055,7 @@ static void options_recording()
     }
     i32 enc = vendor_parse(c.encoder.s) + 1;
     char enc_preview[96];
-    if (enc == 0) snprintf(enc_preview, sizeof enc_preview, "Automatic \xC2\xB7 %s", notes[0]);
+    if (enc == 0) snprintf(enc_preview, sizeof enc_preview, "Automatic - %s", notes[0]);
     else snprintf(enc_preview, sizeof enc_preview, "%s", items[enc]);
     char status[160];
     if (rec.paused) snprintf(status, sizeof status, "Paused");
@@ -2097,7 +2097,7 @@ static void options_recording()
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!peak_on);
-    if (opt_row_f32("Peak bitrate", "Times the bitrate, 1 to 4. Not with CBR", "##peak", &c.peak_factor, 1, 4, "\xC3\x97")) {
+    if (opt_row_f32("Peak bitrate", "Times the bitrate, 1 to 4. Not with CBR", "##peak", &c.peak_factor, 1, 4, "x")) {
         log_line("options: peak %g times the bitrate", c.peak_factor);
         options_apply(APPLY_RECORDER);
     }

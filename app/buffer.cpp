@@ -2,15 +2,15 @@
 //
 // The format is the one the Rust version writes, so switching versions keeps the buffer:
 //
-//   buffer\video\<run>\v_00000.mkv …  one folder per capture ffmpeg run (restarts after the lock screen etc.)
+//   buffer\video\<run>\v_00000.mkv ...  one folder per capture ffmpeg run (restarts after the lock screen etc.)
 //                      list.csv       "v_00000.mkv,0.000000,2.000000" per finished segment (ffmpeg writes it)
-//                      anchor.txt     wall-clock µs of the run's first frame
+//                      anchor.txt     wall-clock us of the run's first frame
 //   buffer\audio\<stream>\a_00000.mka one folder per app audio stream (or the mic), Opus, 10 s segments
 //                      list.csv       as above, seconds from the stream's start
-//                      meta.json      {"kind":"app","exe":"spotify.exe","pid":1,"start_us":…}
-//   buffer\activity.tsv               "µs<TAB>exe" per change of the game being played (empty exe = desktop)
+//                      meta.json      {"kind":"app","exe":"spotify.exe","pid":1,"start_us":...}
+//   buffer\activity.tsv               "us<TAB>exe" per change of the game being played (empty exe = desktop)
 //
-// Every time is wall-clock µs, so video and every audio stream line up. Files are only read, never changed:
+// Every time is wall-clock us, so video and every audio stream line up. Files are only read, never changed:
 // ffmpeg may be writing them right now.
 
 static i64 filetime_to_us(FILETIME ft)
@@ -21,7 +21,7 @@ static i64 filetime_to_us(FILETIME ft)
 
 static i64 secs_to_us(f64 s) { return (i64)(s * 1e6 + (s >= 0 ? 0.5 : -0.5)); }
 
-// "v_00012.mkv" → 12. Segment names sort by this number, which is also how they're matched to list.csv.
+// "v_00012.mkv" -> 12. Segment names sort by this number, which is also how they're matched to list.csv.
 static bool seg_number(const char *name, u32 *out)
 {
     const char *u = strchr(name, '_');

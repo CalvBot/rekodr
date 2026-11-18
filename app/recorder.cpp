@@ -1,4 +1,4 @@
-// Video: the capture ffmpeg (ddagrab → GPU encoder → 2 s segments in the buffer), finding a working encoder, and
+// Video: the capture ffmpeg (ddagrab -> GPU encoder -> 2 s segments in the buffer), finding a working encoder, and
 // pruning the buffer to buffer_hours and the free-space floor.
 //
 // Workers, none of which touch g_app:
@@ -10,11 +10,11 @@
 // The main thread hands them settings through g_rec (under its lock); they report back with EV_RECORDER events.
 //
 // On-disk format, the same as the Rust version so old buffers and the save code keep working:
-//   <buffer>\video\<run>\v_00000.mkv …   one folder per ffmpeg run, named after its local start time
+//   <buffer>\video\<run>\v_00000.mkv ...   one folder per ffmpeg run, named after its local start time
 //                        list.csv         "v_00000.mkv,0.000000,2.000000" per finished segment (ffmpeg writes it)
-//                        anchor.txt       wall-clock µs of the run's first frame, no line ending
-//   <buffer>\audio\<stream>\a_00000.mka   audio.cpp's, with list.csv and meta.json ("start_us": µs)
-//   <buffer>\activity.tsv                "µs<TAB>exe" lines; the pruner drops the old ones
+//                        anchor.txt       wall-clock us of the run's first frame, no line ending
+//   <buffer>\audio\<stream>\a_00000.mka   audio.cpp's, with list.csv and meta.json ("start_us": us)
+//   <buffer>\activity.tsv                "us<TAB>exe" lines; the pruner drops the old ones
 
 #define SEGMENT_SECS 2
 
@@ -27,7 +27,7 @@ enum RecEvent : i64 {
     REC_STARTED,      // b: vendor; text: "<encoder>|<run>"
     REC_STOPPED,      // ffmpeg isn't capturing any more
     REC_ERROR,        // text: what's wrong; empty when healthy again
-    REC_BUFFER,       // b: oldest buffered video (µs, 0 = none); text: "<buffer bytes> <free bytes>"
+    REC_BUFFER,       // b: oldest buffered video (us, 0 = none); text: "<buffer bytes> <free bytes>"
 };
 
 static i32 codec_index(const char *codec)
@@ -303,7 +303,7 @@ static void probe_args(Args *a, i32 vendor, const char *codec)
     ADD("-frames:v", "1", "-c:v", encoder_name(vendor, codec), "-f", "null", "-");
 }
 
-// 0 (p1, fastest) … 6 (p7, best).
+// 0 (p1, fastest) ... 6 (p7, best).
 static i32 preset_step(const char *preset)
 {
     if (preset[0] != 'p') return 3;
@@ -338,11 +338,11 @@ static void record_args(Args *a, i32 v, const RecSettings &s)
         if (s.spatial_aq) ADD("-spatial-aq", "1");
         break;
     case VENDOR_AMF: {
-        // AMF has three speed levels (AV1 a fourth); p1–p7 spread over them.
+        // AMF has three speed levels (AV1 a fourth); p1-p7 spread over them.
         const char *quality = step <= 1 ? "speed" : step <= 4 ? "balanced" : (av1 && step == 6) ? "high_quality" : "quality";
         ADD("-quality", quality);
         if (cqm) {
-            // No capped constant quality in AMF: fixed QP, on AV1's 0–255 scale there.
+            // No capped constant quality in AMF: fixed QP, on AV1's 0-255 scale there.
             char qp[16];
             snprintf(qp, sizeof qp, "%d", av1 ? (s.cq * 5 < 255 ? s.cq * 5 : 255) : s.cq);
             ADD("-rc", "cqp", "-qp_i", qp, "-qp_p", qp);
@@ -453,13 +453,13 @@ static DWORD WINAPI detect_codec_thread(void *arg)
     return 0;
 }
 
-// "h264 nvenc, cpu · hevc nvenc, cpu · av1 none"
+// "h264 nvenc, cpu - hevc nvenc, cpu - av1 none"
 static void detect_summary(const u8 *works, char *out, i32 cap)
 {
     out[0] = 0;
     for (i32 c = 0; c < CODEC_COUNT; c++) {
         char part[64];
-        i32 n = snprintf(part, sizeof part, "%s%s ", c ? " \xC2\xB7 " : "", CODECS[c]);
+        i32 n = snprintf(part, sizeof part, "%s%s ", c ? " - " : "", CODECS[c]);
         bool any = false;
         for (i32 v = 0; v < VENDOR_COUNT; v++) {
             if (!(works[c] & (1 << v))) continue;
@@ -554,7 +554,7 @@ static DWORD WINAPI stderr_thread(void *arg)
     char line[2048];
     while (pipe_read_line(r->pipe, line, sizeof line)) {
         if (starts_with(line, "[Eval @")) {
-            // "[Eval @ 0000…] 1794748014750753.000000": RTCTIME of frame 0, µs since 1970
+            // "[Eval @ 0000...] 1794748014750753.000000": RTCTIME of frame 0, us since 1970
             const char *v = strrchr(line, ' ');
             f64 us = v ? strtod(v + 1, 0) : 0;
             if (us > 0) {
@@ -889,7 +889,7 @@ struct Pruner {
 
 static Pruner g_prune;
 
-// "v_00012.mkv" → 12, or -1 when it isn't one of ours. Only names that match are ever deleted.
+// "v_00012.mkv" -> 12, or -1 when it isn't one of ours. Only names that match are ever deleted.
 static i32 media_num(const char *name, bool video)
 {
     if (name[0] != (video ? 'v' : 'a') || name[1] != '_' || !isdigit((u8)name[2])) return -1;
@@ -918,7 +918,7 @@ static int file_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-// list.csv → g_prune.list, sorted by segment number. Lines are "name,start,end" (the name may be quoted).
+// list.csv -> g_prune.list, sorted by segment number. Lines are "name,start,end" (the name may be quoted).
 static void read_list(const Path &dir, bool video)
 {
     g_prune.list_count = 0;

@@ -8,7 +8,7 @@
 // each reading a run of up to 30 chunks of every track (each to mono at 8 kHz, padded so a short one doesn't end
 // the others, merged one track per channel, raw 16-bit samples on its stdout). So a long session's waveform pops in
 // where you're looking rather than from the start. A finished measure is cached next to the thumbnails
-// (w2-<key>.bin, Options › General clears them), so opening the file again shows it at once.
+// (w2-<key>.bin, Options > General clears them), so opening the file again shows it at once.
 //
 // The workers write while the window reads; a chunk is marked known (with a barrier) once its levels are built, and
 // a stale read only means it shows a moment late. The workers and the window each hold a reference, and whichever

@@ -82,7 +82,7 @@ struct Track {
     i32  rank;    // position in time played (most first); INT32_MAX for apps
 };
 
-struct SavePart { i64 from, to, delay; }; // one stretch of a stream used in one piece: µs into the stream, delay
+struct SavePart { i64 from, to, delay; }; // one stretch of a stream used in one piece: us into the stream, delay
 
 struct SaveWork {
     BufferIdx    buf;
@@ -175,7 +175,7 @@ static SYSTEMTIME local_time(i64 us)
     return local;
 }
 
-// A time of day the way Options › General sets it: "9:04 pm" or "21:04" ("9:04:05 pm", "21:04:05" with seconds).
+// A time of day the way Options > General sets it: "9:04 pm" or "21:04" ("9:04:05 pm", "21:04:05" with seconds).
 static void fmt_hm(const SYSTEMTIME &t, char *out, i32 cap, bool secs = false)
 {
     char sec[8] = "";
@@ -678,7 +678,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     // Genre = the game (Explorer can show, sort and group by it); the exes go in the comment, for icons.
     char hm[16];
     fmt_hm(t, hm, sizeof hm);
-    arg_pair(a, cap, "-metadata", "title=%s \xC2\xB7 %d %.3s %d %s", label, t.wDay, month_name(t.wMonth), t.wYear, hm);
+    arg_pair(a, cap, "-metadata", "title=%s - %d %.3s %d %s", label, t.wDay, month_name(t.wMonth), t.wYear, hm);
     arg_pair(a, cap, "-metadata", "genre=%s", game);
     arg_pair(a, cap, "-metadata", "description=%s", names[0] ? names : DESKTOP);
     arg_pair(a, cap, "-metadata", "comment=clipback; games=%s", exes);

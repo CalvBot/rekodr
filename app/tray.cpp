@@ -1,5 +1,5 @@
 // The tray icon: red dot while recording, grey with a pause sign while paused. Left click opens the window; right
-// click has the menu. Icons 1–3 come from clipback.rc (app, recording, paused).
+// click has the menu. Icons 1-3 come from clipback.rc (app, recording, paused).
 
 #define WM_APP_TRAY (WM_APP + 2)
 

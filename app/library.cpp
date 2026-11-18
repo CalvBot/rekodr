@@ -1323,7 +1323,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     char when[48], size[24], line[160];
     fmt_when(it.mtime_us, when, sizeof when);
     fmt_size(it.size, size, sizeof size);
-    snprintf(line, sizeof line, "%s  \xC2\xB7  %s  \xC2\xB7  %s", it.info.game, when, size);
+    snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(a.x, y), w, col32(COL_DIM), line);
     ImGui::PopFont();
@@ -1362,7 +1362,7 @@ static void lib_player_view()
     ImGui::PopFont();
     char when[48], line[160];
     fmt_when(lib.playing.mtime_us, when, sizeof when);
-    snprintf(line, sizeof line, "%s  \xC2\xB7  %s", lib.playing.info.game, when);
+    snprintf(line, sizeof line, "%s  -  %s", lib.playing.info.game, when);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), line);
     ImGui::PopFont();
@@ -1505,7 +1505,7 @@ static void lib_calendar()
     i32 y = lib.cal_month / 12, m = lib.cal_month % 12 + 1;
     f32 cell = kit_px(36), w = 7 * cell, fh = ImGui::GetFrameHeight();
 
-    // ‹  November 2026  ›
+    // <  November 2026  >
     ImVec2 a = ImGui::GetCursorScreenPos();
     if (kit_icon_button(ICON_LEFT, "##prevm")) lib.cal_month--;
     char title[32];
@@ -1661,7 +1661,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 h)
     fmt_length(s->end_us - s->start_us, len, sizeof len);
     fmt_clock(s->start_us, from, sizeof from);
     fmt_clock(s->end_us, to, sizeof to);
-    snprintf(line, sizeof line, "%s  \xC2\xB7  %s \xE2\x80\x93 %s", len, from, to);
+    snprintf(line, sizeof line, "%s  -  %s - %s", len, from, to);
     ImGui::PushFont(g_font_small);
     put(ImVec2(tx, ty), art ? 0xd4d8de : COL_DIM, line);
     ty += g_font_small->FontSize + kit_px(2);

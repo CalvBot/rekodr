@@ -80,7 +80,7 @@ struct Config {
     // Video
     i32   output_idx; // DXGI output index on the capture GPU
     i32   fps;        // never above the monitor's refresh rate
-    i32   height;     // output height (1080…); 0 = the monitor's own. Never above the monitor's
+    i32   height;     // output height (1080...); 0 = the monitor's own. Never above the monitor's
     Str64 codec;      // "h264" | "hevc" | "av1"
     Str64 encoder;    // "auto" | "nvenc" | "amf" | "qsv" | "cpu"
     f32   bitrate_mbps;         // while a game is played (each game can have its own)
@@ -516,7 +516,7 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     EditRecord undo[20], redo[20];
     i32        undo_count, redo_count;
 };
-// timeline.cpp: the buffer and a range to save. Times are wall-clock µs; 0 = not set.
+// timeline.cpp: the buffer and a range to save. Times are wall-clock us; 0 = not set.
 struct TimelineRow {   // one audio row: every stream of one exe (or the mic)
     char exe[64];
     char name[64];

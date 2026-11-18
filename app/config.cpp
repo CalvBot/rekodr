@@ -146,7 +146,7 @@ static void config_first_run(Config *c, const Paths &paths)
 // Folder rules. An exe's own category wins; with none (new), the deepest folder rule over its path
 // decides. Paths compare without case, / and \ alike, and a trailing slash doesn't matter.
 
-// The next part of a path from *p ("C:", "Users", …), skipping separators. Returns its length; 0 at the end.
+// The next part of a path from *p ("C:", "Users", ...), skipping separators. Returns its length; 0 at the end.
 static i32 path_part(const char **p, const char **part)
 {
     while (**p == '\\' || **p == '/') (*p)++;

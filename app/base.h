@@ -182,7 +182,7 @@ static i64 parse_length_secs(const char *s)
     }
 }
 
-// Parses a range "<from> <to>" in Unix seconds, each with an optional fraction, into µs on now_us()'s clock.
+// Parses a range "<from> <to>" in Unix seconds, each with an optional fraction, into us on now_us()'s clock.
 // Returns 1 for a range, 0 for a single word (not a range: a length, say) and -1 for two words that aren't one.
 static i32 parse_range_us(const char *s, i64 *from_us, i64 *to_us)
 {

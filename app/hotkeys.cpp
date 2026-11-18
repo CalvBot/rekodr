@@ -1,4 +1,4 @@
-// Global hotkeys ("Alt+F10" → save 30s) through RegisterHotKey on the message window. Hotkey i has id i + 1.
+// Global hotkeys ("Alt+F10" -> save 30s) through RegisterHotKey on the message window. Hotkey i has id i + 1.
 
 struct KeyName { const char *name; u32 vk; };
 
@@ -11,7 +11,7 @@ static const KeyName g_key_names[] = {
     {"Num5", VK_NUMPAD5}, {"Num6", VK_NUMPAD6}, {"Num7", VK_NUMPAD7}, {"Num8", VK_NUMPAD8}, {"Num9", VK_NUMPAD9},
 };
 
-// "Ctrl+Alt+F9" → modifiers and virtual key. Returns false if it isn't a key combination we understand.
+// "Ctrl+Alt+F9" -> modifiers and virtual key. Returns false if it isn't a key combination we understand.
 static bool hotkey_parse(const char *text, u32 *mods, u32 *vk)
 {
     *mods = MOD_NOREPEAT;
@@ -57,6 +57,6 @@ static void hotkeys_apply(const Config &c, HWND hwnd)
             log_line("hotkey %s: taken by another program (%d)", c.hotkeys[i].keys.s, (int)GetLastError());
             continue;
         }
-        log_line("hotkey %s → %s", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
+        log_line("hotkey %s -> %s", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
     }
 }

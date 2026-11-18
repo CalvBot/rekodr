@@ -205,7 +205,7 @@ static void ui_load_fonts(f32 scale)
     if (GetFileAttributesA(icons) == INVALID_FILE_ATTRIBUTES) // Windows 10: the older icon font has the same code points
         snprintf(icons, sizeof icons, "%s\\Fonts\\segmdl2.ttf", dir);
 
-    static const ImWchar ranges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0x2190, 0x2193, 0x25CF, 0x25CF, 0}; // Latin-1, dashes, arrows, ●
+    static const ImWchar ranges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0x2190, 0x2193, 0x25CF, 0x25CF, 0}; // Latin-1, dashes, arrows, *
     static const ImWchar icon_ranges[] = {0xE700, 0xF8FF, 0};
     ImFontConfig cfg;
     cfg.OversampleH = 2;
@@ -800,7 +800,7 @@ static void help_window()
     bool open = true;
     if (ImGui::BeginPopupModal("Help", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
         static const HelpRow anywhere[] = {
-            {"`clipback save 90s`", "Save the last 90 s (or 30s, 2m, 1h \xE2\x80\xA6)"},
+            {"`clipback save 90s`", "Save the last 90 s (or 30s, 2m, 1h ...)"},
             {"`clipback timeline`", "Open the buffer timeline"},
             {"`clipback open`", "Open this window"},
             {"`clipback pause`", "Pause / resume recording"},
@@ -816,7 +816,7 @@ static void help_window()
         };
         static const HelpRow player[] = {
             {"[Space]", "Play / pause"},
-            {"[\xE2\x86\x90] / [\xE2\x86\x92]", "Back / forward 5 s"},
+            {"[Left] / [Right]", "Back / forward 5 s"},
             {"[Esc]", "Close the player"},
         };
         static const HelpRow editor[] = {
@@ -839,8 +839,8 @@ static void help_window()
             {"[Ctrl]+wheel, [+] / [-]", "Zoom the timeline"},
             {"Middle-drag, wheel", "Pan the timeline"},
             {"[Shift]+wheel", "Taller or shorter lanes"},
-            {"[\xE2\x86\x90] / [\xE2\x86\x92]", "Step one frame"},
-            {"[Shift]+[\xE2\x86\x90] / [\xE2\x86\x92]", "Step 1 s"},
+            {"[Left] / [Right]", "Step one frame"},
+            {"[Shift]+[Left] / [Right]", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},
             {"[Esc]", "Clear the selection, then back to the library"},
         };
@@ -851,7 +851,7 @@ static void help_window()
             {"Mouse wheel", "Zoom in and out around the mouse"},
             {"Wheel over the names", "Scroll the sound tracks"},
             {"Right or middle drag", "Pan earlier or later"},
-            {"[\xE2\x86\x90] / [\xE2\x86\x92]", "Move the selection 1 s (with Shift 10 s)"},
+            {"[Left] / [Right]", "Move the selection 1 s (with Shift 10 s)"},
             {"[I] / [O]", "Set the start / end at the mouse, or the playhead"},
             {"[Enter]", "Save the selection as a clip"},
             {"[+] / [-]", "Zoom in / out"},

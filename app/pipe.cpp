@@ -5,14 +5,14 @@
 // A client sends commands, one per line, the same ones `clipback.exe <command>` takes ("save 30s", "toggle",
 // "open"), plus "save <from> <to>", an exact stretch in Unix seconds (with an optional fraction) that lifelog's voice
 // commands use. clipback sends lines of JSON:
-//   {"type":"state","paused":false,"recording":true,"game":"Overwatch","oldest_us":…,"saving":0,"error":""}
+//   {"type":"state","paused":false,"recording":true,"game":"Overwatch","oldest_us":...,"saving":0,"error":""}
 //       when a client connects and whenever any of it changes. oldest_us is the oldest footage in the buffer
 //       (0 = none), so a client can show how much the buffer holds.
-//   {"type":"saved","ok":true,"kind":"clip","file":"C:\\…\\Overwatch 2026-11-16 21-04-10.mp4",
-//    "from_us":…,"to_us":…,"trimmed":false}
-//   {"type":"saved","ok":false,"kind":"clip","error":"…"}
+//   {"type":"saved","ok":true,"kind":"clip","file":"C:\\...\\Overwatch 2026-11-16 21-04-10.mp4",
+//    "from_us":...,"to_us":...,"trimmed":false}
+//   {"type":"saved","ok":false,"kind":"clip","error":"..."}
 //       when a save finishes, or when a range can't be saved at all. kind is clip, session, keep or share. A clip's
-//       line says the range it saved (µs since 1970), so a client can match it to what it asked for; trimmed means
+//       line says the range it saved (us since 1970), so a client can match it to what it asked for; trimmed means
 //       the buffer didn't reach back to the start asked for.
 //
 // One thread waits for clients and each client has a thread reading its commands, which go to the main thread as

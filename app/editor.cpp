@@ -1585,7 +1585,7 @@ static void ed_share_tab(f32 w)
     if (plan.fits) {
         char size[24];
         fmt_size((u64)plan.estimate_bytes, size, sizeof size);
-        snprintf(est, sizeof est, "About %s · %dp%.0f · %.1f Mbps", size, plan.side, plan.fps,
+        snprintf(est, sizeof est, "About %s - %dp%.0f - %.1f Mbps", size, plan.side, plan.fps,
                  plan.video_kbps / 1000.0);
         kit_dim("%s", est);
     } else {
@@ -1640,7 +1640,7 @@ static void ed_share_tab(f32 w)
             else if (mins < 48 * 60) snprintf(age, sizeof age, "%lld h ago", mins / 60);
             else snprintf(age, sizeof age, "%lld days ago", mins / 1440);
             fmt_size(f.size, size, sizeof size);
-            snprintf(line, sizeof line, "%s \xC2\xB7 %s", age, size);
+            snprintf(line, sizeof line, "%s - %s", age, size);
             f32 text_w = w - fh - kit_px(8);
             ImVec2 ls = ImGui::CalcTextSize(line);
             f32 ty = floorf(at.y + (fh - ls.y) / 2);
@@ -1723,8 +1723,8 @@ static void screen_editor()
     ImGui::PopFont();
     char when[48], sub[160];
     fmt_when(ed.item.mtime_us, when, sizeof when);
-    if (ed.item.info.game[0]) snprintf(sub, sizeof sub, "Editing  \xC2\xB7  %s  \xC2\xB7  %s", ed.item.info.game, when);
-    else snprintf(sub, sizeof sub, "Editing  \xC2\xB7  %s", when);
+    if (ed.item.info.game[0]) snprintf(sub, sizeof sub, "Editing  -  %s  -  %s", ed.item.info.game, when);
+    else snprintf(sub, sizeof sub, "Editing  -  %s", when);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), sub);
     ImGui::PopFont();

@@ -6,16 +6,16 @@
 // - The watcher (one): every second it lists processes and the PIDs with an active audio session, starts a stream
 //   for each app that isn't ignored and closes streams whose app went quiet for 30 s or exited. Every 2 s it works
 //   out the game being played. It owns g_aw's workers and its own copy of the settings.
-// - One worker per stream: WASAPI → ffmpeg. It owns its client and ffmpeg pipe; it only shares its stop and
+// - One worker per stream: WASAPI -> ffmpeg. It owns its client and ffmpeg pipe; it only shares its stop and
 //   finished flags with the watcher.
 // Neither touches g_app: they post EV_AUDIO events, applied by audio_on_event on the main thread.
 //
 // On disk (the same as the Rust version, so the saving code and old buffers keep working):
-//   <buffer>\audio\<yyyymmdd_hhmmss_mmm>_<exe>_<pid>\a_00000.mka …  Opus in Matroska, 10 s segments
+//   <buffer>\audio\<yyyymmdd_hhmmss_mmm>_<exe>_<pid>\a_00000.mka ...  Opus in Matroska, 10 s segments
 //                                                    list.csv        written by ffmpeg's segment muxer
 //                                                    meta.json       {"kind","exe","pid","start_us"}
 //                                                    ffmpeg.log      ffmpeg's errors
-//   <buffer>\activity.tsv   "<µs>\t<exe>" each time the game being played changes (empty exe = the desktop)
+//   <buffer>\activity.tsv   "<us>\t<exe>" each time the game being played changes (empty exe = the desktop)
 // start_us is the wall-clock time of the first sample, from WASAPI's QPC packet times; gaps are padded with silence
 // and late audio is trimmed, so sample n of a stream is at start_us + n / 48000 s and lines up with the video.
 
@@ -30,14 +30,14 @@
 #define AUDIO_FRAME_BYTES 8 // stereo f32
 
 static const i64 AUDIO_LINGER_US = 30000000; // a stream closes once its app has been quiet this long
-static const i64 AUDIO_GAP_US    = 20000;    // pad gaps longer than this with silence…
-static const i64 AUDIO_LATE_US   = 40000;    // …and trim audio arriving later than this, keeping the stream on time
+static const i64 AUDIO_GAP_US    = 20000;    // pad gaps longer than this with silence...
+static const i64 AUDIO_LATE_US   = 40000;    // ...and trim audio arriving later than this, keeping the stream on time
 
 enum AudioEventKind : u8 {
     AE_NONE,
     AE_STARTED, // b = stream id | kind << 32, text = "exe	path"
     AE_STOPPED, // b = stream id
-    AE_HEARD,   // b = µs, text = "exe	path": an app played sound (added to Config.apps as new if it isn't known)
+    AE_HEARD,   // b = us, text = "exe	path": an app played sound (added to Config.apps as new if it isn't known)
     AE_GAME,    // text = the game being played, empty on the desktop
 };
 

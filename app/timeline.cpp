@@ -745,7 +745,7 @@ static void tl_length(i64 us, char *out, i32 cap)
     else snprintf(out, cap, "%lld h %02lld min", s / 3600, s / 60 % 60);
 }
 
-// Local time minus UTC, in µs, so ruler ticks fall on round local times.
+// Local time minus UTC, in us, so ruler ticks fall on round local times.
 static i64 tl_utc_offset(i64 now)
 {
     SYSTEMTIME local = local_time(now);
@@ -961,7 +961,7 @@ static void tl_text_fit(ImDrawList *dl, ImVec2 p, f32 max_w, ImU32 col, const ch
         dl->AddText(p, col, text);
         return;
     }
-    static const char ell[] = "\xE2\x80\xA6";
+    static const char ell[] = "...";
     f32 ew = ImGui::CalcTextSize(ell).x;
     const char *end = text + strlen(text);
     while (end > text && ImGui::CalcTextSize(text, end).x + ew > max_w) {
@@ -969,7 +969,7 @@ static void tl_text_fit(ImDrawList *dl, ImVec2 p, f32 max_w, ImU32 col, const ch
         while (end > text && ((u8)*end & 0xC0) == 0x80) end--; // whole UTF-8 characters
     }
     while (end > text && end[-1] == ' ') end--;
-    if (end == text) return; // not even one letter fits: nothing rather than a lone "…"
+    if (end == text) return; // not even one letter fits: nothing rather than a lone "..."
     dl->AddText(p, col, text, end);
     dl->AddText(ImVec2(p.x + ImGui::CalcTextSize(text, end).x, p.y), col, ell);
 }
@@ -1156,7 +1156,7 @@ static void screen_timeline()
         bool secs = tl.view_span_us < 600 * TL_SEC;
         tl_clock(tl.view_end_us - tl.view_span_us, secs, a, sizeof a);
         tl_clock(tl.view_end_us, secs, z, sizeof z);
-        snprintf(text, sizeof text, "%s  \xE2\x80\x93  %s", a, z);
+        snprintf(text, sizeof text, "%s  -  %s", a, z);
         f32 tw = ImGui::CalcTextSize(text).x;
         dl->AddText(ImVec2(top.x + avail.x - tw - 4 * s, floorf(y_tools + (fh - ImGui::GetFontSize()) / 2)), col32(COL_DIM), text);
     }
@@ -1544,7 +1544,7 @@ static void screen_timeline()
         }
     }
     if (!tl.loaded || !b.seg_count) {
-        const char *msg = !tl.loaded ? "Reading the buffer\xE2\x80\xA6" : "Nothing recorded yet";
+        const char *msg = !tl.loaded ? "Reading the buffer..." : "Nothing recorded yet";
         ImVec2 sz = ImGui::CalcTextSize(msg);
         dl->AddText(ImVec2(floorf((c.x0 + c.x1 - sz.x) / 2), floorf(y_video + (video_h - th) / 2)), col32(COL_DIM), msg);
     }
@@ -1585,7 +1585,7 @@ static void screen_timeline()
             tl_clock(want_t, true, when, sizeof when);
             snprintf(msg, sizeof msg, "Nothing recorded at %s", when);
         } else if (want_key == tl.failed_key) str_set(msg, "No frame here");
-        else if (!frame) str_set(msg, "Loading\xE2\x80\xA6");
+        else if (!frame) str_set(msg, "Loading...");
         if (msg[0] && !frame) {
             ImVec2 sz = ImGui::CalcTextSize(msg);
             dl->AddText(ImVec2(floorf((p0.x + p1.x - sz.x) / 2), floorf((p0.y + p1.y - sz.y) / 2)), col32(COL_DIM), msg);
@@ -1618,7 +1618,7 @@ static void screen_timeline()
         } else if (pl.error[0]) {
             str_set(status, pl.error);
             ink = COL_WARN;
-        } else if (pl.open && !pl.loaded) str_set(status, "Opening\xE2\x80\xA6");
+        } else if (pl.open && !pl.loaded) str_set(status, "Opening...");
         else if (!pl.open) str_set(status, b.seg_count ? "Play starts at the playhead" : "");
         if (status[0]) {
             ImGui::PushFont(g_font_small);
@@ -1640,7 +1640,7 @@ static void screen_timeline()
         if (kit_icon_button(ICON_CLOSE, "##clear", KIT_GHOST, has_sel, false, ib)) tl.sel_in = tl.sel_out = 0;
 
         // Start, end and length, the nudges beside each time
-        char a[16] = "--:--:--", z[16] = "--:--:--", len[32] = "\xE2\x80\x93";
+        char a[16] = "--:--:--", z[16] = "--:--:--", len[32] = "-";
         if (has_sel) {
             tl_clock(tl.sel_in, true, a, sizeof a);
             tl_clock(tl.sel_out, true, z, sizeof z);
@@ -1724,7 +1724,7 @@ static void screen_timeline()
         if (kit_button(ICON_EDIT "  Save and edit", KIT_SECONDARY, ImVec2(w2, 0), can)) tl_save(SAVE_CLIP, true);
         ImGui::SameLine(0, bgap);
         ImVec2 ses_pos = ImGui::GetCursorScreenPos();
-        if (kit_button(ICON_GAME "  Save session\xE2\x80\xA6", KIT_SECONDARY, ImVec2(w3, 0), can)) ImGui::OpenPopup("##session");
+        if (kit_button(ICON_GAME "  Save session...", KIT_SECONDARY, ImVec2(w3, 0), can)) ImGui::OpenPopup("##session");
 
         // A session: a name typed, or a game picked. In a popup over the card, so nothing moves.
         // Anchored to the button's right edge so it stays inside the window
