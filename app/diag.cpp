@@ -163,7 +163,8 @@ static void diag_log_main_stack()
     else log_line("  (couldn't read its registers: %lu)", GetLastError());
 }
 
-// The watchdog: if the main thread hasn't come round for 3 s while not idle, log where it is; at 15 s write a dump.
+// The watchdog: if the main thread hasn't come round for 1 s while not idle, log where it is; at 15 s write a dump.
+// A second already reads as a freeze, and the stack walk is cheap.
 static DWORD WINAPI diag_watchdog(void *)
 {
     bool stuck = false, dumped = false;
@@ -172,7 +173,7 @@ static DWORD WINAPI diag_watchdog(void *)
         Sleep(500);
         if (g_app.quitting) return 0;
         i64 now = (i64)GetTickCount64(), age = now - g_diag.beat_ms;
-        bool busy = !g_diag.waiting && age > 3000;
+        bool busy = !g_diag.waiting && age > 1000;
         if (busy && !stuck) {
             stuck = true;
             dumped = false;
