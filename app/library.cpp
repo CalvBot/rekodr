@@ -769,6 +769,42 @@ static void lib_drop_queued_thumbs()
     ReleaseSRWLockExclusive(&g_lib.lock);
 }
 
+static void lib_message(bool error, const char *fmt, ...);
+
+// Gives a clip or session a game by hand: its line in games.txt (any old one replaced), then a rescan to show it.
+static bool library_set_game(const LibItem &it, const char *game)
+{
+    char g[64];
+    str_set(g, game);
+    char *t = trim(g);
+    if (!*t || strchr(t, '|')) return false;
+    Path path = path_join(g_app.paths.config_dir, L"games.txt");
+    static char old[LIB_MAX_ITEMS * 160];
+    size_t n = 0;
+    if (FILE *f = _wfopen(path.s, L"rb")) {
+        n = fread(old, 1, sizeof old - 1, f);
+        fclose(f);
+    }
+    old[n] = 0;
+    FILE *f = _wfopen(path.s, L"wb");
+    if (!f) {
+        lib_message(true, "Couldn't save the game for %s", it.name);
+        return false;
+    }
+    for (char *line = old; *line;) {
+        char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line + 1) : strlen(line);
+        unsigned long long key = 0;
+        if (!(sscanf(line, "%llx", &key) == 1 && key == it.key)) fwrite(line, 1, len, f);
+        line += len;
+    }
+    fprintf(f, "%llx | %s | %s\r\n", (unsigned long long)it.key, t, it.name);
+    fclose(f);
+    log_line("library: %s is now %s", it.name, t);
+    library_rescan();
+    return true;
+}
+
 static void lib_message(bool error, const char *fmt, ...)
 {
     Library &lib = g_app.library;
@@ -1105,6 +1141,8 @@ static void library_play(const LibItem &it, f64 from)
     player_open(&lib.player, lib_item_path(it), from, true);
 }
 
+static void lib_rename_start(const LibItem &it);
+
 static void card_menu()
 {
     Library &lib = g_app.library;
@@ -1122,16 +1160,12 @@ static void card_menu()
         }
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
-        if (lib_menu_item(ICON_RENAME, "Rename...")) rename = true;
+        if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
-    if (rename) {
-        str_set(lib.rename_buf, lib.target.name);
-        lib.rename_error[0] = 0;
-        ImGui::OpenPopup("Rename");
-    }
+    if (rename) lib_rename_start(lib.target);
     if (del) ImGui::OpenPopup("Delete");
 }
 
@@ -1156,55 +1190,51 @@ static bool lib_dialog_begin(const char *id)
     return open;
 }
 
-static void rename_modal()
+// Renames lib.target to what's in lib.rename_buf, with its edit. True when done (renamed, or the name didn't
+// change); false with lib.rename_error set when it can't be.
+static bool lib_rename_apply()
 {
     Library &lib = g_app.library;
-    if (!lib_dialog_begin("Rename")) return;
-    kit_heading("Rename");
-    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-    ImGui::SetNextItemWidth(-1);
-    bool enter = ImGui::InputText("##name", lib.rename_buf, sizeof lib.rename_buf, ImGuiInputTextFlags_EnterReturnsTrue);
-    // The error line is always there, so the buttons never move.
-    ImGui::PushFont(g_font_small);
-    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_ACCENT_HOVER));
-    ImGui::TextUnformatted(lib.rename_error[0] ? lib.rename_error : " ");
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
-    i32 b = lib_dialog_buttons(ICON_RENAME "  Rename", KIT_PRIMARY);
-    bool go = b == 1 || enter;
-    bool cancel = b == -1 || ImGui::IsKeyPressed(ImGuiKey_Escape);
-    if (go) {
-        char name[256], cleaned[256];
-        str_set(name, lib.rename_buf);
-        char *t = trim(name);
-        str_set(cleaned, t);
-        clean_name(cleaned);
-        if (!*t) str_set(lib.rename_error, "The name can't be empty.");
-        else if (strcmp(cleaned, t)) str_set(lib.rename_error, "A name can't hold < > : \" / \\ | ? * or end in a dot.");
-        else if (!strcmp(t, lib.target.name)) cancel = true;
+    char name[256], cleaned[256];
+    str_set(name, lib.rename_buf);
+    char *t = trim(name);
+    str_set(cleaned, t);
+    clean_name(cleaned);
+    if (!*t) str_set(lib.rename_error, "The name can't be empty");
+    else if (strcmp(cleaned, t)) str_set(lib.rename_error, "A name can't hold < > : \" / \\ | ? * or end in a dot");
+    else if (!strcmp(t, lib.target.name)) return true;
+    else {
+        LibItem renamed = lib.target;
+        str_set(renamed.name, t);
+        Path from = lib_item_path(lib.target), to = lib_item_path(renamed);
+        if (file_exists(to.s)) str_set(lib.rename_error, "There's already a file with that name");
         else {
-            LibItem renamed = lib.target;
-            str_set(renamed.name, t);
-            Path from = lib_item_path(lib.target), to = lib_item_path(renamed);
-            if (file_exists(to.s)) str_set(lib.rename_error, "There's already a file with that name.");
-            else {
-                if (lib.player.open && !wcscmp(lib.player.path.s, from.s)) library_close_player();
-                if (MoveFileW(from.s, to.s)) {
-                    // The edit goes with it.
-                    Path ef = lib_edit_path(lib.target), et = lib_edit_path(renamed);
-                    if (file_exists(ef.s)) MoveFileW(ef.s, et.s);
-                    lib_message(false, "Renamed to %s", t);
-                    library_rescan();
-                    cancel = true;
-                } else {
-                    snprintf(lib.rename_error, sizeof lib.rename_error,
-                             "Couldn't rename it (error %d). Is it open somewhere?", (int)GetLastError());
-                }
+            if (lib.player.open && !wcscmp(lib.player.path.s, from.s)) library_close_player();
+            if (MoveFileW(from.s, to.s)) {
+                // The edit goes with it.
+                Path ef = lib_edit_path(lib.target), et = lib_edit_path(renamed);
+                if (file_exists(ef.s)) MoveFileW(ef.s, et.s);
+                lib_message(false, "Renamed to %s", t);
+                library_rescan();
+                return true;
             }
+            snprintf(lib.rename_error, sizeof lib.rename_error, "Couldn't rename it (error %d). Is it open somewhere?",
+                     (int)GetLastError());
         }
     }
-    if (cancel) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    log_line("library: rename refused: %s", lib.rename_error);
+    return false;
+}
+
+// Starts editing a card's name where it's shown.
+static void lib_rename_start(const LibItem &it)
+{
+    Library &lib = g_app.library;
+    lib.target = it;
+    str_set(lib.rename_buf, it.name);
+    lib.rename_error[0] = 0;
+    lib.rename_key = it.key;
+    lib.rename_focus = true;
 }
 
 static void delete_modal()
@@ -1265,7 +1295,9 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ImVec2 t0(a.x, a.y + day_h), t1(a.x + w, a.y + day_h + thumb_h);
     ImGui::SetCursorScreenPos(t0);
     ImGui::PushID((const void *)(uintptr_t)it.key);
-    ImGui::InvisibleButton("card", ImVec2(w, thumb_h + meta_h));
+    bool renaming = lib.rename_key == it.key;
+    ImGui::InvisibleButton("card", ImVec2(w, renaming ? thumb_h : thumb_h + meta_h));
+    if (ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_F2, false) && !renaming) lib_rename_start(it);
     bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
     bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right);
     bool over = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(t0, ImVec2(t1.x, t1.y + meta_h));
@@ -1295,13 +1327,18 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (over) {
         dl->AddRectFilled(t0, t1, IM_COL32(0, 0, 0, 50), round);
         lib_play_mark(dl, ImVec2((t0.x + t1.x) / 2, (t0.y + t1.y) / 2), kit_px(24));
-        // Where a click starts playing: a bar along the bottom, and the time.
-        f32 in = kit_px(10), by = t1.y - kit_px(8), bh = kit_px(3);
-        dl->AddRectFilled(ImVec2(t0.x + in, by - bh), ImVec2(t1.x - in, by), IM_COL32(255, 255, 255, 70), bh);
-        dl->AddRectFilled(ImVec2(t0.x + in, by - bh), ImVec2(t0.x + in + frac * (w - 2 * in), by), col32(COL_ACCENT), bh);
+        // Where a click starts playing: a bar the whole width of the picture's bottom edge (the picture's own
+        // rounded shape, clipped to a strip, so it follows the corners), and the time.
+        f32 in = kit_px(10), bh = kit_px(4), by = t1.y - bh;
+        dl->PushClipRect(ImVec2(t0.x, by), t1, true);
+        dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 70), round);
+        dl->PopClipRect();
+        dl->PushClipRect(ImVec2(t0.x, by), ImVec2(t0.x + frac * w, t1.y), true);
+        dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
+        dl->PopClipRect();
         if (it.info.duration > 0) {
             fmt_time(frac * it.info.duration, text, sizeof text);
-            badge(dl, ImVec2(t1.x - in, by - bh - kit_px(6)), true, true, text);
+            badge(dl, ImVec2(t1.x - in, by - kit_px(6)), true, true, text);
         }
         if (it.info.track_count > 1) {
             snprintf(text, sizeof text, "%d tracks", it.info.track_count);
@@ -1316,17 +1353,54 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         lib.target = it;
         lib.open_menu = true;
     }
-    f32 y = t1.y + kit_px(8);
+    // The caption: the game's icon, then the name and one dim line. Renaming edits the name right there.
+    f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
+    f32 tx = a.x + isz + kit_px(10), tw = a.x + w - tx;
+    // No game ("Desktop", "Other") gets a plain glyph rather than whatever icon the name looks up.
+    bool desktop = !strcmp(it.info.game, "Desktop"), no_game = desktop || !strcmp(it.info.game, "Other");
+    ID3D11ShaderResourceView *icon = it.info.game[0] && !no_game ? game_icon(it.info.game) : 0;
+    const char *glyph = desktop ? ICON_WINDOW : ICON_VIDEO;
+    if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
+                                  IM_COL32_WHITE, kit_px(6));
+    else {
+        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), col32(COL_PANEL), kit_px(6));
+        ImGui::PushFont(g_font_icon);
+        ImVec2 is = ImGui::CalcTextSize(glyph);
+        dl->AddText(ImVec2(floorf(a.x + (isz - is.x) / 2), floorf(y + (isz - is.y) / 2)), col32(COL_FAINT), glyph);
+        ImGui::PopFont();
+    }
     ImGui::PushFont(g_font_bold);
-    text_clipped(dl, ImVec2(a.x, y), w, col32(COL_TEXT), it.name);
+    if (renaming) {
+        ImGui::PushID((const void *)(uintptr_t)it.key);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(4), kit_px(1)));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kit_px(4));
+        ImGui::SetCursorScreenPos(ImVec2(tx - kit_px(4), y - kit_px(1)));
+        ImGui::SetNextItemWidth(tw + kit_px(4));
+        if (lib.rename_focus) {
+            ImGui::SetKeyboardFocusHere();
+            lib.rename_focus = false;
+        }
+        bool enter = ImGui::InputText("##rename", lib.rename_buf, sizeof lib.rename_buf,
+                                      ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        bool left = ImGui::IsItemDeactivated(), esc = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        ImGui::PopStyleVar(2);
+        ImGui::PopID();
+        if (esc) lib.rename_key = 0; // Esc: as it was
+        else if (enter || left) { // Enter or clicking away: rename (or keep editing, with why it can't be)
+            if (lib_rename_apply()) lib.rename_key = 0;
+            else lib.rename_focus = true;
+        }
+    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.name);
     y += ImGui::GetFontSize() + kit_px(2);
     ImGui::PopFont();
-    char when[48], size[24], line[160];
+    char when[48], size[24], line[300];
     fmt_when(it.mtime_us, when, sizeof when);
     fmt_size(it.size, size, sizeof size);
-    snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
+    bool err = renaming && lib.rename_error[0];
+    if (err) str_set(line, lib.rename_error);
+    else snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
     ImGui::PushFont(g_font_small);
-    text_clipped(dl, ImVec2(a.x, y), w, col32(COL_DIM), line);
+    text_clipped(dl, ImVec2(tx, y), tw, col32(err ? COL_RED : COL_DIM), line);
     ImGui::PopFont();
     if (clicked) library_play(it, it.info.duration > 0 && frac >= 0 ? frac * it.info.duration : 0);
 }
@@ -1351,9 +1425,9 @@ static void lib_player_view()
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
     bool close = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
     kit_tip("Back to the library", "Esc");
-    static const char *const actions[] = {ICON_EDIT "  Edit", ICON_FOLDER "  Show in folder"};
-    f32 aw[2], acts_w = 0;
-    for (i32 i = 0; i < 2; i++) {
+    static const char *const actions[] = {ICON_COPY "  Copy", ICON_EDIT "  Edit", ICON_FOLDER "  Show in folder"};
+    f32 aw[3], acts_w = 0;
+    for (i32 i = 0; i < 3; i++) {
         aw[i] = ImGui::CalcTextSize(actions[i]).x + 2 * st.FramePadding.x;
         acts_w += aw[i] + (i ? st.ItemSpacing.x : 0);
     }
@@ -1362,20 +1436,51 @@ static void lib_player_view()
     ImGui::PushFont(g_font_big);
     text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), lib.playing.name);
     ImGui::PopFont();
-    char when[48], line[160];
+    char when[48], size[24], line[200];
     fmt_when(lib.playing.mtime_us, when, sizeof when);
-    snprintf(line, sizeof line, "%s  -  %s", lib.playing.info.game, when);
+    fmt_size(lib.playing.size, size, sizeof size);
+    snprintf(line, sizeof line, "%s  -  %s  -  %s", lib.playing.info.game, when, size);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), line);
     ImGui::PopFont();
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
-    bool edit = kit_button(actions[0], KIT_SECONDARY, ImVec2(aw[0], 0));
+    // Copy puts the file on the clipboard; one bigger than the share size offers a share copy first.
+    const Editor &ed = g_app.editor;
+    f32 share_mb = ed.share_size == 0 ? 20.f : ed.share_size == 1 ? 50.f : ed.custom_mb;
+    if (share_mb < 1) share_mb = 1;
+    bool big = lib.playing.size > (u64)(share_mb * 1024 * 1024);
+    ImVec2 copy_at = ImGui::GetCursorScreenPos();
+    if (kit_button(actions[0], KIT_SECONDARY, ImVec2(aw[0], 0))) {
+        if (big) ImGui::OpenPopup("copy_big");
+        else if (clipboard_copy_file(p.path.s)) lib_message(false, "Copied %s to the clipboard", lib.playing.name);
+        else lib_message(true, "Couldn't copy %s", lib.playing.name);
+    }
     ImGui::SameLine();
-    if (kit_button(actions[1], KIT_SECONDARY, ImVec2(aw[1], 0))) show_in_folder(p.path.s);
-    if (edit) {
+    bool edit = kit_button(actions[1], KIT_SECONDARY, ImVec2(aw[1], 0));
+    ImGui::SameLine();
+    if (kit_button(actions[2], KIT_SECONDARY, ImVec2(aw[2], 0))) show_in_folder(p.path.s);
+    bool share = false;
+    ImGui::SetNextWindowPos(ImVec2(copy_at.x, copy_at.y + fh + kit_px(4)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(6), kit_px(6)));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
+    if (ImGui::BeginPopup("copy_big")) {
+        char as_is[64], share_label[64];
+        snprintf(as_is, sizeof as_is, "Copy as it is (%s)", size);
+        snprintf(share_label, sizeof share_label, "Make a share copy (under %.0f MB)", share_mb);
+        if (lib_menu_item(ICON_SHARE, share_label)) share = true;
+        if (lib_menu_item(ICON_COPY, as_is)) {
+            if (clipboard_copy_file(p.path.s)) lib_message(false, "Copied %s to the clipboard", lib.playing.name);
+            else lib_message(true, "Couldn't copy %s", lib.playing.name);
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (edit || share) {
         LibItem it = lib.playing;
         library_close_player();
         editor_open(it);
+        if (share) g_app.editor.tab = 1; // straight to Keep and share
         return;
     }
 
@@ -1399,13 +1504,27 @@ static void lib_player_view()
     dl->AddRectFilled(r0, ImVec2(r0.x + full_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
+    kit_next_tip("Back 10 s", "Shift+Left");
+    if (kit_icon_button(ICON_BACK10, "##back10", KIT_GHOST)) player_seek(&p, p.pos - 10);
+    ImGui::SameLine(0, kit_px(2));
     if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_GHOST)) player_toggle(&p);
     kit_tip(p.paused ? "Play" : "Pause", "Space");
+    ImGui::SameLine(0, kit_px(2));
+    kit_next_tip("Forward 30 s", "Shift+Right");
+    if (kit_icon_button(ICON_FWD30, "##fwd30", KIT_GHOST)) player_seek(&p, p.pos + 30);
+    // Speed: one chip that steps through the speeds.
+    static const f32 rates[] = {0.5f, 1, 1.5f, 2};
+    f32 rate = p.rate > 0 ? p.rate : 1;
+    char rl[16];
+    snprintf(rl, sizeof rl, "%gx##rate", rate);
+    ImGui::SameLine(0, kit_px(2));
+    bool step_rate = kit_button(rl, KIT_GHOST, ImVec2(kit_px(46), 0));
+    kit_tip("Speed", "Shift+. / Shift+,");
     char t1[32], t2[32], tm[80];
     fmt_time(p.pos, t1, sizeof t1);
     fmt_time(p.duration > 0 ? p.duration : lib.playing.info.duration, t2, sizeof t2);
     snprintf(tm, sizeof tm, "%s / %s", t1, t2);
-    f32 time_x = r0.x + pad + fh + kit_px(8), time_w = kit_px(104);
+    f32 time_x = r0.x + pad + 3 * fh + kit_px(46) + 3 * kit_px(2) + kit_px(10), time_w = kit_px(104);
     ImVec2 ts = ImGui::CalcTextSize(tm);
     dl->AddText(ImVec2(time_x, floorf(y + (fh - ts.y) / 2)), col32(COL_DIM), tm);
 
@@ -1418,10 +1537,20 @@ static void lib_player_view()
     ImGui::SetCursorScreenPos(ImVec2(seek_x, y));
     scrub_bar("##seek", &p, seek_w, fh);
     f32 x = r0.x + full_w - pad - right_w;
-    if (tracks > 1) { // which audio track is heard
+    bool tracks_changed = false;
+    if (tracks > 1) { // which audio tracks are heard: tick any of them
         ImGui::SetCursorScreenPos(ImVec2(x, y));
+        u32 mask = p.sound_mask ? p.sound_mask : 1u << p.sound;
+        i32 on = 0, first = -1;
+        for (i32 t = 0; t < tracks && t < MEDIA_MAX_TRACKS; t++)
+            if (mask & (1u << t)) {
+                on++;
+                if (first < 0) first = t;
+            }
         char cur[64];
-        snprintf(cur, sizeof cur, "%s", p.sound < mi.track_count ? mi.tracks[p.sound] : "Track 1");
+        if (on > 1) snprintf(cur, sizeof cur, "%d tracks", on);
+        else if (first >= 0 && first < mi.track_count) snprintf(cur, sizeof cur, "%s", mi.tracks[first]);
+        else snprintf(cur, sizeof cur, "Track %d", first + 1);
         ImGui::SetNextItemWidth(sound_w);
         ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
         if (ImGui::BeginCombo("##sound", cur)) {
@@ -1429,7 +1558,14 @@ static void lib_player_view()
                 char name[48];
                 if (t < mi.track_count) snprintf(name, sizeof name, "%s##%d", mi.tracks[t], t);
                 else snprintf(name, sizeof name, "Track %d##%d", t + 1, t);
-                if (ImGui::Selectable(name, p.sound == t)) player_set_sound(&p, t);
+                bool ticked = (mask & (1u << t)) != 0;
+                if (ImGui::Checkbox(name, &ticked)) {
+                    u32 m = ticked ? mask | (1u << t) : mask & ~(1u << t);
+                    if (m) { // at least one stays on
+                        p.sound_mask = m;
+                        tracks_changed = true;
+                    }
+                }
             }
             ImGui::EndCombo();
         }
@@ -1448,16 +1584,41 @@ static void lib_player_view()
         g_lib_muted = false;
         vol_changed = true;
     }
+    if (tracks_changed && p.engine && p.loaded) {
+        // One track plays on the video's engine; several each get their own engine, mixed by Windows.
+        i32 list[MEDIA_MAX_TRACKS], n = 0;
+        for (i32 t = 0; t < p.audio_count && t < MEDIA_MAX_TRACKS; t++)
+            if (p.sound_mask & (1u << t)) list[n++] = t;
+        if (n <= 1) {
+            player_clear_tracks(&p);
+            player_set_sound(&p, n ? list[0] : 0);
+        } else player_set_tracks(&p, list, n);
+        vol_changed = true;
+    }
     if (p.engine && p.loaded && (vol_changed || g_lib_volume_gen != p.gen)) {
-        p.engine->SetVolume(g_lib_volume);
-        p.engine->SetMuted(g_lib_muted);
+        if (p.track_engine_count) {
+            p.engine->SetMuted(true);
+            for (i32 i = 0; i < p.track_engine_count; i++)
+                player_track_volume(&p, p.track_of_engine[i], g_lib_volume, g_lib_muted);
+        } else {
+            p.engine->SetVolume(g_lib_volume);
+            p.engine->SetMuted(g_lib_muted);
+        }
         g_lib_volume_gen = p.gen;
     }
+    bool keys = !ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
+    i32 ri = 0;
+    while (ri < 3 && rates[ri] != rate) ri++;
+    i32 to = step_rate ? (ri + 1) % 4 : ri; // the chip goes round
+    bool shift = ImGui::GetIO().KeyShift;
+    if (keys && shift && ImGui::IsKeyPressed(ImGuiKey_Period, false) && ri < 3) to = ri + 1;
+    if (keys && shift && ImGui::IsKeyPressed(ImGuiKey_Comma, false) && ri > 0) to = ri - 1;
+    if (to != ri) player_set_rate(&p, rates[to]);
 
     if (!ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) player_toggle(&p);
-        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) player_seek(&p, p.pos - 5);
-        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) player_seek(&p, p.pos + 5);
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) player_seek(&p, p.pos - (ImGui::GetIO().KeyShift ? 10 : 5));
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) player_seek(&p, p.pos + (ImGui::GetIO().KeyShift ? 30 : 5));
         if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
             g_lib_muted = !g_lib_muted;
             g_lib_volume_gen--; // applied next frame
@@ -1997,7 +2158,6 @@ static void screen_library()
     if (lib.open_menu) ImGui::OpenPopup("card_menu");
     lib.open_menu = false;
     card_menu();
-    rename_modal();
     delete_modal();
 
     // Footer: how many, and the last message.

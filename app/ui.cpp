@@ -103,6 +103,8 @@ static f32 g_dpi_scale = 1;
 #define ICON_WINDOW    "\xEE\x9C\xB7" // E737
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_START     "\xEE\xA2\x92" // E892
+#define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
+#define ICON_FWD30     "\xEE\xB4\xBD" // ED3D skip forward 30
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
 
@@ -944,10 +946,13 @@ static void help_window()
             {"[Ctrl]+wheel", "Bigger or smaller cards"},
             {"Point at a thumbnail", "Scrub through it; click to play from there"},
             {"Right-click a card", "Edit, rename, delete and more"},
+            {"[F2]", "Rename the card under the mouse"},
         };
         static const HelpRow player[] = {
             {"[Space]", "Play / pause"},
             {"[Left] / [Right]", "Back / forward 5 s"},
+            {"[Shift]+[Left] / [Right]", "Back 10 s / forward 30 s"},
+            {"[Shift]+[.] / [,]", "Faster / slower"},
             {"[M]", "Mute / unmute"},
             {"[Esc]", "Close the player"},
         };

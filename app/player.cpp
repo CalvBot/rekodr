@@ -274,6 +274,15 @@ static void player_toggle(Player *p)
     else player_pause(p);
 }
 
+// Playback speed (1 = normal), for the video and every track engine.
+static void player_set_rate(Player *p, f32 rate)
+{
+    p->rate = rate;
+    if (p->engine) p->engine->SetPlaybackRate(rate);
+    for (i32 i = 0; i < p->track_engine_count; i++)
+        if (p->track_engine[i]) p->track_engine[i]->SetPlaybackRate(rate);
+}
+
 // The editor: each of `tracks` gets its own audio-only engine, so each has its own volume; the video's engine is
 // muted. Called once the video's audio streams are known (p->loaded).
 static void player_set_tracks(Player *p, const i32 *tracks, i32 n)
@@ -312,6 +321,7 @@ static void player_on_media(const Event &e)
         IMFMediaEngine *te = p->track_engine[i];
         if (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA) {
             engine_pick_audio(te, *p, p->track_of_engine[i]);
+            if (p->rate > 0) te->SetPlaybackRate(p->rate);
             te->SetCurrentTime(p->pos);
             if (!p->paused) te->Play();
         }

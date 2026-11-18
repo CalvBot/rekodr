@@ -404,6 +404,8 @@ struct Player {
     i32               audio_stream[MEDIA_MAX_TRACKS]; // the engine's stream index of each audio track
     i32               audio_count;
     i32               sound;              // the audio track heard (the library's Sound choice)
+    u32               sound_mask;         // library: the audio tracks heard, one bit each; 0 = just `sound`
+    f32               rate;               // playback speed; 0 = normal
     f64               stop_at, loop_from; // editor: playing stops at the trim's end; 0 = the whole file
     char              error[256];
     bool              set_animating; // this player asked ui.animating to keep the frames coming
@@ -464,6 +466,8 @@ struct Library {
     LibItem  target;               // the card a menu, rename or delete is about
     char     rename_buf[256];
     char     rename_error[256];
+    u64      rename_key;           // the card whose name is being edited in place (its key), 0 = none
+    bool     rename_focus;         // give the name field the keyboard next frame
     char     message[256];         // the last result, shown in the pager row ("Copied", "Couldn't rename ...")
     bool     message_error;
     Player   player;
