@@ -932,7 +932,7 @@ static void help_window()
             {"`clipback save 90s`", "Save the last 90 s (or 30s, 2m, 1h ...)"},
             {"`clipback timeline`", "Open the buffer timeline"},
             {"`clipback open`", "Open this window"},
-            {"`clipback pause`", "Pause / resume recording"},
+            {"`clipback toggle`", "Recording on / off"},
         };
         static const HelpRow window[] = {{"[F1]", "This help"}, {"[Esc]", "Close this help"},
                                          {"[Esc]", "Options, setting a hotkey's keys: cancel"}};
@@ -1080,13 +1080,13 @@ static bool top_tab(const char *icon, const char *label, bool active, f32 h)
     ImGui::PushFont(g_font_bold);
     ImVec2 ts = ImGui::CalcTextSize(label);
     f32 slot = g_font_icon->FontSize + kit_px(8); // the icon, then the label
-    f32 padx = kit_px(16), w = slot + ts.x + 2 * padx;
+    f32 padx = kit_px(12), w = slot + ts.x + 2 * padx;
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton(label, ImVec2(w, h));
     if (clicked) dev_click("tab", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    if (hot && !active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(10)), ImVec2(a.x + w, a.y + h - kit_px(10)), col32(COL_PANEL), kit_px(7));
+    if (hot && !active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(7)), ImVec2(a.x + w, a.y + h - kit_px(7)), col32(COL_PANEL), kit_px(7));
     u32 ink = col32(active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM);
     dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(a.x + padx, floorf(a.y + (h - g_font_icon->FontSize) / 2)),
                 active ? col32(COL_ACCENT) : ink, icon);
@@ -1096,8 +1096,8 @@ static bool top_tab(const char *icon, const char *label, bool active, f32 h)
     return clicked;
 }
 
-// The bar across the top: the three screens as tabs, and on the right what the recorder is doing with
-// its Pause / Resume, then Help. The button and Help stay put whatever the status says.
+// The bar across the top: the three screens as tabs, and on the right the recording switch with what the
+// recorder is doing, then Help.
 static void top_bar(f32 h)
 {
     Recorder &rec = g_app.recorder;
@@ -1115,40 +1115,29 @@ static void top_bar(f32 h)
     ImGui::SameLine(0, kit_px(4));
     if (top_tab(ICON_SETTINGS, "Options", s == SCREEN_OPTIONS, h)) g_app.ui.screen = SCREEN_OPTIONS;
 
-    // Right: the status, Pause / Resume, Help.
+    // Right: recording on or off as one switch, what it's doing just before it, then Help. The switch and Help stay
+    // put; the words end where the switch starts.
     f32 fh = ImGui::GetFrameHeight(), y = o.y + (h - fh) / 2;
-    f32 help_x = o.x + w - kit_px(16) - fh;
-    const char *btn = rec.paused ? ICON_RECORD "  Resume" : ICON_PAUSE "  Pause";
-    f32 btn_w = kit_px(104), btn_x = help_x - kit_px(8) - btn_w;
-    ImGui::SetCursorScreenPos(ImVec2(btn_x, y));
-    if (kit_button(btn, KIT_SECONDARY, ImVec2(btn_w, 0))) event_post_text(EV_COMMAND, "toggle");
+    f32 help_x = o.x + w - kit_px(12) - fh, sw_w = kit_px(36), sw_x = help_x - kit_px(14) - sw_w;
+    ImGui::SetCursorScreenPos(ImVec2(sw_x, y));
+    bool on = !rec.paused;
+    if (kit_toggle("##recording", &on)) event_post_text(EV_COMMAND, "toggle");
+    kit_tip(rec.paused ? "Start recording" : "Stop recording (nothing is kept while off)");
     ImGui::SetCursorScreenPos(ImVec2(help_x, y));
     kit_next_tip("Keyboard and mouse", "F1");
     if (kit_icon_button(ICON_HELP, "##help", KIT_GHOST)) g_app.ui.help_open = true;
 
-    const char *status = rec.paused ? "Paused" : rec.recording ? "Recording" : "Not recording";
-    char detail[64] = "";
-    if (rec.paused) str_set(detail, "nothing kept");
-    else if (rec.recording && rec.recording_since_us) {
-        char hm[16];
-        fmt_hm(local_time(rec.recording_since_us), hm, sizeof hm);
-        snprintf(detail, sizeof detail, "since %s", hm);
-    } else if (rec.last_error.s[0]) str_set(detail, "see Options");
-    else str_set(detail, "starting");
+    const char *status = rec.paused ? "Off" : rec.recording ? "Recording" : rec.last_error.s[0] ? "Not recording - see Options"
+                                                                                               : "Starting";
     ImGui::PushFont(g_font_bold);
     ImVec2 ss = ImGui::CalcTextSize(status);
-    ImGui::PopFont();
-    ImVec2 ds = ImGui::CalcTextSize(detail);
-    f32 gap = kit_px(8), tx = btn_x - kit_px(16) - ds.x - gap - ss.x;
-    f32 ty = floorf(o.y + (h - ss.y) / 2);
-    u32 dot = rec.paused ? COL_WARN : rec.recording ? COL_RED : COL_FAINT;
-    ImVec2 dc(tx - kit_px(14), o.y + h / 2);
+    f32 tx = sw_x - kit_px(10) - ss.x;
+    u32 dot = rec.paused ? COL_FAINT : rec.recording ? COL_RED : rec.last_error.s[0] ? COL_WARN : COL_FAINT;
+    ImVec2 dc(tx - kit_px(12), o.y + h / 2);
     dl->AddCircleFilled(dc, kit_px(4.5f), col32(dot));
     if (rec.recording && !rec.paused) dl->AddCircle(dc, kit_px(8), col32(COL_RED, 0.35f), 0, kit_px(1.5f));
-    ImGui::PushFont(g_font_bold);
-    dl->AddText(ImVec2(tx, ty), col32(COL_TEXT), status);
+    dl->AddText(ImVec2(tx, floorf(o.y + (h - ss.y) / 2)), col32(rec.paused ? COL_DIM : COL_TEXT), status);
     ImGui::PopFont();
-    dl->AddText(ImVec2(tx + ss.x + gap, floorf(o.y + (h - ds.y) / 2)), col32(COL_DIM), detail);
 
     ImGui::SetCursorScreenPos(o);
     ImGui::Dummy(ImVec2(w, h));
@@ -1211,10 +1200,10 @@ static void ui_frame()
         ImGui::End();
         goto rendered;
     }
-    top_bar(kit_px(56));
+    top_bar(kit_px(46));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
     // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(28), kit_px(24)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(24), kit_px(16)));
     ImGui::BeginChild("##screen", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();

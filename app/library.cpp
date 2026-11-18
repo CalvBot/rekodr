@@ -1138,7 +1138,7 @@ static void card_menu()
 // The buttons at the bottom right of a dialog: Cancel, then the action. 1 = the action, -1 = Cancel.
 static i32 lib_dialog_buttons(const char *action, KitKind kind)
 {
-    f32 bw = kit_px(104);
+    f32 bw = kit_px(96);
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 2 * bw - ImGui::GetStyle().ItemSpacing.x);
     i32 r = 0;
     if (kit_button(ICON_CLOSE "  Cancel", KIT_SECONDARY, ImVec2(bw, 0))) r = -1;
@@ -1149,8 +1149,8 @@ static i32 lib_dialog_buttons(const char *action, KitKind kind)
 
 static bool lib_dialog_begin(const char *id)
 {
-    ImGui::SetNextWindowSize(ImVec2(kit_px(480), 0));
-    lib_popup_style_push(24);
+    ImGui::SetNextWindowSize(ImVec2(kit_px(400), 0));
+    lib_popup_style_push(18);
     bool open = ImGui::BeginPopupModal(id, 0, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar);
     lib_popup_style_pop();
     return open;
@@ -1219,8 +1219,7 @@ static void delete_modal()
     text_clipped(ImGui::GetWindowDrawList(), p, w, col32(COL_TEXT), lib.target.name);
     ImGui::PopFont();
     kit_dim("It goes to the Recycle Bin, with its edit.");
-    ImGui::Spacing();
-    i32 b = lib_dialog_buttons(ICON_DELETE "  Delete", KIT_PRIMARY);
+    i32 b = lib_dialog_buttons(ICON_DELETE "  Delete", KIT_DANGER);
     bool cancel = b == -1 || ImGui::IsKeyPressed(ImGuiKey_Escape);
     if (b == 1) {
         Path path = lib_item_path(lib.target), edit = lib_edit_path(lib.target);
@@ -1247,7 +1246,7 @@ static void delete_modal()
 }
 
 // The name and the line under a card's picture.
-static f32 lib_meta_h() { return kit_px(10) + g_font_bold->FontSize + kit_px(3) + g_font_small->FontSize + kit_px(4); }
+static f32 lib_meta_h() { return kit_px(8) + g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize + kit_px(2); }
 
 // One card: the day above it (on the first card of a day in each row), the picture, the name and one dim line.
 // Under the mouse the picture scrubs through the file (a click plays from there); a right-click opens its menu.
@@ -1260,7 +1259,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         char day[64];
         fmt_day(it.mtime_us, day, sizeof day);
         ImGui::PushFont(g_font_bold);
-        dl->AddText(ImVec2(a.x, a.y + day_h - ImGui::GetFontSize() - kit_px(10)), col32(COL_DIM), day);
+        dl->AddText(ImVec2(a.x, a.y + day_h - ImGui::GetFontSize() - kit_px(7)), col32(COL_DIM), day);
         ImGui::PopFont();
     }
     ImVec2 t0(a.x, a.y + day_h), t1(a.x + w, a.y + day_h + thumb_h);
@@ -1317,10 +1316,10 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         lib.target = it;
         lib.open_menu = true;
     }
-    f32 y = t1.y + kit_px(10);
+    f32 y = t1.y + kit_px(8);
     ImGui::PushFont(g_font_bold);
     text_clipped(dl, ImVec2(a.x, y), w, col32(COL_TEXT), it.name);
-    y += ImGui::GetFontSize() + kit_px(3);
+    y += ImGui::GetFontSize() + kit_px(2);
     ImGui::PopFont();
     char when[48], size[24], line[160];
     fmt_when(it.mtime_us, when, sizeof when);
@@ -1889,7 +1888,7 @@ static void screen_library()
     // As many columns as bring the cards nearest the width asked for; Ctrl + wheel asks for one column fewer or
     // more (never cards under 140 wide), keeping the row that was at the top there.
     const f32 narrowest = kit_px(140);
-    f32 gap = kit_px(20), day_h = kit_px(36);
+    f32 gap = kit_px(14), day_h = kit_px(30);
     i32 &want_w = g_app.config.card_width;
     if (want_w < 140) want_w = 140;
     i32 cols = (i32)((full_w + gap) / (kit_px((f32)want_w) + gap) + 0.5f);

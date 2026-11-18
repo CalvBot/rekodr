@@ -134,7 +134,7 @@ static void options_list_monitors()
 // controls fixed widths, so nothing moves when a value changes. The opt_card, opt_row, opt_combo, opt_keycaps,
 // opt_pill and opt_pager helpers are generic and could move to the kit in ui.cpp.
 
-static const f32 OPT_PAD = 20;     // a card's padding left and right
+static const f32 OPT_PAD = 16;     // a card's padding left and right
 static const f32 OPT_FIELD_W = 84; // a number box
 static const f32 OPT_UNIT_W = 44;  // the unit after it ("Mbps", "hours")
 
@@ -253,7 +253,7 @@ static void opt_card_begin()
     ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, g_card.a.y + dp(4)));
 }
 
-static void opt_card_end(f32 space_after = 18)
+static void opt_card_end(f32 space_after = 12)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 y = ImGui::GetCursorScreenPos().y + dp(4);
@@ -262,6 +262,14 @@ static void opt_card_end(f32 space_after = 18)
     dl->ChannelsMerge();
     ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, y));
     ImGui::Dummy(ImVec2(g_card.w, dp(space_after) - ImGui::GetStyle().ItemSpacing.y));
+}
+
+// Opens a folder in Explorer (made first if it isn't there yet).
+static void opt_open_dir(Path dir)
+{
+    CreateDirectoryW(dir.s, 0);
+    ShellExecuteW(0, L"open", dir.s, 0, 0, SW_SHOWNORMAL);
+    log_line("options: opened a cache folder");
 }
 
 // A small caption over a card: "VIDEO", "BUFFER".
@@ -288,7 +296,7 @@ static void opt_row_begin(const char *name, const char *sub, f32 control_w, f32 
     g_row.x0 = g_card.a.x + dp(OPT_PAD);
     g_row.x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
     g_row.y = ImGui::GetCursorScreenPos().y;
-    g_row.h = h > 0 ? h : dp(sub ? 64.f : 54.f);
+    g_row.h = h > 0 ? h : dp(sub ? 52.f : 44.f);
     if (g_card.rows++ && line) dl->AddLine(ImVec2(g_row.x0, g_row.y), ImVec2(g_row.x1, g_row.y), col32(COL_LINE));
     if (name) {
         f32 max_x = g_row.x1 - control_w - dp(20), nx = g_row.x0;
@@ -1061,8 +1069,8 @@ static void apps_rename_popup()
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
-    ImGui::SetNextWindowSize(ImVec2(kit_px(560), 0));
-    lib_popup_style_push(24);
+    ImGui::SetNextWindowSize(ImVec2(kit_px(480), 0));
+    lib_popup_style_push(18);
     bool open = ImGui::BeginPopupModal("rename app", 0, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar);
     lib_popup_style_pop();
     if (!open) return;
@@ -1461,7 +1469,7 @@ static void options_apps()
     }
     ImGui::Dummy(ImVec2(0, dp(2)));
 
-    f32 rh = dp(58);
+    f32 rh = dp(50);
     i32 rows = opt_rows_fit(rh, opt_pager_h());
     i32 open_popup = 0; // 1 the menu, 2 a game's settings, 3 rename, 4 a folder's menu: opened outside the rows' ID scopes
     opt_card_begin();
@@ -1599,8 +1607,8 @@ static void options_apps()
 // ---------------------------------------------------------------------------------------------------------------
 // Hotkeys
 
-static const char *ACTION_LABELS[] = {"Save the last", "Open the window", "Open the timeline", "Pause or resume",
-                                      "Pause", "Resume"};
+static const char *ACTION_LABELS[] = {"Save the last", "Open the window", "Open the timeline", "Recording on / off",
+                                      "Stop recording", "Start recording"};
 static const char *ACTION_COMMANDS[] = {"save", "open", "timeline", "toggle", "pause", "resume"};
 static const char *LENGTH_UNITS[] = {"seconds", "minutes", "hours"};
 
@@ -1734,7 +1742,7 @@ static void options_hotkeys()
     Config &c = g_app.config;
     capture_keys();
 
-    f32 fh = ImGui::GetFrameHeight(), rh = dp(54), head_h = dp(34);
+    f32 fh = ImGui::GetFrameHeight(), rh = dp(46), head_h = dp(30);
     i32 rows = opt_rows_fit(rh, head_h + opt_pager_h() + ImGui::GetFrameHeightWithSpacing() + dp(2));
     f32 add_w = dp(132);
     ImGui::AlignTextToFramePadding();
@@ -2108,7 +2116,7 @@ static void options_recording()
     if (enc == 0) snprintf(enc_preview, sizeof enc_preview, "Automatic - %s", notes[0]);
     else snprintf(enc_preview, sizeof enc_preview, "%s", items[enc]);
     char status[160];
-    if (rec.paused) snprintf(status, sizeof status, "Paused");
+    if (rec.paused) snprintf(status, sizeof status, "Off");
     else if (rec.recording) snprintf(status, sizeof status, "Recording with %s", rec.encoder_used.s);
     else if (rec.last_error.s[0]) snprintf(status, sizeof status, "Not recording: %s", rec.last_error.s);
     else snprintf(status, sizeof status, "Starting");
@@ -2361,8 +2369,11 @@ static void options_general()
         fmt_size(wave_bytes, size, sizeof size);
         if (wave_files) snprintf(sub, sizeof sub, "Waveforms of %d file%s, %s", wave_files, wave_files == 1 ? "" : "s", size);
         else str_set(sub, "None cached");
-        f32 cw = text_w(g_font, "Clear") + dp(32);
-        opt_row_begin("Cached waveforms", sub, cw);
+        f32 cw = text_w(g_font, "Clear") + dp(32), fh = ImGui::GetFrameHeight();
+        opt_row_begin("Cached waveforms", sub, fh + dp(8) + cw);
+        kit_next_tip("Open the folder");
+        if (kit_icon_button(ICON_FOLDER, "##wavedir", KIT_SECONDARY)) opt_open_dir(path_join(g_app.paths.local_dir, L"thumbs"));
+        ImGui::SameLine(0, dp(8));
         if (kit_button("Clear##wavecache", KIT_SECONDARY, ImVec2(cw, 0), wave_files > 0)) {
             i32 gone = wave_cache_clear(0);
             log_line("options: cleared %d audio previews", gone);
@@ -2389,6 +2400,10 @@ static void options_general()
         log_line("options: help name games %s", c.share_names ? "on" : "off");
         options_apply(0);
     }
+    opt_row_begin("Cached game art", "Names, icons and covers fetched so far", ImGui::GetFrameHeight());
+    kit_next_tip("Open the folder");
+    if (kit_icon_button(ICON_FOLDER, "##artdir", KIT_SECONDARY)) opt_open_dir(path_join(g_app.paths.local_dir, L"gamedb"));
+    opt_row_end();
     opt_card_end();
 
     opt_section("STARTUP");
@@ -2471,7 +2486,7 @@ static void screen_options()
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 avail = ImGui::GetContentRegionAvail().x, tab_h = dp(40), gap = dp(30);
+    f32 avail = ImGui::GetContentRegionAvail().x, tab_h = dp(34), gap = dp(28);
     dl->AddLine(ImVec2(a.x, a.y + tab_h - 0.5f), ImVec2(a.x + avail, a.y + tab_h - 0.5f), col32(COL_LINE));
     f32 x = a.x;
     for (i32 t = 0; t < OPT_TAB_COUNT; t++) {
@@ -2505,7 +2520,7 @@ static void screen_options()
         x += w + gap;
     }
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + tab_h));
-    ImGui::Dummy(ImVec2(avail, dp(14)));
+    ImGui::Dummy(ImVec2(avail, dp(6)));
 
     // List pages fit their page and turn pages; the others scroll if the window is short.
     bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS;
