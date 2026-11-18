@@ -1329,8 +1329,8 @@ static void screen_timeline()
     static Marker mark_open; // the one whose note is open
     i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
     i32 mark_hit = -1;
-    if (ImGui::IsWindowHovered() && io.MousePos.y >= y_ruler && io.MousePos.y < y_video &&
-        (tl.drag == TL_DRAG_NONE || !tl.dragged)) {
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_ruler &&
+        io.MousePos.y < y_video && (tl.drag == TL_DRAG_NONE || !tl.dragged)) { // the timeline's own click is active
         f32 best = 6 * s;
         for (i32 i = 0; i < mark_count; i++) {
             f32 d = fabsf(io.MousePos.x - tl_x(c, marks[i].t_us));
@@ -1393,8 +1393,7 @@ static void screen_timeline()
     }
     if (ImGui::IsItemDeactivated()) {
         if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok) tl.marker_pick = 0;
-        if (tl.drag == TL_DRAG_PAN && !tl.dragged && mouse_ok && mark_hit >= 0 &&
-            ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+        if (tl.drag == TL_DRAG_PAN && !tl.dragged && mouse_ok && mark_hit >= 0) { // a right (or middle) click
             mark_open = marks[mark_hit];
             tl.marker_pick = mark_open.t_us;
             ImGui::OpenPopup("##marknote");
@@ -1686,7 +1685,7 @@ static void screen_timeline()
         ImGui::PopFont();
     }
     // A marker's whole note, wrapped, with its time
-    ImGui::SetNextWindowSizeConstraints(ImVec2(240 * s, 0), ImVec2(420 * s, 360 * s));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(380 * s, 0), ImVec2(380 * s, 360 * s));
     if (ImGui::BeginPopup("##marknote")) {
         char when[64];
         tl_clock(mark_open.t_us, true, when, sizeof when);
@@ -1696,7 +1695,7 @@ static void screen_timeline()
         ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 5 * s, p.y + lh / 2), 5 * s, col32(mrgb));
         ImGui::SetCursorScreenPos(ImVec2(p.x + 16 * s, p.y));
         ImGui::TextColored(rgb(COL_DIM), "%s", when);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 400 * s);
+        ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(mark_open.note[0] ? mark_open.note : "No note");
         ImGui::PopTextWrapPos();
         if (mark_open.note[0] && kit_button(ICON_COPY "  Copy", KIT_GHOST)) {
