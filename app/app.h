@@ -86,6 +86,7 @@ struct Config {
     f32   bitrate_mbps;         // while a game is played (each game can have its own)
     f32   desktop_bitrate_mbps; // while no game is
     bool  draw_mouse;
+    Str64 capture;    // "auto" | "wgc" (Windows Graphics Capture) | "dxgi" (Desktop Duplication)
     Str64 preset;     // "p1".."p7"
     Str64 rate_control; // "vbr" | "cbr" | "cq"
     i32   cq;
@@ -166,6 +167,7 @@ struct Recorder {
     bool   recording;          // ffmpeg is capturing right now (it has run for a few seconds)
     Str64  encoder_used;       // "h264_nvenc"; empty while not recording
     u8     vendor;             // Vendor of encoder_used
+    bool   wgc;                // capturing with Windows Graphics Capture (else Desktop Duplication)
     Str64  run;                // the run folder being written, "20261115_210654_504"
     i64    recording_since_us;
     Str256 last_error;         // why it isn't recording; empty while healthy

@@ -60,6 +60,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->bitrate_mbps = 20;
     c->desktop_bitrate_mbps = -1; // not in the file: the game bitrate (fixed up after loading)
     c->draw_mouse = true;
+    str_set(c->capture.s, "auto");
     str_set(c->preset.s, "p4");
     str_set(c->rate_control.s, "vbr");
     c->cq = 23;
@@ -294,6 +295,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "encoder")) str_set(c->encoder.s, value);
     else if (!strcmp(key, "bitrate_mbps")) real(&c->bitrate_mbps);
     else if (!strcmp(key, "draw_mouse")) boolean(&c->draw_mouse);
+    else if (!strcmp(key, "capture")) str_set(c->capture.s, value);
     else if (!strcmp(key, "advanced")) {
         g_config_advanced_seen = true;
         g_config_advanced = !strcmp(value, "true") || !strcmp(value, "1");
@@ -458,6 +460,7 @@ static bool config_save(const Config &c, const Paths &paths)
                "desktop_bitrate_mbps = %g\n",
             c.output_idx, c.fps, c.height, c.codec.s, c.encoder.s, c.bitrate_mbps, c.desktop_bitrate_mbps);
     boolean("draw_mouse", c.draw_mouse);
+    fprintf(f, "capture = %s\n", c.capture.s);
     fprintf(f, "preset = %s\nrate_control = %s\ncq = %d\npeak_factor = %g\n", c.preset.s, c.rate_control.s, c.cq,
             c.peak_factor);
     boolean("spatial_aq", c.spatial_aq);

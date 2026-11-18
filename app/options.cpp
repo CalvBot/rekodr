@@ -1990,6 +1990,24 @@ static void options_recording()
         log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
         options_apply(APPLY_RECORDER);
     }
+    {
+        static const char *keys[] = {"auto", "wgc", "dxgi"};
+        static const char *items[] = {"Automatic", "Graphics Capture", "Desktop Duplication"};
+        static const char *notes[] = {0, "Windows 10 1903 and later", "the older way; can freeze"};
+        i32 sel = 0;
+        for (i32 i = 0; i < COUNT(keys); i++)
+            if (!strcmp(c.capture.s, keys[i])) sel = i;
+        char cap_preview[64], sub[64];
+        const char *used = rec.wgc ? "Graphics Capture" : "Desktop Duplication";
+        if (sel == 0 && rec.recording) snprintf(cap_preview, sizeof cap_preview, "Automatic - %s", used);
+        else snprintf(cap_preview, sizeof cap_preview, "%s", items[sel]);
+        snprintf(sub, sizeof sub, "%s", rec.recording ? (rec.wgc ? "Recording with Graphics Capture" : "Recording with Desktop Duplication") : "How the screen is read");
+        if (opt_row_combo("Capture method", sub, "##capture", items, notes, COUNT(items), &sel, wide, 0, cap_preview)) {
+            str_set(c.capture.s, keys[sel]);
+            log_line("options: capture %s", c.capture.s);
+            options_apply(APPLY_RECORDER);
+        }
+    }
     opt_card_end();
 
     opt_section("BITRATE");

@@ -81,11 +81,12 @@ static void capture_filter_scaled(i32 vendor, i32 w, i32 h, char *out, i32 cap)
     }
 }
 
-// A monitor's size in pixels and refresh rate, by its index on the first GPU (as ddagrab's output_idx counts).
-// False if it isn't there.
-static bool monitor_mode(i32 idx, i32 *w, i32 *h, i32 *hz)
+// A monitor's size in pixels, refresh rate and HMONITOR (gfxcapture's hmonitor), by its index on the first GPU (as
+// ddagrab's output_idx counts). False if it isn't there.
+static bool monitor_mode(i32 idx, i32 *w, i32 *h, i32 *hz, u64 *hmon)
 {
     *w = *h = *hz = 0;
+    *hmon = 0;
     IDXGIFactory1 *factory = 0;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
     IDXGIAdapter1 *adapter = 0;
@@ -94,6 +95,7 @@ static bool monitor_mode(i32 idx, i32 *w, i32 *h, i32 *hz)
         if (adapter->EnumOutputs((UINT)idx, &out) == S_OK) {
             DXGI_OUTPUT_DESC d = {};
             out->GetDesc(&d);
+            *hmon = (u64)(uintptr_t)d.Monitor;
             *w = d.DesktopCoordinates.right - d.DesktopCoordinates.left;
             *h = d.DesktopCoordinates.bottom - d.DesktopCoordinates.top;
             DEVMODEW mode = {};
@@ -128,6 +130,9 @@ struct RecSettings {
     f32   min_free_gb;
     i32   output_idx;
     i32   fps;           // never above the monitor's refresh rate
+    u64   hmonitor;      // output_idx's monitor, for Windows Graphics Capture
+    i32   capture;       // CAPTURE_*
+    bool  game;          // a game is being played: its screen should keep changing (the frozen-frame check)
     i32   width, height; // scaled to this; 0 = the monitor's own size (never scaled up)
     Str64 codec;
     Str64 encoder;
@@ -140,6 +145,15 @@ struct RecSettings {
     f32   peak_factor;
     bool  spatial_aq;
 };
+
+enum { CAPTURE_AUTO, CAPTURE_WGC, CAPTURE_DXGI };
+
+static i32 capture_parse(const char *s)
+{
+    if (!strcmp(s, "wgc")) return CAPTURE_WGC;
+    if (!strcmp(s, "dxgi")) return CAPTURE_DXGI;
+    return CAPTURE_AUTO;
+}
 
 struct RecShared {
     SRWLOCK     lock;
@@ -197,6 +211,8 @@ static RecSettings rec_settings_from(const Config &c, const Paths &paths, const 
     s.codec = c.codec;
     s.encoder = c.encoder;
     s.draw_mouse = c.draw_mouse;
+    s.capture = capture_parse(c.capture.s);
+    s.game = game && game[0];
     s.preset = c.preset;
     s.rate_control = c.rate_control;
     s.cq = c.cq;
@@ -224,7 +240,7 @@ static RecSettings rec_settings_from(const Config &c, const Paths &paths, const 
     // Recording above what the monitor shows only makes bigger files: a 4K setting on a 1440p screen records
     // 1440p, and 120 fps on a 60 Hz screen records 60.
     i32 mw, mh, hz;
-    if (monitor_mode(s.output_idx, &mw, &mh, &hz)) {
+    if (monitor_mode(s.output_idx, &mw, &mh, &hz, &s.hmonitor)) {
         if (hz > 0 && s.fps > hz) s.fps = hz;
         if (want_h > 0 && want_h < mh) {
             s.height = want_h & ~1;
@@ -376,17 +392,35 @@ static void record_args(Args *a, i32 v, const RecSettings &s)
     }
 }
 
-// Everything before the two output paths: ddagrab → the encoder → 2 s segments. Frame 0's wall-clock time is
+// Everything before the two output paths: the capture -> the encoder -> 2 s segments. Frame 0's wall-clock time is
 // printed once (the `print` in setpts) and saved as the run's anchor, which lines the video up with the audio.
 // Two of these compare equal exactly when a settings change doesn't need a new ffmpeg.
-static void capture_args(Args *a, i32 vendor, const RecSettings &s)
+//
+// Windows Graphics Capture (gfxcapture, `wgc`) is the default: Desktop Duplication (ddagrab) can keep running while
+// handing out the same frame forever. gfxcapture scales on the GPU, and it only delivers a frame when the screen
+// changed, so the output side repeats frames to hold the frame rate and counts them (dup_frames in -progress):
+// that count is how a frozen capture is spotted.
+static void capture_args(Args *a, i32 vendor, const RecSettings &s, bool wgc)
 {
     a->s[0] = 0;
-    ADD("-hide_banner", "-nostats", "-loglevel", "info", "-init_hw_device", "d3d11va", "-filter_complex");
-    char filter[160];
-    capture_filter_scaled(vendor, s.width, s.height, filter, sizeof filter);
-    addf(a, "ddagrab=output_idx=%d:framerate=%d:draw_mouse=%d,setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'%s",
-         s.output_idx, s.fps, s.draw_mouse ? 1 : 0, filter);
+    ADD("-hide_banner", "-nostats", "-loglevel", "info", "-progress", "pipe:2", "-stats_period", "1", "-init_hw_device",
+        "d3d11va", "-filter_complex");
+    if (wgc) {
+        char size[64] = "";
+        if (s.width > 0 && s.height > 0)
+            snprintf(size, sizeof size, ":width=%d:height=%d:resize_mode=scale_aspect", s.width, s.height);
+        addf(a,
+             "gfxcapture=hmonitor=%llu:max_framerate=%d:capture_cursor=%d:display_border=0%s,"
+             "setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'%s",
+             (unsigned long long)s.hmonitor, s.fps, s.draw_mouse ? 1 : 0, size, capture_filter(vendor));
+        ADD("-fps_mode", "cfr", "-r");
+        addf(a, "%d", s.fps);
+    } else {
+        char filter[160];
+        capture_filter_scaled(vendor, s.width, s.height, filter, sizeof filter);
+        addf(a, "ddagrab=output_idx=%d:framerate=%d:draw_mouse=%d,setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'%s",
+             s.output_idx, s.fps, s.draw_mouse ? 1 : 0, filter);
+    }
     record_args(a, vendor, s);
     // No B-frames and a keyframe every segment: easy to cut, quick to scrub in an editor.
     ADD("-bf", "0", "-g");
@@ -499,7 +533,16 @@ struct StderrReader {
     Path   log;
     char   last[512];
     volatile i64 segment_tick; // GetTickCount64 when ffmpeg last opened a segment (the stall watchdog reads it)
+    volatile i64 frames, dups; // -progress totals: frames written, and how many of them were repeats
 };
+
+// A -progress line ("frame=123", "dup_frames=4", "progress=continue"): a lower-case key, '=', no spaces.
+static bool rec_progress_line(const char *line)
+{
+    if (line[0] < 'a' || line[0] > 'z' || strchr(line, ' ')) return false;
+    const char *eq = strchr(line, '=');
+    return eq != 0;
+}
 
 static StderrReader g_reader;
 
@@ -531,6 +574,11 @@ static DWORD WINAPI stderr_thread(void *arg)
         }
         if (strstr(line, "Opening '")) {
             r->segment_tick = (i64)GetTickCount64();
+            continue;
+        }
+        if (rec_progress_line(line)) {
+            if (starts_with(line, "frame=")) r->frames = _atoi64(line + 6);
+            else if (starts_with(line, "dup_frames=")) r->dups = _atoi64(line + 11);
             continue;
         }
         if (starts_with(line, "  ")) continue;
@@ -592,6 +640,15 @@ static DWORD WINAPI recorder_thread(void *)
     char last_encoder[64] = "";
     u32 backoff = 2000;
     bool log_cleared = false;
+    // Automatic capture uses Windows Graphics Capture until it fails to start twice running, or freezes twice
+    // within 2 minutes; then Desktop Duplication until the capture setting changes.
+    i32 wgc_fails = 0;
+    i32 last_capture = -1;
+    u64 last_frozen = 0;
+    auto use_wgc = [&](const RecSettings &rs) {
+        if (rs.capture == CAPTURE_DXGI || !rs.hmonitor) return false;
+        return rs.capture == CAPTURE_WGC || wgc_fails < 2;
+    };
 
     auto fail = [&](const char *msg) {
         if (!healthy) return;
@@ -655,7 +712,12 @@ static DWORD WINAPI recorder_thread(void *)
             continue;
         }
 
-        capture_args(&base, vendor, s);
+        if (s.capture != last_capture) {
+            last_capture = s.capture;
+            wgc_fails = 0;
+        }
+        bool wgc = use_wgc(s);
+        capture_args(&base, vendor, s, wgc);
         cmd = base;
         Path list = path_join(run_dir, L"list.csv");
         Path pattern = path_join(run_dir, L"v_%05d.mkv");
@@ -674,10 +736,14 @@ static DWORD WINAPI recorder_thread(void *)
         g_reader.run_dir = run_dir;
         g_reader.log = path_join(s.local_dir, L"ffmpeg-video.log");
         g_reader.segment_tick = 0;
+        g_reader.frames = g_reader.dups = 0;
         HANDLE reader = thread_start(stderr_thread, &g_reader);
 
         u64 started = GetTickCount64();
         bool announced = false;
+        bool frozen = false;
+        u64 window_tick = started;
+        i64 window_frames = 0, window_dups = 0;
         i32 code = -1;
         u32 generation = snap.generation;
         for (;;) {
@@ -689,7 +755,7 @@ static DWORD WINAPI recorder_thread(void *)
                 generation = now.generation;
                 // A detection retry can find a GPU whose driver wasn't ready at start, which also lands here.
                 i32 v2 = pick_vendor(now.s, now.works);
-                if (v2 >= 0) capture_args(&base_now, v2, now.s);
+                if (v2 >= 0) capture_args(&base_now, v2, now.s, use_wgc(now.s));
                 restart = v2 != vendor || wcscmp(base_now.s, base.s) || wcscmp(now.s.buffer_dir.s, s.buffer_dir.s) ||
                           wcscmp(now.s.ffmpeg.s, s.ffmpeg.s);
                 if (restart) log_line("video settings changed: restarting the capture");
@@ -708,12 +774,36 @@ static DWORD WINAPI recorder_thread(void *)
                 code = 2; // handled like ffmpeg stopping by itself: retry with backoff
                 break;
             }
+            // Frozen: a game is being played but every frame of the last 10 s repeated the one before. A game redraws
+            // all the time, so the capture lost it (Windows Graphics Capture only hands out changed frames; the
+            // output side fills in repeats). A new capture picks it up again.
+            u64 tick = GetTickCount64();
+            if (tick - window_tick >= 10000) {
+                i64 f = g_reader.frames, d = g_reader.dups;
+                bool same = f > window_frames && f - window_frames <= d - window_dups;
+                window_tick = tick;
+                window_frames = f;
+                window_dups = d;
+                if (wgc && announced && now.s.game && same) {
+                    bool again = last_frozen && tick - last_frozen < 120000;
+                    last_frozen = tick;
+                    if (again && now.s.capture == CAPTURE_AUTO) {
+                        wgc_fails = 2;
+                        log_line("video frozen again while a game is played: switching to Desktop Duplication");
+                    } else {
+                        log_line("video frozen: no new frame for 10 s while a game is played; restarting the capture");
+                    }
+                    capture_stop(&p);
+                    frozen = true;
+                    break;
+                }
+            }
             if (!announced && GetTickCount64() - started > 4000) {
                 // Alive for 4 s: ddagrab got the desktop and the encoder took the frames.
                 log_line(healthy ? "recording video" : "recording video again");
                 char text[160], run8[64];
                 wide_to_utf8(run, run8, sizeof run8);
-                snprintf(text, sizeof text, "%s|%s", name, run8);
+                snprintf(text, sizeof text, "%s|%s|%s", name, run8, wgc ? "wgc" : "dxgi");
                 rec_post(REC_STARTED, vendor, text);
                 if (!healthy) rec_post(REC_ERROR, 0, "");
                 announced = true;
@@ -729,8 +819,17 @@ static DWORD WINAPI recorder_thread(void *)
         g_rec.run[0] = 0;
         ReleaseSRWLockExclusive(&g_rec.lock);
         if (announced) rec_post(REC_STOPPED, 0, "");
+        if (wgc && s.capture == CAPTURE_AUTO && !announced && !frozen && code >= 0) {
+            // Didn't get going: an ffmpeg without gfxcapture, or a Windows without Graphics Capture.
+            if (++wgc_fails == 2)
+                log_line("Windows Graphics Capture didn't start twice (%s): using Desktop Duplication", g_reader.last);
+        } else if (wgc && announced && !frozen) {
+            wgc_fails = 0;
+        }
 
-        if (code >= 0) {
+        if (frozen) {
+            backoff = 2000;
+        } else if (code >= 0) {
             // It stopped by itself. Retry soon (unlocking should record again within seconds), backing off while
             // it keeps failing straight away.
             if (lived > 10000) backoff = 2000;
@@ -1180,8 +1279,11 @@ static void recorder_on_event(const Event &e)
         str_set(text, e.text);
         char *bar = strchr(text, '|');
         if (bar) *bar++ = 0;
+        char *bar2 = bar ? strchr(bar, '|') : 0;
+        if (bar2) *bar2++ = 0;
         str_set(r.encoder_used.s, text);
         str_set(r.run.s, bar ? bar : "");
+        r.wgc = bar2 && !strcmp(bar2, "wgc");
         break;
     }
     case REC_STOPPED:
