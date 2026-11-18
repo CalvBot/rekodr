@@ -559,7 +559,6 @@ struct Timeline {
     i64           hover_us;
     TimelineRow   rows[64];
     i32           row_count;
-    i32           row_scroll;   // first audio row shown
     i16           stream_row[1024]; // the row of each idx->streams entry, -1 = none
     TimelineFrame frames[16];
     u32           frame_clock;
