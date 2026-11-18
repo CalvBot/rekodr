@@ -400,8 +400,9 @@ static void record_args(Args *a, i32 v, const RecSettings &s)
 //
 // Windows Graphics Capture (gfxcapture, `wgc`) is the default: Desktop Duplication (ddagrab) can keep running while
 // handing out the same frame forever. gfxcapture scales on the GPU, and it only delivers a frame when the screen
-// changed, so the output side repeats frames to hold the frame rate and counts them (dup_frames in -progress):
-// that count is how a frozen capture is spotted.
+// changed. The output side repeats frames to hold the frame rate and counts them (dup_frames in -progress), but
+// only once the next frame comes: while the screen stays the same no segment is written, and the gap is filled in
+// when it changes. The dup count is how a frozen capture is spotted.
 static void capture_args(Args *a, i32 vendor, const RecSettings &s, bool wgc)
 {
     a->s[0] = 0;
@@ -552,6 +553,7 @@ struct StderrReader {
     char   last[512];
     volatile i64 segment_tick; // GetTickCount64 when ffmpeg last opened a segment (the stall watchdog reads it)
     volatile i64 frames, dups; // -progress totals: frames written, and how many of them were repeats
+    volatile i64 progress_tick; // GetTickCount64 of the last -progress line: ffmpeg is still running its loop
 };
 
 // A -progress line ("frame=123", "dup_frames=4", "progress=continue"): a lower-case key, '=', no spaces.
@@ -595,6 +597,7 @@ static DWORD WINAPI stderr_thread(void *arg)
             continue;
         }
         if (rec_progress_line(line)) {
+            r->progress_tick = (i64)GetTickCount64();
             if (starts_with(line, "frame=")) r->frames = _atoi64(line + 6);
             else if (starts_with(line, "dup_frames=")) r->dups = _atoi64(line + 11);
             continue;
@@ -754,12 +757,12 @@ static DWORD WINAPI recorder_thread(void *)
         g_reader.run_dir = run_dir;
         g_reader.log = path_join(s.local_dir, L"ffmpeg-video.log");
         g_reader.segment_tick = 0;
-        g_reader.frames = g_reader.dups = 0;
+        g_reader.frames = g_reader.dups = g_reader.progress_tick = 0;
         HANDLE reader = thread_start(stderr_thread, &g_reader);
 
         u64 started = GetTickCount64();
         bool announced = false;
-        bool frozen = false;
+        bool frozen = false, idle = false, renewed = false;
         u64 window_tick = started;
         i64 window_frames = 0, window_dups = 0;
         i32 code = -1;
@@ -786,7 +789,22 @@ static DWORD WINAPI recorder_thread(void *)
             // error in an external library"). No new segment for 15 s (they come every 2 s) means it's stuck.
             i64 last_seg = g_reader.segment_tick;
             u64 since = last_seg ? (u64)last_seg : started;
-            if (GetTickCount64() - since > 15000) {
+            // Windows Graphics Capture on a screen that isn't changing writes nothing either. That's an idle screen,
+            // not a stuck ffmpeg, when ffmpeg still reports progress, no game is played and nobody has touched the
+            // mouse or keyboard since the last segment: wait, and the repeats fill the gap once the screen changes.
+            // Up to a minute, so the encoder never has a long stretch of repeats to catch up on.
+            LASTINPUTINFO input = {sizeof input};
+            bool still = wgc && !now.s.game && GetTickCount64() - (u64)g_reader.progress_tick < 3000 &&
+                         GetLastInputInfo(&input) && (i32)(input.dwTime - (DWORD)since) <= 0;
+            u64 quiet = GetTickCount64() - since;
+            if (still && quiet > 15000 && quiet <= 60000) {
+                if (!idle) log_line("screen unchanged: the capture waits for it to change");
+                idle = true;
+            } else if (still && quiet > 60000) {
+                capture_stop(&p); // a fresh capture starts the next stretch with the screen as it is
+                renewed = true;
+                break;
+            } else if (quiet > 15000) {
                 log_line("video capture stalled: no new segment for 15 s (%s); restarting it", g_reader.last);
                 capture_stop(&p);
                 code = 2; // handled like ffmpeg stopping by itself: retry with backoff
@@ -845,7 +863,7 @@ static DWORD WINAPI recorder_thread(void *)
             wgc_fails = 0;
         }
 
-        if (frozen) {
+        if (frozen || renewed) {
             backoff = 2000;
         } else if (code >= 0) {
             // It stopped by itself. Retry soon (unlocking should record again within seconds), backing off while
