@@ -1531,22 +1531,45 @@ static void screen_timeline()
         }
         return to;
     };
-    static i64 grab_off, grab_len, grab_play, grab_in, grab_out;
+    static i64 grab_off, grab_len, grab_play;
     // Close enough to the playhead (where it was when the drag began) on screen to land on it
     auto near_play = [&](i64 t) { return fabsf(tl_x(c, t) - tl_x(c, grab_play)) <= grab; };
-    // Shift on an end: both ends scale around the playhead, the other end moving in proportion, so the playhead
-    // keeps its place relative to the selection (inside it or not). `t` is where the dragged end goes.
-    auto scale_around_play = [&](bool in, i64 t) {
-        f64 a, z;
-        if (!wa_scale((f64)grab_play, (f64)grab_in, (f64)grab_out, in, (f64)t, (f64)b.oldest_us, (f64)b.newest_us,
-                      (f64)TL_SEC, &a, &z))
-            return;
-        tl.sel_in = tl_whole_sec((i64)a);
-        tl.sel_out = tl_whole_sec((i64)z);
-        tl_clamp_selection();
+    // With Shift, an end of the in and out catches the nearest edge that comes close on screen: where the video or a
+    // shown sound track starts or stops (gaps of up to 50 ms don't count), a game's part, a save, a marker, the
+    // buffer's ends, or the playhead (where it was when the drag began).
+    auto snap_edge = [&](i64 t) {
+        f32 best = 10 * s;
+        i64 to = t, w = (i64)(best / c.px_per_us) + 1;
+        auto take = [&](i64 e) {
+            f32 d = fabsf(tl_x(c, e) - tl_x(c, t));
+            if (d <= best) { best = d; to = e; }
+        };
+        for (i32 i = tl_seg_after(b, t - w); i < b.seg_count && b.segs[i].start_us <= t + w; i++) {
+            if (!i || b.segs[i].start_us - b.segs[i - 1].end_us > 50000) take(b.segs[i].start_us);
+            if (i + 1 == b.seg_count || b.segs[i + 1].start_us - b.segs[i].end_us > 50000) take(b.segs[i].end_us);
+        }
+        for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
+            if (tl.stream_row[st] < 0) continue;
+            const AudioStreamInfo &info = b.streams[st];
+            const AudioSeg *sg = b.audio_segs + info.first_seg;
+            auto seg_end = [&](i32 j) { return sg[j].open ? ImMin(now, sg[j].start_us + 12 * TL_SEC) : sg[j].end_us; };
+            for (i32 j = 0; j < info.seg_count; j++) {
+                if (!j || sg[j].start_us - seg_end(j - 1) > 50000) take(sg[j].start_us);
+                if (j + 1 == info.seg_count || sg[j + 1].start_us - seg_end(j) > 50000) take(seg_end(j));
+            }
+        }
+        for (i32 i = 0; i < b.activity_count; i++)
+            if (b.activity[i].exe[0]) {
+                take(b.activity[i].us);
+                take(i + 1 < b.activity_count ? b.activity[i + 1].us : now);
+            }
+        for (i32 i = 0; i < saved_count; i++) { take(saved[i].a); take(saved[i].z); }
+        for (i32 i = 0; i < mark_count; i++) take(marks[i].t_us);
+        take(b.oldest_us);
+        take(b.newest_us);
+        take(grab_play);
+        return to;
     };
-    // Not when the dragged end is on the playhead: there's nothing to scale by
-    bool can_scale = tl.drag == TL_DRAG_IN ? grab_in != grab_play : grab_out != grab_play;
     if (ImGui::IsItemActivated() && b.seg_count) {
         tl.drag_x = io.MousePos.x;
         tl.dragged = false;
@@ -1555,8 +1578,6 @@ static void screen_timeline()
         grab_off = mouse_t - tl.sel_in;
         grab_len = tl.sel_out - tl.sel_in;
         grab_play = tl_playhead();
-        grab_in = tl.sel_in;
-        grab_out = tl.sel_out;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) tl.drag = TL_DRAG_PAN;
         else if (near_in) tl.drag = TL_DRAG_IN;
         else if (near_out) tl.drag = TL_DRAG_OUT;
@@ -1568,7 +1589,7 @@ static void screen_timeline()
         if (tl.drag == TL_DRAG_MARK) tl.playhead_us = marks[mark_hit].t_us;
     }
     // Dragging an end or the band, the playhead follows the start or the end being moved so its frame shows, and goes
-    // back when it's let go. With Shift on an end the playhead stays; the band lands on the playhead when close.
+    // back when it's let go. The band lands on the playhead when close; with Shift an end lands on an edge.
     if (ImGui::IsItemActive() && tl.drag != TL_DRAG_NONE && mouse_ok) {
         if (fabsf(io.MousePos.x - tl.drag_x) > 4 * s) tl.dragged = true;
         bool keep = io.KeyShift;
@@ -1592,19 +1613,16 @@ static void screen_timeline()
             tl.sel_in = to;
             tl.sel_out = to + grab_len;
             tl.playhead_us = tl.sel_in;
-        } else if ((tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT) && keep && can_scale) {
-            scale_around_play(tl.drag == TL_DRAG_IN, mouse_t);
-            tl.playhead_us = grab_play; // back where it was if the drag began without Shift
         } else if (tl.drag == TL_DRAG_IN) {
-            i64 t = keep && near_play(mouse_t) ? tl_playhead() : on_marker(mouse_sec);
+            i64 t = keep ? snap_edge(mouse_t) : on_marker(mouse_sec);
             tl.sel_in = t < tl.sel_out - TL_SEC ? t : tl.sel_out - TL_SEC;
             tl_clamp_selection();
-            if (!keep) tl.playhead_us = tl.sel_in;
+            tl.playhead_us = on_footage(tl.sel_in);
         } else if (tl.drag == TL_DRAG_OUT) {
-            i64 t = keep && near_play(mouse_t) ? tl_playhead() : on_marker(mouse_sec);
+            i64 t = keep ? snap_edge(mouse_t) : on_marker(mouse_sec);
             tl.sel_out = t > tl.sel_in + TL_SEC ? t : tl.sel_in + TL_SEC;
             tl_clamp_selection();
-            if (!keep) tl.playhead_us = on_footage(tl.sel_out);
+            tl.playhead_us = on_footage(tl.sel_out);
         }
     }
     // A double-click on a save plays it from its start, once the button is let go

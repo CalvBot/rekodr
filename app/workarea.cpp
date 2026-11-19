@@ -75,8 +75,8 @@ static void wa_draw_playhead(ImDrawList *dl, f32 x, f32 y_tracks, f32 y_bottom)
     dl->AddTriangleFilled(ImVec2(x - 5 * s, hy - 7 * s), ImVec2(x + 5 * s, hy - 7 * s), ImVec2(x, hy), col);
 }
 
-// Shift on an end of the work area or the selected region: both ends scale around the playhead p, the other end moving in proportion, so
-// the playhead keeps its place relative to them (inside or not). in0 and out0 are the ends as the drag began, t
+// Shift on an end of the work area: both ends scale around the playhead p, the other end moving in proportion, so the
+// playhead keeps its place relative to them (inside or not). in0 and out0 are the ends as the drag began, t
 // where the dragged end goes; neither end leaves [lo, hi] and they stay least apart. False when the dragged end is
 // on the playhead, where there is nothing to scale by.
 static bool wa_scale(f64 p, f64 in0, f64 out0, bool in, f64 t, f64 lo, f64 hi, f64 least, f64 *in_to, f64 *out_to)

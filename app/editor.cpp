@@ -1051,8 +1051,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
 
     // Shift and a drag on the ruler or the picture's strip draws a new in and out, as on the Timeline. On the ruler
     // their ends and the band between are taken hold of; everywhere else a press moves the playhead. Shift on an end
-    // scales both around the playhead (or, if it can't, lands the end on it when close); the band lands on the
-    // playhead when close. Dragging an end or the band shows its frame, and the playhead goes back once it's let go.
+    // lands it on the clip's start or end or the playhead when close; the band lands on the playhead when close. Dragging an end or the band shows its frame, and the playhead goes back once it's let go.
     ImGui::SetCursorScreenPos(ImVec2(bx0, ruler_y));
     ImGui::InvisibleButton("##scrub", ImVec2(bw, ruler_h + video_h), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool scrub_hot = ImGui::IsItemHovered();
@@ -1066,6 +1065,18 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         const f64 least = 0.2;
         static f64 grab_play, grab_in, grab_out, grab_off;
         auto near_play = [&](f64 t) { return fabsf(x_of(t) - x_of(grab_play)) <= grab; };
+        // With Shift, an end catches the nearest edge that comes close on screen: the clip's start or end, or the
+        // playhead (where it was when the drag began)
+        auto snap_edge = [&](f64 t) {
+            f32 best = kit_px(10);
+            f64 to = t;
+            const f64 edges[] = {0.0, dur, grab_play};
+            for (i32 i = 0; i < COUNT(edges); i++) {
+                f32 d = fabsf(x_of(edges[i]) - x_of(t));
+                if (d <= best) { best = d; to = edges[i]; }
+            }
+            return to;
+        };
         auto set = [&](f64 a, f64 z) {
             ed.edit.in_s = a < 0 ? 0 : a;
             ed.edit.out_s = z >= dur - 0.01 ? 0 : z;
@@ -1108,18 +1119,13 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 set(to, to + len);
                 show = to;
             } else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT) {
-                bool in = ed.lane_drag == ED_DRAG_IN;
-                f64 a, z;
-                if (keep && wa_scale(grab_play, grab_in, grab_out, in, mouse_t, 0, dur, least, &a, &z)) {
-                    set(a, z);
-                } else if (in) {
-                    f64 t = keep && near_play(mouse_t) ? grab_play : mouse_t;
+                f64 t = keep ? snap_edge(mouse_t) : mouse_t;
+                if (ed.lane_drag == ED_DRAG_IN) {
                     set(ImMin(t, ed_out() - least), ed_out());
-                    if (!keep) show = ed.edit.in_s;
+                    show = ed.edit.in_s;
                 } else {
-                    f64 t = keep && near_play(mouse_t) ? grab_play : mouse_t;
                     set(ed.edit.in_s, ImMax(t, ed.edit.in_s + least));
-                    if (!keep) show = ed_out();
+                    show = ed_out();
                 }
             }
             if (show >= 0) {
