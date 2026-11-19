@@ -688,6 +688,198 @@ static int lib_sort_cmp(const void *pa, const void *pb)
     return a.mtime_us > b.mtime_us ? -1 : a.mtime_us < b.mtime_us ? 1 : 0;
 }
 
+// Folders: groups of clips, and of sessions, made by hand (each view has its own). A card can be in several.
+// <config_dir>\folders.txt holds a line "folder | <clips or sessions> | <name>" for each folder, in order, and a
+// line "<key in hex> | <clips or sessions> | <folder> | <file name>" for each card in each folder. The key is the
+// card's, as in games.txt, so a rename keeps it; the file name is only there for people reading the file.
+
+static void lib_message(bool error, const char *fmt, ...);
+static void lib_refilter();
+
+static const char *lib_view_word(LibView v) { return v == LIB_SESSIONS ? "sessions" : "clips"; }
+
+static i32 lib_folder_find(LibView v, const char *name)
+{
+    Library &lib = g_app.library;
+    for (i32 i = 0; i < lib.folder_count; i++)
+        if (lib.folders[i].view == v && !strcmp(lib.folders[i].name, name)) return i;
+    return -1;
+}
+
+// Where `key` is in lib.filed, or where it would go.
+static i32 lib_filed_at(u64 key)
+{
+    Library &lib = g_app.library;
+    i32 lo = 0, hi = lib.filed_count;
+    while (lo < hi) {
+        i32 mid = (lo + hi) / 2;
+        if (lib.filed[mid].key < key) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static u64 lib_folder_mask(u64 key)
+{
+    Library &lib = g_app.library;
+    i32 i = lib_filed_at(key);
+    return i < lib.filed_count && lib.filed[i].key == key ? lib.filed[i].folders : 0;
+}
+
+static void lib_folder_mask_set(u64 key, u64 mask)
+{
+    Library &lib = g_app.library;
+    i32 i = lib_filed_at(key);
+    bool has = i < lib.filed_count && lib.filed[i].key == key;
+    if (mask) {
+        if (!has) {
+            if (lib.filed_count == LIB_MAX_ITEMS) return;
+            memmove(&lib.filed[i + 1], &lib.filed[i], (lib.filed_count - i) * sizeof lib.filed[0]);
+            lib.filed_count++;
+            lib.filed[i].key = key;
+        }
+        lib.filed[i].folders = mask;
+    } else if (has) {
+        memmove(&lib.filed[i], &lib.filed[i + 1], (lib.filed_count - i - 1) * sizeof lib.filed[0]);
+        lib.filed_count--;
+    }
+}
+
+static void lib_folders_load()
+{
+    Library &lib = g_app.library;
+    lib.folders_loaded = true;
+    lib.folder_count = 0;
+    lib.filed_count = 0;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"folders.txt").s, L"rb");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        char first[32] = "", view[16] = "", name[64] = "";
+        if (sscanf(line, "%31[^|]| %15[^| \r\n] | %63[^|\r\n]", first, view, name) != 3) continue;
+        LibView v = !strcmp(view, "sessions") ? LIB_SESSIONS : LIB_CLIPS;
+        char *k = trim(first), *n = trim(name);
+        if (!*n) continue;
+        if (!strcmp(k, "folder")) {
+            if (lib.folder_count < LIB_MAX_FOLDERS && lib_folder_find(v, n) < 0) {
+                str_set(lib.folders[lib.folder_count].name, n);
+                lib.folders[lib.folder_count++].view = v;
+            }
+            continue;
+        }
+        unsigned long long key = 0;
+        i32 i = lib_folder_find(v, n);
+        if (sscanf(k, "%llx", &key) == 1 && key && i >= 0) lib_folder_mask_set(key, lib_folder_mask(key) | 1ull << i);
+    }
+    fclose(f);
+    log_line("library: %d folders, %d cards in them", lib.folder_count, lib.filed_count);
+}
+
+static void lib_folders_save()
+{
+    Library &lib = g_app.library;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"folders.txt").s, L"wb");
+    if (!f) {
+        lib_message(true, "Couldn't save the folders");
+        return;
+    }
+    for (i32 i = 0; i < lib.folder_count; i++)
+        fprintf(f, "folder | %s | %s\r\n", lib_view_word(lib.folders[i].view), lib.folders[i].name);
+    for (i32 j = 0; j < lib.filed_count; j++) {
+        const LibFiled &e = lib.filed[j];
+        const char *file = "";
+        for (i32 k = 0; k < lib.item_count; k++)
+            if (lib.items[k].key == e.key) {
+                file = lib.items[k].name;
+                break;
+            }
+        for (i32 i = 0; i < lib.folder_count; i++)
+            if (e.folders >> i & 1)
+                fprintf(f, "%llx | %s | %s | %s\r\n", (unsigned long long)e.key, lib_view_word(lib.folders[i].view),
+                        lib.folders[i].name, file);
+    }
+    fclose(f);
+}
+
+// A folder name as it can be kept: one line, no '|', trimmed.
+static void lib_folder_clean(char (&out)[64], const char *in)
+{
+    char v[64];
+    str_set(v, in);
+    for (char *c = v; *c; c++)
+        if (*c == '|' || *c == '\t' || *c == '\r' || *c == '\n') *c = *c == '|' ? '/' : ' ';
+    str_set(out, trim(v));
+}
+
+// Makes a folder in this view called `base`, or "base 2", "base 3"... when that's taken. Its index, or -1.
+static i32 lib_folder_new(const char *base)
+{
+    Library &lib = g_app.library;
+    if (lib.folder_count == LIB_MAX_FOLDERS) {
+        lib_message(true, "That's as many folders as there can be");
+        return -1;
+    }
+    char name[64];
+    str_set(name, base);
+    for (i32 n = 2; lib_folder_find(lib.view, name) >= 0; n++) snprintf(name, sizeof name, "%s %d", base, n);
+    i32 i = lib.folder_count++;
+    str_set(lib.folders[i].name, name);
+    lib.folders[i].view = lib.view;
+    log_line("library: folder %s made in %s", name, lib_view_word(lib.view));
+    lib_folders_save();
+    lib_refilter();
+    return i;
+}
+
+static void lib_folder_rename(i32 i, const char *to)
+{
+    Library &lib = g_app.library;
+    LibFolder &fo = lib.folders[i];
+    char n[64];
+    lib_folder_clean(n, to);
+    if (!*n || !strcmp(n, fo.name)) return;
+    if (lib_folder_find(fo.view, n) >= 0) {
+        lib_message(true, "There's already a folder called %s", n);
+        return;
+    }
+    if (fo.view == lib.view && !strcmp(lib.folder, fo.name)) str_set(lib.folder, n);
+    log_line("library: folder %s is now %s", fo.name, n);
+    str_set(fo.name, n);
+    lib_folders_save();
+    lib_refilter();
+}
+
+// Deletes a folder; its cards stay where they are.
+static void lib_folder_delete(i32 i)
+{
+    Library &lib = g_app.library;
+    LibFolder &fo = lib.folders[i];
+    if (fo.view == lib.view && !strcmp(lib.folder, fo.name)) lib.folder[0] = 0;
+    lib_message(false, "Deleted the folder %s", fo.name);
+    memmove(&lib.folders[i], &lib.folders[i + 1], (lib.folder_count - i - 1) * sizeof lib.folders[0]);
+    lib.folder_count--;
+    u64 low = (1ull << i) - 1;
+    for (i32 j = lib.filed_count - 1; j >= 0; j--) {
+        u64 m = lib.filed[j].folders;
+        lib_folder_mask_set(lib.filed[j].key, (m & low) | (m >> 1 & ~low));
+    }
+    lib_folders_save();
+    lib_refilter();
+}
+
+// Puts a card in folder i, or takes it out.
+static void lib_folder_put(const LibItem &it, i32 i, bool in)
+{
+    Library &lib = g_app.library;
+    u64 m = lib_folder_mask(it.key), b = 1ull << i;
+    if (((m & b) != 0) == in) return;
+    lib_folder_mask_set(it.key, in ? m | b : m & ~b);
+    if (in) lib_message(false, "Added %s to %s", it.name, lib.folders[i].name);
+    else lib_message(false, "Took %s out of %s", it.name, lib.folders[i].name);
+    lib_folders_save();
+    lib_refilter();
+}
+
 // The view's game chips and the cards that match the date range, the chip and the search, in the chosen order.
 static void lib_refilter()
 {
@@ -697,12 +889,19 @@ static void lib_refilter()
     lib.range_count = 0;
     lib.shown_count = 0;
     i32 desktop = 0, other = 0;
+    for (i32 f = 0; f < lib.folder_count; f++) lib.folder_items[f] = 0;
+    i32 in_folder = lib.folder[0] ? lib_folder_find(lib.view, lib.folder) : -1;
+    if (in_folder < 0) lib.folder[0] = 0;
+    bool by_folder = g_app.config.side_folders;
     for (i32 i = 0; i < lib.item_count; i++) {
         const LibItem &it = lib.items[i];
         if (it.kind != lib.view) continue;
         lib.view_count++;
         if (!lib_in_range(it.mtime_us)) continue;
         lib.range_count++;
+        u64 fm = lib_folder_mask(it.key);
+        for (i32 f = 0; f < LIB_MAX_FOLDERS && fm >> f; f++)
+            if (fm >> f & 1) lib.folder_items[f]++;
         const char *g = it.info.game;
         if (!strcmp(g, "Desktop")) desktop++;
         else if (!strcmp(g, "Other")) other++;
@@ -716,7 +915,8 @@ static void lib_refilter()
             }
             if (k < lib.game_count) lib.game_items[k]++;
         }
-        if (lib.game[0] && strcmp(lib.game, g)) continue;
+        // The list on the left picks by folder or by game, whichever it shows.
+        if (by_folder ? in_folder >= 0 && !(fm >> in_folder & 1) : lib.game[0] && strcmp(lib.game, g)) continue;
         if (!lib_matches(it.name, lib.search) && !lib_matches(g, lib.search)) continue;
         lib.shown[lib.shown_count++] = i;
     }
@@ -1170,7 +1370,8 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
 
 // A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
 // many it has on the right. The picked one is in the accent colour. Collapsed, only the icon, where it was.
-static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w, bool collapsed)
+static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w, bool collapsed,
+                          const char *glyph = 0)
 {
     f32 h = kit_px(30), is = kit_px(20);
     ImVec2 a = ImGui::GetCursorScreenPos();
@@ -1196,13 +1397,14 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
                     col32(COL_DIM), letter);
     } else {
         ImGui::PushFont(g_font_icon);
-        ImVec2 gs = ImGui::CalcTextSize(ICON_APPS);
-        dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), ICON_APPS);
+        const char *ic = glyph ? glyph : ICON_APPS;
+        ImVec2 gs = ImGui::CalcTextSize(ic);
+        dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), ic);
         ImGui::PopFont();
     }
     if (collapsed) return clicked;
-    char n[16];
-    snprintf(n, sizeof n, "%d", count);
+    char n[16] = "";
+    if (count >= 0) snprintf(n, sizeof n, "%d", count);
     ImVec2 ts = ImGui::CalcTextSize(label), ns = ImGui::CalcTextSize(n);
     f32 ty = floorf(a.y + (h - ts.y) / 2), nx = a.x + w - kit_px(10) - ns.x;
     dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(nx - kit_px(10), a.y + h), true);
@@ -1268,6 +1470,7 @@ static void library_play(const LibItem &it, f64 from)
 }
 
 static void lib_rename_start(const LibItem &it, bool comment = false);
+static void lib_folder_rename_start(i32 i);
 
 // After the screen is drawn: the card preview gets its next frame, and stops once no card has the mouse.
 static void library_hover_end_frame()
@@ -1283,7 +1486,7 @@ static void library_hover_end_frame()
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, comment = false, del = false;
+    bool rename = false, comment = false, del = false, folders = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -1297,6 +1500,7 @@ static void card_menu()
         }
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
+        if (lib_menu_item(ICON_ADD, "Add to a folder")) folders = true;
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
         if (lib_menu_item(ICON_CHAT, it.comment[0] ? "Change the comment" : "Add a comment")) comment = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
@@ -1306,6 +1510,33 @@ static void card_menu()
     if (rename) lib_rename_start(lib.target);
     if (comment) lib_rename_start(lib.target, true);
     if (del) ImGui::OpenPopup("Delete");
+    // The card's folders, ticked when it's in one: a click puts it in or takes it out. New folder makes one with
+    // it in and names it in the list.
+    if (folders) ImGui::OpenPopup("card_folders");
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("card_folders")) {
+        const LibItem &it = lib.target;
+        u64 m = lib_folder_mask(it.key);
+        i32 n = 0;
+        for (i32 i = 0; i < lib.folder_count; i++) {
+            if (lib.folders[i].view != it.kind) continue;
+            n++;
+            bool in = m >> i & 1;
+            ImGui::PushID(i);
+            if (lib_menu_item(in ? ICON_CHECK : "", lib.folders[i].name)) lib_folder_put(it, i, !in);
+            ImGui::PopID();
+        }
+        if (n) ImGui::Separator();
+        if (lib_menu_item(ICON_ADD, "New folder")) {
+            i32 i = lib_folder_new("New folder");
+            if (i >= 0) {
+                lib_folder_put(it, i, true);
+                lib_folder_rename_start(i);
+            }
+        }
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
 }
 
 // The buttons at the bottom right of a dialog: Cancel, then the action. 1 = the action, -1 = Cancel.
@@ -1441,13 +1672,22 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ImGui::SetCursorScreenPos(t0);
     ImGui::PushID((const void *)(uintptr_t)it.key);
     bool renaming = lib.rename_key == it.key;
-    ImGui::InvisibleButton("card", ImVec2(w, renaming ? thumb_h : thumb_h + meta_h));
+    bool pressed = ImGui::InvisibleButton("card", ImVec2(w, renaming ? thumb_h : thumb_h + meta_h));
     if (ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_F2, false) && !renaming) lib_rename_start(it);
-    bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    // A click plays it; a drag carries it to a folder in the list on the left.
+    ImGuiIO &io = ImGui::GetIO();
+    bool clicked = pressed && io.MouseDragMaxDistanceSqr[0] < io.MouseDragThreshold * io.MouseDragThreshold;
     bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-    bool over = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(t0, ImVec2(t1.x, t1.y + meta_h));
+    bool over = ImGui::IsWindowHovered() && !ImGui::GetDragDropPayload() &&
+                ImGui::IsMouseHoveringRect(t0, ImVec2(t1.x, t1.y + meta_h));
     f32 round = kit_px(10);
     LibThumb *th = lib_thumb(it);
+    if (!renaming && ImGui::BeginDragDropSource()) {
+        ImGui::SetDragDropPayload("LIB_CARD", &it.key, sizeof it.key);
+        if (th && th->srv) ImGui::Image((ImTextureID)(intptr_t)th->srv, ImVec2(kit_px(112), kit_px(63)));
+        ImGui::TextUnformatted(it.comment[0] ? it.comment : it.name);
+        ImGui::EndDragDropSource();
+    }
     f32 frac = -1;
     if (over) {
         frac = (ImGui::GetIO().MousePos.x - t0.x) / w;
@@ -1810,6 +2050,8 @@ static void lib_set_view(LibView v)
     if (lib.view == v) return;
     lib.view = v;
     lib.game[0] = 0;
+    lib.folder[0] = 0;
+    lib.folder_renaming = 0;
     lib.scroll = lib.scroll_to = 0;
     lib_refilter();
 }
@@ -2157,10 +2399,185 @@ static bool lib_unsaved_row(f32 full_w)
     return true;
 }
 
+// The Games / Folders switch at the top of the list on the left. Collapsed, it's one icon (what the list shows)
+// where the rows' icons are; a click shows the other. True when it's flipped.
+static bool lib_side_toggle(f32 w, bool collapsed)
+{
+    bool folders = g_app.config.side_folders, flip = false;
+    f32 h = kit_px(30), is = kit_px(20);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (collapsed) {
+        flip = ImGui::InvisibleButton("##sidemode", ImVec2(w, h));
+        bool hot = ImGui::IsItemHovered();
+        kit_tip(folders ? "Show the games" : "Show the folders");
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? COL_PANEL2 : COL_BG), kit_px(7));
+        const char *ic = folders ? ICON_FOLDER : ICON_GAME;
+        ImGui::PushFont(g_font_icon);
+        ImVec2 gs = ImGui::CalcTextSize(ic);
+        dl->AddText(ImVec2(floorf(a.x + kit_px(8) + (is - gs.x) / 2), floorf(a.y + (h - gs.y) / 2)), col32(hot ? COL_TEXT : COL_DIM), ic);
+        ImGui::PopFont();
+    } else {
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_BG), kit_px(7));
+        for (i32 s = 0; s < 2; s++) {
+            ImVec2 p(a.x + floorf(s * w / 2), a.y), q(a.x + floorf((s + 1) * w / 2), a.y + h);
+            ImGui::SetCursorScreenPos(p);
+            ImGui::PushID(s);
+            bool hit = ImGui::InvisibleButton("##sidemode", ImVec2(q.x - p.x, h));
+            bool hot = ImGui::IsItemHovered();
+            ImGui::PopID();
+            bool on = (s == 1) == folders;
+            if (hit && !on) flip = true;
+            if (on || hot) dl->AddRectFilled(ImVec2(p.x + kit_px(2), p.y + kit_px(2)), ImVec2(q.x - kit_px(2), q.y - kit_px(2)),
+                                             col32(on ? COL_HOVER : COL_PANEL2), kit_px(6));
+            const char *label = s ? ICON_FOLDER "  Folders" : ICON_GAME "  Games";
+            ImFont *font = on ? g_font_bold : g_font;
+            ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, label);
+            dl->AddText(font, font->FontSize, ImVec2(floorf((p.x + q.x - ts.x) / 2), floorf(a.y + (h - ts.y) / 2)),
+                        col32(on || hot ? COL_TEXT : COL_DIM), label);
+        }
+    }
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + kit_px(6)));
+    return flip;
+}
+
+// Starts editing folder i's name in the list (showing the folders, not collapsed).
+static void lib_folder_rename_start(i32 i)
+{
+    Library &lib = g_app.library;
+    Config &c = g_app.config;
+    if (!c.side_folders || c.games_collapsed) {
+        c.side_folders = true;
+        c.games_collapsed = false;
+        config_save(c, g_app.paths);
+        lib_refilter();
+    }
+    lib.folder_renaming = i + 1;
+    str_set(lib.folder_buf, lib.folders[i].name);
+    lib.folder_focus = true;
+}
+
+// A folder's row while its name is edited: the icon, then the field. Enter or a click away keeps the name; Esc
+// leaves it as it was.
+static void lib_folder_name_field(i32 i, f32 w)
+{
+    Library &lib = g_app.library;
+    f32 h = kit_px(30), is = kit_px(20);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(a.x + kit_px(2), a.y + kit_px(2)), ImVec2(a.x + w - kit_px(2), a.y + h - kit_px(2)), col32(COL_HOVER), kit_px(6));
+    ImGui::PushFont(g_font_icon);
+    ImVec2 gs = ImGui::CalcTextSize(ICON_FOLDER);
+    dl->AddText(ImVec2(floorf(a.x + kit_px(8) + (is - gs.x) / 2), floorf(a.y + (h - gs.y) / 2)), col32(COL_DIM), ICON_FOLDER);
+    ImGui::PopFont();
+    f32 tx = a.x + kit_px(8) + is + kit_px(6), fy = kit_px(3);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(4), fy));
+    ImGui::SetCursorScreenPos(ImVec2(tx, floorf(a.y + (h - ImGui::GetFontSize() - 2 * fy) / 2)));
+    ImGui::SetNextItemWidth(a.x + w - kit_px(6) - tx);
+    if (lib.folder_focus) {
+        ImGui::SetKeyboardFocusHere();
+        lib.folder_focus = false;
+    }
+    bool enter = ImGui::InputText("##foldername", lib.folder_buf, sizeof lib.folder_buf,
+                                  ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    bool gone = ImGui::IsItemDeactivated();
+    ImGui::PopStyleVar();
+    if (enter || gone) {
+        lib.folder_renaming = 0;
+        lib_folder_rename(i, lib.folder_buf);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + kit_px(2)));
+}
+
+// The folders of this view: all its cards, then each folder with how many it has, then New folder. A card dropped
+// on a folder goes into it; right-click renames or deletes one.
+static void lib_folder_list(f32 w, bool collapsed)
+{
+    Library &lib = g_app.library;
+    i32 pick = -2;
+    bool menu = false, add = false;
+    ImGui::PushID("folders");
+    if (lib_game_item(0, lib.view == LIB_CLIPS ? "All clips" : "All sessions", lib.range_count, !lib.folder[0], w, collapsed))
+        pick = -1;
+    for (i32 i = 0; i < lib.folder_count; i++) {
+        LibFolder &fo = lib.folders[i];
+        if (fo.view != lib.view) continue;
+        ImGui::PushID(i);
+        if (lib.folder_renaming == i + 1 && !collapsed) lib_folder_name_field(i, w);
+        else {
+            if (lib_game_item(0, fo.name, lib.folder_items[i], lib.folder[0] && !strcmp(lib.folder, fo.name), w, collapsed,
+                              ICON_FOLDER))
+                pick = i;
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                lib.folder_target = i;
+                menu = true;
+            }
+            if (ImGui::BeginDragDropTarget()) {
+                const ImGuiPayload *pl = ImGui::AcceptDragDropPayload(
+                    "LIB_CARD", ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+                if (pl) {
+                    ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+                    ImGui::GetWindowDrawList()->AddRect(ImVec2(r0.x + kit_px(2), r0.y + kit_px(2)), ImVec2(r1.x - kit_px(2), r1.y - kit_px(2)),
+                                                        col32(COL_ACCENT), kit_px(6), 0, kit_px(1.5f));
+                    if (pl->IsDelivery()) {
+                        u64 key;
+                        memcpy(&key, pl->Data, sizeof key);
+                        for (i32 k = 0; k < lib.item_count; k++)
+                            if (lib.items[k].key == key) {
+                                lib_folder_put(lib.items[k], i, true);
+                                break;
+                            }
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+        }
+        ImGui::PopID();
+    }
+    if (lib_game_item(0, "New folder", -1, false, w, collapsed, ICON_ADD)) add = true;
+    if (add) {
+        i32 i = lib_folder_new("New folder");
+        if (i >= 0) lib_folder_rename_start(i);
+    }
+    if (menu) ImGui::OpenPopup("folder_menu");
+    bool rename = false, del = false;
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("folder_menu")) {
+        if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
+        if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+    if (rename) lib_folder_rename_start(lib.folder_target);
+    if (del) ImGui::OpenPopup("Delete folder");
+    if (lib_dialog_begin("Delete folder")) {
+        kit_heading("Delete the folder?");
+        ImGui::PushFont(g_font_bold);
+        ImGui::TextUnformatted(lib.folders[lib.folder_target].name);
+        ImGui::PopFont();
+        kit_dim(lib.view == LIB_CLIPS ? "The clips in it stay where they are." : "The sessions in it stay where they are.");
+        i32 b = lib_dialog_buttons(ICON_DELETE "  Delete", KIT_DANGER);
+        if (b == 1) lib_folder_delete(lib.folder_target);
+        if (b != 0 || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    if (pick != -2) {
+        if (pick == -1) lib.folder[0] = 0;
+        else str_set(lib.folder, lib.folders[pick].name);
+        lib.scroll = lib.scroll_to = 0;
+        lib_refilter();
+    }
+    ImGui::PopID();
+}
+
 static void screen_library()
 {
     Library &lib = g_app.library;
     if (!lib.scanned && !lib.scanning) library_rescan();
+    if (!lib.folders_loaded) {
+        lib_folders_load();
+        lib_refilter();
+    }
     if (lib.player.open) {
         lib_player_view();
         return;
@@ -2250,9 +2667,10 @@ static void screen_library()
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
 
-    // The games down the left: all of them, then each game in this view with how many it has, most recent first.
-    // It scrolls on its own when there are more than fit. It is as wide as the Clips and Sessions toggle over it.
-    // The round button on the middle of its right edge collapses it to a rail of icons, which stay where they were.
+    // The list down the left, as wide as the Clips and Sessions toggle over it: a Games / Folders switch, then all
+    // of them and each game in this view with how many it has, most recent first, or this view's folders. It
+    // scrolls on its own when there are more than fit. The round button on the middle of its right edge collapses
+    // it to a rail of icons, which stay where they were.
     {
         bool &collapsed = g_app.config.games_collapsed;
         f32 icon_end = kit_px(6 + 8 + 20); // a row's icon ends this far in from the list's left
@@ -2261,8 +2679,17 @@ static void screen_library()
         dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL), kit_px(10));
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + kit_px(6)));
         ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12)), 0, ImGuiWindowFlags_NoBackground);
+        bool &by_folder = g_app.config.side_folders;
+        if (lib_side_toggle(side_w - kit_px(12), collapsed)) {
+            by_folder = !by_folder;
+            lib.folder_renaming = 0;
+            config_save(g_app.config, g_app.paths);
+            lib.scroll = lib.scroll_to = 0;
+            lib_refilter();
+        }
         i32 pick = -1;
-        for (i32 c = 0; c <= lib.game_count; c++) {
+        if (by_folder) lib_folder_list(side_w - kit_px(12), collapsed);
+        else for (i32 c = 0; c <= lib.game_count; c++) {
             const char *name = c == 0 ? "All games" : lib.games[c - 1];
             bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
             ImGui::PushID(c);
@@ -2281,7 +2708,7 @@ static void screen_library()
             ImVec2 b0 = ImGui::GetCursorScreenPos();
             bool hit = ImGui::InvisibleButton("##games_collapse", ImVec2(bs, bs));
             bool hot = ImGui::IsItemHovered();
-            kit_tip(collapsed ? "Show the games list" : "Collapse the games list");
+            kit_tip(collapsed ? "Show the list" : "Collapse the list");
             ImDrawList *bdl = ImGui::GetWindowDrawList();
             ImVec2 c(b0.x + bs / 2, b0.y + bs / 2);
             bdl->AddCircleFilled(c, bs / 2, col32(hot ? COL_HOVER : COL_PANEL2));
@@ -2294,7 +2721,7 @@ static void screen_library()
             if (hit) {
                 collapsed = !collapsed;
                 config_save(g_app.config, g_app.paths);
-                log_line("library: games list %s", collapsed ? "collapsed" : "shown");
+                log_line("library: the list on the left %s", collapsed ? "collapsed" : "shown");
             }
         }
         if (pick >= 0) {
@@ -2397,6 +2824,7 @@ static void screen_library()
         const char *msg = !lib.scanned ? "Looking for saved files..."
                           : lib.view_count == 0 ? (lib.view == LIB_CLIPS ? "No clips yet" : "No sessions yet")
                           : lib.range_count == 0 ? "Nothing in this time"
+                          : g_app.config.side_folders && lib.folder[0] && !lib.search[0] ? "Nothing in this folder"
                                                  : "Nothing matches";
         f32 cy = floorf(g0.y + grid_h * 0.38f);
         ImGui::PushFont(g_font_title);

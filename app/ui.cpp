@@ -970,6 +970,8 @@ static void help_window()
             {"Point at a thumbnail", "Scrub through it; click to play from there"},
             {"Right-click a card", "Edit, rename, delete and more"},
             {"[F2]", "Rename the card under the mouse"},
+            {"Drag a card onto a folder", "Add it to the folder"},
+            {"Right-click a folder", "Rename or delete it"},
         };
         static const HelpRow player[] = {
             {"[Space]", "Play / pause"},

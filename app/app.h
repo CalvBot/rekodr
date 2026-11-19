@@ -132,6 +132,7 @@ struct Config {
     i32 accent;     // index into ACCENTS (ui.cpp)
     bool games_collapsed; // Library: the games list as a rail of icons
     bool unsaved_collapsed; // Library: the unsaved sessions row folded to its heading
+    bool side_folders;      // Library: the list on the left shows folders, not games
     i32 card_width; // Library cards: about how wide, in pixels at 100% (Ctrl + wheel over the grid changes it)
     f32 timeline_top;   // Timeline: the share of its height above the tracks (the splitter); 0 = the default
     i32 timeline_names; // Timeline: the track names' column, in pixels at 100% (its edge is dragged); 0 = the default
@@ -430,7 +431,7 @@ struct Player {
 };
 
 enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS };
-enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 160 };
+enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 160, LIB_MAX_FOLDERS = 64 };
 
 struct LibItem {
     char      name[256]; // file name without the extension (UTF-8)
@@ -443,6 +444,16 @@ struct LibItem {
     u64       key;       // thumbnail cache key; changes when the file does, not when it's renamed
     MediaInfo info;
     char      comment[128]; // typed by hand (comments.txt); shown as its title
+};
+
+struct LibFolder {
+    char    name[64];
+    LibView view; // Clips and Sessions each have their own folders
+};
+
+struct LibFiled {
+    u64 key;     // the card's (LibItem.key)
+    u64 folders; // the folders it's in, one bit each (Library.folders' indices)
 };
 
 struct LibThumb {
@@ -459,6 +470,17 @@ struct Library {
     bool     open_menu;            // a card asked for its menu (opened outside the grid's own window)
     char     search[128];
     char     game[64];             // the game chip picked; empty = all
+    char     folder[64];           // the folder picked (in this view); empty = all
+    LibFolder folders[LIB_MAX_FOLDERS]; // both views' folders, in the order they were made
+    i32      folder_count;
+    i32      folder_items[LIB_MAX_FOLDERS]; // this view's cards in each, in the date range
+    LibFiled filed[LIB_MAX_ITEMS]; // the cards that are in folders, in key order
+    i32      filed_count;
+    bool     folders_loaded;
+    i32      folder_renaming;      // the folder whose name is being edited in the list, index + 1; 0 = none
+    bool     folder_focus;         // give its name field the keyboard next frame
+    char     folder_buf[64];
+    i32      folder_target;        // the folder a menu or Delete is about
     i32      range;                // LibRange (library.cpp): all, today, this week, this month, custom
     i64      range_from, range_to; // the custom range, in local days (local_day)
     i32      sort;                 // LibSort: newest, oldest, longest, biggest
