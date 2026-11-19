@@ -5,17 +5,18 @@
 // test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
 //
 // Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
-// Clip saved: Edit and Share open the file in the editor on that tab. It goes after 6 s unless the mouse is on it.
+// Both go after 5 s, counted down by a dial in the top-right corner. While the mouse is on one the count holds at
+// full, and starts again from full when the mouse leaves.
+// Clip saved: Edit and Share open the file in the editor on that tab.
 // Session ended: the game's icon, its name and length. Save saves it; Review opens it on the timeline, or the
-// Library's unsaved sessions when several are waiting. It goes after 15 s unless the mouse is on it; closed or
-// ignored, the sessions it asked about are unsaved.
+// Library's unsaved sessions when several are waiting. Closed or ignored, the sessions it asked about are unsaved.
 // The marker window takes the keyboard, and gives it back to the window that had it. Enter or Save keeps what was
 // typed, as does clicking away; Escape leaves the marker plain. Tab steps through the colours.
 
 enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
 // The parts a click lands on: the buttons counted from the right, then the marker's colours (TP_COLOUR + 1..6)
 enum { TP_NONE, TP_MAIN, TP_SECOND, TP_COLOUR = 10 };
-enum { TR_TILE = -1, TR_FIELD = -2 }; // more rectangles, for drawing
+enum { TR_TILE = -1, TR_FIELD = -2, TR_DIAL = -3 }; // more rectangles, for drawing
 
 struct Toast {
     ToastKind kind;
@@ -30,19 +31,39 @@ struct Toast {
     i32       tile_w, tile_h;
     u8        colour;
     i32       hot;                // the part under the mouse
-    bool      open, tracking;
+    bool      open, tracking, held; // held: the mouse is on it, so the countdown waits
+    u64       start_ms;           // the countdown's start (GetTickCount64)
+    HBITMAP   base;               // the toast drawn without its dial, base_w x base_h; redrawn when dirty
+    i32       base_w, base_h;
+    bool      dirty;
     f32       scale;              // the fonts were made for this
     HFONT     font, strong, title_font, icons;
     HBRUSH    field;
 };
 static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
-static const UINT_PTR TOAST_TIMER = 1;
-static const UINT     TOAST_SAVED_MS = 6000, TOAST_SESSION_MS = 15000;
+static const UINT_PTR TOAST_TICK = 1;
+static const UINT     TOAST_LIFE_MS = 5000, TOAST_TICK_MS = 33; // the dial moves at 30 fps
+static const f32      TOAST_DIAL = 14, TOAST_DIAL_RING = 2;
 
 // Clip saved and Session ended leave the keyboard where it is; the marker window takes it.
 static bool toast_quiet(const Toast &t) { return t.kind != TOAST_MARKER; }
 
 static void toast_session_close(i32 part);
+
+// The whole toast is drawn again on its next paint (a part changed); the countdown's ticks only redraw the dial.
+static void toast_redraw(Toast &t)
+{
+    t.dirty = true;
+    InvalidateRect(t.hwnd, 0, FALSE);
+}
+
+// A toast that goes by itself starts its countdown
+static void toast_countdown(Toast &t)
+{
+    t.start_ms = GetTickCount64();
+    t.held = false;
+    SetTimer(t.hwnd, TOAST_TICK, TOAST_TICK_MS, 0);
+}
 
 static COLORREF toast_rgb(u32 c) { return RGB((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff); }
 static i32 toast_px(const Toast &t, f32 v) { return (i32)(v * t.scale + 0.5f); }
@@ -60,6 +81,10 @@ static RECT toast_rect(const Toast &t, i32 part)
     i32 bw = toast_px(t, TOAST_BUTTON_W), bh = toast_px(t, TOAST_BUTTON_H), gap = toast_px(t, TOAST_BUTTON_GAP);
     i32 row = toast_px(t, toast_height(t.kind) - TOAST_PAD - TOAST_BUTTON_H);
     if (part == TR_TILE) return {pad, pad, pad + tile, pad + tile};
+    if (part == TR_DIAL) {
+        i32 d = toast_px(t, TOAST_DIAL), y = toast_px(t, TOAST_PAD - 4);
+        return {w - toast_px(t, TOAST_PAD - 4) - d, y, w - toast_px(t, TOAST_PAD - 4), y + d};
+    }
     if (part == TR_FIELD) {
         i32 y = toast_px(t, TOAST_PAD + TOAST_TILE + TOAST_GAP);
         return {pad, y, w - pad, y + toast_px(t, TOAST_FIELD_H)};
@@ -93,7 +118,7 @@ static void toast_hide(Toast &t)
 {
     t.open = false;
     if (!t.hwnd) return;
-    KillTimer(t.hwnd, TOAST_TIMER);
+    KillTimer(t.hwnd, TOAST_TICK);
     ShowWindow(t.hwnd, SW_HIDE);
 }
 
@@ -115,18 +140,17 @@ static void toast_marker_close(bool keep)
     if (t.before && IsWindow(t.before)) SetForegroundWindow(t.before);
 }
 
-// Shapes are drawn four times the size and scaled down, which smooths their edges (GDI's own are jagged); the
-// text and the icons go on afterwards at their real size.
-static void toast_paint(Toast &t)
+// Shapes are drawn four times the size and scaled down, which smooths their edges (GDI's own are jagged).
+static const i32 TOAST_SS = 4;
+
+// The toast without its dial, into dc (r, the client size): the shapes first, then the text and the icons at their
+// real size.
+static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
 {
-    const i32 SS = 4;
-    PAINTSTRUCT ps;
-    HDC wdc = BeginPaint(t.hwnd, &ps);
-    RECT r;
-    GetClientRect(t.hwnd, &r);
-    HDC big = CreateCompatibleDC(wdc), dc = CreateCompatibleDC(wdc);
-    HBITMAP big_bmp = CreateCompatibleBitmap(wdc, r.right * SS, r.bottom * SS), bmp = CreateCompatibleBitmap(wdc, r.right, r.bottom);
-    HGDIOBJ old_big = SelectObject(big, big_bmp), old_bmp = SelectObject(dc, bmp);
+    const i32 SS = TOAST_SS;
+    HDC big = CreateCompatibleDC(wdc);
+    HBITMAP big_bmp = CreateCompatibleBitmap(wdc, r.right * SS, r.bottom * SS);
+    HGDIOBJ old_big = SelectObject(big, big_bmp);
     auto up = [&](RECT q) { return RECT{q.left * SS, q.top * SS, q.right * SS, q.bottom * SS}; };
     auto brush = [&](u32 rgb) { DeleteObject(SelectObject(big, CreateSolidBrush(toast_rgb(rgb)))); };
     auto rounded = [&](i32 part, f32 radius) {
@@ -199,7 +223,8 @@ static void toast_paint(Toast &t)
     if (!(session && t.tile_px)) DrawTextW(dc, glyph, 1, &tile, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // The title over its line, centred on the tile
-    i32 tx = tile.right + toast_px(t, TOAST_GAP), right = r.right - toast_px(t, TOAST_PAD), mid = (tile.top + tile.bottom) / 2;
+    i32 tx = tile.right + toast_px(t, TOAST_GAP), mid = (tile.top + tile.bottom) / 2;
+    i32 right = quiet ? toast_rect(t, TR_DIAL).left - toast_px(t, 6) : r.right - toast_px(t, TOAST_PAD);
     SelectObject(dc, t.title_font);
     SetTextColor(dc, toast_rgb(COL_TEXT));
     RECT t1 = {tx, tile.top - toast_px(t, 4), right, mid + toast_px(t, 1)};
@@ -220,13 +245,86 @@ static void toast_paint(Toast &t)
         DrawTextW(dc, saved ? L"Edit" : L"Review", -1, &second, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     SelectObject(dc, old_font);
+    SelectObject(big, old_big);
+    DeleteObject(big_bmp);
+    DeleteDC(big);
+}
 
-    BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+// The countdown dial onto wdc: a thin ring in the accent that empties clockwise from the top over the toast's
+// life, full while the mouse is on it.
+static void toast_draw_dial(Toast &t, HDC wdc)
+{
+    const i32 SS = TOAST_SS;
+    RECT d = toast_rect(t, TR_DIAL);
+    i32 w = d.right - d.left, h = d.bottom - d.top, W = w * SS, H = h * SS;
+    f32 left = t.held ? 1 : 1 - (f32)(GetTickCount64() - t.start_ms) / TOAST_LIFE_MS;
+    left = left < 0 ? 0 : left;
+    HDC big = CreateCompatibleDC(wdc), dc = CreateCompatibleDC(wdc);
+    HBITMAP big_bmp = CreateCompatibleBitmap(wdc, W, H), bmp = CreateCompatibleBitmap(wdc, w, h);
+    HGDIOBJ old_big = SelectObject(big, big_bmp), old_bmp = SelectObject(dc, bmp);
+    RECT all = {0, 0, W, H};
+    HBRUSH bg = CreateSolidBrush(toast_rgb(COL_PANEL));
+    FillRect(big, &all, bg);
+    DeleteObject(bg);
+    HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
+    HGDIOBJ old_brush = SelectObject(big, CreateSolidBrush(toast_rgb(COL_PANEL2)));
+    auto brush = [&](u32 rgb) { DeleteObject(SelectObject(big, CreateSolidBrush(toast_rgb(rgb)))); };
+    Ellipse(big, 0, 0, W + 1, H + 1); // the track
+    brush(COL_ACCENT);
+    if (left >= 0.999f) Ellipse(big, 0, 0, W + 1, H + 1);
+    else if (left > 0) { // a pie from the top round to where the time left ends (GDI's pies run anticlockwise)
+        f32 a = 3.14159265f * (0.5f - 2 * left), cx = W / 2.f, cy = H / 2.f;
+        Pie(big, 0, 0, W + 1, H + 1, (i32)(cx + cx * cosf(a)), (i32)(cy - cy * sinf(a)), (i32)cx, 0);
+    }
+    brush(COL_PANEL); // hollowed out to a ring
+    i32 ring = toast_px(t, TOAST_DIAL_RING) * SS;
+    Ellipse(big, ring, ring, W - ring + 1, H - ring + 1);
+    DeleteObject(SelectObject(big, old_brush));
+    SelectObject(big, old_pen);
+    SetStretchBltMode(dc, HALFTONE);
+    SetBrushOrgEx(dc, 0, 0, 0);
+    StretchBlt(dc, 0, 0, w, h, big, 0, 0, W, H, SRCCOPY);
+    BitBlt(wdc, d.left, d.top, w, h, dc, 0, 0, SRCCOPY);
     SelectObject(big, old_big);
     SelectObject(dc, old_bmp);
     DeleteObject(big_bmp);
     DeleteObject(bmp);
     DeleteDC(big);
+    DeleteDC(dc);
+}
+
+// The toast is kept drawn in base, so the dial's ticks only copy it out and draw the dial. Each part reaches the
+// window once, opaque, so nothing flickers.
+static void toast_paint(Toast &t)
+{
+    PAINTSTRUCT ps;
+    HDC wdc = BeginPaint(t.hwnd, &ps);
+    RECT r;
+    GetClientRect(t.hwnd, &r);
+    if (t.base && (t.base_w != r.right || t.base_h != r.bottom)) DeleteObject(t.base), t.base = 0;
+    if (!t.base) {
+        t.base = CreateCompatibleBitmap(wdc, r.right, r.bottom);
+        t.base_w = r.right;
+        t.base_h = r.bottom;
+        t.dirty = true;
+    }
+    HDC dc = CreateCompatibleDC(wdc);
+    HGDIOBJ old_bmp = SelectObject(dc, t.base);
+    if (t.dirty) {
+        toast_draw(t, wdc, dc, r);
+        t.dirty = false;
+    }
+    bool dial = toast_quiet(t);
+    if (dial) {
+        RECT d = toast_rect(t, TR_DIAL);
+        ExcludeClipRect(wdc, d.left, d.top, d.right, d.bottom);
+    }
+    BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+    if (dial) {
+        SelectClipRgn(wdc, 0);
+        toast_draw_dial(t, wdc);
+    }
+    SelectObject(dc, old_bmp);
     DeleteDC(dc);
     EndPaint(t.hwnd, &ps);
 }
@@ -240,7 +338,7 @@ static LRESULT CALLBACK toast_edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     if (msg == WM_KEYDOWN && wp == VK_TAB) {
         i32 n = COUNT(MARKER_COLOURS), step = GetKeyState(VK_SHIFT) < 0 ? n - 1 : 1;
         t.colour = (u8)((t.colour + step) % n);
-        InvalidateRect(t.hwnd, 0, FALSE);
+        toast_redraw(t);
         return 0;
     }
     if (msg == WM_CHAR && (wp == '\r' || wp == '\t' || wp == 27)) return 0; // no beep for the keys taken above
@@ -275,15 +373,14 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         i32 hot = toast_hit(t, lp);
         if (hot != t.hot) {
             t.hot = hot;
-            InvalidateRect(hwnd, 0, FALSE);
+            toast_redraw(t);
         }
         return 0;
     }
     case WM_MOUSELEAVE:
         t.tracking = false;
         t.hot = TP_NONE;
-        InvalidateRect(hwnd, 0, FALSE);
-        if (quiet) SetTimer(hwnd, TOAST_TIMER, 2000, 0); // a moment more once the mouse leaves
+        toast_redraw(t);
         return 0;
     case WM_LBUTTONUP: {
         i32 k = toast_hit(t, lp);
@@ -302,19 +399,27 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (k > TP_COLOUR) {
             u8 c = (u8)(k - TP_COLOUR);
             t.colour = t.colour == c ? 0 : c; // a second click takes the colour off
-            InvalidateRect(hwnd, 0, FALSE);
+            toast_redraw(t);
             SetFocus(t.edit);
         }
         return 0;
     }
-    case WM_TIMER: {
+    case WM_TIMER: { // the countdown's tick: held at full while the mouse is on it, from full again once it leaves
         POINT p;
-        RECT r;
+        RECT r, d = toast_rect(t, TR_DIAL);
         GetCursorPos(&p);
         GetWindowRect(hwnd, &r);
-        if (PtInRect(&r, p)) return 0;
-        if (t.kind == TOAST_SESSION) toast_session_close(TP_NONE);
-        else toast_hide(t);
+        u64 now = GetTickCount64();
+        bool on = PtInRect(&r, p) != 0;
+        if (on || t.held) t.start_ms = now;
+        if (on != t.held) t.held = on;
+        else if (on) return 0; // still held: the dial is already full
+        if (now - t.start_ms >= TOAST_LIFE_MS) {
+            if (t.kind == TOAST_SESSION) toast_session_close(TP_NONE);
+            else toast_hide(t);
+            return 0;
+        }
+        InvalidateRect(hwnd, &d, FALSE);
         return 0;
     }
     case WM_ACTIVATE:
@@ -415,7 +520,7 @@ static void toast_place(Toast &t, const RECT &work)
         SetWindowPos(t.edit, 0, f.left + in, (f.top + f.bottom - eh) / 2, f.right - f.left - 2 * in, eh, SWP_NOZORDER);
     }
     t.hot = TP_NONE;
-    InvalidateRect(t.hwnd, 0, FALSE);
+    toast_redraw(t);
 }
 
 // A save finished: Clip saved, unless clipback's own window is in front (it shows the save itself).
@@ -433,7 +538,7 @@ static void toast_saved(SaveKind kind, const char *path)
     toast_place(t, work);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
-    SetTimer(t.hwnd, TOAST_TIMER, TOAST_SAVED_MS, 0);
+    toast_countdown(t);
 }
 
 // Session ended was answered: Save (TP_MAIN), Review (TP_SECOND), or closed or ignored (anything else). Every
@@ -498,10 +603,10 @@ static bool toast_session(const Session &s, i32 more)
     utf8_to_wide("Session ended", t.title, COUNT(t.title));
     utf8_to_wide(line, t.line, COUNT(t.line));
     if (!t.open) toast_place(t, work);
-    InvalidateRect(t.hwnd, 0, FALSE);
+    toast_redraw(t);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
-    SetTimer(t.hwnd, TOAST_TIMER, TOAST_SESSION_MS, 0);
+    toast_countdown(t);
     return true;
 }
 
