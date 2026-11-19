@@ -61,6 +61,7 @@ struct SaveQueue {
     i32                count;
     SaveSettings       settings;  // from the newest save_range: a job runs with the settings of when it started
     u32                cancel_id; // the running job should stop
+    bool               running;   // the worker has a job
     bool               stop;
     HANDLE             thread;
 };
@@ -575,6 +576,38 @@ static i32 run_ffmpeg(SaveWork *w, i64 total_us, char *error, i32 error_cap)
     proc_close(&p);
     w->ff_ms = GetTickCount64() - started;
     return cancelled ? -2 : code;
+}
+
+// Deletes the work folders (save-<number>) left by saves cut short by a crash or a restart. Only while no save is
+// queued or running, as the folder could be its own; false when one is, to be tried again later.
+static bool save_sweep_work()
+{
+    AcquireSRWLockShared(&g_save_q.lock);
+    bool busy = g_save_q.count || g_save_q.running;
+    ReleaseSRWLockShared(&g_save_q.lock);
+    if (busy) return false;
+    const Path &local = g_app.paths.local_dir;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(path_join(local, L"save-*").s, &fd);
+    if (h == INVALID_HANDLE_VALUE) return true;
+    do {
+        const wchar_t *n = fd.cFileName + 5;
+        bool digits = *n != 0;
+        for (const wchar_t *c = n; *c; c++) digits &= *c >= L'0' && *c <= L'9';
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !digits) continue;
+        Path dir = path_join(local, fd.cFileName);
+        WIN32_FIND_DATAW in;
+        HANDLE hi = FindFirstFileW(path_join(dir, L"*").s, &in);
+        if (hi != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(in.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) DeleteFileW(path_join(dir, in.cFileName).s);
+            } while (FindNextFileW(hi, &in));
+            FindClose(hi);
+        }
+        if (RemoveDirectoryW(dir.s)) log_line("save: deleted the work folder %ls, left by a save cut short", fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return true;
 }
 
 static void remove_work_files(const Path &dir, i32 streams)
@@ -1414,6 +1447,7 @@ static DWORD WINAPI save_thread(void *)
         memmove(g_save_q.items, g_save_q.items + 1, g_save_q.count * sizeof g_save_q.items[0]);
         w->cfg = g_save_q.settings;
         g_save_q.cancel_id = 0;
+        g_save_q.running = true;
         ReleaseSRWLockExclusive(&g_save_q.lock);
 
         save_post(SAVE_EV_STARTED, w->req.id, 0, 0);
@@ -1421,6 +1455,9 @@ static DWORD WINAPI save_thread(void *)
         u64 started = GetTickCount64();
         i64 result = save_run(w, out, sizeof out);
         if (result == SAVE_EV_DONE) log_line("save %u: took %.1f s", w->req.id, (GetTickCount64() - started) / 1000.0);
+        AcquireSRWLockExclusive(&g_save_q.lock);
+        g_save_q.running = false;
+        ReleaseSRWLockExclusive(&g_save_q.lock);
         save_post(result, w->req.id, 0, out);
     }
     return 0;

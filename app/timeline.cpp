@@ -514,10 +514,12 @@ static void timeline_tick()
     Timeline &tl = g_app.timeline;
     tl_check_job();
     // Play's files left over (from a crash, or a build cut short) are deleted at the start and whenever it opens,
-    // so names aren't taken when save ids start again from 1
-    static bool started, was_shown;
+    // so names aren't taken when save ids start again from 1. At the start, so are saves' work folders, once no
+    // save is running.
+    static bool started, was_shown, work_swept;
     bool shown = tl_visible();
     if (!started || (shown && !was_shown)) tl_play_sweep();
+    if (!work_swept) work_swept = save_sweep_work();
     started = true;
     was_shown = shown;
     if (!tl_visible()) {
