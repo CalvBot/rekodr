@@ -1356,6 +1356,21 @@ static void screen_timeline()
             if (t >= saved[i].a - slack && t <= saved[i].z + slack) saved_hit = i;
     }
 
+    // The game part under the mouse, on the game row: Shift and a click adds it to the selected region
+    i64 game_a = 0, game_z = 0;
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_game &&
+        io.MousePos.y < y_game + game_h && io.MousePos.x >= c.x0 && io.MousePos.x <= c.x1) {
+        i64 t = tl_t(c, io.MousePos.x);
+        for (i32 i = b.activity_count - 1; i >= 0; i--) {
+            i64 end = i + 1 < b.activity_count ? b.activity[i + 1].us : now;
+            if (b.activity[i].exe[0] && t >= b.activity[i].us && t < end) {
+                game_a = b.activity[i].us;
+                game_z = end;
+                break;
+            }
+        }
+    }
+
     // Markers in view, on the ruler. A click on one puts the playhead there and shows its note; a right click opens
     // the whole note.
     static Marker marks[256];
@@ -1381,7 +1396,7 @@ static void screen_timeline()
     // zoom, beside it to bring it there; double-click shows everything. --------------------------------------------
     {
         static i32 grab;              // 1 the left end, 2 the right end, 3 the window
-        static i64 grab_off, grab_span, held_lo, held_hi;
+        static i64 grab_off, grab_span, held_lo, held_hi, grab_start, grab_end, grab_play;
         i64 lo = (b.oldest_us ? b.oldest_us : now - TL_DAY) - c.span / 30, hi = now + c.span / 30;
         if (c.start < lo) lo = c.start;
         if (c.start + c.span > hi) hi = c.start + c.span;
@@ -1411,6 +1426,9 @@ static void screen_timeline()
             held_hi = hi;
             grab = over;
             grab_span = tl.view_span_us;
+            grab_start = tl.view_end_us - tl.view_span_us;
+            grab_end = tl.view_end_us;
+            grab_play = tl_playhead();
             tl.follow = false;
             if (!grab) { // beside the window: it comes here and is held
                 tl.view_end_us = bt(mx) + grab_span / 2;
@@ -1421,7 +1439,14 @@ static void screen_timeline()
         }
         if (active && grab && ImGui::IsMousePosValid()) {
             i64 t = bt(mx) - grab_off, end = tl.view_end_us, start = end - tl.view_span_us;
-            if (grab == 1) {
+            f64 a, z;
+            // Shift on an end: the work area scales around the playhead, which keeps its place on screen
+            if ((grab == 1 || grab == 2) && io.KeyShift &&
+                wa_scale((f64)grab_play, (f64)grab_start, (f64)grab_end, grab == 1, (f64)t, (f64)held_lo, (f64)held_hi,
+                         (f64)TL_MIN_SPAN, &a, &z)) {
+                tl.view_end_us = (i64)z;
+                tl.view_span_us = (i64)z - (i64)a;
+            } else if (grab == 1) {
                 if (t > end - TL_MIN_SPAN) t = end - TL_MIN_SPAN;
                 tl.view_span_us = end - t;
             } else if (grab == 2) {
@@ -1597,6 +1622,14 @@ static void screen_timeline()
             tl_play_render(tl.playhead_us);
         }
         if (click && (tl.drag == TL_DRAG_SEEK || tl.drag == TL_DRAG_NEW)) tl.marker_pick = 0;
+        // Shift and a click on a game part: the selected region becomes it, or grows to take it in
+        if (click && tl.drag == TL_DRAG_NEW && game_z > game_a) {
+            i64 a = tl_whole_sec(game_a), z = tl_whole_sec(game_z);
+            bool had = tl.sel_in && tl.sel_out > tl.sel_in;
+            tl.sel_in = had && tl.sel_in < a ? tl.sel_in : a;
+            tl.sel_out = had && tl.sel_out > z ? tl.sel_out : z;
+            tl_clamp_selection();
+        }
         if (tl.drag == TL_DRAG_PAN && click && mark_hit >= 0) { // a right (or middle) click
             mark_open = marks[mark_hit];
             tl.marker_pick = mark_open.t_us;
@@ -1633,7 +1666,8 @@ static void screen_timeline()
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     else if (tl.drag == TL_DRAG_PAN || tl.drag == TL_DRAG_RANGE || (bar_hovered && tl.drag == TL_DRAG_NONE && on_band))
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-    else if (bar_hovered && (saved_hit >= 0 || mark_hit >= 0)) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    else if (bar_hovered && (saved_hit >= 0 || mark_hit >= 0 || (io.KeyShift && game_z > game_a)))
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     set_view(); // the view may have moved: draw it where it is now
     tl.hovering = bar_hovered && tl.drag == TL_DRAG_NONE && b.seg_count > 0;
     tl.hover_us = tl_t(c, mx);

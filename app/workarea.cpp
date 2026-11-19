@@ -1,6 +1,7 @@
-// What the Timeline and the editor share on their tracks: the view bar over the whole, the in and out on the ruler,
-// the playhead, the time pill, and Shift's scaling of the in and out around the playhead. Both draw and handle them
-// alike; times are each caller's own units, passed as f64.
+// What the Timeline and the editor share on their tracks. The work area is the part shown, picked on the bar over
+// the whole; the selected region is the in and out, on the ruler. Also the playhead, the time pill, and Shift's
+// scaling around the playhead (of the work area from the bar's ends, of the selected region from its ends). Both
+// draw and handle them alike; times are each caller's own units, passed as f64.
 
 // The sizes both use
 static f32 wa_ruler_h() { return kit_px(28); }
@@ -20,7 +21,7 @@ static void wa_pill(ImDrawList *dl, f32 x, f32 y, f32 lo, f32 hi, const char *te
     dl->AddText(ImVec2(floorf(a + px), floorf(y + py)), fg, text);
 }
 
-// The view bar: the whole, with the window on the part shown (grips at its ends), the in and out faintly (sa >= sz
+// The work area bar: the whole, with the window on the work area (grips at its ends), the in and out faintly (sa >= sz
 // for none) and the playhead.
 static void wa_draw_viewbar(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 wa, f32 wb, bool hot, f32 sa, f32 sz, f32 px)
 {
@@ -74,7 +75,7 @@ static void wa_draw_playhead(ImDrawList *dl, f32 x, f32 y_tracks, f32 y_bottom)
     dl->AddTriangleFilled(ImVec2(x - 5 * s, hy - 7 * s), ImVec2(x + 5 * s, hy - 7 * s), ImVec2(x, hy), col);
 }
 
-// Shift on an end of the in and out: both ends scale around the playhead p, the other end moving in proportion, so
+// Shift on an end of the work area or the selected region: both ends scale around the playhead p, the other end moving in proportion, so
 // the playhead keeps its place relative to them (inside or not). in0 and out0 are the ends as the drag began, t
 // where the dragged end goes; neither end leaves [lo, hi] and they stay least apart. False when the dragged end is
 // on the playhead, where there is nothing to scale by.

@@ -987,19 +987,24 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     }
     ed.lane_scroll = ed.lane_scroll < 0 ? 0 : ed.lane_scroll > max_scroll ? max_scroll : ed.lane_scroll;
 
-    // The view bar: the whole file, with a window on the part shown. Drag the window to pan, either end to zoom,
-    // beside it to bring it there; double-click shows everything.
+    // The view bar: the whole file, with a window on the work area (the part shown). Drag the window to pan,
+    // either end to zoom (with Shift around the playhead, which keeps its place on screen), beside it to bring it
+    // there; double-click shows everything.
     ImGui::SetCursorScreenPos(ImVec2(bx0, bar_y - kit_px(4)));
     ImGui::InvisibleButton("##view", ImVec2(bw, bar_h + kit_px(8)));
     {
         auto bx = [&](f64 t) { return bx0 + (f32)(t / dur) * bw; };
         f32 tx0 = bx(ed.view_from), tx1 = bx(ed.view_from + ed.view_span), grip = wa_grab();
+        static f64 held_from, held_to, held_play;
         if (ImGui::IsItemActivated()) {
             ed.drag_mx = mx;
-            if (fabsf(mx - tx0) <= grip && mx < (tx0 + tx1) / 2 && ed.view_span < dur) {
+            held_from = ed.view_from;
+            held_to = ed.view_from + ed.view_span;
+            held_play = p.pos;
+            if (fabsf(mx - tx0) <= grip && mx < (tx0 + tx1) / 2) {
                 ed.lane_drag = ED_DRAG_BAR_IN;
                 ed.drag_t = ed.view_from + ed.view_span;
-            } else if (fabsf(mx - tx1) <= grip && ed.view_span < dur) {
+            } else if (fabsf(mx - tx1) <= grip) {
                 ed.lane_drag = ED_DRAG_BAR_OUT;
                 ed.drag_t = ed.view_from;
             } else {
@@ -1014,8 +1019,14 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         if (ImGui::IsItemActive()) {
             f64 bt = (f64)(mx - bx0) / bw * dur;
             bt = bt < 0 ? 0 : bt > dur ? dur : bt;
+            f64 a, z;
+            bool end = ed.lane_drag == ED_DRAG_BAR_IN || ed.lane_drag == ED_DRAG_BAR_OUT;
             if (ed.lane_drag == ED_DRAG_BAR) ed.view_from = ed.drag_t + (mx - ed.drag_mx) / bw * dur;
-            else if (ed.lane_drag == ED_DRAG_BAR_IN && bt < ed.drag_t) {
+            else if (end && io.KeyShift &&
+                     wa_scale(held_play, held_from, held_to, ed.lane_drag == ED_DRAG_BAR_IN, bt, 0, dur, 0.5, &a, &z)) {
+                ed.view_from = a;
+                ed.view_span = z - a;
+            } else if (ed.lane_drag == ED_DRAG_BAR_IN && bt < ed.drag_t) {
                 ed.view_from = bt;
                 ed.view_span = ed.drag_t - bt;
             } else if (ed.lane_drag == ED_DRAG_BAR_OUT && bt > ed.drag_t) {
@@ -1030,7 +1041,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             ed.view_span = dur;
         }
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
-        if (hot && (fabsf(mx - tx0) <= grip || fabsf(mx - tx1) <= grip) && ed.view_span < dur)
+        if (hot && (fabsf(mx - tx0) <= grip || fabsf(mx - tx1) <= grip))
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         wa_draw_viewbar(dl, bx0, bx1, bar_y, bx(ed.view_from), bx(ed.view_from + ed.view_span), hot, bx(ed.edit.in_s),
                         bx(ed_out()), bx(p.pos));
