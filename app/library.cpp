@@ -1168,7 +1168,7 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
 }
 
 // A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
-// many it has on the right. The picked one is in the accent colour. Collapsed, only the icon, in the middle.
+// many it has on the right. The picked one is in the accent colour. Collapsed, only the icon, where it was.
 static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w, bool collapsed)
 {
     f32 h = kit_px(30), is = kit_px(20);
@@ -1183,7 +1183,7 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
     if (active || hot)
         dl->AddRectFilled(ImVec2(a.x + kit_px(2), a.y + kit_px(2)), ImVec2(a.x + w - kit_px(2), a.y + h - kit_px(2)),
                           col32(active ? COL_HOVER : COL_PANEL2), kit_px(6));
-    ImVec2 i0(collapsed ? floorf(a.x + (w - is) / 2) : a.x + kit_px(8), floorf(a.y + (h - is) / 2)), i1(i0.x + is, i0.y + is);
+    ImVec2 i0(a.x + kit_px(8), floorf(a.y + (h - is) / 2)), i1(i0.x + is, i0.y + is);
     ID3D11ShaderResourceView *icon = game ? game_icon(game) : 0;
     if (icon) {
         dl->AddImageRounded((ImTextureID)icon, i0, i1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(5));
@@ -2165,23 +2165,16 @@ static void screen_library()
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
 
     // The games down the left: all of them, then each game in this view with how many it has, most recent first.
-    // It scrolls on its own when there are more than fit. The button at its foot collapses it to a rail of icons
-    // and stays in the same place either way.
+    // It scrolls on its own when there are more than fit. It is as wide as the Clips and Sessions toggle over it.
+    // The round button on the middle of its right edge collapses it to a rail of icons, which stay where they were.
     {
         bool &collapsed = g_app.config.games_collapsed;
-        f32 side_w = collapsed ? kit_px(56) : kit_px(210), side_h = ImGui::GetContentRegionAvail().y;
-        f32 foot = fh + kit_px(6);
+        f32 icon_end = kit_px(6 + 8 + 20); // a row's icon ends this far in from the list's left
+        f32 side_w = collapsed ? icon_end + kit_px(14) : 2 * view_w + kit_px(4), side_h = ImGui::GetContentRegionAvail().y;
         ImVec2 s0 = ImGui::GetCursorScreenPos();
         dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL), kit_px(10));
-        ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + side_h - kit_px(6) - fh));
-        kit_next_tip(collapsed ? "Show the games list" : "Collapse the games list");
-        if (kit_icon_button(collapsed ? ICON_RIGHT : ICON_LEFT, "##games_collapse")) {
-            collapsed = !collapsed;
-            config_save(g_app.config, g_app.paths);
-            log_line("library: games list %s", collapsed ? "collapsed" : "shown");
-        }
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + kit_px(6)));
-        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12) - foot), 0, ImGuiWindowFlags_NoBackground);
+        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12)), 0, ImGuiWindowFlags_NoBackground);
         i32 pick = -1;
         for (i32 c = 0; c <= lib.game_count; c++) {
             const char *name = c == 0 ? "All games" : lib.games[c - 1];
@@ -2193,6 +2186,31 @@ static void screen_library()
             ImGui::PopID();
         }
         ImGui::EndChild();
+        // The collapse button: a window of its own after the list, so it is on top of the list's rows
+        {
+            f32 bs = kit_px(22);
+            ImGui::SetCursorScreenPos(ImVec2(floorf(s0.x + side_w - bs / 2), floorf(s0.y + (side_h - bs) / 2)));
+            ImGui::BeginChild("##gamecollapse", ImVec2(bs, bs), 0,
+                              ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            ImVec2 b0 = ImGui::GetCursorScreenPos();
+            bool hit = ImGui::InvisibleButton("##games_collapse", ImVec2(bs, bs));
+            bool hot = ImGui::IsItemHovered();
+            kit_tip(collapsed ? "Show the games list" : "Collapse the games list");
+            ImDrawList *bdl = ImGui::GetWindowDrawList();
+            ImVec2 c(b0.x + bs / 2, b0.y + bs / 2);
+            bdl->AddCircleFilled(c, bs / 2, col32(hot ? COL_HOVER : COL_PANEL2));
+            bdl->AddCircle(c, bs / 2 - 0.5f, col32(COL_BG), 0, kit_px(1));
+            const char *ic = collapsed ? ICON_RIGHT : ICON_LEFT;
+            f32 isz = kit_px(11);
+            ImVec2 is = g_font_icon->CalcTextSizeA(isz, FLT_MAX, 0, ic);
+            bdl->AddText(g_font_icon, isz, ImVec2(floorf(c.x - is.x / 2), floorf(c.y - is.y / 2)), col32(hot ? COL_TEXT : COL_DIM), ic);
+            ImGui::EndChild();
+            if (hit) {
+                collapsed = !collapsed;
+                config_save(g_app.config, g_app.paths);
+                log_line("library: games list %s", collapsed ? "collapsed" : "shown");
+            }
+        }
         if (pick >= 0) {
             if (pick == 0) lib.game[0] = 0;
             else str_set(lib.game, lib.games[pick - 1]);
