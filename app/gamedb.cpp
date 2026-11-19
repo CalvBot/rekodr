@@ -60,7 +60,9 @@ struct GameDbShared {
     bool       online;      // may fetch
     char       service[128]; // the art service's host; "" = don't ask it
     char       sgdb_key[72]; // the player's own SteamGridDB key; "" = none
-    struct { char id[24], hash[40], name[128]; u32 steam; GameArt kind; } want[64]; // art asked for, not fetched yet
+    // Art asked for, not fetched yet, newest first. `paced`: it needs the art service, which has been asked enough
+    // for now.
+    struct { char id[24], hash[40], name[128]; u32 steam; GameArt kind; bool paced; } want[64];
     i32        want_count;
     // What the art service was asked to name (a modpack, or an exe the list doesn't know), by a key for the
     // question: being asked (body set) or answered (name; "" = nothing it could name; sure = by a store id or the
@@ -72,6 +74,10 @@ struct GameDbShared {
     char       find_q[128], found_q[128];
     struct { char name[128]; i32 year; } found[8];
     i32        found_count;
+    // The art service's ids for names its searches gave, newest at known_next - 1, so a game picked from a search
+    // gets its art without being searched for again.
+    struct { char letters[128], id[24]; } known[64];
+    i32        known_next;
 };
 static GameDbShared g_gamedb;
 
@@ -1292,13 +1298,32 @@ static u32 art_search(const char *q, char **body, i64 *len, bool typing = false)
     return status;
 }
 
-// Where the service has a game's icon or cover, looked up by its name. What it has is kept in <id>-found.json, so
-// the icon and the cover take one lookup between them. False if it has none, or couldn't be asked; *later is set
-// when it couldn't be (the service is down, busy or not handing out art, or the PC is offline), so it is asked again
-// next time rather than taken as none.
-static bool art_service_find(const char *id, const char *name, GameArt kind, char *url, i32 cap, bool *later)
+// The id a search of the service's gave for a name, if one did lately.
+static bool art_known_id(const char *name, char *id, i32 cap)
+{
+    char letters[128];
+    if (gdb_letters(name, letters, sizeof letters) < 2) return false;
+    AcquireSRWLockShared(&g_gamedb.lock);
+    bool got = false;
+    for (i32 i = 0; i < COUNT(g_gamedb.known) && !got; i++)
+        if (!strcmp(g_gamedb.known[i].letters, letters)) {
+            snprintf(id, cap, "%s", g_gamedb.known[i].id);
+            got = true;
+        }
+    ReleaseSRWLockShared(&g_gamedb.lock);
+    return got;
+}
+
+// Where the service has a game's icon or cover, looked up by its name, or by the id a search gave for it lately
+// (art_known_id). What it has is kept in <id>-found.json, so the icon and the cover take one lookup between them.
+// False if it has none, or couldn't be asked; *later is set when it couldn't be (the service is down, busy or not
+// handing out art, or the PC is offline), so it is asked again next time rather than taken as none. With `wait`,
+// one that would ask the service while it has been asked enough for now sets *wait and asks nothing.
+static bool art_service_find(const char *id, const char *name, GameArt kind, char *url, i32 cap, bool *later,
+                             bool *wait = 0)
 {
     *later = false;
+    if (wait) *wait = false;
     if ((!g_gamedb.service[0] && !g_gamedb.sgdb_key[0]) || !name[0]) return false;
     wchar_t fname[64];
     swprintf(fname, COUNT(fname), L"art\\%hs-found.json", id);
@@ -1307,6 +1332,10 @@ static bool art_service_find(const char *id, const char *name, GameArt kind, cha
     // Nothing found is asked about again after a week, what was found after a month
     bool have = GetFileAttributesExW(found.s, GetFileExInfoStandard, &fa) &&
                 !file_older_than(fa, (fa.nFileSizeLow ? 30 : 7) * 24 * 3600);
+    if (!have && wait && g_gamedb.service[0] && art_service_paced()) { // asked enough for now: the caller waits
+        *later = *wait = true;
+        return false;
+    }
     if (!have) {
         // A game clipback only knows by its exe ("someapp.exe") is looked for without the ".exe"
         char q[128], path[512], sid[24] = "";
@@ -1315,16 +1344,19 @@ static bool art_service_find(const char *id, const char *name, GameArt kind, cha
         if (ql > 4 && !_stricmp(q + ql - 4, ".exe")) q[ql - 4] = 0;
         char *body = 0;
         i64 len = 0;
-        u32 status = art_search(q, &body, &len);
-        *later = http_later(status);
-        if (status != 200) { DEV_LOG("gamedb: art search for %s answered %u", name, status); free(body); return false; }
-        bool match = art_pick_search(body, len, q, sid, sizeof sid);
-        free(body);
-        body = 0;
-        len = 0;
+        bool match = art_known_id(q, sid, sizeof sid);
+        if (!match) {
+            u32 status = art_search(q, &body, &len);
+            *later = http_later(status);
+            if (status != 200) { DEV_LOG("gamedb: art search for %s answered %u", name, status); free(body); return false; }
+            match = art_pick_search(body, len, q, sid, sizeof sid);
+            free(body);
+            body = 0;
+            len = 0;
+        }
         if (match) {
             snprintf(path, sizeof path, "/v1/art/%s", sid);
-            status = g_gamedb.service[0] ? art_service_get(path, &body, &len) : 403;
+            u32 status = g_gamedb.service[0] ? art_service_get(path, &body, &len) : 403;
             if (status == 403 && sid[0] == 's') { // not handed out: SteamGridDB's own, with the player's key
                 free(body);
                 body = 0;
@@ -1352,8 +1384,8 @@ static bool art_service_find(const char *id, const char *name, GameArt kind, cha
     return ok;
 }
 
-// The games in a /v1/search answer, in its order: their names and years (0 = none). How many.
-static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *years, i32 max)
+// The games in a /v1/search answer, in its order: their names, years (0 = none) and, with `ids`, ids. How many.
+static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *years, i32 max, char (*ids)[24] = 0)
 {
     i32 n = 0;
     Json j = {json, json + len};
@@ -1364,12 +1396,13 @@ static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *y
         j_eat(&j, ':');
         if (strcmp(key, "games") || !j_eat(&j, '[')) { j_skip(&j); j_eat(&j, ','); continue; }
         while (j_eat(&j, '{')) {
-            char gname[128] = "", k[16];
+            char gname[128] = "", gid[24] = "", k[16];
             i32 year = 0;
             while (!j_eat(&j, '}') && j.p < j.end) {
                 if (!j_string(&j, k, sizeof k)) break;
                 j_eat(&j, ':');
                 if (!strcmp(k, "name")) j_string(&j, gname, sizeof gname) || (j_skip(&j), 0);
+                else if (!strcmp(k, "id")) j_string(&j, gid, sizeof gid) || (j_skip(&j), 0);
                 else if (!strcmp(k, "year")) { j_ws(&j); year = atoi(j.p); j_skip(&j); }
                 else j_skip(&j);
                 j_eat(&j, ',');
@@ -1377,6 +1410,7 @@ static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *y
             j_eat(&j, ',');
             if (gname[0] && n < max) {
                 snprintf(names[n], 128, "%s", gname);
+                if (ids) snprintf(ids[n], 24, "%s", gid);
                 years[n++] = year > 0 ? year : 0;
             }
         }
@@ -1398,11 +1432,17 @@ static void gamedb_fetch_find()
     char *body = 0;
     i64 len = 0;
     u32 status = g_gamedb.online ? art_search(q, &body, &len, true) : 0;
-    char names[8][128];
-    i32 years[8], n = status == 200 && body ? art_search_list(body, len, names, years, 8) : 0;
+    char names[8][128], ids[8][24];
+    i32 years[8], n = status == 200 && body ? art_search_list(body, len, names, years, 8, ids) : 0;
     free(body);
     DEV_LOG("gamedb: art service search for \"%s\" answered %u, %d games", q, status, n);
     AcquireSRWLockExclusive(&g_gamedb.lock);
+    for (i32 i = 0; i < n; i++) {
+        if (!ids[i][0]) continue;
+        auto &k = g_gamedb.known[g_gamedb.known_next++ % COUNT(g_gamedb.known)];
+        gdb_letters(names[i], k.letters, sizeof k.letters);
+        str_set(k.id, ids[i]);
+    }
     snprintf(g_gamedb.found_q, sizeof g_gamedb.found_q, "%s", q);
     g_gamedb.found_count = n;
     for (i32 i = 0; i < n; i++) {
@@ -1525,6 +1565,14 @@ static bool gamedb_for_art(const char *name, GameInfo *out)
 // ---------------------------------------------------------------------------------------------------------------
 // Art. A file that is there is used; one that isn't is asked for and arrives later (GAMEDB_ART).
 
+// Where a game's icon or cover is in the queue of art asked for, or -1. Under the lock.
+static i32 gamedb_want_at(const char *id, GameArt kind)
+{
+    for (i32 i = 0; i < g_gamedb.want_count; i++)
+        if (g_gamedb.want[i].kind == kind && !strcmp(g_gamedb.want[i].id, id)) return i;
+    return -1;
+}
+
 // Where a game's icon or cover is, if it has been fetched. If it hasn't, it is asked for, *coming set and false
 // returned. One found to have none is asked for again after a week.
 static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out, bool *coming = 0)
@@ -1539,33 +1587,38 @@ static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out, bool *coming 
         if (!file_older_than(fa, 7 * 24 * 3600)) return false; // empty: there is none
     }
     if (!g_gamedb.online) return false;
+    // The newest ask goes first, being what is on screen now; one asked again moves to the front, and when the
+    // queue is full the oldest gives way. (The worker fetches want[0].)
     AcquireSRWLockExclusive(&g_gamedb.lock);
-    bool queued = false;
-    for (i32 i = 0; i < g_gamedb.want_count && !queued; i++)
-        queued = g_gamedb.want[i].kind == kind && !strcmp(g_gamedb.want[i].id, g.id);
-    if (!queued && g_gamedb.want_count < COUNT(g_gamedb.want)) {
-        auto &w = g_gamedb.want[g_gamedb.want_count++];
-        str_set(w.id, g.id);
-        str_set(w.hash, hash);
-        str_set(w.name, g.name);
-        w.steam = g.steam;
-        w.kind = kind;
-    }
+    i32 at = gamedb_want_at(g.id, kind);
+    if (at < 0) at = g_gamedb.want_count < COUNT(g_gamedb.want) ? g_gamedb.want_count++ : g_gamedb.want_count - 1;
+    memmove(&g_gamedb.want[1], &g_gamedb.want[0], at * sizeof g_gamedb.want[0]);
+    auto &w = g_gamedb.want[0];
+    str_set(w.id, g.id);
+    str_set(w.hash, hash);
+    str_set(w.name, g.name);
+    w.steam = g.steam;
+    w.kind = kind;
+    w.paced = false;
     ReleaseSRWLockExclusive(&g_gamedb.lock);
     SetEvent(g_gamedb.wake);
     if (coming) *coming = true;
     return false;
 }
 
-// False if some is left for later, the service having been asked enough for now.
+// Fetches the art asked for, newest first. One that needs the art service while it has been asked enough for now
+// waits, and those after it go ahead. False if some is left for later.
 static bool gamedb_fetch_art()
 {
     for (;;) {
+        bool paced = art_service_paced();
         AcquireSRWLockExclusive(&g_gamedb.lock);
-        if (!g_gamedb.want_count) { ReleaseSRWLockExclusive(&g_gamedb.lock); return true; }
-        auto w = g_gamedb.want[0];
+        i32 at = 0;
+        while (at < g_gamedb.want_count && paced && g_gamedb.want[at].paced) at++;
+        bool none = at == g_gamedb.want_count, done = !g_gamedb.want_count;
+        auto w = none ? g_gamedb.want[0] : g_gamedb.want[at];
         ReleaseSRWLockExclusive(&g_gamedb.lock);
-        if (art_service_paced()) return false;
+        if (none) return done;
 
         Path file = gamedb_art_file(w.id, w.kind);
         wchar_t url[256];
@@ -1589,10 +1642,17 @@ static bool gamedb_fetch_art()
         }
         if (!ok && !g_gamedb.stop) {
             char found[512];
-            bool unasked = false;
-            if (art_service_find(w.id, w.name, w.kind, found, sizeof found, &unasked)) {
+            bool unasked = false, wait = false;
+            if (art_service_find(w.id, w.name, w.kind, found, sizeof found, &unasked, &wait)) {
                 ok = http_get_url(found, file);
                 later |= !ok; // the picture is there but didn't come
+            }
+            if (wait) {
+                AcquireSRWLockExclusive(&g_gamedb.lock);
+                i32 i = gamedb_want_at(w.id, w.kind);
+                if (i >= 0) g_gamedb.want[i].paced = true;
+                ReleaseSRWLockExclusive(&g_gamedb.lock);
+                continue;
             }
             later |= unasked;
         }
@@ -1605,8 +1665,11 @@ static bool gamedb_fetch_art()
         DEV_LOG("gamedb: %s for %s %s", w.kind == ART_ICON ? "icon" : "cover", w.id, ok ? "fetched" : "not there");
 
         AcquireSRWLockExclusive(&g_gamedb.lock);
-        memmove(&g_gamedb.want[0], &g_gamedb.want[1], (g_gamedb.want_count - 1) * sizeof g_gamedb.want[0]);
-        g_gamedb.want_count--;
+        i32 i = gamedb_want_at(w.id, w.kind); // asks made meanwhile went in front of it
+        if (i >= 0) {
+            memmove(&g_gamedb.want[i], &g_gamedb.want[i + 1], (g_gamedb.want_count - i - 1) * sizeof g_gamedb.want[0]);
+            g_gamedb.want_count--;
+        }
         ReleaseSRWLockExclusive(&g_gamedb.lock);
         if (g_gamedb.stop) return true;
         Event e = {};
