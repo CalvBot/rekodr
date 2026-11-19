@@ -2677,8 +2677,8 @@ static void screen_library()
 
     // The list down the left, as wide as the Clips and Sessions toggle over it: a Games / Folders switch, then all
     // of them and each game in this view with how many it has, most recent first, or this view's folders. It
-    // scrolls on its own when there are more than fit. The round button on the middle of its right edge collapses
-    // it to a rail of icons, which stay where they were.
+    // scrolls on its own when there are more than fit. The button at its foot collapses it to a rail of icons,
+    // which stay where they were.
     {
         bool &collapsed = g_app.config.games_collapsed;
         f32 icon_end = kit_px(6 + 8 + 20); // a row's icon ends this far in from the list's left
@@ -2686,7 +2686,8 @@ static void screen_library()
         ImVec2 s0 = ImGui::GetCursorScreenPos();
         dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL), kit_px(10));
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + kit_px(6)));
-        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12)), 0, ImGuiWindowFlags_NoBackground);
+        f32 foot = fh + kit_px(6);
+        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12) - foot), 0, ImGuiWindowFlags_NoBackground);
         bool &by_folder = g_app.config.side_folders;
         if (lib_side_toggle(side_w - kit_px(12), collapsed)) {
             by_folder = !by_folder;
@@ -2707,31 +2708,15 @@ static void screen_library()
             ImGui::PopID();
         }
         ImGui::EndChild();
-        // The collapse button: a window of its own after the list, so it is on top of the list's rows
-        {
-            f32 bs = kit_px(26);
-            ImGui::SetCursorScreenPos(ImVec2(floorf(s0.x + side_w - bs / 2), floorf(s0.y + (side_h - bs) / 2)));
-            ImGui::BeginChild("##gamecollapse", ImVec2(bs, bs), 0,
-                              ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            ImVec2 b0 = ImGui::GetCursorScreenPos();
-            bool hit = ImGui::InvisibleButton("##games_collapse", ImVec2(bs, bs));
-            bool hot = ImGui::IsItemHovered();
-            kit_tip(collapsed ? "Show the list" : "Collapse the list");
-            ImDrawList *bdl = ImGui::GetWindowDrawList();
-            ImVec2 c(b0.x + bs / 2, b0.y + bs / 2);
-            // Lighter than the list and the page, ringed in the page's colour, so it reads against both
-            bdl->AddCircleFilled(c, bs / 2, col32(hot ? 0x4a4e57 : 0x3a3d44));
-            bdl->AddCircle(c, bs / 2 - kit_px(1), col32(COL_BG), 0, kit_px(2));
-            const char *ic = collapsed ? ICON_RIGHT : ICON_LEFT;
-            f32 isz = kit_px(12);
-            ImVec2 is = g_font_icon->CalcTextSizeA(isz, FLT_MAX, 0, ic);
-            bdl->AddText(g_font_icon, isz, ImVec2(floorf(c.x - is.x / 2), floorf(c.y - is.y / 2)), col32(COL_TEXT), ic);
-            ImGui::EndChild();
-            if (hit) {
-                collapsed = !collapsed;
-                config_save(g_app.config, g_app.paths);
-                log_line("library: the list on the left %s", collapsed ? "collapsed" : "shown");
-            }
+        // The collapse button at the list's foot: in the bottom right corner when it's shown, in the middle of the
+        // rail when it's collapsed.
+        ImGui::SetCursorScreenPos(ImVec2(collapsed ? floorf(s0.x + (side_w - fh) / 2) : s0.x + side_w - kit_px(6) - fh,
+                                         s0.y + side_h - kit_px(6) - fh));
+        kit_next_tip(collapsed ? "Show the list" : "Collapse the list");
+        if (kit_icon_button(collapsed ? ICON_RIGHT : ICON_LEFT, "##games_collapse")) {
+            collapsed = !collapsed;
+            config_save(g_app.config, g_app.paths);
+            log_line("library: the list on the left %s", collapsed ? "collapsed" : "shown");
         }
         if (pick >= 0) {
             if (pick == 0) lib.game[0] = 0;
