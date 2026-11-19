@@ -945,13 +945,29 @@ static bool clipboard_copy_file(const wchar_t *path)
     return ok;
 }
 
-static void show_in_folder(const wchar_t *path)
+// Opens Explorer on the file's folder with the file picked, on a thread of its own: SHOpenFolderAndSelectItems can
+// take 20 s to return, and the window would hang that long.
+static DWORD WINAPI show_in_folder_thread(void *arg)
 {
+    wchar_t *path = (wchar_t *)arg;
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED);
     PIDLIST_ABSOLUTE pidl = 0;
     if (SUCCEEDED(SHParseDisplayName(path, 0, &pidl, 0, 0))) {
         SHOpenFolderAndSelectItems(pidl, 0, 0, 0);
         CoTaskMemFree(pidl);
     }
+    CoUninitialize();
+    free(path);
+    return 0;
+}
+
+static void show_in_folder(const wchar_t *path)
+{
+    wchar_t *copy = _wcsdup(path);
+    if (!copy) return;
+    HANDLE t = CreateThread(0, 0, show_in_folder_thread, copy, 0, 0);
+    if (t) CloseHandle(t);
+    else free(copy);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
