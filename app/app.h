@@ -552,8 +552,9 @@ struct TimelineFrame { // a preview frame uploaded to the GPU
     u32                       used;    // for evicting the least recently shown
 };
 
-// SEEK moves the playhead (on the tracks); on the ruler NEW draws a selection, RANGE moves it, IN and OUT its ends
-enum TimelineDrag : u8 { TL_DRAG_NONE, TL_DRAG_SEEK, TL_DRAG_NEW, TL_DRAG_RANGE, TL_DRAG_IN, TL_DRAG_OUT, TL_DRAG_PAN };
+// SEEK moves the playhead (on the tracks); on the ruler NEW draws a selection, RANGE moves it, IN and OUT its ends;
+// MARK is a press on a marker, in the strip over the ruler
+enum TimelineDrag : u8 { TL_DRAG_NONE, TL_DRAG_SEEK, TL_DRAG_NEW, TL_DRAG_RANGE, TL_DRAG_IN, TL_DRAG_OUT, TL_DRAG_PAN, TL_DRAG_MARK };
 
 struct Timeline {
     BufferIdx    *idx;          // the index drawn (heap, swapped with the worker's; freed while hidden)

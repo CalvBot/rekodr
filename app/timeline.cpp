@@ -1033,19 +1033,6 @@ static void tl_text_fit(ImDrawList *dl, ImVec2 p, f32 max_w, ImU32 col, const ch
     dl->AddText(ImVec2(p.x + ImGui::CalcTextSize(text, end).x, p.y), col, ell);
 }
 
-// A small rounded label centred on x, its top at y, kept inside [lo, hi]. Current font.
-static void tl_pill(ImDrawList *dl, f32 x, f32 y, f32 lo, f32 hi, const char *text, ImU32 bg, ImU32 fg)
-{
-    ImVec2 ts = ImGui::CalcTextSize(text);
-    f32 px = kit_px(7), py = kit_px(2);
-    f32 w = ts.x + 2 * px, h = ts.y + 2 * py;
-    f32 a = x - w / 2;
-    if (a + w > hi) a = hi - w;
-    if (a < lo) a = lo;
-    dl->AddRectFilled(ImVec2(a, y), ImVec2(a + w, y + h), bg, h / 2);
-    dl->AddText(ImVec2(floorf(a + px), floorf(y + py)), fg, text);
-}
-
 // Something saved from the buffer, as the Saved row draws it
 struct TlSaved {
     i64  a, z;
@@ -1245,14 +1232,14 @@ static void screen_timeline()
     // a splitter (dragged, double-click for the default), kept as a share of the height.
     Config &cfg = g_app.config;
     const f32 gap = 12 * s;
-    const f32 pad_r = 14 * s, ruler_h = 28 * s, saved_h = 9 * s, game_h = 22 * s, video_h = 56 * s;
-    const f32 zoom_bar_h = 10 * s, zoom_bar_room = zoom_bar_h + 6 * s;
+    const f32 pad_r = 14 * s, ruler_h = wa_ruler_h(), saved_h = 9 * s, game_h = 22 * s, video_h = 56 * s;
+    const f32 zoom_bar_h = wa_viewbar_h(), zoom_bar_room = zoom_bar_h + 6 * s, mark_h = 13 * s;
     const f32 line_max = 40 * s, line_min = 20 * s; // a sound lane: as tall as fits, between these
-    const f32 min_tracks = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + 10 * s + TL_LANES * line_min + 10 * s;
+    const f32 min_tracks = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 8 * s + TL_LANES * line_min + 10 * s;
     const f32 top_min = 160 * s;
     auto top_height = [&]() {
         // By default the tracks get what they use at their tallest and the preview the rest
-        const f32 tracks_full = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + 10 * s + TL_LANES * line_max + 10 * s;
+        const f32 tracks_full = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 8 * s + TL_LANES * line_max + 10 * s;
         f32 h = cfg.timeline_top > 0 ? avail.y * cfg.timeline_top : avail.y - fh - 2 * gap - tracks_full;
         if (h > avail.y - fh - 2 * gap - min_tracks) h = avail.y - fh - 2 * gap - min_tracks;
         if (h < top_min) h = top_min;
@@ -1298,9 +1285,9 @@ static void screen_timeline()
     TlCanvas c = {};
     c.dl = dl;
     c.x1 = card_z.x - pad_r;
-    f32 y_zoom = origin.y + 8 * s, y_ruler = y_zoom + zoom_bar_room, y_tracks = y_ruler + ruler_h;
-    f32 y_saved = y_tracks + 2 * s, y_game = y_saved + saved_h + 2 * s, y_video = y_game + game_h;
-    f32 y_snd = y_video + video_h + 10 * s;
+    f32 y_zoom = origin.y + 8 * s, y_marks = y_zoom + zoom_bar_room, y_ruler = y_marks + mark_h, y_tracks = y_ruler + ruler_h;
+    f32 y_saved = y_tracks + 2 * s, y_game = y_saved + saved_h + 1 * s, y_video = y_game + game_h + 1 * s;
+    f32 y_snd = y_video + video_h + 4 * s;
     f32 y_bottom = card_z.y - 10 * s;
     bool names_hot = false;
     {
@@ -1363,7 +1350,7 @@ static void screen_timeline()
     auto lane_name = [&](i32 k) { return summed ? TL_LANE_NAME[k] : (const char *)tl.rows[k].name; };
     auto lane_col = [&](i32 k) { return summed ? TL_LANE_COL[k] : tl.rows[k].rgb; };
     bool compact = line_h < 24 * s; // names in the small font
-    f32 lane_in = ImMax(floorf(line_h * 0.05f), 1.0f), bar_in = lane_in;
+    f32 lane_in = ImMax(floorf(1 * s), 1.0f), bar_in = lane_in; // rows 2 px apart
 
     // What's been saved from here: sessions under, clips over them. A click on one selects it.
     saved_check();
@@ -1379,14 +1366,14 @@ static void screen_timeline()
             if (t >= saved[i].a - slack && t <= saved[i].z + slack) saved_hit = i;
     }
 
-    // Markers in view, as flags on the ruler. A click on one puts the playhead there and shows its note; a right
-    // click opens the whole note.
+    // Markers in view, in their strip over the ruler, apart from the in and out. A click on one puts the playhead
+    // there and shows its note; a right click opens the whole note.
     static Marker marks[256];
     static Marker mark_open; // the one whose note is open
     i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
     i32 mark_hit = -1;
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_ruler &&
-        io.MousePos.y < y_tracks && (tl.drag == TL_DRAG_NONE || !tl.dragged)) { // the timeline's own click is active
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_marks &&
+        io.MousePos.y < y_ruler && (tl.drag == TL_DRAG_NONE || !tl.dragged)) { // the timeline's own click is active
         f32 best = 6 * s;
         for (i32 i = 0; i < mark_count; i++) {
             f32 d = fabsf(io.MousePos.x - tl_x(c, marks[i].t_us));
@@ -1469,20 +1456,8 @@ static void screen_timeline()
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         set_view();
 
-        f32 r = zoom_bar_h / 2, y1 = y_zoom + zoom_bar_h;
-        dl->AddRectFilled(ImVec2(bx0, y_zoom), ImVec2(bx0 + bw, y1), col32(COL_PANEL2), r);
-        if (has_sel) { // the selection, faintly, to show where it sits in the whole buffer
-            f32 sa = ImClamp(bx(tl.sel_in), bx0, bx0 + bw), sz = ImClamp(bx(tl.sel_out), bx0, bx0 + bw);
-            dl->AddRectFilled(ImVec2(sa, y_zoom), ImVec2(ImMax(sz, sa + 1 * s), y1), col32(COL_ACCENT, 0.35f));
-        }
-        window(&wa, &wb);
-        dl->AddRectFilled(ImVec2(wa, y_zoom), ImVec2(wb, y1), hot ? col32(COL_TEXT, 0.55f) : col32(COL_DIM), r);
-        f32 grips[2] = {wa + 4 * s, wb - 4 * s};
-        for (f32 gx : grips)
-            dl->AddLine(ImVec2(floorf(gx) + 0.5f, y_zoom + 2.5f * s), ImVec2(floorf(gx) + 0.5f, y1 - 2.5f * s),
-                        IM_COL32(255, 255, 255, 190), 1.5f * s);
-        f32 px = ImClamp(bx(tl_playhead()), bx0, bx0 + bw);
-        dl->AddRectFilled(ImVec2(px - 1 * s, y_zoom), ImVec2(px + 1 * s, y1), IM_COL32(255, 255, 255, 230));
+        wa_draw_viewbar(dl, bx0, bx0 + bw, y_zoom, bx(tl.view_end_us - tl.view_span_us), bx(tl.view_end_us), hot,
+                        has_sel ? bx(tl.sel_in) : 0, has_sel ? bx(tl.sel_out) : 0, bx(tl_playhead()));
     }
 
     // --- Top left over the track names, a toggle: lit, every app has its own lane; off, the sound is in four lanes
@@ -1509,8 +1484,8 @@ static void screen_timeline()
     }
 
     // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
-    ImGui::SetCursorScreenPos(ImVec2(c.x0, y_ruler));
-    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, card_z.y - y_ruler),
+    ImGui::SetCursorScreenPos(ImVec2(c.x0, y_marks));
+    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, card_z.y - y_marks),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
                                ImGuiButtonFlags_MouseButtonMiddle);
     bool bar_hovered = ImGui::IsItemHovered();
@@ -1523,31 +1498,36 @@ static void screen_timeline()
     bool mouse_ok = ImGui::IsMousePosValid();
     // The ruler holds the selection: its ends and the band between are taken hold of there, and a drag beside
     // them draws a new one. On the tracks the mouse only moves the playhead.
-    f32 grab = 7 * s;
+    f32 grab = wa_grab();
     bool on_ruler = io.MousePos.y >= y_ruler && io.MousePos.y < y_tracks + 2 * s;
     bool near_in = has_sel && on_ruler && fabsf(io.MousePos.x - tl_x(c, tl.sel_in)) <= grab;
     bool near_out = has_sel && on_ruler && !near_in && fabsf(io.MousePos.x - tl_x(c, tl.sel_out)) <= grab;
-    bool on_band = has_sel && on_ruler && !near_in && !near_out && mark_hit < 0 && mouse_t > tl.sel_in &&
+    bool on_band = has_sel && on_ruler && !near_in && !near_out && mouse_t > tl.sel_in &&
                    mouse_t < tl.sel_out;
     // The playhead kept on footage
     auto on_footage = [&](i64 t) { return t >= b.newest_us ? b.newest_us - 1 : t < b.oldest_us ? b.oldest_us : t; };
+    // An end of the in and out lands on a marker that comes close
+    auto on_marker = [&](i64 t) {
+        f32 best = grab;
+        i64 to = t;
+        for (i32 i = 0; i < mark_count; i++) {
+            f32 d = fabsf(tl_x(c, marks[i].t_us) - tl_x(c, t));
+            if (d <= best) { best = d; to = marks[i].t_us; }
+        }
+        return to;
+    };
     // Close enough to the playhead on screen to land on it
     auto near_play = [&](i64 t) { return fabsf(tl_x(c, t) - tl_x(c, tl_playhead())) <= grab; };
     static i64 grab_off, grab_len, grab_play, grab_in, grab_out;
     // Shift on an end: both ends scale around the playhead, the other end moving in proportion, so the playhead
     // keeps its place relative to the selection (inside it or not). `t` is where the dragged end goes.
     auto scale_around_play = [&](bool in, i64 t) {
-        f64 p = (f64)grab_play, a = (f64)grab_in - p, z = (f64)grab_out - p; // the ends from the playhead, signed
-        f64 f = ((f64)t - p) / (in ? a : z);
-        f64 least = (f64)TL_SEC / (z - a), most = 1e9;
-        f64 ends[2] = {a, z};
-        for (f64 e : ends) { // neither end past the buffer
-            if (e < 0) most = ImMin(most, (p - (f64)b.oldest_us) / -e);
-            if (e > 0) most = ImMin(most, ((f64)b.newest_us - p) / e);
-        }
-        f = f > most ? most : f < least ? least : f;
-        tl.sel_in = tl_whole_sec((i64)(p + a * f));
-        tl.sel_out = tl_whole_sec((i64)(p + z * f));
+        f64 a, z;
+        if (!wa_scale((f64)grab_play, (f64)grab_in, (f64)grab_out, in, (f64)t, (f64)b.oldest_us, (f64)b.newest_us,
+                      (f64)TL_SEC, &a, &z))
+            return;
+        tl.sel_in = tl_whole_sec((i64)a);
+        tl.sel_out = tl_whole_sec((i64)z);
         tl_clamp_selection();
     };
     // Not when the dragged end is on the playhead: there's nothing to scale by
@@ -1567,8 +1547,10 @@ static void screen_timeline()
         else if (near_out) tl.drag = TL_DRAG_OUT;
         else if (on_band) tl.drag = TL_DRAG_RANGE;
         else if (on_ruler) tl.drag = TL_DRAG_NEW;
+        else if (io.MousePos.y < y_ruler && mark_hit >= 0) tl.drag = TL_DRAG_MARK;
         else tl.drag = TL_DRAG_SEEK;
         if (tl.drag == TL_DRAG_SEEK) tl.playhead_us = on_footage(mouse_t);
+        if (tl.drag == TL_DRAG_MARK) tl.playhead_us = marks[mark_hit].t_us;
     }
     // Dragging an end or the band, the playhead follows the start or the end being moved so its frame shows, and goes
     // back when it's let go. With Shift the playhead stays, and an end that comes close lands on it.
@@ -1593,8 +1575,9 @@ static void screen_timeline()
             }
             tl.playhead_us = on_footage(t);
         } else if (tl.drag == TL_DRAG_NEW && tl.dragged) {
-            tl.sel_in = tl.drag_anchor_us < mouse_sec ? tl.drag_anchor_us : mouse_sec;
-            tl.sel_out = tl.drag_anchor_us < mouse_sec ? mouse_sec : tl.drag_anchor_us;
+            i64 m = on_marker(mouse_sec);
+            tl.sel_in = tl.drag_anchor_us < m ? tl.drag_anchor_us : m;
+            tl.sel_out = tl.drag_anchor_us < m ? m : tl.drag_anchor_us;
             tl_clamp_selection();
         } else if (tl.drag == TL_DRAG_RANGE && tl.dragged) {
             i64 to = tl_whole_sec(mouse_t - grab_off);
@@ -1609,12 +1592,12 @@ static void screen_timeline()
             scale_around_play(tl.drag == TL_DRAG_IN, mouse_t);
             tl.playhead_us = grab_play; // back where it was if the drag began without Shift
         } else if (tl.drag == TL_DRAG_IN) {
-            i64 t = keep && near_play(mouse_t) ? tl_playhead() : mouse_sec;
+            i64 t = keep && near_play(mouse_t) ? tl_playhead() : on_marker(mouse_sec);
             tl.sel_in = t < tl.sel_out - TL_SEC ? t : tl.sel_out - TL_SEC;
             tl_clamp_selection();
             if (!keep) tl.playhead_us = tl.sel_in;
         } else if (tl.drag == TL_DRAG_OUT) {
-            i64 t = keep && near_play(mouse_t) ? tl_playhead() : mouse_sec;
+            i64 t = keep && near_play(mouse_t) ? tl_playhead() : on_marker(mouse_sec);
             tl.sel_out = t > tl.sel_in + TL_SEC ? t : tl.sel_in + TL_SEC;
             tl_clamp_selection();
             if (!keep) tl.playhead_us = on_footage(tl.sel_out);
@@ -1644,7 +1627,7 @@ static void screen_timeline()
             ImGui::OpenPopup("##savedmenu");
         } else if (tl.drag == TL_DRAG_PAN && click && has_sel && on_ruler && mouse_t >= tl.sel_in && mouse_t <= tl.sel_out) {
             ImGui::OpenPopup("##selmenu"); // a right click on the selection
-        } else if (tl.drag == TL_DRAG_NEW && click && mark_hit >= 0) {
+        } else if (tl.drag == TL_DRAG_MARK && click && mark_hit >= 0) {
             tl.playhead_us = marks[mark_hit].t_us;
             tl.marker_pick = marks[mark_hit].t_us;
         } else if (tl.drag == TL_DRAG_SEEK && click && saved_hit >= 0) {
@@ -1699,7 +1682,6 @@ static void screen_timeline()
         ImGui::PopFont();
         dl->AddText(ImVec2(tx + 22 * s, floorf(y_video + (video_h - th) / 2)), col32(COL_DIM), "Video");
     }
-    dl->AddLine(ImVec2(origin.x + 14 * s, y_snd - 5 * s), ImVec2(c.x1, y_snd - 5 * s), col32(COL_LINE));
     dl->PushClipRect(ImVec2(origin.x, y_snd), ImVec2(c.x0, y_bottom), true);
     for (i32 k = 0; k < lanes; k++) {
         f32 y = y_lanes + k * line_h;
@@ -1738,7 +1720,7 @@ static void screen_timeline()
     f32 lane_r = 6 * s;
     dl->AddRectFilled(ImVec2(c.x0, y_saved), ImVec2(c.x1, y_saved + saved_h), col32(TL_COL_LANE), 3 * s);
     dl->AddRectFilled(ImVec2(c.x0, y_game), ImVec2(c.x1, y_game + game_h), col32(TL_COL_LANE), lane_r);
-    dl->AddRectFilled(ImVec2(c.x0, y_video + 3 * s), ImVec2(c.x1, y_video + video_h - 3 * s), col32(TL_COL_LANE), lane_r);
+    dl->AddRectFilled(ImVec2(c.x0, y_video + 1 * s), ImVec2(c.x1, y_video + video_h - 1 * s), col32(TL_COL_LANE), lane_r);
     dl->PushClipRect(ImVec2(c.x0 - 6 * s, y_snd - 4 * s), ImVec2(c.x1 + 6 * s, y_bottom), true);
     for (i32 k = 0; k < lanes; k++) {
         f32 y = y_lanes + k * line_h;
@@ -1773,7 +1755,7 @@ static void screen_timeline()
     // Video: footage as bars, gaps (lock screen, paused, clipback not running) empty. Zoomed in far enough, a frame
     // every so often along it: each the keyframe at a step of the time grid, so a pan keeps the same frames.
     {
-        f32 y = y_video + 6 * s, h = video_h - 12 * s;
+        f32 y = y_video + 1 * s, h = video_h - 2 * s;
         TlRun run = {};
         ImU32 col = col32(TL_COL_VIDEO, 0.9f);
         for (i32 i = tl_seg_after(b, c.start); i < b.seg_count && b.segs[i].start_us < view_end; i++)
@@ -1803,7 +1785,7 @@ static void screen_timeline()
 
     // The game being played, a band each in the game's colour with its icon and name. Bands may overlap.
     {
-        f32 y = y_game + 3 * s, h = game_h - 6 * s, isz = floorf(ImMin(16 * s, h - 2 * s));
+        f32 y = y_game + 1 * s, h = game_h - 2 * s, isz = floorf(ImMin(16 * s, h - 2 * s));
         ImGui::PushFont(g_font_small);
         for (i32 i = 0; i < b.activity_count; i++) {
             const ActivityEntry &e = b.activity[i];
@@ -1910,22 +1892,10 @@ static void screen_timeline()
     }
 
     // The selection: an accent tint, a band on the ruler, and a handle on each edge
-    f32 y_band = y_ruler + ruler_h - 6 * s;
     if (has_sel) {
-        f32 xa = tl_x(c, tl.sel_in), xb = tl_x(c, tl.sel_out);
-        dl->AddRectFilled(ImVec2(xa, y_tracks), ImVec2(xb, y_bottom), col32(COL_ACCENT, 0.12f));
-        dl->AddRectFilled(ImVec2(xa, y_band), ImVec2(xb, y_band + 4 * s), col32(COL_ACCENT, 0.85f));
-        for (i32 k = 0; k < 2; k++) {
-            f32 x = k ? xb : xa;
-            bool hot = (k ? tl.drag == TL_DRAG_OUT : tl.drag == TL_DRAG_IN) ||
-                       (bar_hovered && tl.drag == TL_DRAG_NONE && (k ? near_out : near_in));
-            ImU32 col = col32(hot ? COL_ACCENT_HOVER : COL_ACCENT);
-            dl->AddLine(ImVec2(x, y_band), ImVec2(x, y_bottom), col, 2 * s);
-            f32 hw = 5 * s, hy = y_band + 2 * s;
-            dl->AddRectFilled(ImVec2(x - hw, hy - 11 * s), ImVec2(x + hw, hy + 11 * s), col, 4 * s);
-            dl->AddLine(ImVec2(x - 1.5f * s, hy - 5 * s), ImVec2(x - 1.5f * s, hy + 5 * s), col32(0xffffff, 0.8f), 1);
-            dl->AddLine(ImVec2(x + 1.5f * s, hy - 5 * s), ImVec2(x + 1.5f * s, hy + 5 * s), col32(0xffffff, 0.8f), 1);
-        }
+        bool idle = bar_hovered && tl.drag == TL_DRAG_NONE;
+        wa_draw_inout(dl, tl_x(c, tl.sel_in), tl_x(c, tl.sel_out), y_ruler, y_tracks, y_bottom,
+                      tl.drag == TL_DRAG_IN || (idle && near_in), tl.drag == TL_DRAG_OUT || (idle && near_out));
     }
 
     // Markers: a diamond on the ruler in the marker's colour (the playhead's is a white triangle), bigger when picked
@@ -1934,8 +1904,8 @@ static void screen_timeline()
         f32 x = floorf(tl_x(c, marks[i].t_us)) + 0.5f;
         u32 rgb = MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb;
         bool picked = marks[i].t_us == tl.marker_pick, hot = i == mark_hit;
-        if (hot) dl->AddLine(ImVec2(x, y_tracks), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
-        f32 r = (hot || picked ? 5.5f : 4.5f) * s, cy = y_ruler + ruler_h - r - 1 * s;
+        if (hot) dl->AddLine(ImVec2(x, y_marks + mark_h / 2), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
+        f32 r = (hot || picked ? 5.5f : 4.5f) * s, cy = floorf(y_marks + mark_h / 2);
         ImVec2 d[4] = {ImVec2(x, cy - r), ImVec2(x + r, cy), ImVec2(x, cy + r), ImVec2(x - r, cy)};
         dl->AddConvexPolyFilled(d, 4, col32(rgb));
         if (picked) dl->AddPolyline(d, 4, col32(COL_TEXT), ImDrawFlags_Closed, 1.5f * s);
@@ -1943,13 +1913,7 @@ static void screen_timeline()
 
     // The playhead (where the preview comes from)
     i64 play = tl_playhead();
-    if (play) {
-        f32 x = tl_x(c, play);
-        ImU32 col = col32(COL_TEXT);
-        dl->AddLine(ImVec2(x, y_tracks - 4 * s), ImVec2(x, y_bottom), col, 1.5f * s);
-        f32 hy = y_tracks - 4 * s;
-        dl->AddTriangleFilled(ImVec2(x - 5 * s, hy - 7 * s), ImVec2(x + 5 * s, hy - 7 * s), ImVec2(x, hy), col);
-    }
+    if (play) wa_draw_playhead(dl, tl_x(c, play), y_tracks, y_bottom);
     // The time under the mouse, or at the edge being dragged, on the ruler
     {
         i64 t = pill_t;
@@ -1967,7 +1931,7 @@ static void screen_timeline()
                 snprintf(when + l, sizeof when - l, "   %s", saved[saved_hit].name);
             }
             ImGui::PushFont(g_font_small);
-            tl_pill(dl, x, y_ruler + 2 * s, c.x0, c.x1, when, col32(COL_HOVER), col32(COL_TEXT));
+            wa_pill(dl, x, y_ruler + 2 * s, c.x0, c.x1, when, col32(COL_HOVER), col32(COL_TEXT));
             ImGui::PopFont();
         }
     }
@@ -1975,7 +1939,7 @@ static void screen_timeline()
     for (i32 i = 0; i < mark_count; i++) {
         if (marks[i].t_us != tl.marker_pick || (pill_t && mark_hit == i)) continue;
         ImGui::PushFont(g_font_small);
-        tl_pill(dl, tl_x(c, marks[i].t_us), y_tracks + 2 * s, c.x0, c.x1, marks[i].note[0] ? marks[i].note : "Marker",
+        wa_pill(dl, tl_x(c, marks[i].t_us), y_tracks + 2 * s, c.x0, c.x1, marks[i].note[0] ? marks[i].note : "Marker",
                 col32(MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb, 0.9f), col32(0x000000));
         ImGui::PopFont();
     }
@@ -2004,25 +1968,41 @@ static void screen_timeline()
     }
     lib_popup_style_pop();
 
-    // A marker's whole note, wrapped, with its time
-    ImGui::SetNextWindowSizeConstraints(ImVec2(380 * s, 0), ImVec2(380 * s, 360 * s));
-    if (ImGui::BeginPopup("##marknote")) {
+    // A marker's whole note, with its time and a copy button on the top line. The note wraps at a reading width; a
+    // short one gets a window just wide enough, a long one a taller window.
+    {
+        const char *note = mark_open.note[0] ? mark_open.note : "No note";
+        f32 pad = 12 * s, wrap = 300 * s, bs = fh;
         char when[64];
         tl_clock(mark_open.t_us, true, when, sizeof when);
-        u32 mrgb = MARKER_COLOURS[mark_open.colour < COUNT(MARKER_COLOURS) ? mark_open.colour : 0].rgb;
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        f32 lh = ImGui::GetTextLineHeight();
-        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 5 * s, p.y + lh / 2), 5 * s, col32(mrgb));
-        ImGui::SetCursorScreenPos(ImVec2(p.x + 16 * s, p.y));
-        ImGui::TextColored(rgb(COL_DIM), "%s", when);
-        ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(mark_open.note[0] ? mark_open.note : "No note");
-        ImGui::PopTextWrapPos();
-        if (mark_open.note[0] && kit_button(ICON_COPY "  Copy", KIT_GHOST)) {
-            ImGui::SetClipboardText(mark_open.note);
-            ImGui::CloseCurrentPopup();
+        f32 head = 16 * s + ImGui::CalcTextSize(when).x + 12 * s + (mark_open.note[0] ? bs : 0);
+        f32 body = ImGui::CalcTextSize(note).x;
+        f32 w = ImClamp(ImMax(head, body), 160 * s, wrap);
+        ImGui::SetNextWindowSize(ImVec2(w + 2 * pad, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8 * s, 6 * s));
+        bool open = ImGui::BeginPopup("##marknote", ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::PopStyleVar(2);
+        if (open) {
+            u32 mrgb = MARKER_COLOURS[mark_open.colour < COUNT(MARKER_COLOURS) ? mark_open.colour : 0].rgb;
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            f32 lh = ImGui::GetTextLineHeight(), ty = floorf(p.y + (bs - lh) / 2);
+            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 5 * s, ty + lh / 2), 5 * s, col32(mrgb));
+            ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 16 * s, ty), col32(COL_DIM), when);
+            if (mark_open.note[0]) {
+                ImGui::SetCursorScreenPos(ImVec2(p.x + w - bs, p.y));
+                kit_next_tip("Copy the note");
+                if (kit_icon_button(ICON_COPY, "##copynote", KIT_GHOST, true, false, bs)) {
+                    ImGui::SetClipboardText(mark_open.note);
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + bs + 6 * s));
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
+            ImGui::TextUnformatted(note);
+            ImGui::PopTextWrapPos();
+            ImGui::EndPopup();
         }
-        ImGui::EndPopup();
     }
     if (!tl.loaded || !b.seg_count) {
         const char *msg = !tl.loaded ? "Reading the buffer..." : "Nothing recorded yet";

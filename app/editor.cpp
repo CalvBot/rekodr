@@ -825,8 +825,8 @@ static void key_shape(ImDrawList *dl, ImVec2 c, f32 r, u8 ease, u32 col)
 }
 
 enum {
-    ED_DRAG_NONE, ED_DRAG_IN, ED_DRAG_OUT, ED_DRAG_SEEK, ED_DRAG_KEYS, ED_DRAG_LEVEL, ED_DRAG_STRETCH, ED_DRAG_PAN,
-    ED_DRAG_BAR, ED_DRAG_BAR_IN, ED_DRAG_BAR_OUT
+    ED_DRAG_NONE, ED_DRAG_IN, ED_DRAG_OUT, ED_DRAG_RANGE, ED_DRAG_NEW, ED_DRAG_MENU, ED_DRAG_SEEK, ED_DRAG_KEYS,
+    ED_DRAG_LEVEL, ED_DRAG_STRETCH, ED_DRAG_PAN, ED_DRAG_BAR, ED_DRAG_BAR_IN, ED_DRAG_BAR_OUT
 };
 
 // The selected keys moved by the drag so far, from where they were when it began. The grabbed key lands on a frame
@@ -944,7 +944,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     f32 gut = kit_px(176), gap = kit_px(3), round = kit_px(6);
     f32 bx0 = o.x + gut, bx1 = o.x + w, bw = bx1 - bx0;
     if (bw < kit_px(40)) return;
-    f32 bar_h = kit_px(8), ruler_h = kit_px(22), video_h = kit_px(46), lane_h = ed_lane_h(), vh = lane_h - 2 * ln_pad();
+    f32 bar_h = wa_viewbar_h(), ruler_h = wa_ruler_h(), video_h = kit_px(46), lane_h = ed_lane_h(), vh = lane_h - 2 * ln_pad();
     auto x_of = [&](f64 t) { return bx0 + (f32)((t - from) / span) * bw; };
     auto t_of = [&](f32 x) {
         f64 t = from + (f64)(x - bx0) / bw * span;
@@ -955,7 +955,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
 
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
-    f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(8), video_y = ruler_y + ruler_h;
+    f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(6), video_y = ruler_y + ruler_h;
     f32 zoom_y = video_y + video_h + gap, mix_y = zoom_y + lane_h + gap;
     f32 area0 = nt ? mix_y + lane_h + gap : mix_y;
     f32 content = nt * (lane_h + gap);
@@ -963,6 +963,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     if (area1 > area0 + content) area1 = area0 + content;
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
+    f32 lanes_y1 = nt ? area1 : zoom_y + lane_h;
 
     // The wheel pans; with Alt it zooms around the mouse, with Alt and Shift around the playhead. Shift alone sets
     // the lanes' height, and over the sound tracks' names the wheel scrolls them (when they don't all fit).
@@ -998,18 +999,19 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     }
     ed.lane_scroll = ed.lane_scroll < 0 ? 0 : ed.lane_scroll > max_scroll ? max_scroll : ed.lane_scroll;
 
-    // The view bar: the whole file, with the part shown; drag it to pan, its ends to zoom, double-click for all.
-    ImGui::SetCursorScreenPos(ImVec2(bx0, bar_y - kit_px(3)));
-    ImGui::InvisibleButton("##view", ImVec2(bw, bar_h + kit_px(6)));
+    // The view bar: the whole file, with a window on the part shown. Drag the window to pan, either end to zoom,
+    // beside it to bring it there; double-click shows everything.
+    ImGui::SetCursorScreenPos(ImVec2(bx0, bar_y - kit_px(4)));
+    ImGui::InvisibleButton("##view", ImVec2(bw, bar_h + kit_px(8)));
     {
-        f32 tx0 = bx0 + (f32)(ed.view_from / dur) * bw, tx1 = bx0 + (f32)((ed.view_from + ed.view_span) / dur) * bw;
+        auto bx = [&](f64 t) { return bx0 + (f32)(t / dur) * bw; };
+        f32 tx0 = bx(ed.view_from), tx1 = bx(ed.view_from + ed.view_span), grip = wa_grab();
         if (ImGui::IsItemActivated()) {
-            f32 grip = kit_px(7);
             ed.drag_mx = mx;
-            if (fabsf(mx - tx0) < grip && ed.view_span < dur) {
+            if (fabsf(mx - tx0) <= grip && mx < (tx0 + tx1) / 2 && ed.view_span < dur) {
                 ed.lane_drag = ED_DRAG_BAR_IN;
                 ed.drag_t = ed.view_from + ed.view_span;
-            } else if (fabsf(mx - tx1) < grip && ed.view_span < dur) {
+            } else if (fabsf(mx - tx1) <= grip && ed.view_span < dur) {
                 ed.lane_drag = ED_DRAG_BAR_OUT;
                 ed.drag_t = ed.view_from;
             } else {
@@ -1040,78 +1042,120 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             ed.view_span = dur;
         }
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
-        if (hot && (fabsf(mx - tx0) < kit_px(7) || fabsf(mx - tx1) < kit_px(7)) && ed.view_span < dur)
+        if (hot && (fabsf(mx - tx0) <= grip || fabsf(mx - tx1) <= grip) && ed.view_span < dur)
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-        tx0 = bx0 + (f32)(ed.view_from / dur) * bw;
-        tx1 = bx0 + (f32)((ed.view_from + ed.view_span) / dur) * bw;
-        if (tx1 - tx0 < kit_px(12)) {
-            f32 c = (tx0 + tx1) / 2;
-            tx0 = c - kit_px(6);
-            tx1 = c + kit_px(6);
-        }
-        dl->AddRectFilled(ImVec2(bx0, bar_y), ImVec2(bx1, bar_y + bar_h), col32(COL_PANEL), bar_h / 2);
-        dl->AddRectFilled(ImVec2(tx0, bar_y), ImVec2(tx1, bar_y + bar_h), col32(hot ? COL_DIM : COL_HOVER), bar_h / 2);
-        f32 px = bx0 + (f32)(p.pos / dur) * bw;
-        dl->AddRectFilled(ImVec2(px - kit_px(1), bar_y), ImVec2(px + kit_px(1), bar_y + bar_h), IM_COL32(255, 255, 255, 200));
+        wa_draw_viewbar(dl, bx0, bx1, bar_y, bx(ed.view_from), bx(ed.view_from + ed.view_span), hot, bx(ed.edit.in_s),
+                        bx(ed_out()), bx(p.pos));
     }
     from = ed.view_from;
     span = ed.view_span;
 
-    // The view's zoom buttons, in the ruler's gutter.
-    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(8), ruler_y + (ruler_h + video_h - fh) / 2));
-    kit_next_tip("Zoom out", "-");
-    if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, span < dur)) ed_view_zoom(1.6, p.pos);
-    ImGui::SameLine(0, kit_px(2));
-    kit_next_tip("Zoom in", "+");
-    if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, span > 0.51)) ed_view_zoom(1 / 1.6, p.pos);
-    {
-        char vt[32], vs[48];
-        fmt_time(span, vt, sizeof vt, span < 10);
-        snprintf(vs, sizeof vs, "%s shown", vt);
-        ImGui::PushFont(g_font_small);
-        f32 tx = o.x + kit_px(8) + 2 * fh + kit_px(10);
-        text_clipped(dl, ImVec2(tx, floorf(ruler_y + (ruler_h + video_h - g_font_small->FontSize) / 2)),
-                     bx0 - gap - tx - kit_px(4), col32(COL_FAINT), vs);
-        ImGui::PopFont();
-    }
-
-    // Ruler and video: scrub, or drag the trim's ends.
-    f32 in_x = x_of(ed.edit.in_s), out_x = x_of(ed_out());
+    // The ruler holds the in and out: their ends and the band between are taken hold of there, and a drag beside
+    // them draws new ones. On the picture's strip the mouse moves the playhead. Shift on an end scales both around
+    // the playhead; Shift on the band, or on an end that can't scale, lands it on the playhead when close.
+    // Dragging an end or the band shows its frame, and the playhead goes back once it's let go.
     ImGui::SetCursorScreenPos(ImVec2(bx0, ruler_y));
-    ImGui::InvisibleButton("##scrub", ImVec2(bw, ruler_h + video_h));
+    ImGui::InvisibleButton("##scrub", ImVec2(bw, ruler_h + video_h), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    bool scrub_hot = ImGui::IsItemHovered();
+    f64 mouse_t = t_of(mx);
+    bool on_ruler = my >= ruler_y && my < video_y;
+    f32 grab = wa_grab();
+    bool near_in = on_ruler && fabsf(mx - x_of(ed.edit.in_s)) <= grab;
+    bool near_out = on_ruler && !near_in && fabsf(mx - x_of(ed_out())) <= grab;
+    bool on_band = on_ruler && !near_in && !near_out && mouse_t > ed.edit.in_s && mouse_t < ed_out();
     {
-        f64 mt = t_of(mx);
-        f32 grab = kit_px(9);
-        bool near_in = fabsf(mx - in_x) < grab, near_out = fabsf(mx - out_x) < grab;
-        if (ImGui::IsItemActivated()) ed.lane_drag = near_out ? ED_DRAG_OUT : near_in ? ED_DRAG_IN : ED_DRAG_SEEK;
-        if (ImGui::IsItemActive()) {
-            f64 minlen = 0.2;
-            if (ed.lane_drag == ED_DRAG_IN) {
-                f64 t = mt < ed_out() - minlen ? mt : ed_out() - minlen;
-                ed.edit.in_s = t < 0 ? 0 : t;
-                ed.dirty = true;
+        const f64 least = 0.2;
+        static f64 grab_play, grab_in, grab_out, grab_off;
+        auto near_play = [&](f64 t) { return fabsf(x_of(t) - x_of(grab_play)) <= grab; };
+        auto set = [&](f64 a, f64 z) {
+            ed.edit.in_s = a < 0 ? 0 : a;
+            ed.edit.out_s = z >= dur - 0.01 ? 0 : z;
+            ed.dirty = true;
+        };
+        if (ImGui::IsItemActivated()) {
+            ed.drag_mx = mx;
+            ed.drag_moved = false;
+            grab_play = p.pos;
+            grab_in = ed.edit.in_s;
+            grab_out = ed_out();
+            grab_off = mouse_t - grab_in;
+            ed.drag_t = mouse_t;
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) ed.lane_drag = ED_DRAG_MENU;
+            else if (near_in) ed.lane_drag = ED_DRAG_IN;
+            else if (near_out) ed.lane_drag = ED_DRAG_OUT;
+            else if (on_band) ed.lane_drag = ED_DRAG_RANGE;
+            else if (on_ruler) ed.lane_drag = ED_DRAG_NEW;
+            else {
+                ed.lane_drag = ED_DRAG_SEEK;
                 p.scrubbing = true;
-                player_seek(&p, ed.edit.in_s);
-            } else if (ed.lane_drag == ED_DRAG_OUT) {
-                f64 t = mt > ed.edit.in_s + minlen ? mt : ed.edit.in_s + minlen;
-                ed.edit.out_s = t >= dur - 0.01 ? 0 : t;
-                ed.dirty = true;
-                p.scrubbing = true;
-                player_seek(&p, t);
-            } else if (ed.lane_drag == ED_DRAG_SEEK) {
-                p.scrubbing = true;
-                if (mt < p.pos - 0.02 || mt > p.pos + 0.02) player_seek(&p, mt);
+                player_seek(&p, mouse_t);
             }
-        } else if (ImGui::IsItemDeactivated()) {
-            ed.lane_drag = ED_DRAG_NONE;
-            p.scrubbing = false;
-            player_seek(&p, p.pos);
         }
-        if ((ImGui::IsItemHovered() && (near_in || near_out)) || ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT)
+        if (ImGui::IsItemActive() && ImGui::IsMousePosValid()) {
+            if (fabsf(mx - ed.drag_mx) > kit_px(4)) ed.drag_moved = true;
+            bool keep = io.KeyShift;
+            f64 show = -1; // the frame to show while dragging
+            if (ed.lane_drag == ED_DRAG_SEEK) {
+                if (mouse_t < p.pos - 0.02 || mouse_t > p.pos + 0.02) player_seek(&p, mouse_t);
+            } else if (ed.lane_drag == ED_DRAG_NEW && ed.drag_moved) {
+                f64 a = ImMin(ed.drag_t, mouse_t), z = ImMax(ed.drag_t, mouse_t);
+                if (z - a < least) z = ImMin(a + least, dur);
+                set(a, z);
+            } else if (ed.lane_drag == ED_DRAG_RANGE && ed.drag_moved) {
+                f64 len = grab_out - grab_in, to = mouse_t - grab_off;
+                if (keep && near_play(to)) to = grab_play;
+                else if (keep && near_play(to + len)) to = grab_play - len;
+                to = to + len > dur ? dur - len : to < 0 ? 0 : to;
+                set(to, to + len);
+                if (!keep) show = to;
+            } else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT) {
+                bool in = ed.lane_drag == ED_DRAG_IN;
+                f64 a, z;
+                if (keep && wa_scale(grab_play, grab_in, grab_out, in, mouse_t, 0, dur, least, &a, &z)) {
+                    set(a, z);
+                } else if (in) {
+                    f64 t = keep && near_play(mouse_t) ? grab_play : mouse_t;
+                    set(ImMin(t, ed_out() - least), ed_out());
+                    if (!keep) show = ed.edit.in_s;
+                } else {
+                    f64 t = keep && near_play(mouse_t) ? grab_play : mouse_t;
+                    set(ed.edit.in_s, ImMax(t, ed.edit.in_s + least));
+                    if (!keep) show = ed_out();
+                }
+            }
+            if (show >= 0) {
+                p.scrubbing = true;
+                player_seek(&p, show);
+            } else if (ed.lane_drag != ED_DRAG_SEEK && p.scrubbing) {
+                p.scrubbing = false;
+                player_seek(&p, grab_play);
+            }
+        }
+        if (ImGui::IsItemDeactivated()) {
+            bool moved_ends = ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT || ed.lane_drag == ED_DRAG_RANGE;
+            if (ed.lane_drag == ED_DRAG_MENU && !ed.drag_moved && on_ruler && mouse_t >= ed.edit.in_s && mouse_t <= ed_out())
+                ImGui::OpenPopup("##inout_menu"); // a right click on the in and out
+            if (p.scrubbing || moved_ends) {
+                p.scrubbing = false;
+                player_seek(&p, moved_ends ? grab_play : p.pos);
+            }
+            ed.lane_drag = ED_DRAG_NONE;
+        }
+        if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT || (scrub_hot && ed.lane_drag == ED_DRAG_NONE && (near_in || near_out)))
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        else if (ed.lane_drag == ED_DRAG_RANGE || (scrub_hot && ed.lane_drag == ED_DRAG_NONE && on_band))
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     }
-    in_x = x_of(ed.edit.in_s);
-    out_x = x_of(ed_out());
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("##inout_menu")) {
+        if (lib_menu_item(ICON_CLOSE, "Clear in and out")) {
+            ed.edit.in_s = ed.edit.out_s = 0;
+            ed.dirty = true;
+        }
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+    f32 in_x = x_of(ed.edit.in_s), out_x = x_of(ed_out());
 
     // The ruler: a label every 70 px or more, small ticks between.
     dl->AddRectFilled(ImVec2(bx0, ruler_y), ImVec2(bx1, ruler_y + ruler_h), col32(COL_PANEL), round, ImDrawFlags_RoundCornersTop);
@@ -1135,12 +1179,10 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             }
         }
         ImGui::PopFont();
-        // The kept part, as a line along the ruler's foot.
-        dl->AddRectFilled(ImVec2(in_x, ruler_y + ruler_h - kit_px(2)), ImVec2(out_x, ruler_y + ruler_h), col32(COL_ACCENT));
         dl->PopClipRect();
     }
 
-    // The video: frames from the file's strip at the picture's shape, then the trim over them.
+    // The video: frames from the file's strip at the picture's shape.
     {
         f32 y0 = video_y, y1 = video_y + video_h;
         dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL2));
@@ -1156,17 +1198,6 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 dl->AddImage((ImTextureID)(intptr_t)lib.strip, ImVec2(x, y0), ImVec2(x + tile, y1), ImVec2(u0, 0), ImVec2(u1, 1));
             }
         }
-        if (in_x > bx0) dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(in_x, y1), IM_COL32(0, 0, 0, 185));
-        if (out_x < bx1) dl->AddRectFilled(ImVec2(out_x, y0), ImVec2(bx1, y1), IM_COL32(0, 0, 0, 185));
-        bool trimming = ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT;
-        u32 acc = col32(trimming ? COL_ACCENT_HOVER : COL_ACCENT);
-        f32 hw = kit_px(7), bw2 = kit_px(2), cy = (y0 + y1) / 2, gh = kit_px(8);
-        dl->AddRectFilled(ImVec2(in_x, y0), ImVec2(out_x, y0 + bw2), acc);
-        dl->AddRectFilled(ImVec2(in_x, y1 - bw2), ImVec2(out_x, y1), acc);
-        dl->AddRectFilled(ImVec2(in_x, y0), ImVec2(in_x + hw, y1), acc, kit_px(3), ImDrawFlags_RoundCornersLeft);
-        dl->AddRectFilled(ImVec2(out_x - hw, y0), ImVec2(out_x, y1), acc, kit_px(3), ImDrawFlags_RoundCornersRight);
-        dl->AddRectFilled(ImVec2(in_x + hw / 2 - kit_px(1), cy - gh), ImVec2(in_x + hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
-        dl->AddRectFilled(ImVec2(out_x - hw / 2 - kit_px(1), cy - gh), ImVec2(out_x - hw / 2 + kit_px(1), cy + gh), IM_COL32(255, 255, 255, 200));
         dl->PopClipRect();
     }
 
@@ -1179,7 +1210,6 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         f32 ry = area0 + i * (lane_h + gap) - ed.lane_scroll;
         rows[nr++] = {1 + tracks[i], i, tracks[i], ry, ry + lane_h, true, ed.item.info.tracks[tracks[i]]};
     }
-    f32 lanes_y1 = nt ? area1 : zoom_y + lane_h;
 
     auto row_at = [&](f32 y) -> i32 {
         for (i32 r = 0; r < nr; r++) {
@@ -1483,20 +1513,33 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             key_shape(dl, c, r0 + kit_px(2), q.ease, on ? IM_COL32_WHITE : IM_COL32(0, 0, 0, 170));
             key_shape(dl, c, r0, q.ease, col32(on ? COL_ACCENT : !l ? COL_BLUE : muted ? COL_FAINT : 0xd6d9de));
         }
-        // Outside the trim, darkened.
-        if (in_x > bx0) dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(in_x, y1), IM_COL32(0, 0, 0, 110));
-        if (out_x < bx1) dl->AddRectFilled(ImVec2(out_x, y0), ImVec2(bx1, y1), IM_COL32(0, 0, 0, 110));
         dl->PopClipRect();
         if (row.scrolls) ImGui::PopClipRect();
     }
 
-    // The playhead, through everything.
+    // The in and out, the playhead, and the time under the mouse (or at the end being dragged) on the ruler
+    dl->PushClipRect(ImVec2(bx0 - kit_px(6), ruler_y), ImVec2(bx1 + kit_px(6), lanes_y1), true);
+    bool idle = scrub_hot && ed.lane_drag == ED_DRAG_NONE;
+    wa_draw_inout(dl, in_x, out_x, ruler_y, video_y, lanes_y1, ed.lane_drag == ED_DRAG_IN || (idle && near_in),
+                  ed.lane_drag == ED_DRAG_OUT || (idle && near_out));
     f32 px = x_of(p.pos);
-    if (px >= bx0 - 1 && px <= bx1 + 1) {
-        dl->AddRectFilled(ImVec2(px - kit_px(1), ruler_y), ImVec2(px + kit_px(1), lanes_y1), IM_COL32_WHITE);
-        f32 k = kit_px(6);
-        dl->AddTriangleFilled(ImVec2(px - k, ruler_y), ImVec2(px + k, ruler_y), ImVec2(px, ruler_y + k), IM_COL32_WHITE);
+    if (px >= bx0 - 1 && px <= bx1 + 1) wa_draw_playhead(dl, px, video_y, lanes_y1);
+    f64 pill_t = -1;
+    if (idle) pill_t = mouse_t;
+    else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_RANGE) pill_t = ed.edit.in_s;
+    else if (ed.lane_drag == ED_DRAG_OUT) pill_t = ed_out();
+    else if (ed.lane_drag == ED_DRAG_SEEK) pill_t = p.pos;
+    else if (ed.lane_drag == ED_DRAG_NEW && ed.drag_moved) pill_t = mouse_t;
+    if (pill_t >= 0) {
+        f32 x = x_of(pill_t);
+        if (idle) dl->AddLine(ImVec2(x, video_y), ImVec2(x, lanes_y1), col32(COL_TEXT, 0.3f));
+        char when[32];
+        fmt_time(pill_t, when, sizeof when, true);
+        ImGui::PushFont(g_font_small);
+        wa_pill(dl, x, ruler_y + kit_px(2), bx0, bx1, when, col32(COL_HOVER), col32(COL_TEXT));
+        ImGui::PopFont();
     }
+    dl->PopClipRect();
 }
 
 // A group's caption on the left and its page controls on the right, on one row.
@@ -2181,48 +2224,47 @@ static void screen_editor()
         badge(dl, ImVec2(a.x + kit_px(10), a.y + kit_px(10)), false, false, zt);
     }
 
-    // The transport bar: play, the time, the trim buttons, and how much is kept on the right. Fixed widths.
+    // The transport bar, as the Timeline's: Play and the playhead's time, zoom, then the in and out and their
+    // length on the right with a button to clear them. Fixed places, so nothing moves.
     ImVec2 r0(pos.x, pos.y + video_h + kit_px(10));
     dl->AddRectFilled(r0, ImVec2(r0.x + main_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
     kit_next_tip(p.paused ? "Play" : "Pause", "Space");
-    if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_GHOST)) player_toggle(&p);
-    char t1[32], t2[32], tm[80];
+    if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_PRIMARY)) player_toggle(&p);
+    f64 dur = ed_duration();
+    char t1[32];
     fmt_time(p.pos, t1, sizeof t1, true);
-    fmt_time(ed_duration(), t2, sizeof t2, true);
-    snprintf(tm, sizeof tm, "%s / %s", t1, t2);
-    f32 time_x = r0.x + pad + fh + kit_px(8);
-    ImVec2 ts = ImGui::CalcTextSize(tm);
-    dl->AddText(ImVec2(time_x, floorf(y + (fh - ts.y) / 2)), col32(COL_DIM), tm);
-    static const char *const trims[] = {ICON_START "  Set start", ICON_NOW "  Set end", ICON_UNDO "  Reset"};
-    static const char *const trim_icons[] = {ICON_START "##start", ICON_NOW "##end", ICON_UNDO "##reset"};
-    // Narrow, the trim buttons drop their words; narrower still, the kept length goes. Decided by the width alone
-    // (the widest the texts get), so nothing moves as the time or the trim changes.
-    f32 pad_x = 2 * ImGui::GetStyle().FramePadding.x, words_w = 0;
-    for (i32 i = 0; i < 3; i++) words_w += ImGui::CalcTextSize(trims[i]).x + pad_x + kit_px(4);
-    f32 kept_most = ImGui::CalcTextSize("00:00:00 kept").x + kit_px(24), bar_end = r0.x + main_w;
-    f32 bx = time_x + kit_px(170);
-    bool words = bx + words_w + kept_most <= bar_end;
-    bool show_kept = bx + (words ? words_w : 3 * (fh + kit_px(4))) + kept_most <= bar_end;
-    for (i32 i = 0; i < 3; i++) {
-        const char *label = words ? trims[i] : trim_icons[i];
-        f32 w = words ? ImGui::CalcTextSize(trims[i]).x + pad_x : fh;
-        ImGui::SetCursorScreenPos(ImVec2(bx, y));
-        bool enabled = i < 2 || ed.edit.in_s > 0 || ed.edit.out_s > 0;
-        if (kit_button(label, KIT_GHOST, ImVec2(w, 0), enabled)) {
-            if (i == 0 && p.pos < ed_out() - 0.2) { ed.edit.in_s = p.pos; ed.dirty = true; }
-            if (i == 1 && p.pos > ed.edit.in_s + 0.2) { ed.edit.out_s = p.pos >= ed_duration() - 0.01 ? 0 : p.pos; ed.dirty = true; }
-            if (i == 2) { ed.edit.in_s = ed.edit.out_s = 0; ed.dirty = true; }
+    f32 x = r0.x + pad + fh + kit_px(12);
+    ImGui::PushFont(g_font_bold);
+    dl->AddText(ImVec2(x, floorf(y + (fh - ImGui::GetFontSize()) / 2)), col32(COL_TEXT), t1);
+    fmt_time(dur, t1, sizeof t1, true);
+    x += ImGui::CalcTextSize(t1).x + kit_px(18);
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    kit_next_tip("Zoom out", "-");
+    if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, ed.view_span < dur)) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
+    ImGui::SameLine(0, kit_px(2));
+    kit_next_tip("Zoom in", "+");
+    if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, ed.view_span > 0.51)) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
+    {
+        bool trimmed = ed.edit.in_s > 0 || ed.edit.out_s > 0;
+        f32 x_clear = r0.x + main_w - pad - fh;
+        ImGui::SetCursorScreenPos(ImVec2(x_clear, y));
+        kit_next_tip("Clear in and out");
+        if (kit_icon_button(ICON_CLOSE, "##clear_inout", KIT_GHOST, trimmed)) {
+            ed.edit.in_s = ed.edit.out_s = 0;
+            ed.dirty = true;
         }
-        bx += w + kit_px(4);
+        char ta[32], tz[32], len[32], sel[112];
+        fmt_time(ed.edit.in_s, ta, sizeof ta, true);
+        fmt_time(ed_out(), tz, sizeof tz, true);
+        fmt_time(ed_out() - ed.edit.in_s, len, sizeof len, true);
+        snprintf(sel, sizeof sel, "%s - %s   %s", ta, tz, len);
+        ImVec2 ks = ImGui::CalcTextSize(sel);
+        f32 kx = x_clear - kit_px(6) - ks.x;
+        dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(trimmed ? COL_TEXT : COL_DIM), sel);
     }
-    char kept[32], sel[48];
-    fmt_time(ed_out() - ed.edit.in_s, kept, sizeof kept, true);
-    snprintf(sel, sizeof sel, "%s kept", kept);
-    ImVec2 ks = ImGui::CalcTextSize(sel);
-    f32 kx = r0.x + main_w - kit_px(16) - ks.x;
-    if (show_kept) dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(COL_TEXT), sel);
 
     // The side panel: Edit, or Keep & share.
     ImGui::SetCursorScreenPos(ImVec2(pos.x + main_w + gap, body_y));
@@ -2302,8 +2344,8 @@ static void screen_editor()
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) ed_paste(p.pos);
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) ed_undo(io.KeyShift);
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) ed_undo(true);
-        if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) ed_view_zoom(1 / 1.6, p.pos);
-        if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) ed_view_zoom(1.6, p.pos);
+        if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
+        if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
         // Left and Right jump between keys and the trim's ends (a second with Shift); comma and period step a frame
         for (i32 dir = -1; dir <= 1; dir += 2) {
             if (ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_LeftArrow : ImGuiKey_RightArrow)) {
