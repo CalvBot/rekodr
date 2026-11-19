@@ -1231,13 +1231,13 @@ static void screen_timeline()
     Config &cfg = g_app.config;
     const f32 gap = 12 * s;
     const f32 pad_r = 14 * s, ruler_h = wa_ruler_h(), saved_h = 9 * s, game_h = 22 * s, video_h = 36 * s;
-    const f32 zoom_bar_h = wa_viewbar_h(), zoom_bar_room = zoom_bar_h + 6 * s, mark_h = 13 * s;
+    const f32 zoom_bar_h = wa_viewbar_h(), zoom_bar_room = zoom_bar_h + 6 * s;
     const f32 line_max = 40 * s, line_min = 20 * s; // a sound lane: as tall as fits, between these
-    const f32 min_tracks = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_min + 10 * s;
+    const f32 min_tracks = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_min + 10 * s;
     const f32 top_min = 160 * s;
     auto top_height = [&]() {
         // By default the tracks get what they use at their tallest and the preview the rest
-        const f32 tracks_full = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_max + 10 * s;
+        const f32 tracks_full = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_max + 10 * s;
         f32 h = cfg.timeline_top > 0 ? avail.y * cfg.timeline_top : avail.y - fh - 2 * gap - tracks_full;
         if (h > avail.y - fh - 2 * gap - min_tracks) h = avail.y - fh - 2 * gap - min_tracks;
         if (h < top_min) h = top_min;
@@ -1283,7 +1283,7 @@ static void screen_timeline()
     TlCanvas c = {};
     c.dl = dl;
     c.x1 = card_z.x - pad_r;
-    f32 y_zoom = origin.y + 8 * s, y_marks = y_zoom + zoom_bar_room, y_ruler = y_marks + mark_h, y_tracks = y_ruler + ruler_h;
+    f32 y_zoom = origin.y + 8 * s, y_ruler = y_zoom + zoom_bar_room, y_tracks = y_ruler + ruler_h;
     f32 y_saved = y_tracks + 2 * s, y_game = y_saved + saved_h + 1 * s, y_video = y_game + game_h;
     f32 y_snd = y_video + video_h; // each row is inset 1 px, so every gap is 2
     f32 y_bottom = card_z.y - 10 * s;
@@ -1364,14 +1364,14 @@ static void screen_timeline()
             if (t >= saved[i].a - slack && t <= saved[i].z + slack) saved_hit = i;
     }
 
-    // Markers in view, in their strip over the ruler, apart from the in and out. A click on one puts the playhead
-    // there and shows its note; a right click opens the whole note.
+    // Markers in view, on the ruler. A click on one puts the playhead there and shows its note; a right click opens
+    // the whole note.
     static Marker marks[256];
     static Marker mark_open; // the one whose note is open
     i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
     i32 mark_hit = -1;
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_marks &&
-        io.MousePos.y < y_ruler && (tl.drag == TL_DRAG_NONE || !tl.dragged)) { // the timeline's own click is active
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_ruler &&
+        io.MousePos.y < y_tracks && (tl.drag == TL_DRAG_NONE || !tl.dragged)) { // the timeline's own click is active
         f32 best = 6 * s;
         for (i32 i = 0; i < mark_count; i++) {
             f32 d = fabsf(io.MousePos.x - tl_x(c, marks[i].t_us));
@@ -1482,8 +1482,8 @@ static void screen_timeline()
     }
 
     // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
-    ImGui::SetCursorScreenPos(ImVec2(c.x0, y_marks));
-    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, card_z.y - y_marks),
+    ImGui::SetCursorScreenPos(ImVec2(c.x0, y_ruler));
+    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, card_z.y - y_ruler),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
                                ImGuiButtonFlags_MouseButtonMiddle);
     bool bar_hovered = ImGui::IsItemHovered();
@@ -1494,13 +1494,13 @@ static void screen_timeline()
     // No position while the mouse is outside the window (WM_MOUSELEAVE): leave the drag where it was rather than
     // jumping it to the left edge.
     bool mouse_ok = ImGui::IsMousePosValid();
-    // The ruler holds the selection: its ends and the band between are taken hold of there, and a drag beside
-    // them draws a new one. On the tracks the mouse only moves the playhead.
+    // Shift and a drag anywhere draws a new selection. On the ruler its ends and the band between are taken hold
+    // of (a marker first, over the band); everywhere else a press moves the playhead.
     f32 grab = wa_grab();
     bool on_ruler = io.MousePos.y >= y_ruler && io.MousePos.y < y_tracks + 2 * s;
     bool near_in = has_sel && on_ruler && fabsf(io.MousePos.x - tl_x(c, tl.sel_in)) <= grab;
     bool near_out = has_sel && on_ruler && !near_in && fabsf(io.MousePos.x - tl_x(c, tl.sel_out)) <= grab;
-    bool on_band = has_sel && on_ruler && !near_in && !near_out && mouse_t > tl.sel_in &&
+    bool on_band = has_sel && on_ruler && !near_in && !near_out && mark_hit < 0 && mouse_t > tl.sel_in &&
                    mouse_t < tl.sel_out;
     // The playhead kept on footage
     auto on_footage = [&](i64 t) { return t >= b.newest_us ? b.newest_us - 1 : t < b.oldest_us ? b.oldest_us : t; };
@@ -1514,9 +1514,9 @@ static void screen_timeline()
         }
         return to;
     };
-    // Close enough to the playhead on screen to land on it
-    auto near_play = [&](i64 t) { return fabsf(tl_x(c, t) - tl_x(c, tl_playhead())) <= grab; };
     static i64 grab_off, grab_len, grab_play, grab_in, grab_out;
+    // Close enough to the playhead (where it was when the drag began) on screen to land on it
+    auto near_play = [&](i64 t) { return fabsf(tl_x(c, t) - tl_x(c, grab_play)) <= grab; };
     // Shift on an end: both ends scale around the playhead, the other end moving in proportion, so the playhead
     // keeps its place relative to the selection (inside it or not). `t` is where the dragged end goes.
     auto scale_around_play = [&](bool in, i64 t) {
@@ -1543,15 +1543,15 @@ static void screen_timeline()
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) tl.drag = TL_DRAG_PAN;
         else if (near_in) tl.drag = TL_DRAG_IN;
         else if (near_out) tl.drag = TL_DRAG_OUT;
+        else if (io.KeyShift) tl.drag = TL_DRAG_NEW;
+        else if (mark_hit >= 0) tl.drag = TL_DRAG_MARK;
         else if (on_band) tl.drag = TL_DRAG_RANGE;
-        else if (on_ruler) tl.drag = TL_DRAG_NEW;
-        else if (io.MousePos.y < y_ruler && mark_hit >= 0) tl.drag = TL_DRAG_MARK;
         else tl.drag = TL_DRAG_SEEK;
         if (tl.drag == TL_DRAG_SEEK) tl.playhead_us = on_footage(mouse_t);
         if (tl.drag == TL_DRAG_MARK) tl.playhead_us = marks[mark_hit].t_us;
     }
     // Dragging an end or the band, the playhead follows the start or the end being moved so its frame shows, and goes
-    // back when it's let go. With Shift the playhead stays, and an end that comes close lands on it.
+    // back when it's let go. With Shift on an end the playhead stays; the band lands on the playhead when close.
     if (ImGui::IsItemActive() && tl.drag != TL_DRAG_NONE && mouse_ok) {
         if (fabsf(io.MousePos.x - tl.drag_x) > 4 * s) tl.dragged = true;
         bool keep = io.KeyShift;
@@ -1560,18 +1560,7 @@ static void screen_timeline()
             tl.view_end_us = tl.drag_view_end - (i64)((f64)(io.MousePos.x - tl.drag_x) / c.px_per_us);
             tl_clamp_view(now);
         } else if (tl.drag == TL_DRAG_SEEK) {
-            // With Shift it catches a marker or an end of the selection
-            i64 t = mouse_t;
-            if (keep) {
-                f32 best = 10 * s;
-                auto catch_at = [&](i64 k) {
-                    f32 d = fabsf(tl_x(c, k) - io.MousePos.x);
-                    if (d <= best) { best = d; t = k; }
-                };
-                for (i32 i = 0; i < mark_count; i++) catch_at(marks[i].t_us);
-                if (has_sel) { catch_at(tl.sel_in); catch_at(tl.sel_out); }
-            }
-            tl.playhead_us = on_footage(t);
+            tl.playhead_us = on_footage(mouse_t);
         } else if (tl.drag == TL_DRAG_NEW && tl.dragged) {
             i64 m = on_marker(mouse_sec);
             tl.sel_in = tl.drag_anchor_us < m ? tl.drag_anchor_us : m;
@@ -1579,13 +1568,13 @@ static void screen_timeline()
             tl_clamp_selection();
         } else if (tl.drag == TL_DRAG_RANGE && tl.dragged) {
             i64 to = tl_whole_sec(mouse_t - grab_off);
-            if (keep && near_play(to)) to = tl_playhead();
-            else if (keep && near_play(to + grab_len)) to = tl_playhead() - grab_len;
+            if (near_play(to)) to = grab_play;
+            else if (near_play(to + grab_len)) to = grab_play - grab_len;
             if (to + grab_len > b.newest_us) to = b.newest_us - grab_len;
             if (to < b.oldest_us) to = b.oldest_us;
             tl.sel_in = to;
             tl.sel_out = to + grab_len;
-            if (!keep) tl.playhead_us = tl.sel_in;
+            tl.playhead_us = tl.sel_in;
         } else if ((tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT) && keep && can_scale) {
             scale_around_play(tl.drag == TL_DRAG_IN, mouse_t);
             tl.playhead_us = grab_play; // back where it was if the drag began without Shift
@@ -1921,8 +1910,8 @@ static void screen_timeline()
         f32 x = floorf(tl_x(c, marks[i].t_us)) + 0.5f;
         u32 rgb = MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb;
         bool picked = marks[i].t_us == tl.marker_pick, hot = i == mark_hit;
-        if (hot) dl->AddLine(ImVec2(x, y_marks + mark_h / 2), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
-        f32 r = (hot || picked ? 5.5f : 4.5f) * s, cy = floorf(y_marks + mark_h / 2);
+        if (hot) dl->AddLine(ImVec2(x, y_tracks), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
+        f32 r = (hot || picked ? 5.5f : 4.5f) * s, cy = y_ruler + ruler_h - r - 1 * s;
         ImVec2 d[4] = {ImVec2(x, cy - r), ImVec2(x + r, cy), ImVec2(x, cy + r), ImVec2(x - r, cy)};
         dl->AddConvexPolyFilled(d, 4, col32(rgb));
         if (picked) dl->AddPolyline(d, 4, col32(COL_TEXT), ImDrawFlags_Closed, 1.5f * s);

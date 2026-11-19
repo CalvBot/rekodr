@@ -1050,10 +1050,10 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     from = ed.view_from;
     span = ed.view_span;
 
-    // The ruler holds the in and out: their ends and the band between are taken hold of there, and a drag beside
-    // them draws new ones. On the picture's strip the mouse moves the playhead. Shift on an end scales both around
-    // the playhead; Shift on the band, or on an end that can't scale, lands it on the playhead when close.
-    // Dragging an end or the band shows its frame, and the playhead goes back once it's let go.
+    // Shift and a drag on the ruler or the picture's strip draws a new in and out, as on the Timeline. On the ruler
+    // their ends and the band between are taken hold of; everywhere else a press moves the playhead. Shift on an end
+    // scales both around the playhead (or, if it can't, lands the end on it when close); the band lands on the
+    // playhead when close. Dragging an end or the band shows its frame, and the playhead goes back once it's let go.
     ImGui::SetCursorScreenPos(ImVec2(bx0, ruler_y));
     ImGui::InvisibleButton("##scrub", ImVec2(bw, ruler_h + video_h), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool scrub_hot = ImGui::IsItemHovered();
@@ -1083,8 +1083,8 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) ed.lane_drag = ED_DRAG_MENU;
             else if (near_in) ed.lane_drag = ED_DRAG_IN;
             else if (near_out) ed.lane_drag = ED_DRAG_OUT;
+            else if (io.KeyShift) ed.lane_drag = ED_DRAG_NEW;
             else if (on_band) ed.lane_drag = ED_DRAG_RANGE;
-            else if (on_ruler) ed.lane_drag = ED_DRAG_NEW;
             else {
                 ed.lane_drag = ED_DRAG_SEEK;
                 p.scrubbing = true;
@@ -1103,11 +1103,11 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 set(a, z);
             } else if (ed.lane_drag == ED_DRAG_RANGE && ed.drag_moved) {
                 f64 len = grab_out - grab_in, to = mouse_t - grab_off;
-                if (keep && near_play(to)) to = grab_play;
-                else if (keep && near_play(to + len)) to = grab_play - len;
+                if (near_play(to)) to = grab_play;
+                else if (near_play(to + len)) to = grab_play - len;
                 to = to + len > dur ? dur - len : to < 0 ? 0 : to;
                 set(to, to + len);
-                if (!keep) show = to;
+                show = to;
             } else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT) {
                 bool in = ed.lane_drag == ED_DRAG_IN;
                 f64 a, z;

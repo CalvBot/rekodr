@@ -974,6 +974,10 @@ static void help_window()
         static const HelpRow editor[] = {
             {"[Space]", "Play / pause"},
             {"[I] / [O]", "Trim start / end at the playhead"},
+            {"Click or drag on the ruler or picture strip", "Move the playhead"},
+            {"[Shift]+drag there", "Set a new in and out"},
+            {"Drag the in and out's band or ends", "Move them"},
+            {"[Shift]+drag an end", "Scale the in and out around the playhead"},
             {"[K]", "Zoom key at the playhead"},
             {"Double-click a lane", "Add a key there"},
             {"[Ctrl]+click a lane", "Add a key on the line"},
@@ -990,7 +994,8 @@ static void help_window()
             {"[Ctrl]+[Z] / [Ctrl]+[Y]", "Undo / redo"},
             {"Mouse wheel, middle-drag", "Pan the timeline"},
             {"[Alt]+wheel", "Zoom around the mouse"},
-            {"[Alt]+[Shift]+wheel, [+] / [-]", "Zoom around the playhead"},
+            {"[Alt]+[Shift]+wheel", "Zoom around the playhead"},
+            {"[+] / [-]", "Zoom in / out"},
             {"Drag the view bar", "Pan; drag its ends to zoom, double-click for all"},
             {"Wheel over the track names", "Scroll the sound tracks"},
             {"[Shift]+wheel", "Taller or shorter lanes"},
@@ -1002,10 +1007,8 @@ static void help_window()
         };
         static const HelpRow timeline[] = {
             {"Click or drag on the tracks", "Move the playhead"},
-            {"[Shift]+drag on the tracks", "Catch markers and the selection's ends"},
-            {"Drag along the ruler", "Select a range"},
+            {"[Shift]+drag", "Select a range"},
             {"Drag the selection's band or ends", "Move them; the playhead follows"},
-            {"[Shift]+drag the band", "The playhead stays, and an end catches it"},
             {"[Shift]+drag an end", "Scale the selection around the playhead"},
             {"[Space]", "Play or pause from the playhead"},
             {"Mouse wheel", "Pan earlier or later"},
