@@ -3082,26 +3082,20 @@ static void lib_player_view()
 {
     Library &lib = g_app.library;
     Player &p = lib.player;
-    const ImGuiStyle &st = ImGui::GetStyle();
     player_update(&p);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight(), full_w = ImGui::GetContentRegionAvail().x;
 
-    // Header: back, the name and when, and the actions on the right.
+    // Header, one block: back, the name over a dim line (game, when, size, then its comment on one line or a faint
+    // "Add a comment"; a click opens it whole), and the actions as icons on the right.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
-    f32 text_h = g_font_big->FontSize + g_font_small->FontSize + kit_px(4) + g_font->FontSize + kit_px(6);
-    f32 head_h = fmaxf(fh, text_h);
+    f32 fs = g_font_small->FontSize, text_h = g_font_big->FontSize + kit_px(3) + fs;
+    f32 head_h = fmaxf(fh, text_h), gap = kit_px(2), acts_w = 3 * fh + 2 * gap;
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
     bool close = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
     kit_tip("Back to the library", "Esc");
-    static const char *const actions[] = {ICON_COPY "  Copy", ICON_EDIT "  Edit", ICON_FOLDER "  Show in folder"};
-    f32 aw[3], acts_w = 0;
-    for (i32 i = 0; i < 3; i++) {
-        aw[i] = ImGui::CalcTextSize(actions[i]).x + 2 * st.FramePadding.x;
-        acts_w += aw[i] + (i ? st.ItemSpacing.x : 0);
-    }
-    f32 tx = h0.x + fh + kit_px(14), tw = h0.x + full_w - acts_w - kit_px(24) - tx;
-    f32 ty = h0.y + (head_h - text_h) / 2;
+    f32 tx = h0.x + fh + kit_px(12), tw = h0.x + full_w - acts_w - kit_px(24) - tx;
+    f32 ty = h0.y + (head_h - text_h) / 2, my = ty + g_font_big->FontSize + kit_px(3);
     ImGui::PushFont(g_font_big);
     char shown[300];
     bool timed = lib_shown_name(lib.playing.name, shown, sizeof shown);
@@ -3113,9 +3107,8 @@ static void lib_player_view()
     if (timed) snprintf(line, sizeof line, "%s  -  %s", lib.playing.info.game, size); // the name says when
     else snprintf(line, sizeof line, "%s  -  %s  -  %s", lib.playing.info.game, when, size);
     ImGui::PushFont(g_font_small);
-    text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), line);
-    ImGui::PopFont();
-    // Its comment under that, on one line (its line breaks as gaps); a click opens it whole to change it.
+    f32 lw = ImMin(ImGui::CalcTextSize(line).x, tw);
+    text_clipped(dl, ImVec2(tx, my), tw, col32(COL_DIM), line);
     {
         const char *cm = lib_comment(lib.playing.key);
         char one[LIB_COMMENT_MAX + 1];
@@ -3125,22 +3118,26 @@ static void lib_player_view()
             else one[k++] = *s;
         }
         one[k] = 0;
-        f32 cy = ty + g_font_big->FontSize + kit_px(4) + g_font_small->FontSize + kit_px(6);
-        ImVec2 save = ImGui::GetCursorScreenPos();
-        ImGui::SetCursorScreenPos(ImVec2(tx, cy));
-        const char *shown_c = one[0] ? one : "Add a comment";
-        f32 cw = ImMin(ImGui::CalcTextSize(shown_c).x + g_font->FontSize + kit_px(8), tw);
-        bool hit = ImGui::InvisibleButton("##player_comment", ImVec2(ImMax(cw, 1.f), g_font->FontSize));
-        bool hot = ImGui::IsItemHovered();
-        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        ImVec2 gs = g_font_icon->CalcTextSizeA(g_font->FontSize, FLT_MAX, 0, ICON_COMMENT);
-        dl->AddText(g_font_icon, g_font->FontSize, ImVec2(tx, floorf(cy + (g_font->FontSize - gs.y) / 2 + kit_px(1))),
-                    col32(hot ? COL_TEXT : COL_DIM), ICON_COMMENT);
-        f32 cx = tx + gs.x + kit_px(8);
-        text_clipped(dl, ImVec2(cx, cy), tx + tw - cx, col32(one[0] ? (hot ? COL_ACCENT : COL_TEXT) : (hot ? COL_DIM : COL_FAINT)), shown_c);
-        if (hit) lib_comment_open(lib.playing);
-        ImGui::SetCursorScreenPos(save);
+        f32 cx = tx + lw + kit_px(18), room = tx + tw - cx;
+        if (room > kit_px(40)) {
+            const char *shown_c = one[0] ? one : "Add a comment";
+            ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_COMMENT);
+            f32 cw = ImMin(gs.x + kit_px(6) + ImGui::CalcTextSize(shown_c).x, room);
+            ImVec2 save = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(cx, my));
+            bool hit = ImGui::InvisibleButton("##player_comment", ImVec2(ImMax(cw, 1.f), fs));
+            bool hot = ImGui::IsItemHovered();
+            if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            dl->AddText(g_font_icon, fs, ImVec2(cx, floorf(my + (fs - gs.y) / 2 + kit_px(1))), col32(hot ? COL_TEXT : COL_DIM),
+                        ICON_COMMENT);
+            f32 tx2 = cx + gs.x + kit_px(6);
+            text_clipped(dl, ImVec2(tx2, my), cx + room - tx2,
+                         col32(one[0] ? (hot ? COL_ACCENT : COL_TEXT) : (hot ? COL_DIM : COL_FAINT)), shown_c);
+            if (hit) lib_comment_open(lib.playing);
+            ImGui::SetCursorScreenPos(save);
+        }
     }
+    ImGui::PopFont();
     lib_comment_dialog();
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
     // Copy puts the file on the clipboard; one bigger than the share size offers a share copy first.
@@ -3149,17 +3146,20 @@ static void lib_player_view()
     if (share_mb < 1) share_mb = 1;
     bool big = lib.playing.size > (u64)(share_mb * 1024 * 1024);
     ImVec2 copy_at = ImGui::GetCursorScreenPos();
-    if (kit_button(actions[0], KIT_SECONDARY, ImVec2(aw[0], 0))) {
+    kit_next_tip("Copy the file");
+    if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) {
         if (big) ImGui::OpenPopup("copy_big");
         else if (clipboard_copy_file(p.path.s)) lib_message(false, "Copied %s to the clipboard", lib.playing.name);
         else lib_message(true, "Couldn't copy %s", lib.playing.name);
     }
-    ImGui::SameLine();
-    bool edit = kit_button(actions[1], KIT_SECONDARY, ImVec2(aw[1], 0));
-    ImGui::SameLine();
-    if (kit_button(actions[2], KIT_SECONDARY, ImVec2(aw[2], 0))) show_in_folder(p.path.s);
+    ImGui::SameLine(0, gap);
+    kit_next_tip("Edit");
+    bool edit = kit_icon_button(ICON_EDIT, "##edit", KIT_GHOST);
+    ImGui::SameLine(0, gap);
+    kit_next_tip("Show in folder");
+    if (kit_icon_button(ICON_FOLDER, "##folder", KIT_GHOST)) show_in_folder(p.path.s);
     bool share = false;
-    ImGui::SetNextWindowPos(ImVec2(copy_at.x, copy_at.y + fh + kit_px(4)));
+    ImGui::SetNextWindowPos(ImVec2(h0.x + full_w, copy_at.y + fh + kit_px(4)), 0, ImVec2(1, 0)); // under the icons, right-aligned
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(6), kit_px(6)));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
     if (ImGui::BeginPopup("copy_big")) {
@@ -3185,7 +3185,7 @@ static void lib_player_view()
 
     // The picture, as big as fits, on black.
     // Under it the controls, then the seek bar along the bottom as wide as the picture's area; fixed heights.
-    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + head_h + kit_px(18)));
+    ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + head_h + kit_px(10)));
     f32 ctl_gap = kit_px(10), seek_gap = kit_px(6), seek_h = kit_px(20);
     ImVec2 pos = ImGui::GetCursorScreenPos();
     ImVec2 area(full_w, ImGui::GetContentRegionAvail().y - ctl_gap - fh - seek_gap - seek_h);
