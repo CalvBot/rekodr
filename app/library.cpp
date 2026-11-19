@@ -2394,8 +2394,27 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     ImGui::PopID();
 }
 
-// The row, drawn from the cursor; returns false (and draws nothing) when there are none. A click on the heading
-// (a chevron, then the words) folds it to the heading alone (kept in the settings). The tiles slide sideways and glide: the wheel over
+// Whether an unsaved session passes the grid's filters, judged as the card it becomes when saved: its game, its
+// end in the date range, the search. None is in a folder.
+static bool lib_unsaved_shown(u32 id)
+{
+    const Library &lib = g_app.library;
+    if (g_app.config.side_folders && lib.folder[0]) return false;
+    const Session *s = session_find(id);
+    if (!s) return true; // "Gone from the buffer" stays until the row is next taken
+    if (!lib_in_range(s->end_us)) return false;
+    if (!lib.game[0] && !lib.search[0]) return true;
+    char file[300], game[128];
+    save_file_name(s->exe, s->name, s->start_us, file, sizeof file);
+    // The game its file is tagged with: the exe's shown name; a session named by hand, what its file name says
+    if (s->exe[0]) audio_display_name(g_app.config, s->exe, game, sizeof game);
+    else game_from_name(file, game, sizeof game);
+    if (!g_app.config.side_folders && lib.game[0] && strcmp(lib.game, game)) return false;
+    return lib_matches(file, lib.search) || lib_matches(game, lib.search);
+}
+
+// The row, drawn from the cursor; returns false (and draws nothing) when none pass the grid's filters. A click on
+// the heading (a chevron, then the words) folds it to the heading alone (kept in the settings). The tiles slide sideways and glide: the wheel over
 // them, or the arrows on the right, a row's width at a time.
 static bool lib_unsaved_row(f32 full_w)
 {
@@ -2403,17 +2422,21 @@ static bool lib_unsaved_row(f32 full_w)
     ImGuiIO &io = ImGui::GetIO();
     sessions_unsaved_take();
     lib_posters_sweep();
-    if (ss.row_count == 0) return false;
+    static u32 rows[COUNT(ss.rows)];
+    i32 row_count = 0;
+    for (i32 r = 0; r < ss.row_count; r++)
+        if (lib_unsaved_shown(ss.rows[r])) rows[row_count++] = ss.rows[r];
+    if (row_count == 0) return false;
     f32 gap = kit_px(14), fh = ImGui::GetFrameHeight();
     i32 per = (i32)((full_w + gap) / (kit_px(280) + gap));
     if (per < 1) per = 1;
     f32 tile_w = floorf((full_w - (per - 1) * gap) / per), thumb_h = floorf(tile_w * 9 / 16), step = tile_w + gap;
-    f32 max_scroll = ss.row_count > per ? (ss.row_count - per) * step : 0;
+    f32 max_scroll = row_count > per ? (row_count - per) * step : 0;
 
     ImVec2 a = ImGui::GetCursorScreenPos();
     bool &folded = g_app.config.unsaved_collapsed;
     char head[48];
-    snprintf(head, sizeof head, "UNSAVED SESSIONS  %d", ss.row_count);
+    snprintf(head, sizeof head, "UNSAVED SESSIONS  %d", row_count);
     {
         ImFont *tf = g_font_small;
         const char *ic = folded ? ICON_RIGHT : ICON_DOWN;
@@ -2463,13 +2486,13 @@ static bool lib_unsaved_row(f32 full_w)
 
     // The tile under the mouse reads its frames first; with none, whichever lacks its poster.
     i32 first = (i32)(ss.scroll / step), hovered = -1;
-    for (i32 r = first; r < ss.row_count && r <= first + per; r++) {
+    for (i32 r = first; r < row_count && r <= first + per; r++) {
         f32 x = a.x + r * step - ss.scroll;
         if (m.x >= ImMax(x, a.x) && m.x < ImMin(x + tile_w, a.x + full_w) && m.y >= y && m.y < y + thumb_h) hovered = r;
     }
     ImGui::PushClipRect(ImVec2(a.x, y), ImVec2(a.x + full_w, y + row_h), true);
-    for (i32 r = first; r < ss.row_count && r <= first + per; r++)
-        lib_unsaved_tile(ss.rows[r], ImVec2(floorf(a.x + r * step - ss.scroll), y), tile_w, thumb_h, hovered < 0 || hovered == r);
+    for (i32 r = first; r < row_count && r <= first + per; r++)
+        lib_unsaved_tile(rows[r], ImVec2(floorf(a.x + r * step - ss.scroll), y), tile_w, thumb_h, hovered < 0 || hovered == r);
     ImGui::PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(a.x, y + row_h + kit_px(18)));
     return true;
