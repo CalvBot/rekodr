@@ -1776,7 +1776,11 @@ static bool lib_dialog_begin(const char *id)
     bool open = ImGui::BeginPopupModal(id, 0, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar |
                                                   ImGuiWindowFlags_AlwaysAutoResize);
     lib_popup_style_pop();
-    if (open) ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(kit_px(8), kit_px(6)));
+    if (open) {
+        // Idle frames stop after a few; keep drawing until the dimmed background has faded in.
+        if (ImGui::IsWindowAppearing()) ui_wake(30);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(kit_px(8), kit_px(6)));
+    }
     return open;
 }
 
@@ -1839,12 +1843,14 @@ static i32 lib_confirm(const char *title, const char *name, const char *note, co
 {
     f32 bw = lib_dialog_button_w(action), gap = kit_px(8);
     f32 row_w = (check ? lib_dialog_check_w(check) + kit_px(40) : 0) + 2 * bw + gap;
-    f32 title_w = g_font_big->CalcTextSizeA(g_font_big->FontSize, FLT_MAX, 0, title).x;
+    f32 title_w = g_font_title->CalcTextSizeA(g_font_title->FontSize, FLT_MAX, 0, title).x;
     f32 name_w = ImMin(ImGui::CalcTextSize(name).x, kit_px(480));
     f32 w = ImMax(ImMax(row_w, title_w), ImMax(name_w, kit_px(300)));
     ImVec2 a = ImGui::GetCursorScreenPos();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    kit_heading(title);
+    ImGui::PushFont(g_font_title);
+    ImGui::TextUnformatted(title);
+    ImGui::PopFont();
     ImVec2 n = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
     text_clipped(dl, n, w, col32(COL_DIM), name);
@@ -3119,8 +3125,9 @@ static void lib_folder_list(f32 w, bool collapsed)
         char box[64], note[96] = "";
         snprintf(box, sizeof box, "Also delete the %s in it", lib.view == LIB_CLIPS ? "clips" : "sessions");
         if (shared)
-            snprintf(note, sizeof note, "%d of them %s in other folders too, and still %s.", shared,
-                     shared == 1 ? "is" : "are", shared == 1 ? "goes" : "go");
+            snprintf(note, sizeof note, shared == 1 ? "%d of them is also in another folder; it's deleted too."
+                                                    : "%d of them are also in other folders; they're deleted too.",
+                     shared);
         i32 b = lib_confirm("Delete the folder?", lib.folders[fi].name, shared ? note : 0, box, &with_items, count > 0,
                             ICON_DELETE "  Delete", KIT_DANGER);
         bool go = with_items && count > 0;
