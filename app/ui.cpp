@@ -1027,6 +1027,8 @@ static void help_window()
             {"[Shift]+drag an end of it", "Zoom around the playhead"},
             {"Wheel over the names", "Scroll the sound tracks"},
             {"[Shift]+wheel over the tracks", "Taller or shorter tracks"},
+            {"Wheel over the preview", "Zoom the picture in at the mouse"},
+            {"Middle drag the preview", "Move around the zoomed picture"},
             {"Right or middle drag", "Pan earlier or later"},
             {"[Left] / [Right]", "Move the selection 1 s (with Shift 10 s)"},
             {"[I] / [O] or [Q] / [E]", "Set the start / end at the playhead"},

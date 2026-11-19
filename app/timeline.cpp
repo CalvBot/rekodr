@@ -2100,13 +2100,44 @@ static void screen_timeline()
     ImVec2 p0(floorf(top.x + (avail.x - pw) / 2), top.y + floorf((top_h - ph) / 2));
     ImVec2 p1(p0.x + pw, p0.y + ph);
     f32 pr = 10 * s;
+    // The wheel zooms the preview in toward the cursor (up to 8x) and back out; a middle drag moves around in it.
+    // Only the view: nothing saved changes.
+    static f32 pv_z = 1, pv_u = 0, pv_v = 0; // the zoom, and the picture's top left as shown (0..1 - 1/zoom)
+    ImVec2 uv0, uv1;
+    {
+        ImGui::SetCursorScreenPos(p0);
+        ImGui::InvisibleButton("##preview", ImVec2(pw > 1 ? pw : 1, ph > 1 ? ph : 1), ImGuiButtonFlags_MouseButtonMiddle);
+        ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+        f32 w = 1 / pv_z;
+        auto clamp_view = [&]() {
+            w = 1 / pv_z;
+            pv_u = ImClamp(pv_u, 0.f, 1 - w);
+            pv_v = ImClamp(pv_v, 0.f, 1 - w);
+        };
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0) {
+            f32 mu = ImClamp((io.MousePos.x - p0.x) / pw, 0.f, 1.f), mv = ImClamp((io.MousePos.y - p0.y) / ph, 0.f, 1.f);
+            f32 at_u = pv_u + mu * w, at_v = pv_v + mv * w; // the point under the cursor stays under it
+            pv_z = ImClamp(pv_z * powf(1.25f, io.MouseWheel), 1.f, 8.f);
+            pv_u = at_u - mu / pv_z;
+            pv_v = at_v - mv / pv_z;
+            clamp_view();
+        }
+        if (ImGui::IsItemActive() && pv_z > 1) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            pv_u -= io.MouseDelta.x / pw * w;
+            pv_v -= io.MouseDelta.y / ph * w;
+            clamp_view();
+        }
+        uv0 = ImVec2(pv_u, pv_v);
+        uv1 = ImVec2(pv_u + w, pv_v + w);
+    }
     dl->AddRectFilled(p0, p1, col32(0x000000), pr);
     Player &pl = tl.player;
     bool playing_view = pl.open && pl.frame_ready && !pl.error[0];
     if (playing_view) {
         ImVec2 v0, v1;
         player_fit(pl, p0, ImVec2(pw, ph), &v0, &v1);
-        dl->AddImage((ImTextureID)(intptr_t)pl.srv, v0, v1);
+        dl->AddImage((ImTextureID)(intptr_t)pl.srv, v0, v1, uv0, uv1);
     } else {
         // Hovering shows the keyframe under the mouse (quick); otherwise the exact frame at the playhead. While Play
         // gets ready the last frame stays.
@@ -2117,7 +2148,7 @@ static void screen_timeline()
         TimelineFrame *frame = tl_frame_find(want_key);
         if (frame) tl.shown_key = frame->key;
         else if (want_key || busy_play) frame = tl_frame_find(tl.shown_key); // the last one shown, until the new one is ready
-        if (frame) dl->AddImageRounded((ImTextureID)(intptr_t)frame->srv, p0, p1, ImVec2(0, 0), ImVec2(1, 1), col32(0xffffff), pr);
+        if (frame) dl->AddImageRounded((ImTextureID)(intptr_t)frame->srv, p0, p1, uv0, uv1, col32(0xffffff), pr);
         char when[16], msg[200] = "";
         if (pl.error[0]) str_set(msg, "This stretch couldn't be played");
         else if (!b.seg_count) str_set(msg, "No footage");
