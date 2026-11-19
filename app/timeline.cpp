@@ -1800,14 +1800,17 @@ static void screen_timeline()
         }
     }
 
-    // Markers: a flag on the ruler in the marker's colour and a line down through the tracks; the picked one stronger
+    // Markers: a diamond on the ruler in the marker's colour (the playhead's is a white triangle), bigger when picked
+    // or under the mouse. The line down through the tracks shows only while the mouse is on it.
     for (i32 i = 0; i < mark_count; i++) {
         f32 x = floorf(tl_x(c, marks[i].t_us)) + 0.5f;
         u32 rgb = MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb;
         bool picked = marks[i].t_us == tl.marker_pick, hot = i == mark_hit;
-        dl->AddLine(ImVec2(x, y_video), ImVec2(x, y_bottom), col32(rgb, picked ? 0.9f : 0.4f), (picked ? 1.5f : 1) * s);
-        f32 fw = (hot || picked ? 6 : 4.5f) * s, fy = y_ruler + ruler_h;
-        dl->AddTriangleFilled(ImVec2(x - fw, fy - 2 * fw), ImVec2(x + fw, fy - 2 * fw), ImVec2(x, fy), col32(rgb));
+        if (hot) dl->AddLine(ImVec2(x, y_video), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
+        f32 r = (hot || picked ? 5.5f : 4.5f) * s, cy = y_ruler + ruler_h - r - 1 * s;
+        ImVec2 d[4] = {ImVec2(x, cy - r), ImVec2(x + r, cy), ImVec2(x, cy + r), ImVec2(x - r, cy)};
+        dl->AddConvexPolyFilled(d, 4, col32(rgb));
+        if (picked) dl->AddPolyline(d, 4, col32(COL_TEXT), ImDrawFlags_Closed, 1.5f * s);
     }
 
     // The playhead (where the preview comes from)
