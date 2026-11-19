@@ -84,6 +84,11 @@ static void run_command(const char *text)
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]], 0);
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
         else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
+        else if (starts_with(arg, "game")) { // game [<text>]: the editor's game picker, with <text> typed
+            g_app.editor.tab = 0;
+            str_set(g_game_pick_typed, trim(arg + 4));
+            g_game_pick_show = true;
+        }
         else if (!strcmp(arg, "help")) { g_app.ui.help_open = true; g_app.ui.help_close = false; }
         else if (starts_with(arg, "setup")) { // setup, setup2 .. setup5: the first-run setup at that step
             ui_show(SCREEN_LIBRARY);
@@ -98,7 +103,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {

@@ -1533,6 +1533,9 @@ static void library_hover_end_frame()
     if (lib.hover.open) player_update(&lib.hover);
 }
 
+static char g_game_pick_typed[64]; // what the picker opens with
+static bool g_game_pick_show;      // `show game`: the editor's picker opens
+
 // "Change game": a search box over the games. Rows: names that are what's typed first, then the library's games,
 // then the art service's for what's typed (when it can be asked), and last the name as typed, so it works offline
 // too. The rows and the line under them keep their place as results come in. A pick (or Enter, the first row)
@@ -1551,7 +1554,9 @@ static bool lib_game_picker(const char *id, LibItem &it)
     if (!open) return false;
     bool changed = false;
     if (ImGui::IsWindowAppearing()) {
-        typed[0] = settled[0] = 0;
+        str_set(typed, g_game_pick_typed);
+        settled[0] = g_game_pick_typed[0] = 0;
+        changed_at = ImGui::GetTime();
         ImGui::SetKeyboardFocusHere();
     }
     ImGui::SetNextItemWidth(-1);
@@ -1671,7 +1676,8 @@ static bool lib_game_field(const char *id, LibItem &it, f32 w)
     ImGui::PopFont();
     text_clipped(dl, ImVec2(a.x + pad, ty), w - 3 * pad - cs.x, col32(it.info.game[0] ? COL_TEXT : COL_DIM),
                  it.info.game[0] ? it.info.game : "None");
-    if (hit) ImGui::OpenPopup("game_pick");
+    if (hit || g_game_pick_show) ImGui::OpenPopup("game_pick");
+    g_game_pick_show = false;
     ImGui::SetNextWindowPos(ImVec2(a.x, a.y + fh + kit_px(4)), ImGuiCond_Appearing);
     bool changed = lib_game_picker("game_pick", it);
     ImGui::PopID();
