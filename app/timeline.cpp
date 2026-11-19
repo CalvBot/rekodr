@@ -1534,18 +1534,24 @@ static void screen_timeline()
     // Close enough to the playhead on screen to land on it
     auto near_play = [&](i64 t) { return fabsf(tl_x(c, t) - tl_x(c, tl_playhead())) <= grab; };
     static i64 grab_off, grab_len, grab_play, grab_in, grab_out;
-    // Shift on an end, with the playhead inside the selection: both ends scale around the playhead, the other end
-    // moving in proportion, so the playhead keeps its place in the selection. `t` is where the dragged end goes.
+    // Shift on an end: both ends scale around the playhead, the other end moving in proportion, so the playhead
+    // keeps its place relative to the selection (inside it or not). `t` is where the dragged end goes.
     auto scale_around_play = [&](bool in, i64 t) {
-        f64 p = (f64)grab_play, a = p - (f64)grab_in, z = (f64)grab_out - p; // the ends' distances from the playhead
-        f64 f = in ? (p - (f64)t) / a : ((f64)t - p) / z;
-        f64 most = ImMin((p - (f64)b.oldest_us) / a, ((f64)b.newest_us - p) / z), least = (f64)TL_SEC / (a + z);
+        f64 p = (f64)grab_play, a = (f64)grab_in - p, z = (f64)grab_out - p; // the ends from the playhead, signed
+        f64 f = ((f64)t - p) / (in ? a : z);
+        f64 least = (f64)TL_SEC / (z - a), most = 1e9;
+        f64 ends[2] = {a, z};
+        for (f64 e : ends) { // neither end past the buffer
+            if (e < 0) most = ImMin(most, (p - (f64)b.oldest_us) / -e);
+            if (e > 0) most = ImMin(most, ((f64)b.newest_us - p) / e);
+        }
         f = f > most ? most : f < least ? least : f;
-        tl.sel_in = tl_whole_sec((i64)(p - a * f));
+        tl.sel_in = tl_whole_sec((i64)(p + a * f));
         tl.sel_out = tl_whole_sec((i64)(p + z * f));
         tl_clamp_selection();
     };
-    bool can_scale = grab_in < grab_play && grab_play < grab_out;
+    // Not when the dragged end is on the playhead: there's nothing to scale by
+    bool can_scale = tl.drag == TL_DRAG_IN ? grab_in != grab_play : grab_out != grab_play;
     if (ImGui::IsItemActivated() && b.seg_count) {
         tl.drag_x = io.MousePos.x;
         tl.dragged = false;
@@ -1564,8 +1570,8 @@ static void screen_timeline()
         else tl.drag = TL_DRAG_SEEK;
         if (tl.drag == TL_DRAG_SEEK) tl.playhead_us = on_footage(mouse_t);
     }
-    // Dragging an end or the band, the playhead follows the start or the end being moved so its frame shows. With
-    // Shift the playhead stays, and an end that comes close lands on it.
+    // Dragging an end or the band, the playhead follows the start or the end being moved so its frame shows, and goes
+    // back when it's let go. With Shift the playhead stays, and an end that comes close lands on it.
     if (ImGui::IsItemActive() && tl.drag != TL_DRAG_NONE && mouse_ok) {
         if (fabsf(io.MousePos.x - tl.drag_x) > 4 * s) tl.dragged = true;
         bool keep = io.KeyShift;
@@ -1619,6 +1625,8 @@ static void screen_timeline()
     if (bar_hovered && saved_hit >= 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) play_saved_at = saved[saved_hit].a;
     if (ImGui::IsItemDeactivated()) {
         bool click = !tl.dragged && mouse_ok;
+        // Moving an end or the band shows its frame while dragging; the playhead stays where it was
+        if (tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT || tl.drag == TL_DRAG_RANGE) tl.playhead_us = grab_play;
         if (play_saved_at) {
             tl.playhead_us = play_saved_at;
             tl.marker_pick = 0;
