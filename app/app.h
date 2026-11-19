@@ -543,7 +543,7 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
 struct TimelineRow {   // one audio row: every stream of one exe (or the mic)
     char exe[64];
     char name[64];
-    u32  rgb;     // its lane's colour: what kind of track it is (COL_TRACK_*)
+    u8   kind;    // what kind of track it is (TrackKind), which gives its lane's colour
 };
 
 struct TimelineFrame { // a preview frame uploaded to the GPU

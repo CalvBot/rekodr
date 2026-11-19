@@ -184,13 +184,8 @@ static void tl_ask_index()
     if (!g_tl.index_thread) g_tl.index_thread = thread_start(tl_index_thread, 0);
 }
 
-// Sound rows are grouped: the mic, then games, then other apps.
-static i32 tl_row_group(const TimelineRow &r)
-{
-    if (!strcmp(r.exe, "mic")) return 0;
-    AppCategory cat = audio_category_at(g_app.config, r.exe, 0);
-    return cat == CAT_GAME ? 1 : cat == CAT_COMMUNICATION ? 2 : 3;
-}
+// Sound rows are grouped by kind: the mic, then games, chat, and other apps.
+static i32 tl_row_group(const TimelineRow &r) { return r.kind; }
 
 // One row per exe, by group, and within a group in the order they were first heard.
 static void tl_make_rows()
@@ -213,8 +208,7 @@ static void tl_make_rows()
             if (st.mic) str_set(row->name, "Mic");
             else audio_display_name(g_app.config, exe, row->name, sizeof row->name);
             AppCategory cat = st.mic ? CAT_NONE : audio_category_at(g_app.config, exe, st.path);
-            row->rgb = st.mic ? COL_TRACK_MIC : cat == CAT_GAME ? COL_TRACK_GAME
-                     : cat == CAT_COMMUNICATION ? COL_TRACK_CHAT : COL_TRACK_APP;
+            row->kind = st.mic ? KIND_MIC : cat == CAT_GAME ? KIND_GAME : cat == CAT_COMMUNICATION ? KIND_CHAT : KIND_APP;
         }
         tl.stream_row[s] = (i16)r;
     }
@@ -1191,9 +1185,6 @@ static f32 tl_peak_in(const TlPeaks &p, i64 start_us, i64 a, i64 z)
 // The sound lanes: a lane for each app, or every app of a kind summed into one of four (the quick clip timeline
 // always, the main one in Simple).
 static const i32 TL_LANES = 4;
-static const char *const TL_LANE_ICON[TL_LANES] = {ICON_MIC, ICON_GAME, ICON_CHAT, ICON_APPS};
-static const char *const TL_LANE_NAME[TL_LANES] = {"Mic", "Game", "Chat", "Apps"};
-static const u32 TL_LANE_COL[TL_LANES] = {COL_TRACK_MIC, COL_TRACK_GAME, COL_TRACK_CHAT, COL_TRACK_APP};
 
 static void screen_timeline()
 {
@@ -1344,9 +1335,10 @@ static void screen_timeline()
     if (tl.lane_scroll > scroll_most) tl.lane_scroll = scroll_most;
     if (tl.lane_scroll < 0) tl.lane_scroll = 0;
     f32 y_lanes = y_snd - tl.lane_scroll; // where lane 0 is
-    auto lane_icon = [&](i32 k) { return TL_LANE_ICON[summed ? k : tl_row_group(tl.rows[k])]; };
-    auto lane_name = [&](i32 k) { return summed ? TL_LANE_NAME[k] : (const char *)tl.rows[k].name; };
-    auto lane_col = [&](i32 k) { return summed ? TL_LANE_COL[k] : tl.rows[k].rgb; };
+    // Summed, lane k is the kind k (KIND_MIC to KIND_APP); otherwise row k
+    auto lane_icon = [&](i32 k) { return KIND_LOOK[summed ? k : tl.rows[k].kind].icon; };
+    auto lane_name = [&](i32 k) { return summed ? KIND_LOOK[k].name : (const char *)tl.rows[k].name; };
+    auto lane_col = [&](i32 k) { return KIND_LOOK[summed ? k : tl.rows[k].kind].rgb; };
     bool compact = line_h < 24 * s; // names in the small font
     f32 lane_in = ImMax(floorf(1 * s), 1.0f), bar_in = lane_in; // rows 2 px apart
 
@@ -1840,33 +1832,56 @@ static void screen_timeline()
             if (v > lane_peak[k][i]) lane_peak[k][i] = v;
         }
     }
+    // Each lane's bars: every stream's segments in it (in Simple, every app of its kind), merged so that where
+    // streams overlap the bar is drawn once. Each bar is also marked on the columns it covers, so the waveform stays
+    // inside the bars.
+    struct LaneSpan { i64 a, z; i32 k; };
+    static LaneSpan *spans;
+    static i32 spans_cap;
+    i32 span_count = 0;
     for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
         if (tl.stream_row[st] < 0) continue;
         i32 k = row_lane[tl.stream_row[st]];
         const AudioStreamInfo &info = b.streams[st];
-        f32 y = y_lanes + k * line_h + bar_in, h = line_h - 2 * bar_in;
-        ImU32 col = col32(lane_col(k), 0.16f);
-        // Each bar drawn is also marked on the columns it covers, so the waveform stays inside the bars
-        auto cover = [&](i64 ta, i64 tz) {
-            f32 xa = ImMax(tl_x(c, ta), c.x0), xb = ImMin(tl_x(c, tz), c.x1);
-            if (xb <= xa) return;
-            for (i32 i = ImMax((i32)((xa - c.x0) / wstep), 0); i < columns; i++) {
-                f32 x = c.x0 + i * wstep;
-                if (x >= xb) break;
-                f32 *cv = lane_cov[k][i], ca = ImMax(x, xa), cz = ImMin(x + wstep, xb);
-                if (cv[1] <= cv[0]) { cv[0] = ca; cv[1] = cz; }
-                else { cv[0] = ImMin(cv[0], ca); cv[1] = ImMax(cv[1], cz); }
-            }
-        };
-        TlRun run = {};
         for (i32 j = 0; j < info.seg_count; j++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + j];
             // An open segment is the one being written, or one left behind when clipback was killed: segments are
             // 10 s, so it can't reach past that (else a dead stream would seem to run up to now).
             i64 e = seg.open ? ImMin(now, seg.start_us + 12 * TL_SEC) : seg.end_us;
             if (e < c.start || seg.start_us > view_end) continue;
+            if (span_count == spans_cap) {
+                i32 cap = spans_cap ? spans_cap * 2 : 4096;
+                LaneSpan *grown = (LaneSpan *)realloc(spans, cap * sizeof *spans);
+                if (!grown) break;
+                spans = grown;
+                spans_cap = cap;
+            }
+            spans[span_count++] = {seg.start_us, e, k};
+        }
+    }
+    qsort(spans, span_count, sizeof *spans, [](const void *x, const void *y) {
+        const LaneSpan &p = *(const LaneSpan *)x, &q = *(const LaneSpan *)y;
+        return p.k != q.k ? p.k - q.k : p.a < q.a ? -1 : p.a > q.a ? 1 : 0;
+    });
+    for (i32 i = 0; i < span_count;) {
+        i32 k = spans[i].k;
+        f32 y = y_lanes + k * line_h + bar_in, h = line_h - 2 * bar_in;
+        ImU32 col = col32(lane_col(k), 0.16f);
+        auto cover = [&](i64 ta, i64 tz) {
+            f32 xa = ImMax(tl_x(c, ta), c.x0), xb = ImMin(tl_x(c, tz), c.x1);
+            if (xb <= xa) return;
+            for (i32 n = ImMax((i32)((xa - c.x0) / wstep), 0); n < columns; n++) {
+                f32 x = c.x0 + n * wstep;
+                if (x >= xb) break;
+                f32 *cv = lane_cov[k][n], ca = ImMax(x, xa), cz = ImMin(x + wstep, xb);
+                if (cv[1] <= cv[0]) { cv[0] = ca; cv[1] = cz; }
+                else { cv[0] = ImMin(cv[0], ca); cv[1] = ImMax(cv[1], cz); }
+            }
+        };
+        TlRun run = {};
+        for (; i < span_count && spans[i].k == k; i++) {
             TlRun was = run;
-            tl_run_add(c, &run, seg.start_us, e, y, h, col);
+            tl_run_add(c, &run, spans[i].a, spans[i].z, y, h, col);
             if (was.a && run.a != was.a) cover(was.a, was.z); // the run before was drawn
         }
         if (run.a) {

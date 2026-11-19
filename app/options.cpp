@@ -589,7 +589,8 @@ static void ago_text(i64 us, char *out, i32 cap)
 
 // Each category has a colour and a short name, used for its button on every app row and its filter chip.
 static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Chat", "Excluded"};
-static const u32 CATEGORY_COLOURS[] = {COL_WARN, COL_TRACK_APP, COL_TRACK_GAME, COL_TRACK_CHAT, 0x8e939c};
+static const u32 CATEGORY_COLOURS[] = {COL_WARN, KIND_LOOK[KIND_APP].rgb, KIND_LOOK[KIND_GAME].rgb,
+                                       KIND_LOOK[KIND_CHAT].rgb, 0x8e939c};
 
 // The name an app gets when it has none of its own: "Overwatch" for overwatch.exe (as audio_display_name).
 static void default_app_name(const char *exe, char *out, i32 cap)

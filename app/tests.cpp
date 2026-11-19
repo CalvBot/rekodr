@@ -254,9 +254,9 @@ static void test_share_plan()
 // The editor's lanes: a track's kind from its title, and waveforms read only where a chunk is measured.
 static void test_wave_chunks()
 {
-    T(ed_track_kind("sam (chat)", 2) == ED_KIND_CHAT && ed_track_kind("Overwatch (game)", 3) == ED_KIND_GAME);
-    T(ed_track_kind("Mic", 1) == ED_KIND_MIC && ed_track_kind("Brave Browser", 4) == ED_KIND_APP);
-    T(ed_track_kind("Mix", EDIT_MASTER) == ED_KIND_MIX);
+    T(ed_track_kind("sam (chat)", 2) == KIND_CHAT && ed_track_kind("Overwatch (game)", 3) == KIND_GAME);
+    T(ed_track_kind("Mic", 1) == KIND_MIC && ed_track_kind("Brave Browser", 4) == KIND_APP);
+    T(ed_track_kind("Mix", EDIT_MASTER) == KIND_MIX);
 
     // 25 s of one track: three chunks (10, 10 and 5 s), the middle one measured, loud at 15 s.
     static WaveData w;

@@ -38,8 +38,6 @@ static const f32 TOAST_W = 400, TOAST_PAD = 16, TOAST_GAP = 12, TOAST_MARGIN = 1
                  TOAST_BUTTON_W = 84, TOAST_BUTTON_H = 30, TOAST_BUTTON_GAP = 8, TOAST_BUTTON_ROUND = 7, TOAST_FIELD_H = 34,
                  TOAST_DOT = 22, TOAST_DOT_GAP = 10;
 
-static const u32 COL_TRACK_GAME = 0x3fbf74, COL_TRACK_APP = 0x5b9cff, COL_TRACK_CHAT = 0xb07cff, COL_TRACK_MIC = 0xf06fa0;
-
 // The accent choices (Options, Look), and the colours in use, set by ui_apply_accent.
 struct Accent { const char *name; u32 base, hover; };
 static const Accent ACCENTS[] = {
@@ -113,6 +111,15 @@ static f32 g_dpi_scale = 1;
 #define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
 #define ICON_FWD30     "\xEE\xB4\xBD" // ED3D skip forward 30
 #define ICON_SOLO      "\xEE\x9F\xB6" // E7F6 headphone
+
+// The kinds of sound track, in the order their lanes go, and how each is shown wherever tracks are: the Timeline,
+// the editor, and the app categories in Options.
+enum TrackKind : u8 { KIND_MIC, KIND_GAME, KIND_CHAT, KIND_APP, KIND_MIX, KIND_COUNT };
+struct TrackKindLook { const char *name, *icon; u32 rgb; };
+static const TrackKindLook KIND_LOOK[KIND_COUNT] = {
+    {"Mic", ICON_MIC, 0xf06fa0}, {"Game", ICON_GAME, 0x3fbf74}, {"Chat", ICON_CHAT, 0xb07cff},
+    {"Apps", ICON_APPS, 0x5b9cff}, {"Mix", ICON_VOLUME, 0xeceef1},
+};
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
 

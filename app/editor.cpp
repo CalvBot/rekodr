@@ -873,27 +873,15 @@ static void ed_drag_keys(f64 dt, f64 dfrac, f32 px_per_s, f32 vh, bool time_only
     ed.dirty = true;
 }
 
-// A sound lane's colour, by the kind of track its title says it is: chat, game, an app, or the mic.
-enum EdKind { ED_KIND_MIX, ED_KIND_MIC, ED_KIND_CHAT, ED_KIND_GAME, ED_KIND_APP };
-static EdKind ed_track_kind(const char *title, i32 slot)
+// A sound lane's kind, by what its title says it is: chat, game, an app, or the mic; the master is the mix.
+static TrackKind ed_track_kind(const char *title, i32 slot)
 {
-    if (slot == EDIT_MASTER) return ED_KIND_MIX;
+    if (slot == EDIT_MASTER) return KIND_MIX;
     size_t n = strlen(title);
-    if (n >= 6 && !strcmp(title + n - 6, "(chat)")) return ED_KIND_CHAT;
-    if (n >= 6 && !strcmp(title + n - 6, "(game)")) return ED_KIND_GAME;
-    if (!strcmp(title, "Mic")) return ED_KIND_MIC;
-    return ED_KIND_APP;
-}
-
-static u32 ed_kind_rgb(EdKind k)
-{
-    switch (k) {
-    case ED_KIND_MIX: return 0xeceef1;
-    case ED_KIND_MIC: return COL_TRACK_MIC;
-    case ED_KIND_CHAT: return COL_TRACK_CHAT;
-    case ED_KIND_GAME: return COL_TRACK_GAME;
-    default: return COL_TRACK_APP;
-    }
+    if (n >= 6 && !strcmp(title + n - 6, "(chat)")) return KIND_CHAT;
+    if (n >= 6 && !strcmp(title + n - 6, "(game)")) return KIND_GAME;
+    if (!strcmp(title, "Mic")) return KIND_MIC;
+    return KIND_APP;
 }
 
 static u32 ed_rgba(u32 rgb, i32 alpha) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, alpha); }
@@ -1403,7 +1391,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         bool muted = s >= 0 && ed.edit.muted[s];
         dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(bx0 - gap, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersLeft);
         dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersRight);
-        u32 kind_rgb = s >= 0 ? ed_kind_rgb(ed_track_kind(row.name, s)) : 0;
+        u32 kind_rgb = s >= 0 ? KIND_LOOK[ed_track_kind(row.name, s)].rgb : 0;
         if (s >= 0) // the kind of track, as a strip down the gutter's left edge
             dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(o.x + kit_px(3), y1), ed_rgba(kind_rgb, muted ? 70 : 220), round,
                               ImDrawFlags_RoundCornersLeft);
