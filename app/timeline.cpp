@@ -475,12 +475,13 @@ static void tl_check_job()
 
 static bool tl_visible() { return g_app.ui.shown && g_app.ui.screen == SCREEN_TIMELINE && !IsIconic(g_app.ui.hwnd); }
 
-// The Library's unsaved sessions show the buffer's frames too, so the index is kept while they're on screen.
+// The Library's unsaved sessions show the buffer's frames too, so the index is kept while the Library is shown, on
+// either tab, and Sessions has it ready the moment it's picked.
 static bool tl_wanted_by_library()
 {
     const Library &lib = g_app.library;
-    return g_app.ui.shown && g_app.ui.screen == SCREEN_LIBRARY && !IsIconic(g_app.ui.hwnd) && lib.view == LIB_SESSIONS &&
-           !lib.player.open && g_app.sessions.row_count > 0;
+    return g_app.ui.shown && g_app.ui.screen == SCREEN_LIBRARY && !IsIconic(g_app.ui.hwnd) && !lib.player.open &&
+           g_app.sessions.row_count > 0;
 }
 
 // A keyframe of the buffer at `t` (the start of its segment, or the next one if `t` falls in a gap) for the
