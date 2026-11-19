@@ -22,7 +22,6 @@ enum SaveEventKind : i64 {
 };
 
 static const i64 SEGMENT_US = 2000000; // video segment length
-static const char *DESKTOP = "Desktop";
 
 // What the worker needs from Config and Paths, copied on the main thread with every job.
 struct SaveSettings {
@@ -225,7 +224,7 @@ static void save_file_name(const char *game_exe, const char *name, i64 start_us,
         audio_display_name(g_app.config, game_exe, game, sizeof game);
         clean_name(game);
     }
-    if (!game[0]) str_set(game, DESKTOP);
+    if (!game[0]) str_set(game, GAME_DESKTOP);
     save_name_expand(g_app.config.name_template, game, start_us, out, cap);
 }
 
@@ -712,7 +711,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     make_tracks(w);
     char game[96], names[1024] = {}, exes[1024] = {};
     if (w->game_count) display_name(w->cfg, w->games[0].exe, game, sizeof game);
-    else str_set(game, DESKTOP);
+    else str_set(game, GAME_DESKTOP);
     for (i32 g = 0; g < w->game_count; g++) {
         char n[96];
         display_name(w->cfg, w->games[g].exe, n, sizeof n);
@@ -884,7 +883,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     fmt_hm(t, hm, sizeof hm);
     arg_pair(a, cap, "-metadata", "title=%s - %d %.3s %d %s", label, t.wDay, month_name(t.wMonth), t.wYear, hm);
     arg_pair(a, cap, "-metadata", "genre=%s", game);
-    arg_pair(a, cap, "-metadata", "description=%s", names[0] ? names : DESKTOP);
+    arg_pair(a, cap, "-metadata", "description=%s", names[0] ? names : GAME_DESKTOP);
     arg_pair(a, cap, "-metadata", "comment=clipback; games=%s", exes);
     arg_pair(a, cap, "-movflags", "+faststart");
     arg_pair(a, cap, "-f", "mp4");

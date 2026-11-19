@@ -71,6 +71,10 @@ static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev"; // clipback-a
 
 static const char SAVE_NAME_DEFAULT[] = "{game} {hh}-{mm} {DD}-{MM}-{YYYY}";
 
+// The two "games" that aren't games: footage of no game, and files the save template doesn't read.
+static const char GAME_DESKTOP[] = "Desktop";
+static const char GAME_NOT_OURS[] = "Not from clipback";
+
 struct Config {
     Path save_dir;     // <Videos>\Clips, holding 2026\Clips, 2026\Sessions, 2026\Data
     Path buffer_dir;   // the rolling buffer
@@ -307,7 +311,7 @@ struct MediaInfo {
     i32  track_count;                  // audio tracks
     char tracks[MEDIA_MAX_TRACKS][32]; // their titles: "Mix", "Mic", "sam (chat)", "Overwatch (game)" ...
     u8   channels[MEDIA_MAX_TRACKS];   // and channel counts: 1 for a mono Mic or chat, 2 for the rest
-    char game[64];                     // what it's of: the tagged game, "Desktop", or "Other" for files not ours
+    char game[64];                     // what it's of: the tagged game, GAME_DESKTOP or GAME_NOT_OURS
 };
 
 // How a keyframed value moves away from a key and into the next (as in Compress for Discord): Smooth and EaseOut

@@ -61,25 +61,7 @@ static Path lib_cache_file(const Path &cache, u64 key, const wchar_t *ext)
     return path_join(cache, name);
 }
 
-// "Overwatch" from "Overwatch 2026-11-15 21-04-10": the words before the date. A clip saved on the desktop is named
-// "Clip <date>", which is "Desktop"; a file without a date isn't one of ours, which is "Other".
-static void game_from_name(const char *name, char *out, i32 cap)
-{
-    size_t n = strlen(name);
-    for (size_t i = 0; i + 10 <= n; i++) {
-        const char *d = name + i;
-        bool date = isdigit((u8)d[0]) && isdigit((u8)d[1]) && isdigit((u8)d[2]) && isdigit((u8)d[3]) && d[4] == '-' &&
-                    isdigit((u8)d[5]) && isdigit((u8)d[6]) && d[7] == '-' && isdigit((u8)d[8]) && isdigit((u8)d[9]);
-        if (!date || (i > 0 && name[i - 1] != ' ')) continue;
-        char prefix[256];
-        snprintf(prefix, sizeof prefix, "%.*s", (int)i, name);
-        char *p = trim(prefix);
-        if (!*p || !_stricmp(p, "Clip")) snprintf(out, cap, "Desktop");
-        else snprintf(out, cap, "%s", p);
-        return;
-    }
-    snprintf(out, cap, "Other");
-}
+static void game_from_name(const char *tmpl, const char *name, char *out, i32 cap);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Workers
@@ -362,7 +344,7 @@ static bool lib_comments_save()
 }
 
 // A file's game: the one given by hand, else its own tag, else what its name says.
-static bool lib_set_game(LibItem *it, const char *tagged)
+static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
 {
     for (i32 i = 0; i < g_game_override_count; i++) {
         if (g_game_overrides[i].key != it->key) continue;
@@ -370,7 +352,7 @@ static bool lib_set_game(LibItem *it, const char *tagged)
         return true;
     }
     if (tagged[0]) str_set(it->info.game, tagged);
-    else game_from_name(it->name, it->info.game, sizeof it->info.game);
+    else game_from_name(tmpl, it->name, it->info.game, sizeof it->info.game);
     return false;
 }
 
@@ -395,6 +377,7 @@ struct LibProbeRun {
     volatile LONG next;
     i32           probed;
     Path          save_dir, cache, ffprobe;
+    const char   *tmpl; // the save template, for the game in a name
 };
 
 static DWORD WINAPI lib_prober(void *param)
@@ -413,7 +396,7 @@ static DWORD WINAPI lib_prober(void *param)
             it.info.duration = 0; // shown without a length rather than asked again and again this scan
         }
         it.probed = true;
-        lib_set_game(&it, tagged);
+        lib_set_game(&it, tagged, run.tmpl);
         AcquireSRWLockExclusive(&run.lock);
         run.items[i] = it;
         run.probed++;
@@ -461,7 +444,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     it->key = fnv64(&it->mtime_us, sizeof it->mtime_us, k);
                     char tagged[64];
                     it->probed = lib_cache_read(cache, it->key, &it->info, tagged, sizeof tagged);
-                    by_hand += lib_set_game(it, it->probed ? tagged : "");
+                    by_hand += lib_set_game(it, it->probed ? tagged : "", tmpl);
                     lib_set_display_name(it);
                 } while (FindNextFileW(h, &f));
                 FindClose(h);
@@ -481,6 +464,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
     run.save_dir = save_dir;
     run.cache = cache;
     run.ffprobe = ffprobe_for(ffmpeg);
+    run.tmpl = tmpl;
     i32 todo = 0;
     for (i32 i = 0; i < n; i++) todo += !items[i].probed;
     if (!todo) return;
@@ -826,8 +810,7 @@ static int lib_sort_cmp(const void *pa, const void *pb)
     case SORT_LONGEST: if (a.info.duration != b.info.duration) return a.info.duration > b.info.duration ? -1 : 1; break;
     case SORT_BIGGEST: if (a.size != b.size) return a.size > b.size ? -1 : 1; break;
     case SORT_GAME: { // by game, A to Z, with no game last; newest first within each
-        bool an = !strcmp(a.info.game, "Desktop") || !strcmp(a.info.game, "Other");
-        bool bn = !strcmp(b.info.game, "Desktop") || !strcmp(b.info.game, "Other");
+        bool an = game_is_none(a.info.game), bn = game_is_none(b.info.game);
         if (an != bn) return an ? 1 : -1;
         int c = _stricmp(a.info.game, b.info.game);
         if (c) return c;
@@ -1146,8 +1129,8 @@ static void lib_refilter()
         for (i32 f = 0; f < LIB_MAX_FOLDERS && fm >> f; f++)
             if (fm >> f & 1) lib.folder_items[f]++;
         const char *g = it.info.game;
-        if (!strcmp(g, "Desktop")) desktop++;
-        else if (!strcmp(g, "Other")) other++;
+        if (!strcmp(g, GAME_DESKTOP)) desktop++;
+        else if (!strcmp(g, GAME_NOT_OURS)) other++;
         else {
             i32 k = 0;
             while (k < lib.game_count && strcmp(lib.games[k], g)) k++;
@@ -1165,8 +1148,8 @@ static void lib_refilter()
         lib.shown[lib.shown_count++] = i;
     }
     // Games most recent first, then Desktop, then files not ours.
-    if (desktop) { str_set(lib.games[lib.game_count], "Desktop"); lib.game_items[lib.game_count++] = desktop; }
-    if (other) { str_set(lib.games[lib.game_count], "Other"); lib.game_items[lib.game_count++] = other; }
+    if (desktop) { str_set(lib.games[lib.game_count], GAME_DESKTOP); lib.game_items[lib.game_count++] = desktop; }
+    if (other) { str_set(lib.games[lib.game_count], GAME_NOT_OURS); lib.game_items[lib.game_count++] = other; }
     if (lib.sort != SORT_NEWEST) qsort(lib.shown, lib.shown_count, sizeof lib.shown[0], lib_sort_cmp);
 }
 
@@ -1607,6 +1590,23 @@ static i64 lib_name_us(const char *tmpl, const char *name, i64 mtime_us)
     return ((((i64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) - 116444736000000000LL) / 10;
 }
 
+// The game in a file name from the save template `tmpl`: its {game}, where "Clip" or none is the desktop. A name
+// the template doesn't read isn't one of ours.
+static void game_from_name(const char *tmpl, const char *name, char *out, i32 cap)
+{
+    NameParts p;
+    SYSTEMTIME t;
+    char copy[16];
+    if (!lib_name_read(tmpl, name, p, t, copy)) {
+        snprintf(out, cap, "%s", GAME_NOT_OURS);
+        return;
+    }
+    char g[256] = "";
+    if (p.game) snprintf(g, sizeof g, "%.*s", (int)p.game_len, p.game);
+    char *s = trim(g);
+    snprintf(out, cap, "%s", !*s || !_stricmp(s, "Clip") ? GAME_DESKTOP : s);
+}
+
 // The name a clip or session is shown with (see above). True when the name shown has a time.
 static bool lib_shown_name(const char *name, char *out, i32 cap)
 {
@@ -1966,7 +1966,7 @@ static const char *lib_game_pick(const char *id, const char *current)
     for (i32 pass = 0; pass < 3; pass++) { // 0: what's typed, exactly; 1: the library's; 2: the art service's
         for (i32 i = 0; i < lib.game_count; i++) {
             const char *g = lib.games[i];
-            if (!strcmp(g, "Other") || (*tq && !lib_matches(g, tq))) continue;
+            if (!strcmp(g, GAME_NOT_OURS) || (*tq && !lib_matches(g, tq))) continue;
             gdb_letters(g, letters, sizeof letters);
             if (pass == 1 || (pass == 0 && *tq && !strcmp(letters, want))) add(g, 0, true);
         }
@@ -1998,7 +1998,7 @@ static const char *lib_game_pick(const char *id, const char *current)
         ID3D11ShaderResourceView *icon = game_db_icon(names[i]);
         if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1),
                                       IM_COL32_WHITE, kit_px(5));
-        else if (!strcmp(names[i], "Desktop")) { // no game: the monitor glyph, as in the Games list
+        else if (!strcmp(names[i], GAME_DESKTOP)) { // no game: the monitor glyph, as in the Games list
             ImGui::PushFont(g_font_icon);
             ImVec2 gs = ImGui::CalcTextSize(ICON_MONITOR);
             dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), ICON_MONITOR);
@@ -2928,8 +2928,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     // The caption: the game's icon, then the name and one dim line. Renaming edits the name right there.
     f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
     f32 tx = a.x + isz + kit_px(10), tw = a.x + w - tx;
-    // No game ("Desktop", "Other") gets a plain glyph rather than whatever icon the name looks up.
-    bool desktop = !strcmp(it.info.game, "Desktop"), no_game = desktop || !strcmp(it.info.game, "Other");
+    // No game (GAME_DESKTOP, GAME_NOT_OURS) gets a plain glyph rather than whatever icon the name looks up.
+    bool desktop = !strcmp(it.info.game, GAME_DESKTOP), no_game = game_is_none(it.info.game);
     ID3D11ShaderResourceView *icon = it.info.game[0] && !no_game ? game_icon(it.info.game) : 0;
     const char *glyph = desktop ? ICON_MONITOR : ICON_VIDEO;
     if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
@@ -3737,7 +3737,7 @@ static bool lib_unsaved_shown(u32 id)
     save_file_name(s->exe, s->name, s->start_us, file, sizeof file);
     // The game its file is tagged with: the exe's shown name; a session named by hand, what its file name says
     if (s->exe[0]) audio_display_name(g_app.config, s->exe, game, sizeof game);
-    else game_from_name(file, game, sizeof game);
+    else game_from_name(g_app.config.name_template, file, game, sizeof game);
     if (!g_app.config.side_folders && lib.game[0] && strcmp(lib.game, game)) return false;
     return lib_name_matches(file, lib.search) || lib_matches(game, lib.search);
 }
@@ -4176,7 +4176,7 @@ static void screen_library()
             ImGui::PushID(c);
             // No game gets a built-in glyph: a monitor for Desktop, a video for files not ours
             bool none = c > 0 && game_is_none(name);
-            const char *glyph = !none ? 0 : !strcmp(name, "Desktop") ? ICON_MONITOR : ICON_VIDEO;
+            const char *glyph = !none ? 0 : !strcmp(name, GAME_DESKTOP) ? ICON_MONITOR : ICON_VIDEO;
             if (lib_game_item(c == 0 || none ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
                               side_w - kit_px(12), collapsed, glyph, c > 0 && lib_favourite_find("games", name) >= 0))
                 pick = c;

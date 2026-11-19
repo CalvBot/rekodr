@@ -722,7 +722,7 @@ static i32  g_tl_game_count;
 static void tl_games_add(const char *name)
 {
     if (!name[0] || g_tl_game_count >= (i32)COUNT(g_tl_games)) return;
-    if (!strcmp(name, "Desktop") || !strcmp(name, "Other")) return;
+    if (game_is_none(name)) return;
     for (i32 i = 0; i < g_tl_game_count; i++)
         if (!_stricmp(g_tl_games[i], name)) return;
     str_set(g_tl_games[g_tl_game_count++], name);

@@ -99,6 +99,9 @@ Clips are named after the game played most in them, or `Desktop`. Sessions are n
 - **Title:** `Overwatch · 15 Nov 2026 21:04`.
 - **Description:** every game in the file.
 
+The Library files a video under its tagged game, else the `{game}` its name holds by the file name template (`Clip` or
+none is `Desktop`). A name the template doesn't read is listed as **Not from clipback**. `games.txt` overrides both.
+
 ## Recording (always on)
 This works today and stays the same, including the on-disk buffer format, so switching versions keeps the buffer.
 

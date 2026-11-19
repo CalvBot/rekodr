@@ -301,8 +301,8 @@ static AppIcon *icon_slot(AppIcon *slots, i32 *count, i32 cap, const char *key)
 static AppIcon g_db_icons[LIB_MAX_GAMES + 64];
 static i32 g_db_icon_count;
 
-// "Desktop" (no game) and "Other" (files not ours) aren't games, so no lookup gives them an icon
-static bool game_is_none(const char *name) { return !strcmp(name, "Desktop") || !strcmp(name, "Other"); }
+// GAME_DESKTOP and GAME_NOT_OURS aren't games, so no lookup gives them an icon
+static bool game_is_none(const char *name) { return !strcmp(name, GAME_DESKTOP) || !strcmp(name, GAME_NOT_OURS); }
 
 static ID3D11ShaderResourceView *game_db_icon(const char *name)
 {

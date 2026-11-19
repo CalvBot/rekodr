@@ -90,6 +90,28 @@ static void test_shown_names()
     T(!strcmp(out, "Overwatch 2 - 20 Nov 2020 at 15:05"));
 }
 
+// The game in a file name comes from the save template; a name it doesn't read isn't ours
+static void test_game_from_name()
+{
+    char g[64];
+    game_from_name(SAVE_NAME_DEFAULT, "Minecraft 15-00 20-11-2020", g, sizeof g);
+    T(!strcmp(g, "Minecraft"));
+    game_from_name(SAVE_NAME_DEFAULT, "Over 9 21-30 20-11-2020 (2)", g, sizeof g);
+    T(!strcmp(g, "Over 9"));
+    game_from_name(SAVE_NAME_DEFAULT, "Clip 15-00 20-11-2020", g, sizeof g);
+    T(!strcmp(g, GAME_DESKTOP));
+    game_from_name(SAVE_NAME_DEFAULT, "Desktop 15-00 20-11-2020", g, sizeof g);
+    T(!strcmp(g, GAME_DESKTOP));
+    game_from_name("{YYYY}-{MM}-{DD} {hh}.{mm} {game}", "2020-11-20 15.05 Overwatch 2", g, sizeof g);
+    T(!strcmp(g, "Overwatch 2"));
+    game_from_name("{YYYY}-{MM}-{DD} {hh}.{mm}", "2020-11-20 15.05", g, sizeof g);
+    T(!strcmp(g, GAME_DESKTOP));
+    game_from_name(SAVE_NAME_DEFAULT, "Holiday video", g, sizeof g);
+    T(!strcmp(g, GAME_NOT_OURS));
+    game_from_name(SAVE_NAME_DEFAULT, "Minecraft 2026-11-19 21-30-00", g, sizeof g);
+    T(!strcmp(g, GAME_NOT_OURS));
+}
+
 static void test_buffer_names()
 {
     u32 n = 0;
@@ -1032,6 +1054,7 @@ int main()
     InitializeSRWLock(&g_log_lock);
     test_lengths();
     test_select_range();
+    test_game_from_name();
     test_save_names();
     test_buffer_names();
     test_shown_names();
