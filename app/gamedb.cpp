@@ -779,11 +779,19 @@ static bool gamedb_exe_name(const AppInfo &a, bool game, char *name, i32 cap, bo
 // so it is told (POST /v1/confirm). When enough players name
 // an exe in a folder the same game, the service names it so for everyone. Only with the player's say-so, and never
 // for a game a store id decides. Main thread.
+static void gamedb_vote(const AppInfo &a, const char *name);
+
 static void gamedb_confirm(const AppInfo &a, const char *name)
+{
+    if (app_category(g_app.config, a) != CAT_GAME) return;
+    gamedb_vote(a, name);
+}
+
+// Sends the vote that exe `a` is game `name`, under the same rules as gamedb_confirm, whatever it is sorted as.
+static void gamedb_vote(const AppInfo &a, const char *name)
 {
     Config &c = g_app.config;
     if (!c.share_names || !g_gamedb.online || !g_gamedb.service[0] || !a.path[0] || !name[0]) return;
-    if (app_category(c, a) != CAT_GAME) return;
     GameInfo listed;
     if (gamedb_by_exe(a.exe.s, a.path, "", "", &listed)) return; // the games list has it
     char said[128];
@@ -794,6 +802,111 @@ static void gamedb_confirm(const AppInfo &a, const char *name)
         return;
     gamedb_ask(fnv64(body, strlen(body)), ASK_CONFIRM, body);
     log_line("games: told the art service %s is %s", a.exe.s, name);
+}
+
+// Browsers: a game played in one can't be told by its exe, so the service only counts the game.
+static bool is_browser(const char *exe)
+{
+    static const char *const browsers[] = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
+                                           "vivaldi.exe", "arc.exe", "zen.exe", "librewolf.exe", "waterfox.exe",
+                                           "floorp.exe", "chromium.exe", "iexplore.exe", "thorium.exe"};
+    for (auto b : browsers)
+        if (!_stricmp(exe, b)) return true;
+    return false;
+}
+
+// The program longest in front between from_us and to_us, from focus.tsv text ("us\texe" lines, oldest first).
+// clipback itself and "nothing in front" don't count. False if nothing was.
+static bool focus_longest(char *text, i64 from_us, i64 to_us, char *exe, i32 cap)
+{
+    struct Spent { char exe[64]; i64 us; } spent[32];
+    i32 n = 0;
+    i64 at = 0;
+    char cur[64] = "";
+    auto add = [&](i64 until) {
+        i64 a = at > from_us ? at : from_us, b = until < to_us ? until : to_us;
+        if (!cur[0] || b <= a || !_stricmp(cur, "clipback.exe")) return;
+        i32 i = 0;
+        while (i < n && strcmp(spent[i].exe, cur)) i++;
+        if (i == n) {
+            if (n == COUNT(spent)) return;
+            str_set(spent[n].exe, cur);
+            spent[n++].us = 0;
+        }
+        spent[i].us += b - a;
+    };
+    for (char *line = text; line && *line;) {
+        char *next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char *tab = strchr(line, '\t');
+        if (tab) {
+            *tab = 0;
+            i64 t = strtoll(line, 0, 10);
+            char *e = tab + 1;
+            size_t len = strlen(e);
+            while (len && (e[len - 1] == '\r' || e[len - 1] == ' ')) e[--len] = 0;
+            if (t > 0) {
+                add(t);
+                at = t;
+                str_set(cur, e);
+            }
+        }
+        line = next;
+    }
+    add(to_us);
+    i32 best = -1;
+    for (i32 i = 0; i < n; i++)
+        if (best < 0 || spent[i].us > spent[best].us) best = i;
+    if (best < 0) return false;
+    snprintf(exe, cap, "%s", spent[best].exe);
+    return true;
+}
+
+static void saved_load();                      // save.cpp
+static void mc_put(char *out, i32 cap, i32 *n, const char *s); // mcpack.cpp
+static Path lib_item_path(const LibItem &it);  // library.cpp
+
+// A clip or session was given a game by hand: with "Help name games" on, the service is told the program that was
+// in front during it is that game. Only for a file saved from this buffer while the buffer still covers it. Main
+// thread.
+static void gamedb_clip_game(const LibItem &it, const char *game)
+{
+    Config &c = g_app.config;
+    if (!c.share_names || !g_gamedb.online || !g_gamedb.service[0] || !game[0]) return;
+    char path[1024];
+    wide_to_utf8(lib_item_path(it).s, path, sizeof path);
+    saved_load();
+    const SavedRange *r = 0;
+    for (i32 i = g_app.saving.saved_count - 1; i >= 0 && !r; i--)
+        if (!_stricmp(g_app.saving.saved[i].path, path)) r = &g_app.saving.saved[i];
+    if (!r) return;
+    FILE *f = _wfopen(path_join(c.buffer_dir, L"focus.tsv").s, L"rb");
+    if (!f) return;
+    static char text[256 * 1024];
+    size_t got = fread(text, 1, sizeof text - 1, f);
+    fclose(f);
+    text[got] = 0;
+    char exe[64];
+    if (!focus_longest(text, r->from_us, r->to_us, exe, sizeof exe)) return;
+    if (is_browser(exe)) {
+        static char body[512];
+        i32 n = snprintf(body, sizeof body, "{\"exe\":");
+        mc_put(body, sizeof body, &n, exe);
+        n += snprintf(body + n, sizeof body - n, ",\"name\":");
+        mc_put(body, sizeof body, &n, game);
+        n += snprintf(body + n, sizeof body - n, "}");
+        if (n <= 0 || n >= (i32)sizeof body - 1) return;
+        gamedb_ask(fnv64(body, strlen(body)), ASK_CONFIRM, body);
+        log_line("games: told the art service a clip in %s is %s", exe, game);
+        return;
+    }
+    AppInfo *a = 0;
+    for (i32 i = 0; i < c.app_count && !a; i++)
+        if (!strcmp(c.apps[i].exe.s, exe)) a = &c.apps[i];
+    if (!a) return;
+    AppCategory cat = app_category(c, *a);
+    if (cat != CAT_GAME && cat != CAT_NONE) return; // a chat app or a tool in front says nothing of the game
+    gamedb_vote(*a, game);
 }
 
 // Names an app from the database: its description becomes the game's name, and one that hasn't been sorted yet

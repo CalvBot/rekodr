@@ -801,6 +801,45 @@ static void test_storeids()
         str_set(app.exe.s, "hollow_knight.exe");
         gamedb_confirm(app, "Hollow Knight");
         T(confirms(&sent) == 1);
+
+        // A clip given a game by hand: the program longest in front during it is voted for, and a browser
+        // only counts the game
+        char focus[] = "100\tgame.exe\n200\tclipback.exe\n900\tfirefox.exe\n1000\tgame.exe\n";
+        char exe[64];
+        T(focus_longest(focus, 150, 1020, exe, sizeof exe) && !strcmp(exe, "firefox.exe"));
+        char focus2[] = "100\tgame.exe\n200\tclipback.exe\n900\tfirefox.exe\n1000\tgame.exe\n";
+        T(focus_longest(focus2, 0, 1500, exe, sizeof exe) && !strcmp(exe, "game.exe"));
+        char focus3[] = "100\tclipback.exe\n200\t\n";
+        T(!focus_longest(focus3, 0, 300, exe, sizeof exe));
+        T(is_browser("Chrome.exe") && !is_browser("game.exe"));
+        {
+            Saving keep = g_app.saving;
+            Path buffer = g_app.config.buffer_dir, save_dir = g_app.config.save_dir;
+            swprintf(g_app.config.buffer_dir.s, MAX_PATH, L"%hs/clipbuf", root);
+            swprintf(g_app.config.save_dir.s, MAX_PATH, L"%hs/clipsave", root);
+            CreateDirectoryW(g_app.config.buffer_dir.s, 0);
+            LibItem it = {};
+            str_set(it.name, "Clip 1");
+            str_set(it.ext, ".mp4");
+            it.year = 2026;
+            g_app.saving = {};
+            g_app.saving.saved_loaded = true;
+            g_app.saving.saved_count = 1;
+            g_app.saving.saved[0].from_us = 1000;
+            g_app.saving.saved[0].to_us = 5000;
+            wide_to_utf8(lib_item_path(it).s, g_app.saving.saved[0].path, sizeof g_app.saving.saved[0].path);
+            FILE *ff = _wfopen(path_join(g_app.config.buffer_dir, L"focus.tsv").s, L"wb");
+            fputs("500\tdiscord.exe\n1500\tchrome.exe\n4800\tdiscord.exe\n", ff);
+            fclose(ff);
+            gamedb_clip_game(it, "Chess");
+            T(confirms(&sent) == 2 && !strcmp(sent, "{\"exe\":\"chrome.exe\",\"name\":\"Chess\"}"));
+            str_set(it.name, "Not saved here");
+            gamedb_clip_game(it, "Chess");
+            T(confirms(&sent) == 2);
+            g_app.saving = keep;
+            g_app.config.buffer_dir = buffer;
+            g_app.config.save_dir = save_dir;
+        }
         for (auto &q : g_gamedb.asks) {
             free(q.body);
             q = {};
