@@ -1559,9 +1559,14 @@ static bool lib_game_picker(const char *id, LibItem &it)
         changed_at = ImGui::GetTime();
         ImGui::SetKeyboardFocusHere();
     }
+    // The search box: framed like the inputs in Options' popups
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(12), kit_px(10)));
     ImGui::SetNextItemWidth(-1);
     bool enter = ImGui::InputTextWithHint("##game_q", "Search for a game", typed, sizeof typed,
                                           ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
     if (ImGui::IsItemEdited()) changed_at = ImGui::GetTime();
     // The art service is asked once the text has stayed the same a moment, not for each key
     if (strcmp(settled, typed) && ImGui::GetTime() - changed_at > 0.35) str_set(settled, typed);
@@ -1743,26 +1748,84 @@ static void card_menu()
     lib_popup_style_pop();
 }
 
-// The buttons at the bottom right of a dialog: Cancel, then the action (action_w wide when it's given, for a long
-// label). 1 = the action, -1 = Cancel.
-static i32 lib_dialog_buttons(const char *action, KitKind kind, f32 action_w = 0)
-{
-    f32 bw = kit_px(96), aw = action_w > 0 ? action_w : bw;
-    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - bw - aw - ImGui::GetStyle().ItemSpacing.x);
-    i32 r = 0;
-    if (kit_button(ICON_CLOSE "  Cancel", KIT_SECONDARY, ImVec2(bw, 0))) r = -1;
-    ImGui::SameLine();
-    if (kit_button(action, kind, ImVec2(aw, 0))) r = 1;
-    return r;
-}
+// Dialogs (Delete, Delete folder, an app's name in Options) share one layout: the title, what it's about in bold,
+// a line or a box, and Cancel and the action as a pair at the bottom right, one even gap between each.
+// lib_dialog_begin .. lib_dialog_end; `show delete` and `show delete-folder [ticked]` open the library's.
+static i32 g_show_dialog; // 1 Delete (the first card), 2 Delete folder (the first folder), 3 the same, ticked
 
 static bool lib_dialog_begin(const char *id)
 {
-    ImGui::SetNextWindowSize(ImVec2(kit_px(400), 0));
-    lib_popup_style_push(18);
+    ImGui::SetNextWindowSize(ImVec2(kit_px(420), 0));
+    lib_popup_style_push(22);
     bool open = ImGui::BeginPopupModal(id, 0, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar);
     lib_popup_style_pop();
+    if (open) ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(kit_px(8), kit_px(14)));
     return open;
+}
+
+static void lib_dialog_end()
+{
+    ImGui::PopStyleVar();
+    ImGui::EndPopup();
+}
+
+// One of the pair: a filled button, both the same height.
+static bool lib_dialog_button(const char *label, u32 fill, u32 hover, u32 ink, f32 w)
+{
+    ImGui::PushStyleColor(ImGuiCol_Button, rgb(fill));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(hover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(hover, 0.8f));
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(ink));
+    bool hit = ImGui::Button(label, ImVec2(w, kit_px(36)));
+    ImGui::PopStyleColor(4);
+    if (hit) dev_click("button", label);
+    return hit;
+}
+
+// The pair at the bottom right: Cancel, then the action, red for KIT_DANGER and the accent otherwise (action_w
+// wide when it's given, for a label that changes). 1 = the action, -1 = Cancel.
+static i32 lib_dialog_buttons(const char *action, KitKind kind, f32 action_w = 0)
+{
+    f32 bw = kit_px(104), aw = action_w > 0 ? action_w : bw, gap = kit_px(8);
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - bw - aw - gap);
+    i32 r = 0;
+    if (lib_dialog_button(ICON_CLOSE "  Cancel", COL_HOVER, 0x383b42, COL_TEXT, bw)) r = -1;
+    ImGui::SameLine(0, gap);
+    bool red = kind == KIT_DANGER;
+    if (lib_dialog_button(action, red ? COL_RED : COL_ACCENT, red ? 0xf45d67 : COL_ACCENT_HOVER, 0xffffff, aw)) r = 1;
+    return r;
+}
+
+// A tick box with its label, from the left edge: a ringed box, filled with a tick when on.
+static bool lib_dialog_check(const char *label, bool *v, bool enabled)
+{
+    f32 box = kit_px(20), h = ImMax(box, ImGui::GetTextLineHeight()), gap = kit_px(10);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    if (!enabled) ImGui::BeginDisabled();
+    bool hit = ImGui::InvisibleButton(label, ImVec2(box + gap + ImGui::CalcTextSize(label).x, h)) && enabled;
+    if (!enabled) ImGui::EndDisabled();
+    bool hot = enabled && ImGui::IsItemHovered();
+    if (hit) {
+        *v = !*v;
+        dev_click("check", label);
+    }
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 b0(a.x, floorf(a.y + (h - box) / 2)), b1(b0.x + box, b0.y + box);
+    if (*v && enabled) {
+        dl->AddRectFilled(b0, b1, col32(hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(4));
+        ImGui::PushFont(g_font_icon);
+        ImVec2 cs = ImGui::CalcTextSize(ICON_CHECK);
+        f32 s = box * 0.8f / ImMax(cs.x, cs.y);
+        ImGui::PopFont();
+        dl->AddText(g_font_icon, g_font_icon->FontSize * s, ImVec2(floorf(b0.x + (box - cs.x * s) / 2), floorf(b0.y + (box - cs.y * s) / 2)),
+                    IM_COL32_WHITE, ICON_CHECK);
+    } else {
+        dl->AddRectFilled(b0, b1, col32(COL_BG), kit_px(4));
+        dl->AddRect(b0, b1, col32(!enabled ? COL_LINE : hot ? COL_DIM : COL_FAINT), kit_px(4), 0, kit_px(1.5f));
+    }
+    dl->AddText(ImVec2(b0.x + box + gap, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)),
+                col32(enabled ? COL_TEXT : COL_FAINT), label);
+    return hit;
 }
 
 // Renames lib.target to what's in lib.rename_buf, with its edit. True when done (renamed, or the name didn't
@@ -1862,7 +1925,7 @@ static void delete_modal()
         cancel = true;
     }
     if (cancel) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    lib_dialog_end();
 }
 
 // The name and the line under a card's picture.
@@ -2988,10 +3051,16 @@ static void lib_folder_list(f32 w, bool collapsed)
     // Deleting a folder: unticked, only the folder goes; ticked, everything in it goes to the Recycle Bin as a card's
     // Delete sends it, even what is in other folders too.
     static bool with_items;
+    if (g_show_dialog >= 2) {
+        for (i32 i = lib.folder_count - 1; i >= 0; i--)
+            if (lib.folders[i].view == lib.view) lib.folder_target = i;
+        del = lib.folder_target >= 0 && lib.folder_target < lib.folder_count;
+    }
     if (del) {
-        with_items = false;
+        with_items = g_show_dialog == 3;
         ImGui::OpenPopup("Delete folder");
     }
+    if (g_show_dialog >= 2) g_show_dialog = 0;
     if (lib_dialog_begin("Delete folder")) {
         i32 fi = lib.folder_target;
         u64 bit = 1ull << fi;
@@ -3010,12 +3079,8 @@ static void lib_folder_list(f32 w, bool collapsed)
         ImGui::PopFont();
         char box[64];
         snprintf(box, sizeof box, "Also delete the %s in it", lib.view == LIB_CLIPS ? "clips" : "sessions");
-        if (count == 0) ImGui::BeginDisabled();
-        ImGui::Checkbox(box, &with_items);
-        if (count == 0) ImGui::EndDisabled();
+        lib_dialog_check(box, &with_items, count > 0);
         bool go = with_items && count > 0;
-        if (go) kit_dim("They go to the Recycle Bin, with their edits.");
-        else kit_dim(lib.view == LIB_CLIPS ? "The clips in it stay where they are." : "The sessions in it stay where they are.");
         if (shared) {
             char note[96];
             snprintf(note, sizeof note, "%d of them %s in other folders too, and still %s.", shared, shared == 1 ? "is" : "are", shared == 1 ? "goes" : "go");
@@ -3039,7 +3104,7 @@ static void lib_folder_list(f32 w, bool collapsed)
             lib_folder_delete(fi);
         }
         if (b != 0 || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        lib_dialog_end();
     }
     if (pick != -2) {
         if (pick == -1) lib.folder[0] = 0;
@@ -3325,6 +3390,11 @@ static void screen_library()
     if (lib.open_menu) ImGui::OpenPopup("card_menu");
     lib.open_menu = false;
     card_menu();
+    if (g_show_dialog == 1 && lib.shown_count > 0) {
+        lib.target = lib.items[lib.shown[0]];
+        ImGui::OpenPopup("Delete");
+    }
+    if (g_show_dialog == 1) g_show_dialog = 0;
     delete_modal();
     if (g_lib_switch_us && !g_lib_first_us) g_lib_first_us = now_us();
     if (g_lib_switch_us && lib.scanned && !g_lib_missing) {
