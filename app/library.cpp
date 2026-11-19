@@ -1546,15 +1546,16 @@ static void card_menu()
     lib_popup_style_pop();
 }
 
-// The buttons at the bottom right of a dialog: Cancel, then the action. 1 = the action, -1 = Cancel.
-static i32 lib_dialog_buttons(const char *action, KitKind kind)
+// The buttons at the bottom right of a dialog: Cancel, then the action (action_w wide when it's given, for a long
+// label). 1 = the action, -1 = Cancel.
+static i32 lib_dialog_buttons(const char *action, KitKind kind, f32 action_w = 0)
 {
-    f32 bw = kit_px(96);
-    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 2 * bw - ImGui::GetStyle().ItemSpacing.x);
+    f32 bw = kit_px(96), aw = action_w > 0 ? action_w : bw;
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - bw - aw - ImGui::GetStyle().ItemSpacing.x);
     i32 r = 0;
     if (kit_button(ICON_CLOSE "  Cancel", KIT_SECONDARY, ImVec2(bw, 0))) r = -1;
     ImGui::SameLine();
-    if (kit_button(action, kind, ImVec2(bw, 0))) r = 1;
+    if (kit_button(action, kind, ImVec2(aw, 0))) r = 1;
     return r;
 }
 
@@ -1619,6 +1620,30 @@ static void lib_rename_start(const LibItem &it, bool comment)
     lib.rename_focus = true;
 }
 
+// Sends a clip or session to the Recycle Bin, with its edit if there is one; true when it went. The player lets go
+// of it first.
+static bool lib_recycle(const LibItem &it)
+{
+    Library &lib = g_app.library;
+    Path path = lib_item_path(it), edit = lib_edit_path(it);
+    if (lib.player.open && !wcscmp(lib.player.path.s, path.s)) library_close_player();
+    // A list of paths ending in two nulls: the video, and its edit if there is one.
+    static wchar_t from[2 * MAX_PATH + 4];
+    memset(from, 0, sizeof from);
+    size_t n = wcslen(path.s);
+    memcpy(from, path.s, n * sizeof(wchar_t));
+    if (file_exists(edit.s)) memcpy(from + n + 1, edit.s, wcslen(edit.s) * sizeof(wchar_t));
+    SHFILEOPSTRUCTW op = {};
+    op.hwnd = g_app.ui.hwnd;
+    op.wFunc = FO_DELETE;
+    op.pFrom = from;
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_SILENT;
+    int r = SHFileOperationW(&op);
+    bool ok = r == 0 && !op.fAnyOperationsAborted;
+    log_line("library: %s %s the Recycle Bin (%d)", it.name, ok ? "went to" : "didn't go to", r);
+    return ok;
+}
+
 static void delete_modal()
 {
     Library &lib = g_app.library;
@@ -1634,22 +1659,8 @@ static void delete_modal()
     i32 b = lib_dialog_buttons(ICON_DELETE "  Delete", KIT_DANGER);
     bool cancel = b == -1 || ImGui::IsKeyPressed(ImGuiKey_Escape);
     if (b == 1) {
-        Path path = lib_item_path(lib.target), edit = lib_edit_path(lib.target);
-        if (lib.player.open && !wcscmp(lib.player.path.s, path.s)) library_close_player();
-        // A list of paths ending in two nulls: the video, and its edit if there is one.
-        static wchar_t from[2 * MAX_PATH + 4];
-        memset(from, 0, sizeof from);
-        size_t n = wcslen(path.s);
-        memcpy(from, path.s, n * sizeof(wchar_t));
-        if (file_exists(edit.s)) memcpy(from + n + 1, edit.s, wcslen(edit.s) * sizeof(wchar_t));
-        SHFILEOPSTRUCTW op = {};
-        op.hwnd = g_app.ui.hwnd;
-        op.wFunc = FO_DELETE;
-        op.pFrom = from;
-        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_SILENT;
-        int r = SHFileOperationW(&op);
-        if (r == 0 && !op.fAnyOperationsAborted) lib_message(false, "%s went to the Recycle Bin", lib.target.name);
-        else lib_message(true, "Couldn't delete %s (error %d)", lib.target.name, r);
+        if (lib_recycle(lib.target)) lib_message(false, "%s went to the Recycle Bin", lib.target.name);
+        else lib_message(true, "Couldn't delete %s", lib.target.name);
         library_rescan();
         cancel = true;
     }
@@ -2614,15 +2625,59 @@ static void lib_folder_list(f32 w, bool collapsed)
     }
     lib_popup_style_pop();
     if (rename) lib_folder_rename_start(lib.folder_target);
-    if (del) ImGui::OpenPopup("Delete folder");
+    // Deleting a folder: unticked, only the folder goes; ticked, everything in it goes to the Recycle Bin as a card's
+    // Delete sends it, even what is in other folders too.
+    static bool with_items;
+    if (del) {
+        with_items = false;
+        ImGui::OpenPopup("Delete folder");
+    }
     if (lib_dialog_begin("Delete folder")) {
+        i32 fi = lib.folder_target;
+        u64 bit = 1ull << fi;
+        i32 count = 0, shared = 0;
+        for (i32 k = 0; k < lib.item_count; k++) {
+            if (lib.items[k].kind != lib.view) continue;
+            u64 m = lib_folder_mask(lib.items[k].key);
+            if (!(m & bit)) continue;
+            count++;
+            if (m & ~bit) shared++;
+        }
+        const char *noun = lib.view == LIB_CLIPS ? (count == 1 ? "clip" : "clips") : (count == 1 ? "session" : "sessions");
         kit_heading("Delete the folder?");
         ImGui::PushFont(g_font_bold);
-        ImGui::TextUnformatted(lib.folders[lib.folder_target].name);
+        ImGui::TextUnformatted(lib.folders[fi].name);
         ImGui::PopFont();
-        kit_dim(lib.view == LIB_CLIPS ? "The clips in it stay where they are." : "The sessions in it stay where they are.");
-        i32 b = lib_dialog_buttons(ICON_DELETE "  Delete", KIT_DANGER);
-        if (b == 1) lib_folder_delete(lib.folder_target);
+        char box[64];
+        snprintf(box, sizeof box, "Also delete the %s in it", lib.view == LIB_CLIPS ? "clips" : "sessions");
+        if (count == 0) ImGui::BeginDisabled();
+        ImGui::Checkbox(box, &with_items);
+        if (count == 0) ImGui::EndDisabled();
+        bool go = with_items && count > 0;
+        if (go) kit_dim("They go to the Recycle Bin, with their edits.");
+        else kit_dim(lib.view == LIB_CLIPS ? "The clips in it stay where they are." : "The sessions in it stay where they are.");
+        if (shared) {
+            char note[96];
+            snprintf(note, sizeof note, "%d of them %s in other folders too, and still %s.", shared, shared == 1 ? "is" : "are", shared == 1 ? "goes" : "go");
+            kit_dim(note);
+        }
+        char action[64];
+        if (go) snprintf(action, sizeof action, ICON_DELETE "  Delete folder and %d %s", count, noun);
+        else snprintf(action, sizeof action, ICON_DELETE "  Delete folder");
+        i32 b = lib_dialog_buttons(action, KIT_DANGER, kit_px(230));
+        if (b == 1) {
+            if (go) {
+                i32 gone = 0;
+                for (i32 k = 0; k < lib.item_count; k++) {
+                    LibItem it = lib.items[k];
+                    if (it.kind == lib.view && (lib_folder_mask(it.key) & bit) && lib_recycle(it)) gone++;
+                }
+                if (gone == count) lib_message(false, "%s and %d %s went to the Recycle Bin", lib.folders[fi].name, gone, noun);
+                else lib_message(true, "%d of %d %s couldn't be deleted", count - gone, count, noun);
+                library_rescan();
+            }
+            lib_folder_delete(fi);
+        }
         if (b != 0 || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
