@@ -12,10 +12,13 @@
 // Library's unsaved sessions when several are waiting. Closed or ignored, the sessions it asked about are unsaved.
 // The marker window takes the keyboard, and gives it back to the window that had it. Enter or Save keeps what was
 // typed, as does clicking away; Escape leaves the marker plain. Tab steps through the colours.
+// Every toast has a Dismiss button (an X) at the bottom left: it closes the toast as ignoring it would, and on the
+// marker window it is Escape.
 
 enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
-// The parts a click lands on: the buttons counted from the right, then the marker's colours (TP_COLOUR + 1..6)
-enum { TP_NONE, TP_MAIN, TP_SECOND, TP_COLOUR = 10 };
+// The parts a click lands on: the buttons counted from the right, Dismiss at the left, then the marker's colours
+// (TP_COLOUR + 1..6)
+enum { TP_NONE, TP_MAIN, TP_SECOND, TP_DISMISS, TP_COLOUR = 10 };
 enum { TR_TILE = -1, TR_FIELD = -2, TR_DIAL = -3 }; // more rectangles, for drawing
 
 struct Toast {
@@ -37,7 +40,7 @@ struct Toast {
     i32       base_w, base_h;
     bool      dirty;
     f32       scale;              // the fonts were made for this
-    HFONT     font, strong, title_font, icons;
+    HFONT     font, strong, title_font, icons, small_icons;
     HBRUSH    field;
 };
 static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
@@ -91,8 +94,9 @@ static RECT toast_rect(const Toast &t, i32 part)
     }
     if (part == TP_MAIN) return {w - pad - bw, row, w - pad, row + bh};
     if (part == TP_SECOND) return {w - pad - 2 * bw - gap, row, w - pad - bw - gap, row + bh};
+    if (part == TP_DISMISS) return {pad, row, pad + bh, row + bh};
     if (part > TP_COLOUR) {
-        i32 d = toast_px(t, TOAST_DOT), x = pad + (part - TP_COLOUR - 1) * (d + toast_px(t, TOAST_DOT_GAP));
+        i32 d = toast_px(t, TOAST_DOT), x = pad + bh + toast_px(t, TOAST_GAP) + (part - TP_COLOUR - 1) * (d + toast_px(t, TOAST_DOT_GAP));
         i32 y = row + (bh - d) / 2;
         return {x, y, x + d, y + d};
     }
@@ -104,6 +108,7 @@ static i32 toast_hit(const Toast &t, LPARAM lp)
     POINT p = {(i16)LOWORD(lp), (i16)HIWORD(lp)};
     i32 parts[8], n = 0;
     parts[n++] = TP_MAIN;
+    parts[n++] = TP_DISMISS;
     if (toast_quiet(t)) parts[n++] = TP_SECOND;
     else
         for (i32 k = 1; k <= 6; k++) parts[n++] = TP_COLOUR + k;
@@ -208,6 +213,10 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
         brush(t.hot == TP_SECOND ? COL_HOVER : COL_PANEL2);
         rounded(TP_SECOND, TOAST_BUTTON_ROUND);
     }
+    if (t.hot == TP_DISMISS) { // a ghost button: only its X until the mouse is on it
+        brush(COL_HOVER);
+        rounded(TP_DISMISS, TOAST_BUTTON_ROUND);
+    }
     DeleteObject(SelectObject(big, old_brush));
     SelectObject(big, old_pen);
 
@@ -233,6 +242,12 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     SetTextColor(dc, toast_rgb(COL_DIM));
     RECT t2 = {tx, mid + toast_px(t, 3), right, tile.bottom + toast_px(t, 4)};
     DrawTextW(dc, t.line, -1, &t2, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    RECT dismiss = toast_rect(t, TP_DISMISS);
+    SelectObject(dc, t.small_icons);
+    SetTextColor(dc, toast_rgb(t.hot == TP_DISMISS ? COL_TEXT : COL_DIM));
+    const wchar_t cancel[] = {(wchar_t)0xE711, 0}; // Segoe MDL2: Cancel
+    DrawTextW(dc, cancel, 1, &dismiss, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     RECT main = toast_rect(t, TP_MAIN);
     SelectObject(dc, t.strong);
@@ -386,7 +401,7 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         i32 k = toast_hit(t, lp);
         if (saved) {
             toast_hide(t);
-            if (k) {
+            if (k == TP_MAIN || k == TP_SECOND) {
                 log_line("toast: %s %s", k == TP_SECOND ? "edit" : "share", t.path);
                 ui_show(SCREEN_EDITOR);
                 editor_open_file(t.path);
@@ -396,6 +411,8 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             toast_session_close(k);
         } else if (k == TP_MAIN) {
             toast_marker_close(true);
+        } else if (k == TP_DISMISS) {
+            toast_marker_close(false);
         } else if (k > TP_COLOUR) {
             u8 c = (u8)(k - TP_COLOUR);
             t.colour = t.colour == c ? 0 : c; // a second click takes the colour off
@@ -467,7 +484,8 @@ static bool toast_window(Toast &t)
 static void toast_fonts(Toast &t, f32 s)
 {
     if (t.font && t.scale == s) return;
-    if (t.font) DeleteObject(t.font), DeleteObject(t.strong), DeleteObject(t.title_font), DeleteObject(t.icons);
+    if (t.font) DeleteObject(t.font), DeleteObject(t.strong), DeleteObject(t.title_font), DeleteObject(t.icons),
+                  DeleteObject(t.small_icons);
     t.scale = s;
     auto make = [&](f32 px, i32 weight, const wchar_t *face) {
         return CreateFontW(-(i32)(px * s + 0.5f), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -478,6 +496,7 @@ static void toast_fonts(Toast &t, f32 s)
     t.strong = make(14, FW_SEMIBOLD, L"Segoe UI");
     t.title_font = make(18, FW_SEMIBOLD, L"Segoe UI");
     t.icons = make(18, FW_NORMAL, L"Segoe MDL2 Assets");
+    t.small_icons = make(12, FW_NORMAL, L"Segoe MDL2 Assets");
     if (t.edit) SendMessageW(t.edit, WM_SETFONT, (WPARAM)t.font, TRUE);
 }
 
@@ -541,7 +560,7 @@ static void toast_saved(SaveKind kind, const char *path)
     toast_countdown(t);
 }
 
-// Session ended was answered: Save (TP_MAIN), Review (TP_SECOND), or closed or ignored (anything else). Every
+// Session ended was answered: Save (TP_MAIN), Review (TP_SECOND), or dismissed, closed or ignored (anything else). Every
 // session it asked about that isn't being saved is unsaved.
 static void toast_session_close(i32 part)
 {
