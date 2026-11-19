@@ -126,6 +126,7 @@ struct Config {
     i32 card_width; // Library cards: about how wide, in pixels at 100% (Ctrl + wheel over the grid changes it)
     f32 timeline_top;   // Timeline: the share of its height above the tracks (the splitter); 0 = the default
     i32 timeline_names; // Timeline: the track names' column, in pixels at 100% (its edge is dragged); 0 = the default
+    i32 timeline_lane; // Timeline: a sound lane's height, in pixels at 100% (Shift+wheel); 0 = as tall as fits
     bool timeline_simple; // Timeline: the sound in four lanes (Mic, Game, Chat, Apps) instead of one per app
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default
     f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default
@@ -546,7 +547,8 @@ struct TimelineFrame { // a preview frame uploaded to the GPU
     u32                       used;    // for evicting the least recently shown
 };
 
-enum TimelineDrag : u8 { TL_DRAG_NONE, TL_DRAG_NEW, TL_DRAG_IN, TL_DRAG_OUT, TL_DRAG_PAN };
+// SEEK moves the playhead (on the tracks); on the ruler NEW draws a selection, RANGE moves it, IN and OUT its ends
+enum TimelineDrag : u8 { TL_DRAG_NONE, TL_DRAG_SEEK, TL_DRAG_NEW, TL_DRAG_RANGE, TL_DRAG_IN, TL_DRAG_OUT, TL_DRAG_PAN };
 
 struct Timeline {
     BufferIdx    *idx;          // the index drawn (heap, swapped with the worker's; freed while hidden)

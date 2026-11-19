@@ -277,6 +277,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "card_width")) c->card_width = atoi(value);
     else if (!strcmp(key, "timeline_top")) real(&c->timeline_top);
     else if (!strcmp(key, "timeline_names")) c->timeline_names = atoi(value);
+    else if (!strcmp(key, "timeline_lane")) c->timeline_lane = atoi(value);
     else if (!strcmp(key, "timeline_simple")) c->timeline_simple = atoi(value) != 0;
     else if (!strcmp(key, "editor_top")) real(&c->editor_top);
     else if (!strcmp(key, "editor_side")) real(&c->editor_side);
@@ -470,6 +471,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("start_with_windows", c.start_with_windows);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %d\ncard_width = %d\n", c.accent, c.card_width);
+    fprintf(f, "timeline_lane = %d\n", c.timeline_lane);
     fprintf(f, "timeline_top = %g\ntimeline_names = %d\ntimeline_simple = %d\n", c.timeline_top, c.timeline_names,
             c.timeline_simple ? 1 : 0);
     fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\n", c.editor_top, c.editor_side, c.editor_lane);

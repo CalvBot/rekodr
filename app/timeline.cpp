@@ -942,9 +942,8 @@ static void tl_keys(i64 now)
     i64 step = io.KeyShift ? 10 * TL_SEC : TL_SEC;
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) tl_move_selection(-step);
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) tl_move_selection(step);
-    i64 at = tl.hovering ? tl.hover_us : tl_playhead();
-    if (ImGui::IsKeyPressed(ImGuiKey_I, false)) tl_set_edge(true, at);
-    if (ImGui::IsKeyPressed(ImGuiKey_O, false)) tl_set_edge(false, at);
+    if (ImGui::IsKeyPressed(ImGuiKey_I, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false)) tl_set_edge(true, tl_playhead());
+    if (ImGui::IsKeyPressed(ImGuiKey_O, false) || ImGui::IsKeyPressed(ImGuiKey_E, false)) tl_set_edge(false, tl_playhead());
     if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) {
         tl_save(SAVE_CLIP, false);
         tl_quick_done();
@@ -1294,17 +1293,28 @@ static void screen_timeline()
     i32 lanes = summed ? TL_LANES : tl.row_count;
     i8 row_lane[COUNT(tl.rows)];
     for (i32 r = 0; r < tl.row_count; r++) row_lane[r] = (i8)(summed ? tl_row_group(tl.rows[r]) : r);
+    // As tall as fits, or the height picked with Shift+wheel over the tracks
     f32 line_h = floorf((y_bottom - y_snd) / (lanes < TL_LANES ? TL_LANES : lanes));
     if (line_h > line_max) line_h = line_max;
     if (line_h < line_min) line_h = line_min;
+    const f32 lane_least = 16 * s, lane_most = 120 * s;
+    if (cfg.timeline_lane > 0) line_h = ImClamp(floorf(cfg.timeline_lane * s), lane_least, lane_most);
+    bool over_lanes = ImGui::IsWindowHovered() && io.MousePos.y >= y_snd && io.MousePos.y < y_bottom &&
+                      io.MousePos.x >= origin.x && io.MousePos.x < c.x1;
+    if (over_lanes && io.MouseWheel != 0 && io.KeyShift && !io.KeyAlt) {
+        f32 old_h = line_h;
+        line_h = ImClamp(floorf(line_h + (io.MouseWheel > 0 ? 4 : -4) * s), lane_least, lane_most);
+        cfg.timeline_lane = (i32)(line_h / s + 0.5f);
+        tl.lane_scroll *= line_h / old_h; // the same lanes stay in view
+        config_save(cfg, g_app.paths);
+    }
     f32 scroll_most = lanes * line_h - (y_bottom - y_snd);
-    if (summed || scroll_most < 0) scroll_most = 0;
-    if (ImGui::IsWindowHovered() && io.MouseWheel != 0 && io.MousePos.x < c.x0 && io.MousePos.y >= y_snd &&
-        io.MousePos.y < y_bottom) // the wheel on the names scrolls the lanes (on the bars it zooms)
-        tl.lane_scroll -= io.MouseWheel * line_h;
+    if (scroll_most < 0) scroll_most = 0;
+    if (over_lanes && io.MouseWheel != 0 && !io.KeyShift && !io.KeyAlt && io.MousePos.x < c.x0)
+        tl.lane_scroll -= io.MouseWheel * line_h; // the wheel on the names scrolls the lanes (on the bars it pans)
     if (tl.lane_scroll > scroll_most) tl.lane_scroll = scroll_most;
     if (tl.lane_scroll < 0) tl.lane_scroll = 0;
-    f32 y_lanes = y_snd - (summed ? 0 : tl.lane_scroll); // where lane 0 is
+    f32 y_lanes = y_snd - tl.lane_scroll; // where lane 0 is
     auto lane_icon = [&](i32 k) { return TL_LANE_ICON[summed ? k : tl_row_group(tl.rows[k])]; };
     auto lane_name = [&](i32 k) { return summed ? TL_LANE_NAME[k] : (const char *)tl.rows[k].name; };
     auto lane_col = [&](i32 k) { return summed ? TL_LANE_COL[k] : tl.rows[k].rgb; };
@@ -1443,62 +1453,98 @@ static void screen_timeline()
     // No position while the mouse is outside the window (WM_MOUSELEAVE): leave the drag where it was rather than
     // jumping it to the left edge.
     bool mouse_ok = ImGui::IsMousePosValid();
+    // The ruler holds the selection: its ends and the band between are taken hold of there, and a drag beside
+    // them draws a new one. On the tracks the mouse only moves the playhead.
     f32 grab = 7 * s;
-    bool near_in = has_sel && fabsf(io.MousePos.x - tl_x(c, tl.sel_in)) <= grab;
-    bool near_out = has_sel && !near_in && fabsf(io.MousePos.x - tl_x(c, tl.sel_out)) <= grab;
+    bool on_ruler = io.MousePos.y >= y_ruler && io.MousePos.y < y_video + 2 * s;
+    bool near_in = has_sel && on_ruler && fabsf(io.MousePos.x - tl_x(c, tl.sel_in)) <= grab;
+    bool near_out = has_sel && on_ruler && !near_in && fabsf(io.MousePos.x - tl_x(c, tl.sel_out)) <= grab;
+    bool on_band = has_sel && on_ruler && !near_in && !near_out && mark_hit < 0 && mouse_t > tl.sel_in &&
+                   mouse_t < tl.sel_out;
+    // The playhead kept on footage
+    auto on_footage = [&](i64 t) { return t >= b.newest_us ? b.newest_us - 1 : t < b.oldest_us ? b.oldest_us : t; };
+    // Close enough to the playhead on screen to land on it
+    auto near_play = [&](i64 t) { return fabsf(tl_x(c, t) - tl_x(c, tl_playhead())) <= grab; };
+    static i64 grab_off, grab_len;
     if (ImGui::IsItemActivated() && b.seg_count) {
         tl.drag_x = io.MousePos.x;
         tl.dragged = false;
         tl.drag_anchor_us = mouse_sec;
         tl.drag_view_end = tl.view_end_us;
+        grab_off = mouse_t - tl.sel_in;
+        grab_len = tl.sel_out - tl.sel_in;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) tl.drag = TL_DRAG_PAN;
         else if (near_in) tl.drag = TL_DRAG_IN;
         else if (near_out) tl.drag = TL_DRAG_OUT;
-        else tl.drag = TL_DRAG_NEW;
+        else if (on_band) tl.drag = TL_DRAG_RANGE;
+        else if (on_ruler) tl.drag = TL_DRAG_NEW;
+        else tl.drag = TL_DRAG_SEEK;
+        if (tl.drag == TL_DRAG_SEEK) tl.playhead_us = on_footage(mouse_t);
     }
+    // Dragging an end or the band, the playhead follows the start or the end being moved so its frame shows. With
+    // Shift the playhead stays, and an end that comes close lands on it.
     if (ImGui::IsItemActive() && tl.drag != TL_DRAG_NONE && mouse_ok) {
         if (fabsf(io.MousePos.x - tl.drag_x) > 4 * s) tl.dragged = true;
+        bool keep = io.KeyShift;
         if (tl.drag == TL_DRAG_PAN) {
             tl.follow = false;
             tl.view_end_us = tl.drag_view_end - (i64)((f64)(io.MousePos.x - tl.drag_x) / c.px_per_us);
             tl_clamp_view(now);
+        } else if (tl.drag == TL_DRAG_SEEK) {
+            // With Shift it catches a marker or an end of the selection
+            i64 t = mouse_t;
+            if (keep) {
+                f32 best = 10 * s;
+                auto catch_at = [&](i64 k) {
+                    f32 d = fabsf(tl_x(c, k) - io.MousePos.x);
+                    if (d <= best) { best = d; t = k; }
+                };
+                for (i32 i = 0; i < mark_count; i++) catch_at(marks[i].t_us);
+                if (has_sel) { catch_at(tl.sel_in); catch_at(tl.sel_out); }
+            }
+            tl.playhead_us = on_footage(t);
         } else if (tl.drag == TL_DRAG_NEW && tl.dragged) {
             tl.sel_in = tl.drag_anchor_us < mouse_sec ? tl.drag_anchor_us : mouse_sec;
             tl.sel_out = tl.drag_anchor_us < mouse_sec ? mouse_sec : tl.drag_anchor_us;
-            tl.playhead_us = mouse_t;
             tl_clamp_selection();
+        } else if (tl.drag == TL_DRAG_RANGE && tl.dragged) {
+            i64 to = tl_whole_sec(mouse_t - grab_off);
+            if (keep && near_play(to)) to = tl_playhead();
+            else if (keep && near_play(to + grab_len)) to = tl_playhead() - grab_len;
+            if (to + grab_len > b.newest_us) to = b.newest_us - grab_len;
+            if (to < b.oldest_us) to = b.oldest_us;
+            tl.sel_in = to;
+            tl.sel_out = to + grab_len;
+            if (!keep) tl.playhead_us = tl.sel_in;
         } else if (tl.drag == TL_DRAG_IN) {
-            tl.sel_in = mouse_sec < tl.sel_out - TL_SEC ? mouse_sec : tl.sel_out - TL_SEC;
-            tl.playhead_us = tl.sel_in;
+            i64 t = keep && near_play(mouse_t) ? tl_playhead() : mouse_sec;
+            tl.sel_in = t < tl.sel_out - TL_SEC ? t : tl.sel_out - TL_SEC;
             tl_clamp_selection();
+            if (!keep) tl.playhead_us = tl.sel_in;
         } else if (tl.drag == TL_DRAG_OUT) {
-            tl.sel_out = mouse_sec > tl.sel_in + TL_SEC ? mouse_sec : tl.sel_in + TL_SEC;
-            tl.playhead_us = tl.sel_out;
+            i64 t = keep && near_play(mouse_t) ? tl_playhead() : mouse_sec;
+            tl.sel_out = t > tl.sel_in + TL_SEC ? t : tl.sel_in + TL_SEC;
             tl_clamp_selection();
+            if (!keep) tl.playhead_us = on_footage(tl.sel_out);
         }
     }
     if (ImGui::IsItemDeactivated()) {
-        if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok) tl.marker_pick = 0;
-        if (tl.drag == TL_DRAG_PAN && !tl.dragged && mouse_ok && mark_hit >= 0) { // a right (or middle) click
+        bool click = !tl.dragged && mouse_ok;
+        if (click && (tl.drag == TL_DRAG_SEEK || tl.drag == TL_DRAG_NEW)) tl.marker_pick = 0;
+        if (tl.drag == TL_DRAG_PAN && click && mark_hit >= 0) { // a right (or middle) click
             mark_open = marks[mark_hit];
             tl.marker_pick = mark_open.t_us;
             ImGui::OpenPopup("##marknote");
-        } else if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && mark_hit >= 0) {
+        } else if (tl.drag == TL_DRAG_NEW && click && mark_hit >= 0) {
             tl.playhead_us = marks[mark_hit].t_us;
             tl.marker_pick = marks[mark_hit].t_us;
-        } else if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok && saved_hit >= 0) {
+        } else if (tl.drag == TL_DRAG_SEEK && click && saved_hit >= 0) {
             // A click on something saved: it becomes the selection
             tl.sel_in = tl_whole_sec(saved[saved_hit].a);
             tl.sel_out = tl_whole_sec(saved[saved_hit].z);
             if (tl.sel_out <= tl.sel_in) tl.sel_out = tl.sel_in + TL_SEC;
             tl_clamp_selection();
             tl.playhead_us = tl.sel_in;
-        } else if (tl.drag == TL_DRAG_NEW && !tl.dragged && mouse_ok) {
-            // A click: the playhead goes there, kept on footage
-            i64 t = mouse_t;
-            if (t >= b.newest_us) t = b.newest_us - 1;
-            if (t < b.oldest_us) t = b.oldest_us;
-            tl.playhead_us = t;
         }
         tl.drag = TL_DRAG_NONE;
     }
@@ -1506,7 +1552,7 @@ static void screen_timeline()
     if (bar_hovered && io.MouseWheel != 0) {
         if (io.KeyAlt) {
             tl_zoom(pow(0.75, (f64)io.MouseWheel), io.KeyShift ? mouse_t : tl_playhead(), now);
-        } else {
+        } else if (!io.KeyShift) { // Shift: the lanes' height (above)
             tl.follow = false;
             tl.view_end_us -= (i64)((f64)tl.view_span_us * 0.15 * io.MouseWheel);
             tl_clamp_view(now);
@@ -1514,7 +1560,8 @@ static void screen_timeline()
     }
     if (tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT || (bar_hovered && tl.drag == TL_DRAG_NONE && (near_in || near_out)))
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    else if (tl.drag == TL_DRAG_PAN) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    else if (tl.drag == TL_DRAG_PAN || tl.drag == TL_DRAG_RANGE || (bar_hovered && tl.drag == TL_DRAG_NONE && on_band))
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     else if (bar_hovered && (saved_hit >= 0 || mark_hit >= 0)) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     set_view(); // the view may have moved: draw it where it is now
     tl.hovering = bar_hovered && tl.drag == TL_DRAG_NONE && b.seg_count > 0;
@@ -1526,6 +1573,8 @@ static void screen_timeline()
     if (tl.hovering) pill_t = tl.hover_us;
     else if (tl.drag == TL_DRAG_IN) pill_t = tl.sel_in;
     else if (tl.drag == TL_DRAG_OUT) pill_t = tl.sel_out;
+    else if (tl.drag == TL_DRAG_RANGE) pill_t = tl.sel_in;
+    else if (tl.drag == TL_DRAG_SEEK) pill_t = tl.playhead_us;
     else if (tl.drag == TL_DRAG_NEW && tl.dragged) pill_t = mouse_sec;
 
     // --- Track names on the left ----------------------------------------------------------------------------------
@@ -1936,7 +1985,7 @@ static void screen_timeline()
         kit_next_tip("Clear the selection");
         if (kit_icon_button(ICON_CLOSE, "##clear", KIT_GHOST, has_sel)) tl.sel_in = tl.sel_out = 0;
         {
-            char sel[96] = "Drag across the tracks to select";
+            char sel[96] = "Nothing selected";
             u32 ink = COL_FAINT;
             if (has_sel && !has_video) {
                 str_set(sel, "No video in this range");
