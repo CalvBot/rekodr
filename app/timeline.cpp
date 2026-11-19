@@ -2,9 +2,10 @@
 // sits top left: a still frame at the playhead, or the footage playing with its sound after Play.
 //
 // Two workers, neither touching g_app:
-// - the index worker reads the buffer (buffer_read) every 3 s while the screen is shown. There are two heap blocks
-//   of BufferIdx (about 8 MB each): the main thread draws from one while the worker fills the other, and they swap
-//   on EV_TIMELINE. Both are freed while the screen isn't shown.
+// - the index worker reads the buffer (buffer_read) every 3 s while the screen is shown: from a copy of its last
+//   read it reads only the folders that changed, and the whole buffer after a prune. There are two heap blocks of
+//   BufferIdx (about 8 MB each): the main thread draws from one while the worker fills the other, and they swap
+//   on EV_TIMELINE. A third holds the worker's copy. All are freed while the screen isn't shown.
 // - the preview worker runs ffmpeg for one small frame of the segment under the wanted time (the newest request
 //   wins) and hands back BGRA pixels. The main thread uploads them as D3D11 textures and keeps the last few.
 //
@@ -42,6 +43,7 @@ struct TlShared {
     Path               buffer_dir;
     BufferIdx         *spare; // the block the worker fills next; 0 while it's filling it
     BufferIdx         *ready; // filled, not taken by the main thread yet
+    BufferIdx         *last;  // the worker's copy of what it read last, of last_dir; 0 until the first read
     bool               preview_want;
     TlPreviewReq       req;
     bool               result_ready, result_ok;
@@ -54,27 +56,41 @@ static TlShared g_tl;
 // ---------------------------------------------------------------------------------------------------------------
 // Workers
 
+static BufferIdx *tl_alloc_idx()
+{
+    return (BufferIdx *)VirtualAlloc(0, sizeof(BufferIdx), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+}
+
 static DWORD WINAPI tl_index_thread(void *)
 {
-    static Path dir;
+    static Path dir, last_dir;
     for (;;) {
         AcquireSRWLockExclusive(&g_tl.lock);
         while (!g_tl.index_want || !g_tl.spare) SleepConditionVariableSRW(&g_tl.index_wake, &g_tl.lock, INFINITE, 0);
-        BufferIdx *b = g_tl.spare;
+        BufferIdx *b = g_tl.spare, *last = g_tl.last;
         g_tl.spare = 0;
         g_tl.index_want = false;
         dir = g_tl.buffer_dir;
         ReleaseSRWLockExclusive(&g_tl.lock);
 
         u64 started = GetTickCount64();
-        buffer_read(dir, b);
+        bool same = last && !_wcsicmp(dir.s, last_dir.s), full = true;
+        buffer_read(dir, b, same ? last : 0, &full);
+        u64 ms = GetTickCount64() - started;
+        if (!last) last = tl_alloc_idx();
+        if (last) {
+            buffer_idx_copy(last, b);
+            last_dir = dir;
+        }
         AcquireSRWLockExclusive(&g_tl.lock);
         g_tl.ready = b;
+        g_tl.last = last;
         ReleaseSRWLockExclusive(&g_tl.lock);
+        DEV_LOG("timeline: %s buffer read in %llu ms", full ? "full" : "partial", ms);
         Event e = {};
         e.kind = EV_TIMELINE;
         e.a = TL_EV_INDEX;
-        e.b = (i64)(GetTickCount64() - started);
+        e.b = (i64)ms;
         event_post(e);
     }
 }
@@ -153,11 +169,6 @@ static DWORD WINAPI tl_preview_thread(void *)
 
 // ---------------------------------------------------------------------------------------------------------------
 // Main thread: the index
-
-static BufferIdx *tl_alloc_idx()
-{
-    return (BufferIdx *)VirtualAlloc(0, sizeof(BufferIdx), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-}
 
 static void tl_ask_index()
 {
@@ -289,10 +300,10 @@ static void tl_release()
     tl.pending_key = tl.shown_key = tl.failed_key = 0;
     if (!tl.idx) return;
     AcquireSRWLockExclusive(&g_tl.lock);
-    BufferIdx *spare = g_tl.spare, *ready = g_tl.ready;
+    BufferIdx *spare = g_tl.spare, *ready = g_tl.ready, *last = g_tl.last;
     bool idle = spare || ready; // otherwise the worker is reading into the second block
     if (idle) {
-        g_tl.spare = g_tl.ready = 0;
+        g_tl.spare = g_tl.ready = g_tl.last = 0;
         g_tl.index_want = false;
     }
     ReleaseSRWLockExclusive(&g_tl.lock);
@@ -300,6 +311,7 @@ static void tl_release()
     VirtualFree(tl.idx, 0, MEM_RELEASE);
     if (spare) VirtualFree(spare, 0, MEM_RELEASE);
     if (ready) VirtualFree(ready, 0, MEM_RELEASE);
+    if (last) VirtualFree(last, 0, MEM_RELEASE);
     tl.idx = 0;
     tl.loaded = false;
     tl.row_count = 0;

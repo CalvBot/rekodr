@@ -228,6 +228,7 @@ struct VideoRun {
     char name[64];  // folder under buffer\video
     i64  anchor_us; // wall clock of the run's first frame (anchor.txt)
     i32  first_seg, seg_count;
+    i64  list_written_us, list_bytes; // list.csv as it was read: unchanged means the run is too
 };
 
 struct VideoSeg {
@@ -246,6 +247,7 @@ struct AudioStreamInfo {
     char path[MAX_PATH]; // the exe's full path when it was recorded (meta.json; "" in older buffers)
     i64  start_us; // wall clock of the first sample (meta.json)
     i32  first_seg, seg_count;
+    i64  list_written_us, list_bytes; // list.csv as it was read
 };
 
 struct AudioSeg {

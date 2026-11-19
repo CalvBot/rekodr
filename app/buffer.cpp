@@ -1,4 +1,4 @@
-// Reading the buffer's index from disk into a BufferIdx. Saves use it now; the timeline will later.
+// Reading the buffer's index from disk into a BufferIdx, for saves and the timeline.
 //
 // The format:
 //
@@ -191,10 +191,68 @@ static bool file_mtime_us(const Path &p, i64 *out)
     return true;
 }
 
+// When list.csv in `dir` was last written and how long it is; 0 and 0 when it isn't there.
+static void list_stamp(const Path &dir, i64 *written_us, i64 *bytes)
+{
+    *written_us = *bytes = 0;
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExW(path_join(dir, L"list.csv").s, GetFileExInfoStandard, &a)) return;
+    *written_us = filetime_to_us(a.ftLastWriteTime);
+    *bytes = ((i64)a.nFileSizeHigh << 32) | a.nFileSizeLow;
+}
+
+static bool file_exists(const Path &dir, const char *name)
+{
+    wchar_t w[64];
+    utf8_to_wide(name, w, COUNT(w));
+    return GetFileAttributesW(path_join(dir, w).s) != INVALID_FILE_ATTRIBUTES;
+}
+
+static Path sub_dir(const Path &dir, const char *name)
+{
+    wchar_t w[128];
+    utf8_to_wide(name, w, COUNT(w));
+    return path_join(dir, w);
+}
+
 static int cmp_run(const void *a, const void *b)
 {
     i64 x = ((const VideoRun *)a)->anchor_us, y = ((const VideoRun *)b)->anchor_us;
     return x < y ? -1 : x > y;
+}
+
+// Reads run `i`'s segments (its list.csv lines whose files are there) onto the end of b->segs.
+static void read_run(const Path &video_dir, BufferIdx *b, i32 i, BufferScratch *s)
+{
+    VideoRun *r = &b->runs[i];
+    Path run_dir = sub_dir(video_dir, r->name);
+    list_stamp(run_dir, &r->list_written_us, &r->list_bytes);
+    list_media(run_dir, L"*.mkv", s);
+    read_list(run_dir, s);
+    if (r->list_written_us > b->video_written_us) b->video_written_us = r->list_written_us;
+    r->first_seg = b->seg_count;
+    for (i32 l = 0; l < s->line_count; l++) {
+        const ScratchLine *line = &s->lines[l];
+        const ScratchFile *file = find_file(s, line->num);
+        if (!file) continue; // pruned, its line stays in list.csv
+        if (b->seg_count == COUNT(b->segs)) { log_line("buffer: more than %d video segments; the rest left out", COUNT(b->segs)); break; }
+        VideoSeg *v = &b->segs[b->seg_count++];
+        v->start_us = r->anchor_us + secs_to_us(line->start);
+        v->end_us = r->anchor_us + secs_to_us(line->end);
+        v->inpoint = line->start;
+        v->outpoint = line->end;
+        v->size = file->size;
+        v->run = i;
+        str_set(v->name, file->name);
+    }
+    r->seg_count = b->seg_count - r->first_seg;
+}
+
+static void video_span(BufferIdx *b)
+{
+    if (!b->seg_count) return;
+    b->oldest_us = b->segs[0].start_us;
+    b->newest_us = b->segs[b->seg_count - 1].end_us;
 }
 
 static void read_video(const Path &video_dir, BufferIdx *b, BufferScratch *s)
@@ -216,99 +274,166 @@ static void read_video(const Path &video_dir, BufferIdx *b, BufferScratch *s)
     }
     // Runs never overlap, so in anchor order their segments come out oldest first without a global sort.
     qsort(b->runs, b->run_count, sizeof b->runs[0], cmp_run);
+    for (i32 i = 0; i < b->run_count; i++) read_run(video_dir, b, i, s);
+    video_span(b);
+}
 
+// Fills the index from `prev`, re-reading only the runs whose list.csv changed and the new ones. False when the
+// buffer changed in a way that needs a full read: a run folder gone, or the oldest segment pruned.
+static bool read_video_since(const Path &video_dir, const BufferIdx &prev, BufferIdx *b, BufferScratch *s)
+{
+    // The pruner deletes the oldest footage first, so a prune always takes this one
+    if (prev.seg_count && !file_exists(sub_dir(video_dir, prev.runs[prev.segs[0].run].name), prev.segs[0].name))
+        return false;
+    list_dirs(video_dir, s);
+    bool seen[COUNT(prev.runs)] = {};
+    for (i32 d = 0; d < s->dir_count && b->run_count < COUNT(b->runs); d++) {
+        i32 p = 0;
+        while (p < prev.run_count && strcmp(prev.runs[p].name, s->dirs[d].name)) p++;
+        VideoRun *r = &b->runs[b->run_count];
+        if (p < prev.run_count) {
+            *r = prev.runs[p];
+            seen[p] = true;
+        } else {
+            char text[64];
+            if (!read_small(path_join(sub_dir(video_dir, s->dirs[d].name), L"anchor.txt"), text, sizeof text)) continue;
+            char *end = 0;
+            i64 anchor = strtoll(trim(text), &end, 10);
+            if (end == text || anchor <= 0) continue;
+            *r = {};
+            str_set(r->name, s->dirs[d].name);
+            r->anchor_us = anchor;
+            r->first_seg = -1; // nothing to take from prev
+        }
+        b->run_count++;
+    }
+    for (i32 p = 0; p < prev.run_count; p++) if (!seen[p]) return false;
+    qsort(b->runs, b->run_count, sizeof b->runs[0], cmp_run);
     for (i32 i = 0; i < b->run_count; i++) {
         VideoRun *r = &b->runs[i];
-        wchar_t wname[128];
-        utf8_to_wide(r->name, wname, COUNT(wname));
-        Path run_dir = path_join(video_dir, wname);
-        list_media(run_dir, L"*.mkv", s);
-        read_list(run_dir, s);
-        i64 written = 0;
-        if (file_mtime_us(path_join(run_dir, L"list.csv"), &written) && written > b->video_written_us)
-            b->video_written_us = written;
-        r->first_seg = b->seg_count;
-        for (i32 l = 0; l < s->line_count; l++) {
-            const ScratchLine *line = &s->lines[l];
-            const ScratchFile *file = find_file(s, line->num);
-            if (!file) continue; // pruned, its line stays in list.csv
-            if (b->seg_count == COUNT(b->segs)) { log_line("buffer: more than %d video segments; the rest left out", COUNT(b->segs)); break; }
-            VideoSeg *v = &b->segs[b->seg_count++];
-            v->start_us = r->anchor_us + secs_to_us(line->start);
-            v->end_us = r->anchor_us + secs_to_us(line->end);
-            v->inpoint = line->start;
-            v->outpoint = line->end;
-            v->size = file->size;
-            v->run = i;
-            str_set(v->name, file->name);
+        i64 written, bytes;
+        list_stamp(sub_dir(video_dir, r->name), &written, &bytes);
+        if (r->first_seg < 0 || written != r->list_written_us || bytes != r->list_bytes) {
+            read_run(video_dir, b, i, s);
+            continue;
         }
-        r->seg_count = b->seg_count - r->first_seg;
+        if (b->seg_count + r->seg_count > COUNT(b->segs)) return false; // the full read says what's left out
+        memcpy(&b->segs[b->seg_count], &prev.segs[r->first_seg], r->seg_count * sizeof(VideoSeg));
+        for (i32 k = 0; k < r->seg_count; k++) b->segs[b->seg_count + k].run = i;
+        r->first_seg = b->seg_count;
+        b->seg_count += r->seg_count;
+        if (written > b->video_written_us) b->video_written_us = written;
     }
-    if (b->seg_count) {
-        b->oldest_us = b->segs[0].start_us;
-        b->newest_us = b->segs[b->seg_count - 1].end_us;
+    video_span(b);
+    return true;
+}
+
+// Reads the segments of the stream at b->streams[b->stream_count], in `dir`, onto the end of b->audio_segs.
+static void read_stream(const Path &dir, BufferIdx *b, BufferScratch *s)
+{
+    AudioStreamInfo *st = &b->streams[b->stream_count];
+    list_stamp(dir, &st->list_written_us, &st->list_bytes);
+    list_media(dir, L"*.mka", s);
+    read_list(dir, s);
+    st->first_seg = b->audio_seg_count;
+    i64 next_start = 0; // offset from the stream start
+    for (i32 f = 0; f < s->file_count; f++) {
+        if (b->audio_seg_count == COUNT(b->audio_segs)) { log_line("buffer: more than %d audio segments; the rest left out", COUNT(b->audio_segs)); break; }
+        const ScratchFile *file = &s->files[f];
+        const ScratchLine *line = find_line(s, file->num);
+        // Unlisted and not written for a minute: left by an ffmpeg that was killed (a live one flushes every
+        // second and starts a new file every 10 s). It's often empty, and ffmpeg can't open it.
+        if (!line && now_us() - file->written_us > 60 * 1000000LL) continue;
+        AudioSeg *a = &b->audio_segs[b->audio_seg_count++];
+        *a = {};
+        str_set(a->name, file->name);
+        a->size = file->size;
+        if (line) {
+            a->start_us = st->start_us + secs_to_us(line->start);
+            a->end_us = st->start_us + secs_to_us(line->end);
+            next_start = secs_to_us(line->end);
+        } else {
+            a->start_us = st->start_us + next_start; // not listed yet: the one being written
+            a->open = true;
+        }
     }
+    // An unlisted file before the last one means ffmpeg died mid-segment: keep only the segments after it,
+    // which run on contiguously to the end.
+    i32 last_open = -1;
+    for (i32 k = st->first_seg; k < b->audio_seg_count; k++) if (b->audio_segs[k].open) last_open = k;
+    if (last_open >= 0 && last_open + 1 != b->audio_seg_count) {
+        i32 keep = b->audio_seg_count - (last_open + 1);
+        memmove(&b->audio_segs[st->first_seg], &b->audio_segs[last_open + 1], keep * sizeof(AudioSeg));
+        b->audio_seg_count = st->first_seg + keep;
+    }
+    st->seg_count = b->audio_seg_count - st->first_seg;
+}
+
+// Reads the stream in folder `name` (meta.json and its segments) onto the end of the index; one that isn't
+// readable is left out. False when the index has no room for another stream.
+static bool read_stream_new(const Path &audio_dir, const char *name, BufferIdx *b, BufferScratch *s)
+{
+    if (b->stream_count == COUNT(b->streams)) { log_line("buffer: more than %d audio streams; the rest left out", COUNT(b->streams)); return false; }
+    Path dir = sub_dir(audio_dir, name);
+    char json[2048], kind[32], exe[64], num[32];
+    if (!read_small(path_join(dir, L"meta.json"), json, sizeof json)) return true;
+    if (!json_field(json, "kind", kind, sizeof kind) || !json_field(json, "exe", exe, sizeof exe) ||
+        !json_field(json, "start_us", num, sizeof num))
+        return true;
+    AudioStreamInfo *st = &b->streams[b->stream_count];
+    *st = {};
+    str_set(st->dir, name);
+    for (char *c = exe; *c; c++) *c = (char)tolower((u8)*c);
+    str_set(st->exe, exe);
+    st->mic = !strcmp(kind, "mic");
+    st->start_us = strtoll(num, 0, 10);
+    if (json_field(json, "pid", num, sizeof num)) st->pid = (u32)strtoul(num, 0, 10);
+    json_field(json, "path", st->path, sizeof st->path);
+    read_stream(dir, b, s);
+    b->stream_count++;
+    return true;
 }
 
 static void read_audio(const Path &audio_dir, BufferIdx *b, BufferScratch *s)
 {
     list_dirs(audio_dir, s);
-    for (i32 d = 0; d < s->dir_count; d++) {
-        if (b->stream_count == COUNT(b->streams)) { log_line("buffer: more than %d audio streams; the rest left out", COUNT(b->streams)); break; }
-        wchar_t wname[128];
-        utf8_to_wide(s->dirs[d].name, wname, COUNT(wname));
-        Path dir = path_join(audio_dir, wname);
-        char json[2048], kind[32], exe[64], num[32];
-        if (!read_small(path_join(dir, L"meta.json"), json, sizeof json)) continue;
-        if (!json_field(json, "kind", kind, sizeof kind) || !json_field(json, "exe", exe, sizeof exe) ||
-            !json_field(json, "start_us", num, sizeof num))
-            continue;
-        AudioStreamInfo *st = &b->streams[b->stream_count];
-        *st = {};
-        str_set(st->dir, s->dirs[d].name);
-        for (char *c = exe; *c; c++) *c = (char)tolower((u8)*c);
-        str_set(st->exe, exe);
-        st->mic = !strcmp(kind, "mic");
-        st->start_us = strtoll(num, 0, 10);
-        if (json_field(json, "pid", num, sizeof num)) st->pid = (u32)strtoul(num, 0, 10);
-        json_field(json, "path", st->path, sizeof st->path);
+    for (i32 d = 0; d < s->dir_count; d++)
+        if (!read_stream_new(audio_dir, s->dirs[d].name, b, s)) break;
+}
 
-        list_media(dir, L"*.mka", s);
-        read_list(dir, s);
-        st->first_seg = b->audio_seg_count;
-        i64 next_start = 0; // offset from the stream start
-        for (i32 f = 0; f < s->file_count; f++) {
-            if (b->audio_seg_count == COUNT(b->audio_segs)) { log_line("buffer: more than %d audio segments; the rest left out", COUNT(b->audio_segs)); break; }
-            const ScratchFile *file = &s->files[f];
-            const ScratchLine *line = find_line(s, file->num);
-            // Unlisted and not written for a minute: left by an ffmpeg that was killed (a live one flushes every
-            // second and starts a new file every 10 s). It's often empty, and ffmpeg can't open it.
-            if (!line && now_us() - file->written_us > 60 * 1000000LL) continue;
-            AudioSeg *a = &b->audio_segs[b->audio_seg_count++];
-            *a = {};
-            str_set(a->name, file->name);
-            a->size = file->size;
-            if (line) {
-                a->start_us = st->start_us + secs_to_us(line->start);
-                a->end_us = st->start_us + secs_to_us(line->end);
-                next_start = secs_to_us(line->end);
-            } else {
-                a->start_us = st->start_us + next_start; // not listed yet: the one being written
-                a->open = true;
-            }
+// Fills the index from `prev`, re-reading only the streams whose list.csv changed or that were being written, and
+// the new ones. False when a stream folder is gone or a stream's oldest segment was pruned.
+static bool read_audio_since(const Path &audio_dir, const BufferIdx &prev, BufferIdx *b, BufferScratch *s)
+{
+    list_dirs(audio_dir, s);
+    i32 j = 0; // prev's streams are in folder order too
+    for (i32 d = 0; d < s->dir_count; d++) {
+        const char *name = s->dirs[d].name;
+        if (j < prev.stream_count && strcmp(prev.streams[j].dir, name) < 0) return false;
+        if (j == prev.stream_count || strcmp(prev.streams[j].dir, name)) {
+            if (!read_stream_new(audio_dir, name, b, s)) break;
+            continue;
         }
-        // An unlisted file before the last one means ffmpeg died mid-segment: keep only the segments after it,
-        // which run on contiguously to the end.
-        i32 last_open = -1;
-        for (i32 k = st->first_seg; k < b->audio_seg_count; k++) if (b->audio_segs[k].open) last_open = k;
-        if (last_open >= 0 && last_open + 1 != b->audio_seg_count) {
-            i32 keep = b->audio_seg_count - (last_open + 1);
-            memmove(&b->audio_segs[st->first_seg], &b->audio_segs[last_open + 1], keep * sizeof(AudioSeg));
-            b->audio_seg_count = st->first_seg + keep;
+        const AudioStreamInfo &ps = prev.streams[j++];
+        if (b->stream_count == COUNT(b->streams)) return false;
+        Path dir = sub_dir(audio_dir, name);
+        AudioStreamInfo *st = &b->streams[b->stream_count];
+        *st = ps;
+        i64 written, bytes;
+        list_stamp(dir, &written, &bytes);
+        bool open = ps.seg_count && prev.audio_segs[ps.first_seg + ps.seg_count - 1].open;
+        if (open || written != ps.list_written_us || bytes != ps.list_bytes) {
+            read_stream(dir, b, s);
+        } else {
+            if (ps.seg_count && !file_exists(dir, prev.audio_segs[ps.first_seg].name)) return false;
+            if (b->audio_seg_count + ps.seg_count > COUNT(b->audio_segs)) return false;
+            memcpy(&b->audio_segs[b->audio_seg_count], &prev.audio_segs[ps.first_seg], ps.seg_count * sizeof(AudioSeg));
+            st->first_seg = b->audio_seg_count;
+            b->audio_seg_count += ps.seg_count;
         }
-        st->seg_count = b->audio_seg_count - st->first_seg;
         b->stream_count++;
     }
+    return j == prev.stream_count;
 }
 
 static void read_activity(const Path &buffer_dir, BufferIdx *b)
@@ -336,23 +461,53 @@ static void read_activity(const Path &buffer_dir, BufferIdx *b)
     fclose(f);
 }
 
-// Fills `b` from the buffer folder. Returns false only if the working memory couldn't be had; an empty or missing
-// buffer is just an empty index.
-static bool buffer_read(const Path &buffer_dir, BufferIdx *b)
+// Zeroing only the counts and header: the arrays are big and every entry used is written whole.
+static void idx_clear(BufferIdx *b)
 {
-    // Zeroing only the counts and header: the arrays are big and every entry used is written whole.
     b->run_count = b->seg_count = b->stream_count = b->audio_seg_count = b->activity_count = 0;
     b->oldest_us = b->newest_us = b->video_written_us = 0;
+}
+
+// Fills `b` from the buffer folder. With `prev`, an index of the same folder read before, only what changed since is
+// read (a full read when something was pruned or a folder went away); *full says which it was. Returns false only if
+// the working memory couldn't be had; an empty or missing buffer is just an empty index.
+static bool buffer_read(const Path &buffer_dir, BufferIdx *b, const BufferIdx *prev = 0, bool *full = 0)
+{
+    idx_clear(b);
     BufferScratch *s = (BufferScratch *)VirtualAlloc(0, sizeof(BufferScratch), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!s) {
         log_line("buffer: out of memory reading the index");
         return false;
     }
-    read_video(path_join(buffer_dir, L"video"), b, s);
-    read_audio(path_join(buffer_dir, L"audio"), b, s);
+    Path video = path_join(buffer_dir, L"video"), audio = path_join(buffer_dir, L"audio");
+    bool whole = !prev || !read_video_since(video, *prev, b, s) || !read_audio_since(audio, *prev, b, s);
+    if (whole) {
+        idx_clear(b);
+        read_video(video, b, s);
+        read_audio(audio, b, s);
+    }
     read_activity(buffer_dir, b);
     VirtualFree(s, 0, MEM_RELEASE);
+    if (full) *full = whole;
     return true;
+}
+
+// Copies the entries `src` uses (not its whole arrays) into `dst`.
+static void buffer_idx_copy(BufferIdx *dst, const BufferIdx *src)
+{
+    memcpy(dst->runs, src->runs, src->run_count * sizeof src->runs[0]);
+    memcpy(dst->segs, src->segs, src->seg_count * sizeof src->segs[0]);
+    memcpy(dst->streams, src->streams, src->stream_count * sizeof src->streams[0]);
+    memcpy(dst->audio_segs, src->audio_segs, src->audio_seg_count * sizeof src->audio_segs[0]);
+    memcpy(dst->activity, src->activity, src->activity_count * sizeof src->activity[0]);
+    dst->run_count = src->run_count;
+    dst->seg_count = src->seg_count;
+    dst->stream_count = src->stream_count;
+    dst->audio_seg_count = src->audio_seg_count;
+    dst->activity_count = src->activity_count;
+    dst->oldest_us = src->oldest_us;
+    dst->newest_us = src->newest_us;
+    dst->video_written_us = src->video_written_us;
 }
 
 // The end of the newest finished video segment, read cheaply (only the newest run's list.csv tail), and when that
