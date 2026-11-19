@@ -63,6 +63,38 @@ static void test_select_range()
     T(!lib_range_bounds(keys, 5, 20, 99, &lo, &hi));                      // the card isn't shown
 }
 
+// Clicks on cards: which select, which play, and where the anchor goes. Keys 1 to 10 in the grid's order.
+static void test_card_clicks()
+{
+    Library &lib = g_app.library;
+    lib.item_count = lib.shown_count = 10;
+    for (i32 i = 0; i < 10; i++) {
+        lib.items[i] = {};
+        lib.items[i].key = 10 - i; // items in any order; the grid's order is lib.shown
+        lib.shown[i] = 9 - i;
+    }
+    lib_sel_clear();
+    T(!lib_card_click(4, false, false, false) && lib.selected_count == 0); // a plain click plays
+    T(lib_card_click(3, false, false, true) && lib.selected_count == 1 && lib.select_anchor == 3); // the tick box
+    T(lib_card_click(7, true, false, true) && lib.selected_count == 5); // Shift on a tick box: 3 to 7
+    T(lib.select_anchor == 3 && lib_selected(5) && !lib_selected(8));
+    T(lib_card_click(1, true, false, false) && lib.selected_count == 7 && lib.select_anchor == 3); // and 1 to 3
+    T(lib_card_click(9, false, false, false) && lib_selected(9) && lib.select_anchor == 9); // a click while selecting
+    T(lib_card_click(9, false, true, false) && !lib_selected(9) && lib.select_anchor == 9); // Ctrl: off again
+    lib_sel_clear();
+    T(lib.select_anchor == 0);
+    T(lib_card_click(6, true, false, false) && lib.selected_count == 1 && lib.select_anchor == 6); // Shift, none: alone
+    T(lib_card_click(8, true, false, false) && lib.selected_count == 3); // 6 to 8
+    lib_sel_clear();
+    T(lib_card_click(2, false, true, false) && lib.select_anchor == 2); // Ctrl + click
+    T(lib_card_click(10, true, false, false) && lib.selected_count == 9);
+    lib_sel_clear();
+    lib_sel_all();
+    T(lib.selected_count == 10 && lib.select_anchor == 1);
+    lib_sel_clear();
+    lib.item_count = lib.shown_count = 0;
+}
+
 static void test_lengths()
 {
     T(parse_length_secs("30s") == 30);
@@ -1086,6 +1118,7 @@ int main()
     InitializeSRWLock(&g_log_lock);
     test_lengths();
     test_select_range();
+    test_card_clicks();
     test_game_pick();
     test_game_from_name();
     test_save_names();

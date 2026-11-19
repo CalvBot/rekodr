@@ -92,6 +92,7 @@ static void run_command(const char *text)
             ui_show(SCREEN_LIBRARY);
             lib_sel_clear();
             for (i32 i = 0; i < atoi(trim(arg + 6)) && i < lib.shown_count; i++) lib_sel_set(lib.items[lib.shown[i]].key, true);
+            if (lib.selected_count) lib.select_anchor = lib.items[lib.shown[0]].key;
         }
         else if (starts_with(arg, "session-toast")) { // session-toast [<more>]: Session ended for a made-up session
             Session s = {};

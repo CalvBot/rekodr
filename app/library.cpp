@@ -2534,9 +2534,11 @@ static void lib_sel_clear()
     lib.select_anchor = 0;
 }
 
+// Every card shown; with no anchor, the first becomes it.
 static void lib_sel_all()
 {
     Library &lib = g_app.library;
+    if (!lib.select_anchor && lib.shown_count) lib.select_anchor = lib.items[lib.shown[0]].key;
     for (i32 s = 0; s < lib.shown_count; s++) lib_sel_set(lib.items[lib.shown[s]].key, true);
 }
 
@@ -2568,6 +2570,20 @@ static void lib_sel_range(u64 to)
     if (!lib_range_bounds(keys, lib.shown_count, lib.select_anchor, to, &lo, &hi)) return;
     if (lo == hi) lib.select_anchor = to; // the anchor wasn't shown
     for (i32 s = lo; s <= hi; s++) lib_sel_set(keys[s], true);
+}
+
+// A left click on card `key` (on its tick box when `on_box`). Shift + click, on the box or not, selects the range
+// from the anchor (lib_sel_range). A click on the box, Ctrl + click, or any click while cards are selected ticks or
+// unticks the card, and it becomes the anchor. False when the click plays the card instead.
+static bool lib_card_click(u64 key, bool shift, bool ctrl, bool on_box)
+{
+    Library &lib = g_app.library;
+    if (shift) lib_sel_range(key);
+    else if (on_box || ctrl || lib.selected_count > 0) {
+        lib_sel_set(key, !lib_selected(key));
+        lib.select_anchor = key;
+    } else return false;
+    return true;
 }
 
 // The selected cards that are shown, as indices into lib.items in the grid's order; how many.
@@ -3040,11 +3056,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (clicked) {
         ImVec2 c = io.MouseClickedPos[0];
         bool on_box = c.x >= b0.x - kit_px(4) && c.x < b1.x + kit_px(4) && c.y >= b0.y - kit_px(4) && c.y < b1.y + kit_px(4);
-        if (io.KeyShift && !on_box) lib_sel_range(it.key);
-        else if (on_box || io.KeyCtrl || picking) {
-            lib_sel_set(it.key, !sel);
-            lib.select_anchor = it.key;
-        } else library_play(it, it.info.duration > 0 && frac >= 0 ? frac * it.info.duration : 0);
+        if (!lib_card_click(it.key, io.KeyShift, io.KeyCtrl, on_box))
+            library_play(it, it.info.duration > 0 && frac >= 0 ? frac * it.info.duration : 0);
     }
 }
 
