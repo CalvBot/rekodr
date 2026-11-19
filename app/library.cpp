@@ -2916,8 +2916,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             dl->AddText(g_font_icon, box * 0.6f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
                         IM_COL32_WHITE, ICON_CHECK);
         } else {
-            dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, box_hot ? 150 : 110), kit_px(4));
-            dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : 200), kit_px(4), 0, kit_px(1.5f));
+            dl->AddRectFilled(b0, b1, IM_COL32(14, 14, 18, box_hot ? 235 : 220), kit_px(4)); // reads over bright pictures
+            dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : 220), kit_px(4), 0, kit_px(1.5f));
         }
     }
     ImGui::PopID();
