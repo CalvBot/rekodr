@@ -1356,7 +1356,7 @@ static void tl_saved_open(const char *path)
     for (i32 i = 0; i < lib.item_count; i++) {
         if (_wcsicmp(lib_item_path(lib.items[i]).s, w.s)) continue;
         g_app.ui.screen = SCREEN_LIBRARY;
-        library_play(lib.items[i], 0);
+        library_play(lib.items[i]);
         return;
     }
     ShellExecuteW(0, L"open", w.s, 0, 0, SW_SHOWNORMAL);

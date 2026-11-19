@@ -81,7 +81,7 @@ static void run_command(const char *text)
             lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
         } else if (!strcmp(arg, "player")) { // the newest clip, playing in the library
             ui_show(SCREEN_LIBRARY);
-            if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]], 0);
+            if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]]);
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
         else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
         else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail

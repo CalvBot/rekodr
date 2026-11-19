@@ -1881,13 +1881,14 @@ static void lib_popup_style_pop() { ImGui::PopStyleVar(3); }
 // ---------------------------------------------------------------------------------------------------------------
 // The Library screen
 
-static void library_play(const LibItem &it, f64 from)
+// Opens a clip in the player, from its start: pointing at a card only previews it.
+static void library_play(const LibItem &it)
 {
     Library &lib = g_app.library;
     player_close(&lib.hover);
     lib.playing = it;
     lib.player.id = 0;
-    player_open(&lib.player, lib_item_path(it), from, true);
+    player_open(&lib.player, lib_item_path(it), 0, true);
 }
 
 static void lib_rename_start(const LibItem &it, bool display_name = false);
@@ -2218,7 +2219,7 @@ static void card_menu()
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
         Path path = lib_item_path(it);
-        if (lib_menu_item(ICON_PLAY, "Play")) library_play(it, 0);
+        if (lib_menu_item(ICON_PLAY, "Play")) library_play(it);
         if (lib_menu_item(ICON_EDIT, "Edit")) editor_open(it);
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
         if (lib_menu_item(ICON_COPY, "Copy the file")) {
@@ -3068,8 +3069,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (clicked) {
         ImVec2 c = io.MouseClickedPos[0];
         bool on_box = c.x >= b0.x - kit_px(4) && c.x < b1.x + kit_px(4) && c.y >= b0.y - kit_px(4) && c.y < b1.y + kit_px(4);
-        if (!lib_card_click(it.key, io.KeyShift, io.KeyCtrl, on_box))
-            library_play(it, it.info.duration > 0 && frac >= 0 ? frac * it.info.duration : 0);
+        if (!lib_card_click(it.key, io.KeyShift, io.KeyCtrl, on_box)) library_play(it);
     }
 }
 
