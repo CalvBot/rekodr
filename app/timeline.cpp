@@ -833,11 +833,13 @@ static void tl_play_update()
         // A playhead left still: its first piece built ahead, one at a time, given up as soon as the playhead moves.
         // Not at the live edge, which moves on.
         u64 ms = GetTickCount64();
-        if (tl.playhead_us != tl.rest_us || tl.drag != TL_DRAG_NONE) {
+        if (tl.playhead_us != tl.rest_us) {
             tl_piece_drop(tl.rest);
             tl.rest_us = tl.playhead_us;
             tl.rest_since = ms;
             tl.rest_tried = false;
+        } else if (tl.drag != TL_DRAG_NONE) {
+            tl.rest_since = ms; // a drag that hasn't moved the playhead (yet) keeps what's built, and waits to build
         } else if (!tl.rest_tried && ms - tl.rest_since >= TL_PLAY_REST_MS) {
             tl.rest_tried = true;
             const BufferIdx &b = *tl.idx;
