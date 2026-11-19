@@ -43,6 +43,35 @@ static void test_lengths()
     T(parse_range_us("30s", &rf, &rt) == 0);
 }
 
+// Names from the template in Options are shown with a readable date; others as they are
+static void test_shown_names()
+{
+    str_set(g_app.config.name_template, SAVE_NAME_DEFAULT);
+    g_app.config.clock_24h = false;
+    char name[300], out[300];
+    lib_shown_name("Minecraft 15-00 20-11-2020", out, sizeof out);
+    T(!strcmp(out, "Minecraft - 20 Nov 2020 at 3 pm"));
+    lib_shown_name("Minecraft 21-30 20-11-2020 (2)", out, sizeof out);
+    T(!strcmp(out, "Minecraft - 20 Nov 2020 at 9:30 pm (2)"));
+    lib_shown_name("Minecraft 2026-11-19 21-30-00", out, sizeof out);
+    T(!strcmp(out, "Minecraft 2026-11-19 21-30-00"));
+    lib_shown_name("Minecraft 25-00 20-11-2020", out, sizeof out);
+    T(!strcmp(out, "Minecraft 25-00 20-11-2020"));
+    save_name_expand(SAVE_NAME_DEFAULT, "Minecraft", now_us(), name, sizeof name);
+    lib_shown_name(name, out, sizeof out);
+    T(!strncmp(out, "Minecraft - today at ", 21));
+    save_name_expand(SAVE_NAME_DEFAULT, "Minecraft", now_us() - 86400ll * 1000000, name, sizeof name);
+    lib_shown_name(name, out, sizeof out);
+    T(!strncmp(out, "Minecraft - yesterday at ", 25));
+    g_app.config.clock_24h = true;
+    lib_shown_name("Over 9 15-05 20-11-2020", out, sizeof out);
+    T(!strcmp(out, "Over 9 - 20 Nov 2020 at 15:05"));
+    T(lib_name_matches("Minecraft 15-05 20-11-2020", "nov 2020"));
+    str_set(g_app.config.name_template, "{YYYY}-{MM}-{DD} {hh}.{mm} {game}");
+    lib_shown_name("2020-11-20 15.05 Overwatch 2", out, sizeof out);
+    T(!strcmp(out, "Overwatch 2 - 20 Nov 2020 at 15:05"));
+}
+
 static void test_buffer_names()
 {
     u32 n = 0;
@@ -986,6 +1015,7 @@ int main()
     test_lengths();
     test_save_names();
     test_buffer_names();
+    test_shown_names();
     test_folder_rules();
     test_fields();
     test_hotkeys();

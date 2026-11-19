@@ -694,6 +694,16 @@ enum LibRange : i32 { RANGE_ALL, RANGE_TODAY, RANGE_WEEK, RANGE_MONTH, RANGE_CUS
 enum LibSort : i32 { SORT_NEWEST, SORT_OLDEST, SORT_LONGEST, SORT_BIGGEST, SORT_GAME, SORT_COUNT };
 
 static i64 local_day(i64 us, SYSTEMTIME *out);
+static void lib_shown_name(const char *name, char *out, i32 cap);
+
+// A file name matches a search by itself or by the name it's shown with ("Minecraft - today at 3 pm")
+static bool lib_name_matches(const char *name, const char *needle)
+{
+    if (lib_matches(name, needle)) return true;
+    char shown[300];
+    lib_shown_name(name, shown, sizeof shown);
+    return lib_matches(shown, needle);
+}
 
 // Whether a file's time is in the chosen range, by local days. 1601-01-01 (day 0) was a Monday, so a week
 // starts on a day that's a multiple of 7.
@@ -962,7 +972,7 @@ static void lib_refilter()
         }
         // The list on the left picks by folder or by game, whichever it shows.
         if (by_folder ? in_folder >= 0 && !(fm >> in_folder & 1) : lib.game[0] && strcmp(lib.game, g)) continue;
-        if (!lib_matches(it.name, lib.search) && !lib_matches(g, lib.search)) continue;
+        if (!lib_name_matches(it.name, lib.search) && !lib_matches(g, lib.search)) continue;
         lib.shown[lib.shown_count++] = i;
     }
     // Games most recent first, then Desktop, then files not ours.
@@ -1293,6 +1303,110 @@ static void fmt_when(i64 us, char *out, i32 cap)
     else if (day == today - 1) str_set(when, "yesterday");
     else snprintf(when, sizeof when, "%d %.3s", t.wDay, month_name(t.wMonth));
     snprintf(out, cap, "%s %s", when, hm);
+}
+
+// What a name from the template in Options holds, read back with that template: {game}, and the date and time.
+struct NameParts {
+    const char *game;
+    i32         game_len, year, month, day, hour, minute;
+};
+
+// Whether s matches the template from tmpl on. A template's characters a file name can't hold were dropped when
+// it was named, so they're skipped here too; {game} takes as little as lets the rest match.
+static bool name_match(const char *tmpl, const char *s, NameParts *p)
+{
+    static const char *const tokens[] = {"{game}", "{YYYY}", "{YY}", "{MM}", "{DD}", "{hh}", "{mm}", "{ss}"};
+    while (*tmpl) {
+        i32 k = 0;
+        while (k < COUNT(tokens) && strncmp(tmpl, tokens[k], strlen(tokens[k]))) k++;
+        if (k == COUNT(tokens)) {
+            if (strchr("<>:\"/\\|?*", *tmpl) || (u8)*tmpl < 32) { tmpl++; continue; }
+            if (*s != *tmpl) {
+                if (*s) return false;
+                for (; *tmpl; tmpl++) // the end of a name was trimmed of spaces and dots
+                    if (*tmpl != ' ' && *tmpl != '.' && !strchr("<>:\"/\\|?*", *tmpl)) return false;
+                return true;
+            }
+            tmpl++, s++;
+            continue;
+        }
+        const char *rest = tmpl + strlen(tokens[k]);
+        if (k == 0) {
+            for (i32 n = 1; s[n - 1]; n++) {
+                p->game = s;
+                p->game_len = n;
+                if (name_match(rest, s + n, p)) return true;
+            }
+            return false;
+        }
+        i32 digits = k == 1 ? 4 : 2, v = 0;
+        for (i32 i = 0; i < digits; i++) {
+            if (!isdigit((u8)s[i])) return false;
+            v = v * 10 + s[i] - '0';
+        }
+        if (k == 1) p->year = v;
+        else if (k == 2) p->year = 2000 + v;
+        else if (k == 3) p->month = v;
+        else if (k == 4) p->day = v;
+        else if (k == 5) p->hour = v;
+        else if (k == 6) p->minute = v;
+        s += digits;
+        tmpl = rest;
+    }
+    return !*s;
+}
+
+// The name a clip or session is shown with: when its file name holds the date and time from the template in
+// Options, "Minecraft - today at 3 pm", "yesterday at 9:30 pm", a weekday within the week, then "19 Nov at 3 pm",
+// with the year when it isn't this one. Any other name is shown as it is.
+static void lib_shown_name(const char *name, char *out, i32 cap)
+{
+    snprintf(out, cap, "%s", name);
+    char stem[300], copy[16] = ""; // " (2)": a second file of the same name
+    str_set(stem, name);
+    size_t n = strlen(stem);
+    if (n && stem[n - 1] == ')') {
+        size_t i = n - 1;
+        while (i && isdigit((u8)stem[i - 1])) i--;
+        if (i >= 2 && i < n - 1 && stem[i - 1] == '(' && stem[i - 2] == ' ') {
+            str_set(copy, stem + i - 2);
+            stem[i - 2] = 0;
+        }
+    }
+    NameParts p = {0, 0, 0, 0, 0, -1, 0};
+    if (!name_match(g_app.config.name_template, stem, &p)) {
+        if (!copy[0]) return;
+        str_set(stem, name); // the " (n)" may belong to the name itself
+        copy[0] = 0;
+        p = {0, 0, 0, 0, 0, -1, 0};
+        if (!name_match(g_app.config.name_template, stem, &p)) return;
+    }
+    if (!p.year || p.month < 1 || p.month > 12 || p.day < 1 || p.day > 31 || p.hour > 23 || p.minute > 59) return;
+    SYSTEMTIME t = {}, now;
+    t.wYear = (WORD)p.year, t.wMonth = (WORD)p.month, t.wDay = (WORD)p.day;
+    t.wHour = (WORD)(p.hour < 0 ? 0 : p.hour), t.wMinute = (WORD)p.minute;
+    FILETIME ft;
+    if (!SystemTimeToFileTime(&t, &ft)) return;
+    i64 day = (i64)((((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 864000000000ull);
+    i64 today = local_day(now_us(), &now);
+    char when[64], at[24] = "";
+    if (day == today) str_set(when, "today");
+    else if (day == today - 1) str_set(when, "yesterday");
+    else if (day < today && day > today - 7) str_set(when, WEEKDAYS[day % 7]); // 1601-01-01 was a Monday
+    else if (t.wYear == now.wYear) snprintf(when, sizeof when, "%d %.3s", t.wDay, month_name(t.wMonth));
+    else snprintf(when, sizeof when, "%d %.3s %d", t.wDay, month_name(t.wMonth), t.wYear);
+    if (p.hour >= 0) {
+        i32 h12 = t.wHour % 12 ? t.wHour % 12 : 12;
+        const char *ap = t.wHour < 12 ? "am" : "pm";
+        if (g_app.config.clock_24h) snprintf(at, sizeof at, " at %02d:%02d", t.wHour, t.wMinute);
+        else if (t.wMinute) snprintf(at, sizeof at, " at %d:%02d %s", h12, t.wMinute, ap);
+        else snprintf(at, sizeof at, " at %d %s", h12, ap);
+    }
+    if (p.game) snprintf(out, cap, "%.*s - %s%s%s", p.game_len, p.game, when, at, copy);
+    else {
+        snprintf(out, cap, "%s%s%s", when, at, copy);
+        out[0] = (char)toupper((u8)out[0]);
+    }
 }
 
 // Text cut with "..." to fit `width`, in the current font.
@@ -2029,7 +2143,9 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (!renaming && ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload("LIB_CARD", &it.key, sizeof it.key);
         if (th && th->srv) ImGui::Image((ImTextureID)(intptr_t)th->srv, ImVec2(kit_px(112), kit_px(63)));
-        ImGui::TextUnformatted(it.comment[0] ? it.comment : it.name);
+        char shown[300];
+        lib_shown_name(it.name, shown, sizeof shown);
+        ImGui::TextUnformatted(it.comment[0] ? it.comment : shown);
         ImGui::EndDragDropSource();
     }
     f32 frac = -1;
@@ -2149,7 +2265,11 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             if (lib_rename_apply()) lib.rename_key = 0;
             else lib.rename_focus = true;
         }
-    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.comment[0] ? it.comment : it.name);
+    } else {
+        char shown[300];
+        lib_shown_name(it.name, shown, sizeof shown);
+        text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.comment[0] ? it.comment : shown);
+    }
     y += ImGui::GetFontSize() + kit_px(2);
     ImGui::PopFont();
     char when[48], size[24], line[300];
@@ -2194,7 +2314,9 @@ static void lib_player_view()
     f32 tx = h0.x + fh + kit_px(14), tw = h0.x + full_w - acts_w - kit_px(24) - tx;
     f32 ty = h0.y + (head_h - g_font_big->FontSize - g_font_small->FontSize - kit_px(4)) / 2;
     ImGui::PushFont(g_font_big);
-    text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), lib.playing.name);
+    char shown[300];
+    lib_shown_name(lib.playing.name, shown, sizeof shown);
+    text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), shown);
     ImGui::PopFont();
     char when[48], size[24], line[200];
     fmt_when(lib.playing.mtime_us, when, sizeof when);
@@ -2846,7 +2968,9 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     char file[300];
     save_file_name(s->exe, s->name, s->start_us, file, sizeof file); // as session_save names it
     ImGui::PushFont(g_font_bold);
-    text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), file);
+    char shown[300];
+    lib_shown_name(file, shown, sizeof shown);
+    text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), shown);
     ImGui::PopFont();
     y += g_font_bold->FontSize + kit_px(2);
     char from[32], to[32], line[200];
@@ -2875,7 +2999,7 @@ static bool lib_unsaved_shown(u32 id)
     if (s->exe[0]) audio_display_name(g_app.config, s->exe, game, sizeof game);
     else game_from_name(file, game, sizeof game);
     if (!g_app.config.side_folders && lib.game[0] && strcmp(lib.game, game)) return false;
-    return lib_matches(file, lib.search) || lib_matches(game, lib.search);
+    return lib_name_matches(file, lib.search) || lib_matches(game, lib.search);
 }
 
 // The row, drawn from the cursor; returns false (and draws nothing) when none pass the grid's filters. A click on
