@@ -878,7 +878,7 @@ static DWORD WINAPI recorder_thread(void *)
         if (announced) rec_post(REC_STOPPED, 0, "");
         if (s.hwnd && code >= 0 && (!announced || frozen)) {
             bad_hwnd = s.hwnd;
-            log_line("the game's window couldn't be recorded (%s): recording the monitor", frozen ? "no new frames" : g_reader.last);
+            log_line("that game's window couldn't be recorded (%s): recording the monitor", frozen ? "no new frames" : g_reader.last);
         } else if (wgc && s.capture == CAPTURE_AUTO && !announced && !frozen && code >= 0) {
             // Didn't get going: an ffmpeg without gfxcapture, or a Windows without Graphics Capture.
             if (++wgc_fails == 2)

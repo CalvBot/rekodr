@@ -2040,7 +2040,7 @@ static void options_recording()
         log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
         options_apply(APPLY_RECORDER);
     }
-    if (opt_row_toggle("Capture the game's window", "Records the game last in front, not the whole screen. Each game can set its own.",
+    if (opt_row_toggle("Capture game windows", "Records the window of the game you are in, not the whole screen. Each game can set its own.",
                        "##wincap", &c.window_capture)) {
         log_line("options: capture window %s by default", c.window_capture ? "on" : "off");
         options_apply(APPLY_RECORDER | APPLY_AUDIO);
