@@ -1653,8 +1653,8 @@ static void text_clipped(ImDrawList *dl, ImVec2 pos, f32 width, u32 col, const c
     ImGui::PopStyleColor();
 }
 
-// A small label on a dark pill over a picture: a clip's length, its track count, the zoom.
-static void badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const char *text)
+// A small label on a dark pill over a picture: a clip's length, its track count, the zoom. Returns its width.
+static f32 badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const char *text)
 {
     ImGui::PushFont(g_font_small);
     f32 px = kit_px(6), py = kit_px(2);
@@ -1664,6 +1664,7 @@ static void badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const 
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 0, 0, 180), kit_px(5));
     dl->AddText(ImVec2(a.x + px, a.y + py), IM_COL32(240, 240, 240, 255), text);
     ImGui::PopFont();
+    return w;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2491,20 +2492,34 @@ static void lib_sel_all()
     for (i32 s = 0; s < lib.shown_count; s++) lib_sel_set(lib.items[lib.shown[s]].key, true);
 }
 
-// Shift + click: every card from the anchor to this one, in the grid's order, is selected (no anchor: this one).
+// Shift + click's range in n keys (the grid's order): from `anchor` to `to`, both included, as positions
+// [*lo, *hi]. An anchor not among them gives `to` alone. False when `to` isn't among them.
+static bool lib_range_bounds(const u64 *keys, i32 n, u64 anchor, u64 to, i32 *lo, i32 *hi)
+{
+    i32 from_at = -1, to_at = -1;
+    for (i32 s = 0; s < n; s++) {
+        if (keys[s] == anchor) from_at = s;
+        if (keys[s] == to) to_at = s;
+    }
+    if (to_at < 0) return false;
+    if (from_at < 0) from_at = to_at;
+    *lo = ImMin(from_at, to_at);
+    *hi = ImMax(from_at, to_at);
+    return true;
+}
+
+// Shift + click: with nothing selected, this card alone, and it becomes the anchor. Otherwise every card from the
+// anchor to this one, in the grid's order, is added; the anchor stays, so the next Shift + click ranges from it too.
 static void lib_sel_range(u64 to)
 {
     Library &lib = g_app.library;
-    i32 from_at = -1, to_at = -1;
-    for (i32 s = 0; s < lib.shown_count; s++) {
-        u64 k = lib.items[lib.shown[s]].key;
-        if (k == lib.select_anchor) from_at = s;
-        if (k == to) to_at = s;
-    }
-    if (to_at < 0) return;
-    if (from_at < 0) from_at = to_at;
-    for (i32 s = ImMin(from_at, to_at); s <= ImMax(from_at, to_at); s++) lib_sel_set(lib.items[lib.shown[s]].key, true);
-    lib.select_anchor = to;
+    if (lib.selected_count == 0) lib.select_anchor = to;
+    static u64 keys[LIB_MAX_ITEMS];
+    for (i32 s = 0; s < lib.shown_count; s++) keys[s] = lib.items[lib.shown[s]].key;
+    i32 lo, hi;
+    if (!lib_range_bounds(keys, lib.shown_count, lib.select_anchor, to, &lo, &hi)) return;
+    if (lo == hi) lib.select_anchor = to; // the anchor wasn't shown
+    for (i32 s = lo; s <= hi; s++) lib_sel_set(keys[s], true);
 }
 
 // The selected cards that are shown, as indices into lib.items in the grid's order; how many.
@@ -2875,33 +2890,34 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
             dl->PopClipRect();
         }
+        f32 time_w = 0;
         if (it.info.duration > 0) {
             fmt_time(frac * it.info.duration, text, sizeof text);
-            badge(dl, ImVec2(t1.x - in, by - kit_px(6)), true, true, text);
+            time_w = badge(dl, ImVec2(t1.x - in, by - kit_px(6)), true, true, text) + kit_px(6);
         }
-        if (it.info.track_count > 1) { // right of the tick box
+        if (it.info.track_count > 1) { // left of the time
             snprintf(text, sizeof text, "%d tracks", it.info.track_count);
-            badge(dl, ImVec2(t0.x + in + kit_px(22) + kit_px(6), t0.y + in), false, false, text);
+            badge(dl, ImVec2(t1.x - in - time_w, by - kit_px(6)), true, true, text);
         }
     } else if (it.info.duration > 0) {
         fmt_time(it.info.duration, text, sizeof text);
         badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, text);
     }
     // Selected: an accent ring round the picture. The tick box: filled with a tick when selected, else a ring.
-    f32 box = kit_px(22);
+    f32 box = kit_px(17);
     ImVec2 b0(t0.x + kit_px(10), t0.y + kit_px(10)), b1(b0.x + box, b0.y + box);
     if (sel) dl->AddRect(t0, t1, col32(COL_ACCENT), round, 0, kit_px(3));
     if (sel || over || picking) {
         ImVec2 cm = io.MousePos;
         bool box_hot = over && cm.x >= b0.x - kit_px(4) && cm.x < b1.x + kit_px(4) && cm.y >= b0.y - kit_px(4) && cm.y < b1.y + kit_px(4);
         if (sel) {
-            dl->AddRectFilled(b0, b1, col32(box_hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(5));
-            ImVec2 cs = g_font_icon->CalcTextSizeA(box * 0.7f, FLT_MAX, 0, ICON_CHECK);
-            dl->AddText(g_font_icon, box * 0.7f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
+            dl->AddRectFilled(b0, b1, col32(box_hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(4));
+            ImVec2 cs = g_font_icon->CalcTextSizeA(box * 0.6f, FLT_MAX, 0, ICON_CHECK);
+            dl->AddText(g_font_icon, box * 0.6f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
                         IM_COL32_WHITE, ICON_CHECK);
         } else {
-            dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, box_hot ? 150 : 110), kit_px(5));
-            dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : 200), kit_px(5), 0, kit_px(1.5f));
+            dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, box_hot ? 150 : 110), kit_px(4));
+            dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : 200), kit_px(4), 0, kit_px(1.5f));
         }
     }
     ImGui::PopID();

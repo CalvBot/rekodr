@@ -19,6 +19,18 @@ static i32 g_failed, g_checked;
         } \
     } while (0)
 
+static void test_select_range()
+{
+    const u64 keys[] = {10, 20, 30, 40, 50};
+    i32 lo = -1, hi = -1;
+    T(lib_range_bounds(keys, 5, 20, 40, &lo, &hi) && lo == 1 && hi == 3); // anchor before
+    T(lib_range_bounds(keys, 5, 50, 20, &lo, &hi) && lo == 1 && hi == 4); // anchor after
+    T(lib_range_bounds(keys, 5, 30, 30, &lo, &hi) && lo == 2 && hi == 2); // the anchor itself
+    T(lib_range_bounds(keys, 5, 99, 40, &lo, &hi) && lo == 3 && hi == 3); // anchor not shown: that card alone
+    T(lib_range_bounds(keys, 5, 0, 10, &lo, &hi) && lo == 0 && hi == 0);  // no anchor
+    T(!lib_range_bounds(keys, 5, 20, 99, &lo, &hi));                      // the card isn't shown
+}
+
 static void test_lengths()
 {
     T(parse_length_secs("30s") == 30);
@@ -1019,6 +1031,7 @@ int main()
 {
     InitializeSRWLock(&g_log_lock);
     test_lengths();
+    test_select_range();
     test_save_names();
     test_buffer_names();
     test_shown_names();
