@@ -880,15 +880,13 @@ static void tl_set_edge(bool in, i64 t)
     t = tl_whole_sec(t);
     const BufferIdx &b = *tl.idx;
     if (!b.seg_count) return;
-    if (!tl.sel_in) {
-        tl.sel_in = in ? t : t - 30 * TL_SEC;
-        tl.sel_out = in ? t + 30 * TL_SEC : t;
-    } else if (in) {
+    // With no other end, or the other end on the wrong side, it goes as far as the buffer reaches
+    if (in) {
+        if (!tl.sel_in || tl.sel_out <= t) tl.sel_out = b.newest_us;
         tl.sel_in = t;
-        if (tl.sel_out <= t) tl.sel_out = t + 30 * TL_SEC;
     } else {
+        if (!tl.sel_in || tl.sel_in >= t) tl.sel_in = b.oldest_us;
         tl.sel_out = t;
-        if (tl.sel_in >= t) tl.sel_in = t - 30 * TL_SEC;
     }
     tl_clamp_selection();
 }
@@ -1232,7 +1230,7 @@ static void screen_timeline()
     // a splitter (dragged, double-click for the default), kept as a share of the height.
     Config &cfg = g_app.config;
     const f32 gap = 12 * s;
-    const f32 pad_r = 14 * s, ruler_h = wa_ruler_h(), saved_h = 9 * s, game_h = 22 * s, video_h = 56 * s;
+    const f32 pad_r = 14 * s, ruler_h = wa_ruler_h(), saved_h = 9 * s, game_h = 22 * s, video_h = 36 * s;
     const f32 zoom_bar_h = wa_viewbar_h(), zoom_bar_room = zoom_bar_h + 6 * s, mark_h = 13 * s;
     const f32 line_max = 40 * s, line_min = 20 * s; // a sound lane: as tall as fits, between these
     const f32 min_tracks = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_min + 10 * s;
@@ -1828,10 +1826,12 @@ static void screen_timeline()
     // Sound: when each app had a stream open, faintly, and over it the loudest of the lane's apps at each moment
     g_tl_peaks_frame++;
     static f32 lane_peak[COUNT(tl.rows)][2048];
+    static f32 lane_cov[COUNT(tl.rows)][2048][2]; // the part of each column the lane's bars cover, x from and to
     f32 wstep = floorf(2 * s) > 1 ? floorf(2 * s) : 1;
     i32 columns = (i32)((c.x1 - c.x0) / wstep) + 1;
     if (columns > 2048) columns = 2048;
     memset(lane_peak, 0, lanes * sizeof lane_peak[0]);
+    memset(lane_cov, 0, lanes * sizeof lane_cov[0]);
     dl->PushClipRect(ImVec2(c.x0 - 6 * s, y_snd - 4 * s), ImVec2(c.x1 + 6 * s, y_bottom), true);
     for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
         if (tl.stream_row[st] < 0) continue;
@@ -1857,6 +1857,18 @@ static void screen_timeline()
         const AudioStreamInfo &info = b.streams[st];
         f32 y = y_lanes + k * line_h + bar_in, h = line_h - 2 * bar_in;
         ImU32 col = col32(lane_col(k), 0.16f);
+        // Each bar drawn is also marked on the columns it covers, so the waveform stays inside the bars
+        auto cover = [&](i64 ta, i64 tz) {
+            f32 xa = ImMax(tl_x(c, ta), c.x0), xb = ImMin(tl_x(c, tz), c.x1);
+            if (xb <= xa) return;
+            for (i32 i = ImMax((i32)((xa - c.x0) / wstep), 0); i < columns; i++) {
+                f32 x = c.x0 + i * wstep;
+                if (x >= xb) break;
+                f32 *cv = lane_cov[k][i], ca = ImMax(x, xa), cz = ImMin(x + wstep, xb);
+                if (cv[1] <= cv[0]) { cv[0] = ca; cv[1] = cz; }
+                else { cv[0] = ImMin(cv[0], ca); cv[1] = ImMax(cv[1], cz); }
+            }
+        };
         TlRun run = {};
         for (i32 j = 0; j < info.seg_count; j++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + j];
@@ -1864,9 +1876,14 @@ static void screen_timeline()
             // 10 s, so it can't reach past that (else a dead stream would seem to run up to now).
             i64 e = seg.open ? ImMin(now, seg.start_us + 12 * TL_SEC) : seg.end_us;
             if (e < c.start || seg.start_us > view_end) continue;
+            TlRun was = run;
             tl_run_add(c, &run, seg.start_us, e, y, h, col);
+            if (was.a && run.a != was.a) cover(was.a, was.z); // the run before was drawn
         }
-        if (run.a) tl_span(c, run.a, run.z, y, h, col);
+        if (run.a) {
+            tl_span(c, run.a, run.z, y, h, col);
+            cover(run.a, run.z);
+        }
     }
     // The waveform stands on the lane's floor
     for (i32 k = 0; k < lanes; k++) {
@@ -1876,9 +1893,9 @@ static void screen_timeline()
         for (i32 i = 0; i < columns; i++) {
             // Columns touch, and sound too quiet to rise a pixel draws nothing
             f32 hh = lane_peak[k][i] * most;
-            if (hh < 1 * s) continue;
-            f32 x = c.x0 + i * wstep;
-            dl->AddRectFilled(ImVec2(x, floor_y - hh), ImVec2(x + wstep, floor_y), col);
+            const f32 *cv = lane_cov[k][i];
+            if (hh < 1 * s || cv[1] <= cv[0]) continue;
+            dl->AddRectFilled(ImVec2(cv[0], floor_y - hh), ImVec2(cv[1], floor_y), col);
         }
     }
 
