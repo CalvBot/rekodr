@@ -2209,7 +2209,7 @@ static void screen_timeline()
     }
     dl->PopClipRect();
 
-    // --- The preview, top left: the video playing, or the still frame at the playhead (under the mouse while hovering)
+    // --- The preview, top left: the video playing, or the still frame at the playhead
     f32 pw = top_h * (f32)TL_FRAME_W / (f32)TL_FRAME_H;
     if (pw > avail.x) pw = avail.x;
     f32 ph = floorf(pw * (f32)TL_FRAME_H / (f32)TL_FRAME_W);
@@ -2255,12 +2255,10 @@ static void screen_timeline()
         player_fit(pl, p0, ImVec2(pw, ph), &v0, &v1);
         dl->AddImage((ImTextureID)(intptr_t)pl.srv, v0, v1, uv0, uv1);
     } else {
-        // Hovering shows the keyframe under the mouse (quick); otherwise the exact frame at the playhead. While Play
-        // gets ready the last frame stays.
+        // The exact frame at the playhead, wherever the mouse is. While Play gets ready the last frame stays.
         bool busy_play = tl.play.job || pl.open;
-        bool exact = !tl.hovering;
-        i64 want_t = tl.hovering && !busy_play ? tl.hover_us : play;
-        i64 want_key = b.seg_count && want_t && !busy_play ? tl_want_frame(want_t, exact) : 0;
+        i64 want_t = play;
+        i64 want_key = b.seg_count && want_t && !busy_play ? tl_want_frame(want_t, true) : 0;
         TimelineFrame *frame = tl_frame_find(want_key);
         if (frame) tl.shown_key = frame->key;
         else if (want_key || busy_play) frame = tl_frame_find(tl.shown_key); // the last one shown, until the new one is ready
