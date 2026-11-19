@@ -2191,6 +2191,7 @@ static void lib_calendar()
 
 
 static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask); // timeline.cpp
+static void timeline_keyframes(const i64 *ts, i32 n);                  // timeline.cpp
 
 // Each tile's poster (the frame at its middle), kept apart from the timeline's few frames, so the tiles have their
 // pictures at once whenever Sessions is shown again. One goes when its session is saved or gone from the buffer.
@@ -2238,8 +2239,8 @@ static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timel
 
 // An unsaved session, drawn like a clip's card: its picture from the buffer (pointing scrubs through it, a click
 // looks at it on the timeline), then its icon, the file name it gets when saved, and its length and times. Save sits
-// on the right of the caption and asks for a title first. `ask` lets this one read a frame it hasn't got (one tile
-// asks at a time).
+// on the right of the caption and asks for a title first. `ask` lets this one read a frame it hasn't got: the tile
+// under the mouse, as it scrubs (the row asks for the posters).
 static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
 {
     Sessions &ss = g_app.sessions;
@@ -2484,15 +2485,20 @@ static bool lib_unsaved_row(f32 full_w)
     }
     ss.scroll = ImClamp(ss.scroll, 0.f, max_scroll);
 
-    // The tile under the mouse reads its frames first; with none, whichever lacks its poster.
-    i32 first = (i32)(ss.scroll / step), hovered = -1;
+    // The posters of the tiles on screen are asked for together; the tile under the mouse reads the frames it
+    // scrubs through.
+    i32 first = (i32)(ss.scroll / step), hovered = -1, want_n = 0;
+    i64 want[20];
     for (i32 r = first; r < row_count && r <= first + per; r++) {
         f32 x = a.x + r * step - ss.scroll;
         if (m.x >= ImMax(x, a.x) && m.x < ImMin(x + tile_w, a.x + full_w) && m.y >= y && m.y < y + thumb_h) hovered = r;
+        const Session *s = session_find(rows[r]);
+        if (s && want_n < COUNT(want) && !lib_poster(rows[r])) want[want_n++] = s->start_us + (s->end_us - s->start_us) / 2;
     }
+    timeline_keyframes(want, want_n);
     ImGui::PushClipRect(ImVec2(a.x, y), ImVec2(a.x + full_w, y + row_h), true);
     for (i32 r = first; r < row_count && r <= first + per; r++)
-        lib_unsaved_tile(rows[r], ImVec2(floorf(a.x + r * step - ss.scroll), y), tile_w, thumb_h, hovered < 0 || hovered == r);
+        lib_unsaved_tile(rows[r], ImVec2(floorf(a.x + r * step - ss.scroll), y), tile_w, thumb_h, hovered == r);
     ImGui::PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(a.x, y + row_h + kit_px(18)));
     return true;
