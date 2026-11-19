@@ -2327,8 +2327,8 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     ImGui::PopID();
 }
 
-// The row, drawn from the cursor; returns false (and draws nothing) when there are none. The button beside the
-// heading folds it to the heading alone (kept in the settings). The tiles slide sideways and glide: the wheel over
+// The row, drawn from the cursor; returns false (and draws nothing) when there are none. A click on the heading
+// (a chevron, then the words) folds it to the heading alone (kept in the settings). The tiles slide sideways and glide: the wheel over
 // them, or the arrows on the right, a row's width at a time.
 static bool lib_unsaved_row(f32 full_w)
 {
@@ -2346,17 +2346,25 @@ static bool lib_unsaved_row(f32 full_w)
     bool &folded = g_app.config.unsaved_collapsed;
     char head[48];
     snprintf(head, sizeof head, "UNSAVED SESSIONS  %d", ss.row_count);
-    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (fh - g_font_small->FontSize) / 2));
-    kit_label(head);
-    ImGui::PushFont(g_font_small);
-    f32 head_w = ImGui::CalcTextSize(head).x;
-    ImGui::PopFont();
-    ImGui::SetCursorScreenPos(ImVec2(a.x + head_w + kit_px(6), a.y));
-    kit_next_tip(folded ? "Show the unsaved sessions" : "Fold the unsaved sessions");
-    if (kit_icon_button(folded ? ICON_RIGHT : ICON_DOWN, "##unsaved_fold")) {
-        folded = !folded;
-        config_save(g_app.config, g_app.paths);
-        log_line("library: unsaved sessions %s", folded ? "folded" : "shown");
+    {
+        ImFont *tf = g_font_small;
+        const char *ic = folded ? ICON_RIGHT : ICON_DOWN;
+        f32 isz = floorf(tf->FontSize * 0.8f), ty = floorf(a.y + (fh - tf->FontSize) / 2);
+        ImVec2 is = g_font_icon->CalcTextSizeA(isz, FLT_MAX, 0, ic);
+        f32 iw = kit_px(12), tw = tf->CalcTextSizeA(tf->FontSize, FLT_MAX, 0, head).x;
+        ImGui::SetCursorScreenPos(a);
+        bool hit = ImGui::InvisibleButton("##unsaved_fold", ImVec2(iw + kit_px(4) + tw, fh));
+        bool hot = ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        u32 ink = col32(hot ? COL_DIM : COL_FAINT);
+        ImDrawList *hdl = ImGui::GetWindowDrawList();
+        hdl->AddText(g_font_icon, isz, ImVec2(floorf(a.x + (iw - is.x) / 2), floorf(a.y + (fh - is.y) / 2)), ink, ic);
+        hdl->AddText(tf, tf->FontSize, ImVec2(a.x + iw + kit_px(4), ty), ink, head);
+        if (hit) {
+            folded = !folded;
+            config_save(g_app.config, g_app.paths);
+            log_line("library: unsaved sessions %s", folded ? "folded" : "shown");
+        }
     }
     if (folded) {
         ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + fh + kit_px(10)));
