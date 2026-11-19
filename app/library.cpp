@@ -694,7 +694,7 @@ enum LibRange : i32 { RANGE_ALL, RANGE_TODAY, RANGE_WEEK, RANGE_MONTH, RANGE_CUS
 enum LibSort : i32 { SORT_NEWEST, SORT_OLDEST, SORT_LONGEST, SORT_BIGGEST, SORT_GAME, SORT_COUNT };
 
 static i64 local_day(i64 us, SYSTEMTIME *out);
-static void lib_shown_name(const char *name, char *out, i32 cap);
+static bool lib_shown_name(const char *name, char *out, i32 cap);
 
 // A file name matches a search by itself or by the name it's shown with ("Minecraft - today at 3 pm")
 static bool lib_name_matches(const char *name, const char *needle)
@@ -1358,8 +1358,8 @@ static bool name_match(const char *tmpl, const char *s, NameParts *p)
 
 // The name a clip or session is shown with: when its file name holds the date and time from the template in
 // Options, "Minecraft - today at 3 pm", "yesterday at 9:30 pm", a weekday within the week, then "19 Nov at 3 pm",
-// with the year when it isn't this one. Any other name is shown as it is.
-static void lib_shown_name(const char *name, char *out, i32 cap)
+// with the year when it isn't this one. Any other name is shown as it is. True when the name shown has a time.
+static bool lib_shown_name(const char *name, char *out, i32 cap)
 {
     snprintf(out, cap, "%s", name);
     char stem[300], copy[16] = ""; // " (2)": a second file of the same name
@@ -1375,18 +1375,18 @@ static void lib_shown_name(const char *name, char *out, i32 cap)
     }
     NameParts p = {0, 0, 0, 0, 0, -1, 0};
     if (!name_match(g_app.config.name_template, stem, &p)) {
-        if (!copy[0]) return;
+        if (!copy[0]) return false;
         str_set(stem, name); // the " (n)" may belong to the name itself
         copy[0] = 0;
         p = {0, 0, 0, 0, 0, -1, 0};
-        if (!name_match(g_app.config.name_template, stem, &p)) return;
+        if (!name_match(g_app.config.name_template, stem, &p)) return false;
     }
-    if (!p.year || p.month < 1 || p.month > 12 || p.day < 1 || p.day > 31 || p.hour > 23 || p.minute > 59) return;
+    if (!p.year || p.month < 1 || p.month > 12 || p.day < 1 || p.day > 31 || p.hour > 23 || p.minute > 59) return false;
     SYSTEMTIME t = {}, now;
     t.wYear = (WORD)p.year, t.wMonth = (WORD)p.month, t.wDay = (WORD)p.day;
     t.wHour = (WORD)(p.hour < 0 ? 0 : p.hour), t.wMinute = (WORD)p.minute;
     FILETIME ft;
-    if (!SystemTimeToFileTime(&t, &ft)) return;
+    if (!SystemTimeToFileTime(&t, &ft)) return false;
     i64 day = (i64)((((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 864000000000ull);
     i64 today = local_day(now_us(), &now);
     char when[64], at[24] = "";
@@ -1407,6 +1407,7 @@ static void lib_shown_name(const char *name, char *out, i32 cap)
         snprintf(out, cap, "%s%s%s", when, at, copy);
         out[0] = (char)toupper((u8)out[0]);
     }
+    return p.hour >= 0;
 }
 
 // Text cut with "..." to fit `width`, in the current font.
@@ -2110,7 +2111,7 @@ static void delete_modal()
 // The name and the line under a card's picture.
 static f32 lib_meta_h() { return kit_px(8) + g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize + kit_px(2); }
 
-// One card: the day above it (on the first card of a day in each row), the picture, the name and one dim line.
+// One card: the day above it (on the first card of a day), the picture, the name and one dim line.
 // Under the mouse the picture scrubs through the file (a click plays from there); a right-click opens its menu.
 static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h, bool show_day)
 {
@@ -2129,6 +2130,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ImGui::SetCursorScreenPos(t0);
     ImGui::PushID((const void *)(uintptr_t)it.key);
     bool renaming = lib.rename_key == it.key;
+    char shown[300];
+    bool timed = lib_shown_name(it.name, shown, sizeof shown);
     bool pressed = ImGui::InvisibleButton("card", ImVec2(w, renaming ? thumb_h : thumb_h + meta_h));
     if (ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_F2, false) && !renaming) lib_rename_start(it);
     // A click plays it; a drag carries it to a folder in the list on the left.
@@ -2143,8 +2146,6 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (!renaming && ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload("LIB_CARD", &it.key, sizeof it.key);
         if (th && th->srv) ImGui::Image((ImTextureID)(intptr_t)th->srv, ImVec2(kit_px(112), kit_px(63)));
-        char shown[300];
-        lib_shown_name(it.name, shown, sizeof shown);
         ImGui::TextUnformatted(it.comment[0] ? it.comment : shown);
         ImGui::EndDragDropSource();
     }
@@ -2265,11 +2266,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             if (lib_rename_apply()) lib.rename_key = 0;
             else lib.rename_focus = true;
         }
-    } else {
-        char shown[300];
-        lib_shown_name(it.name, shown, sizeof shown);
-        text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.comment[0] ? it.comment : shown);
-    }
+    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.comment[0] ? it.comment : shown);
     y += ImGui::GetFontSize() + kit_px(2);
     ImGui::PopFont();
     char when[48], size[24], line[300];
@@ -2278,6 +2275,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     bool err = renaming && lib.rename_error[0];
     if (err) str_set(line, lib.rename_error);
     else if (it.comment[0] || (renaming && lib.rename_comment)) snprintf(line, sizeof line, "%s  -  %s", it.name, size);
+    else if (timed) snprintf(line, sizeof line, "%s  -  %s", it.info.game, size); // the name says when
     else snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, y), tw, col32(err ? COL_RED : COL_DIM), line);
@@ -2315,13 +2313,14 @@ static void lib_player_view()
     f32 ty = h0.y + (head_h - g_font_big->FontSize - g_font_small->FontSize - kit_px(4)) / 2;
     ImGui::PushFont(g_font_big);
     char shown[300];
-    lib_shown_name(lib.playing.name, shown, sizeof shown);
+    bool timed = lib_shown_name(lib.playing.name, shown, sizeof shown);
     text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), shown);
     ImGui::PopFont();
     char when[48], size[24], line[200];
     fmt_when(lib.playing.mtime_us, when, sizeof when);
     fmt_size(lib.playing.size, size, sizeof size);
-    snprintf(line, sizeof line, "%s  -  %s  -  %s", lib.playing.info.game, when, size);
+    if (timed) snprintf(line, sizeof line, "%s  -  %s", lib.playing.info.game, size); // the name says when
+    else snprintf(line, sizeof line, "%s  -  %s  -  %s", lib.playing.info.game, when, size);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), line);
     ImGui::PopFont();
@@ -3536,15 +3535,17 @@ static void screen_library()
     // Only the rows in view are drawn (and ask for their thumbnails)
     f32 top = floorf(lib.scroll);
     i32 r0 = (i32)(top / card_h), r1 = (i32)((top + grid_h) / card_h);
+    // A day's (or game's) heading goes over its first card only, so rows of the same day read as one section
+    auto group = [&](i32 idx) {
+        const LibItem &it = lib.items[lib.shown[idx]];
+        return lib.sort == SORT_GAME ? (i64)fnv64(it.info.game, strlen(it.info.game)) : local_day(it.mtime_us, 0);
+    };
     for (i32 r = r0; r <= r1 && r < rows; r++) {
-        i64 prev_day = -1;
         for (i32 c = 0; c < cols; c++) {
             i32 idx = r * cols + c;
             if (idx >= lib.shown_count) break;
             const LibItem &it = lib.items[lib.shown[idx]];
-            i64 day = lib.sort == SORT_GAME ? (i64)fnv64(it.info.game, strlen(it.info.game)) : local_day(it.mtime_us, 0);
-            bool show_day = c == 0 || day != prev_day;
-            prev_day = day;
+            bool show_day = idx == 0 || group(idx) != group(idx - 1);
             lib_card(it, ImVec2(g0.x + c * (card_w + gap), g0.y + r * card_h - top), card_w, thumb_h, day_h, show_day);
         }
     }
