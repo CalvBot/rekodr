@@ -55,6 +55,7 @@ struct GameDbShared {
     SRWLOCK    lock;
     GameIndex *index;
     HANDLE     thread, wake;
+    HANDLE     find_thread, find_wake; // the searches a player types, on a thread of their own
     volatile LONG stop;
     bool       online;      // may fetch
     char       service[128]; // the art service's host; "" = don't ask it
@@ -1019,12 +1020,12 @@ static void url_encode(const char *in, char *out, i32 cap)
 
 // The service allows an address 30 requests a minute. Art and names are asked for at 20 a minute at most, which
 // leaves room for the searches a player types; past that they wait their turn (gamedb_thread looks again shortly).
-// Only the worker thread touches these.
+// The worker and the search thread both count their requests here.
 static u64 g_service_calls[20]; // when the last 20 requests were made (GetTickCount64)
-static i32 g_service_call_at;
+static volatile LONG g_service_call_n;
 static bool art_service_paced()
 {
-    u64 oldest = g_service_calls[g_service_call_at];
+    u64 oldest = g_service_calls[(u32)g_service_call_n % COUNT(g_service_calls)];
     return g_gamedb.service[0] && oldest && GetTickCount64() - oldest < 60000;
 }
 
@@ -1037,7 +1038,8 @@ static bool http_later(u32 status)
 
 // A signed GET to the service, or a POST of the JSON `post`. Returns the status (0 = no answer); the body, for a
 // 200, in *body.
-static u32 art_service_get(const char *path, char **body, i64 *len, const char *post = 0)
+// A search being typed doesn't wait out a 429: the next key asks again.
+static u32 art_service_get(const char *path, char **body, i64 *len, const char *post = 0, bool wait_out = true)
 {
     wchar_t host[128], wpath[1024], header[320];
     utf8_to_wide(g_gamedb.service, host, COUNT(host));
@@ -1049,10 +1051,9 @@ static u32 art_service_get(const char *path, char **body, i64 *len, const char *
         i64 unix_seconds = (((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - 116444736000000000ll) / 10000000;
         art_service_sign(path, unix_seconds, sig, sizeof sig, post);
         swprintf(header, COUNT(header), L"x-clipback: %hs\r\n%s", sig, post ? L"content-type: application/json\r\n" : L"");
-        g_service_calls[g_service_call_at] = GetTickCount64();
-        g_service_call_at = (g_service_call_at + 1) % COUNT(g_service_calls);
+        g_service_calls[(u32)(InterlockedIncrement(&g_service_call_n) - 1) % COUNT(g_service_calls)] = GetTickCount64();
         u32 status = http_get(host, wpath, header, 0, body, len, post);
-        if (status != 429 || attempt || g_gamedb.stop) return status;
+        if (status != 429 || attempt || !wait_out || g_gamedb.stop) return status;
         // Asked too often (it allows 30 a minute): wait the minute out, once
         for (i32 s = 0; s < 61 && !g_gamedb.stop; s++) Sleep(1000);
     }
@@ -1253,7 +1254,7 @@ static u32 art_search(const char *q, char **body, i64 *len, bool typing = false)
     char enc[400], path[512];
     url_encode(q, enc, sizeof enc);
     snprintf(path, sizeof path, "/v1/search?q=%s%s", enc, typing ? "&typing=1" : "");
-    u32 status = g_gamedb.service[0] ? art_service_get(path, body, len) : 403;
+    u32 status = g_gamedb.service[0] ? art_service_get(path, body, len, 0, !typing) : 403;
     if (status != 403 || !g_gamedb.sgdb_key[0]) return status;
     free(*body);
     *body = 0;
@@ -1365,7 +1366,7 @@ static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *y
     return n;
 }
 
-// Looks for the name typed when naming an app (gamedb_find_online asked for it) on the art service. Worker thread.
+// Looks for the name typed when naming an app (gamedb_find_online asked for it) on the art service. Search thread.
 static void gamedb_fetch_find()
 {
     char q[128];
@@ -1396,7 +1397,7 @@ static void gamedb_fetch_find()
 // Main thread.
 static i32 gamedb_find_online(const char *q, char (*names)[128], i32 *years, i32 max)
 {
-    if (!q[0] || !g_gamedb.online || (!g_gamedb.service[0] && !g_gamedb.sgdb_key[0]) || !g_gamedb.wake) return 0;
+    if (!q[0] || !g_gamedb.online || (!g_gamedb.service[0] && !g_gamedb.sgdb_key[0]) || !g_gamedb.find_wake) return 0;
     i32 n = -1;
     bool ask = false;
     AcquireSRWLockExclusive(&g_gamedb.lock);
@@ -1412,7 +1413,7 @@ static i32 gamedb_find_online(const char *q, char (*names)[128], i32 *years, i32
         }
     }
     ReleaseSRWLockExclusive(&g_gamedb.lock);
-    if (ask) SetEvent(g_gamedb.wake);
+    if (ask) SetEvent(g_gamedb.find_wake);
     return n;
 }
 
@@ -1725,10 +1726,19 @@ static DWORD WINAPI gamedb_thread(void *)
         }
     }
     while (!g_gamedb.stop) {
-        gamedb_fetch_find();
         bool done = gamedb_fetch_asks();
         done &= gamedb_fetch_art();
         WaitForSingleObject(g_gamedb.wake, done ? INFINITE : 2000); // some waiting their turn: look again soon
+    }
+    return 0;
+}
+
+// The searches a player types, apart from the worker, so they never wait behind art.
+static DWORD WINAPI gamedb_find_thread(void *)
+{
+    while (!g_gamedb.stop) {
+        gamedb_fetch_find();
+        WaitForSingleObject(g_gamedb.find_wake, INFINITE);
     }
     return 0;
 }
@@ -1740,6 +1750,8 @@ static void gamedb_start(bool online)
     str_set(g_gamedb.sgdb_key, g_app.config.sgdb_key);
     g_gamedb.wake = CreateEventW(0, FALSE, FALSE, 0);
     g_gamedb.thread = thread_start(gamedb_thread, 0);
+    g_gamedb.find_wake = CreateEventW(0, FALSE, FALSE, 0);
+    g_gamedb.find_thread = thread_start(gamedb_find_thread, 0);
 }
 
 static void gamedb_stop()
@@ -1747,5 +1759,7 @@ static void gamedb_stop()
     if (!g_gamedb.thread) return;
     InterlockedExchange(&g_gamedb.stop, 1);
     SetEvent(g_gamedb.wake);
+    SetEvent(g_gamedb.find_wake);
     WaitForSingleObject(g_gamedb.thread, 3000);
+    WaitForSingleObject(g_gamedb.find_thread, 3000);
 }
