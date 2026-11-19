@@ -84,6 +84,8 @@ static void run_command(const char *text)
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]], 0);
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
         else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
+        else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail
+            g_app.config.games_collapsed = !strcmp(arg, "list-collapsed");
         else if (!strcmp(arg, "delete")) g_show_dialog = 1; // the first card's Delete dialog
         else if (starts_with(arg, "delete-folder")) { // on the list of folders, which it belongs to
             g_app.config.side_folders = true;
@@ -109,7 +111,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, delete, delete-folder, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {

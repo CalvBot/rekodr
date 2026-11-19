@@ -1464,10 +1464,9 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
     return clicked;
 }
 
-// A pill of the Library's header, all of one height. A plain one (Clips, Sessions) has its label in the middle and
-// is lit when `on`. One that drops a list has an optional picture, its label from the left and an arrow on the
-// right, and is outlined when `on`: when what it is set to narrows what is shown.
-static bool lib_pill(const char *id, const char *label, f32 w, bool on, bool drops, ID3D11ShaderResourceView *picture = 0)
+// A pill of the Library's header that drops a list: an optional picture, its label from the left and an arrow on
+// the right, outlined when `on`: when what it is set to narrows what is shown.
+static bool lib_pill(const char *id, const char *label, f32 w, bool on, ID3D11ShaderResourceView *picture = 0)
 {
     f32 h = ImGui::GetFrameHeight(), round = ImGui::GetStyle().FrameRounding;
     ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + w, a.y + h);
@@ -1475,14 +1474,8 @@ static bool lib_pill(const char *id, const char *label, f32 w, bool on, bool dro
     if (clicked) dev_click("pill", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, z, col32(!drops && on ? 0x3a3d44 : hot ? COL_HOVER : COL_PANEL2), round);
+    dl->AddRectFilled(a, z, col32(hot ? COL_HOVER : COL_PANEL2), round);
     f32 ty = floorf(a.y + (h - g_font->FontSize) / 2);
-    if (!drops) {
-        ImFont *font = on ? g_font_bold : g_font;
-        f32 tw = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, label).x;
-        dl->AddText(font, font->FontSize, ImVec2(floorf(a.x + (w - tw) / 2), ty), col32(on || hot ? COL_TEXT : COL_DIM), label);
-        return clicked;
-    }
     if (on) dl->AddRect(a, z, col32(COL_ACCENT, 0.7f), round, 0, kit_px(1));
     f32 x = a.x + kit_px(12), is = kit_px(20);
     if (picture) {
@@ -1495,6 +1488,30 @@ static bool lib_pill(const char *id, const char *label, f32 w, bool on, bool dro
     dl->PushClipRect(ImVec2(x, a.y), ImVec2(cx - kit_px(6), z.y), true);
     dl->AddText(g_font, g_font->FontSize, ImVec2(x, ty), col32(COL_TEXT), label);
     dl->PopClipRect();
+    return clicked;
+}
+
+// A two-sided switch (Clips / Sessions, Games / Folders): one button, w by h, that a click anywhere flips. The lit
+// half shows which side is on; under the mouse the whole track lightens. True when clicked.
+static bool lib_switch(const char *id, const char *const *labels, f32 w, f32 h, bool second, u32 track, u32 track_hot,
+                       u32 lit)
+{
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h)) && !kit_closed_here(ImGui::GetItemID());
+    if (clicked) dev_click("switch", labels[second ? 0 : 1]);
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 round = ImGui::GetStyle().FrameRounding, in = kit_px(3);
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? track_hot : track), round);
+    for (i32 s = 0; s < 2; s++) {
+        ImVec2 p(a.x + floorf(s * w / 2), a.y), q(a.x + floorf((s + 1) * w / 2), a.y + h);
+        bool on = (s == 1) == second;
+        if (on) dl->AddRectFilled(ImVec2(p.x + in, p.y + in), ImVec2(q.x - in, q.y - in), col32(lit), ImMax(round - in, 0.0f));
+        ImFont *font = on ? g_font_bold : g_font;
+        ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, labels[s]);
+        dl->AddText(font, font->FontSize, ImVec2(floorf((p.x + q.x - ts.x) / 2), floorf(a.y + (h - ts.y) / 2)),
+                    col32(on || hot ? COL_TEXT : COL_DIM), labels[s]);
+    }
     return clicked;
 }
 
@@ -2898,8 +2915,8 @@ static bool lib_unsaved_row(f32 full_w)
     return true;
 }
 
-// The Games / Folders switch at the top of the list on the left. Collapsed, it's one icon (what the list shows)
-// where the rows' icons are; a click shows the other. True when it's flipped.
+// The Games / Folders switch at the top of the list on the left (lib_switch). Collapsed, it's one icon (what the
+// list shows) where the rows' icons are; a click shows the other. True when it's flipped.
 static bool lib_side_toggle(f32 w, bool collapsed)
 {
     bool folders = g_app.config.side_folders, flip = false;
@@ -2917,24 +2934,8 @@ static bool lib_side_toggle(f32 w, bool collapsed)
         dl->AddText(ImVec2(floorf(a.x + kit_px(8) + (is - gs.x) / 2), floorf(a.y + (h - gs.y) / 2)), col32(hot ? COL_TEXT : COL_DIM), ic);
         ImGui::PopFont();
     } else {
-        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_BG), kit_px(7));
-        for (i32 s = 0; s < 2; s++) {
-            ImVec2 p(a.x + floorf(s * w / 2), a.y), q(a.x + floorf((s + 1) * w / 2), a.y + h);
-            ImGui::SetCursorScreenPos(p);
-            ImGui::PushID(s);
-            bool hit = ImGui::InvisibleButton("##sidemode", ImVec2(q.x - p.x, h));
-            bool hot = ImGui::IsItemHovered();
-            ImGui::PopID();
-            bool on = (s == 1) == folders;
-            if (hit && !on) flip = true;
-            if (on || hot) dl->AddRectFilled(ImVec2(p.x + kit_px(2), p.y + kit_px(2)), ImVec2(q.x - kit_px(2), q.y - kit_px(2)),
-                                             col32(on ? COL_HOVER : COL_PANEL2), kit_px(6));
-            const char *label = s ? ICON_FOLDER "  Folders" : ICON_GAME "  Games";
-            ImFont *font = on ? g_font_bold : g_font;
-            ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, label);
-            dl->AddText(font, font->FontSize, ImVec2(floorf((p.x + q.x - ts.x) / 2), floorf(a.y + (h - ts.y) / 2)),
-                        col32(on || hot ? COL_TEXT : COL_DIM), label);
-        }
+        static const char *const sides[] = {ICON_GAME "  Games", ICON_FOLDER "  Folders"};
+        flip = lib_switch("##sidemode", sides, w, h, folders, COL_BG, 0x15161a, COL_HOVER);
     }
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + kit_px(6)));
     return flip;
@@ -3131,23 +3132,22 @@ static void screen_library()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 full_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
 
-    // Header: pills of one height. Clips and Sessions, then three that each drop a list (the game, the date range,
-    // the order), and the search on the right. A list that is narrowing what's shown is outlined.
+    // Header, all of one height: the Clips / Sessions switch, then pills that each drop a list (the date range, the
+    // order), and the search on the right. A list that is narrowing what's shown is outlined.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
     static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
     static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
     f32 hgap = kit_px(8), view_w = kit_px(104), drop_w = kit_px(112);
-    for (i32 v = 0; v < 2; v++) {
-        ImGui::SetCursorScreenPos(ImVec2(h0.x + v * (view_w + kit_px(4)), h0.y));
-        if (lib_pill(v ? "##sessions" : "##clips", views[v], view_w, lib.view == v, false) && lib.view != v) lib_set_view((LibView)v);
-    }
+    ImGui::SetCursorScreenPos(h0);
+    if (lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER, 0x3a3d44))
+        lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
 
     // The date range; Custom opens the calendar
     i32 step;
     ImVec2 range_at(h0.x + 2 * view_w + kit_px(4) + kit_px(16), h0.y);
     ImGui::SetCursorScreenPos(range_at);
-    if (lib_pill("##range", ranges[lib.range], drop_w, lib.range != 0, true)) ImGui::OpenPopup("range");
+    if (lib_pill("##range", ranges[lib.range], drop_w, lib.range != 0)) ImGui::OpenPopup("range");
     step = lib.range;
     if (kit_wheel_step(&step, RANGE_CUSTOM)) { // every range but Custom, which needs its calendar
         lib.range = step;
@@ -3184,7 +3184,7 @@ static void screen_library()
     f32 search_w = full_w - (sort_at.x - h0.x) - drop_w - kit_px(12);
     search_w = search_w < kit_px(100) ? kit_px(100) : search_w > kit_px(240) ? kit_px(240) : search_w;
     ImGui::SetCursorScreenPos(sort_at);
-    if (lib_pill("##sort", sorts[lib.sort], drop_w, false, true)) ImGui::OpenPopup("sort");
+    if (lib_pill("##sort", sorts[lib.sort], drop_w, false)) ImGui::OpenPopup("sort");
     step = lib.sort;
     if (kit_wheel_step(&step, SORT_COUNT)) {
         lib.sort = step;
@@ -3245,10 +3245,10 @@ static void screen_library()
             ImGui::PopID();
         }
         ImGui::EndChild();
-        // The collapse button at the list's foot: in the bottom right corner when it's shown, in the middle of the
-        // rail when it's collapsed.
-        ImGui::SetCursorScreenPos(ImVec2(collapsed ? floorf(s0.x + (side_w - fh) / 2) : s0.x + side_w - kit_px(6) - fh,
-                                         s0.y + side_h - kit_px(6) - fh));
+        // The collapse button at the list's foot: in its bottom left corner, in the middle of the rail it collapses to,
+        // so it's in the same place either way and only its arrow turns.
+        f32 rail_w = icon_end + kit_px(14);
+        ImGui::SetCursorScreenPos(ImVec2(floorf(s0.x + (rail_w - fh) / 2), s0.y + side_h - kit_px(6) - fh));
         kit_next_tip(collapsed ? "Show the list" : "Collapse the list");
         if (kit_icon_button(collapsed ? ICON_RIGHT : ICON_LEFT, "##games_collapse")) {
             collapsed = !collapsed;
