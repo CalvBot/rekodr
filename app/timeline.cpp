@@ -1235,11 +1235,11 @@ static void screen_timeline()
     const f32 pad_r = 14 * s, ruler_h = wa_ruler_h(), saved_h = 9 * s, game_h = 22 * s, video_h = 56 * s;
     const f32 zoom_bar_h = wa_viewbar_h(), zoom_bar_room = zoom_bar_h + 6 * s, mark_h = 13 * s;
     const f32 line_max = 40 * s, line_min = 20 * s; // a sound lane: as tall as fits, between these
-    const f32 min_tracks = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 8 * s + TL_LANES * line_min + 10 * s;
+    const f32 min_tracks = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_min + 10 * s;
     const f32 top_min = 160 * s;
     auto top_height = [&]() {
         // By default the tracks get what they use at their tallest and the preview the rest
-        const f32 tracks_full = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 8 * s + TL_LANES * line_max + 10 * s;
+        const f32 tracks_full = 8 * s + zoom_bar_room + mark_h + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_max + 10 * s;
         f32 h = cfg.timeline_top > 0 ? avail.y * cfg.timeline_top : avail.y - fh - 2 * gap - tracks_full;
         if (h > avail.y - fh - 2 * gap - min_tracks) h = avail.y - fh - 2 * gap - min_tracks;
         if (h < top_min) h = top_min;
@@ -1286,8 +1286,8 @@ static void screen_timeline()
     c.dl = dl;
     c.x1 = card_z.x - pad_r;
     f32 y_zoom = origin.y + 8 * s, y_marks = y_zoom + zoom_bar_room, y_ruler = y_marks + mark_h, y_tracks = y_ruler + ruler_h;
-    f32 y_saved = y_tracks + 2 * s, y_game = y_saved + saved_h + 1 * s, y_video = y_game + game_h + 1 * s;
-    f32 y_snd = y_video + video_h + 4 * s;
+    f32 y_saved = y_tracks + 2 * s, y_game = y_saved + saved_h + 1 * s, y_video = y_game + game_h;
+    f32 y_snd = y_video + video_h; // each row is inset 1 px, so every gap is 2
     f32 y_bottom = card_z.y - 10 * s;
     bool names_hot = false;
     {
