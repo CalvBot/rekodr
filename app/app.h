@@ -73,7 +73,7 @@ static const char SAVE_NAME_DEFAULT[] = "{game} {hh}-{mm} {DD}-{MM}-{YYYY}";
 
 // The two "games" that aren't games: footage of no game, and files the save template doesn't read.
 static const char GAME_DESKTOP[] = "Desktop";
-static const char GAME_NOT_OURS[] = "Not from clipback";
+static const char GAME_NOT_OURS[] = "Other";
 
 struct Config {
     Path save_dir;     // <Videos>\Clips, holding 2026\Clips, 2026\Sessions, 2026\Data
