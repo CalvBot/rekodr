@@ -606,12 +606,6 @@ static void test_gamedb()
     // Its window naming the game is a fair guess when the command line doesn't say
     T(gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "javaw org.launcher.EntryPoint", "Minecraft 1.7.10", &g) && !strcmp(g.id, "1"));
     T(gamedb_by_exe("hl2.exe", "D:\\steamapps\\common\\GarrysMod\\hl2.exe", "hl2.exe -game garrysmod", "", &g) && !strcmp(g.id, "4"));
-    // Finding games by part of a name
-    GameInfo hits[4];
-    T(gamedb_search("count", hits, 4) == 1 && !strcmp(hits[0].name, "Counter-Strike 2"));
-    T(gamedb_search("r", hits, 4) == 4); // every one of the four has an r
-    T(gamedb_search("ru", hits, 4) == 1 && !strcmp(hits[0].name, "Rust"));
-    T(gamedb_search("", hits, 4) == 0 && gamedb_search("zzz", hits, 4) == 0);
     // A game the list doesn't have still gets an id for its art, the same for the same letters
     GameInfo h;
     T(gamedb_for_art("Hollow Knight", &g) && g.id[0] == 'n' && !strcmp(g.name, "Hollow Knight"));

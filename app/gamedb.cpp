@@ -694,39 +694,6 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     return true;
 }
 
-// Games whose name has these letters in it, best first: a name that starts with them before one that only has
-// them, one with an icon and a Windows exe before a bare entry (the list has thousands), and of those the
-// shortest name, which is the nearest to what was typed. Returns how many were put in `out`.
-static i32 gamedb_search(const char *query, GameInfo *out, i32 max)
-{
-    char want[128];
-    i32 wl = gdb_letters(query, want, sizeof want), n = 0;
-    if (!wl || max <= 0 || max > 16) return 0;
-    i32 rows[16], scores[16];
-    AcquireSRWLockShared(&g_gamedb.lock);
-    const GameIndex *ix = g_gamedb.index;
-    for (i32 i = 0; ix && i < ix->row_count; i++) {
-        const GameRow &r = ix->rows[i];
-        char letters[128];
-        i32 len = gdb_letters(r.name, letters, sizeof letters);
-        const char *at = strstr(letters, want);
-        if (!at) continue;
-        i32 score = (at == letters ? 0 : 4000) + (r.icon[0] ? 0 : 2000) + (r.exes[0] ? 0 : 1000) + len;
-        i32 k = n;
-        while (k > 0 && scores[k - 1] > score) k--;
-        bool dup = false;
-        for (i32 d = 0; d < n && !dup; d++) dup = !_stricmp(ix->rows[rows[d]].name, r.name);
-        if (dup || k >= max) continue;
-        if (n < max) n++;
-        for (i32 m = n - 1; m > k; m--) { rows[m] = rows[m - 1]; scores[m] = scores[m - 1]; }
-        rows[k] = i;
-        scores[k] = score;
-    }
-    for (i32 i = 0; i < n; i++) gdb_fill(ix->rows[rows[i]], &out[i]);
-    ReleaseSRWLockShared(&g_gamedb.lock);
-    return n;
-}
-
 static void sessions_game_renamed(const char *exe); // sessions.cpp
 static bool mc_clues(const char *cmdline, char *out, i32 cap); // mcpack.cpp
 
