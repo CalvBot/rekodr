@@ -1161,8 +1161,8 @@ static f32 tl_peak_in(const TlPeaks &p, i64 start_us, i64 a, i64 z)
     return m / 255.f;
 }
 
-// The sound lanes. The quick clip timeline sums every app of a kind into one of four; the main timeline has a lane
-// for each app.
+// The sound lanes: a lane for each app, or every app of a kind summed into one of four (the quick clip timeline
+// always, the main one in Simple).
 static const i32 TL_LANES = 4;
 static const char *const TL_LANE_ICON[TL_LANES] = {ICON_MIC, ICON_GAME, ICON_CHAT, ICON_APPS};
 static const char *const TL_LANE_NAME[TL_LANES] = {"Mic", "Game", "Chat", "Apps"};
@@ -1289,7 +1289,7 @@ static void screen_timeline()
     set_view();
 
     // The sound lanes share what's left below the video, scrolled when there are more than fit
-    bool summed = tl.quick || !tl.row_count;
+    bool summed = tl.quick || cfg.timeline_simple || !tl.row_count;
     i32 lanes = summed ? TL_LANES : tl.row_count;
     i8 row_lane[COUNT(tl.rows)];
     for (i32 r = 0; r < tl.row_count; r++) row_lane[r] = (i8)(summed ? tl_row_group(tl.rows[r]) : r);
@@ -1308,7 +1308,7 @@ static void screen_timeline()
     auto lane_name = [&](i32 k) { return summed ? TL_LANE_NAME[k] : (const char *)tl.rows[k].name; };
     auto lane_col = [&](i32 k) { return summed ? TL_LANE_COL[k] : tl.rows[k].rgb; };
     bool compact = line_h < 24 * s; // names in the small font
-    f32 lane_in = floorf(line_h * 0.14f), bar_in = floorf(line_h * 0.3f);
+    f32 lane_in = ImMax(floorf(line_h * 0.05f), 1.0f), bar_in = lane_in;
 
     // What's been saved from here: sessions under, clips over them. A click on one selects it.
     saved_check();
@@ -1584,7 +1584,7 @@ static void screen_timeline()
         i32 k = row_lane[tl.stream_row[st]];
         const AudioStreamInfo &info = b.streams[st];
         f32 y = y_lanes + k * line_h + bar_in, h = line_h - 2 * bar_in;
-        ImU32 col = col32(lane_col(k), 0.25f);
+        ImU32 col = col32(lane_col(k), 0.16f);
         TlRun run = {};
         for (i32 j = 0; j < info.seg_count; j++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + j];
@@ -1596,15 +1596,17 @@ static void screen_timeline()
         }
         if (run.a) tl_span(c, run.a, run.z, y, h, col);
     }
+    // The waveform stands on the lane's floor
     for (i32 k = 0; k < lanes; k++) {
-        f32 mid = y_lanes + k * line_h + line_h / 2, half = line_h / 2 - lane_in - 1 * s;
-        if (mid + half < y_snd || mid - half > y_bottom) continue;
+        f32 floor_y = y_lanes + (k + 1) * line_h - lane_in - 1 * s, most = line_h - 2 * lane_in - 2 * s;
+        if (floor_y < y_snd || floor_y - most > y_bottom) continue;
         ImU32 col = col32(lane_col(k), 0.9f);
         for (i32 i = 0; i < columns; i++) {
-            f32 v = lane_peak[k][i];
-            if (v <= 0.02f) continue;
-            f32 x = c.x0 + i * wstep, hh = ImMax(v * half, 1 * s);
-            dl->AddRectFilled(ImVec2(x, mid - hh), ImVec2(x + wstep - (wstep > 1 ? 1 : 0), mid + hh), col);
+            // Columns touch, and sound too quiet to rise a pixel draws nothing
+            f32 hh = lane_peak[k][i] * most;
+            if (hh < 1 * s) continue;
+            f32 x = c.x0 + i * wstep;
+            dl->AddRectFilled(ImVec2(x, floor_y - hh), ImVec2(x + wstep, floor_y), col);
         }
     }
 
@@ -1803,6 +1805,16 @@ static void screen_timeline()
         if (kit_icon_button(ICON_NOW, "##now", KIT_GHOST, !tl.follow)) {
             tl.follow = true;
             tl_clamp_view(now);
+        }
+        // Simple: the sound in four lanes, every app summed into its kind's
+        if (!tl.quick) {
+            ImGui::SameLine(0, 10 * s);
+            if (kit_chip("Simple##lanes", cfg.timeline_simple, 0, 84 * s)) {
+                cfg.timeline_simple = !cfg.timeline_simple;
+                tl.lane_scroll = 0;
+                config_save(cfg, g_app.paths);
+                log_line("timeline: simple %s", cfg.timeline_simple ? "on" : "off");
+            }
         }
         x = ImGui::GetItemRectMax().x + 18 * s;
 
