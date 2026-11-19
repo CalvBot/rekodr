@@ -444,7 +444,7 @@ struct LibItem {
     i64       when_us;   // when it's from: the time in its name (by the template in Options), else mtime_us
     u64       key;       // thumbnail cache key; changes when the file does, not when it's renamed
     MediaInfo info;
-    char      comment[128]; // typed by hand (comments.txt); shown as its title
+    char      display_name[128]; // typed by hand (names.txt); shown in place of its file name
 };
 
 struct LibFolder {
@@ -509,7 +509,7 @@ struct Library {
     char     rename_error[256];
     u64      rename_key;           // the card whose name is being edited in place (its key), 0 = none
     bool     rename_focus;         // give the name field the keyboard next frame
-    bool     rename_comment;       // the field edits the card's comment, not its file name
+    bool     rename_display_name;  // the field edits the card's display name, not its file name
     char     message[256];         // the last result, shown in the pager row ("Copied", "Couldn't rename ...")
     bool     message_error;
     Player   player;
@@ -666,7 +666,7 @@ struct Session {
     u32          job;              // the save job while SAVING
     char         video[256];       // the saved file's name once SAVED
     char         record[256];      // its record under save_dir, "2026\Data\<name>.session.txt"; empty = none
-    char         comment[128];     // typed by hand; shown as its title, the name and times kept under it
+    char         display_name[128]; // typed by hand; shown as its title, the name and times kept under it
 };
 
 struct Sessions {
@@ -682,8 +682,8 @@ struct Sessions {
     u32     rows[256];
     i32     row_count;
     f32     scroll, scroll_to; // how far along the row is slid, and where it's gliding to (px)
-    bool    title_focus;       // the save prompt's title field takes the keyboard next frame
-    char    title_buf[128];    // the title being typed in the save prompt
+    bool    name_focus;       // the save prompt's display name field takes the keyboard next frame
+    char    name_buf[128];    // the display name being typed in the save prompt
     i32     drawn_frame;
 };
 

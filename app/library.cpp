@@ -220,13 +220,13 @@ struct GameOverride {
 static GameOverride g_game_overrides[LIB_MAX_ITEMS];
 static i32          g_game_override_count;
 
-// Comments typed on cards: <config_dir>\comments.txt, lines of "<key in hex> | <comment> | <file name>" like games.txt.
-struct CommentNote {
+// Display names typed on cards: <config_dir>\names.txt, lines of "<key in hex> | <name> | <file name>" like games.txt.
+struct NameNote {
     u64  key;
     char text[128];
 };
-static CommentNote g_comments[LIB_MAX_ITEMS];
-static i32         g_comment_count;
+static NameNote g_names[LIB_MAX_ITEMS];
+static i32         g_name_count;
 
 static void lib_overrides_load()
 {
@@ -246,29 +246,29 @@ static void lib_overrides_load()
     fclose(f);
 }
 
-static void lib_comments_load()
+static void lib_names_load()
 {
-    g_comment_count = 0;
-    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"comments.txt").s, L"rb");
+    g_name_count = 0;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"names.txt").s, L"rb");
     if (!f) return;
     char line[512];
-    while (fgets(line, sizeof line, f) && g_comment_count < LIB_MAX_ITEMS) {
-        CommentNote c = {};
+    while (fgets(line, sizeof line, f) && g_name_count < LIB_MAX_ITEMS) {
+        NameNote c = {};
         char text[128] = "";
         if (sscanf(line, "%llx | %127[^|\r\n]", &c.key, text) != 2) continue;
         char *t = trim(text);
         if (!*t || !c.key) continue;
         str_set(c.text, t);
-        g_comments[g_comment_count++] = c;
+        g_names[g_name_count++] = c;
     }
     fclose(f);
 }
 
-static void lib_set_comment(LibItem *it)
+static void lib_set_display_name(LibItem *it)
 {
-    for (i32 i = 0; i < g_comment_count; i++)
-        if (g_comments[i].key == it->key) {
-            str_set(it->comment, g_comments[i].text);
+    for (i32 i = 0; i < g_name_count; i++)
+        if (g_names[i].key == it->key) {
+            str_set(it->display_name, g_names[i].text);
             return;
         }
 }
@@ -340,7 +340,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
     LibItem *items = g_scan_items;
     i32 n = 0, by_hand = 0;
     lib_overrides_load();
-    lib_comments_load();
+    lib_names_load();
     WIN32_FIND_DATAW fd;
     HANDLE years = FindFirstFileW(path_join(save_dir, L"*").s, &fd);
     if (years != INVALID_HANDLE_VALUE) {
@@ -374,7 +374,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     char tagged[64];
                     it->probed = lib_cache_read(cache, it->key, &it->info, tagged, sizeof tagged);
                     by_hand += lib_set_game(it, it->probed ? tagged : "");
-                    lib_set_comment(it);
+                    lib_set_display_name(it);
                 } while (FindNextFileW(h, &f));
                 FindClose(h);
             }
@@ -1118,7 +1118,7 @@ static void lib_drop_queued_thumbs()
 static void lib_message(bool error, const char *fmt, ...);
 static void library_rescan();
 
-// Sets `key`'s line in a "<key> | <value> | <file name>" file (games.txt, comments.txt): any old line goes, and an
+// Sets `key`'s line in a "<key> | <value> | <file name>" file (games.txt, names.txt): any old line goes, and an
 // empty value leaves none. Then a rescan shows it.
 static bool lib_keyed_write(const wchar_t *file, u64 key, const char *value, const char *name)
 {
@@ -1164,11 +1164,11 @@ static bool library_set_game(const LibItem &it, const char *game)
     return lib_keyed_write(L"games.txt", it.key, t, it.name);
 }
 
-// A comment on a file (empty takes it off).
-static bool library_set_comment(u64 key, const char *text, const char *name)
+// A display name for a file (empty takes it off).
+static bool library_set_display_name(u64 key, const char *text, const char *name)
 {
-    log_line("library: comment on %s %s", name, text[0] ? "set" : "removed");
-    return lib_keyed_write(L"comments.txt", key, text, name);
+    log_line("library: display name on %s %s", name, text[0] ? "set" : "removed");
+    return lib_keyed_write(L"names.txt", key, text, name);
 }
 
 static void lib_message(bool error, const char *fmt, ...)
@@ -1686,7 +1686,7 @@ static void library_play(const LibItem &it, f64 from)
     player_open(&lib.player, lib_item_path(it), from, true);
 }
 
-static void lib_rename_start(const LibItem &it, bool comment = false);
+static void lib_rename_start(const LibItem &it, bool display_name = false);
 static void lib_folder_rename_start(i32 i);
 
 // After the screen is drawn: the card preview gets its next frame, and stops once no card has the mouse.
@@ -1864,7 +1864,7 @@ static bool lib_game_field(const char *id, LibItem &it, f32 w)
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, comment = false, del = false, folders = false, game = false;
+    bool rename = false, display_name = false, del = false, folders = false, game = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -1881,13 +1881,13 @@ static void card_menu()
         if (lib_menu_item(ICON_ADD, "Add to a folder")) folders = true;
         if (lib_menu_item(ICON_GAME, "Change game")) game = true;
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
-        if (lib_menu_item(ICON_CHAT, it.comment[0] ? "Change the comment" : "Add a comment")) comment = true;
+        if (lib_menu_item(ICON_TAG, it.display_name[0] ? "Change the display name" : "Add a display name")) display_name = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
     if (rename) lib_rename_start(lib.target);
-    if (comment) lib_rename_start(lib.target, true);
+    if (display_name) lib_rename_start(lib.target, true);
     if (del) ImGui::OpenPopup("Delete");
     if (game) ImGui::OpenPopup("card_game");
     if (lib_game_picker("card_game", lib.target)) lib_message(false, "%s is filed under %s", lib.target.name, lib.target.info.game);
@@ -2061,8 +2061,8 @@ static bool lib_dialog_check(const char *label, bool *v, bool enabled)
 static bool lib_rename_apply()
 {
     Library &lib = g_app.library;
-    if (lib.rename_comment) {
-        if (strcmp(lib.rename_buf, lib.target.comment)) library_set_comment(lib.target.key, lib.rename_buf, lib.target.name);
+    if (lib.rename_display_name) {
+        if (strcmp(lib.rename_buf, lib.target.display_name)) library_set_display_name(lib.target.key, lib.rename_buf, lib.target.name);
         return true;
     }
     char name[256], cleaned[256];
@@ -2097,12 +2097,12 @@ static bool lib_rename_apply()
 }
 
 // Starts editing a card's name where it's shown.
-static void lib_rename_start(const LibItem &it, bool comment)
+static void lib_rename_start(const LibItem &it, bool display_name)
 {
     Library &lib = g_app.library;
     lib.target = it;
-    lib.rename_comment = comment;
-    str_set(lib.rename_buf, comment ? it.comment : it.name);
+    lib.rename_display_name = display_name;
+    str_set(lib.rename_buf, display_name ? it.display_name : it.name);
     lib.rename_error[0] = 0;
     lib.rename_key = it.key;
     lib.rename_focus = true;
@@ -2186,7 +2186,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (!renaming && ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload("LIB_CARD", &it.key, sizeof it.key);
         if (th && th->srv) ImGui::Image((ImTextureID)(intptr_t)th->srv, ImVec2(kit_px(112), kit_px(63)));
-        ImGui::TextUnformatted(it.comment[0] ? it.comment : shown);
+        ImGui::TextUnformatted(it.display_name[0] ? it.display_name : shown);
         ImGui::EndDragDropSource();
     }
     f32 frac = -1;
@@ -2295,8 +2295,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             ImGui::SetKeyboardFocusHere();
             lib.rename_focus = false;
         }
-        i32 cap = lib.rename_comment ? (i32)sizeof it.comment : (i32)sizeof lib.rename_buf;
-        bool enter = ImGui::InputTextWithHint("##rename", lib.rename_comment ? "Add a comment" : "", lib.rename_buf, cap,
+        i32 cap = lib.rename_display_name ? (i32)sizeof it.display_name : (i32)sizeof lib.rename_buf;
+        bool enter = ImGui::InputTextWithHint("##rename", lib.rename_display_name ? "Add a display name" : "", lib.rename_buf, cap,
                                               ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
         bool left = ImGui::IsItemDeactivated(), esc = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
         ImGui::PopStyleVar(2);
@@ -2306,7 +2306,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             if (lib_rename_apply()) lib.rename_key = 0;
             else lib.rename_focus = true;
         }
-    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.comment[0] ? it.comment : shown);
+    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.display_name[0] ? it.display_name : shown);
     y += ImGui::GetFontSize() + kit_px(2);
     ImGui::PopFont();
     char when[48], size[24], line[300];
@@ -2314,7 +2314,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     fmt_size(it.size, size, sizeof size);
     bool err = renaming && lib.rename_error[0];
     if (err) str_set(line, lib.rename_error);
-    else if (it.comment[0] || (renaming && lib.rename_comment)) snprintf(line, sizeof line, "%s  -  %s", it.name, size);
+    else if (it.display_name[0] || (renaming && lib.rename_display_name)) snprintf(line, sizeof line, "%s  -  %s", it.name, size);
     else if (timed) snprintf(line, sizeof line, "%s  -  %s", it.info.game, size); // the name says when
     else snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
     ImGui::PushFont(g_font_small);
@@ -2969,35 +2969,35 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     ImGui::SetCursorScreenPos(ImVec2(bx, by));
     kit_next_tip(saved ? "Saved" : "Save the session");
     if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) {
-        ss.title_buf[0] = 0;
-        ss.title_focus = true;
-        ImGui::OpenPopup("##savetitle");
+        ss.name_buf[0] = 0;
+        ss.name_focus = true;
+        ImGui::OpenPopup("##savename");
     }
-    // The save prompt, under the button: a title for its card (the file keeps its name). Enter saves, with the title
-    // or, left empty, none; Esc or a click away doesn't save.
+    // The save prompt, under the button: a display name for its card (the file keeps its name). Enter saves, with the
+    // display name or, left empty, none; Esc or a click away doesn't save.
     f32 pw = kit_px(300);
     ImGui::SetNextWindowPos(ImVec2(ImMax(bx + fh - pw - 2 * kit_px(14), kit_px(8)), by + fh + kit_px(6)));
     lib_popup_style_push(14);
-    bool prompt = ImGui::BeginPopup("##savetitle");
+    bool prompt = ImGui::BeginPopup("##savename");
     lib_popup_style_pop();
     if (prompt) {
-        kit_label("TITLE");
+        kit_label("DISPLAY NAME");
         ImGui::SetNextItemWidth(pw);
-        if (ss.title_focus) {
+        if (ss.name_focus) {
             ImGui::SetKeyboardFocusHere();
-            ss.title_focus = false;
+            ss.name_focus = false;
         }
-        bool enter = ImGui::InputTextWithHint("##title", "Optional", ss.title_buf, sizeof ss.title_buf,
+        bool enter = ImGui::InputTextWithHint("##dname", "Optional", ss.name_buf, sizeof ss.name_buf,
                                               ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::Dummy(ImVec2(0, kit_px(2)));
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pw - kit_px(96));
         bool go = kit_button("Save", KIT_PRIMARY, ImVec2(kit_px(96), 0));
         if (enter || go) {
-            for (char *c = ss.title_buf; *c; c++)
+            for (char *c = ss.name_buf; *c; c++)
                 if (*c == '\t' || *c == '|') *c = ' ';
-            str_set(s->comment, trim(ss.title_buf));
+            str_set(s->display_name, trim(ss.name_buf));
             ss.dirty = true;
-            log_line("session %u: saving%s", s->id, s->comment[0] ? " with a title" : "");
+            log_line("session %u: saving%s", s->id, s->display_name[0] ? " with a display name" : "");
             session_save(s);
             ImGui::CloseCurrentPopup();
         }

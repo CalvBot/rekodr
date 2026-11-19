@@ -163,7 +163,7 @@ static void session_write_record(Session *s, i32 video_year)
             (long long)s->end_us);
     fprintf(f, "footage_start_us = %lld\nfootage_end_us = %lld\n", (long long)foot_from, (long long)foot_to);
     fprintf(f, "video = %s\n", s->video);
-    if (s->comment[0]) fprintf(f, "comment = %s\n", s->comment);
+    if (s->display_name[0]) fprintf(f, "display_name = %s\n", s->display_name);
     bool ok = fclose(f) == 0 && MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
     if (!ok) {
         log_line("session %u: couldn't write its record %s (%d)", s->id, rel, (int)GetLastError());
@@ -198,7 +198,7 @@ static bool session_save(Session *s)
     return true;
 }
 
-static bool library_set_comment(u64 key, const char *text, const char *name); // library.cpp
+static bool library_set_display_name(u64 key, const char *text, const char *name); // library.cpp
 
 // Follows the save jobs of sessions being saved.
 static void sessions_check_saves()
@@ -223,17 +223,17 @@ static void sessions_check_saves()
             }
             session_write_record(s, year);
             log_line("session %u (%s): saved", s->id, s->name);
-            // Its comment goes with the file, keyed as the Library keys it (its size and time).
+            // Its display name goes with the file, keyed as the Library keys it (its size and time).
             wchar_t wp[MAX_PATH];
             WIN32_FILE_ATTRIBUTE_DATA fa;
             utf8_to_wide(v->path, wp, COUNT(wp));
-            if (s->comment[0] && GetFileAttributesExW(wp, GetFileExInfoStandard, &fa)) {
+            if (s->display_name[0] && GetFileAttributesExW(wp, GetFileExInfoStandard, &fa)) {
                 u64 size = ((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
                 i64 mt = filetime_us(fa.ftLastWriteTime);
                 char stem[256];
                 str_set(stem, s->video);
                 if (char *dot = strrchr(stem, '.')) *dot = 0;
-                library_set_comment(fnv64(&mt, sizeof mt, fnv64(&size, sizeof size)), s->comment, stem);
+                library_set_display_name(fnv64(&mt, sizeof mt, fnv64(&size, sizeof size)), s->display_name, stem);
             }
         } else {
             s->state = SES_NOT_SAVED;
@@ -362,7 +362,7 @@ static void sessions_write()
     i64 now = now_us();
     len += snprintf(text + len, cap - len, "# clipback's open sessions and the ones still in the buffer. Rewritten by clipback.\n");
     len += snprintf(text + len, cap - len, "written_us\t%lld\nnext_id\t%u\n", (long long)now, ss.next_id);
-    len += snprintf(text + len, cap - len, "# session  id  state  custom  start_us  end_us  exe  name  video  record  comment\n");
+    len += snprintf(text + len, cap - len, "# session  id  state  custom  start_us  end_us  exe  name  video  record  display_name\n");
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         const Session &s = ss.items[i];
         if (s.state == SES_FREE) continue;
@@ -370,7 +370,7 @@ static void sessions_write()
         SessionState st = s.state == SES_SAVING ? SES_NOT_SAVED : s.state;
         len += snprintf(text + len, cap - len, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\t%s\n", s.id,
                         STATE_NAMES[st], s.custom ? 1 : 0, (long long)s.start_us, (long long)s.end_us, s.exe, s.name,
-                        s.video, s.record, s.comment);
+                        s.video, s.record, s.display_name);
     }
     CHECK(len < cap, "sessions.txt fits its buffer; %d of %d", len, cap);
 
@@ -530,7 +530,7 @@ static void sessions_load()
                 str_set(s->name, fl[7]);
                 str_set(s->video, fl[8]);
                 str_set(s->record, fl[9]);
-                if (n == 11) str_set(s->comment, fl[10]);
+                if (n == 11) str_set(s->display_name, fl[10]);
                 if (s->id > ss.next_id) ss.next_id = s->id;
                 loaded++;
             }
