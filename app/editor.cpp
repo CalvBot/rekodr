@@ -1774,43 +1774,11 @@ static void ed_edit_tab(f32 w)
     f32 fh = ImGui::GetFrameHeight(), sp = st.ItemSpacing.x;
     ImDrawList *dl = ImGui::GetWindowDrawList();
 
-    // The game it's filed under: pick one the library knows or type another.
+    // The game it's filed under: the library's picker (lib_game_field)
     ed_caption("GAME");
-    {
-        Library &lib = g_app.library;
-        static char other[64];
-        ImGui::SetNextItemWidth(w);
-        ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
-        const char *pick = 0;
-        if (ImGui::BeginCombo("##game", ed.item.info.game[0] ? ed.item.info.game : "None")) {
-            if (ImGui::IsWindowAppearing()) {
-                other[0] = 0;
-                ImGui::SetKeyboardFocusHere();
-            }
-            ImGui::SetNextItemWidth(-1);
-            char typed[64];
-            bool enter = ImGui::InputTextWithHint("##other", "Type a game, then Enter", other, sizeof other,
-                                                  ImGuiInputTextFlags_EnterReturnsTrue);
-            str_set(typed, other);
-            char *tt = trim(typed);
-            if (enter && *tt) {
-                pick = trim(other);
-                ImGui::CloseCurrentPopup();
-            }
-            for (i32 i = 0; i < lib.game_count; i++) {
-                if (*tt && !lib_matches(lib.games[i], tt)) continue;
-                if (ImGui::Selectable(lib.games[i], !strcmp(lib.games[i], ed.item.info.game))) pick = lib.games[i];
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::PopStyleColor();
-        char g[64] = "";
-        if (pick) str_set(g, pick); // pick may point into the list the rescan rewrites
-        if (g[0] && strcmp(g, ed.item.info.game) && library_set_game(ed.item, g)) {
-            str_set(ed.item.info.game, g);
-            snprintf(ed.result, sizeof ed.result, "Filed under %s", g);
-            ed.result_error = false;
-        }
+    if (lib_game_field("##game", ed.item, w)) {
+        snprintf(ed.result, sizeof ed.result, "Filed under %s", ed.item.info.game);
+        ed.result_error = false;
     }
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 

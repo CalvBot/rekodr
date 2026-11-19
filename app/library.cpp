@@ -1536,8 +1536,9 @@ static void library_hover_end_frame()
 // "Change game": a search box over the games. Rows: names that are what's typed first, then the library's games,
 // then the art service's for what's typed (when it can be asked), and last the name as typed, so it works offline
 // too. The rows and the line under them keep their place as results come in. A pick (or Enter, the first row)
-// files the card under it.
-static void lib_game_picker()
+// files `it` under it and tells the art service (gamedb_clip_game). The popup `id` is opened by the caller; true
+// when the game changed.
+static bool lib_game_picker(const char *id, LibItem &it)
 {
     Library &lib = g_app.library;
     const i32 ROWS = 7;
@@ -1545,10 +1546,10 @@ static void lib_game_picker()
     static f64 changed_at;
     ImGui::SetNextWindowSize(ImVec2(kit_px(360), 0));
     lib_popup_style_push(10);
-    bool open = ImGui::BeginPopup("card_game");
+    bool open = ImGui::BeginPopup(id);
     lib_popup_style_pop();
-    if (!open) return;
-    const LibItem &it = lib.target;
+    if (!open) return false;
+    bool changed = false;
     if (ImGui::IsWindowAppearing()) {
         typed[0] = settled[0] = 0;
         ImGui::SetKeyboardFocusHere();
@@ -1642,13 +1643,39 @@ static void lib_game_picker()
         char g[64];
         str_set(g, pick); // names[] is rewritten next frame, and the rescan rewrites the library's list
         if (strcmp(g, it.info.game) && library_set_game(it, g)) {
-            str_set(lib.target.info.game, g);
-            lib_message(false, "%s is filed under %s", it.name, g);
+            str_set(it.info.game, g);
             gamedb_clip_game(it, g);
+            changed = true;
         }
         ImGui::CloseCurrentPopup();
     } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
+    return changed;
+}
+
+// A game field (the editor's): the game, or "None", on a button `w` wide that opens the picker under it. True when
+// the game changed.
+static bool lib_game_field(const char *id, LibItem &it, f32 w)
+{
+    ImGui::PushID(id);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 fh = ImGui::GetFrameHeight();
+    bool hit = ImGui::InvisibleButton("##field", ImVec2(w, fh));
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + fh), col32(hot ? COL_HOVER : COL_PANEL2), ImGui::GetStyle().FrameRounding);
+    f32 pad = ImGui::GetStyle().FramePadding.x, ty = floorf(a.y + (fh - ImGui::GetFontSize()) / 2);
+    ImGui::PushFont(g_font_icon);
+    ImVec2 cs = ImGui::CalcTextSize(ICON_DOWN);
+    dl->AddText(ImVec2(a.x + w - pad - cs.x, floorf(a.y + (fh - cs.y) / 2)), col32(COL_DIM), ICON_DOWN);
+    ImGui::PopFont();
+    text_clipped(dl, ImVec2(a.x + pad, ty), w - 3 * pad - cs.x, col32(it.info.game[0] ? COL_TEXT : COL_DIM),
+                 it.info.game[0] ? it.info.game : "None");
+    if (hit) ImGui::OpenPopup("game_pick");
+    ImGui::SetNextWindowPos(ImVec2(a.x, a.y + fh + kit_px(4)), ImGuiCond_Appearing);
+    bool changed = lib_game_picker("game_pick", it);
+    ImGui::PopID();
+    return changed;
 }
 
 static void card_menu()
@@ -1680,7 +1707,7 @@ static void card_menu()
     if (comment) lib_rename_start(lib.target, true);
     if (del) ImGui::OpenPopup("Delete");
     if (game) ImGui::OpenPopup("card_game");
-    lib_game_picker();
+    if (lib_game_picker("card_game", lib.target)) lib_message(false, "%s is filed under %s", lib.target.name, lib.target.info.game);
     // The card's folders, ticked when it's in one: a click puts it in or takes it out. New folder makes one with
     // it in and names it in the list.
     if (folders) ImGui::OpenPopup("card_folders");
