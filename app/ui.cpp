@@ -379,6 +379,22 @@ static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// The work area of the monitor furthest right, where a test copy (CLIPBACK_HOME) puts its window and toasts.
+static bool rightmost_monitor(RECT *work, HMONITOR *mon)
+{
+    struct Best { RECT work; HMONITOR mon; } best = {{LONG_MIN}, 0};
+    EnumDisplayMonitors(0, 0, [](HMONITOR m, HDC, LPRECT, LPARAM p) -> BOOL {
+        MONITORINFO mi = {sizeof mi};
+        Best *b = (Best *)p;
+        if (GetMonitorInfoW(m, &mi) && mi.rcWork.left > b->work.left) *b = {mi.rcWork, m};
+        return TRUE;
+    }, (LPARAM)&best);
+    if (!best.mon) return false;
+    *work = best.work;
+    *mon = best.mon;
+    return true;
+}
+
 static bool ui_init()
 {
     HINSTANCE inst = GetModuleHandleW(0);
@@ -397,18 +413,10 @@ static bool ui_init()
     f32 scale = GetDpiForSystem() / 96.f;
     RECT work;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    if (is_test_copy()) {
-        struct { RECT work; HMONITOR mon; } best = {work, 0};
-        EnumDisplayMonitors(0, 0, [](HMONITOR m, HDC, LPRECT, LPARAM p) -> BOOL {
-            MONITORINFO mi = {sizeof mi};
-            auto *b = (decltype(best) *)p;
-            if (GetMonitorInfoW(m, &mi) && mi.rcWork.left > b->work.left) *b = {mi.rcWork, m};
-            return TRUE;
-        }, (LPARAM)&best);
-        UINT dx, dy;
-        if (best.mon && GetDpiForMonitor(best.mon, MDT_EFFECTIVE_DPI, &dx, &dy) == S_OK) scale = dx / 96.f;
-        work = best.work;
-    }
+    HMONITOR mon;
+    UINT dx, dy;
+    if (is_test_copy() && rightmost_monitor(&work, &mon) && GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dx, &dy) == S_OK)
+        scale = dx / 96.f;
     i32 w = ImMin((i32)(1280 * scale), (i32)(work.right - work.left)), h = ImMin((i32)(800 * scale), (i32)(work.bottom - work.top));
     i32 x = work.left + (work.right - work.left - w) / 2, y = work.top + (work.bottom - work.top - h) / 2;
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"clipback", WS_OVERLAPPEDWINDOW, x, y, w, h, 0, 0, inst, 0);
@@ -1287,7 +1295,6 @@ static void ui_frame()
     library_hover_end_frame(); // the Library cards' preview stops once no card has the mouse
     ImGui::EndChild();
     help_window();
-    sessions_popup(); // "Save that session?" when a session has just ended
     ImGui::End();
 
 rendered:

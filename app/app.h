@@ -648,7 +648,7 @@ struct Timeline {
 enum SessionState : u8 {
     SES_FREE,      // empty slot
     SES_OPEN,      // its game is being played, or was less than the session gap ago
-    SES_ASKING,    // ended; the popup asks whether to save it
+    SES_ASKING,    // ended; the session toast asks whether to save it
     SES_NOT_SAVED, // ended and not saved (Not now, or by hand): in the Library's unsaved sessions
     SES_SAVING,    // a save job is copying it
     SES_SAVED,
@@ -658,7 +658,7 @@ struct Session {
     u32          id;
     SessionState state;
     bool         custom;           // a name typed by hand rather than a game
-    bool         prompted;         // the window was brought up for its popup
+    bool         asked;            // the session toast has shown it
     char         exe[64];          // the game (lower case); empty for a custom session
     char         name[128];        // shown, and names the file: "Overwatch", "Stream with Sam"
     i64          start_us, end_us; // the real start and end; while open, end is when the game was last seen
@@ -676,7 +676,7 @@ struct Sessions {
     bool    dirty;          // sessions.txt needs writing
     i64     written_us;     // when sessions.txt was last written
     i64     woke_minute;    // the minute the window was last redrawn for the countdowns
-    u32     waiting_logged; // the session whose popup waits on a game in front (logged once)
+    u32     waiting_logged; // the session whose toast waits on a game in front (logged once)
     // The unsaved sessions in the Library: their tiles stay put while on screen, so a click never moves the others.
     u32     rows[256];
     i32     row_count;

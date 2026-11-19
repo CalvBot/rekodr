@@ -1,14 +1,18 @@
 // toast.cpp: the desktop toasts, small windows over everything in the corner of a monitor (Options > General >
-// Popups): "Clip saved" when a save finishes while a game is in front, and the marker window `mark ask` opens.
-// Both are laid out like the session popup inside clipback's window (sessions.cpp), from the same TOAST_* sizes:
-// a tile beside a title over a line, then a row of buttons with the main one last on the right.
+// Popups): "Clip saved" when a save finishes while a game is in front, "Session ended" when a session the game is set
+// to Ask for has ended (sessions.cpp), and the marker window `mark ask` opens. All are laid out alike, from the
+// TOAST_* sizes: a tile beside a title over a line, then a row of buttons with the main one last on the right. A
+// test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
 //
-// Clip saved never takes the keyboard from the game. Edit and Share open the file in the editor on that tab. It goes
-// after 6 s unless the mouse is on it; a click anywhere else on it closes it.
+// Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
+// Clip saved: Edit and Share open the file in the editor on that tab. It goes after 6 s unless the mouse is on it.
+// Session ended: the game's icon, its name and length. Save saves it; Review opens it on the timeline, or the
+// Library's unsaved sessions when several are waiting. It goes after 15 s unless the mouse is on it; closed or
+// ignored, the sessions it asked about are unsaved.
 // The marker window takes the keyboard, and gives it back to the window that had it. Enter or Save keeps what was
 // typed, as does clicking away; Escape leaves the marker plain. Tab steps through the colours.
 
-enum ToastKind { TOAST_SAVED, TOAST_MARKER };
+enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
 // The parts a click lands on: the buttons counted from the right, then the marker's colours (TP_COLOUR + 1..6)
 enum { TP_NONE, TP_MAIN, TP_SECOND, TP_COLOUR = 10 };
 enum { TR_TILE = -1, TR_FIELD = -2 }; // more rectangles, for drawing
@@ -20,6 +24,10 @@ struct Toast {
     wchar_t   title[64], line[MAX_PATH];
     char      path[MAX_PATH * 2]; // Clip saved: the file
     i64       marker;             // the marker being described
+    u32       session;            // Session ended: the newest session asked about
+    i32       more;               // and how many more
+    u32      *tile_px;            // Session ended: the game's icon over the panel, tile_w x tile_h BGRA; null for none
+    i32       tile_w, tile_h;
     u8        colour;
     i32       hot;                // the part under the mouse
     bool      open, tracking;
@@ -27,9 +35,14 @@ struct Toast {
     HFONT     font, strong, title_font, icons;
     HBRUSH    field;
 };
-static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER};
+static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
 static const UINT_PTR TOAST_TIMER = 1;
-static const UINT     TOAST_SAVED_MS = 6000;
+static const UINT     TOAST_SAVED_MS = 6000, TOAST_SESSION_MS = 15000;
+
+// Clip saved and Session ended leave the keyboard where it is; the marker window takes it.
+static bool toast_quiet(const Toast &t) { return t.kind != TOAST_MARKER; }
+
+static void toast_session_close(i32 part);
 
 static COLORREF toast_rgb(u32 c) { return RGB((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff); }
 static i32 toast_px(const Toast &t, f32 v) { return (i32)(v * t.scale + 0.5f); }
@@ -66,7 +79,7 @@ static i32 toast_hit(const Toast &t, LPARAM lp)
     POINT p = {(i16)LOWORD(lp), (i16)HIWORD(lp)};
     i32 parts[8], n = 0;
     parts[n++] = TP_MAIN;
-    if (t.kind == TOAST_SAVED) parts[n++] = TP_SECOND;
+    if (toast_quiet(t)) parts[n++] = TP_SECOND;
     else
         for (i32 k = 1; k <= 6; k++) parts[n++] = TP_COLOUR + k;
     for (i32 i = 0; i < n; i++) {
@@ -121,7 +134,7 @@ static void toast_paint(Toast &t)
         i32 d = toast_px(t, 2 * radius) * SS;
         RoundRect(big, q.left, q.top, q.right + 1, q.bottom + 1, d, d);
     };
-    bool saved = t.kind == TOAST_SAVED;
+    bool saved = t.kind == TOAST_SAVED, session = t.kind == TOAST_SESSION, quiet = toast_quiet(t);
 
     RECT all = {0, 0, r.right * SS, r.bottom * SS};
     HBRUSH bg = CreateSolidBrush(toast_rgb(COL_PANEL));
@@ -129,10 +142,25 @@ static void toast_paint(Toast &t)
     DeleteObject(bg);
     HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
     HGDIOBJ old_brush = SelectObject(big, CreateSolidBrush(0));
-    // The tile: the accent behind a tick, or the marker's colour behind a flag
-    brush(saved ? COL_ACCENT : MARKER_COLOURS[t.colour].rgb);
+    // The tile: the accent behind a tick, the game's icon (a game glyph on a soft accent without one), or the
+    // marker's colour behind a flag
+    brush(saved ? COL_ACCENT : session ? COL_ACCENT_SOFT : MARKER_COLOURS[t.colour].rgb);
     rounded(TR_TILE, TOAST_ROUND);
-    if (!saved) {
+    if (session && t.tile_px) {
+        RECT q = up(toast_rect(t, TR_TILE));
+        i32 d = toast_px(t, 2 * TOAST_ROUND) * SS;
+        HRGN clip = CreateRoundRectRgn(q.left, q.top, q.right + 1, q.bottom + 1, d, d);
+        SelectClipRgn(big, clip);
+        BITMAPINFO bi = {};
+        bi.bmiHeader = {sizeof bi.bmiHeader, t.tile_w, -t.tile_h, 1, 32, BI_RGB};
+        SetStretchBltMode(big, HALFTONE);
+        SetBrushOrgEx(big, 0, 0, 0);
+        StretchDIBits(big, q.left, q.top, q.right - q.left, q.bottom - q.top, 0, 0, t.tile_w, t.tile_h, t.tile_px, &bi,
+                      DIB_RGB_COLORS, SRCCOPY);
+        SelectClipRgn(big, 0);
+        DeleteObject(clip);
+    }
+    if (t.kind == TOAST_MARKER) {
         brush(COL_PANEL2);
         rounded(TR_FIELD, TOAST_BUTTON_ROUND);
         for (i32 k = 1; k <= 6; k++) {
@@ -152,7 +180,7 @@ static void toast_paint(Toast &t)
     // The buttons, as the window's own: the main one in the accent, the other secondary
     brush(t.hot == TP_MAIN ? COL_ACCENT_HOVER : COL_ACCENT);
     rounded(TP_MAIN, TOAST_BUTTON_ROUND);
-    if (saved) {
+    if (quiet) {
         brush(t.hot == TP_SECOND ? COL_HOVER : COL_PANEL2);
         rounded(TP_SECOND, TOAST_BUTTON_ROUND);
     }
@@ -165,10 +193,10 @@ static void toast_paint(Toast &t)
     SetBkMode(dc, TRANSPARENT);
 
     HGDIOBJ old_font = SelectObject(dc, t.icons);
-    SetTextColor(dc, RGB(255, 255, 255));
+    SetTextColor(dc, session ? toast_rgb(COL_ACCENT) : RGB(255, 255, 255));
     RECT tile = toast_rect(t, TR_TILE);
-    const wchar_t glyph[] = {(wchar_t)(saved ? 0xE73E : 0xE7C1), 0}; // Segoe MDL2 Assets: CheckMark, Flag
-    DrawTextW(dc, glyph, 1, &tile, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    const wchar_t glyph[] = {(wchar_t)(saved ? 0xE73E : session ? 0xE7FC : 0xE7C1), 0}; // Segoe MDL2: CheckMark, Game, Flag
+    if (!(session && t.tile_px)) DrawTextW(dc, glyph, 1, &tile, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // The title over its line, centred on the tile
     i32 tx = tile.right + toast_px(t, TOAST_GAP), right = r.right - toast_px(t, TOAST_PAD), mid = (tile.top + tile.bottom) / 2;
@@ -185,11 +213,11 @@ static void toast_paint(Toast &t)
     SelectObject(dc, t.strong);
     SetTextColor(dc, RGB(255, 255, 255));
     DrawTextW(dc, saved ? L"Share" : L"Save", -1, &main, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    if (saved) {
+    if (quiet) {
         RECT second = toast_rect(t, TP_SECOND);
         SelectObject(dc, t.font);
         SetTextColor(dc, toast_rgb(COL_TEXT));
-        DrawTextW(dc, L"Edit", -1, &second, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(dc, saved ? L"Edit" : L"Review", -1, &second, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     SelectObject(dc, old_font);
 
@@ -224,10 +252,10 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     Toast *tp = (Toast *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     if (!tp) return DefWindowProcW(hwnd, msg, wp, lp);
     Toast &t = *tp;
-    bool saved = t.kind == TOAST_SAVED;
+    bool saved = t.kind == TOAST_SAVED, quiet = toast_quiet(t);
     switch (msg) {
     case WM_MOUSEACTIVATE:
-        if (saved) return MA_NOACTIVATE; // the game keeps the keyboard
+        if (quiet) return MA_NOACTIVATE; // the game keeps the keyboard
         break;
     case WM_PAINT: toast_paint(t); return 0;
     case WM_ERASEBKGND: return 1;
@@ -255,7 +283,7 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         t.tracking = false;
         t.hot = TP_NONE;
         InvalidateRect(hwnd, 0, FALSE);
-        if (saved) SetTimer(hwnd, TOAST_TIMER, 2000, 0); // a moment more once the mouse leaves
+        if (quiet) SetTimer(hwnd, TOAST_TIMER, 2000, 0); // a moment more once the mouse leaves
         return 0;
     case WM_LBUTTONUP: {
         i32 k = toast_hit(t, lp);
@@ -267,6 +295,8 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 editor_open_file(t.path);
                 g_app.editor.tab = k == TP_MAIN ? 1 : 0;
             }
+        } else if (t.kind == TOAST_SESSION) {
+            toast_session_close(k);
         } else if (k == TP_MAIN) {
             toast_marker_close(true);
         } else if (k > TP_COLOUR) {
@@ -282,11 +312,13 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         RECT r;
         GetCursorPos(&p);
         GetWindowRect(hwnd, &r);
-        if (!PtInRect(&r, p)) toast_hide(t);
+        if (PtInRect(&r, p)) return 0;
+        if (t.kind == TOAST_SESSION) toast_session_close(TP_NONE);
+        else toast_hide(t);
         return 0;
     }
     case WM_ACTIVATE:
-        if (saved) break;
+        if (quiet) break;
         if (LOWORD(wp) == WA_INACTIVE) toast_marker_close(true); // clicked away: what was typed is kept
         else SetFocus(t.edit);
         return 0;
@@ -307,7 +339,7 @@ static bool toast_window(Toast &t)
         RegisterClassW(&wc);
         registered = true;
     }
-    DWORD ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | (t.kind == TOAST_SAVED ? WS_EX_NOACTIVATE : 0);
+    DWORD ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | (toast_quiet(t) ? WS_EX_NOACTIVATE : 0);
     t.hwnd = CreateWindowExW(ex, L"clipback_toast", L"clipback", WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, 0, 0, inst, 0);
     if (!t.hwnd) return false;
     SetWindowLongPtrW(t.hwnd, GWLP_USERDATA, (LONG_PTR)&t);
@@ -345,9 +377,11 @@ static void toast_fonts(Toast &t, f32 s)
 }
 
 // The monitor toasts go on: Config.popup_monitor, an output index or -2 the one recorded. -1 turns Clip saved off;
-// the marker window, asked for by hand, then goes on the one recorded. False when there's none.
+// the others then go on the one recorded. A test copy's go on the monitor furthest right. False when there's none.
 static bool toast_monitor(ToastKind kind, RECT *work)
 {
+    HMONITOR right;
+    if (is_test_copy()) return rightmost_monitor(work, &right);
     i32 out = g_app.config.popup_monitor;
     if (out == -1 && kind == TOAST_SAVED) return false;
     if (out < 0) out = g_app.config.output_idx;
@@ -360,17 +394,20 @@ static bool toast_monitor(ToastKind kind, RECT *work)
     return true;
 }
 
-// In the monitor's corner, sized for its scale, and above the other toast when that one is up there
+// In the monitor's corner, sized for its scale, and above the other toasts that are up there
 static void toast_place(Toast &t, const RECT &work)
 {
     SetWindowPos(t.hwnd, HWND_TOPMOST, work.right - 2, work.bottom - 2, 1, 1, SWP_NOACTIVATE);
     toast_fonts(t, GetDpiForWindow(t.hwnd) / 96.f);
     i32 w = toast_px(t, TOAST_W), h = toast_px(t, toast_height(t.kind)), m = toast_px(t, TOAST_MARGIN);
     i32 bottom = work.bottom - m;
-    const Toast &other = &t == &g_toast_saved ? g_toast_marker : g_toast_saved;
-    RECT o;
-    if (other.open && GetWindowRect(other.hwnd, &o) && o.left < work.right && o.right > work.left && o.bottom > work.top)
-        bottom = o.top - m;
+    const Toast *others[] = {&g_toast_saved, &g_toast_marker, &g_toast_session};
+    for (const Toast *other : others) {
+        RECT o;
+        if (other != &t && other->open && GetWindowRect(other->hwnd, &o) && o.left < work.right && o.right > work.left &&
+            o.bottom > work.top && o.top - m < bottom)
+            bottom = o.top - m;
+    }
     SetWindowPos(t.hwnd, HWND_TOPMOST, work.right - w - m, bottom - h, w, h, SWP_NOACTIVATE);
     if (t.edit) {
         RECT f = toast_rect(t, TR_FIELD);
@@ -397,6 +434,75 @@ static void toast_saved(SaveKind kind, const char *path)
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
     SetTimer(t.hwnd, TOAST_TIMER, TOAST_SAVED_MS, 0);
+}
+
+// Session ended was answered: Save (TP_MAIN), Review (TP_SECOND), or closed or ignored (anything else). Every
+// session it asked about that isn't being saved is unsaved.
+static void toast_session_close(i32 part)
+{
+    Toast &t = g_toast_session;
+    if (!t.open) return;
+    toast_hide(t);
+    Session *s = session_find(t.session);
+    if (part == TP_MAIN && s && s->state == SES_ASKING) session_save(s);
+    sessions_not_now();
+    if (part != TP_SECOND) return;
+    log_line("toast: review %s", t.more ? "the unsaved sessions" : s ? s->name : "a session that's gone");
+    if (!t.more && s) {
+        ui_show(SCREEN_TIMELINE);
+        timeline_review(s->start_us, s->end_us, s->name);
+    } else {
+        library_close_player();
+        ui_show(SCREEN_LIBRARY);
+        lib_set_view(LIB_SESSIONS);
+    }
+}
+
+// The game's icon for the tile, laid over the panel: from the games database, else the program's own. Null for none.
+static u32 *toast_game_pixels(const Session &s, i32 *w, i32 *h)
+{
+    static IWICImagingFactory *wic;
+    GameInfo g;
+    Path p = {};
+    u32 *px = 0;
+    if (gamedb_for_art(s.name, &g) && gamedb_art(g, ART_ICON, &p) &&
+        (wic || SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))))
+        px = wic_load(wic, p.s, w, h);
+    if (!px && s.exe[0] && app_find_path(s.exe, &p) && (px = app_icon_pixels(p))) *w = *h = APP_ICON_PX;
+    if (!px) return 0;
+    u32 bg = COL_PANEL; // straight alpha over the panel, so GDI can draw it opaque
+    for (i32 i = 0; i < *w * *h; i++) {
+        u32 c = px[i], a = c >> 24, out = 0xff000000u;
+        for (i32 sh = 0; sh < 24; sh += 8)
+            out |= ((((c >> sh) & 255) * a + ((bg >> sh) & 255) * (255 - a) + 127) / 255) << sh;
+        px[i] = out;
+    }
+    return px;
+}
+
+// Session ended, for session s with `more` others waiting behind it. Shown again with the new ones when another
+// ends while it's up. False when it can't be shown.
+static bool toast_session(const Session &s, i32 more)
+{
+    Toast &t = g_toast_session;
+    RECT work;
+    if (!toast_monitor(TOAST_SESSION, &work) || !toast_window(t)) return false;
+    t.session = s.id;
+    t.more = more;
+    if (t.tile_px) HeapFree(GetProcessHeap(), 0, t.tile_px);
+    t.tile_px = toast_game_pixels(s, &t.tile_w, &t.tile_h);
+    char len[32], line[192];
+    fmt_length(s.end_us - s.start_us, len, sizeof len);
+    if (more) snprintf(line, sizeof line, "%s - %s, +%d more", s.name, len, more);
+    else snprintf(line, sizeof line, "%s - %s", s.name, len);
+    utf8_to_wide("Session ended", t.title, COUNT(t.title));
+    utf8_to_wide(line, t.line, COUNT(t.line));
+    if (!t.open) toast_place(t, work);
+    InvalidateRect(t.hwnd, 0, FALSE);
+    t.open = true;
+    ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
+    SetTimer(t.hwnd, TOAST_TIMER, TOAST_SESSION_MS, 0);
+    return true;
 }
 
 // `mark ask`: the window for marker t_us's colour and note

@@ -1,5 +1,5 @@
-// Sessions (SPEC.md, "1. Whole sessions"): finding game sessions as they happen, the "save that session?" popup,
-// the unsaved sessions, and sessions made by hand.
+// Sessions (SPEC.md, "1. Whole sessions"): finding game sessions as they happen, asking whether to save one that
+// ended (the session toast, toast.cpp), the unsaved sessions, and sessions made by hand.
 //
 // Detection runs on the main thread, from the game being played (audio.cpp's watcher calls sessions_on_game when
 // it changes) and the 1 s tick. A session starts when a game whose session mode isn't Never becomes the game being
@@ -286,7 +286,7 @@ static void session_end(Session *s)
         session_save(s);
     } else {
         s->state = SES_ASKING;
-        s->prompted = false;
+        s->asked = false;
         ui_wake();
     }
 }
@@ -579,56 +579,47 @@ static bool sessions_game_in_front()
            r.bottom >= mi.rcMonitor.bottom;
 }
 
-// The session the popup asks about: the one that ended first. `waiting` gets how many more are queued.
-static Session *sessions_asking(i32 *waiting)
+static bool toast_session(const Session &s, i32 more); // toast.cpp
+
+// Sessions the toast asked about and got no answer for (closed, ignored, or another button): unsaved, in the
+// Library's Unsaved row.
+static void sessions_not_now()
 {
     Sessions &ss = g_app.sessions;
-    Session *first = 0;
+    for (i32 i = 0; i < COUNT(ss.items); i++) {
+        Session *s = &ss.items[i];
+        if (s->state != SES_ASKING || !s->asked) continue;
+        s->state = SES_NOT_SAVED;
+        ss.dirty = true;
+        log_line("session %u (%s): not now; unsaved", s->id, s->name);
+    }
+}
+
+// The session toast, for the newest session that ended, once no game is in front. Sessions that end while it's
+// up join it ("+N more").
+static void sessions_prompt()
+{
+    Sessions &ss = g_app.sessions;
+    Session *newest = 0;
     i32 n = 0;
+    bool fresh = false;
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         Session *s = &ss.items[i];
         if (s->state != SES_ASKING) continue;
         n++;
-        if (!first || s->end_us < first->end_us) first = s;
+        fresh |= !s->asked;
+        if (!newest || s->end_us > newest->end_us) newest = s;
     }
-    if (waiting) *waiting = n > 0 ? n - 1 : 0;
-    return first;
-}
-
-// Brings the window up for the popup, once per session, unless a game is in front.
-static void sessions_prompt()
-{
-    Sessions &ss = g_app.sessions;
-    Session *s = sessions_asking(0);
-    if (!s) return;
-    if (s->prompted) {
-        if (g_app.ui.shown) return;
-        // The window was closed with the popup up: that's Not now, for every session waiting.
-        for (i32 i = 0; i < COUNT(ss.items); i++) {
-            if (ss.items[i].state != SES_ASKING) continue;
-            ss.items[i].state = SES_NOT_SAVED;
-            log_line("session %u (%s): window closed; unsaved", ss.items[i].id, ss.items[i].name);
-        }
-        ss.dirty = true;
-        return;
-    }
+    if (!fresh) return;
     if (sessions_game_in_front()) {
-        if (ss.waiting_logged != s->id) log_line("session %u (%s): popup waits until no game is in front", s->id, s->name);
-        ss.waiting_logged = s->id;
+        if (ss.waiting_logged != newest->id) log_line("session %u (%s): the toast waits until no game is in front", newest->id, newest->name);
+        ss.waiting_logged = newest->id;
         return;
     }
     for (i32 i = 0; i < COUNT(ss.items); i++)
-        if (ss.items[i].state == SES_ASKING) ss.items[i].prompted = true; // the queue shows in the same popup
-    log_line("session %u (%s): asking", s->id, s->name);
-    // Like ui_show, but on top without activating: the popup never takes the keyboard (SPEC.md), so whatever is
-    // in front, such as a game just relaunched, keeps it.
-    Ui &ui = g_app.ui;
-    if (!ui.hwnd) return;
-    if (!ui.shown) ShowWindow(ui.hwnd, SW_SHOWNA); // keeps it maximized if it was
-    if (IsIconic(ui.hwnd)) ShowWindow(ui.hwnd, SW_SHOWNOACTIVATE);
-    SetWindowPos(ui.hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    ui.shown = true;
-    ui_wake(4);
+        if (ss.items[i].state == SES_ASKING) ss.items[i].asked = true;
+    log_line("session %u (%s): asking%s", newest->id, newest->name, n > 1 ? ", with others waiting" : "");
+    if (!toast_session(*newest, n - 1)) sessions_not_now();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -758,94 +749,6 @@ static void sessions_change(u32 id, i64 from_us, i64 to_us, const char *name)
     if (s->record[0] || s->custom) session_write_record(s, 0);
     g_app.sessions.dirty = true;
     ui_wake();
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// The popup: in the window's corner, over every screen. It doesn't take the keyboard (no nav or focus), and
-// sessions that end while it's up wait behind it.
-
-static void timeline_review(i64 from_us, i64 to_us, const char *name); // timeline.cpp
-
-static void sessions_popup()
-{
-    i32 waiting = 0;
-    Session *s = sessions_asking(&waiting);
-    if (!s) return;
-    // Laid out as the desktop toasts are (toast.cpp), from the same TOAST_* sizes
-    f32 sc = g_dpi_scale;
-    f32 pad = TOAST_PAD * sc, tile = TOAST_TILE * sc, gap = TOAST_GAP * sc, button_w = TOAST_BUTTON_W * sc;
-    f32 button_h = TOAST_BUTTON_H * sc, margin = TOAST_MARGIN * sc;
-    // Fixed size: every line is always there, whatever it says, so the buttons never move
-    ImVec2 size(TOAST_W * sc, pad + tile + gap + button_h + pad);
-    const ImGuiViewport *vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - size.x - margin,
-                                   vp->WorkPos.y + vp->WorkSize.y - size.y - margin));
-    ImGui::SetNextWindowSize(size);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, rgb(COL_PANEL));
-    ImGui::PushStyleColor(ImGuiCol_Border, rgb(COL_LINE));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, TOAST_ROUND * sc);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
-    ImGui::Begin("##session_popup", 0,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
-    char len[32], from[32], to[32], when[128];
-    fmt_length(s->end_us - s->start_us, len, sizeof len);
-    fmt_clock(s->start_us, from, sizeof from);
-    fmt_clock(s->end_us, to, sizeof to);
-    snprintf(when, sizeof when, "%s  -  %s - %s", len, from, to);
-
-    // The game's icon (a game tile when it has none), and beside it its name over how long and when
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 inner_w = size.x - 2 * pad;
-    ID3D11ShaderResourceView *icon = game_db_icon(s->name);
-    if (!icon && s->exe[0]) icon = app_icon(s->exe);
-    if (icon) {
-        dl->AddImageRounded((ImTextureID)icon, a, ImVec2(a.x + tile, a.y + tile), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, TOAST_ROUND * sc);
-    } else {
-        dl->AddRectFilled(a, ImVec2(a.x + tile, a.y + tile), col32(COL_ACCENT_SOFT), TOAST_ROUND * sc);
-        ImGui::PushFont(g_font_icon);
-        ImVec2 is = ImGui::CalcTextSize(ICON_GAME);
-        dl->AddText(ImVec2(floorf(a.x + (tile - is.x) / 2), floorf(a.y + (tile - is.y) / 2)), col32(COL_ACCENT), ICON_GAME);
-        ImGui::PopFont();
-    }
-    f32 tx = a.x + tile + gap, nh = g_font_big->FontSize, wh = g_font->FontSize;
-    f32 ty = floorf(a.y + (tile - nh - 5 * sc - wh) / 2);
-    dl->PushClipRect(ImVec2(tx, a.y), ImVec2(a.x + inner_w, a.y + tile), true);
-    dl->AddText(g_font_big, nh, ImVec2(tx, ty), col32(COL_TEXT), s->name);
-    dl->AddText(g_font, wh, ImVec2(tx, ty + nh + 5 * sc), col32(COL_DIM), when);
-    dl->PopClipRect();
-
-    // How many more are waiting, in the corner (the place is kept when there are none)
-    if (waiting > 0) {
-        char more[32];
-        snprintf(more, sizeof more, "+%d waiting", waiting);
-        f32 mw = g_font_small->CalcTextSizeA(g_font_small->FontSize, FLT_MAX, 0, more).x;
-        dl->AddText(g_font_small, g_font_small->FontSize, ImVec2(a.x + inner_w - mw, a.y), col32(COL_FAINT), more);
-    }
-
-    // Under them: Review opens it on the timeline, to look before answering; the answer is on the right
-    f32 by = a.y + tile + gap;
-    u32 id = s->id;
-    ImGui::SetCursorScreenPos(ImVec2(a.x, by));
-    bool review = kit_button("Review", KIT_SECONDARY, ImVec2(button_w, button_h));
-    ImGui::SetCursorScreenPos(ImVec2(a.x + inner_w - 2 * button_w - TOAST_BUTTON_GAP * sc, by));
-    bool later = kit_button("Not now", KIT_GHOST, ImVec2(button_w, button_h));
-    ImGui::SameLine(0, TOAST_BUTTON_GAP * sc);
-    bool save = kit_button("Save", KIT_PRIMARY, ImVec2(button_w, button_h));
-    ImGui::End();
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(2);
-
-    Session *cur = session_find(id);
-    if (review && cur) timeline_review(cur->start_us, cur->end_us, cur->name);
-    if (save && cur) session_save(cur);
-    if (later && cur) {
-        cur->state = SES_NOT_SAVED;
-        g_app.sessions.dirty = true;
-        log_line("session %u (%s): not now; unsaved", cur->id, cur->name);
-    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

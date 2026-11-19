@@ -2647,21 +2647,21 @@ static void options_general()
         log_line("options: tooltips %s", c.tooltips ? "on" : "off");
         options_apply(0);
     }
-    // Where the toasts go: Clip saved and the marker window, on the monitor recorded or another one. Off keeps
-    // only the marker window, which is asked for by hand.
+    // Where the toasts go: Clip saved, Session ended and the marker window, on the monitor recorded or another one.
+    // Off turns Clip saved off; the others then go on the monitor recorded.
     {
         OptionsUi &o = g_app.options;
         f32 wide = dp(300);
         char preview[160];
-        if (c.popup_monitor == -1) str_set(preview, "Markers only");
+        if (c.popup_monitor == -1) str_set(preview, "No Clip saved");
         else if (c.popup_monitor == -2) str_set(preview, "The monitor recorded");
         else if (c.popup_monitor < o.monitor_count) monitor_label(c.popup_monitor, preview, sizeof preview);
         else snprintf(preview, sizeof preview, "%d. not connected", c.popup_monitor + 1);
-        opt_row_begin("Popups", "Clip saved and the marker window, in a corner of this monitor", wide);
+        opt_row_begin("Popups", "Clip saved, Session ended and the marker window, in a corner of this monitor", wide);
         if (opt_combo_begin("##popups", preview, wide, wide)) {
             if (ImGui::IsWindowAppearing()) options_list_monitors();
             i32 pick = c.popup_monitor;
-            if (opt_combo_item("Markers only", "", c.popup_monitor == -1)) pick = -1;
+            if (opt_combo_item("No Clip saved", "", c.popup_monitor == -1)) pick = -1;
             if (opt_combo_item("The monitor recorded", "", c.popup_monitor == -2)) pick = -2;
             for (i32 i = 0; i < o.monitor_count; i++) {
                 char label[96], note[64];

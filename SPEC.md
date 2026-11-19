@@ -19,11 +19,12 @@ Keep a whole session from start to finish.
   - **By hand,** from the timeline or the library: pick in and out points, then pick a game or type a name.
     A session's start, end and name can be changed later the same way, including an automatic one.
 - When an automatic session ends and lasted at least the **minimum session length** (setting, default 15 min), a
-  small popup asks:
-  `Overwatch session, 2 h 14 min (19:02 to 21:16). Save it?` **Save** · **Not now**
-  - The popup appears in the corner of the screen and never takes the keyboard focus. If a game is in front, it
-    waits until it isn't.
-  - **Not now** (or ignoring it) leaves the session in the Sessions screen under *Not saved*. It shows how long the
+  desktop toast asks, laid out like Clip saved: *Session ended*, `Overwatch - 2 h 14 min`, **Review** and **Save**.
+  - It appears in the corner of the popups' monitor and never takes the keyboard focus. If a game is in front, it
+    waits until it isn't. It goes after 15 s unless the mouse is on it.
+  - **Review** opens clipback on the session in the timeline. With several sessions waiting, the toast shows the
+    newest with "+N more", and Review opens the Library's unsaved sessions instead.
+  - Closing or ignoring it leaves the session in the Sessions screen under *Not saved*. It shows how long the
     session will stay in the buffer before it's gone, and it can still be saved from there.
   - Per game: *Ask* (default), *Always save* or *Never*.
 - **Save** copies the buffer into one MP4 with every audio track. The video isn't re-encoded, so the only cost is

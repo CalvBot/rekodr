@@ -2779,7 +2779,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     } else badge(dl, ImVec2(t1.x - in, t1.y - in), true, true, len_s);
     // What happens to it: time left in the buffer, saving, saved
     if (saved) str_set(text, "Saved");
-    else if (s->state == SES_ASKING) str_set(text, "Asking in the popup");
+    else if (s->state == SES_ASKING) str_set(text, "Asking");
     else if (saving) {
         const SaveJobView *v = save_view(s->job);
         if (v && v->state == SAVE_RUNNING) snprintf(text, sizeof text, "Saving %d%%", (int)(v->progress * 100));

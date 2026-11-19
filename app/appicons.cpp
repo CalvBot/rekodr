@@ -79,9 +79,11 @@ static AppIcon g_app_icons[192];
 static i32 g_app_icon_count;
 static i32 g_app_icon_frame; // the frame that last looked one up
 
-static ID3D11ShaderResourceView *app_icon_load(const Path &path)
+// A program's icon, APP_ICON_PX square, as straight-alpha BGRA (HeapAlloc'd). Null if it has none.
+static const i32 APP_ICON_PX = 48;
+static u32 *app_icon_pixels(const Path &path)
 {
-    const i32 S = 48;
+    const i32 S = APP_ICON_PX;
     HICON icon = 0;
     if (SHDefExtractIconW(path.s, 0, 0, &icon, 0, S) != S_OK || !icon) return 0;
     BITMAPINFO bi = {};
@@ -93,7 +95,7 @@ static ID3D11ShaderResourceView *app_icon_load(const Path &path)
     void *bits = 0;
     HDC dc = CreateCompatibleDC(0);
     HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, 0, 0);
-    ID3D11ShaderResourceView *srv = 0;
+    u32 *out = 0;
     if (bmp && bits) {
         HGDIOBJ old = SelectObject(dc, bmp);
         memset(bits, 0, S * S * 4);
@@ -105,11 +107,21 @@ static ID3D11ShaderResourceView *app_icon_load(const Path &path)
         if (!alpha) // an old icon without alpha: whatever was drawn is opaque
             for (i32 i = 0; i < S * S; i++)
                 if (px[i] & 0xffffff) px[i] |= 0xff000000u;
-        srv = gpu_texture(px, S, S);
+        out = (u32 *)HeapAlloc(GetProcessHeap(), 0, S * S * 4);
+        if (out) memcpy(out, px, S * S * 4);
     }
     if (bmp) DeleteObject(bmp);
     DeleteDC(dc);
     DestroyIcon(icon);
+    return out;
+}
+
+static ID3D11ShaderResourceView *app_icon_load(const Path &path)
+{
+    u32 *px = app_icon_pixels(path);
+    if (!px) return 0;
+    ID3D11ShaderResourceView *srv = gpu_texture(px, APP_ICON_PX, APP_ICON_PX);
+    HeapFree(GetProcessHeap(), 0, px);
     return srv;
 }
 

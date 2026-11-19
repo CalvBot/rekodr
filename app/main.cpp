@@ -87,6 +87,13 @@ static void run_command(const char *text)
         else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail
             g_app.config.games_collapsed = !strcmp(arg, "list-collapsed");
         else if (!strcmp(arg, "delete")) g_show_dialog = 1; // the first card's Delete dialog
+        else if (starts_with(arg, "session-toast")) { // session-toast [<more>]: Session ended for a made-up session
+            Session s = {};
+            str_set(s.name, "Minecraft");
+            s.end_us = now_us();
+            s.start_us = s.end_us - (i64)(83 * 60e6);
+            toast_session(s, atoi(trim(arg + 13)));
+        }
         else if (starts_with(arg, "delete-folder")) { // on the list of folders, which it belongs to
             g_app.config.side_folders = true;
             g_app.config.games_collapsed = false;
@@ -111,7 +118,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, session-toast, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {
