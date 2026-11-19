@@ -845,7 +845,7 @@ static int lib_sort_cmp(const void *pa, const void *pb)
 
 static void lib_message(bool error, const char *fmt, ...);
 static void lib_refilter();
-static void lib_pins_load();
+static void lib_favourites_load();
 static const char *lib_noun(i32 n);
 
 static const char *lib_view_word(LibView v) { return v == LIB_SESSIONS ? "sessions" : "clips"; }
@@ -925,7 +925,7 @@ static void lib_folders_load()
     }
     fclose(f);
     log_line("library: %d folders, %d cards in them", lib.folder_count, lib.filed_count);
-    lib_pins_load();
+    lib_favourites_load();
     lib_comments_load();
 }
 
@@ -955,86 +955,86 @@ static void lib_folders_save()
     fclose(f);
 }
 
-// Rows pinned to the top of the list on the left: <config_dir>\pins.txt holds a line "<games, clips or sessions> |
-// <name>" for each, in pin order. clips and sessions are folders of those views.
-static i32 lib_pin_find(const char *list, const char *name)
+// Favourites, the rows at the top of the list on the left: <config_dir>\favourites.txt holds a line "<games, clips or
+// sessions> | <name>" for each, in the order they were added. clips and sessions are folders of those views.
+static i32 lib_favourite_find(const char *list, const char *name)
 {
     Library &lib = g_app.library;
-    for (i32 i = 0; i < lib.pin_count; i++)
-        if (!strcmp(lib.pins[i].list, list) && !strcmp(lib.pins[i].name, name)) return i;
+    for (i32 i = 0; i < lib.favourite_count; i++)
+        if (!strcmp(lib.favourites[i].list, list) && !strcmp(lib.favourites[i].name, name)) return i;
     return -1;
 }
 
-static void lib_pins_load()
+static void lib_favourites_load()
 {
     Library &lib = g_app.library;
-    lib.pin_count = 0;
-    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"pins.txt").s, L"rb");
+    lib.favourite_count = 0;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"favourites.txt").s, L"rb");
     if (!f) return;
     char line[256];
-    while (fgets(line, sizeof line, f) && lib.pin_count < LIB_MAX_PINS) {
-        LibPin p = {};
+    while (fgets(line, sizeof line, f) && lib.favourite_count < LIB_MAX_FAVOURITES) {
+        LibFavourite p = {};
         char list[16] = "", name[64] = "";
         if (sscanf(line, "%15[^| ] | %63[^|\r\n]", list, name) != 2) continue;
         char *n = trim(name);
-        if (!*n || lib_pin_find(list, n) >= 0) continue;
+        if (!*n || lib_favourite_find(list, n) >= 0) continue;
         str_set(p.list, list);
         str_set(p.name, n);
-        lib.pins[lib.pin_count++] = p;
+        lib.favourites[lib.favourite_count++] = p;
     }
     fclose(f);
 }
 
-static void lib_pins_save()
+static void lib_favourites_save()
 {
     Library &lib = g_app.library;
-    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"pins.txt").s, L"wb");
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"favourites.txt").s, L"wb");
     if (!f) {
-        lib_message(true, "Couldn't save the pins");
+        lib_message(true, "Couldn't save the favourites");
         return;
     }
-    for (i32 i = 0; i < lib.pin_count; i++) fprintf(f, "%s | %s\r\n", lib.pins[i].list, lib.pins[i].name);
+    for (i32 i = 0; i < lib.favourite_count; i++) fprintf(f, "%s | %s\r\n", lib.favourites[i].list, lib.favourites[i].name);
     fclose(f);
 }
 
-// Pins a row (below the ones pinned already) or unpins it.
-static void lib_pin_set(const char *list, const char *name, bool on)
+// Makes a row a favourite (below the ones already there) or not.
+static void lib_favourite_set(const char *list, const char *name, bool on)
 {
     Library &lib = g_app.library;
-    i32 i = lib_pin_find(list, name);
+    i32 i = lib_favourite_find(list, name);
     if (on == (i >= 0)) return;
     if (on) {
-        if (lib.pin_count == LIB_MAX_PINS) {
-            lib_message(true, "That's as many pins as there can be");
+        if (lib.favourite_count == LIB_MAX_FAVOURITES) {
+            lib_message(true, "That's as many favourites as there can be");
             return;
         }
-        LibPin &p = lib.pins[lib.pin_count++];
+        LibFavourite &p = lib.favourites[lib.favourite_count++];
         str_set(p.list, list);
         str_set(p.name, name);
     } else {
-        memmove(&lib.pins[i], &lib.pins[i + 1], (lib.pin_count - i - 1) * sizeof lib.pins[0]);
-        lib.pin_count--;
+        memmove(&lib.favourites[i], &lib.favourites[i + 1], (lib.favourite_count - i - 1) * sizeof lib.favourites[0]);
+        lib.favourite_count--;
     }
-    log_line("library: %s %s %s", list, name, on ? "pinned" : "unpinned");
-    lib_pins_save();
+    log_line("library: %s %s %s", list, name, on ? "favourited" : "unfavourited");
+    lib_favourites_save();
 }
 
-// The order of a list's rows: its pinned ones in pin order, then the rest as they come. names(i) is row i's name,
+// The order of a list's rows: its favourites in the order they were added, then the rest as they come. names(i) is row i's name,
 // or null for a row that isn't shown.
-template <typename F> static i32 lib_pin_order(const char *list, i32 count, F names, i32 *order)
+template <typename F> static i32 lib_favourite_order(const char *list, i32 count, F names, i32 *order)
 {
     Library &lib = g_app.library;
     i32 n = 0;
-    for (i32 p = 0; p < lib.pin_count; p++) {
-        if (strcmp(lib.pins[p].list, list)) continue;
+    for (i32 p = 0; p < lib.favourite_count; p++) {
+        if (strcmp(lib.favourites[p].list, list)) continue;
         for (i32 i = 0; i < count; i++)
-            if (names(i) && !strcmp(names(i), lib.pins[p].name)) {
+            if (names(i) && !strcmp(names(i), lib.favourites[p].name)) {
                 order[n++] = i;
                 break;
             }
     }
     for (i32 i = 0; i < count; i++)
-        if (names(i) && lib_pin_find(list, names(i)) < 0) order[n++] = i;
+        if (names(i) && lib_favourite_find(list, names(i)) < 0) order[n++] = i;
     return n;
 }
 
@@ -1081,11 +1081,11 @@ static void lib_folder_rename(i32 i, const char *to)
     }
     if (fo.view == lib.view && !strcmp(lib.folder, fo.name)) str_set(lib.folder, n);
     log_line("library: folder %s is now %s", fo.name, n);
-    i32 pin = lib_pin_find(lib_view_word(fo.view), fo.name);
+    i32 fav = lib_favourite_find(lib_view_word(fo.view), fo.name);
     str_set(fo.name, n);
-    if (pin >= 0) {
-        str_set(lib.pins[pin].name, n);
-        lib_pins_save();
+    if (fav >= 0) {
+        str_set(lib.favourites[fav].name, n);
+        lib_favourites_save();
     }
     lib_folders_save();
     lib_refilter();
@@ -1098,7 +1098,7 @@ static void lib_folder_delete(i32 i)
     LibFolder &fo = lib.folders[i];
     if (fo.view == lib.view && !strcmp(lib.folder, fo.name)) lib.folder[0] = 0;
     lib_message(false, "Deleted the folder %s", fo.name);
-    lib_pin_set(lib_view_word(fo.view), fo.name, false);
+    lib_favourite_set(lib_view_word(fo.view), fo.name, false);
     memmove(&lib.folders[i], &lib.folders[i + 1], (lib.folder_count - i - 1) * sizeof lib.folders[0]);
     lib.folder_count--;
     u64 low = (1ull << i) - 1;
@@ -1763,10 +1763,10 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
 }
 
 // A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
-// many it has on the right, with a pin left of that when it's pinned. The picked one is in the accent colour.
+// many it has on the right, with a star left of that when it's a favourite. The picked one is in the accent colour.
 // Collapsed, only the icon, where it was.
 static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w, bool collapsed,
-                          const char *glyph = 0, bool pinned = false)
+                          const char *glyph = 0, bool favourite = false)
 {
     f32 h = kit_px(30), is = kit_px(20);
     ImVec2 a = ImGui::GetCursorScreenPos();
@@ -1804,11 +1804,11 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
     if (count >= 0) snprintf(n, sizeof n, "%d", count);
     ImVec2 ts = ImGui::CalcTextSize(label), ns = ImGui::CalcTextSize(n);
     f32 ty = floorf(a.y + (h - ts.y) / 2), nx = a.x + w - kit_px(10) - ns.x, text_end = nx - kit_px(10);
-    if (pinned) { // at the same spot on every pinned row, clear of a count up to four digits
+    if (favourite) { // at the same spot on every favourite row, clear of a count up to four digits
         f32 psz = kit_px(12), slot = ImGui::CalcTextSize("0000").x;
-        ImVec2 ps = g_font_icon->CalcTextSizeA(psz, FLT_MAX, 0, ICON_PIN);
+        ImVec2 ps = g_font_icon->CalcTextSizeA(psz, FLT_MAX, 0, ICON_STAR_FILL);
         f32 px = floorf(a.x + w - kit_px(10) - slot - kit_px(6) - ps.x);
-        dl->AddText(g_font_icon, psz, ImVec2(px, floorf(a.y + (h - ps.y) / 2)), col32(COL_DIM), ICON_PIN);
+        dl->AddText(g_font_icon, psz, ImVec2(px, floorf(a.y + (h - ps.y) / 2)), col32(COL_ACCENT), ICON_STAR_FILL);
         text_end = ImMin(text_end, px - kit_px(6));
     }
     dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(text_end, a.y + h), true);
@@ -3899,8 +3899,8 @@ static void lib_folder_name_field(i32 i, f32 w)
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + kit_px(2)));
 }
 
-// The folders of this view: all its cards, then each folder with how many it has (the pinned ones first), then New
-// folder. A card dropped on a folder goes into it; right-click pins, renames or deletes one.
+// The folders of this view: all its cards, then each folder with how many it has (the favourites first), then New
+// folder. A card dropped on a folder goes into it; right-click favourites, renames or deletes one.
 static void lib_folder_list(f32 w, bool collapsed)
 {
     Library &lib = g_app.library;
@@ -3911,7 +3911,7 @@ static void lib_folder_list(f32 w, bool collapsed)
         pick = -1;
     const char *list = lib_view_word(lib.view);
     i32 order[LIB_MAX_FOLDERS];
-    i32 shown = lib_pin_order(list, lib.folder_count, [&](i32 i) {
+    i32 shown = lib_favourite_order(list, lib.folder_count, [&](i32 i) {
         return lib.folders[i].view == lib.view ? (const char *)lib.folders[i].name : (const char *)0;
     }, order);
     for (i32 o = 0; o < shown; o++) {
@@ -3921,7 +3921,7 @@ static void lib_folder_list(f32 w, bool collapsed)
         if (lib.folder_renaming == i + 1 && !collapsed) lib_folder_name_field(i, w);
         else {
             if (lib_game_item(0, fo.name, lib.folder_items[i], lib.folder[0] && !strcmp(lib.folder, fo.name), w, collapsed,
-                              ICON_FOLDER, lib_pin_find(list, fo.name) >= 0))
+                              ICON_FOLDER, lib_favourite_find(list, fo.name) >= 0))
                 pick = i;
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                 lib.folder_target = i;
@@ -3956,18 +3956,18 @@ static void lib_folder_list(f32 w, bool collapsed)
         if (i >= 0) lib_folder_rename_start(i);
     }
     if (menu) ImGui::OpenPopup("folder_menu");
-    bool rename = false, del = false, pin = false;
-    bool pinned = lib.folder_target >= 0 && lib.folder_target < lib.folder_count &&
-                  lib_pin_find(list, lib.folders[lib.folder_target].name) >= 0;
+    bool rename = false, del = false, fav_flip = false;
+    bool favourite = lib.folder_target >= 0 && lib.folder_target < lib.folder_count &&
+                  lib_favourite_find(list, lib.folders[lib.folder_target].name) >= 0;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("folder_menu")) {
-        if (lib_menu_item(ICON_PIN, pinned ? "Unpin" : "Pin to top")) pin = true;
+        if (lib_menu_item(favourite ? ICON_STAR : ICON_STAR_FILL, favourite ? "Unfavourite" : "Favourite")) fav_flip = true;
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
-    if (pin) lib_pin_set(list, lib.folders[lib.folder_target].name, !pinned);
+    if (fav_flip) lib_favourite_set(list, lib.folders[lib.folder_target].name, !favourite);
     if (rename) lib_folder_rename_start(lib.folder_target);
     // Deleting a folder: unticked, only the folder goes; ticked, everything in it goes to the Recycle Bin as a card's
     // Delete sends it, even what is in other folders too.
@@ -4165,8 +4165,8 @@ static void screen_library()
         i32 pick = -1;
         static char game_target[64]; // the game a right-click menu is about
         bool game_menu = false;
-        i32 order[LIB_MAX_GAMES + 1] = {0}; // All games, then the pinned games, then the rest
-        i32 shown = by_folder ? 0 : 1 + lib_pin_order("games", lib.game_count, [&](i32 i) { return (const char *)lib.games[i]; }, order + 1);
+        i32 order[LIB_MAX_GAMES + 1] = {0}; // All games, then the favourite games, then the rest
+        i32 shown = by_folder ? 0 : 1 + lib_favourite_order("games", lib.game_count, [&](i32 i) { return (const char *)lib.games[i]; }, order + 1);
         for (i32 o = 1; o < shown; o++) order[o]++;
         if (by_folder) lib_folder_list(side_w - kit_px(12), collapsed);
         else for (i32 o = 0; o < shown; o++) {
@@ -4178,7 +4178,7 @@ static void screen_library()
             bool none = c > 0 && game_is_none(name);
             const char *glyph = !none ? 0 : !strcmp(name, "Desktop") ? ICON_MONITOR : ICON_VIDEO;
             if (lib_game_item(c == 0 || none ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
-                              side_w - kit_px(12), collapsed, glyph, c > 0 && lib_pin_find("games", name) >= 0))
+                              side_w - kit_px(12), collapsed, glyph, c > 0 && lib_favourite_find("games", name) >= 0))
                 pick = c;
             if (c > 0 && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                 str_set(game_target, name);
@@ -4189,8 +4189,9 @@ static void screen_library()
         if (game_menu) ImGui::OpenPopup("game_menu");
         lib_popup_style_push(6);
         if (ImGui::BeginPopup("game_menu")) {
-            bool pinned = lib_pin_find("games", game_target) >= 0;
-            if (lib_menu_item(ICON_PIN, pinned ? "Unpin" : "Pin to top")) lib_pin_set("games", game_target, !pinned);
+            bool favourite = lib_favourite_find("games", game_target) >= 0;
+            if (lib_menu_item(favourite ? ICON_STAR : ICON_STAR_FILL, favourite ? "Unfavourite" : "Favourite"))
+                lib_favourite_set("games", game_target, !favourite);
             ImGui::EndPopup();
         }
         lib_popup_style_pop();

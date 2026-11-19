@@ -109,7 +109,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_MONITOR   "\xEE\x9F\xB4" // E7F4 TV monitor
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_TAG       "\xEE\xA3\xAC" // E8EC
-#define ICON_PIN       "\xEE\x9C\x98" // E718
+#define ICON_STAR_FILL "\xEE\x9C\xB5" // E735
 #define ICON_COMMENT   "\xEE\xA4\x8A" // E90A
 #define ICON_START     "\xEE\xA2\x92" // E892
 #define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
@@ -1066,8 +1066,8 @@ static void help_window()
             {"[Ctrl]+[A]", "Select every card shown"},
             {"[Esc]", "Clear the selection"},
             {"[Shift]+wheel", "Slide the Unsaved sessions row"},
-            {"Right-click a game", "Pin it to the top"},
-            {"Right-click a folder", "Pin, rename or delete it"},
+            {"Right-click a game", "Make it a favourite, at the top"},
+            {"Right-click a folder", "Favourite, rename or delete it"},
         };
         static const HelpRow player[] = {
             {"[Space]", "Play / pause"},
