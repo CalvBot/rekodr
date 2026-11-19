@@ -1096,8 +1096,6 @@ static void apps_rename_popup()
     snprintf(title, sizeof title, "Name for %s", a.exe.s);
     kit_heading(title);
 
-    // What is looked for: the text once it has stayed the same a moment, so each key typed isn't a lookup
-    static char settled[64];
     static f64 changed_at;
     if (ImGui::IsWindowAppearing()) {
         if (a.name.s[0]) str_set(o.edit, a.name.s);
@@ -1106,7 +1104,7 @@ static void apps_rename_popup()
             size_t n = strlen(o.edit);
             if (n > 4 && !_stricmp(o.edit + n - 4, ".exe")) o.edit[n - 4] = 0;
         }
-        str_set(settled, o.edit);
+        changed_at = ImGui::GetTime();
         ImGui::SetKeyboardFocusHere();
     }
     ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
@@ -1116,24 +1114,27 @@ static void apps_rename_popup()
     if (ImGui::IsItemEdited()) changed_at = ImGui::GetTime();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
-    if (strcmp(settled, o.edit) && ImGui::GetTime() - changed_at > 0.35) str_set(settled, o.edit);
 
-    // The games: the list's first, then the art service's, a name that is what was typed going first. Six rows,
-    // always, and the line under them, so the buttons stay where they are.
+    // The games: the games list's, which answer each key at once, then the art service's below them, asked once the
+    // text stays the same a moment and shown only while they are for the text in the box. A name that is what was
+    // typed goes first among the list's. Six rows, always, and the line under them, so the buttons stay where they are.
     const i32 ROWS = 6;
-    static GameInfo local[ROWS];
-    static char online[8][128], names[ROWS][128];
+    static char local[ROWS][128], online[8][128], names[ROWS][128];
     static i32 online_years[8], years[ROWS];
-    i32 nl = settled[0] ? gamedb_search(settled, local, ROWS) : 0;
-    i32 no = settled[0] ? gamedb_find_online(settled, online, online_years, 8) : 0;
+    char q[64];
+    str_set(q, o.edit);
+    char *tq = trim(q);
+    i32 nl = gamedb_find_local(tq, local, ROWS);
+    bool settled = ImGui::GetTime() - changed_at > 0.15;
+    i32 no = *tq && settled ? gamedb_find_online(tq, online, online_years, 8) : *tq ? -1 : 0;
     char want[128], letters[128];
-    gdb_letters(settled, want, sizeof want);
+    gdb_letters(tq, want, sizeof want);
     i32 n = 0;
-    for (i32 pass = 0; pass < 2; pass++) // pass 0: names that are what was typed; pass 1: the rest
-        for (i32 i = 0; i < nl + (no > 0 ? no : 0) && n < ROWS; i++) {
-            const char *name = i < nl ? local[i].name : online[i - nl];
+    for (i32 pass = 0; pass < 3; pass++) // 0: the list's names that are what was typed; 1: the list's; 2: the art service's
+        for (i32 i = pass < 2 ? 0 : nl; i < (pass < 2 ? nl : nl + (no > 0 ? no : 0)) && n < ROWS; i++) {
+            const char *name = i < nl ? local[i] : online[i - nl];
             gdb_letters(name, letters, sizeof letters);
-            if ((pass == 0) != !strcmp(letters, want)) continue;
+            if (pass == 0 && strcmp(letters, want)) continue;
             bool dup = false;
             for (i32 d = 0; d < n && !dup; d++) {
                 char seen[128];
@@ -1177,9 +1178,8 @@ static void apps_rename_popup()
         opt_text_at(dl, g_font, ImVec2(i0.x + is + dp(12), floorf(r0.y + (rh - dp(2) - g_font->FontSize) / 2)), COL_TEXT, names[i], right);
     }
     ImGui::SetCursorScreenPos(ImVec2(l0.x, l0.y + ROWS * rh));
-    bool looking = strcmp(settled, o.edit) || no < 0;
     const char *status = !o.edit[0] ? "Type a name, or pick the game it is"
-                       : looking   ? "Searching..."
+                       : no < 0    ? "Searching..."
                        : !n        ? "No game has that name; it is kept as typed"
                                    : " ";
     ImGui::PushFont(g_font_small);

@@ -1907,19 +1907,21 @@ static void library_hover_end_frame()
 static char g_game_pick_typed[64]; // what the picker opens with
 static bool g_game_pick_show;      // `show game`: the editor's picker opens
 
-// A row of the game picker: a game in the library, one from the art service, or the name as typed (a custom game).
-enum GamePickKind : u8 { PICK_LIBRARY, PICK_ONLINE, PICK_TYPED };
+// A row of the game picker: a game in the library, one from the games list (gamedb_find_local), one from the art
+// service, or the name as typed (a custom game).
+enum GamePickKind : u8 { PICK_LIBRARY, PICK_LIST, PICK_ONLINE, PICK_TYPED };
 struct GamePickRow {
     char name[64];
     i32  year;
     u8   kind; // GamePickKind
 };
 
-// The picker's rows for what's typed, at most `max`: names that are exactly what's typed first, then the library's
-// games (`games`, n_games of them) that match, then the art service's (`online`, n_online), and last, with something
-// typed, the name as typed unless a row has it already.
-static i32 game_pick_rows(const char *typed, const char (*games)[64], i32 n_games, const char (*online)[128],
-                          const i32 *online_years, i32 n_online, GamePickRow *rows, i32 max)
+// The picker's rows for what's typed, at most `max`: a library or list game that is exactly what's typed first, then
+// the library's games (`games`, n_games of them) that match, then the games list's (`local`, n_local), then the art
+// service's (`online`, n_online), and last, with something typed, the name as typed unless a row has it already. A
+// name is one row, however it's written. The art service's answer only adds rows below the others.
+static i32 game_pick_rows(const char *typed, const char (*games)[64], i32 n_games, const char (*local)[128], i32 n_local,
+                          const char (*online)[128], const i32 *online_years, i32 n_online, GamePickRow *rows, i32 max)
 {
     char q[64], want[128], letters[128];
     str_set(q, typed);
@@ -1938,18 +1940,19 @@ static i32 game_pick_rows(const char *typed, const char (*games)[64], i32 n_game
         rows[n].year = year;
         rows[n++].kind = kind;
     };
-    for (i32 pass = 0; pass < 3; pass++) { // 0: what's typed, exactly; 1: the library's; 2: the art service's
+    for (i32 pass = 0; pass < 2; pass++) { // 0: what's typed, exactly; 1: the rest
         for (i32 i = 0; i < n_games; i++) {
             const char *g = games[i];
             if (!strcmp(g, GAME_NOT_OURS) || (*tq && !lib_matches(g, tq))) continue;
             gdb_letters(g, letters, sizeof letters);
-            if (pass == 1 || (pass == 0 && *tq && !strcmp(letters, want))) add(g, 0, PICK_LIBRARY);
+            if (pass == 1 || (*tq && !strcmp(letters, want))) add(g, 0, PICK_LIBRARY);
         }
-        for (i32 i = 0; i < n_online && pass != 1; i++) {
-            gdb_letters(online[i], letters, sizeof letters);
-            if (pass == 2 || !strcmp(letters, want)) add(online[i], online_years[i], PICK_ONLINE);
+        for (i32 i = 0; i < n_local; i++) {
+            gdb_letters(local[i], letters, sizeof letters);
+            if (pass == 1 || !strcmp(letters, want)) add(local[i], 0, PICK_LIST);
         }
     }
+    for (i32 i = 0; i < n_online; i++) add(online[i], online_years[i], PICK_ONLINE);
     if (*tq) {
         cap = max;
         add(tq, 0, PICK_TYPED);
@@ -1957,28 +1960,32 @@ static i32 game_pick_rows(const char *typed, const char (*games)[64], i32 n_game
     return n;
 }
 
-// Whether a pick is a game the art service may be told of: one of its own, or a real game in the library.
+// Whether a pick is a game the art service may be told of: one from the games list or the art service, or a real
+// game in the library.
 static bool game_pick_known(const GamePickRow &r)
 {
-    return r.kind == PICK_ONLINE || (r.kind == PICK_LIBRARY && !game_is_none(r.name) && !game_is_custom(r.name));
+    return r.kind == PICK_LIST || r.kind == PICK_ONLINE ||
+           (r.kind == PICK_LIBRARY && !game_is_none(r.name) && !game_is_custom(r.name));
 }
 
-// A pick has been filed: one typed is a custom game from now on, and one of the art service's isn't.
+// A pick has been filed: one typed is a custom game from now on, and one from the games list or the art service isn't.
 static void game_pick_filed(const GamePickRow &r)
 {
     if (r.kind == PICK_TYPED) game_set_custom(r.name, true);
-    else if (r.kind == PICK_ONLINE) game_set_custom(r.name, false);
+    else if (r.kind == PICK_LIST || r.kind == PICK_ONLINE) game_set_custom(r.name, false);
 }
 
-// "Change game": a search box over the games (game_pick_rows), so it works offline too. One row is lit: the first,
-// or the one the arrow keys or the mouse moved to; Enter picks the row lit as it was last drawn, never one still to
-// come. The rows and the line under them keep their place as results come in. `current` is the game whose name is
-// in the accent colour. The popup `id` is opened by the caller; returns the row picked, else null.
+// "Change game": a search box over the games (game_pick_rows). The library's games and the games list answer each
+// key at once; the art service is asked once the text stays the same a moment, and its answer shows only while it
+// is for the text in the box. One row is lit: the first, or the one the arrow keys or the mouse moved to, and it
+// stays lit when rows come in under it. Enter picks the row lit as it was last drawn, never one still to come. The
+// rows and the line under them keep their place. `current` is the game whose name is in the accent colour. The
+// popup `id` is opened by the caller; returns the row picked, else null.
 static const GamePickRow *lib_game_pick(const char *id, const char *current)
 {
     Library &lib = g_app.library;
     const i32 ROWS = 7;
-    static char typed[64], settled[64];
+    static char typed[64];
     static f64 changed_at;
     static GamePickRow rows[ROWS], drawn[ROWS], picked;
     static i32 lit, drawn_n;
@@ -1989,7 +1996,7 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
     if (!open) return 0;
     if (ImGui::IsWindowAppearing()) {
         str_set(typed, g_game_pick_typed);
-        settled[0] = g_game_pick_typed[0] = 0;
+        g_game_pick_typed[0] = 0;
         changed_at = ImGui::GetTime();
         lit = drawn_n = 0;
         ImGui::SetKeyboardFocusHere();
@@ -2002,7 +2009,8 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
                                           ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
-    if (ImGui::IsItemEdited()) {
+    bool edited = ImGui::IsItemEdited();
+    if (edited) {
         changed_at = ImGui::GetTime();
         lit = 0;
     }
@@ -2013,15 +2021,20 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
     }
     if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) lit = ImMin(lit + 1, ImMax(drawn_n - 1, 0));
     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) lit = ImMax(lit - 1, 0);
-    // The art service is asked once the text has stayed the same a moment, not for each key
-    if (strcmp(settled, typed) && ImGui::GetTime() - changed_at > 0.35) str_set(settled, typed);
     char sq[64];
-    str_set(sq, settled);
+    str_set(sq, typed);
     char *ts = trim(sq);
-    static char online[8][128];
+    static char local[ROWS][128], online[8][128];
     static i32 online_years[8];
-    i32 no = *ts ? gamedb_find_online(ts, online, online_years, 8) : 0;
-    i32 n = game_pick_rows(typed, lib.games, lib.game_count, online, online_years, ImMax(no, 0), rows, ROWS);
+    i32 nl = gamedb_find_local(ts, local, ROWS);
+    // The art service is asked once the text has stayed the same a moment, not for each key
+    bool settled = ImGui::GetTime() - changed_at > 0.15;
+    i32 no = *ts && settled ? gamedb_find_online(ts, online, online_years, 8) : *ts ? -1 : 0;
+    i32 n = game_pick_rows(typed, lib.games, lib.game_count, local, nl, online, online_years, ImMax(no, 0), rows, ROWS);
+    // New rows come in under the lit one; should it move all the same, the light goes with it
+    if (!edited && lit < drawn_n && (lit >= n || strcmp(rows[lit].name, drawn[lit].name) || rows[lit].kind != drawn[lit].kind))
+        for (i32 i = 0; i < n; i++)
+            if (!strcmp(rows[i].name, drawn[lit].name) && rows[i].kind == drawn[lit].kind) lit = i;
     lit = ImMin(lit, ImMax(n - 1, 0));
 
     f32 w = ImGui::GetContentRegionAvail().x, rh = kit_px(38), is = kit_px(26);
@@ -2072,8 +2085,7 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
     memcpy(drawn, rows, n * sizeof rows[0]);
     drawn_n = n;
     ImGui::SetCursorScreenPos(ImVec2(l0.x, l0.y + ROWS * rh));
-    bool looking = strcmp(settled, typed) || no < 0;
-    kit_dim(looking ? "Searching..." : n ? " " : "Type the game's name");
+    kit_dim(no < 0 ? "Searching..." : n ? " " : "Type the game's name");
     if (got) ImGui::CloseCurrentPopup();
     else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();

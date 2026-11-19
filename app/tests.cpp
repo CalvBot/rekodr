@@ -26,20 +26,46 @@ static void test_game_pick()
     const char online[2][128] = {"Simon", "Simon Says"};
     const i32 years[2] = {1978, 1990};
     GamePickRow rows[7];
-    // Typed, nothing from the art service yet: the name as typed, alone
-    i32 n = game_pick_rows("simon", games, 3, online, years, 0, rows, 7);
+    // Typed, nothing from the list or the art service: the name as typed, alone
+    i32 n = game_pick_rows("simon", games, 3, 0, 0, online, years, 0, rows, 7);
     T(n == 1 && rows[0].kind == PICK_TYPED && !strcmp(rows[0].name, "simon") && !game_pick_known(rows[0]));
-    // The art service's answer: its exact name first; the typed row goes, as a row has that name
-    n = game_pick_rows("simon", games, 3, online, years, 2, rows, 7);
+    // The art service's answer: its rows; the typed row goes, as a row has that name
+    n = game_pick_rows("simon", games, 3, 0, 0, online, years, 2, rows, 7);
     T(n == 2 && rows[0].kind == PICK_ONLINE && !strcmp(rows[0].name, "Simon") && rows[0].year == 1978);
     T(rows[1].kind == PICK_ONLINE && game_pick_known(rows[0]));
     // A library game that matches, then the name as typed
-    n = game_pick_rows("mine", games, 3, online, years, 0, rows, 7);
+    n = game_pick_rows("mine", games, 3, 0, 0, online, years, 0, rows, 7);
     T(n == 2 && rows[0].kind == PICK_LIBRARY && !strcmp(rows[0].name, "Minecraft") && game_pick_known(rows[0]));
     T(rows[1].kind == PICK_TYPED && !strcmp(rows[1].name, "mine"));
     // Nothing typed: the library's games, Other left out; Desktop isn't a known game
-    n = game_pick_rows("", games, 3, online, years, 0, rows, 7);
+    n = game_pick_rows("", games, 3, 0, 0, online, years, 0, rows, 7);
     T(n == 2 && !strcmp(rows[1].name, "Desktop") && !game_pick_known(rows[1]));
+    // The games list's answer comes with the key: an exact name first, the library's next, then the list's, and the
+    // name as typed last; list games are known
+    const char lib2[2][64] = {"Terraria Mods", "Desktop"};
+    const char local[3][128] = {"Terraria", "Terraria: Otherworld", "Terra Nil"};
+    n = game_pick_rows("terraria", lib2, 2, local, 3, online, years, 0, rows, 7);
+    T(n == 4 && rows[0].kind == PICK_LIST && !strcmp(rows[0].name, "Terraria") && game_pick_known(rows[0]));
+    T(rows[1].kind == PICK_LIBRARY && !strcmp(rows[1].name, "Terraria Mods"));
+    T(rows[2].kind == PICK_LIST && !strcmp(rows[2].name, "Terraria: Otherworld"));
+    // ... the typed row isn't there, as a row has that name; with "terra" it is, last
+    n = game_pick_rows("terra", lib2, 2, local, 3, online, years, 0, rows, 7);
+    T(n == 5 && rows[0].kind == PICK_LIBRARY && rows[4].kind == PICK_TYPED && !strcmp(rows[4].name, "terra"));
+    // The art service's answer goes under the list's, one row a name, and moves no row above it
+    const char online2[3][128] = {"Terraria", "TERRA-RIA", "Terrarium"};
+    const i32 years2[3] = {2011, 2012, 2020};
+    GamePickRow before[7];
+    i32 nb = game_pick_rows("terraria", lib2, 2, local, 3, online2, years2, 0, before, 7);
+    n = game_pick_rows("terraria", lib2, 2, local, 3, online2, years2, 3, rows, 7);
+    T(n == nb + 1 && rows[nb].kind == PICK_ONLINE && !strcmp(rows[nb].name, "Terrarium"));
+    for (i32 i = 0; i < nb; i++) T(!strcmp(rows[i].name, before[i].name) && rows[i].kind == before[i].kind);
+    // The rows never pass `max`, the typed row kept
+    n = game_pick_rows("terr", lib2, 2, local, 3, online2, years2, 3, rows, 4);
+    T(n == 4 && rows[3].kind == PICK_TYPED);
+    GamePickRow listed = {"Terraria", 0, PICK_LIST};
+    game_set_custom("Terraria", true);
+    game_pick_filed(listed);
+    T(!game_is_custom("Terraria"));
     // A typed pick is a custom game until it's picked from the art service
     game_set_custom("Simon", false);
     GamePickRow typed = {"Simon", 0, PICK_TYPED}, lib_row = {"Simon", 0, PICK_LIBRARY}, svc = {"Simon", 1978, PICK_ONLINE};
