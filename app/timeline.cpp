@@ -1009,6 +1009,8 @@ static void tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h, 
 // Drawing helpers. tl_text_fit and tl_pill are generic enough to move to the kit.
 
 #define TL_ICON_DOWN "\xEE\x9C\x8D" // E70D chevron down
+#define TL_ICON_LAYERS "\xEE\xA0\x9E" // E81E layers: the simple lanes
+#define TL_ICON_LIST "\xEE\xA3\xBD" // E8FD bulleted list: a lane per app
 
 static const u32 TL_COL_VIDEO = 0x5a7fbf, TL_COL_LANE = 0x131418;
 
@@ -1483,6 +1485,26 @@ static void screen_timeline()
                         IM_COL32(255, 255, 255, 190), 1.5f * s);
         f32 px = ImClamp(bx(tl_playhead()), bx0, bx0 + bw);
         dl->AddRectFilled(ImVec2(px - 1 * s, y_zoom), ImVec2(px + 1 * s, y1), IM_COL32(255, 255, 255, 230));
+    }
+
+    // --- Simple or every app, top left over the track names: the sound in four lanes (every app summed into its
+    // kind's), or a lane per app. The lit one is in use.
+    if (!tl.quick) {
+        f32 bs = 24 * s;
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 14 * s, floorf(y_ruler + (ruler_h - bs) / 2)));
+        for (i32 k = 0; k < 2; k++) {
+            bool simple = k == 0;
+            if (k) ImGui::SameLine(0, 2 * s);
+            kit_next_tip(simple ? "Simple: a lane per kind of sound" : "Every app in its own lane");
+            if (kit_icon_button(simple ? TL_ICON_LAYERS : TL_ICON_LIST, simple ? "##lanes_simple" : "##lanes_all", KIT_GHOST,
+                                true, cfg.timeline_simple == simple, bs) &&
+                cfg.timeline_simple != simple) {
+                cfg.timeline_simple = simple;
+                tl.lane_scroll = 0;
+                config_save(cfg, g_app.paths);
+                log_line("timeline: simple %s", simple ? "on" : "off");
+            }
+        }
     }
 
     // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
@@ -2092,16 +2114,6 @@ static void screen_timeline()
         if (kit_icon_button(ICON_NOW, "##now", KIT_GHOST, !tl.follow)) {
             tl.follow = true;
             tl_clamp_view(now);
-        }
-        // Simple: the sound in four lanes, every app summed into its kind's
-        if (!tl.quick) {
-            ImGui::SameLine(0, 10 * s);
-            if (kit_chip("Simple##lanes", cfg.timeline_simple, 0, 84 * s)) {
-                cfg.timeline_simple = !cfg.timeline_simple;
-                tl.lane_scroll = 0;
-                config_save(cfg, g_app.paths);
-                log_line("timeline: simple %s", cfg.timeline_simple ? "on" : "off");
-            }
         }
         x = ImGui::GetItemRectMax().x + 18 * s;
 
