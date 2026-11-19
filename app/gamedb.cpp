@@ -1417,10 +1417,77 @@ static i32 gamedb_find_online(const char *q, char (*names)[128], i32 *years, i32
     return n;
 }
 
+// Custom games: names typed in Change game rather than picked from the library's or the art service's games. Nothing
+// looks up art or an icon for one. <config_dir>\custom_games.txt holds one name a line. Any thread.
+static struct {
+    SRWLOCK lock;
+    char    names[256][64];
+    i32     count;
+    bool    loaded;
+} g_custom_games = {SRWLOCK_INIT};
+
+static void custom_games_load_locked()
+{
+    if (g_custom_games.loaded) return;
+    g_custom_games.loaded = true;
+    if (!g_app.paths.config_dir.s[0]) return;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"custom_games.txt").s, L"rb");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof line, f) && g_custom_games.count < COUNT(g_custom_games.names)) {
+        char *t = trim(line);
+        if (*t) str_set(g_custom_games.names[g_custom_games.count++], t);
+    }
+    fclose(f);
+}
+
+static i32 custom_games_find_locked(const char *name)
+{
+    for (i32 i = 0; i < g_custom_games.count; i++)
+        if (!_stricmp(g_custom_games.names[i], name)) return i;
+    return -1;
+}
+
+static bool game_is_custom(const char *name)
+{
+    AcquireSRWLockExclusive(&g_custom_games.lock);
+    custom_games_load_locked();
+    bool found = custom_games_find_locked(name) >= 0;
+    ReleaseSRWLockExclusive(&g_custom_games.lock);
+    return found;
+}
+
+// Marks a name a custom game, or not.
+static void game_set_custom(const char *name, bool custom)
+{
+    AcquireSRWLockExclusive(&g_custom_games.lock);
+    custom_games_load_locked();
+    i32 at = custom_games_find_locked(name);
+    bool change = custom != (at >= 0) && (!custom || g_custom_games.count < COUNT(g_custom_games.names));
+    if (change) {
+        if (custom) str_set(g_custom_games.names[g_custom_games.count++], name);
+        else {
+            memmove(&g_custom_games.names[at], &g_custom_games.names[at + 1],
+                    (g_custom_games.count - at - 1) * sizeof g_custom_games.names[0]);
+            g_custom_games.count--;
+        }
+        if (g_app.paths.config_dir.s[0]) {
+            FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"custom_games.txt").s, L"wb");
+            if (f) {
+                for (i32 i = 0; i < g_custom_games.count; i++) fprintf(f, "%s\r\n", g_custom_games.names[i]);
+                fclose(f);
+            }
+        }
+    }
+    ReleaseSRWLockExclusive(&g_custom_games.lock);
+    if (change) log_line("games: %s is %s", name, custom ? "a custom game" : "not a custom game");
+}
+
 // A game by its name, for its art: the list's entry, else one made up from the name, whose art only the art
-// service can find.
+// service can find. None for a custom game.
 static bool gamedb_for_art(const char *name, GameInfo *out)
 {
+    if (game_is_custom(name)) return false;
     if (gamedb_by_name(name, out)) return true;
     AcquireSRWLockShared(&g_gamedb.lock);
     bool loaded = g_gamedb.index != 0;

@@ -306,7 +306,7 @@ static bool game_is_none(const char *name) { return !strcmp(name, GAME_DESKTOP) 
 
 static ID3D11ShaderResourceView *game_db_icon(const char *name)
 {
-    if (game_is_none(name)) return 0;
+    if (game_is_none(name) || game_is_custom(name)) return 0;
     AppIcon *slot = icon_slot(g_db_icons, &g_db_icon_count, COUNT(g_db_icons), name);
     if (!slot) return 0;
     if (slot->srv || slot->tried) return slot->srv;
@@ -328,6 +328,7 @@ static i32 g_db_cover_count;
 
 static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h, ID3D11ShaderResourceView **blur = 0)
 {
+    if (game_is_custom(name)) return 0;
     AppIcon *slot = icon_slot(g_db_covers, &g_db_cover_count, COUNT(g_db_covers), name);
     if (!slot) return 0;
     if (!slot->srv && !slot->tried && icon_lookup_ok()) {
@@ -346,13 +347,14 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
 }
 
 // The icon for a game's name: the database's, else the app clipback knows by that name, else the installed
-// program's. Null if none has one (and while it is being looked up: one a frame, like app_icon).
+// program's. Null if none has one, for a custom game (whose name may be any program's), and while it is being
+// looked up (one a frame, like app_icon).
 static AppIcon g_game_icons[LIB_MAX_GAMES];
 static i32 g_game_icon_count;
 
 static ID3D11ShaderResourceView *game_icon(const char *name)
 {
-    if (game_is_none(name)) return 0;
+    if (game_is_none(name) || game_is_custom(name)) return 0;
     if (ID3D11ShaderResourceView *art = game_db_icon(name)) return art;
     AppIcon *slot = icon_slot(g_game_icons, &g_game_icon_count, COUNT(g_game_icons), name);
     if (!slot) return 0;

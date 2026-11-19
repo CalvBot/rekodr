@@ -1907,16 +1907,81 @@ static void library_hover_end_frame()
 static char g_game_pick_typed[64]; // what the picker opens with
 static bool g_game_pick_show;      // `show game`: the editor's picker opens
 
-// "Change game": a search box over the games. Rows: names that are what's typed first, then the library's games,
-// then the art service's for what's typed (when it can be asked), and last the name as typed, so it works offline
-// too. The rows and the line under them keep their place as results come in. `current` is the game lit in the
-// list. The popup `id` is opened by the caller; returns the game picked (or Enter, the first row), else null.
-static const char *lib_game_pick(const char *id, const char *current)
+// A row of the game picker: a game in the library, one from the art service, or the name as typed (a custom game).
+enum GamePickKind : u8 { PICK_LIBRARY, PICK_ONLINE, PICK_TYPED };
+struct GamePickRow {
+    char name[64];
+    i32  year;
+    u8   kind; // GamePickKind
+};
+
+// The picker's rows for what's typed, at most `max`: names that are exactly what's typed first, then the library's
+// games (`games`, n_games of them) that match, then the art service's (`online`, n_online), and last, with something
+// typed, the name as typed unless a row has it already.
+static i32 game_pick_rows(const char *typed, const char (*games)[64], i32 n_games, const char (*online)[128],
+                          const i32 *online_years, i32 n_online, GamePickRow *rows, i32 max)
+{
+    char q[64], want[128], letters[128];
+    str_set(q, typed);
+    char *tq = trim(q);
+    gdb_letters(tq, want, sizeof want);
+    i32 n = 0, cap = *tq ? max - 1 : max; // with something typed, the last row is the name as typed
+    auto add = [&](const char *name, i32 year, u8 kind) {
+        if (n >= cap || !name[0]) return;
+        gdb_letters(name, letters, sizeof letters);
+        for (i32 d = 0; d < n; d++) {
+            char seen[128];
+            gdb_letters(rows[d].name, seen, sizeof seen);
+            if (!strcmp(seen, letters)) return;
+        }
+        str_set(rows[n].name, name);
+        rows[n].year = year;
+        rows[n++].kind = kind;
+    };
+    for (i32 pass = 0; pass < 3; pass++) { // 0: what's typed, exactly; 1: the library's; 2: the art service's
+        for (i32 i = 0; i < n_games; i++) {
+            const char *g = games[i];
+            if (!strcmp(g, GAME_NOT_OURS) || (*tq && !lib_matches(g, tq))) continue;
+            gdb_letters(g, letters, sizeof letters);
+            if (pass == 1 || (pass == 0 && *tq && !strcmp(letters, want))) add(g, 0, PICK_LIBRARY);
+        }
+        for (i32 i = 0; i < n_online && pass != 1; i++) {
+            gdb_letters(online[i], letters, sizeof letters);
+            if (pass == 2 || !strcmp(letters, want)) add(online[i], online_years[i], PICK_ONLINE);
+        }
+    }
+    if (*tq) {
+        cap = max;
+        add(tq, 0, PICK_TYPED);
+    }
+    return n;
+}
+
+// Whether a pick is a game the art service may be told of: one of its own, or a real game in the library.
+static bool game_pick_known(const GamePickRow &r)
+{
+    return r.kind == PICK_ONLINE || (r.kind == PICK_LIBRARY && !game_is_none(r.name) && !game_is_custom(r.name));
+}
+
+// A pick has been filed: one typed is a custom game from now on, and one of the art service's isn't.
+static void game_pick_filed(const GamePickRow &r)
+{
+    if (r.kind == PICK_TYPED) game_set_custom(r.name, true);
+    else if (r.kind == PICK_ONLINE) game_set_custom(r.name, false);
+}
+
+// "Change game": a search box over the games (game_pick_rows), so it works offline too. One row is lit: the first,
+// or the one the arrow keys or the mouse moved to; Enter picks the row lit as it was last drawn, never one still to
+// come. The rows and the line under them keep their place as results come in. `current` is the game whose name is
+// in the accent colour. The popup `id` is opened by the caller; returns the row picked, else null.
+static const GamePickRow *lib_game_pick(const char *id, const char *current)
 {
     Library &lib = g_app.library;
     const i32 ROWS = 7;
     static char typed[64], settled[64];
     static f64 changed_at;
+    static GamePickRow rows[ROWS], drawn[ROWS], picked;
+    static i32 lit, drawn_n;
     ImGui::SetNextWindowSize(ImVec2(kit_px(360), 0));
     lib_popup_style_push(10);
     bool open = ImGui::BeginPopup(id);
@@ -1926,6 +1991,7 @@ static const char *lib_game_pick(const char *id, const char *current)
         str_set(typed, g_game_pick_typed);
         settled[0] = g_game_pick_typed[0] = 0;
         changed_at = ImGui::GetTime();
+        lit = drawn_n = 0;
         ImGui::SetKeyboardFocusHere();
     }
     // The search box: framed like the inputs in Options' popups
@@ -1936,78 +2002,62 @@ static const char *lib_game_pick(const char *id, const char *current)
                                           ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
-    if (ImGui::IsItemEdited()) changed_at = ImGui::GetTime();
+    if (ImGui::IsItemEdited()) {
+        changed_at = ImGui::GetTime();
+        lit = 0;
+    }
+    const GamePickRow *got = 0;
+    if (enter && lit < drawn_n) {
+        picked = drawn[lit];
+        got = &picked;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) lit = ImMin(lit + 1, ImMax(drawn_n - 1, 0));
+    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) lit = ImMax(lit - 1, 0);
     // The art service is asked once the text has stayed the same a moment, not for each key
     if (strcmp(settled, typed) && ImGui::GetTime() - changed_at > 0.35) str_set(settled, typed);
-    char q[64], sq[64];
-    str_set(q, typed);
+    char sq[64];
     str_set(sq, settled);
-    char *tq = trim(q), *ts = trim(sq);
-
-    static char online[8][128], names[ROWS][128];
+    char *ts = trim(sq);
+    static char online[8][128];
     static i32 online_years[8];
-    i32 years[ROWS] = {}, no = *ts ? gamedb_find_online(ts, online, online_years, 8) : 0;
-    bool from_lib[ROWS] = {};
-    char want[128], letters[128];
-    gdb_letters(tq, want, sizeof want);
-    i32 n = 0, cap = *tq ? ROWS - 1 : ROWS; // with something typed, the last row is the name as typed
-    auto add = [&](const char *name, i32 year, bool lib_game) {
-        if (n >= cap || !name[0]) return;
-        gdb_letters(name, letters, sizeof letters);
-        for (i32 d = 0; d < n; d++) {
-            char seen[128];
-            gdb_letters(names[d], seen, sizeof seen);
-            if (!strcmp(seen, letters)) return;
-        }
-        str_set(names[n], name);
-        years[n] = year;
-        from_lib[n++] = lib_game;
-    };
-    for (i32 pass = 0; pass < 3; pass++) { // 0: what's typed, exactly; 1: the library's; 2: the art service's
-        for (i32 i = 0; i < lib.game_count; i++) {
-            const char *g = lib.games[i];
-            if (!strcmp(g, GAME_NOT_OURS) || (*tq && !lib_matches(g, tq))) continue;
-            gdb_letters(g, letters, sizeof letters);
-            if (pass == 1 || (pass == 0 && *tq && !strcmp(letters, want))) add(g, 0, true);
-        }
-        for (i32 i = 0; i < no && pass != 1; i++) {
-            gdb_letters(online[i], letters, sizeof letters);
-            if (pass == 2 || !strcmp(letters, want)) add(online[i], online_years[i], false);
-        }
-    }
-    bool typed_row = false;
-    if (*tq) {
-        cap = ROWS;
-        i32 before = n;
-        add(tq, 0, false);
-        typed_row = n > before;
-    }
+    i32 no = *ts ? gamedb_find_online(ts, online, online_years, 8) : 0;
+    i32 n = game_pick_rows(typed, lib.games, lib.game_count, online, online_years, ImMax(no, 0), rows, ROWS);
+    lit = ImMin(lit, ImMax(n - 1, 0));
 
-    const char *pick = 0;
     f32 w = ImGui::GetContentRegionAvail().x, rh = kit_px(38), is = kit_px(26);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 l0 = ImGui::GetCursorScreenPos();
     l0.y += kit_px(4);
+    bool moved = ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0;
     for (i32 i = 0; i < n; i++) {
+        const GamePickRow &r = rows[i];
         ImVec2 r0(l0.x, l0.y + i * rh);
         ImGui::SetCursorScreenPos(r0);
         ImGui::PushID(i);
-        if (ImGui::Selectable("##game_row", !strcmp(names[i], current), 0, ImVec2(w, rh - kit_px(2)))) pick = names[i];
+        if (ImGui::Selectable("##game_row", i == lit, 0, ImVec2(w, rh - kit_px(2))) && !got) {
+            picked = r;
+            got = &picked;
+        }
+        if (moved && ImGui::IsItemHovered()) lit = i;
         ImGui::PopID();
+        // The icon: the game's, else a glyph (a controller for a custom game, the monitor for Desktop) or a tile
         ImVec2 i0(r0.x + kit_px(6), floorf(r0.y + (rh - kit_px(2) - is) / 2));
-        ID3D11ShaderResourceView *icon = game_db_icon(names[i]);
+        bool custom = r.kind == PICK_TYPED || (r.kind == PICK_LIBRARY && game_is_custom(r.name));
+        ID3D11ShaderResourceView *icon = custom ? 0 : game_db_icon(r.name);
+        const char *glyph = custom ? ICON_GAME : !strcmp(r.name, GAME_DESKTOP) ? ICON_MONITOR : 0;
         if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1),
                                       IM_COL32_WHITE, kit_px(5));
-        else if (!strcmp(names[i], GAME_DESKTOP)) { // no game: the monitor glyph, as in the Games list
+        else if (glyph) {
             ImGui::PushFont(g_font_icon);
-            ImVec2 gs = ImGui::CalcTextSize(ICON_MONITOR);
-            dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), ICON_MONITOR);
+            ImVec2 gs = ImGui::CalcTextSize(glyph);
+            dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), glyph);
             ImGui::PopFont();
         } else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), kit_px(5));
-        char note[16] = "";
-        if (typed_row && i == n - 1) str_set(note, "As typed");
-        else if (from_lib[i]) str_set(note, "In the library");
-        else if (years[i]) snprintf(note, sizeof note, "%d", years[i]);
+        char note[16] = "", label[96];
+        if (r.kind == PICK_LIBRARY) str_set(note, "In the library");
+        else if (r.year) snprintf(note, sizeof note, "%d", r.year);
+        if (r.kind == PICK_TYPED) snprintf(label, sizeof label, "Use \"%s\" as a new game", r.name);
+        else str_set(label, r.name);
         f32 right = r0.x + w - kit_px(8);
         if (note[0]) {
             f32 nw = g_font_small->CalcTextSizeA(g_font_small->FontSize, FLT_MAX, 0, note).x;
@@ -2017,31 +2067,29 @@ static const char *lib_game_pick(const char *id, const char *current)
             right -= kit_px(10);
         }
         text_clipped(dl, ImVec2(i0.x + is + kit_px(10), floorf(r0.y + (rh - kit_px(2) - ImGui::GetFontSize()) / 2)),
-                     right - (i0.x + is + kit_px(10)), col32(COL_TEXT), names[i]);
+                     right - (i0.x + is + kit_px(10)), col32(!strcmp(r.name, current) ? COL_ACCENT : COL_TEXT), label);
     }
+    memcpy(drawn, rows, n * sizeof rows[0]);
+    drawn_n = n;
     ImGui::SetCursorScreenPos(ImVec2(l0.x, l0.y + ROWS * rh));
     bool looking = strcmp(settled, typed) || no < 0;
     kit_dim(looking ? "Searching..." : n ? " " : "Type the game's name");
-    if (enter && n) pick = names[0];
-    static char picked[64]; // names[] is rewritten next frame, and a rescan rewrites the library's list
-    const char *got = 0;
-    if (pick) {
-        str_set(picked, pick);
-        got = picked;
-        ImGui::CloseCurrentPopup();
-    } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    if (got) ImGui::CloseCurrentPopup();
+    else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
     return got;
 }
 
-// The picker for one card: a pick files `it` under the game and tells the art service (gamedb_clip_game). True when
-// the game changed.
+// The picker for one card: a pick files `it` under the game, and a known one is told to the art service
+// (gamedb_clip_game). True when the game changed.
 static bool lib_game_picker(const char *id, LibItem &it)
 {
-    const char *g = lib_game_pick(id, it.info.game);
-    if (!g || !strcmp(g, it.info.game) || !library_set_game(it, g)) return false;
-    str_set(it.info.game, g);
-    gamedb_clip_game(it, g);
+    const GamePickRow *r = lib_game_pick(id, it.info.game);
+    if (!r || !strcmp(r->name, it.info.game) || !library_set_game(it, r->name)) return false;
+    bool known = game_pick_known(*r);
+    game_pick_filed(*r);
+    str_set(it.info.game, r->name);
+    if (known) gamedb_clip_game(it, r->name);
     return true;
 }
 
@@ -2583,8 +2631,10 @@ static void lib_sel_folder_put(i32 fi, bool in)
 }
 
 // Files the selected cards under one game (one write of games.txt) and tells the art service about each.
-static void lib_sel_set_game(const char *game)
+static void lib_sel_set_game(const GamePickRow &r)
 {
+    const char *game = r.name;
+    bool known = game_pick_known(r);
     Library &lib = g_app.library;
     static i32 idx[LIB_MAX_ITEMS];
     static u64 keys[LIB_MAX_ITEMS];
@@ -2602,9 +2652,10 @@ static void lib_sel_set_game(const char *game)
         if (strcmp(lib.items[idx[i]].info.game, game)) items[told++] = lib.items[idx[i]];
     if (!lib_keyed_write(L"games.txt", keys, names, m, game)) return;
     log_line("library: %d %s are now %s", m, lib_noun(m), game);
+    game_pick_filed(r);
     for (i32 i = 0; i < m && i < COUNT(items); i++) {
         str_set(items[i].info.game, game);
-        gamedb_clip_game(items[i], game);
+        if (known) gamedb_clip_game(items[i], game);
     }
     lib_message(false, "%d %s filed under %s", m, lib_noun(m), game);
 }
@@ -2749,7 +2800,7 @@ static void lib_sel_bar(ImVec2 at, f32 right, i32 n)
     if (kit_icon_button(ICON_CLOSE, "##sel_clear")) lib_sel_clear();
 
     ImGui::SetNextWindowPos(ImVec2(game_at.x, at.y + fh + kit_px(6)), ImGuiCond_Appearing);
-    if (const char *g = lib_game_pick("sel_game", "")) lib_sel_set_game(g);
+    if (const GamePickRow *r = lib_game_pick("sel_game", "")) lib_sel_set_game(*r);
     ImGui::SetNextWindowPos(ImVec2(folder_at.x, at.y + fh + kit_px(6)));
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("sel_folders")) {
@@ -2928,10 +2979,11 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     // The caption: the game's icon, then the name and one dim line. Renaming edits the name right there.
     f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
     f32 tx = a.x + isz + kit_px(10), tw = a.x + w - tx;
-    // No game (GAME_DESKTOP, GAME_NOT_OURS) gets a plain glyph rather than whatever icon the name looks up.
+    // No game (GAME_DESKTOP, GAME_NOT_OURS) and a custom game get a plain glyph, never an icon looked up by name.
     bool desktop = !strcmp(it.info.game, GAME_DESKTOP), no_game = game_is_none(it.info.game);
-    ID3D11ShaderResourceView *icon = it.info.game[0] && !no_game ? game_icon(it.info.game) : 0;
-    const char *glyph = desktop ? ICON_MONITOR : ICON_VIDEO;
+    bool custom = !no_game && it.info.game[0] && game_is_custom(it.info.game);
+    ID3D11ShaderResourceView *icon = it.info.game[0] && !no_game && !custom ? game_icon(it.info.game) : 0;
+    const char *glyph = custom ? ICON_GAME : desktop ? ICON_MONITOR : ICON_VIDEO;
     if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
                                   IM_COL32_WHITE, kit_px(6));
     else {
@@ -4174,10 +4226,11 @@ static void screen_library()
             const char *name = c == 0 ? "All games" : lib.games[c - 1];
             bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
             ImGui::PushID(c);
-            // No game gets a built-in glyph: a monitor for Desktop, a video for files not ours
-            bool none = c > 0 && game_is_none(name);
-            const char *glyph = !none ? 0 : !strcmp(name, GAME_DESKTOP) ? ICON_MONITOR : ICON_VIDEO;
-            if (lib_game_item(c == 0 || none ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
+            // No game gets a built-in glyph: a monitor for Desktop, a video for files not ours; a custom game a
+            // controller
+            bool none = c > 0 && game_is_none(name), custom = c > 0 && !none && game_is_custom(name);
+            const char *glyph = custom ? ICON_GAME : !none ? 0 : !strcmp(name, GAME_DESKTOP) ? ICON_MONITOR : ICON_VIDEO;
+            if (lib_game_item(c == 0 || none || custom ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
                               side_w - kit_px(12), collapsed, glyph, c > 0 && lib_favourite_find("games", name) >= 0))
                 pick = c;
             if (c > 0 && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {

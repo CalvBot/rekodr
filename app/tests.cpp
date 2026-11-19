@@ -19,6 +19,38 @@ static i32 g_failed, g_checked;
         } \
     } while (0)
 
+// The game picker's rows, and which picks are custom games or may be told to the art service
+static void test_game_pick()
+{
+    const char games[3][64] = {"Minecraft", "Desktop", "Other"};
+    const char online[2][128] = {"Simon", "Simon Says"};
+    const i32 years[2] = {1978, 1990};
+    GamePickRow rows[7];
+    // Typed, nothing from the art service yet: the name as typed, alone
+    i32 n = game_pick_rows("simon", games, 3, online, years, 0, rows, 7);
+    T(n == 1 && rows[0].kind == PICK_TYPED && !strcmp(rows[0].name, "simon") && !game_pick_known(rows[0]));
+    // The art service's answer: its exact name first; the typed row goes, as a row has that name
+    n = game_pick_rows("simon", games, 3, online, years, 2, rows, 7);
+    T(n == 2 && rows[0].kind == PICK_ONLINE && !strcmp(rows[0].name, "Simon") && rows[0].year == 1978);
+    T(rows[1].kind == PICK_ONLINE && game_pick_known(rows[0]));
+    // A library game that matches, then the name as typed
+    n = game_pick_rows("mine", games, 3, online, years, 0, rows, 7);
+    T(n == 2 && rows[0].kind == PICK_LIBRARY && !strcmp(rows[0].name, "Minecraft") && game_pick_known(rows[0]));
+    T(rows[1].kind == PICK_TYPED && !strcmp(rows[1].name, "mine"));
+    // Nothing typed: the library's games, Other left out; Desktop isn't a known game
+    n = game_pick_rows("", games, 3, online, years, 0, rows, 7);
+    T(n == 2 && !strcmp(rows[1].name, "Desktop") && !game_pick_known(rows[1]));
+    // A typed pick is a custom game until it's picked from the art service
+    game_set_custom("Simon", false);
+    GamePickRow typed = {"Simon", 0, PICK_TYPED}, lib_row = {"Simon", 0, PICK_LIBRARY}, svc = {"Simon", 1978, PICK_ONLINE};
+    game_pick_filed(typed);
+    T(game_is_custom("simon") && !game_pick_known(lib_row));
+    GameInfo g;
+    T(!gamedb_for_art("Simon", &g));
+    game_pick_filed(svc);
+    T(!game_is_custom("Simon") && game_pick_known(lib_row));
+}
+
 static void test_select_range()
 {
     const u64 keys[] = {10, 20, 30, 40, 50};
@@ -1054,6 +1086,7 @@ int main()
     InitializeSRWLock(&g_log_lock);
     test_lengths();
     test_select_range();
+    test_game_pick();
     test_game_from_name();
     test_save_names();
     test_buffer_names();

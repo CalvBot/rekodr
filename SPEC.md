@@ -102,6 +102,9 @@ Clips are named after the game played most in them, or `Desktop`. Sessions are n
 The Library files a video under its tagged game, else the `{game}` its name holds by the file name template (`Clip` or
 none is `Desktop`). A name the template doesn't read is listed as **Other**. `games.txt` overrides both.
 
+A game typed in the game picker rather than picked from its rows is a custom game (`custom_games.txt`): it shows a
+controller glyph, and no art is looked up for it or vote sent. Enter picks the row that is lit.
+
 ## Recording (always on)
 This works today and stays the same, including the on-disk buffer format, so switching versions keeps the buffer.
 
