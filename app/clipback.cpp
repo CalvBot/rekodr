@@ -18,6 +18,7 @@
 #include <winhttp.h>
 #include <bcrypt.h>
 #include <tlhelp32.h>
+#include <shellscalingapi.h>
 
 #include <stdint.h>
 #include <stdio.h>

@@ -392,11 +392,24 @@ static bool ui_init()
     wc.lpszClassName = L"clipback.window";
     RegisterClassExW(&wc);
 
-    // Centered on the main monitor, sized for it
+    // Centered on the main monitor, sized for it. A test copy (CLIPBACK_HOME) starts on the rightmost monitor instead,
+    // away from the user's work.
     f32 scale = GetDpiForSystem() / 96.f;
-    i32 w = (i32)(1280 * scale), h = (i32)(800 * scale);
     RECT work;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    if (is_test_copy()) {
+        struct { RECT work; HMONITOR mon; } best = {work, 0};
+        EnumDisplayMonitors(0, 0, [](HMONITOR m, HDC, LPRECT, LPARAM p) -> BOOL {
+            MONITORINFO mi = {sizeof mi};
+            auto *b = (decltype(best) *)p;
+            if (GetMonitorInfoW(m, &mi) && mi.rcWork.left > b->work.left) *b = {mi.rcWork, m};
+            return TRUE;
+        }, (LPARAM)&best);
+        UINT dx, dy;
+        if (best.mon && GetDpiForMonitor(best.mon, MDT_EFFECTIVE_DPI, &dx, &dy) == S_OK) scale = dx / 96.f;
+        work = best.work;
+    }
+    i32 w = ImMin((i32)(1280 * scale), (i32)(work.right - work.left)), h = ImMin((i32)(800 * scale), (i32)(work.bottom - work.top));
     i32 x = work.left + (work.right - work.left - w) / 2, y = work.top + (work.bottom - work.top - h) / 2;
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"clipback", WS_OVERLAPPEDWINDOW, x, y, w, h, 0, 0, inst, 0);
     if (!hwnd) return false;
