@@ -838,6 +838,69 @@ static bool kit_wheel_step(i32 *index, i32 count, u32 disabled = 0)
     return true;
 }
 
+// A row that slides sideways (KitStrip). It glides to where it's sent, easing out over 380 ms from where it is
+// then, so a new target mid-glide sets off again from there. The glide runs on the clock, not on frame times, so a
+// first frame after the window slept doesn't jump.
+static void kit_strip_go(KitStrip &s, f32 to, f32 max)
+{
+    to = ImClamp(to, 0.f, max);
+    if (to == s.to) return;
+    s.from = s.pos;
+    s.to = to;
+    s.from_us = now_us();
+    ui_wake();
+}
+
+// Shift + wheel, or a sideways wheel (a tilt wheel, a touchpad swipe), over the strip slides it `notch` a click.
+// The plain wheel is left to the page.
+static void kit_strip_wheel(KitStrip &s, bool over, f32 notch, f32 max)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    f32 side = io.MouseWheelH + (io.KeyShift ? io.MouseWheel : 0);
+    if (over && max > 0 && side != 0) kit_strip_go(s, s.to - side * notch, max);
+}
+
+// Moves the strip along its glide, for this frame. max is how far it can slide.
+static void kit_strip_glide(KitStrip &s, f32 max)
+{
+    s.to = ImClamp(s.to, 0.f, max);
+    if (s.pos != s.to) {
+        f32 t = (f32)(now_us() - s.from_us) / 380000.f;
+        if (t >= 1) s.pos = s.to;
+        else {
+            f32 u = 1 - ImMax(t, 0.f);
+            s.pos = s.from + (s.to - s.from) * (1 - u * u * u);
+            ui_wake();
+        }
+    }
+    s.pos = ImClamp(s.pos, 0.f, max);
+}
+
+// The height kept under a strip for its bar, whether or not the bar shows.
+static f32 kit_strip_bar_h() { return kit_px(12); }
+
+// The strip's bar, `w` wide at `at`, when it slides at all (max > 0): a thin thumb like the grid's. Drag the thumb,
+// or click the track to go there.
+static void kit_strip_bar(const char *id, KitStrip &s, ImVec2 at, f32 w, f32 max)
+{
+    if (max <= 0 || w <= 0) return;
+    ImGuiIO &io = ImGui::GetIO();
+    f32 h = kit_strip_bar_h(), thumb = ImMax(floorf(w * w / (w + max)), kit_px(36)), travel = w - thumb;
+    f32 tx = at.x + (s.pos / max) * travel;
+    static f32 grab; // where in the thumb the drag took hold
+    ImGui::SetCursorScreenPos(at);
+    ImGui::InvisibleButton(id, ImVec2(w, h));
+    bool hot = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+    if (ImGui::IsItemActivated()) grab = io.MousePos.x >= tx && io.MousePos.x <= tx + thumb ? io.MousePos.x - tx : thumb / 2;
+    if (held && travel > 0) {
+        s.pos = s.to = s.from = ImClamp((io.MousePos.x - grab - at.x) / travel * max, 0.f, max);
+        tx = at.x + (s.pos / max) * travel;
+    }
+    f32 ty = floorf(at.y + (h - kit_px(6)) / 2);
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + thumb, ty + kit_px(6)),
+                                              col32(held ? COL_DIM : hot ? COL_FAINT : COL_HOVER), kit_px(3));
+}
+
 static void kit_align_right(f32 w)
 {
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - w);

@@ -3349,8 +3349,10 @@ static bool lib_unsaved_shown(u32 id)
 }
 
 // The row, drawn from the cursor; returns false (and draws nothing) when none pass the grid's filters. A click on
-// the heading (a chevron, then the words) folds it to the heading alone (kept in the settings). The tiles slide sideways and glide: the wheel over
-// them, or the arrows on the right, a row's width at a time.
+// the heading (a chevron, then the words) folds it to the heading alone (kept in the settings). The tiles slide
+// sideways (kit_strip_*): the arrows on the right a row's width at a time, Shift + wheel or a sideways wheel over
+// them, or the bar under them. lib_unsaved_over says the mouse is on the tiles, where the plain wheel scrolls the grid.
+static bool lib_unsaved_over;
 static bool lib_unsaved_row(f32 full_w)
 {
     Sessions &ss = g_app.sessions;
@@ -3396,40 +3398,36 @@ static bool lib_unsaved_row(f32 full_w)
         ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + fh + kit_px(10)));
         return true;
     }
+    KitStrip &st = ss.strip;
     if (max_scroll > 0) {
         ImGui::SetCursorScreenPos(ImVec2(a.x + full_w - 2 * fh - kit_px(2), a.y));
         kit_next_tip("Earlier ones");
-        if (kit_icon_button(ICON_LEFT, "##unsaved_back", KIT_GHOST, ss.scroll_to > 0.5f)) ss.scroll_to -= per * step;
+        if (kit_icon_button(ICON_LEFT, "##unsaved_back", KIT_GHOST, st.to > 0.5f)) kit_strip_go(st, st.to - per * step, max_scroll);
         ImGui::SameLine(0, kit_px(2));
         kit_next_tip("Later ones");
-        if (kit_icon_button(ICON_RIGHT, "##unsaved_on", KIT_GHOST, ss.scroll_to < max_scroll - 0.5f)) ss.scroll_to += per * step;
+        if (kit_icon_button(ICON_RIGHT, "##unsaved_on", KIT_GHOST, st.to < max_scroll - 0.5f))
+            kit_strip_go(st, st.to + per * step, max_scroll);
     }
     f32 y = a.y + fh + kit_px(6), row_h = thumb_h + lib_meta_h();
     ImVec2 m = io.MousePos;
-    bool over = m.x >= a.x && m.x < a.x + full_w && m.y >= y && m.y < y + row_h &&
+    bool over = m.x >= a.x && m.x < a.x + full_w && m.y >= y && m.y < y + row_h + kit_strip_bar_h() &&
                 !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
-    if (over && max_scroll > 0 && (io.MouseWheel != 0 || io.MouseWheelH != 0))
-        ss.scroll_to -= (io.MouseWheel + io.MouseWheelH) * step * 0.6f;
-    ss.scroll_to = ImClamp(ss.scroll_to, 0.f, max_scroll);
-    f32 away = ss.scroll_to - ss.scroll;
-    if (fabsf(away) < 0.5f) ss.scroll = ss.scroll_to;
-    else {
-        ss.scroll += away * (1 - expf(-io.DeltaTime * 14));
-        ui_wake();
-    }
-    ss.scroll = ImClamp(ss.scroll, 0.f, max_scroll);
+    lib_unsaved_over = over;
+    kit_strip_wheel(st, over, step * 0.6f, max_scroll);
+    kit_strip_bar("##unsaved_bar", st, ImVec2(a.x, y + row_h), full_w, max_scroll);
+    kit_strip_glide(st, max_scroll);
 
     // The tile under the mouse reads the frames it scrubs through.
-    i32 first = (i32)(ss.scroll / step), hovered = -1;
+    i32 first = (i32)(st.pos / step), hovered = -1;
     for (i32 r = first; r < row_count && r <= first + per; r++) {
-        f32 x = a.x + r * step - ss.scroll;
+        f32 x = a.x + r * step - st.pos;
         if (m.x >= ImMax(x, a.x) && m.x < ImMin(x + tile_w, a.x + full_w) && m.y >= y && m.y < y + thumb_h) hovered = r;
     }
     ImGui::PushClipRect(ImVec2(a.x, y), ImVec2(a.x + full_w, y + row_h), true);
     for (i32 r = first; r < row_count && r <= first + per; r++)
-        lib_unsaved_tile(rows[r], ImVec2(floorf(a.x + r * step - ss.scroll), y), tile_w, thumb_h, hovered == r);
+        lib_unsaved_tile(rows[r], ImVec2(floorf(a.x + r * step - st.pos), y), tile_w, thumb_h, hovered == r);
     ImGui::PopClipRect();
-    ImGui::SetCursorScreenPos(ImVec2(a.x, y + row_h + kit_px(18)));
+    ImGui::SetCursorScreenPos(ImVec2(a.x, y + row_h + kit_strip_bar_h() + kit_px(8)));
     return true;
 }
 
@@ -3807,6 +3805,7 @@ static void screen_library()
     }
 
     g_lib_missing = 0;
+    lib_unsaved_over = false;
     if (lib.view == LIB_SESSIONS) lib_unsaved_row(full_w);
     else lib_posters_ahead();
 
@@ -3850,7 +3849,8 @@ static void screen_library()
     ImGui::BeginChild("##grid", ImVec2(full_w + bar_w, grid_h), 0,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
     dl = ImGui::GetWindowDrawList();
-    if (!popup && !ctrl && io.MouseWheel != 0 && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+    if (!popup && !ctrl && io.MouseWheel != 0 &&
+        (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) || (lib_unsaved_over && !io.KeyShift)))
         lib.scroll_to -= io.MouseWheel * floorf(card_h * 0.6f);
     if (!popup && !io.WantTextInput) {
         if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) lib.scroll_to += floorf(grid_h * 0.9f);

@@ -677,6 +677,13 @@ struct Session {
     char         display_name[128]; // typed by hand; shown as its title, the name and times kept under it
 };
 
+// A row that slides sideways (kit_strip_* in ui.cpp): where it is and where it's gliding to (px), and where and
+// when the glide set off.
+struct KitStrip {
+    f32 pos, to, from;
+    i64 from_us;
+};
+
 struct Sessions {
     Session items[256];     // slot order means nothing; SES_FREE slots are empty
     u32     next_id;
@@ -689,7 +696,7 @@ struct Sessions {
     // The unsaved sessions in the Library: their tiles stay put while on screen, so a click never moves the others.
     u32     rows[256];
     i32     row_count;
-    f32     scroll, scroll_to; // how far along the row is slid, and where it's gliding to (px)
+    KitStrip strip;           // how far along the row is slid
     bool    name_focus;       // the save prompt's display name field takes the keyboard next frame
     char    name_buf[128];    // the display name being typed in the save prompt
     i32     drawn_frame;
