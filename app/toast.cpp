@@ -5,7 +5,7 @@
 // test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
 //
 // Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
-// Both go after 5 s, counted down by a dial in the top-right corner. While the mouse is on one the count holds at
+// Both go after 5 s, counted down by a ring round their Dismiss X. While the mouse is on one the count holds at
 // full, and starts again from full when the mouse leaves.
 // Clip saved: Edit and Share open the file in the editor on that tab.
 // Session ended: the game's icon, its name and length. Save saves it; Review opens it on the timeline, or the
@@ -46,7 +46,7 @@ struct Toast {
 static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
 static const UINT_PTR TOAST_TICK = 1;
 static const UINT     TOAST_LIFE_MS = 5000, TOAST_TICK_MS = 33; // the dial moves at 30 fps
-static const f32      TOAST_DIAL = 14, TOAST_DIAL_RING = 2;
+static const f32      TOAST_DIAL = 24, TOAST_DIAL_RING = 2;
 
 // Clip saved and Session ended leave the keyboard where it is; the marker window takes it.
 static bool toast_quiet(const Toast &t) { return t.kind != TOAST_MARKER; }
@@ -84,9 +84,9 @@ static RECT toast_rect(const Toast &t, i32 part)
     i32 bw = toast_px(t, TOAST_BUTTON_W), bh = toast_px(t, TOAST_BUTTON_H), gap = toast_px(t, TOAST_BUTTON_GAP);
     i32 row = toast_px(t, toast_height(t.kind) - TOAST_PAD - TOAST_BUTTON_H);
     if (part == TR_TILE) return {pad, pad, pad + tile, pad + tile};
-    if (part == TR_DIAL) {
-        i32 d = toast_px(t, TOAST_DIAL), y = toast_px(t, TOAST_PAD - 4);
-        return {w - toast_px(t, TOAST_PAD - 4) - d, y, w - toast_px(t, TOAST_PAD - 4), y + d};
+    if (part == TR_DIAL) { // round the Dismiss X, inside its button
+        i32 d = toast_px(t, TOAST_DIAL), x = pad + (bh - d) / 2, y = row + (bh - d) / 2;
+        return {x, y, x + d, y + d};
     }
     if (part == TR_FIELD) {
         i32 y = toast_px(t, TOAST_PAD + TOAST_TILE + TOAST_GAP);
@@ -147,6 +147,17 @@ static void toast_marker_close(bool keep)
 
 // Shapes are drawn four times the size and scaled down, which smooths their edges (GDI's own are jagged).
 static const i32 TOAST_SS = 4;
+
+// The Dismiss X, centred in r
+static void toast_draw_x(Toast &t, HDC dc, RECT r)
+{
+    HGDIOBJ old = SelectObject(dc, t.small_icons);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, toast_rgb(t.hot == TP_DISMISS ? COL_TEXT : COL_DIM));
+    const wchar_t cancel[] = {(wchar_t)0xE711, 0}; // Segoe MDL2: Cancel
+    DrawTextW(dc, cancel, 1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, old);
+}
 
 // The toast without its dial, into dc (r, the client size): the shapes first, then the text and the icons at their
 // real size.
@@ -233,7 +244,7 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
 
     // The title over its line, centred on the tile
     i32 tx = tile.right + toast_px(t, TOAST_GAP), mid = (tile.top + tile.bottom) / 2;
-    i32 right = quiet ? toast_rect(t, TR_DIAL).left - toast_px(t, 6) : r.right - toast_px(t, TOAST_PAD);
+    i32 right = r.right - toast_px(t, TOAST_PAD);
     SelectObject(dc, t.title_font);
     SetTextColor(dc, toast_rgb(COL_TEXT));
     RECT t1 = {tx, tile.top - toast_px(t, 4), right, mid + toast_px(t, 1)};
@@ -244,10 +255,7 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     DrawTextW(dc, t.line, -1, &t2, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     RECT dismiss = toast_rect(t, TP_DISMISS);
-    SelectObject(dc, t.small_icons);
-    SetTextColor(dc, toast_rgb(t.hot == TP_DISMISS ? COL_TEXT : COL_DIM));
-    const wchar_t cancel[] = {(wchar_t)0xE711, 0}; // Segoe MDL2: Cancel
-    DrawTextW(dc, cancel, 1, &dismiss, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (!quiet) toast_draw_x(t, dc, dismiss); // a quiet toast's X goes in with its dial
 
     RECT main = toast_rect(t, TP_MAIN);
     SelectObject(dc, t.strong);
@@ -265,8 +273,8 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     DeleteDC(big);
 }
 
-// The countdown dial onto wdc: a thin ring in the accent that empties clockwise from the top over the toast's
-// life, full while the mouse is on it.
+// The countdown dial onto wdc: a thin ring in the accent round the Dismiss X, which empties clockwise from the top
+// over the toast's life (when it ends, the toast is dismissed), full while the mouse is on it.
 static void toast_draw_dial(Toast &t, HDC wdc)
 {
     const i32 SS = TOAST_SS;
@@ -278,7 +286,8 @@ static void toast_draw_dial(Toast &t, HDC wdc)
     HBITMAP big_bmp = CreateCompatibleBitmap(wdc, W, H), bmp = CreateCompatibleBitmap(wdc, w, h);
     HGDIOBJ old_big = SelectObject(big, big_bmp), old_bmp = SelectObject(dc, bmp);
     RECT all = {0, 0, W, H};
-    HBRUSH bg = CreateSolidBrush(toast_rgb(COL_PANEL));
+    u32 back = t.hot == TP_DISMISS ? COL_HOVER : COL_PANEL; // the Dismiss button's own fill
+    HBRUSH bg = CreateSolidBrush(toast_rgb(back));
     FillRect(big, &all, bg);
     DeleteObject(bg);
     HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
@@ -291,7 +300,7 @@ static void toast_draw_dial(Toast &t, HDC wdc)
         f32 a = 3.14159265f * (0.5f - 2 * left), cx = W / 2.f, cy = H / 2.f;
         Pie(big, 0, 0, W + 1, H + 1, (i32)(cx + cx * cosf(a)), (i32)(cy - cy * sinf(a)), (i32)cx, 0);
     }
-    brush(COL_PANEL); // hollowed out to a ring
+    brush(back); // hollowed out to a ring
     i32 ring = toast_px(t, TOAST_DIAL_RING) * SS;
     Ellipse(big, ring, ring, W - ring + 1, H - ring + 1);
     DeleteObject(SelectObject(big, old_brush));
@@ -299,6 +308,8 @@ static void toast_draw_dial(Toast &t, HDC wdc)
     SetStretchBltMode(dc, HALFTONE);
     SetBrushOrgEx(dc, 0, 0, 0);
     StretchBlt(dc, 0, 0, w, h, big, 0, 0, W, H, SRCCOPY);
+    RECT x = {0, 0, w, h};
+    toast_draw_x(t, dc, x);
     BitBlt(wdc, d.left, d.top, w, h, dc, 0, 0, SRCCOPY);
     SelectObject(big, old_big);
     SelectObject(dc, old_bmp);

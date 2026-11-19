@@ -21,7 +21,7 @@ Keep a whole session from start to finish.
 - When an automatic session ends and lasted at least the **minimum session length** (setting, default 15 min), a
   desktop toast asks, laid out like Clip saved: *Session ended*, `Overwatch - 2 h 14 min`, **Review** and **Save**.
   - It appears in the corner of the popups' monitor and never takes the keyboard focus. If a game is in front, it
-    waits until it isn't. It goes after 5 s, counted down by a dial in its corner, unless the mouse is on it.
+    waits until it isn't. It goes after 5 s, counted down by a ring round its Dismiss X, unless the mouse is on it.
   - **Review** opens clipback on the session in the timeline. With several sessions waiting, the toast shows the
     newest with "+N more", and Review opens the Library's unsaved sessions instead.
   - Closing or ignoring it leaves the session in the Sessions screen under *Not saved*. It shows how long the
