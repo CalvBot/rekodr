@@ -273,6 +273,94 @@ static void lib_set_display_name(LibItem *it)
         }
 }
 
+// Comments on clips and sessions: <config_dir>\comments.txt holds a line "<key in hex> | <file name> | <comment>" for
+// each, keyed as games.txt is. The comment goes last so it can hold '|'; its line breaks are written \n and its
+// backslashes \\. Loaded on the UI thread with the folders, and only read there.
+enum { LIB_COMMENT_MAX = 1000 };
+struct ClipComment {
+    u64   key;
+    char  name[256];
+    char *text; // malloc'd
+};
+static ClipComment *g_clip_comments;
+static i32          g_clip_comment_count, g_clip_comment_cap;
+
+// A file's comment, or "".
+static const char *lib_comment(u64 key)
+{
+    for (i32 i = 0; i < g_clip_comment_count; i++)
+        if (g_clip_comments[i].key == key) return g_clip_comments[i].text;
+    return "";
+}
+
+// Sets (or, with an empty text, takes off) a file's comment in memory.
+static void lib_comment_put(u64 key, const char *name, const char *text)
+{
+    i32 i = 0;
+    while (i < g_clip_comment_count && g_clip_comments[i].key != key) i++;
+    if (!*text) {
+        if (i == g_clip_comment_count) return;
+        free(g_clip_comments[i].text);
+        g_clip_comments[i] = g_clip_comments[--g_clip_comment_count];
+        return;
+    }
+    if (i == g_clip_comment_count) {
+        if (g_clip_comment_count == g_clip_comment_cap) {
+            g_clip_comment_cap = g_clip_comment_cap ? 2 * g_clip_comment_cap : 64;
+            g_clip_comments = (ClipComment *)realloc(g_clip_comments, g_clip_comment_cap * sizeof *g_clip_comments);
+        }
+        g_clip_comments[g_clip_comment_count++] = {key, "", 0};
+    }
+    ClipComment &cc = g_clip_comments[i];
+    str_set(cc.name, name);
+    free(cc.text);
+    cc.text = _strdup(text);
+}
+
+static void lib_comments_load()
+{
+    for (i32 i = 0; i < g_clip_comment_count; i++) free(g_clip_comments[i].text);
+    g_clip_comment_count = 0;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"comments.txt").s, L"rb");
+    if (!f) return;
+    static char line[4 * LIB_COMMENT_MAX];
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long key = 0;
+        char name[256] = "";
+        i32 at = 0;
+        if (sscanf(line, "%llx | %255[^|] |%n", &key, name, &at) != 2 || !at || !key) continue;
+        char text[LIB_COMMENT_MAX + 1];
+        i32 n = 0;
+        const char *s = line + at;
+        if (*s == ' ') s++;
+        for (; *s && *s != '\r' && *s != '\n' && n < LIB_COMMENT_MAX; s++) {
+            if (*s == '\\' && s[1] == 'n') text[n++] = '\n', s++;
+            else if (*s == '\\' && s[1] == '\\') text[n++] = '\\', s++;
+            else text[n++] = *s;
+        }
+        text[n] = 0;
+        lib_comment_put(key, trim(name), text);
+    }
+    fclose(f);
+}
+
+static bool lib_comments_save()
+{
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"comments.txt").s, L"wb");
+    if (!f) return false;
+    for (i32 i = 0; i < g_clip_comment_count; i++) {
+        const ClipComment &cc = g_clip_comments[i];
+        fprintf(f, "%llx | %s | ", (unsigned long long)cc.key, cc.name);
+        for (const char *s = cc.text; *s; s++) {
+            if (*s == '\n') fputs("\\n", f);
+            else if (*s == '\\') fputs("\\\\", f);
+            else if (*s != '\r') fputc(*s, f);
+        }
+        fputs("\r\n", f);
+    }
+    return fclose(f) == 0;
+}
+
 // A file's game: the one given by hand, else its own tag, else what its name says.
 static bool lib_set_game(LibItem *it, const char *tagged)
 {
@@ -837,6 +925,7 @@ static void lib_folders_load()
     fclose(f);
     log_line("library: %d folders, %d cards in them", lib.folder_count, lib.filed_count);
     lib_pins_load();
+    lib_comments_load();
 }
 
 static void lib_folders_save()
@@ -1070,7 +1159,8 @@ static void lib_refilter()
         }
         // The list on the left picks by folder or by game, whichever it shows.
         if (by_folder ? in_folder >= 0 && !(fm >> in_folder & 1) : lib.game[0] && strcmp(lib.game, g)) continue;
-        if (!lib_name_matches(it.name, lib.search) && !lib_matches(g, lib.search)) continue;
+        if (!lib_name_matches(it.name, lib.search) && !lib_matches(g, lib.search) && !lib_matches(lib_comment(it.key), lib.search))
+            continue;
         lib.shown[lib.shown_count++] = i;
     }
     // Games most recent first, then Desktop, then files not ours.
@@ -1960,10 +2050,89 @@ static bool lib_game_field(const char *id, LibItem &it, f32 w)
     return changed;
 }
 
+static bool lib_dialog_begin(const char *id);
+static void lib_dialog_end();
+static i32 lib_dialog_pair(const char *action, KitKind kind, f32 right);
+
+// The Comment dialog: the card's name, a box for the comment (several lines, up to LIB_COMMENT_MAX characters) and
+// Cancel / Save. lib_comment_open asks for it; lib_comment_dialog draws it, where the card menu and the player are.
+static LibItem g_comment_item;
+static char    g_comment_buf[LIB_COMMENT_MAX + 1];
+static bool    g_comment_ask, g_comment_focus;
+
+static void lib_comment_open(const LibItem &it)
+{
+    g_comment_item = it;
+    str_set(g_comment_buf, lib_comment(it.key));
+    g_comment_ask = g_comment_focus = true;
+}
+
+// Saves a file's comment (empty takes it off).
+static bool library_set_comment(u64 key, const char *text, const char *name)
+{
+    char t[LIB_COMMENT_MAX + 1];
+    str_set(t, text);
+    char *s = trim(t);
+    if (!strcmp(s, lib_comment(key))) return true;
+    lib_comment_put(key, name, s);
+    log_line("library: comment on %s %s", name, *s ? "set" : "removed");
+    lib_refilter();
+    if (lib_comments_save()) return true;
+    lib_message(true, "Couldn't save the comment on %s", name);
+    return false;
+}
+
+// A box for a comment, w x h, with a dim hint while it's empty. True when it's left after a change.
+static bool lib_comment_box(const char *id, char *buf, i32 cap, f32 w, f32 h)
+{
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::InputTextMultiline(id, buf, cap, ImVec2(w, h), ImGuiInputTextFlags_NoHorizontalScroll);
+    bool done = ImGui::IsItemDeactivatedAfterEdit();
+    if (!buf[0] && !ImGui::IsItemActive()) {
+        ImVec2 pad = ImGui::GetStyle().FramePadding;
+        ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + pad.x, a.y + pad.y), col32(COL_FAINT), "Add a comment");
+    }
+    return done;
+}
+
+static void lib_comment_dialog()
+{
+    if (g_comment_ask) ImGui::OpenPopup("Comment");
+    g_comment_ask = false;
+    if (!lib_dialog_begin("Comment")) return;
+    f32 w = kit_px(460);
+    ImGui::PushFont(g_font_title);
+    ImGui::TextUnformatted("Comment");
+    ImGui::PopFont();
+    char shown[300];
+    const LibItem &it = g_comment_item;
+    if (it.display_name[0]) str_set(shown, it.display_name);
+    else lib_shown_name(it.name, shown, sizeof shown);
+    ImVec2 n = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
+    text_clipped(ImGui::GetWindowDrawList(), n, w, col32(COL_DIM), shown);
+    ImGui::Dummy(ImVec2(1, kit_px(4)));
+    if (g_comment_focus) {
+        ImGui::SetKeyboardFocusHere();
+        g_comment_focus = false;
+    }
+    lib_comment_box("##comment", g_comment_buf, sizeof g_comment_buf, w, 7 * ImGui::GetTextLineHeight() + 2 * ImGui::GetStyle().FramePadding.y);
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+    f32 y = ImGui::GetCursorScreenPos().y, bh = kit_px(34);
+    char count[32];
+    snprintf(count, sizeof count, "%d / %d", (i32)strlen(g_comment_buf), (i32)LIB_COMMENT_MAX);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(n.x, floorf(y + (bh - ImGui::GetTextLineHeight()) / 2)), col32(COL_FAINT), count);
+    i32 b = lib_dialog_pair(ICON_SAVE "  Save", KIT_PRIMARY, n.x + w);
+    if (b == 1) library_set_comment(it.key, g_comment_buf, it.name);
+    if (b) ImGui::CloseCurrentPopup();
+    else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+    lib_dialog_end();
+}
+
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, display_name = false, del = false, folders = false, game = false;
+    bool rename = false, display_name = false, del = false, folders = false, game = false, comment = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -1981,12 +2150,15 @@ static void card_menu()
         if (lib_menu_item(ICON_GAME, "Change game")) game = true;
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
         if (lib_menu_item(ICON_TAG, it.display_name[0] ? "Change the display name" : "Add a display name")) display_name = true;
+        if (lib_menu_item(ICON_COMMENT, "Comment...")) comment = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
     if (rename) lib_rename_start(lib.target);
     if (display_name) lib_rename_start(lib.target, true);
+    if (comment) lib_comment_open(lib.target);
+    lib_comment_dialog();
     if (del) ImGui::OpenPopup("Delete");
     if (game) ImGui::OpenPopup("card_game");
     if (lib_game_picker("card_game", lib.target)) lib_message(false, "%s is filed under %s", lib.target.name, lib.target.info.game);
@@ -2417,7 +2589,15 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     else if (timed) snprintf(line, sizeof line, "%s  -  %s", it.info.game, size); // the name says when
     else snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
     ImGui::PushFont(g_font_small);
-    text_clipped(dl, ImVec2(tx, y), tw, col32(err ? COL_RED : COL_DIM), line);
+    f32 line_w = tw;
+    if (lib_comment(it.key)[0] && !err) { // a note at the line's right end, the same spot on every card
+        f32 gsz = g_font_small->FontSize;
+        ImVec2 gs = g_font_icon->CalcTextSizeA(gsz, FLT_MAX, 0, ICON_COMMENT);
+        dl->AddText(g_font_icon, gsz, ImVec2(floorf(a.x + w - gs.x), floorf(y + (gsz - gs.y) / 2 + kit_px(1))), col32(COL_DIM),
+                    ICON_COMMENT);
+        line_w = tw - gs.x - kit_px(8);
+    }
+    text_clipped(dl, ImVec2(tx, y), line_w, col32(err ? COL_RED : COL_DIM), line);
     ImGui::PopFont();
     if (clicked) library_play(it, it.info.duration > 0 && frac >= 0 ? frac * it.info.duration : 0);
 }
@@ -2438,7 +2618,8 @@ static void lib_player_view()
 
     // Header: back, the name and when, and the actions on the right.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
-    f32 head_h = fmaxf(fh, g_font_big->FontSize + g_font_small->FontSize + kit_px(4));
+    f32 text_h = g_font_big->FontSize + g_font_small->FontSize + kit_px(4) + g_font->FontSize + kit_px(6);
+    f32 head_h = fmaxf(fh, text_h);
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
     bool close = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
     kit_tip("Back to the library", "Esc");
@@ -2449,7 +2630,7 @@ static void lib_player_view()
         acts_w += aw[i] + (i ? st.ItemSpacing.x : 0);
     }
     f32 tx = h0.x + fh + kit_px(14), tw = h0.x + full_w - acts_w - kit_px(24) - tx;
-    f32 ty = h0.y + (head_h - g_font_big->FontSize - g_font_small->FontSize - kit_px(4)) / 2;
+    f32 ty = h0.y + (head_h - text_h) / 2;
     ImGui::PushFont(g_font_big);
     char shown[300];
     bool timed = lib_shown_name(lib.playing.name, shown, sizeof shown);
@@ -2463,6 +2644,33 @@ static void lib_player_view()
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, ty + g_font_big->FontSize + kit_px(4)), tw, col32(COL_DIM), line);
     ImGui::PopFont();
+    // Its comment under that, on one line (its line breaks as gaps); a click opens it whole to change it.
+    {
+        const char *cm = lib_comment(lib.playing.key);
+        char one[LIB_COMMENT_MAX + 1];
+        i32 k = 0;
+        for (const char *s = cm; *s && k < LIB_COMMENT_MAX - 2; s++) {
+            if (*s == '\n') { one[k++] = ' '; one[k++] = ' '; }
+            else one[k++] = *s;
+        }
+        one[k] = 0;
+        f32 cy = ty + g_font_big->FontSize + kit_px(4) + g_font_small->FontSize + kit_px(6);
+        ImVec2 save = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(tx, cy));
+        const char *shown_c = one[0] ? one : "Add a comment";
+        f32 cw = ImMin(ImGui::CalcTextSize(shown_c).x + g_font->FontSize + kit_px(8), tw);
+        bool hit = ImGui::InvisibleButton("##player_comment", ImVec2(ImMax(cw, 1.f), g_font->FontSize));
+        bool hot = ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ImVec2 gs = g_font_icon->CalcTextSizeA(g_font->FontSize, FLT_MAX, 0, ICON_COMMENT);
+        dl->AddText(g_font_icon, g_font->FontSize, ImVec2(tx, floorf(cy + (g_font->FontSize - gs.y) / 2 + kit_px(1))),
+                    col32(hot ? COL_TEXT : COL_DIM), ICON_COMMENT);
+        f32 cx = tx + gs.x + kit_px(8);
+        text_clipped(dl, ImVec2(cx, cy), tx + tw - cx, col32(one[0] ? (hot ? COL_ACCENT : COL_TEXT) : (hot ? COL_DIM : COL_FAINT)), shown_c);
+        if (hit) lib_comment_open(lib.playing);
+        ImGui::SetCursorScreenPos(save);
+    }
+    lib_comment_dialog();
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
     // Copy puts the file on the clipboard; one bigger than the share size offers a share copy first.
     const Editor &ed = g_app.editor;

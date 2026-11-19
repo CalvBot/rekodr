@@ -63,6 +63,9 @@ Keep a whole session from start to finish.
   (`pins.txt` in the config folder).
 - **Display names:** a card can carry a name typed by hand, shown in place of its file name; the file keeps its
   name. They're kept in `names.txt` in the config folder, keyed by each file's size and time.
+- **Comments:** a clip or session can carry a note of up to 1000 characters, over several lines, separate from its
+  display name. It's written from the card's menu (Comment...) or the editor's side panel, shown under the
+  player's title and as a note mark on the card, and search finds it. Kept in `comments.txt` in the config folder.
 - Originals are only deleted when you delete them, and they go to the Recycle Bin.
 
 ## Folders

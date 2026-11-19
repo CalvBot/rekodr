@@ -1782,6 +1782,7 @@ static void ed_edit_tab(f32 w)
     }
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
+
     // Zoom at the playhead: a slider with its value on the right.
     ed_caption("ZOOM");
     f64 z, cx, cy;
@@ -1837,6 +1838,20 @@ static void ed_edit_tab(f32 w)
     if (kit_button(ICON_VIDEO "  Premiere Pro", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(true);
     ImGui::SameLine();
     if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(false);
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // Its comment (the same as the card's), saved when the box is left. The box takes what's left of the panel but
+    // two lines for what the buttons say, so that never moves it.
+    ed_caption("COMMENT");
+    static char comment[LIB_COMMENT_MAX + 1];
+    static u64 comment_key;
+    if (comment_key != ed.item.key) {
+        comment_key = ed.item.key;
+        str_set(comment, lib_comment(ed.item.key));
+    }
+    f32 lh = ImGui::GetTextLineHeight(), box_min = 2 * lh + 2 * st.FramePadding.y;
+    f32 box_h = ImMax(box_min, ImGui::GetContentRegionAvail().y - 2 * ImGui::GetTextLineHeightWithSpacing() - kit_px(6));
+    if (lib_comment_box("##comment", comment, sizeof comment, w, box_h)) library_set_comment(ed.item.key, comment, ed.item.name);
     if (ed.result[0]) {
         ImGui::PushStyleColor(ImGuiCol_Text, rgb(ed.result_error ? 0xff8a92 : COL_DIM));
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);

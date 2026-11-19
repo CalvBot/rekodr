@@ -87,6 +87,7 @@ static void run_command(const char *text)
         else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail
             g_app.config.games_collapsed = !strcmp(arg, "list-collapsed");
         else if (!strcmp(arg, "delete")) g_show_dialog = 1; // the first card's Delete dialog
+        else if (!strcmp(arg, "comment") && lib.shown_count > 0) lib_comment_open(lib.items[lib.shown[0]]); // its Comment
         else if (starts_with(arg, "session-toast")) { // session-toast [<more>]: Session ended for a made-up session
             Session s = {};
             str_set(s.name, "Minecraft");
