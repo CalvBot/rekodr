@@ -1492,8 +1492,8 @@ static void screen_timeline()
         f32 bs = 24 * s;
         bool all = !cfg.timeline_simple;
         ImGui::SetCursorScreenPos(ImVec2(origin.x + 14 * s, floorf(y_ruler + (ruler_h - bs) / 2) - 2 * s));
-        kit_next_tip(all ? "View: every app in its own lane. Clips keep every track either way"
-                         : "View: a lane per kind of sound. Clips keep every track either way");
+        kit_next_tip(all ? "View: every app in its own lane"
+                         : "View: a lane per kind of sound");
         if (kit_icon_button("", "##lanes", KIT_GHOST, true, all, bs)) {
             cfg.timeline_simple = !cfg.timeline_simple;
             tl.lane_scroll = 0;
