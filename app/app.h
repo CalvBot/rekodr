@@ -131,6 +131,7 @@ struct Config {
     // Look
     i32 accent;     // index into ACCENTS (ui.cpp)
     bool games_collapsed; // Library: the games list as a rail of icons
+    bool unsaved_collapsed; // Library: the unsaved sessions row folded to its heading
     i32 card_width; // Library cards: about how wide, in pixels at 100% (Ctrl + wheel over the grid changes it)
     f32 timeline_top;   // Timeline: the share of its height above the tracks (the splitter); 0 = the default
     i32 timeline_names; // Timeline: the track names' column, in pixels at 100% (its edge is dragged); 0 = the default
@@ -651,11 +652,8 @@ struct Sessions {
     // The unsaved sessions in the Library: their tiles stay put while on screen, so a click never moves the others.
     u32     rows[256];
     i32     row_count;
-    i32     page;
+    f32     scroll, scroll_to; // how far along the row is slid, and where it's gliding to (px)
     i32     drawn_frame;
-    u32     comment_id;        // the unsaved session whose comment is being typed, 0 = none
-    bool    comment_focus;     // give its field the keyboard next frame
-    char    comment_buf[128];
 };
 
 static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp the game being played

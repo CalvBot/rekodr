@@ -1882,18 +1882,17 @@ static void lib_calendar()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Unsaved sessions: a row of tiles at the top of Sessions, paged when there are more than fit.
+// Unsaved sessions: a row of tiles at the top of Sessions that slides sideways when there are more than fit.
 
 
 static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask); // timeline.cpp
 static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timeline.cpp
 
 // An unsaved session, drawn like a clip's card: its picture from the buffer (pointing scrubs through it, a click
-// looks at it on the timeline), then its icon, its comment or name, and its length and times. Save and Comment sit
+// looks at it on the timeline), then its icon, the file name it gets when saved, and its length and times. Save sits
 // on the right of the caption. `ask` lets this one read a frame it hasn't got (one tile asks at a time).
 static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
 {
-    Sessions &ss = g_app.sessions;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight(), round = kit_px(10);
     Session *s = session_find(id);
@@ -1912,7 +1911,6 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     ImGui::SetCursorScreenPos(t0);
     ImGui::InvisibleButton("pic", ImVec2(w, thumb_h));
     bool hover = ImGui::IsItemHovered();
-    kit_tip("Look at it on the timeline");
     f32 frac = 0.5f;
     if (hover) {
         frac = (ImGui::GetIO().MousePos.x - t0.x) / w;
@@ -1920,8 +1918,17 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     }
     i64 len = s->end_us - s->start_us, mid = s->start_us + len / 2;
     i64 t = s->start_us + (i64)(frac * (f64)len);
+    // Scrubbing keeps the last frame it showed until the next one is read; the poster before there's one
+    static u32 shown_id;
+    static i64 shown_t;
     ID3D11ShaderResourceView *pic = timeline_keyframe(t, ask);
-    if (!pic && hover) pic = timeline_keyframe(mid, false); // the poster until the new one's read
+    if (pic && hover) {
+        shown_id = id;
+        shown_t = t;
+    } else if (!pic && hover) {
+        if (shown_id == id) pic = timeline_keyframe(shown_t, false);
+        if (!pic) pic = timeline_keyframe(mid, false);
+    }
     if (pic) dl->AddImageRounded((ImTextureID)pic, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
     else {
         i32 cw = 0, ch = 0;
@@ -1966,7 +1973,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     } else session_time_left(*s, text, sizeof text);
     badge(dl, ImVec2(t0.x + in, t0.y + in), false, false, text);
 
-    // The caption: icon, then the title (its comment, else its name) and a dim line; Save and Comment on the right
+    // The caption: icon, then the file name it gets and a dim line; Save on the right
     f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
     ID3D11ShaderResourceView *icon = game_db_icon(s->name);
     if (!icon && s->exe[0]) icon = app_icon(s->exe);
@@ -1983,91 +1990,92 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     ImGui::SetCursorScreenPos(ImVec2(bx, by));
     kit_next_tip(saved ? "Saved" : "Save the session");
     if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) session_save(s);
-    bx -= fh + kit_px(4);
-    ImGui::SetCursorScreenPos(ImVec2(bx, by));
-    bool editing = ss.comment_id == s->id;
-    kit_next_tip(s->comment[0] ? "Change the comment" : "Add a comment");
-    if (kit_icon_button(ICON_CHAT, "##comment", KIT_GHOST) && !editing) {
-        ss.comment_id = s->id;
-        ss.comment_focus = true;
-        str_set(ss.comment_buf, s->comment);
-        editing = true;
-    }
     f32 tx = a.x + isz + kit_px(10), tw = bx - kit_px(8) - tx;
+    char file[300];
+    save_file_name(s->exe, s->name, s->start_us, file, sizeof file); // as session_save names it
     ImGui::PushFont(g_font_bold);
-    if (editing) {
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(4), kit_px(1)));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kit_px(4));
-        ImGui::SetCursorScreenPos(ImVec2(tx - kit_px(4), y - kit_px(1)));
-        ImGui::SetNextItemWidth(tw + kit_px(4));
-        if (ss.comment_focus) {
-            ImGui::SetKeyboardFocusHere();
-            ss.comment_focus = false;
-        }
-        bool enter = ImGui::InputTextWithHint("##text", "Add a comment", ss.comment_buf, sizeof ss.comment_buf,
-                                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-        bool left = ImGui::IsItemDeactivated(), esc = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
-        ImGui::PopStyleVar(2);
-        if (esc) ss.comment_id = 0;
-        else if (enter || left) {
-            for (char *c = ss.comment_buf; *c; c++)
-                if (*c == '\t' || *c == '|') *c = ' ';
-            str_set(s->comment, trim(ss.comment_buf));
-            ss.dirty = true;
-            ss.comment_id = 0;
-            log_line("session %u: comment %s", s->id, s->comment[0] ? "set" : "removed");
-        }
-    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), s->comment[0] ? s->comment : s->name);
+    text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), file);
     ImGui::PopFont();
     y += g_font_bold->FontSize + kit_px(2);
     char from[32], to[32], line[200];
     fmt_clock(s->start_us, from, sizeof from);
     fmt_clock(s->end_us, to, sizeof to);
-    if (s->comment[0] || editing) snprintf(line, sizeof line, "%s  -  %s  -  %s - %s", s->name, len_s, from, to);
-    else snprintf(line, sizeof line, "%s  -  %s - %s", len_s, from, to);
+    snprintf(line, sizeof line, "%s  -  %s - %s", len_s, from, to);
     ImGui::PushFont(g_font_small);
     text_clipped(dl, ImVec2(tx, y), tw, col32(COL_DIM), line);
     ImGui::PopFont();
     ImGui::PopID();
 }
 
-// The row, drawn from the cursor; returns false (and draws nothing) when there are none.
+// The row, drawn from the cursor; returns false (and draws nothing) when there are none. The button beside the
+// heading folds it to the heading alone (kept in the settings). The tiles slide sideways and glide: the wheel over
+// them, or the arrows on the right, a row's width at a time.
 static bool lib_unsaved_row(f32 full_w)
 {
     Sessions &ss = g_app.sessions;
+    ImGuiIO &io = ImGui::GetIO();
     sessions_unsaved_take();
     if (ss.row_count == 0) return false;
     f32 gap = kit_px(14), fh = ImGui::GetFrameHeight();
     i32 per = (i32)((full_w + gap) / (kit_px(280) + gap));
     if (per < 1) per = 1;
-    i32 pages = (ss.row_count + per - 1) / per;
-    if (ss.page >= pages) ss.page = pages - 1;
-    if (ss.page < 0) ss.page = 0;
-    f32 tile_w = floorf((full_w - (per - 1) * gap) / per), thumb_h = floorf(tile_w * 9 / 16);
+    f32 tile_w = floorf((full_w - (per - 1) * gap) / per), thumb_h = floorf(tile_w * 9 / 16), step = tile_w + gap;
+    f32 max_scroll = ss.row_count > per ? (ss.row_count - per) * step : 0;
 
     ImVec2 a = ImGui::GetCursorScreenPos();
+    bool &folded = g_app.config.unsaved_collapsed;
     char head[48];
     snprintf(head, sizeof head, "UNSAVED SESSIONS  %d", ss.row_count);
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + (fh - g_font_small->FontSize) / 2));
     kit_label(head);
-    if (pages > 1) {
-        ImGui::SetCursorScreenPos(ImVec2(a.x + full_w - lib_pager_w(), a.y));
-        lib_pager("unsaved", &ss.page, pages);
+    ImGui::PushFont(g_font_small);
+    f32 head_w = ImGui::CalcTextSize(head).x;
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(a.x + head_w + kit_px(6), a.y));
+    kit_next_tip(folded ? "Show the unsaved sessions" : "Fold the unsaved sessions");
+    if (kit_icon_button(folded ? ICON_RIGHT : ICON_DOWN, "##unsaved_fold")) {
+        folded = !folded;
+        config_save(g_app.config, g_app.paths);
+        log_line("library: unsaved sessions %s", folded ? "folded" : "shown");
     }
-    f32 y = a.y + fh + kit_px(6);
+    if (folded) {
+        ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + fh + kit_px(10)));
+        return true;
+    }
+    if (max_scroll > 0) {
+        ImGui::SetCursorScreenPos(ImVec2(a.x + full_w - 2 * fh - kit_px(2), a.y));
+        kit_next_tip("Earlier ones");
+        if (kit_icon_button(ICON_LEFT, "##unsaved_back", KIT_GHOST, ss.scroll_to > 0.5f)) ss.scroll_to -= per * step;
+        ImGui::SameLine(0, kit_px(2));
+        kit_next_tip("Later ones");
+        if (kit_icon_button(ICON_RIGHT, "##unsaved_on", KIT_GHOST, ss.scroll_to < max_scroll - 0.5f)) ss.scroll_to += per * step;
+    }
+    f32 y = a.y + fh + kit_px(6), row_h = thumb_h + lib_meta_h();
+    ImVec2 m = io.MousePos;
+    bool over = m.x >= a.x && m.x < a.x + full_w && m.y >= y && m.y < y + row_h &&
+                !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
+    if (over && max_scroll > 0 && (io.MouseWheel != 0 || io.MouseWheelH != 0))
+        ss.scroll_to -= (io.MouseWheel + io.MouseWheelH) * step * 0.6f;
+    ss.scroll_to = ImClamp(ss.scroll_to, 0.f, max_scroll);
+    f32 away = ss.scroll_to - ss.scroll;
+    if (fabsf(away) < 0.5f) ss.scroll = ss.scroll_to;
+    else {
+        ss.scroll += away * (1 - expf(-io.DeltaTime * 14));
+        ui_wake();
+    }
+    ss.scroll = ImClamp(ss.scroll, 0.f, max_scroll);
+
     // The tile under the mouse reads its frames first; with none, whichever lacks its poster.
-    ImVec2 m = ImGui::GetIO().MousePos;
-    i32 hovered = -1;
-    for (i32 k = 0; k < per; k++) {
-        f32 x = a.x + k * (tile_w + gap);
-        if (m.x >= x && m.x < x + tile_w && m.y >= y && m.y < y + thumb_h) hovered = k;
+    i32 first = (i32)(ss.scroll / step), hovered = -1;
+    for (i32 r = first; r < ss.row_count && r <= first + per; r++) {
+        f32 x = a.x + r * step - ss.scroll;
+        if (m.x >= ImMax(x, a.x) && m.x < ImMin(x + tile_w, a.x + full_w) && m.y >= y && m.y < y + thumb_h) hovered = r;
     }
-    for (i32 k = 0; k < per; k++) {
-        i32 r = ss.page * per + k;
-        if (r >= ss.row_count) break;
-        lib_unsaved_tile(ss.rows[r], ImVec2(a.x + k * (tile_w + gap), y), tile_w, thumb_h, hovered < 0 || hovered == k);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(a.x, y + thumb_h + lib_meta_h() + kit_px(18)));
+    ImGui::PushClipRect(ImVec2(a.x, y), ImVec2(a.x + full_w, y + row_h), true);
+    for (i32 r = first; r < ss.row_count && r <= first + per; r++)
+        lib_unsaved_tile(ss.rows[r], ImVec2(floorf(a.x + r * step - ss.scroll), y), tile_w, thumb_h, hovered < 0 || hovered == r);
+    ImGui::PopClipRect();
+    ImGui::SetCursorScreenPos(ImVec2(a.x, y + row_h + kit_px(18)));
     return true;
 }
 
