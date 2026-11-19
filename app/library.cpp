@@ -1533,10 +1533,128 @@ static void library_hover_end_frame()
     if (lib.hover.open) player_update(&lib.hover);
 }
 
+// "Change game": a search box over the games. Rows: names that are what's typed first, then the library's games,
+// then the art service's for what's typed (when it can be asked), and last the name as typed, so it works offline
+// too. The rows and the line under them keep their place as results come in. A pick (or Enter, the first row)
+// files the card under it.
+static void lib_game_picker()
+{
+    Library &lib = g_app.library;
+    const i32 ROWS = 7;
+    static char typed[64], settled[64];
+    static f64 changed_at;
+    ImGui::SetNextWindowSize(ImVec2(kit_px(360), 0));
+    lib_popup_style_push(10);
+    bool open = ImGui::BeginPopup("card_game");
+    lib_popup_style_pop();
+    if (!open) return;
+    const LibItem &it = lib.target;
+    if (ImGui::IsWindowAppearing()) {
+        typed[0] = settled[0] = 0;
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(-1);
+    bool enter = ImGui::InputTextWithHint("##game_q", "Search for a game", typed, sizeof typed,
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::IsItemEdited()) changed_at = ImGui::GetTime();
+    // The art service is asked once the text has stayed the same a moment, not for each key
+    if (strcmp(settled, typed) && ImGui::GetTime() - changed_at > 0.35) str_set(settled, typed);
+    char q[64], sq[64];
+    str_set(q, typed);
+    str_set(sq, settled);
+    char *tq = trim(q), *ts = trim(sq);
+
+    static char online[8][128], names[ROWS][128];
+    static i32 online_years[8];
+    i32 years[ROWS] = {}, no = *ts ? gamedb_find_online(ts, online, online_years, 8) : 0;
+    bool from_lib[ROWS] = {};
+    char want[128], letters[128];
+    gdb_letters(tq, want, sizeof want);
+    i32 n = 0, cap = *tq ? ROWS - 1 : ROWS; // with something typed, the last row is the name as typed
+    auto add = [&](const char *name, i32 year, bool lib_game) {
+        if (n >= cap || !name[0]) return;
+        gdb_letters(name, letters, sizeof letters);
+        for (i32 d = 0; d < n; d++) {
+            char seen[128];
+            gdb_letters(names[d], seen, sizeof seen);
+            if (!strcmp(seen, letters)) return;
+        }
+        str_set(names[n], name);
+        years[n] = year;
+        from_lib[n++] = lib_game;
+    };
+    for (i32 pass = 0; pass < 3; pass++) { // 0: what's typed, exactly; 1: the library's; 2: the art service's
+        for (i32 i = 0; i < lib.game_count; i++) {
+            const char *g = lib.games[i];
+            if (!strcmp(g, "Other") || (*tq && !lib_matches(g, tq))) continue;
+            gdb_letters(g, letters, sizeof letters);
+            if (pass == 1 || (pass == 0 && *tq && !strcmp(letters, want))) add(g, 0, true);
+        }
+        for (i32 i = 0; i < no && pass != 1; i++) {
+            gdb_letters(online[i], letters, sizeof letters);
+            if (pass == 2 || !strcmp(letters, want)) add(online[i], online_years[i], false);
+        }
+    }
+    bool typed_row = false;
+    if (*tq) {
+        cap = ROWS;
+        i32 before = n;
+        add(tq, 0, false);
+        typed_row = n > before;
+    }
+
+    const char *pick = 0;
+    f32 w = ImGui::GetContentRegionAvail().x, rh = kit_px(38), is = kit_px(26);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 l0 = ImGui::GetCursorScreenPos();
+    l0.y += kit_px(4);
+    for (i32 i = 0; i < n; i++) {
+        ImVec2 r0(l0.x, l0.y + i * rh);
+        ImGui::SetCursorScreenPos(r0);
+        ImGui::PushID(i);
+        if (ImGui::Selectable("##game_row", !strcmp(names[i], it.info.game), 0, ImVec2(w, rh - kit_px(2)))) pick = names[i];
+        ImGui::PopID();
+        ImVec2 i0(r0.x + kit_px(6), floorf(r0.y + (rh - kit_px(2) - is) / 2));
+        ID3D11ShaderResourceView *icon = game_db_icon(names[i]);
+        if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1),
+                                      IM_COL32_WHITE, kit_px(5));
+        else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), kit_px(5));
+        char note[16] = "";
+        if (typed_row && i == n - 1) str_set(note, "As typed");
+        else if (from_lib[i]) str_set(note, "In the library");
+        else if (years[i]) snprintf(note, sizeof note, "%d", years[i]);
+        f32 right = r0.x + w - kit_px(8);
+        if (note[0]) {
+            f32 nw = g_font_small->CalcTextSizeA(g_font_small->FontSize, FLT_MAX, 0, note).x;
+            right -= nw;
+            dl->AddText(g_font_small, g_font_small->FontSize,
+                        ImVec2(right, floorf(r0.y + (rh - kit_px(2) - g_font_small->FontSize) / 2)), col32(COL_FAINT), note);
+            right -= kit_px(10);
+        }
+        text_clipped(dl, ImVec2(i0.x + is + kit_px(10), floorf(r0.y + (rh - kit_px(2) - ImGui::GetFontSize()) / 2)),
+                     right - (i0.x + is + kit_px(10)), col32(COL_TEXT), names[i]);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(l0.x, l0.y + ROWS * rh));
+    bool looking = strcmp(settled, typed) || no < 0;
+    kit_dim(looking ? "Searching..." : n ? " " : "Type the game's name");
+    if (enter && n) pick = names[0];
+    if (pick) {
+        char g[64];
+        str_set(g, pick); // names[] is rewritten next frame, and the rescan rewrites the library's list
+        if (strcmp(g, it.info.game) && library_set_game(it, g)) {
+            str_set(lib.target.info.game, g);
+            lib_message(false, "%s is filed under %s", it.name, g);
+            gamedb_clip_game(it, g);
+        }
+        ImGui::CloseCurrentPopup();
+    } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, comment = false, del = false, folders = false;
+    bool rename = false, comment = false, del = false, folders = false, game = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -1551,6 +1669,7 @@ static void card_menu()
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
         if (lib_menu_item(ICON_ADD, "Add to a folder")) folders = true;
+        if (lib_menu_item(ICON_GAME, "Change game")) game = true;
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
         if (lib_menu_item(ICON_CHAT, it.comment[0] ? "Change the comment" : "Add a comment")) comment = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
@@ -1560,6 +1679,8 @@ static void card_menu()
     if (rename) lib_rename_start(lib.target);
     if (comment) lib_rename_start(lib.target, true);
     if (del) ImGui::OpenPopup("Delete");
+    if (game) ImGui::OpenPopup("card_game");
+    lib_game_picker();
     // The card's folders, ticked when it's in one: a click puts it in or takes it out. New folder makes one with
     // it in and names it in the list.
     if (folders) ImGui::OpenPopup("card_folders");
