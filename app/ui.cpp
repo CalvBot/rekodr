@@ -1232,6 +1232,7 @@ static void ui_frame()
     ImGuiContext &g = *ImGui::GetCurrentContext();
     g.DebugLogFlags = ImGuiDebugLogFlags_EventError | ImGuiDebugLogFlags_OutputToTTY |
                       (g_dev ? ImGuiDebugLogFlags_EventPopup | ImGuiDebugLogFlags_EventFocus : 0);
+    ImGui::GetIO().ConfigDebugHighlightIdConflicts = g_dev; // ImGui's ID conflict box is for the detailed log only
     if (g_dev) dev_input();
 
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::IsPopupOpen("Help")) {

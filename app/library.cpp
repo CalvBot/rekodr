@@ -1375,7 +1375,9 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
 {
     f32 h = kit_px(30), is = kit_px(20);
     ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::PushID(label); // rows that share an ID stack (All, the folders, New folder) differ by their label
     bool clicked = ImGui::InvisibleButton("##game", ImVec2(w, h));
+    ImGui::PopID();
     bool hot = ImGui::IsItemHovered();
     if (collapsed) kit_tip(label);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
