@@ -11,6 +11,11 @@
 
 static void editor_open(const LibItem &item); // editor.cpp
 
+// Detailed log: how long after a switch between Clips and Sessions every card and tile on screen has its picture.
+static i64 g_lib_switch_us;
+static i32 g_lib_missing; // pictures on screen still missing this frame
+static i64 g_lib_first_us; // the first frame drawn after the switch
+
 enum LibTaskKind : u8 { LT_SCAN, LT_THUMB, LT_STRIP };
 enum { LIB_STRIP_FRAMES = 24 };
 
@@ -1684,6 +1689,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
                 ImGui::IsMouseHoveringRect(t0, ImVec2(t1.x, t1.y + meta_h));
     f32 round = kit_px(10);
     LibThumb *th = lib_thumb(it);
+    if (!(th && (th->srv || th->failed)) && it.probed && it.info.duration > 0) g_lib_missing++;
     if (!renaming && ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload("LIB_CARD", &it.key, sizeof it.key);
         if (th && th->srv) ImGui::Image((ImTextureID)(intptr_t)th->srv, ImVec2(kit_px(112), kit_px(63)));
@@ -2050,6 +2056,8 @@ static void lib_set_view(LibView v)
 {
     Library &lib = g_app.library;
     if (lib.view == v) return;
+    g_lib_switch_us = now_us();
+    g_lib_first_us = 0;
     lib.view = v;
     lib.game[0] = 0;
     lib.folder[0] = 0;
@@ -2172,6 +2180,7 @@ static void lib_calendar()
 
 
 static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask); // timeline.cpp
+
 static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timeline.cpp
 
 // An unsaved session, drawn like a clip's card: its picture from the buffer (pointing scrubs through it, a click
@@ -2217,6 +2226,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
         if (shown_id == id) pic = timeline_keyframe(shown_t, false);
         if (!pic) pic = timeline_keyframe(mid, false);
     }
+    if (!pic) g_lib_missing++;
     if (pic) dl->AddImageRounded((ImTextureID)pic, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
     else {
         i32 cw = 0, ch = 0;
@@ -2731,6 +2741,7 @@ static void screen_library()
         full_w -= side_w + side_gap;
     }
 
+    g_lib_missing = 0;
     if (lib.view == LIB_SESSIONS) lib_unsaved_row(full_w);
 
 
@@ -2854,6 +2865,13 @@ static void screen_library()
     lib.open_menu = false;
     card_menu();
     delete_modal();
+    if (g_lib_switch_us && !g_lib_first_us) g_lib_first_us = now_us();
+    if (g_lib_switch_us && lib.scanned && !g_lib_missing) {
+        DEV_LOG("library: %s drawn %.0f ms after the switch, with all its pictures %.0f ms after that",
+                lib.view == LIB_CLIPS ? "clips" : "sessions", (g_lib_first_us - g_lib_switch_us) / 1000.0,
+                (now_us() - g_lib_first_us) / 1000.0);
+        g_lib_switch_us = 0;
+    }
 
     // Footer: how many, and the last message.
     ImGui::SetCursorScreenPos(ImVec2(g0.x, g0.y + grid_h + kit_px(8)));
