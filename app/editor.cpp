@@ -1840,8 +1840,7 @@ static void ed_edit_tab(f32 w)
     if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(false);
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
-    // Its comment (the same as the card's), saved when the box is left. The box takes what's left of the panel but
-    // two lines for what the buttons say, so that never moves it.
+    // Its comment (the same as the card's), saved when the box is left.
     ed_caption("COMMENT");
     static char comment[LIB_COMMENT_MAX + 1];
     static u64 comment_key;
@@ -1849,8 +1848,7 @@ static void ed_edit_tab(f32 w)
         comment_key = ed.item.key;
         str_set(comment, lib_comment(ed.item.key));
     }
-    f32 lh = ImGui::GetTextLineHeight(), box_min = 2 * lh + 2 * st.FramePadding.y;
-    f32 box_h = ImMax(box_min, ImGui::GetContentRegionAvail().y - 2 * ImGui::GetTextLineHeightWithSpacing() - kit_px(6));
+    f32 box_h = 5 * ImGui::GetTextLineHeight() + 2 * st.FramePadding.y;
     if (lib_comment_box("##comment", comment, sizeof comment, w, box_h)) library_set_comment(ed.item.key, comment, ed.item.name);
     if (ed.result[0]) {
         ImGui::PushStyleColor(ImGuiCol_Text, rgb(ed.result_error ? 0xff8a92 : COL_DIM));
@@ -2261,8 +2259,19 @@ static void screen_editor()
         static const char *const tabs[] = {"Edit", "Keep & share"};
         kit_segmented("##tab", tabs, 2, &ed.tab, (cw - kit_px(6)) / 2);
         ImGui::Dummy(ImVec2(1, kit_px(6)));
+        // The tab scrolls when it's taller than the panel: a thin bar out in the card's right margin, so the
+        // controls keep their width whether it shows or not.
+        f32 bar = kit_px(10);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, bar);
+        ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, kit_px(3));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, rgb(COL_PANEL, 0));
+        ImGui::BeginChild("##ed_tab_body", ImVec2(cw + bar, ImGui::GetContentRegionAvail().y));
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(3);
         if (ed.tab == 0) ed_edit_tab(cw);
         else ed_share_tab(cw);
+        ImGui::EndChild();
     }
     kit_card_end();
 
