@@ -846,6 +846,7 @@ static int lib_sort_cmp(const void *pa, const void *pb)
 static void lib_message(bool error, const char *fmt, ...);
 static void lib_refilter();
 static void lib_pins_load();
+static const char *lib_noun(i32 n);
 
 static const char *lib_view_word(LibView v) { return v == LIB_SESSIONS ? "sessions" : "clips"; }
 
@@ -1299,9 +1300,9 @@ static void lib_drop_queued_thumbs()
 static void lib_message(bool error, const char *fmt, ...);
 static void library_rescan();
 
-// Sets `key`'s line in a "<key> | <value> | <file name>" file (games.txt, names.txt): any old line goes, and an
-// empty value leaves none. Then a rescan shows it.
-static bool lib_keyed_write(const wchar_t *file, u64 key, const char *value, const char *name)
+// Sets the lines of n keys (names[i] is keys[i]'s file name) in a "<key> | <value> | <file name>" file (games.txt,
+// names.txt) to one value: their old lines go, and an empty value leaves none. Then a rescan shows it.
+static bool lib_keyed_write(const wchar_t *file, const u64 *keys, const char *const *names, i32 n_keys, const char *value)
 {
     char v[128];
     str_set(v, value);
@@ -1318,17 +1319,21 @@ static bool lib_keyed_write(const wchar_t *file, u64 key, const char *value, con
     old[n] = 0;
     FILE *f = _wfopen(path.s, L"wb");
     if (!f) {
-        lib_message(true, "Couldn't save that for %s", name);
+        lib_message(true, "Couldn't save that for %s", n_keys == 1 ? names[0] : "them");
         return false;
     }
     for (char *line = old; *line;) {
         char *end = strchr(line, '\n');
         size_t len = end ? (size_t)(end - line + 1) : strlen(line);
         unsigned long long k = 0;
-        if (!(sscanf(line, "%llx", &k) == 1 && k == key)) fwrite(line, 1, len, f);
+        bool ours = false;
+        if (sscanf(line, "%llx", &k) == 1)
+            for (i32 i = 0; i < n_keys && !ours; i++) ours = keys[i] == k;
+        if (!ours) fwrite(line, 1, len, f);
         line += len;
     }
-    if (*t) fprintf(f, "%llx | %s | %s\r\n", (unsigned long long)key, t, name);
+    if (*t)
+        for (i32 i = 0; i < n_keys; i++) fprintf(f, "%llx | %s | %s\r\n", (unsigned long long)keys[i], t, names[i]);
     fclose(f);
     library_rescan();
     return true;
@@ -1342,14 +1347,15 @@ static bool library_set_game(const LibItem &it, const char *game)
     char *t = trim(g);
     if (!*t || strchr(t, '|')) return false;
     log_line("library: %s is now %s", it.name, t);
-    return lib_keyed_write(L"games.txt", it.key, t, it.name);
+    const char *name = it.name;
+    return lib_keyed_write(L"games.txt", &it.key, &name, 1, t);
 }
 
 // A display name for a file (empty takes it off).
 static bool library_set_display_name(u64 key, const char *text, const char *name)
 {
     log_line("library: display name on %s %s", name, text[0] ? "set" : "removed");
-    return lib_keyed_write(L"names.txt", key, text, name);
+    return lib_keyed_write(L"names.txt", &key, &name, 1, text);
 }
 
 static void lib_message(bool error, const char *fmt, ...)
@@ -1399,6 +1405,14 @@ static void library_on_event(const Event &e)
     }
     case LIB_EV_RESULTS: lib_take_results(); break;
     case LIB_EV_MEDIA: player_on_media(e); break;
+    case LIB_EV_DELETED: {
+        i32 all = (i32)(e.b >> 32), gone = (i32)(e.b & 0xffffffff);
+        lib.deleting = false;
+        if (gone == all) lib_message(false, "%d %s went to the Recycle Bin", gone, lib_noun(gone));
+        else lib_message(true, "%d of %d %s couldn't be deleted", all - gone, all, lib_noun(all));
+        library_rescan();
+        break;
+    }
     }
 }
 
@@ -1894,10 +1908,9 @@ static bool g_game_pick_show;      // `show game`: the editor's picker opens
 
 // "Change game": a search box over the games. Rows: names that are what's typed first, then the library's games,
 // then the art service's for what's typed (when it can be asked), and last the name as typed, so it works offline
-// too. The rows and the line under them keep their place as results come in. A pick (or Enter, the first row)
-// files `it` under it and tells the art service (gamedb_clip_game). The popup `id` is opened by the caller; true
-// when the game changed.
-static bool lib_game_picker(const char *id, LibItem &it)
+// too. The rows and the line under them keep their place as results come in. `current` is the game lit in the
+// list. The popup `id` is opened by the caller; returns the game picked (or Enter, the first row), else null.
+static const char *lib_game_pick(const char *id, const char *current)
 {
     Library &lib = g_app.library;
     const i32 ROWS = 7;
@@ -1907,8 +1920,7 @@ static bool lib_game_picker(const char *id, LibItem &it)
     lib_popup_style_push(10);
     bool open = ImGui::BeginPopup(id);
     lib_popup_style_pop();
-    if (!open) return false;
-    bool changed = false;
+    if (!open) return 0;
     if (ImGui::IsWindowAppearing()) {
         str_set(typed, g_game_pick_typed);
         settled[0] = g_game_pick_typed[0] = 0;
@@ -1979,7 +1991,7 @@ static bool lib_game_picker(const char *id, LibItem &it)
         ImVec2 r0(l0.x, l0.y + i * rh);
         ImGui::SetCursorScreenPos(r0);
         ImGui::PushID(i);
-        if (ImGui::Selectable("##game_row", !strcmp(names[i], it.info.game), 0, ImVec2(w, rh - kit_px(2)))) pick = names[i];
+        if (ImGui::Selectable("##game_row", !strcmp(names[i], current), 0, ImVec2(w, rh - kit_px(2)))) pick = names[i];
         ImGui::PopID();
         ImVec2 i0(r0.x + kit_px(6), floorf(r0.y + (rh - kit_px(2) - is) / 2));
         ID3D11ShaderResourceView *icon = game_db_icon(names[i]);
@@ -2010,18 +2022,26 @@ static bool lib_game_picker(const char *id, LibItem &it)
     bool looking = strcmp(settled, typed) || no < 0;
     kit_dim(looking ? "Searching..." : n ? " " : "Type the game's name");
     if (enter && n) pick = names[0];
+    static char picked[64]; // names[] is rewritten next frame, and a rescan rewrites the library's list
+    const char *got = 0;
     if (pick) {
-        char g[64];
-        str_set(g, pick); // names[] is rewritten next frame, and the rescan rewrites the library's list
-        if (strcmp(g, it.info.game) && library_set_game(it, g)) {
-            str_set(it.info.game, g);
-            gamedb_clip_game(it, g);
-            changed = true;
-        }
+        str_set(picked, pick);
+        got = picked;
         ImGui::CloseCurrentPopup();
     } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
-    return changed;
+    return got;
+}
+
+// The picker for one card: a pick files `it` under the game and tells the art service (gamedb_clip_game). True when
+// the game changed.
+static bool lib_game_picker(const char *id, LibItem &it)
+{
+    const char *g = lib_game_pick(id, it.info.game);
+    if (!g || !strcmp(g, it.info.game) || !library_set_game(it, g)) return false;
+    str_set(it.info.game, g);
+    gamedb_clip_game(it, g);
+    return true;
 }
 
 // A game field (the editor's): the game, or "None", on a button `w` wide that opens the picker under it. True when
@@ -2419,11 +2439,333 @@ static void delete_modal()
     lib_dialog_end();
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Selecting several cards to act on together: their keys, kept in order so a card finds itself quickly. Only the
+// view's shown cards count; the selection clears when the view or a filter changes (lib_sel_track).
+
+static i32 lib_sel_slot(u64 key) // where key is or would go in lib.selected
+{
+    const Library &lib = g_app.library;
+    i32 lo = 0, hi = lib.selected_count;
+    while (lo < hi) {
+        i32 mid = (lo + hi) / 2;
+        if (lib.selected[mid] < key) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static bool lib_selected(u64 key)
+{
+    const Library &lib = g_app.library;
+    i32 i = lib_sel_slot(key);
+    return i < lib.selected_count && lib.selected[i] == key;
+}
+
+static void lib_sel_set(u64 key, bool on)
+{
+    Library &lib = g_app.library;
+    i32 i = lib_sel_slot(key);
+    bool in = i < lib.selected_count && lib.selected[i] == key;
+    if (on == in) return;
+    if (on) {
+        memmove(&lib.selected[i + 1], &lib.selected[i], (lib.selected_count - i) * sizeof lib.selected[0]);
+        lib.selected[i] = key;
+        lib.selected_count++;
+    } else {
+        memmove(&lib.selected[i], &lib.selected[i + 1], (lib.selected_count - i - 1) * sizeof lib.selected[0]);
+        lib.selected_count--;
+    }
+}
+
+static void lib_sel_clear()
+{
+    Library &lib = g_app.library;
+    lib.selected_count = 0;
+    lib.select_anchor = 0;
+}
+
+static void lib_sel_all()
+{
+    Library &lib = g_app.library;
+    for (i32 s = 0; s < lib.shown_count; s++) lib_sel_set(lib.items[lib.shown[s]].key, true);
+}
+
+// Shift + click: every card from the anchor to this one, in the grid's order, is selected (no anchor: this one).
+static void lib_sel_range(u64 to)
+{
+    Library &lib = g_app.library;
+    i32 from_at = -1, to_at = -1;
+    for (i32 s = 0; s < lib.shown_count; s++) {
+        u64 k = lib.items[lib.shown[s]].key;
+        if (k == lib.select_anchor) from_at = s;
+        if (k == to) to_at = s;
+    }
+    if (to_at < 0) return;
+    if (from_at < 0) from_at = to_at;
+    for (i32 s = ImMin(from_at, to_at); s <= ImMax(from_at, to_at); s++) lib_sel_set(lib.items[lib.shown[s]].key, true);
+    lib.select_anchor = to;
+}
+
+// The selected cards that are shown, as indices into lib.items in the grid's order; how many.
+static i32 lib_sel_indices(i32 *out)
+{
+    const Library &lib = g_app.library;
+    i32 n = 0;
+    if (lib.selected_count == 0) return 0;
+    for (i32 s = 0; s < lib.shown_count; s++)
+        if (lib_selected(lib.items[lib.shown[s]].key)) out[n++] = lib.shown[s];
+    return n;
+}
+
+// Once a frame: the selection clears when the view or a filter changes, and drops cards no longer shown (once a
+// scan has settled, so cards coming back from a rescan stay ticked).
+static void lib_sel_track()
+{
+    Library &lib = g_app.library;
+    u64 h = fnv64(&lib.view, sizeof lib.view);
+    h = fnv64(&lib.range, sizeof lib.range, h);
+    h = fnv64(&lib.range_from, sizeof lib.range_from, h);
+    h = fnv64(&lib.range_to, sizeof lib.range_to, h);
+    h = fnv64(&lib.sort, sizeof lib.sort, h);
+    h = fnv64(lib.search, strlen(lib.search), h);
+    h = fnv64(lib.game, strlen(lib.game), h);
+    h = fnv64(lib.folder, strlen(lib.folder), h);
+    h = fnv64(&g_app.config.side_folders, sizeof g_app.config.side_folders, h);
+    if (h != lib.select_filter) {
+        lib.select_filter = h;
+        lib_sel_clear();
+    }
+    if (lib.scanning || lib.selected_count == 0) return;
+    static i32 idx[LIB_MAX_ITEMS];
+    i32 n = lib_sel_indices(idx);
+    if (n == lib.selected_count) return;
+    lib.selected_count = 0;
+    for (i32 i = 0; i < n; i++) lib_sel_set(lib.items[idx[i]].key, true);
+}
+
+static const char *lib_noun(i32 n)
+{
+    return g_app.library.view == LIB_CLIPS ? (n == 1 ? "clip" : "clips") : (n == 1 ? "session" : "sessions");
+}
+
+// Puts the selected cards in folder fi, or takes them out of it: one save, one message.
+static void lib_sel_folder_put(i32 fi, bool in)
+{
+    Library &lib = g_app.library;
+    static i32 idx[LIB_MAX_ITEMS];
+    i32 n = lib_sel_indices(idx);
+    u64 b = 1ull << fi;
+    for (i32 i = 0; i < n; i++) {
+        u64 key = lib.items[idx[i]].key, m = lib_folder_mask(key);
+        if (((m & b) != 0) != in) lib_folder_mask_set(key, in ? m | b : m & ~b);
+    }
+    if (in) lib_message(false, "Added %d %s to %s", n, lib_noun(n), lib.folders[fi].name);
+    else lib_message(false, "Took %d %s out of %s", n, lib_noun(n), lib.folders[fi].name);
+    log_line("library: %d %s %s %s", n, lib_noun(n), in ? "put in" : "taken out of", lib.folders[fi].name);
+    lib_folders_save();
+    lib_refilter();
+}
+
+// Files the selected cards under one game (one write of games.txt) and tells the art service about each.
+static void lib_sel_set_game(const char *game)
+{
+    Library &lib = g_app.library;
+    static i32 idx[LIB_MAX_ITEMS];
+    static u64 keys[LIB_MAX_ITEMS];
+    static const char *names[LIB_MAX_ITEMS];
+    static LibItem items[LIB_MAX_ITEMS / 8]; // copies told to the art service; a rescan rewrites lib.items
+    i32 n = lib_sel_indices(idx), m = 0;
+    for (i32 i = 0; i < n; i++) {
+        const LibItem &it = lib.items[idx[i]];
+        if (!strcmp(it.info.game, game)) continue;
+        keys[m] = it.key;
+        names[m++] = it.name;
+    }
+    if (m == 0) return;
+    for (i32 i = 0, told = 0; i < n && told < COUNT(items); i++)
+        if (strcmp(lib.items[idx[i]].info.game, game)) items[told++] = lib.items[idx[i]];
+    if (!lib_keyed_write(L"games.txt", keys, names, m, game)) return;
+    log_line("library: %d %s are now %s", m, lib_noun(m), game);
+    for (i32 i = 0; i < m && i < COUNT(items); i++) {
+        str_set(items[i].info.game, game);
+        gamedb_clip_game(items[i], game);
+    }
+    lib_message(false, "%d %s filed under %s", m, lib_noun(m), game);
+}
+
+// Deleting the selection: each file (and its edit) goes to the Recycle Bin on a thread of its own, then the grid
+// is scanned again once.
+struct LibDeleteJob {
+    Path *files; // the videos and their edits, an empty path where a video has none
+    i32   count; // videos
+};
+
+static DWORD WINAPI lib_delete_thread(void *arg)
+{
+    LibDeleteJob *job = (LibDeleteJob *)arg;
+    CoInitializeEx(0, COINIT_APARTMENTTHREADED);
+    i32 gone = 0;
+    for (i32 i = 0; i < job->count; i++) {
+        static wchar_t from[2 * MAX_PATH + 4];
+        memset(from, 0, sizeof from);
+        const Path &video = job->files[2 * i], &edit = job->files[2 * i + 1];
+        size_t n = wcslen(video.s);
+        memcpy(from, video.s, n * sizeof(wchar_t));
+        if (edit.s[0]) memcpy(from + n + 1, edit.s, wcslen(edit.s) * sizeof(wchar_t));
+        SHFILEOPSTRUCTW op = {};
+        op.wFunc = FO_DELETE;
+        op.pFrom = from;
+        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+        int r = SHFileOperationW(&op);
+        if (r == 0 && !op.fAnyOperationsAborted) gone++;
+        else log_line("library: a file didn't go to the Recycle Bin (%d)", r);
+    }
+    CoUninitialize();
+    Event e = {};
+    e.kind = EV_LIBRARY;
+    e.a = LIB_EV_DELETED;
+    e.b = ((i64)job->count << 32) | gone;
+    free(job->files);
+    free(job);
+    event_post(e);
+    return 0;
+}
+
+static void lib_sel_delete()
+{
+    Library &lib = g_app.library;
+    static i32 idx[LIB_MAX_ITEMS];
+    i32 n = lib_sel_indices(idx);
+    if (n == 0 || lib.deleting) return;
+    LibDeleteJob *job = (LibDeleteJob *)calloc(1, sizeof *job);
+    job->files = (Path *)calloc(2 * n, sizeof(Path));
+    job->count = n;
+    player_close(&lib.hover);
+    for (i32 i = 0; i < n; i++) {
+        const LibItem &it = lib.items[idx[i]];
+        Path path = lib_item_path(it), edit = lib_edit_path(it);
+        if (lib.player.open && !wcscmp(lib.player.path.s, path.s)) library_close_player();
+        job->files[2 * i] = path;
+        if (file_exists(edit.s)) job->files[2 * i + 1] = edit;
+    }
+    log_line("library: deleting %d %s", n, lib_noun(n));
+    lib_message(false, "Deleting %d %s...", n, lib_noun(n));
+    lib.deleting = true;
+    lib_sel_clear();
+    HANDLE t = CreateThread(0, 0, lib_delete_thread, job, 0, 0);
+    if (t) CloseHandle(t);
+    else {
+        lib.deleting = false;
+        free(job->files);
+        free(job);
+        lib_message(true, "Couldn't delete them");
+    }
+}
+
+// The selection's Delete dialog: "Delete 3 clips?" over the first names.
+static void lib_sel_delete_modal()
+{
+    Library &lib = g_app.library;
+    if (!lib_dialog_begin("Delete selected")) return;
+    static i32 idx[LIB_MAX_ITEMS];
+    i32 n = lib_sel_indices(idx);
+    char title[64], names[300] = "";
+    snprintf(title, sizeof title, "Delete %d %s?", n, lib_noun(n));
+    i32 len = 0, listed = 0;
+    for (; listed < n && listed < 3; listed++) {
+        const LibItem &it = lib.items[idx[listed]];
+        len += snprintf(names + len, sizeof names - len, "%s%s", listed ? ", " : "", it.display_name[0] ? it.display_name : it.name);
+        if (len >= (i32)sizeof names - 1) break;
+    }
+    if (n > listed && len < (i32)sizeof names - 1) snprintf(names + len, sizeof names - len, " and %d more", n - listed);
+    i32 b = lib_confirm(title, names, 0, 0, 0, false, ICON_DELETE "  Delete", KIT_DANGER);
+    if (b == 1) lib_sel_delete();
+    if (b != 0 || n == 0 || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    lib_dialog_end();
+}
+
+// A button of the selection bar: an icon and a word on a quiet fill, red for Delete. True when clicked.
+static bool lib_bar_button(const char *id, const char *icon, const char *label, bool danger = false)
+{
+    f32 h = ImGui::GetFrameHeight(), pad = kit_px(12), gap = kit_px(8), round = ImGui::GetStyle().FrameRounding;
+    f32 isz = g_font->FontSize;
+    ImVec2 is = g_font_icon->CalcTextSizeA(isz, FLT_MAX, 0, icon), ts = ImGui::CalcTextSize(label);
+    f32 w = pad + is.x + gap + ts.x + pad;
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool hit = ImGui::InvisibleButton(id, ImVec2(w, h)) && !kit_closed_here(ImGui::GetItemID());
+    if (hit) dev_click("button", label);
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    u32 fill = danger ? (hot ? 0x4a2025 : COL_RED_SOFT) : (hot ? COL_HOVER : COL_PANEL2);
+    u32 ink = danger ? 0xff8a92 : COL_TEXT;
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(fill), round);
+    dl->AddText(g_font_icon, isz, ImVec2(a.x + pad, floorf(a.y + (h - is.y) / 2)), col32(danger ? ink : COL_DIM), icon);
+    dl->AddText(ImVec2(a.x + pad + is.x + gap, floorf(a.y + (h - ts.y) / 2)), col32(ink), label);
+    ImGui::SameLine(0, kit_px(6));
+    return hit;
+}
+
+// The selection bar, in place of the date, order and search on the header's row from `at` to `right` (screen x):
+// how many are selected, then what can be done to them all, and Clear at the far right.
+static void lib_sel_bar(ImVec2 at, f32 right, i32 n)
+{
+    Library &lib = g_app.library;
+    f32 fh = ImGui::GetFrameHeight();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    char count[32];
+    snprintf(count, sizeof count, "%d selected", n);
+    f32 slot = g_font_bold->CalcTextSizeA(g_font_bold->FontSize, FLT_MAX, 0, "0000 selected").x;
+    dl->AddText(g_font_bold, g_font_bold->FontSize, ImVec2(at.x + kit_px(4), floorf(at.y + (fh - g_font_bold->FontSize) / 2)),
+                col32(COL_TEXT), count);
+    ImGui::SetCursorScreenPos(ImVec2(at.x + kit_px(4) + slot + kit_px(12), at.y));
+    bool in_folder = g_app.config.side_folders && lib.folder[0];
+    if (lib_bar_button("##sel_all", ICON_CHECK, "Select all")) lib_sel_all();
+    ImVec2 game_at = ImGui::GetCursorScreenPos();
+    if (lib_bar_button("##sel_game", ICON_GAME, "Change game")) ImGui::OpenPopup("sel_game");
+    ImVec2 folder_at = ImGui::GetCursorScreenPos();
+    if (lib_bar_button("##sel_folder", ICON_FOLDER, "Move to folder")) ImGui::OpenPopup("sel_folders");
+    if (in_folder && lib_bar_button("##sel_out", ICON_CLOSE, "Remove from folder")) {
+        i32 fi = lib_folder_find(lib.view, lib.folder);
+        if (fi >= 0) lib_sel_folder_put(fi, false);
+    }
+    if (lib_bar_button("##sel_delete", ICON_DELETE, "Delete", true)) ImGui::OpenPopup("Delete selected");
+    ImGui::SetCursorScreenPos(ImVec2(right - fh, at.y));
+    if (kit_icon_button(ICON_CLOSE, "##sel_clear")) lib_sel_clear();
+
+    ImGui::SetNextWindowPos(ImVec2(game_at.x, at.y + fh + kit_px(6)), ImGuiCond_Appearing);
+    if (const char *g = lib_game_pick("sel_game", "")) lib_sel_set_game(g);
+    ImGui::SetNextWindowPos(ImVec2(folder_at.x, at.y + fh + kit_px(6)));
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("sel_folders")) {
+        i32 shown = 0;
+        for (i32 i = 0; i < lib.folder_count; i++) {
+            if (lib.folders[i].view != lib.view) continue;
+            shown++;
+            ImGui::PushID(i);
+            if (lib_menu_item(ICON_FOLDER, lib.folders[i].name, false, kit_px(200))) lib_sel_folder_put(i, true);
+            ImGui::PopID();
+        }
+        if (shown) ImGui::Separator();
+        if (lib_menu_item(ICON_ADD, "New folder", false, kit_px(200))) {
+            i32 i = lib_folder_new("New folder");
+            if (i >= 0) {
+                lib_sel_folder_put(i, true);
+                lib_folder_rename_start(i);
+            }
+        }
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+}
+
 // The name and the line under a card's picture.
 static f32 lib_meta_h() { return kit_px(8) + g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize + kit_px(2); }
 
 // One card: the day above it (on the first card of a day), the picture, the name and one dim line.
 // Under the mouse the picture scrubs through the file (a click plays from there); a right-click opens its menu.
+// A tick box in the picture's top left corner, under the mouse or while any card is selected, selects it; while
+// any is, a click on a card ticks it too (Ctrl + click always, Shift + click a range).
 static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h, bool show_day)
 {
     Library &lib = g_app.library;
@@ -2454,9 +2796,18 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     f32 round = kit_px(10);
     LibThumb *th = lib_thumb(it);
     if (!(th && (th->srv || th->failed)) && it.probed && it.info.duration > 0) g_lib_missing++;
+    bool sel = lib_selected(it.key), picking = lib.selected_count > 0;
+    // Dragging a selected card carries the whole selection: the picture gets a badge with how many.
     if (!renaming && ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload("LIB_CARD", &it.key, sizeof it.key);
-        if (th && th->srv) ImGui::Image((ImTextureID)(intptr_t)th->srv, ImVec2(kit_px(112), kit_px(63)));
+        ImVec2 p0 = ImGui::GetCursorScreenPos(), ps(kit_px(112), kit_px(63));
+        if (th && th->srv) ImGui::Image((ImTextureID)(intptr_t)th->srv, ps);
+        else ImGui::Dummy(ps);
+        if (sel && lib.selected_count > 1) {
+            char many[16];
+            snprintf(many, sizeof many, "%d", lib.selected_count);
+            badge(ImGui::GetWindowDrawList(), ImVec2(p0.x + ps.x - kit_px(6), p0.y + kit_px(6)), true, false, many);
+        }
         ImGui::TextUnformatted(it.display_name[0] ? it.display_name : shown);
         ImGui::EndDragDropSource();
     }
@@ -2511,28 +2862,47 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         frac = frac < 0 ? 0 : frac > 0.999f ? 0.999f : frac;
         if (!live) {
             dl->AddRectFilled(t0, t1, IM_COL32(0, 0, 0, 50), round);
-            lib_play_mark(dl, ImVec2((t0.x + t1.x) / 2, (t0.y + t1.y) / 2), kit_px(24));
+            if (!picking) lib_play_mark(dl, ImVec2((t0.x + t1.x) / 2, (t0.y + t1.y) / 2), kit_px(24));
         }
         // Where a click starts playing: a bar the whole width of the picture's bottom edge (the picture's own
         // rounded shape, clipped to a strip, so it follows the corners), and the time.
         f32 in = kit_px(10), bh = kit_px(4), by = t1.y - bh;
-        dl->PushClipRect(ImVec2(t0.x, by), t1, true);
-        dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 70), round);
-        dl->PopClipRect();
-        dl->PushClipRect(ImVec2(t0.x, by), ImVec2(t0.x + frac * w, t1.y), true);
-        dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
-        dl->PopClipRect();
+        if (!picking) {
+            dl->PushClipRect(ImVec2(t0.x, by), t1, true);
+            dl->AddRectFilled(t0, t1, IM_COL32(255, 255, 255, 70), round);
+            dl->PopClipRect();
+            dl->PushClipRect(ImVec2(t0.x, by), ImVec2(t0.x + frac * w, t1.y), true);
+            dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
+            dl->PopClipRect();
+        }
         if (it.info.duration > 0) {
             fmt_time(frac * it.info.duration, text, sizeof text);
             badge(dl, ImVec2(t1.x - in, by - kit_px(6)), true, true, text);
         }
-        if (it.info.track_count > 1) {
+        if (it.info.track_count > 1) { // right of the tick box
             snprintf(text, sizeof text, "%d tracks", it.info.track_count);
-            badge(dl, ImVec2(t0.x + in, t0.y + in), false, false, text);
+            badge(dl, ImVec2(t0.x + in + kit_px(22) + kit_px(6), t0.y + in), false, false, text);
         }
     } else if (it.info.duration > 0) {
         fmt_time(it.info.duration, text, sizeof text);
         badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, text);
+    }
+    // Selected: an accent ring round the picture. The tick box: filled with a tick when selected, else a ring.
+    f32 box = kit_px(22);
+    ImVec2 b0(t0.x + kit_px(10), t0.y + kit_px(10)), b1(b0.x + box, b0.y + box);
+    if (sel) dl->AddRect(t0, t1, col32(COL_ACCENT), round, 0, kit_px(3));
+    if (sel || over || picking) {
+        ImVec2 cm = io.MousePos;
+        bool box_hot = over && cm.x >= b0.x - kit_px(4) && cm.x < b1.x + kit_px(4) && cm.y >= b0.y - kit_px(4) && cm.y < b1.y + kit_px(4);
+        if (sel) {
+            dl->AddRectFilled(b0, b1, col32(box_hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(5));
+            ImVec2 cs = g_font_icon->CalcTextSizeA(box * 0.7f, FLT_MAX, 0, ICON_CHECK);
+            dl->AddText(g_font_icon, box * 0.7f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
+                        IM_COL32_WHITE, ICON_CHECK);
+        } else {
+            dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, box_hot ? 150 : 110), kit_px(5));
+            dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : 200), kit_px(5), 0, kit_px(1.5f));
+        }
     }
     ImGui::PopID();
     if (menu) { // opened outside the card's ID, where card_menu() looks for it
@@ -2599,7 +2969,15 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     }
     text_clipped(dl, ImVec2(tx, y), line_w, col32(err ? COL_RED : COL_DIM), line);
     ImGui::PopFont();
-    if (clicked) library_play(it, it.info.duration > 0 && frac >= 0 ? frac * it.info.duration : 0);
+    if (clicked) {
+        ImVec2 c = io.MouseClickedPos[0];
+        bool on_box = c.x >= b0.x - kit_px(4) && c.x < b1.x + kit_px(4) && c.y >= b0.y - kit_px(4) && c.y < b1.y + kit_px(4);
+        if (io.KeyShift && !on_box) lib_sel_range(it.key);
+        else if (on_box || io.KeyCtrl || picking) {
+            lib_sel_set(it.key, !sel);
+            lib.select_anchor = it.key;
+        } else library_play(it, it.info.duration > 0 && frac >= 0 ? frac * it.info.duration : 0);
+    }
 }
 
 // The library player's volume: one for every file, kept while clipback runs.
@@ -3543,7 +3921,8 @@ static void lib_folder_list(f32 w, bool collapsed)
                     if (pl->IsDelivery()) {
                         u64 key;
                         memcpy(&key, pl->Data, sizeof key);
-                        for (i32 k = 0; k < lib.item_count; k++)
+                        if (lib_selected(key) && lib.selected_count > 1) lib_sel_folder_put(i, true);
+                        else for (i32 k = 0; k < lib.item_count; k++)
                             if (lib.items[k].key == key) {
                                 lib_folder_put(lib.items[k], i, true);
                                 break;
@@ -3660,9 +4039,25 @@ static void screen_library()
     if (lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER, 0x3a3d44))
         lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
 
+    // While cards are selected, the selection bar takes the rest of the row (lib_sel_bar).
+    lib_sel_track();
+    static i32 sel_idx[LIB_MAX_ITEMS];
+    i32 sel_n = lib_sel_indices(sel_idx);
+    bool typing = io.WantTextInput, popup_open = ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
+    if (!typing && !popup_open && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+        lib_sel_all();
+        sel_n = lib_sel_indices(sel_idx);
+    }
+    if (sel_n > 0 && !typing && !popup_open && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        lib_sel_clear();
+        sel_n = 0;
+    }
+
     // The date range; Custom opens the calendar
     i32 step;
     ImVec2 range_at(h0.x + 2 * view_w + kit_px(4) + kit_px(16), h0.y);
+    if (sel_n > 0) lib_sel_bar(range_at, h0.x + full_w, sel_n);
+    else {
     ImGui::SetCursorScreenPos(range_at);
     if (lib_pill("##range", ranges[lib.range], drop_w, lib.range != 0)) ImGui::OpenPopup("range");
     step = lib.range;
@@ -3726,6 +4121,7 @@ static void screen_library()
     if (kit_search("##search", lib.search, sizeof lib.search, "Search", search_w)) {
         lib.scroll = lib.scroll_to = 0;
         lib_refilter();
+    }
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
 
@@ -3938,6 +4334,7 @@ static void screen_library()
     }
     if (g_show_dialog == 1) g_show_dialog = 0;
     delete_modal();
+    lib_sel_delete_modal();
     if (g_lib_switch_us && !g_lib_first_us) g_lib_first_us = now_us();
     if (g_lib_switch_us && lib.scanned && !g_lib_missing) {
         DEV_LOG("library: %s drawn %.0f ms after the switch, with all its pictures %.0f ms after that",

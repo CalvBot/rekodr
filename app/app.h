@@ -512,6 +512,11 @@ struct Library {
     u64                       strip_key, strip_want;
     ID3D11ShaderResourceView *strip;
     i32                       strip_frames;
+    u64      selected[LIB_MAX_ITEMS]; // the cards ticked to act on together (their keys, in key order)
+    i32      selected_count;
+    u64      select_anchor;        // the card last ticked or clicked, where Shift + click's range starts
+    u64      select_filter;        // what the grid shows (a hash of the view and filters); the selection clears when it changes
+    bool     deleting;             // the selection's Delete is running on its own thread
     LibItem  target;               // the card a menu, rename or delete is about
     char     rename_buf[256];
     char     rename_error[256];

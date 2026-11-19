@@ -66,6 +66,11 @@ Keep a whole session from start to finish.
 - **Comments:** a clip or session can carry a note of up to 1000 characters, over several lines, separate from its
   display name. It's written from the card's menu (Comment...) or the editor's side panel, shown under the
   player's title and as a note mark on the card, and search finds it. Kept in `comments.txt` in the config folder.
+- **Selecting:** cards can be selected to act on together, with the tick box in a card's corner, Ctrl + click,
+  Shift + click for a range, or Ctrl + A for every card shown; Esc clears it. While any is selected, a click on a card
+  ticks it, and a bar in place of the filters changes their game, moves them to a folder or out of the open one, or
+  deletes them. Dragging a selected card takes them all to a folder. The selection belongs to Clips or Sessions and
+  clears when the view or a filter changes.
 - Originals are only deleted when you delete them, and they go to the Recycle Bin.
 
 ## Folders

@@ -88,6 +88,11 @@ static void run_command(const char *text)
             g_app.config.games_collapsed = !strcmp(arg, "list-collapsed");
         else if (!strcmp(arg, "delete")) g_show_dialog = 1; // the first card's Delete dialog
         else if (!strcmp(arg, "comment") && lib.shown_count > 0) lib_comment_open(lib.items[lib.shown[0]]); // its Comment
+        else if (starts_with(arg, "select")) { // select <n>: the first n cards selected, with the selection bar
+            ui_show(SCREEN_LIBRARY);
+            lib_sel_clear();
+            for (i32 i = 0; i < atoi(trim(arg + 6)) && i < lib.shown_count; i++) lib_sel_set(lib.items[lib.shown[i]].key, true);
+        }
         else if (starts_with(arg, "session-toast")) { // session-toast [<more>]: Session ended for a made-up session
             Session s = {};
             str_set(s.name, "Minecraft");

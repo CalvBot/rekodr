@@ -1060,7 +1060,12 @@ static void help_window()
             {"Point at a thumbnail", "Scrub through it; click to play from there"},
             {"Right-click a card", "Edit, rename, delete and more"},
             {"[F2]", "Rename the card under the mouse"},
-            {"Drag a card onto a folder", "Add it to the folder"},
+            {"Drag a card onto a folder", "Add it (or all the selected ones) to the folder"},
+            {"[Ctrl]+click a card", "Select it, or take it out of the selection"},
+            {"[Shift]+click a card", "Select every card from the last one clicked"},
+            {"[Ctrl]+[A]", "Select every card shown"},
+            {"[Esc]", "Clear the selection"},
+            {"[Shift]+wheel", "Slide the Unsaved sessions row"},
             {"Right-click a game", "Pin it to the top"},
             {"Right-click a folder", "Pin, rename or delete it"},
         };

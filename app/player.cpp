@@ -16,6 +16,7 @@ enum LibEventKind : i64 {
     LIB_EV_SCANNED, // b: scan gen; the scan worker has published new items
     LIB_EV_RESULTS, // thumbnails or strips are ready to upload
     LIB_EV_MEDIA,   // b: (tag << 32) | MF_MEDIA_ENGINE_EVENT; text: "<param1> <param2>"
+    LIB_EV_DELETED, // b: (how many were to go << 32) | how many went; a Delete of the selection has finished
 };
 
 struct MediaFoundation {
