@@ -1120,18 +1120,22 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
 }
 
 // A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
-// many it has on the right. The picked one is in the accent colour.
-static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w = 0)
+// many it has on the right. The picked one is in the accent colour. Collapsed, only the icon, in the middle.
+static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w, bool collapsed)
 {
-    if (w <= 0) w = kit_px(228);
     f32 h = kit_px(30), is = kit_px(20);
     ImVec2 a = ImGui::GetCursorScreenPos();
-    bool clicked = ImGui::Selectable("##game", false, 0, ImVec2(w, h));
+    bool clicked = ImGui::InvisibleButton("##game", ImVec2(w, h));
+    bool hot = ImGui::IsItemHovered();
+    if (collapsed) kit_tip(label);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
     if (clicked) dev_click("menu", label);
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    if (active) dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_HOVER), kit_px(6));
-    ImVec2 i0(a.x + kit_px(8), floorf(a.y + (h - is) / 2)), i1(i0.x + is, i0.y + is);
+    // Lit a little inside the row, so the rows above and below stay apart
+    if (active || hot)
+        dl->AddRectFilled(ImVec2(a.x + kit_px(2), a.y + kit_px(2)), ImVec2(a.x + w - kit_px(2), a.y + h - kit_px(2)),
+                          col32(active ? COL_HOVER : COL_PANEL2), kit_px(6));
+    ImVec2 i0(collapsed ? floorf(a.x + (w - is) / 2) : a.x + kit_px(8), floorf(a.y + (h - is) / 2)), i1(i0.x + is, i0.y + is);
     ID3D11ShaderResourceView *icon = game ? game_icon(game) : 0;
     if (icon) {
         dl->AddImageRounded((ImTextureID)icon, i0, i1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(5));
@@ -1147,6 +1151,7 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
         dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), ICON_APPS);
         ImGui::PopFont();
     }
+    if (collapsed) return clicked;
     char n[16];
     snprintf(n, sizeof n, "%d", count);
     ImVec2 ts = ImGui::CalcTextSize(label), ns = ImGui::CalcTextSize(n);
@@ -2112,20 +2117,30 @@ static void screen_library()
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
 
     // The games down the left: all of them, then each game in this view with how many it has, most recent first.
-    // It scrolls on its own when there are more than fit.
+    // It scrolls on its own when there are more than fit. The button at its foot collapses it to a rail of icons
+    // and stays in the same place either way.
     {
-        f32 side_w = kit_px(210), side_h = ImGui::GetContentRegionAvail().y;
+        bool &collapsed = g_app.config.games_collapsed;
+        f32 side_w = collapsed ? kit_px(56) : kit_px(210), side_h = ImGui::GetContentRegionAvail().y;
+        f32 foot = fh + kit_px(6);
         ImVec2 s0 = ImGui::GetCursorScreenPos();
         dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL), kit_px(10));
+        ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + side_h - kit_px(6) - fh));
+        kit_next_tip(collapsed ? "Show the games list" : "Collapse the games list");
+        if (kit_icon_button(collapsed ? ICON_RIGHT : ICON_LEFT, "##games_collapse")) {
+            collapsed = !collapsed;
+            config_save(g_app.config, g_app.paths);
+            log_line("library: games list %s", collapsed ? "collapsed" : "shown");
+        }
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + kit_px(6)));
-        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12)), 0, ImGuiWindowFlags_NoBackground);
+        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12) - foot), 0, ImGuiWindowFlags_NoBackground);
         i32 pick = -1;
         for (i32 c = 0; c <= lib.game_count; c++) {
             const char *name = c == 0 ? "All games" : lib.games[c - 1];
             bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
             ImGui::PushID(c);
             if (lib_game_item(c == 0 ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
-                              side_w - kit_px(12)))
+                              side_w - kit_px(12), collapsed))
                 pick = c;
             ImGui::PopID();
         }

@@ -123,6 +123,7 @@ struct Config {
 
     // Look
     i32 accent;     // index into ACCENTS (ui.cpp)
+    bool games_collapsed; // Library: the games list as a rail of icons
     i32 card_width; // Library cards: about how wide, in pixels at 100% (Ctrl + wheel over the grid changes it)
     f32 timeline_top;   // Timeline: the share of its height above the tracks (the splitter); 0 = the default
     i32 timeline_names; // Timeline: the track names' column, in pixels at 100% (its edge is dragged); 0 = the default
