@@ -1016,7 +1016,7 @@ static void help_window()
         static const HelpRow timeline[] = {
             {"Click or drag on the tracks", "Move the playhead"},
             {"[Shift]+drag", "Select a range"},
-            {"[Shift]+click a game", "Select that part, or add it to the selection"},
+            {"[Shift]+click a game", "Add that part to the selection; again takes it out"},
             {"Drag the selection's band or ends", "Move them; the playhead follows"},
             {"[Shift]+drag an end", "Scale the selection around the playhead"},
             {"[Space]", "Play or pause from the playhead"},

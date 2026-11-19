@@ -1622,12 +1622,21 @@ static void screen_timeline()
             tl_play_render(tl.playhead_us);
         }
         if (click && (tl.drag == TL_DRAG_SEEK || tl.drag == TL_DRAG_NEW)) tl.marker_pick = 0;
-        // Shift and a click on a game part: the selected region becomes it, or grows to take it in
+        // Shift and a click on a game part: the selected region becomes it, or grows to take it in. A part already
+        // inside it is taken out again by the nearer end moving past it (all of it, the region is cleared).
         if (click && tl.drag == TL_DRAG_NEW && game_z > game_a) {
             i64 a = tl_whole_sec(game_a), z = tl_whole_sec(game_z);
             bool had = tl.sel_in && tl.sel_out > tl.sel_in;
-            tl.sel_in = had && tl.sel_in < a ? tl.sel_in : a;
-            tl.sel_out = had && tl.sel_out > z ? tl.sel_out : z;
+            // the part as the region would hold it: within the footage
+            i64 ca = ImMax(a, tl_whole_sec(b.oldest_us)), cz = ImMin(z, tl_whole_sec(b.newest_us));
+            if (had && ca >= tl.sel_in && cz <= tl.sel_out) {
+                if (ca <= tl.sel_in && cz >= tl.sel_out) tl.sel_in = tl.sel_out = 0;
+                else if (ca - tl.sel_in <= tl.sel_out - cz) tl.sel_in = cz;
+                else tl.sel_out = ca;
+            } else {
+                tl.sel_in = had && tl.sel_in < a ? tl.sel_in : a;
+                tl.sel_out = had && tl.sel_out > z ? tl.sel_out : z;
+            }
             tl_clamp_selection();
         }
         if (tl.drag == TL_DRAG_PAN && click && mark_hit >= 0) { // a right (or middle) click
