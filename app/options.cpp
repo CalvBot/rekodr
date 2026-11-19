@@ -953,6 +953,19 @@ static void game_settings_popup()
     opt_unit("0-" "51");
     ImGui::EndDisabled();
 
+    game_line("Capture window", x);
+    {
+        static const char *const wnotes[] = {0, "this game's window, not the whole screen", "the whole screen"};
+        snprintf(def, sizeof def, "Default - %s", c.window_capture ? "On" : "Off");
+        const char *witems[] = {def, "On", "Off"};
+        i32 wsel = r.window > 0 ? 1 : r.window < 0 ? 2 : 0;
+        if (opt_combo("##window", witems, wnotes, 3, &wsel, cw)) {
+            r.window = wsel == 1 ? 1 : wsel == 2 ? -1 : 0;
+            log_line("options: %s capture window: %s", a.exe.s, wsel == 1 ? "on" : wsel == 2 ? "off" : "default");
+            options_apply(APPLY_RECORDER | APPLY_AUDIO);
+        }
+    }
+
     game_line("Sessions", x);
     i32 m = a.session_mode;
     if (opt_combo("##mode", SESSION_LABELS, 0, COUNT(SESSION_LABELS), &m, cw)) {
@@ -973,12 +986,12 @@ static void game_settings_popup()
     kit_dim("Empty uses Recording's. The recording restarts when this game starts.");
     ImGui::PopFont();
     f32 bw = dp(84);
-    bool custom = r.bitrate_mbps || r.fps || r.height || r.preset.s[0] || r.rate_control.s[0] || r.cq;
+    bool custom = r.bitrate_mbps || r.fps || r.height || r.preset.s[0] || r.rate_control.s[0] || r.cq || r.window;
     ImGui::SetCursorPosX(x + cw - 2 * bw - dp(8));
     if (kit_button("Reset", KIT_GHOST, ImVec2(bw, 0), custom)) {
         r = {};
         log_line("options: %s records with the default settings", a.exe.s);
-        options_apply(APPLY_RECORDER);
+        options_apply(APPLY_RECORDER | APPLY_AUDIO);
     }
     ImGui::SameLine(0, dp(8));
     if (kit_button("Done", KIT_PRIMARY, ImVec2(bw, 0))) ImGui::CloseCurrentPopup();
@@ -999,6 +1012,7 @@ static void game_summary(const AppInfo &a, char *out, i32 cap)
     if (r.fps) { snprintf(t, sizeof t, "%d fps", r.fps); add(t); }
     if (r.preset.s[0]) add(PRESET_LABELS[preset_step(r.preset.s)]);
     if (r.rate_control.s[0]) add(RC_LABELS[rc_index(r.rate_control.s)]);
+    if (r.window) add(r.window > 0 ? "its window" : "whole screen");
     if (a.session_mode == SESSION_ALWAYS) add("sessions saved");
     else if (a.session_mode == SESSION_NEVER) add("no sessions");
 }
@@ -2025,6 +2039,11 @@ static void options_recording()
     if (opt_row_toggle("Show the mouse pointer", 0, "##mouse", &c.draw_mouse)) {
         log_line("options: mouse %s", c.draw_mouse ? "shown" : "hidden");
         options_apply(APPLY_RECORDER);
+    }
+    if (opt_row_toggle("Capture the game's window", "Records the game last in front, not the whole screen. Each game can set its own.",
+                       "##wincap", &c.window_capture)) {
+        log_line("options: capture window %s by default", c.window_capture ? "on" : "off");
+        options_apply(APPLY_RECORDER | APPLY_AUDIO);
     }
     {
         static const char *keys[] = {"auto", "wgc", "dxgi"};

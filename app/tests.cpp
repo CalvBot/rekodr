@@ -162,6 +162,8 @@ static void test_settings_round_trip()
     app->category = CAT_GAME;
     app->session_mode = SESSION_ALWAYS;
     app->rec.fps = 60;
+    app->rec.window = -1;
+    a.window_capture = true;
     str_set(app->path, "C:\\Games\\The Game\\game.exe");
     a.folder_count = 1;
     str_set(a.folders[0].path, "C:\\V\\*\\off");
@@ -179,6 +181,28 @@ static void test_settings_round_trip()
         const AppInfo &g = b.apps[0];
         T(!strcmp(g.exe.s, "game.exe") && !strcmp(g.name.s, "The Game") && g.category == CAT_GAME);
         T(g.session_mode == SESSION_ALWAYS && g.rec.fps == 60 && !strcmp(g.path, "C:\\Games\\The Game\\game.exe"));
+        T(g.rec.window == -1 && b.window_capture);
+        // capture window: a game's own setting wins over the default, and only a game has a window to record
+        T(!window_capture_for(b, "game.exe", g.path));
+        b.apps[0].rec.window = 0;
+        T(window_capture_for(b, "game.exe", g.path));
+        b.window_capture = false;
+        T(!window_capture_for(b, "game.exe", g.path));
+        b.apps[0].rec.window = 1;
+        T(window_capture_for(b, "game.exe", g.path) && !window_capture_for(b, "notepad.exe", "C:\\Windows\\notepad.exe"));
+        // a window is recorded through Windows Graphics Capture by its handle, fitted into a fixed size
+        static Args args;
+        RecSettings rs = {};
+        rs.fps = 60;
+        rs.hmonitor = 7;
+        str_set(rs.codec.s, "h264");
+        capture_args(&args, VENDOR_CPU, rs, true);
+        T(wcsstr(args.s, L"gfxcapture=hmonitor=7:") && !wcsstr(args.s, L"hwnd="));
+        rs.hwnd = 1234;
+        rs.width = 2560;
+        rs.height = 1440;
+        capture_args(&args, VENDOR_CPU, rs, true);
+        T(wcsstr(args.s, L"gfxcapture=hwnd=1234:") && wcsstr(args.s, L":width=2560:height=1440:resize_mode=scale_aspect"));
     }
     T(b.clock_24h == a.clock_24h);
     T(!b.voice_mono);

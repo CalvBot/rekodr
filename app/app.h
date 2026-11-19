@@ -29,6 +29,7 @@ struct RecOverride {
     Str64 preset;       // "" = Config.preset
     Str64 rate_control; // "" = Config.rate_control
     i32   cq;           // 0 = Config.cq
+    i32   window;       // record its window, not the monitor: 0 = Config.window_capture, 1 = yes, -1 = no
 };
 
 // One known app, keyed by its lower-case exe name. Holds the per-app settings too (category, a game's recording
@@ -88,6 +89,8 @@ struct Config {
     f32   desktop_bitrate_mbps; // while no game is
     bool  draw_mouse;
     Str64 capture;    // "auto" | "wgc" (Windows Graphics Capture) | "dxgi" (Desktop Duplication)
+    bool  window_capture; // record the window of the game last in front, not the whole monitor; a game's own
+                          // setting (RecOverride.window) wins
     Str64 preset;     // "p1".."p7"
     Str64 rate_control; // "vbr" | "cbr" | "cq"
     i32   cq;
@@ -215,6 +218,7 @@ struct Audio {
     AudioLive streams[64]; // live streams in the order they started
     i32       stream_count;
     Str64     game;        // the game being played (lower-case exe); empty on the desktop
+    u64       window;      // the game window being recorded (an HWND); 0 = the monitor
 };
 
 // buffer.cpp: the buffer's index as read from disk (format in buffer.cpp). Big: the arrays hold 24 h of 2 s video

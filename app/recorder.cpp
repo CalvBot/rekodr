@@ -14,7 +14,7 @@
 //                        list.csv         "v_00000.mkv,0.000000,2.000000" per finished segment (ffmpeg writes it)
 //                        anchor.txt       wall-clock us of the run's first frame, no line ending
 //   <buffer>\audio\<stream>\a_00000.mka   audio.cpp's, with list.csv and meta.json ("start_us": us)
-//   <buffer>\activity.tsv                "us<TAB>exe" lines; the pruner drops the old ones
+//   <buffer>\activity.tsv, focus.tsv     "us<TAB>exe" lines; the pruner drops the old ones
 
 #define SEGMENT_SECS 2
 
@@ -131,6 +131,7 @@ struct RecSettings {
     i32   output_idx;
     i32   fps;           // never above the monitor's refresh rate
     u64   hmonitor;      // output_idx's monitor, for Windows Graphics Capture
+    u64   hwnd;          // a game's window to record instead of the monitor (Windows Graphics Capture only); 0 = none
     i32   capture;       // CAPTURE_*
     bool  game;          // a game is being played: its screen should keep changing (the frozen-frame check)
     i32   width, height; // scaled to this; 0 = the monitor's own size (never scaled up)
@@ -196,8 +197,9 @@ static bool rec_sleep(u32 ms, bool wake)
 }
 
 // The settings to record with while `game` (lower-case exe, empty = the desktop) is the game being played: the
-// desktop bitrate with no game, else the game bitrate, then whatever that game sets for itself.
-static RecSettings rec_settings_from(const Config &c, const Paths &paths, const char *game)
+// desktop bitrate with no game, else the game bitrate, then whatever that game sets for itself. `window` is the
+// game window to record instead of the monitor (audio.cpp keeps it), 0 for the monitor.
+static RecSettings rec_settings_from(const Config &c, const Paths &paths, const char *game, u64 window)
 {
     RecSettings s = {};
     s.ffmpeg = c.ffmpeg;
@@ -247,6 +249,15 @@ static RecSettings rec_settings_from(const Config &c, const Paths &paths, const 
         if (want_h > 0 && want_h < mh) {
             s.height = want_h & ~1;
             s.width = (i32)(((i64)mw * want_h / mh + 1) & ~1);
+        }
+        if (window && s.capture != CAPTURE_DXGI && s.hmonitor) {
+            s.hwnd = window;
+            // Fitted into the monitor's size (bars where its shape differs), so a window's video is the size the
+            // monitor's would be whatever size the window is.
+            if (!s.width) {
+                s.width = mw & ~1;
+                s.height = mh & ~1;
+            }
         }
     }
     return s;
@@ -413,9 +424,10 @@ static void capture_args(Args *a, i32 vendor, const RecSettings &s, bool wgc)
         if (s.width > 0 && s.height > 0)
             snprintf(size, sizeof size, ":width=%d:height=%d:resize_mode=scale_aspect", s.width, s.height);
         addf(a,
-             "gfxcapture=hmonitor=%llu:max_framerate=%d:capture_cursor=%d:display_border=0%s,"
+             "gfxcapture=%s=%llu:max_framerate=%d:capture_cursor=%d:display_border=0%s,"
              "setpts='PTS+0*if(eq(N\\,0)\\,print(RTCTIME)\\,0)'%s",
-             (unsigned long long)s.hmonitor, s.fps, s.draw_mouse ? 1 : 0, size, capture_filter(vendor));
+             s.hwnd ? "hwnd" : "hmonitor", (unsigned long long)(s.hwnd ? s.hwnd : s.hmonitor), s.fps, s.draw_mouse ? 1 : 0,
+             size, capture_filter(vendor));
         ADD("-fps_mode", "cfr", "-r");
         addf(a, "%d", s.fps);
     } else {
@@ -668,7 +680,15 @@ static DWORD WINAPI recorder_thread(void *)
     u64 last_frozen = 0;
     auto use_wgc = [&](const RecSettings &rs) {
         if (rs.capture == CAPTURE_DXGI || !rs.hmonitor) return false;
-        return rs.capture == CAPTURE_WGC || wgc_fails < 2;
+        return rs.hwnd || rs.capture == CAPTURE_WGC || wgc_fails < 2; // only it can record a window
+    };
+    // A window that couldn't be recorded (it didn't start, or froze) is left alone: the monitor is recorded until
+    // another window is asked for.
+    u64 bad_hwnd = 0;
+    auto without_bad_window = [&](RecSettings rs) {
+        if (!rs.hwnd) bad_hwnd = 0;
+        else if (rs.hwnd == bad_hwnd || !IsWindow((HWND)(intptr_t)rs.hwnd)) rs.hwnd = 0;
+        return rs;
     };
 
     auto fail = [&](const char *msg) {
@@ -689,7 +709,7 @@ static DWORD WINAPI recorder_thread(void *)
             WaitForMultipleObjects(2, h, FALSE, INFINITE);
             continue;
         }
-        const RecSettings &s = snap.s;
+        const RecSettings s = without_bad_window(snap.s);
         if (!log_cleared) {
             // A fresh ffmpeg-video.log each start.
             Path log = path_join(s.local_dir, L"ffmpeg-video.log");
@@ -776,7 +796,8 @@ static DWORD WINAPI recorder_thread(void *)
                 generation = now.generation;
                 // A detection retry can find a GPU whose driver wasn't ready at start, which also lands here.
                 i32 v2 = pick_vendor(now.s, now.works);
-                if (v2 >= 0) capture_args(&base_now, v2, now.s, use_wgc(now.s));
+                const RecSettings ns = without_bad_window(now.s);
+                if (v2 >= 0) capture_args(&base_now, v2, ns, use_wgc(ns));
                 restart = v2 != vendor || wcscmp(base_now.s, base.s) || wcscmp(now.s.buffer_dir.s, s.buffer_dir.s) ||
                           wcscmp(now.s.ffmpeg.s, s.ffmpeg.s);
                 if (restart) log_line("video settings changed: restarting the capture");
@@ -855,7 +876,10 @@ static DWORD WINAPI recorder_thread(void *)
         g_rec.run[0] = 0;
         ReleaseSRWLockExclusive(&g_rec.lock);
         if (announced) rec_post(REC_STOPPED, 0, "");
-        if (wgc && s.capture == CAPTURE_AUTO && !announced && !frozen && code >= 0) {
+        if (s.hwnd && code >= 0 && (!announced || frozen)) {
+            bad_hwnd = s.hwnd;
+            log_line("the game's window couldn't be recorded (%s): recording the monitor", frozen ? "no new frames" : g_reader.last);
+        } else if (wgc && s.capture == CAPTURE_AUTO && !announced && !frozen && code >= 0) {
             // Didn't get going: an ffmpeg without gfxcapture, or a Windows without Graphics Capture.
             if (++wgc_fails == 2)
                 log_line("Windows Graphics Capture didn't start twice (%s): using Desktop Duplication", g_reader.last);
@@ -1096,10 +1120,11 @@ static Path prune_dir_path(const RecSettings &s, const PruneDir &d)
     return path_join(parent, d.name);
 }
 
-// Drops activity.tsv lines older than the buffer, keeping the one that says what was on at its start.
-static void prune_activity(const RecSettings &s, i64 oldest_us)
+// Drops a log's lines older than the buffer (activity.tsv, focus.tsv), keeping the one that says what was on at
+// its start.
+static void prune_activity(const RecSettings &s, i64 oldest_us, const wchar_t *name)
 {
-    Path path = path_join(s.buffer_dir, L"activity.tsv");
+    Path path = path_join(s.buffer_dir, name);
     AcquireSRWLockExclusive(&g_activity_lock);
     i64 size = 0;
     char *text = read_file(path.s, &size);
@@ -1128,7 +1153,7 @@ static void prune_activity(const RecSettings &s, i64 oldest_us)
             BOOL ok = WriteFile(f, keep, n, &written, 0) && written == n;
             CloseHandle(f);
             if (!ok || !MoveFileExW(tmp.s, path.s, MOVEFILE_REPLACE_EXISTING)) {
-                log_line("prune: couldn't rewrite activity.tsv (%d)", (int)GetLastError());
+                log_line("prune: couldn't rewrite %ls (%d)", name, (int)GetLastError());
                 DeleteFileW(tmp.s);
             }
         }
@@ -1224,7 +1249,10 @@ static void prune_pass()
         bytes += f.size;
         if (f.listed && g_prune.dirs[f.dir].video && (!oldest || f.start_us < oldest)) oldest = f.start_us;
     }
-    if (g_prune.passes++ % 120 == 0) prune_activity(s, oldest ? oldest : cutoff); // at start, then hourly
+    if (g_prune.passes++ % 120 == 0) { // at start, then hourly
+        prune_activity(s, oldest ? oldest : cutoff, L"activity.tsv");
+        prune_activity(s, oldest ? oldest : cutoff, L"focus.tsv");
+    }
 
     if (have_free) GetDiskFreeSpaceExW(s.buffer_dir.s, &free_bytes, 0, 0);
     char text[64];
@@ -1250,7 +1278,7 @@ static void recorder_start()
     g_rec.detect_done = CreateEventW(0, TRUE, FALSE, 0);
     CHECK(g_rec.wake && g_rec.stop && g_rec.detect_done, "CreateEvent failed (%d)", (int)GetLastError());
     AcquireSRWLockExclusive(&g_rec.lock);
-    g_rec.settings = rec_settings_from(g_app.config, g_app.paths, g_app.audio.game.s);
+    g_rec.settings = rec_settings_from(g_app.config, g_app.paths, g_app.audio.game.s, g_app.audio.window);
     g_rec.paused = g_app.recorder.paused;
     ReleaseSRWLockExclusive(&g_rec.lock);
 
@@ -1293,7 +1321,7 @@ static void recorder_set_paused(bool paused)
 static void recorder_settings_changed()
 {
     AcquireSRWLockExclusive(&g_rec.lock);
-    g_rec.settings = rec_settings_from(g_app.config, g_app.paths, g_app.audio.game.s);
+    g_rec.settings = rec_settings_from(g_app.config, g_app.paths, g_app.audio.game.s, g_app.audio.window);
     g_rec.generation++;
     ReleaseSRWLockExclusive(&g_rec.lock);
     if (g_rec.wake) SetEvent(g_rec.wake);

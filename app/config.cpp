@@ -294,6 +294,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "bitrate_mbps")) real(&c->bitrate_mbps);
     else if (!strcmp(key, "draw_mouse")) boolean(&c->draw_mouse);
     else if (!strcmp(key, "capture")) str_set(c->capture.s, value);
+    else if (!strcmp(key, "window_capture")) boolean(&c->window_capture);
     else if (!strcmp(key, "encoder_args")) str_set(c->encoder_args, value);
     else if (!strcmp(key, "premiere")) path(&c->premiere);
     else if (!strcmp(key, "resolve")) path(&c->resolve);
@@ -326,9 +327,9 @@ static void config_set(Config *c, const char *key, char *value)
             str_set(h->action.s, f[1]);
         }
     } else if (!strcmp(key, "app")) {
-        // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset | height | path
-        char *f[11] = {};
-        i32 n = split_fields(value, f, 11);
+        // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset | height | path | window
+        char *f[12] = {};
+        i32 n = split_fields(value, f, 12);
         if (n >= 3) {
             AppInfo *a = config_app(c, f[0]);
             if (!a) return;
@@ -342,6 +343,7 @@ static void config_set(Config *c, const char *key, char *value)
             if (n >= 9) str_set(a->rec.preset.s, f[8]);
             if (n >= 10) a->rec.height = atoi(f[9]);
             if (n >= 11) str_set(a->path, f[10]);
+            if (n >= 12) a->rec.window = atoi(f[11]);
         }
     } else if (!strcmp(key, "input")) {
         // input = mono | Line (RODE AI-1) | {0.0.1.00000000}.{...}
@@ -449,6 +451,7 @@ static bool config_save(const Config &c, const Paths &paths)
             c.output_idx, c.fps, c.height, c.codec.s, c.encoder.s, c.bitrate_mbps, c.desktop_bitrate_mbps);
     boolean("draw_mouse", c.draw_mouse);
     fprintf(f, "capture = %s\n", c.capture.s);
+    boolean("window_capture", c.window_capture);
     fprintf(f, "preset = %s\nrate_control = %s\ncq = %d\npeak_factor = %g\n", c.preset.s, c.rate_control.s, c.cq,
             c.peak_factor);
     boolean("spatial_aq", c.spatial_aq);
@@ -479,13 +482,13 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
-               " | height | where it was last heard\n"
-               "# (a game's own recording settings; 0 or empty = the default)\n");
+               " | height | where it was last heard | capture window\n"
+               "# (a game's own recording settings; 0 or empty = the default. capture window: 1 = yes, -1 = no)\n");
     for (i32 i = 0; i < c.app_count; i++) {
         const AppInfo &a = c.apps[i];
-        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s | %d | %s\n", a.exe.s, a.name.s,
+        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s | %d | %s | %d\n", a.exe.s, a.name.s,
                 category_name(a.category), session_mode_name(a.session_mode), a.rec.bitrate_mbps, a.rec.fps,
-                a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path);
+                a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path, a.rec.window);
     }
     fprintf(f, "\n# input = mono | stereo, name | endpoint id (a recording device on a track of its own)\n");
     for (i32 i = 0; i < c.input_count; i++)

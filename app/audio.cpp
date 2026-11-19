@@ -17,6 +17,7 @@
 //                                                    peaks.bin       the loudest of each 100 ms, a byte each
 //                                                    ffmpeg.log      ffmpeg's errors
 //   <buffer>\activity.tsv   "<us>\t<exe>" each time the game being played changes (empty exe = the desktop)
+//   <buffer>\focus.tsv      "<us>\t<exe>" each time the program in front changes, whatever it is (empty = none)
 // start_us is the wall-clock time of the first sample, from WASAPI's QPC packet times; gaps are padded with silence
 // and late audio is trimmed, so sample n of a stream is at start_us + n / 48000 s and lines up with the video.
 // peaks.bin is the timeline's waveform, measured as the audio is written: byte n is the loudest sample from
@@ -42,6 +43,7 @@ enum AudioEventKind : u8 {
     AE_STOPPED, // b = stream id
     AE_HEARD,   // b = us, text = "exe	path": an app played sound (added to Config.apps as new if it isn't known)
     AE_GAME,    // text = the game being played, empty on the desktop
+    AE_WINDOW,  // b = the game window to record (an HWND), 0 = the monitor
 };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -769,6 +771,11 @@ struct AudioWatch {
     bool          activity_started;
     Str64         game;
     Path          activity_file;
+    Str64         focus;         // the program in front, as last written to focus.tsv
+    Path          focus_file;
+    HWND          window;        // the game window being recorded, 0 = the monitor
+    Str64         window_exe;    // whose it is
+    char          window_path[MAX_PATH];
 };
 
 static AudioWatch g_aw;
@@ -1034,8 +1041,37 @@ static void audio_tick_streams()
     }
 }
 
+// Whether a game's window is recorded instead of the monitor: its own setting, else Config.window_capture.
+static bool window_capture_for(const Config &cfg, const char *exe, const char *path)
+{
+    if (audio_category_at(cfg, exe, path) != CAT_GAME) return false;
+    for (i32 i = 0; i < cfg.app_count; i++)
+        if (!strcmp(cfg.apps[i].exe.s, exe) && cfg.apps[i].rec.window) return cfg.apps[i].rec.window > 0;
+    return cfg.window_capture;
+}
+
+// "<us>\t<text>\n" added to a log in the buffer folder (activity.tsv, focus.tsv).
+static void buffer_log_append(const Path &file, const char *text)
+{
+    AcquireSRWLockExclusive(&g_activity_lock);
+    HANDLE f = CreateFileW(file.s, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, 0);
+    if (f != INVALID_HANDLE_VALUE) {
+        char line[128];
+        int n = snprintf(line, sizeof line, "%lld\t%s\n", (long long)now_us(), text);
+        DWORD written;
+        WriteFile(f, line, (DWORD)n, &written, 0);
+        CloseHandle(f);
+    } else {
+        log_line("couldn't write %ls (%d)", file.s, (int)GetLastError());
+    }
+    ReleaseSRWLockExclusive(&g_activity_lock);
+}
+
 // Every 2 s: the game whose window is in front, else the last one played if it's still running, else any running
-// game (the first by name), else the desktop. Changes are appended to activity.tsv.
+// game (the first by name), else the desktop. Changes are appended to activity.tsv. What is in front, whatever it
+// is, goes to focus.tsv the same way. And the window to record is kept up: the last game in front that has
+// "capture window" on, for as long as that window is there and not minimised.
 static void audio_tick_activity()
 {
     const Config &cfg = g_aw.config;
@@ -1046,7 +1082,45 @@ static void audio_tick_activity()
     if (fg) GetWindowThreadProcessId(fg, &fg_pid);
     const AudioProc *front = fg_pid ? procs_find(g_aw.procs, fg_pid) : 0;
     char front_path[MAX_PATH] = "";
-    if (front) proc_image_path(fg_pid, front_path, sizeof front_path);
+    if (fg_pid) proc_image_path(fg_pid, front_path, sizeof front_path);
+
+    // focus.tsv: a line when the program in front changes (and a fresh one on start, or when the buffer moves)
+    {
+        Str64 focus = {};
+        const char *name = strrchr(front_path, '\\');
+        str_set(focus.s, name ? name + 1 : front_path);
+        for (char *p = focus.s; *p; p++) *p = (char)tolower((u8)*p);
+        Path file = path_join(cfg.buffer_dir, L"focus.tsv");
+        if (!str_eq(focus.s, g_aw.focus.s) || wcscmp(file.s, g_aw.focus_file.s)) {
+            SHCreateDirectoryExW(0, cfg.buffer_dir.s, 0);
+            buffer_log_append(file, focus.s);
+            g_aw.focus = focus;
+            g_aw.focus_file = file;
+        }
+    }
+
+    // The window to record
+    {
+        HWND want = g_aw.window;
+        if (front && fg && window_capture_for(cfg, front->exe.s, front_path)) {
+            want = fg;
+            g_aw.window_exe = front->exe;
+            str_set(g_aw.window_path, front_path);
+        } else if (want && (!IsWindow(want) || IsIconic(want) || !window_capture_for(cfg, g_aw.window_exe.s, g_aw.window_path))) {
+            want = 0; // gone, minimised, or its setting was turned off: the monitor again
+        }
+        if (want != g_aw.window) {
+            g_aw.window = want;
+            if (want) log_line("recording the window of %s", g_aw.window_exe.s);
+            else log_line("recording the monitor");
+            Event e = {};
+            e.kind = EV_AUDIO;
+            e.a = AE_WINDOW;
+            e.b = (i64)(intptr_t)want;
+            event_post(e);
+        }
+    }
+
     if (front && audio_category_at(cfg, front->exe.s, front_path) == CAT_GAME) {
         game = front->exe;
     } else {
@@ -1070,19 +1144,7 @@ static void audio_tick_activity()
     if (g_aw.activity_started && str_eq(game.s, g_aw.game.s) && !wcscmp(file.s, g_aw.activity_file.s)) return;
 
     SHCreateDirectoryExW(0, cfg.buffer_dir.s, 0);
-    AcquireSRWLockExclusive(&g_activity_lock);
-    HANDLE f = CreateFileW(file.s, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, 0);
-    if (f != INVALID_HANDLE_VALUE) {
-        char line[128];
-        int n = snprintf(line, sizeof line, "%lld\t%s\n", (long long)now_us(), game.s);
-        DWORD written;
-        WriteFile(f, line, (DWORD)n, &written, 0);
-        CloseHandle(f);
-    } else {
-        log_line("couldn't write %ls (%d)", file.s, (int)GetLastError());
-    }
-    ReleaseSRWLockExclusive(&g_activity_lock);
+    buffer_log_append(file, game.s);
     if (g_aw.activity_started) {
         if (game.s[0]) {
             char name[128];
@@ -1227,6 +1289,10 @@ static void audio_on_event(const Event &e)
             if (!strcmp(g_app.config.apps[i].exe.s, e.text) && gamedb_name_app(&g_app.config.apps[i])) config_save(g_app.config, g_app.paths);
         recorder_settings_changed(); // a game can have its own recording settings
         sessions_on_game(e.text);
+        break;
+    case AE_WINDOW:
+        a.window = (u64)e.b;
+        recorder_settings_changed(); // a new capture, of that window or of the monitor
         break;
     default: break;
     }
