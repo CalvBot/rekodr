@@ -2877,10 +2877,12 @@ static void screen_options()
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + tab_h));
     ImGui::Dummy(ImVec2(avail, dp(6)));
 
-    // List pages fit their page and turn pages; the others scroll if the window is short.
+    // List pages fit their page and turn pages; the others scroll if the window is short. Lists stop at a width
+    // whose rows can still be read across, as the settings cards do at theirs.
     bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS;
     g_card_max_w = list ? FLT_MAX : dp(860);
-    ImGui::BeginChild("page", ImVec2(0, 0), ImGuiChildFlags_None,
+    f32 page_w = list ? fminf(ImGui::GetContentRegionAvail().x, dp(1180)) : 0;
+    ImGui::BeginChild("page", ImVec2(page_w, 0), ImGuiChildFlags_None,
                       list ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
     switch (o.tab) {
     case OPT_APPS: options_apps(); break;
