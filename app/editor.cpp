@@ -964,12 +964,12 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
 
-    // The wheel pans; with Alt it zooms around the playhead, with Alt and Shift around the mouse. Shift alone sets
+    // The wheel pans; with Alt it zooms around the mouse, with Alt and Shift around the playhead. Shift alone sets
     // the lanes' height, and over the sound tracks' names the wheel scrolls them (when they don't all fit).
     if (over && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
         f32 wh = io.MouseWheel;
         if (wh && io.KeyAlt) {
-            ed_view_zoom(pow(0.75, wh), io.KeyShift && mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
+            ed_view_zoom(pow(0.75, wh), !io.KeyShift && mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
         } else if (wh && io.KeyShift) {
             Config &cfg = g_app.config;
             i32 v = (i32)(lane_h / kit_px(1) + 0.5f) + (wh > 0 ? 6 : -6);

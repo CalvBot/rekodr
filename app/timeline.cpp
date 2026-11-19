@@ -1465,7 +1465,19 @@ static void screen_timeline()
     auto on_footage = [&](i64 t) { return t >= b.newest_us ? b.newest_us - 1 : t < b.oldest_us ? b.oldest_us : t; };
     // Close enough to the playhead on screen to land on it
     auto near_play = [&](i64 t) { return fabsf(tl_x(c, t) - tl_x(c, tl_playhead())) <= grab; };
-    static i64 grab_off, grab_len;
+    static i64 grab_off, grab_len, grab_play, grab_in, grab_out;
+    // Shift on an end, with the playhead inside the selection: both ends scale around the playhead, the other end
+    // moving in proportion, so the playhead keeps its place in the selection. `t` is where the dragged end goes.
+    auto scale_around_play = [&](bool in, i64 t) {
+        f64 p = (f64)grab_play, a = p - (f64)grab_in, z = (f64)grab_out - p; // the ends' distances from the playhead
+        f64 f = in ? (p - (f64)t) / a : ((f64)t - p) / z;
+        f64 most = ImMin((p - (f64)b.oldest_us) / a, ((f64)b.newest_us - p) / z), least = (f64)TL_SEC / (a + z);
+        f = f > most ? most : f < least ? least : f;
+        tl.sel_in = tl_whole_sec((i64)(p - a * f));
+        tl.sel_out = tl_whole_sec((i64)(p + z * f));
+        tl_clamp_selection();
+    };
+    bool can_scale = grab_in < grab_play && grab_play < grab_out;
     if (ImGui::IsItemActivated() && b.seg_count) {
         tl.drag_x = io.MousePos.x;
         tl.dragged = false;
@@ -1473,6 +1485,9 @@ static void screen_timeline()
         tl.drag_view_end = tl.view_end_us;
         grab_off = mouse_t - tl.sel_in;
         grab_len = tl.sel_out - tl.sel_in;
+        grab_play = tl_playhead();
+        grab_in = tl.sel_in;
+        grab_out = tl.sel_out;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) tl.drag = TL_DRAG_PAN;
         else if (near_in) tl.drag = TL_DRAG_IN;
         else if (near_out) tl.drag = TL_DRAG_OUT;
@@ -1516,6 +1531,9 @@ static void screen_timeline()
             tl.sel_in = to;
             tl.sel_out = to + grab_len;
             if (!keep) tl.playhead_us = tl.sel_in;
+        } else if ((tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT) && keep && can_scale) {
+            scale_around_play(tl.drag == TL_DRAG_IN, mouse_t);
+            tl.playhead_us = grab_play; // back where it was if the drag began without Shift
         } else if (tl.drag == TL_DRAG_IN) {
             i64 t = keep && near_play(mouse_t) ? tl_playhead() : mouse_sec;
             tl.sel_in = t < tl.sel_out - TL_SEC ? t : tl.sel_out - TL_SEC;
@@ -1548,10 +1566,10 @@ static void screen_timeline()
         }
         tl.drag = TL_DRAG_NONE;
     }
-    // The wheel pans; with Alt it zooms around the playhead, with Alt and Shift around the mouse
+    // The wheel pans; with Alt it zooms around the mouse, with Alt and Shift around the playhead
     if (bar_hovered && io.MouseWheel != 0) {
         if (io.KeyAlt) {
-            tl_zoom(pow(0.75, (f64)io.MouseWheel), io.KeyShift ? mouse_t : tl_playhead(), now);
+            tl_zoom(pow(0.75, (f64)io.MouseWheel), io.KeyShift ? tl_playhead() : mouse_t, now);
         } else if (!io.KeyShift) { // Shift: the lanes' height (above)
             tl.follow = false;
             tl.view_end_us -= (i64)((f64)tl.view_span_us * 0.15 * io.MouseWheel);
