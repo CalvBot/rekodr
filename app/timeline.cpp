@@ -1009,8 +1009,6 @@ static void tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h, 
 // Drawing helpers. tl_text_fit and tl_pill are generic enough to move to the kit.
 
 #define TL_ICON_DOWN "\xEE\x9C\x8D" // E70D chevron down
-#define TL_ICON_LAYERS "\xEE\xA0\x9E" // E81E layers: the simple lanes
-#define TL_ICON_LIST "\xEE\xA3\xBD" // E8FD bulleted list: a lane per app
 
 static const u32 TL_COL_VIDEO = 0x5a7fbf, TL_COL_LANE = 0x131418;
 
@@ -1487,24 +1485,31 @@ static void screen_timeline()
         dl->AddRectFilled(ImVec2(px - 1 * s, y_zoom), ImVec2(px + 1 * s, y1), IM_COL32(255, 255, 255, 230));
     }
 
-    // --- Simple or every app, top left over the track names: the sound in four lanes (every app summed into its
-    // kind's), or a lane per app. The lit one is in use.
+    // --- Top left over the track names, a toggle: lit, every app has its own lane; off, the sound is in four lanes
+    // (every app summed into its kind's). Its icon is drawn: three staggered track bars. Beside it "View", faintly: it
+    // only changes what is shown, never what a clip has.
     if (!tl.quick) {
         f32 bs = 24 * s;
-        ImGui::SetCursorScreenPos(ImVec2(origin.x + 14 * s, floorf(y_ruler + (ruler_h - bs) / 2)));
-        for (i32 k = 0; k < 2; k++) {
-            bool simple = k == 0;
-            if (k) ImGui::SameLine(0, 2 * s);
-            kit_next_tip(simple ? "Simple: a lane per kind of sound" : "Every app in its own lane");
-            if (kit_icon_button(simple ? TL_ICON_LAYERS : TL_ICON_LIST, simple ? "##lanes_simple" : "##lanes_all", KIT_GHOST,
-                                true, cfg.timeline_simple == simple, bs) &&
-                cfg.timeline_simple != simple) {
-                cfg.timeline_simple = simple;
-                tl.lane_scroll = 0;
-                config_save(cfg, g_app.paths);
-                log_line("timeline: simple %s", simple ? "on" : "off");
-            }
+        bool all = !cfg.timeline_simple;
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 14 * s, floorf(y_ruler + (ruler_h - bs) / 2) - 2 * s));
+        kit_next_tip(all ? "View: every app in its own lane. Clips keep every track either way"
+                         : "View: a lane per kind of sound. Clips keep every track either way");
+        if (kit_icon_button("", "##lanes", KIT_GHOST, true, all, bs)) {
+            cfg.timeline_simple = !cfg.timeline_simple;
+            tl.lane_scroll = 0;
+            config_save(cfg, g_app.paths);
+            log_line("timeline: simple %s", cfg.timeline_simple ? "on" : "off");
         }
+        ImVec2 a = ImGui::GetItemRectMin();
+        ImU32 ink = col32(all || ImGui::IsItemHovered() ? COL_TEXT : 0xc4c8cf);
+        static const f32 bars[3][2] = {{5, 15}, {9, 19}, {5, 13}}; // each bar's start and end, of 24
+        for (i32 k = 0; k < 3; k++) {
+            f32 y = a.y + (7 + 4.5f * k) * s;
+            dl->AddRectFilled(ImVec2(a.x + bars[k][0] * s, floorf(y)), ImVec2(a.x + bars[k][1] * s, floorf(y) + 2 * s), ink, 1 * s);
+        }
+        ImGui::PushFont(g_font_small);
+        dl->AddText(ImVec2(a.x + bs + 6 * s, floorf(a.y + (bs - ImGui::GetTextLineHeight()) / 2)), col32(COL_FAINT), "View");
+        ImGui::PopFont();
     }
 
     // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
