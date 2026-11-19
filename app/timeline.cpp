@@ -1553,6 +1553,8 @@ static void screen_timeline()
             mark_open = marks[mark_hit];
             tl.marker_pick = mark_open.t_us;
             ImGui::OpenPopup("##marknote");
+        } else if (tl.drag == TL_DRAG_PAN && click && has_sel && on_ruler && mouse_t >= tl.sel_in && mouse_t <= tl.sel_out) {
+            ImGui::OpenPopup("##selmenu"); // a right click on the selection
         } else if (tl.drag == TL_DRAG_NEW && click && mark_hit >= 0) {
             tl.playhead_us = marks[mark_hit].t_us;
             tl.marker_pick = marks[mark_hit].t_us;
@@ -1851,6 +1853,17 @@ static void screen_timeline()
                 col32(MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb, 0.9f), col32(0x000000));
         ImGui::PopFont();
     }
+    // The selection's right-click menu
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("##selmenu")) {
+        if (lib_menu_item(ICON_CLOSE, "Clear in and out")) {
+            tl.sel_in = tl.sel_out = 0;
+            log_line("timeline: selection cleared");
+        }
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+
     // A marker's whole note, wrapped, with its time
     ImGui::SetNextWindowSizeConstraints(ImVec2(380 * s, 0), ImVec2(380 * s, 360 * s));
     if (ImGui::BeginPopup("##marknote")) {

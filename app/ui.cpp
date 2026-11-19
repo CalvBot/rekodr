@@ -1016,6 +1016,7 @@ static void help_window()
             {"Right or middle drag", "Pan earlier or later"},
             {"[Left] / [Right]", "Move the selection 1 s (with Shift 10 s)"},
             {"[I] / [O] or [Q] / [E]", "Set the start / end at the playhead"},
+            {"Right-click the selection", "Clear in and out"},
             {"[Enter]", "Save the selection as a clip"},
             {"[+] / [-]", "Zoom in / out"},
             {"[Home]", "Follow the recording"},
