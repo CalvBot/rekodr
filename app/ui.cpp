@@ -109,6 +109,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_MONITOR   "\xEE\x9F\xB4" // E7F4 TV monitor
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_TAG       "\xEE\xA3\xAC" // E8EC
+#define ICON_PIN       "\xEE\x9C\x98" // E718
 #define ICON_START     "\xEE\xA2\x92" // E892
 #define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
 #define ICON_FWD30     "\xEE\xB4\xBD" // ED3D skip forward 30
@@ -996,7 +997,8 @@ static void help_window()
             {"Right-click a card", "Edit, rename, delete and more"},
             {"[F2]", "Rename the card under the mouse"},
             {"Drag a card onto a folder", "Add it to the folder"},
-            {"Right-click a folder", "Rename or delete it"},
+            {"Right-click a game", "Pin it to the top"},
+            {"Right-click a folder", "Pin, rename or delete it"},
         };
         static const HelpRow player[] = {
             {"[Space]", "Play / pause"},

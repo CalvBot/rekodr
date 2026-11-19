@@ -59,6 +59,8 @@ Keep a whole session from start to finish.
     `%TEMP%\clipback\share\` and onto the clipboard, ready to paste. Share copies never go in the Clips folder. A
     *Recent shares* list keeps them for re-copying until they're cleared (setting, default 7 days). If a share copy
     is gone, it is encoded again from the original.
+- **Pins:** games and folders can be pinned to the top of the list on the left, in the order they were pinned
+  (`pins.txt` in the config folder).
 - **Display names:** a card can carry a name typed by hand, shown in place of its file name; the file keeps its
   name. They're kept in `names.txt` in the config folder, keyed by each file's size and time.
 - Originals are only deleted when you delete them, and they go to the Recycle Bin.

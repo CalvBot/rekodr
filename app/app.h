@@ -431,7 +431,7 @@ struct Player {
 };
 
 enum LibView : u8 { LIB_CLIPS, LIB_SESSIONS };
-enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 160, LIB_MAX_FOLDERS = 64 };
+enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 160, LIB_MAX_FOLDERS = 64, LIB_MAX_PINS = 64 };
 
 struct LibItem {
     char      name[256]; // file name without the extension (UTF-8)
@@ -450,6 +450,12 @@ struct LibItem {
 struct LibFolder {
     char    name[64];
     LibView view; // Clips and Sessions each have their own folders
+};
+
+// A row pinned to the top of the list on the left: a game, or a folder of clips or of sessions.
+struct LibPin {
+    char list[12]; // "games", "clips" or "sessions"
+    char name[64];
 };
 
 struct LibFiled {
@@ -482,6 +488,8 @@ struct Library {
     bool     folder_focus;         // give its name field the keyboard next frame
     char     folder_buf[64];
     i32      folder_target;        // the folder a menu or Delete is about
+    LibPin   pins[LIB_MAX_PINS];   // in pin order (pins.txt)
+    i32      pin_count;
     i32      range;                // LibRange (library.cpp): all, today, this week, this month, custom
     i64      range_from, range_to; // the custom range, in local days (local_day)
     i32      sort;                 // LibSort: newest, oldest, longest, biggest
