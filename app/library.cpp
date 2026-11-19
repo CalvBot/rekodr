@@ -1,7 +1,8 @@
 // Library: the saved clips and sessions, found under <save_dir>\<year>\{Clips,Sessions}, and the player.
 //
 // Two worker threads do the slow parts: the scan (listing the folders, ffprobe for files not seen before) and the
-// thumbnails (ffmpeg makes a strip of 24 frames per file, cached under local_dir\thumbs, decoded with WIC). They
+// thumbnails (ffmpeg makes a strip of 24 frames per file, cached under local_dir\thumbs, decoded with WIC), and the
+// unsaved sessions' posters (one frame of the buffer each, cached under thumbs\posters). They
 // share only LibShared below, under its lock, and post EV_LIBRARY events; the main thread copies their results
 // into g_app.library and turns pixels into textures. The cache is keyed by a file's size and time, so a rename
 // keeps its thumbnail.
@@ -16,20 +17,20 @@ static i64 g_lib_switch_us;
 static i32 g_lib_missing; // pictures on screen still missing this frame
 static i64 g_lib_first_us; // the first frame drawn after the switch
 
-enum LibTaskKind : u8 { LT_SCAN, LT_THUMB, LT_STRIP };
+enum LibTaskKind : u8 { LT_SCAN, LT_THUMB, LT_STRIP, LT_POSTER };
 enum { LIB_STRIP_FRAMES = 24 };
 
 struct LibTask {
     LibTaskKind kind;
     u64         key;
     f64         duration;
-    Path        path;
+    Path        path;   // LT_POSTER: the buffer segment, empty when its poster is on disk
     i32         poster; // which frame of the strip a card shows
 };
 
 struct LibResult {
     u64  key;
-    bool strip, failed;
+    bool strip, poster, failed; // poster: an unsaved session's, keyed by its buffer segment's start
     i32  w, h, frames; // w and h of the whole image
     u32 *pixels;       // BGRA, HeapAlloc'd by the worker, freed by the main thread
 };
@@ -467,6 +468,14 @@ static bool lib_make_strip(const Path &ffmpeg, const Path &src, f64 duration, co
     return false;
 }
 
+// An unsaved session's poster on disk: thumbs\posters\p-<its buffer segment's start, hex>.jpg
+static Path lib_poster_file(const Path &cache, u64 key)
+{
+    wchar_t name[64];
+    swprintf(name, COUNT(name), L"p-%016llx.jpg", key);
+    return path_join(path_join(cache, L"posters"), name);
+}
+
 static void lib_add_result(const LibResult &r)
 {
     for (;;) {
@@ -534,6 +543,35 @@ static void lib_picture(IWICImagingFactory *wic, const LibTask &t, const Path &c
     lib_add_result(r);
 }
 
+// A poster: the segment's first frame, read once by ffmpeg into its file, then from the file.
+static void lib_poster_read(IWICImagingFactory *wic, const LibTask &t, const Path &cache, const Path &ffmpeg)
+{
+    LibResult r = {};
+    r.key = t.key;
+    r.poster = true;
+    Path jpg = lib_poster_file(cache, t.key);
+    if (!file_exists(jpg.s) && t.path.s[0] && ffmpeg.s[0]) {
+        Path tmp = {};
+        swprintf(tmp.s, MAX_PATH, L"%s.tmp.jpg", jpg.s);
+        static thread_local wchar_t args[2048];
+        args[0] = 0;
+        static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-y", "-i"};
+        arg_list(args, COUNT(args), head, COUNT(head));
+        cmd_arg(args, COUNT(args), t.path.s);
+        static const char *const tail[] = {"-an", "-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-q:v", "6"};
+        arg_list(args, COUNT(args), tail, COUNT(tail));
+        cmd_arg(args, COUNT(args), tmp.s);
+        i32 code = proc_run(ffmpeg.s, args, 30000, 0, 0);
+        if (!(code == 0 && file_exists(tmp.s) && MoveFileExW(tmp.s, jpg.s, MOVEFILE_REPLACE_EXISTING))) DeleteFileW(tmp.s);
+    }
+    i32 w = 0, h = 0;
+    if (wic && file_exists(jpg.s)) r.pixels = wic_load(wic, jpg.s, &w, &h);
+    r.w = w;
+    r.h = h;
+    r.failed = !r.pixels;
+    lib_add_result(r);
+}
+
 static DWORD WINAPI lib_thread(void *)
 {
     CoInitializeEx(0, COINIT_MULTITHREADED);
@@ -574,6 +612,8 @@ static DWORD WINAPI lib_thread(void *)
             e.a = LIB_EV_SCANNED; // once more, so the main thread sees the scan has ended
             event_post(e);
             if (GetTickCount64() - started > 2000) log_line("library: scan took %.1f s", (GetTickCount64() - started) / 1000.0);
+        } else if (t.kind == LT_POSTER) {
+            lib_poster_read(wic, t, cache, ffmpeg);
         } else {
             lib_picture(wic, t, cache, ffmpeg);
         }
@@ -613,7 +653,7 @@ static void library_rescan()
     Path ffmpeg = {};
     if (!ffmpeg_find(g_app.config.ffmpeg, &ffmpeg)) ffmpeg = {};
     Path cache = path_join(g_app.paths.local_dir, L"thumbs");
-    SHCreateDirectoryExW(0, cache.s, 0);
+    SHCreateDirectoryExW(0, path_join(cache, L"posters").s, 0);
     AcquireSRWLockExclusive(&g_lib.lock);
     bool queued = g_lib.scan_queued;
     g_lib.save_dir = g_app.config.save_dir;
@@ -962,6 +1002,8 @@ static LibThumb *lib_thumb_slot(u64 key, bool make)
     return pick;
 }
 
+static void lib_poster_landed(const LibResult &r); // below
+
 static void lib_take_results()
 {
     Library &lib = g_app.library;
@@ -973,7 +1015,8 @@ static void lib_take_results()
     ReleaseSRWLockExclusive(&g_lib.lock);
     for (i32 i = 0; i < n; i++) {
         LibResult &r = got[i];
-        if (r.strip) {
+        if (r.poster) lib_poster_landed(r);
+        else if (r.strip) {
             if (!r.failed && r.key == lib.strip_want && g_app.ui.shown) {
                 if (lib.strip) lib.strip->Release();
                 lib.strip = gpu_texture(r.pixels, r.w, r.h);
@@ -2191,48 +2234,191 @@ static void lib_calendar()
 
 
 static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask); // timeline.cpp
-static void timeline_keyframes(const i64 *ts, i32 n);                  // timeline.cpp
 
-// Each tile's poster (the frame at its middle), kept apart from the timeline's few frames, so the tiles have their
-// pictures at once whenever Sessions is shown again. One goes when its session is saved or gone from the buffer.
+static i32 tl_seg_at(const BufferIdx &b, i64 t);    // timeline.cpp
+static i32 tl_seg_after(const BufferIdx &b, i64 t); // timeline.cpp
+
+// Each unsaved session's poster: the first frame of the buffer segment at its middle. The library's workers read it
+// with ffmpeg once into thumbs\posters (lib_poster_read), named by the segment's start, so after a relaunch it comes
+// from the file without the buffer's index or ffmpeg. The textures of the ones shown lately are kept here. While
+// Clips is shown, the first ones are read ahead, so Sessions has them at once. A poster goes, its file too, once no
+// unsaved session shows it: its session saved, or its footage pruned from the buffer.
 struct UnsavedPoster {
-    u32                       id;
+    u64                       key; // its segment's start; 0 = a free slot
     ID3D11ShaderResourceView *srv;
+    bool                      pending, failed;
+    u32                       used;
 };
 static UnsavedPoster g_posters[64];
+static u32           g_poster_clock;
+static u64           g_poster_disk[1024]; // the keys of the files there, sorted
+static i32           g_poster_disk_n = -1; // -1 = not listed yet
+static u64           g_poster_swept;       // GetTickCount64 of the last sweep
 
-static ID3D11ShaderResourceView *lib_poster(u32 id)
+static Path lib_poster_cache() { return path_join(g_app.paths.local_dir, L"thumbs"); }
+
+static int lib_u64_cmp(const void *a, const void *b)
 {
-    for (UnsavedPoster &p : g_posters)
-        if (p.srv && p.id == id) return p.srv;
+    u64 x = *(const u64 *)a, y = *(const u64 *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void lib_poster_disk_list()
+{
+    if (g_poster_disk_n >= 0) return;
+    g_poster_disk_n = 0;
+    Path pattern = path_join(path_join(lib_poster_cache(), L"posters"), L"p-*.jpg");
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern.s, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        u64 key = 0;
+        if (swscanf(fd.cFileName, L"p-%16llx.jpg", &key) == 1 && key && g_poster_disk_n < COUNT(g_poster_disk))
+            g_poster_disk[g_poster_disk_n++] = key;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(g_poster_disk, g_poster_disk_n, sizeof g_poster_disk[0], lib_u64_cmp);
+}
+
+static bool lib_poster_on_disk(u64 key)
+{
+    lib_poster_disk_list();
+    return bsearch(&key, g_poster_disk, g_poster_disk_n, sizeof key, lib_u64_cmp) != 0;
+}
+
+static void lib_poster_disk_add(u64 key)
+{
+    if (lib_poster_on_disk(key) || g_poster_disk_n == COUNT(g_poster_disk)) return;
+    i32 i = g_poster_disk_n++;
+    while (i > 0 && g_poster_disk[i - 1] > key) {
+        g_poster_disk[i] = g_poster_disk[i - 1];
+        i--;
+    }
+    g_poster_disk[i] = key;
+}
+
+// The poster's key for a session: from the buffer's index once it's read, else the file nearest before its middle
+// (segments are a few seconds long).
+static u64 lib_poster_key(const Session &s)
+{
+    i64 mid = s.start_us + (s.end_us - s.start_us) / 2;
+    const Timeline &tl = g_app.timeline;
+    if (tl.idx && tl.loaded) {
+        const BufferIdx &b = *tl.idx;
+        i32 k = tl_seg_at(b, mid);
+        if (k < 0) k = tl_seg_after(b, mid);
+        return k < b.seg_count ? (u64)b.segs[k].start_us : 0;
+    }
+    lib_poster_disk_list();
+    for (i32 i = g_poster_disk_n - 1; i >= 0; i--) {
+        if (g_poster_disk[i] > (u64)mid) continue;
+        return (u64)mid - g_poster_disk[i] < 10000000ull ? g_poster_disk[i] : 0;
+    }
     return 0;
 }
 
-static void lib_poster_keep(u32 id, ID3D11ShaderResourceView *srv)
+// A session's poster, null until it's read. It's asked for when it isn't there: `soon` puts it first in the queue.
+static ID3D11ShaderResourceView *lib_poster(const Session &s, bool soon)
 {
-    UnsavedPoster *free_slot = 0;
+    u64 key = lib_poster_key(s);
+    if (!key) return 0;
+    UnsavedPoster *slot = 0;
     for (UnsavedPoster &p : g_posters) {
-        if (p.srv && p.id == id) {
-            if (p.srv == srv) return;
-            p.srv->Release();
-            p.srv = 0;
+        if (p.key == key) {
+            p.used = ++g_poster_clock;
+            return p.srv;
         }
-        if (!p.srv && !free_slot) free_slot = &p;
+        if (p.pending) continue;
+        if (!slot || (slot->key && (!p.key || p.used < slot->used))) slot = &p;
     }
-    if (!free_slot) return;
-    srv->AddRef();
-    free_slot->id = id;
-    free_slot->srv = srv;
+    if (!slot) return 0;
+    LibTask t = {};
+    t.kind = LT_POSTER;
+    t.key = key;
+    if (!lib_poster_on_disk(key)) {
+        const Timeline &tl = g_app.timeline;
+        if (!tl.idx || !tl.loaded) return 0; // which file it's in waits for the index
+        const BufferIdx &b = *tl.idx;
+        i32 k = tl_seg_at(b, (i64)key);
+        if (k < 0) return 0;
+        const VideoSeg &seg = b.segs[k];
+        wchar_t run[64], name[32];
+        utf8_to_wide(b.runs[seg.run].name, run, COUNT(run));
+        utf8_to_wide(seg.name, name, COUNT(name));
+        t.path = path_join(path_join(path_join(g_app.config.buffer_dir, L"video"), run), name);
+    }
+    if (slot->srv) slot->srv->Release();
+    *slot = {};
+    slot->key = key;
+    slot->pending = true;
+    slot->used = ++g_poster_clock;
+    lib_push(t, soon);
+    return 0;
 }
 
-static void lib_posters_sweep()
+static void lib_poster_landed(const LibResult &r)
 {
     for (UnsavedPoster &p : g_posters) {
-        if (!p.srv) continue;
-        Session *s = session_find(p.id);
-        if (s && s->state != SES_SAVED) continue;
-        p.srv->Release();
-        p.srv = 0;
+        if (p.key != r.key || !p.pending) continue;
+        p.pending = false;
+        if (!r.failed && g_app.ui.shown) p.srv = gpu_texture(r.pixels, r.w, r.h);
+        p.failed = !p.srv;
+        if (!g_app.ui.shown) p = {}; // asked again when it's shown
+        break;
+    }
+    if (!r.failed) lib_poster_disk_add(r.key);
+}
+
+// Every few seconds: the posters no tile shows go from memory, and those of no unsaved session from disk. Only once
+// the sessions and the buffer's index are read, so a poster isn't lost for want of knowing.
+static void lib_posters_sweep()
+{
+    const Sessions &ss = g_app.sessions;
+    const Timeline &tl = g_app.timeline;
+    if (!ss.loaded || !tl.idx || !tl.loaded || !tl.idx->seg_count) return;
+    u64 now = GetTickCount64();
+    if (g_poster_swept && now - g_poster_swept < 5000) return;
+    g_poster_swept = now;
+    static u64 keep[COUNT(ss.rows)], shown[COUNT(ss.rows)];
+    i32 kn = 0, sn = 0;
+    for (i32 r = 0; r < ss.row_count; r++) {
+        const Session *s = session_find(ss.rows[r]);
+        if (!s) continue;
+        shown[sn++] = lib_poster_key(*s);
+        if (s->state != SES_SAVED) keep[kn++] = shown[sn - 1];
+    }
+    qsort(keep, kn, sizeof keep[0], lib_u64_cmp);
+    qsort(shown, sn, sizeof shown[0], lib_u64_cmp);
+    for (UnsavedPoster &p : g_posters) {
+        if (!p.key || p.pending || bsearch(&p.key, shown, sn, sizeof p.key, lib_u64_cmp)) continue;
+        if (p.srv) p.srv->Release();
+        p = {};
+    }
+    lib_poster_disk_list();
+    Path cache = lib_poster_cache();
+    i32 w = 0, gone = 0;
+    for (i32 i = 0; i < g_poster_disk_n; i++) {
+        u64 key = g_poster_disk[i];
+        if (bsearch(&key, keep, kn, sizeof key, lib_u64_cmp)) {
+            g_poster_disk[w++] = key;
+            continue;
+        }
+        DeleteFileW(lib_poster_file(cache, key).s);
+        gone++;
+    }
+    g_poster_disk_n = w;
+    if (gone) DEV_LOG("library: %d session posters no longer shown went from disk", gone);
+}
+
+// While Clips is shown, the posters of the first unsaved sessions are read ahead.
+static void lib_posters_ahead()
+{
+    sessions_unsaved_take();
+    lib_posters_sweep();
+    const Sessions &ss = g_app.sessions;
+    for (i32 r = 0; r < ss.row_count && r < 12; r++) {
+        const Session *s = session_find(ss.rows[r]);
+        if (s && s->state != SES_SAVED) lib_poster(*s, false);
     }
 }
 static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timeline.cpp
@@ -2240,7 +2426,7 @@ static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timel
 // An unsaved session, drawn like a clip's card: its picture from the buffer (pointing scrubs through it, a click
 // looks at it on the timeline), then its icon, the file name it gets when saved, and its length and times. Save sits
 // on the right of the caption and asks for a title first. `ask` lets this one read a frame it hasn't got: the tile
-// under the mouse, as it scrubs (the row asks for the posters).
+// under the mouse, as it scrubs. Otherwise it shows its poster.
 static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
 {
     Sessions &ss = g_app.sessions;
@@ -2267,21 +2453,17 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
         frac = (ImGui::GetIO().MousePos.x - t0.x) / w;
         frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
     }
-    i64 len = s->end_us - s->start_us, mid = s->start_us + len / 2;
+    i64 len = s->end_us - s->start_us;
     i64 t = s->start_us + (i64)(frac * (f64)len);
     // Scrubbing keeps the last frame it showed until the next one is read; the poster before there's one
     static u32 shown_id;
     static i64 shown_t;
-    ID3D11ShaderResourceView *pic = timeline_keyframe(t, ask);
-    if (pic && hover) {
+    ID3D11ShaderResourceView *pic = hover ? timeline_keyframe(t, ask) : 0;
+    if (pic) {
         shown_id = id;
         shown_t = t;
-    } else if (!pic && hover) {
-        if (shown_id == id) pic = timeline_keyframe(shown_t, false);
-        if (!pic) pic = timeline_keyframe(mid, false);
-    }
-    if (pic && !hover) lib_poster_keep(id, pic);
-    if (!pic) pic = lib_poster(id);
+    } else if (hover && shown_id == id) pic = timeline_keyframe(shown_t, false);
+    if (!pic) pic = lib_poster(*s, true);
     if (!pic) g_lib_missing++;
     if (pic) dl->AddImageRounded((ImTextureID)pic, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
     else {
@@ -2485,17 +2667,12 @@ static bool lib_unsaved_row(f32 full_w)
     }
     ss.scroll = ImClamp(ss.scroll, 0.f, max_scroll);
 
-    // The posters of the tiles on screen are asked for together; the tile under the mouse reads the frames it
-    // scrubs through.
-    i32 first = (i32)(ss.scroll / step), hovered = -1, want_n = 0;
-    i64 want[20];
+    // The tile under the mouse reads the frames it scrubs through.
+    i32 first = (i32)(ss.scroll / step), hovered = -1;
     for (i32 r = first; r < row_count && r <= first + per; r++) {
         f32 x = a.x + r * step - ss.scroll;
         if (m.x >= ImMax(x, a.x) && m.x < ImMin(x + tile_w, a.x + full_w) && m.y >= y && m.y < y + thumb_h) hovered = r;
-        const Session *s = session_find(rows[r]);
-        if (s && want_n < COUNT(want) && !lib_poster(rows[r])) want[want_n++] = s->start_us + (s->end_us - s->start_us) / 2;
     }
-    timeline_keyframes(want, want_n);
     ImGui::PushClipRect(ImVec2(a.x, y), ImVec2(a.x + full_w, y + row_h), true);
     for (i32 r = first; r < row_count && r <= first + per; r++)
         lib_unsaved_tile(rows[r], ImVec2(floorf(a.x + r * step - ss.scroll), y), tile_w, thumb_h, hovered == r);
@@ -2872,6 +3049,7 @@ static void screen_library()
 
     g_lib_missing = 0;
     if (lib.view == LIB_SESSIONS) lib_unsaved_row(full_w);
+    else lib_posters_ahead();
 
 
     // The grid fills what's left above the footer and scrolls: the wheel, Page Up / Page Down, Home / End, or the
