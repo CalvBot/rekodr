@@ -96,6 +96,7 @@ struct SaveWork {
     i32          streams[128];      // indexes into buf.streams of those overlapping the clip
     i32          stream_track[128]; // the track each goes on, -1 = none (ignored apps)
     i32          stream_parts[128]; // stretches of it used (0 = it only overlaps a gap)
+    i32          stream_segs[128][2]; // its segments that reach into the clip, [first, end) within the stream
     i32          stream_count;
     Track        tracks[130];
     i32          track_count;
@@ -430,8 +431,10 @@ static void make_graph(SaveWork *w, i64 total_us, bool mix_only)
             w->stream_parts[i] = 0;
             continue;
         }
+        // Its input is only the segments that reach into the clip, so it starts at the first one's start
         i64 base, avail_end;
         stream_span(w->buf, w->streams[i], &base, &avail_end);
+        base = w->buf.audio_segs[w->buf.streams[w->streams[i]].first_seg + w->stream_segs[i][0]].start_us;
         i32 n = 0;
         for (i32 k = 0; k < w->piece_count; k++) {
             const Piece &p = w->pieces[k];
@@ -656,6 +659,18 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
             log_line("save %u: more than %d audio streams; the rest left out", req.id, COUNT(w->streams));
             break;
         }
+        // Only the segments that reach into the clip go to ffmpeg: atrim decodes everything before its start, which
+        // hours into a long stream (the mic) is most of the save's time.
+        const AudioStreamInfo &st = b.streams[s];
+        i32 k0 = 0, k1 = st.seg_count;
+        while (k0 < st.seg_count - 1) {
+            const AudioSeg &g = b.audio_segs[st.first_seg + k0];
+            if (g.open || g.end_us > clip_start) break;
+            k0++;
+        }
+        while (k1 > k0 + 1 && b.audio_segs[st.first_seg + k1 - 1].start_us >= clip_end) k1--;
+        w->stream_segs[w->stream_count][0] = k0;
+        w->stream_segs[w->stream_count][1] = k1;
         w->streams[w->stream_count++] = s;
     }
 
@@ -733,7 +748,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         wchar_t sdir[128];
         utf8_to_wide(st.dir, sdir, COUNT(sdir));
         Path stream_dir = path_join(audio_dir, sdir);
-        for (i32 k = 0; k < st.seg_count; k++) {
+        for (i32 k = w->stream_segs[i][0]; k < w->stream_segs[i][1]; k++) {
             const AudioSeg &seg = b.audio_segs[st.first_seg + k];
             wchar_t name[32];
             utf8_to_wide(seg.name, name, COUNT(name));
