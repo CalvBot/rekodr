@@ -382,6 +382,7 @@ static void player_on_media(const Event &e)
 // Every frame the player is on screen: the newest frame into the texture, the clock, the editor's range.
 static void player_update(Player *p)
 {
+    FRAME_PART("player_update");
     Ui &ui = g_app.ui;
     bool want = false;
     if (p->open && p->engine) {

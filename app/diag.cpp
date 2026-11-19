@@ -201,3 +201,62 @@ static void diag_watchdog_start()
         CloseHandle(t);
     }
 }
+
+// Parts of a frame, timed so a slow frame can say where its time went. A part is timed by a FRAME_PART("name")
+// in its scope; the totals per name are kept for the frame and logged only when it was slow.
+struct FramePartTotal { const char *name; i64 ticks; i32 calls; };
+static FramePartTotal g_frame_parts[24];
+static i32 g_frame_part_count;
+
+static i64 qpc_now()
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+static void frame_parts_reset() { g_frame_part_count = 0; }
+
+static void frame_part_add(const char *name, i64 ticks)
+{
+    for (i32 i = 0; i < g_frame_part_count; i++)
+        if (g_frame_parts[i].name == name || !strcmp(g_frame_parts[i].name, name)) {
+            g_frame_parts[i].ticks += ticks;
+            g_frame_parts[i].calls++;
+            return;
+        }
+    if (g_frame_part_count < COUNT(g_frame_parts)) g_frame_parts[g_frame_part_count++] = {name, ticks, 1};
+}
+
+struct FramePartTimer {
+    const char *name;
+    i64         t0;
+    FramePartTimer(const char *n) : name(n), t0(qpc_now()) {}
+    ~FramePartTimer() { frame_part_add(name, qpc_now() - t0); }
+};
+#define FRAME_PART_CAT2(a, b) a##b
+#define FRAME_PART_CAT(a, b) FRAME_PART_CAT2(a, b)
+#define FRAME_PART(name) FramePartTimer FRAME_PART_CAT(frame_part_, __LINE__)(name)
+
+// The timed parts of the frame just drawn, slowest first, as "player 310 ms (2), uploads 120 ms (14)".
+static void frame_parts_text(char *out, i32 cap)
+{
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    FramePartTotal sorted[COUNT(g_frame_parts)];
+    i32 n = g_frame_part_count;
+    memcpy(sorted, g_frame_parts, n * sizeof sorted[0]);
+    for (i32 i = 1; i < n; i++)
+        for (i32 j = i; j > 0 && sorted[j].ticks > sorted[j - 1].ticks; j--) {
+            FramePartTotal t = sorted[j];
+            sorted[j] = sorted[j - 1];
+            sorted[j - 1] = t;
+        }
+    out[0] = 0;
+    for (i32 i = 0; i < n; i++) {
+        size_t len = strlen(out);
+        snprintf(out + len, cap - len, "%s%s %.0f ms (%d)", i ? ", " : "", sorted[i].name,
+                 sorted[i].ticks * 1000.0 / f.QuadPart, sorted[i].calls);
+    }
+    if (!n) snprintf(out, cap, "none of the timed parts");
+}

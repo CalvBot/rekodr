@@ -233,6 +233,7 @@ static void tl_make_rows()
 
 static void tl_take_index(i64 ms)
 {
+    FRAME_PART("timeline index swap");
     Timeline &tl = g_app.timeline;
     AcquireSRWLockExclusive(&g_tl.lock);
     BufferIdx *fresh = g_tl.ready;
@@ -309,6 +310,7 @@ static void tl_release()
 
 static ID3D11ShaderResourceView *tl_upload(const u8 *px)
 {
+    FRAME_PART("timeline frame upload");
     if (!g_gpu.device) return 0;
     D3D11_TEXTURE2D_DESC d = {};
     d.Width = TL_FRAME_W;

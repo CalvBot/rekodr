@@ -376,8 +376,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             u64 t0 = GetTickCount64();
             ui_frame();
             u64 took = GetTickCount64() - t0;
-            if (took > 200) log_line("slow frame: %llu ms on screen %d", took, (int)ui.screen);
-            else if (took > 100) DEV_LOG("slow frame: %llu ms", took);
+            if (took > 200) {
+                char parts[600];
+                frame_parts_text(parts, sizeof parts);
+                log_line("slow frame: %llu ms on screen %d; since the last frame: %s", took, (int)ui.screen, parts);
+            } else if (took > 100) DEV_LOG("slow frame: %llu ms", took);
+            frame_parts_reset();
             if (ui.frames_left > 0) ui.frames_left--;
         }
     }

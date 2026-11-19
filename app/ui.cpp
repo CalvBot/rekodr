@@ -819,6 +819,7 @@ static void kit_align_right(f32 w)
 // A texture from BGRA pixels, for ImGui to draw (thumbnails, app icons).
 static ID3D11ShaderResourceView *gpu_texture(const u32 *pixels, i32 w, i32 h)
 {
+    FRAME_PART("texture upload");
     D3D11_TEXTURE2D_DESC d = {};
     d.Width = (UINT)w;
     d.Height = (UINT)h;
@@ -1219,9 +1220,12 @@ static void dev_input()
 
 static void ui_frame()
 {
-    ImGui_ImplDX11_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
+    {
+        FRAME_PART("new frame");
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+    }
     ui_popups_click_through();
     ImGuiContext &g = *ImGui::GetCurrentContext();
     g.DebugLogFlags = ImGuiDebugLogFlags_EventError | ImGuiDebugLogFlags_OutputToTTY |
@@ -1256,11 +1260,11 @@ static void ui_frame()
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
     screens_left_behind(); // editor.cpp: closes the player of a screen that isn't shown any more
-    switch (g_app.ui.screen) {
-    case SCREEN_LIBRARY: screen_library(); break;
-    case SCREEN_TIMELINE: screen_timeline(); break;
-    case SCREEN_EDITOR: screen_editor(); break;
-    case SCREEN_OPTIONS: screen_options(); break;
+    switch (g_app.ui.screen) { // each screen's layout and drawing, with what it uploads and updates
+    case SCREEN_LIBRARY: { FRAME_PART("library screen"); screen_library(); } break;
+    case SCREEN_TIMELINE: { FRAME_PART("timeline screen"); screen_timeline(); } break;
+    case SCREEN_EDITOR: { FRAME_PART("editor screen"); screen_editor(); } break;
+    case SCREEN_OPTIONS: { FRAME_PART("options screen"); screen_options(); } break;
     }
     ImGui::EndChild();
     help_window();
@@ -1268,13 +1272,19 @@ static void ui_frame()
     ImGui::End();
 
 rendered:
-    ImGui::Render();
-    const ImVec4 bg = rgb(COL_BG);
-    const f32 clear[4] = {bg.x, bg.y, bg.z, 1};
-    g_gpu.context->OMSetRenderTargets(1, &g_gpu.target, 0);
-    g_gpu.context->ClearRenderTargetView(g_gpu.target, clear);
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    g_gpu.swapchain->Present(1, 0);
+    {
+        FRAME_PART("render");
+        ImGui::Render();
+        const ImVec4 bg = rgb(COL_BG);
+        const f32 clear[4] = {bg.x, bg.y, bg.z, 1};
+        g_gpu.context->OMSetRenderTargets(1, &g_gpu.target, 0);
+        g_gpu.context->ClearRenderTargetView(g_gpu.target, clear);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    }
+    {
+        FRAME_PART("present");
+        g_gpu.swapchain->Present(1, 0);
+    }
     g.DebugLogBuf.clear(); // already in our log (imgui_debug_print); don't let it grow
     g.DebugLogIndex.clear();
 }
