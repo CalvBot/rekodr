@@ -2709,7 +2709,7 @@ static void screen_library()
         ImGui::EndChild();
         // The collapse button: a window of its own after the list, so it is on top of the list's rows
         {
-            f32 bs = kit_px(22);
+            f32 bs = kit_px(26);
             ImGui::SetCursorScreenPos(ImVec2(floorf(s0.x + side_w - bs / 2), floorf(s0.y + (side_h - bs) / 2)));
             ImGui::BeginChild("##gamecollapse", ImVec2(bs, bs), 0,
                               ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -2719,12 +2719,13 @@ static void screen_library()
             kit_tip(collapsed ? "Show the list" : "Collapse the list");
             ImDrawList *bdl = ImGui::GetWindowDrawList();
             ImVec2 c(b0.x + bs / 2, b0.y + bs / 2);
-            bdl->AddCircleFilled(c, bs / 2, col32(hot ? COL_HOVER : COL_PANEL2));
-            bdl->AddCircle(c, bs / 2 - 0.5f, col32(COL_BG), 0, kit_px(1));
+            // Lighter than the list and the page, ringed in the page's colour, so it reads against both
+            bdl->AddCircleFilled(c, bs / 2, col32(hot ? 0x4a4e57 : 0x3a3d44));
+            bdl->AddCircle(c, bs / 2 - kit_px(1), col32(COL_BG), 0, kit_px(2));
             const char *ic = collapsed ? ICON_RIGHT : ICON_LEFT;
-            f32 isz = kit_px(11);
+            f32 isz = kit_px(12);
             ImVec2 is = g_font_icon->CalcTextSizeA(isz, FLT_MAX, 0, ic);
-            bdl->AddText(g_font_icon, isz, ImVec2(floorf(c.x - is.x / 2), floorf(c.y - is.y / 2)), col32(hot ? COL_TEXT : COL_DIM), ic);
+            bdl->AddText(g_font_icon, isz, ImVec2(floorf(c.x - is.x / 2), floorf(c.y - is.y / 2)), col32(COL_TEXT), ic);
             ImGui::EndChild();
             if (hit) {
                 collapsed = !collapsed;
