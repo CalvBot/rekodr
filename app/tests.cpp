@@ -920,10 +920,32 @@ static void test_edit_xml()
     ed = blank;
 }
 
+static void test_save_names()
+{
+    // 2026-11-15 21:04:05 local, whatever the time zone
+    SYSTEMTIME lt = {2026, 11, 0, 15, 21, 4, 5, 0}, utc;
+    TzSpecificLocalTimeToSystemTime(0, &lt, &utc);
+    FILETIME ft;
+    SystemTimeToFileTime(&utc, &ft);
+    i64 us = ((((i64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) - 116444736000000000LL) / 10;
+    char out[256];
+    save_name_expand(SAVE_NAME_DEFAULT, "Overwatch", us, out, sizeof out);
+    T(!strcmp(out, "Overwatch 21-04 15-11-2026"));
+    save_name_expand("{YY}{MM}{DD}_{hh}{mm}{ss} {game}", "Desktop", us, out, sizeof out);
+    T(!strcmp(out, "261115_210405 Desktop"));
+    save_name_expand("{game}: {hh}:{mm}?", "A/B", us, out, sizeof out);
+    T(!strcmp(out, "AB 2104"));
+    save_name_expand("{nope} {game}", "X", us, out, sizeof out);
+    T(!strcmp(out, "{nope} X"));
+    save_name_expand(":/?", "X", us, out, sizeof out);
+    T(!strcmp(out, "X"));
+}
+
 int main()
 {
     InitializeSRWLock(&g_log_lock);
     test_lengths();
+    test_save_names();
     test_buffer_names();
     test_folder_rules();
     test_fields();

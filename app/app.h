@@ -69,10 +69,13 @@ struct Hotkey {
 
 static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev"; // clipback-api, its own repo
 
+static const char SAVE_NAME_DEFAULT[] = "{game} {hh}-{mm} {DD}-{MM}-{YYYY}";
+
 struct Config {
     Path save_dir;     // <Videos>\Clips, holding 2026\Clips, 2026\Sessions, 2026\Data
     Path buffer_dir;   // the rolling buffer
     Path play_dir;     // the Timeline's Play files (preview-*.mp4); the local folder unless moved to a faster drive
+    char name_template[128]; // what clips and sessions are named: {game} {YYYY} {YY} {MM} {DD} {hh} {mm} {ss}
     bool buffer_by_size; // the buffer is limited by buffer_gb, else by buffer_hours; never both
     f32  buffer_hours; // keep this much footage (24)
     f32  buffer_gb;    // or this much (100)

@@ -2697,6 +2697,25 @@ static void options_general()
     opt_section("FOLDERS");
     opt_card_begin();
     if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
+    {
+        // What saves are named: the template, and under it what a save of the game in front would be called now
+        f32 field_w = fmaxf(dp(220), fminf(dp(420), (g_card.w - 2 * dp(OPT_PAD)) * 0.55f));
+        char example[256], sub[320];
+        save_file_name(g_app.audio.game.s, "", now_us(), example, sizeof example);
+        snprintf(sub, sizeof sub, "{game} {YYYY} {YY} {MM} {DD} {hh} {mm} {ss}, as in %s", example);
+        opt_row_begin("File names", sub, field_w);
+        char text[sizeof c.name_template];
+        if (opt_text("##names", c.name_template, field_w, 0, SAVE_NAME_DEFAULT, text, sizeof text)) {
+            char *t = trim(text);
+            if (!*t) t = (char *)SAVE_NAME_DEFAULT;
+            if (strcmp(t, c.name_template)) {
+                str_set(c.name_template, t);
+                log_line("options: file names %s", c.name_template);
+                options_apply(0);
+            }
+        }
+        opt_row_end();
+    }
     if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
     if (opt_row_folder("Playback cache", "Where the Timeline builds what it plays; a fast drive starts sooner", "play",
                        &c.play_dir))

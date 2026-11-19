@@ -57,6 +57,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->buffer_gb = 100;
     c->min_free_gb = 50;
     c->fps = 60;
+    str_set(c->name_template, SAVE_NAME_DEFAULT);
     str_set(c->codec.s, "h264");
     str_set(c->encoder.s, "auto");
     c->bitrate_mbps = 20;
@@ -271,6 +272,7 @@ static void config_set(Config *c, const char *key, char *value)
     if (!strcmp(key, "save_dir")) path(&c->save_dir);
     else if (!strcmp(key, "buffer_dir")) path(&c->buffer_dir);
     else if (!strcmp(key, "play_dir")) path(&c->play_dir);
+    else if (!strcmp(key, "name_template")) str_set(c->name_template, value);
     else if (!strcmp(key, "buffer_hours")) real(&c->buffer_hours);
     else if (!strcmp(key, "buffer_gb")) real(&c->buffer_gb);
     else if (!strcmp(key, "buffer_by_size")) boolean(&c->buffer_by_size);
@@ -445,6 +447,7 @@ static bool config_save(const Config &c, const Paths &paths)
     path("save_dir", c.save_dir);
     path("buffer_dir", c.buffer_dir);
     path("play_dir", c.play_dir);
+    fprintf(f, "name_template = %s\n", c.name_template);
     boolean("buffer_by_size", c.buffer_by_size);
     fprintf(f, "buffer_hours = %g\nbuffer_gb = %g\n", c.buffer_hours, c.buffer_gb);
     fprintf(f, "min_free_gb = %g\n", c.min_free_gb);

@@ -138,9 +138,7 @@ static void session_write_record(Session *s, i32 video_year)
         size_t n = strlen(stem);
         if (n > 4 && !_stricmp(stem + n - 4, ".mp4")) stem[n - 4] = 0;
     } else {
-        SYSTEMTIME st = local_time(s->start_us);
-        snprintf(stem, sizeof stem, "%s %04d-%02d-%02d %02d-%02d", s->name, st.wYear, st.wMonth, st.wDay, st.wHour,
-                 st.wMinute);
+        save_name_expand(g_app.config.name_template, s->name, s->start_us, stem, sizeof stem);
     }
     char rel[256];
     snprintf(rel, sizeof rel, "%d\\Data\\%s.session.txt", year, stem);

@@ -31,6 +31,7 @@ struct SaveSettings {
     Path    ffmpeg;   // empty = not found
     Path    work_dir; // temp lists and graphs (under local_dir, so test copies keep to CLIPBACK_HOME)
     Path    play_dir; // previews (Config::play_dir)
+    char    name_template[128];
     char    codec[64];
     u8      vendor; // the H.264 encoder Keep and Share use when they re-encode (Vendor)
     bool    voice_mono;
@@ -179,6 +180,51 @@ static SYSTEMTIME local_time(i64 us)
     FileTimeToSystemTime(&ft, &utc);
     if (!SystemTimeToTzSpecificLocalTime(0, &utc, &local)) local = utc;
     return local;
+}
+
+// A clip's or session's file name (no folder, " (2)" or ".mp4") from a template: {game} is `game`, and {YYYY} {YY}
+// {MM} {DD} {hh} {mm} {ss} the local time `start_us` (24-hour). What a file name can't hold is dropped; a template
+// that leaves nothing gives the game.
+static void save_name_expand(const char *tmpl, const char *game, i64 start_us, char *out, i32 cap)
+{
+    static const char *const tokens[] = {"{game}", "{YYYY}", "{YY}", "{MM}", "{DD}", "{hh}", "{mm}", "{ss}"};
+    SYSTEMTIME t = local_time(start_us);
+    const i32 nums[] = {0, t.wYear, t.wYear % 100, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond};
+    i32 n = 0;
+    for (const char *p = tmpl; *p && n < cap - 1;) {
+        i32 k = 0;
+        while (k < COUNT(tokens) && strncmp(p, tokens[k], strlen(tokens[k]))) k++;
+        if (k == COUNT(tokens)) {
+            out[n++] = *p++;
+            continue;
+        }
+        char v[128];
+        if (k == 0) snprintf(v, sizeof v, "%s", game);
+        else snprintf(v, sizeof v, k == 1 ? "%04d" : "%02d", nums[k]);
+        n += snprintf(out + n, cap - n, "%s", v);
+        if (n > cap - 1) n = cap - 1;
+        p += strlen(tokens[k]);
+    }
+    out[n] = 0;
+    clean_name(out);
+    if (!out[0]) snprintf(out, cap, "%s", game);
+}
+
+// The file name a clip or session of footage from `start_us` gets with the template in Options: `game_exe` is the
+// game played most in it ("" = the desktop), `name` one typed for it, which stands in for the game ("" = none).
+static void save_file_name(const char *game_exe, const char *name, i64 start_us, char *out, i32 cap)
+{
+    char game[256] = "";
+    if (name && name[0]) {
+        str_set(game, name);
+        clean_name(game);
+    }
+    if (!game[0] && game_exe && game_exe[0]) {
+        audio_display_name(g_app.config, game_exe, game, sizeof game);
+        clean_name(game);
+    }
+    if (!game[0]) str_set(game, DESKTOP);
+    save_name_expand(g_app.config.name_template, game, start_us, out, cap);
 }
 
 // A time of day the way Options > General sets it: "9:04 pm" or "21:04" ("9:04:05 pm", "21:04:05" with seconds).
@@ -631,8 +677,8 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     clean_name(label);
     if (!label[0]) str_set(label, game);
 
-    // <save_dir>\<year>\Clips\<label> 2026-11-15 21-04-10.mp4, or ...\Sessions\<label> 2026-11-15 19-02.mp4. The
-    // year is the year the footage starts in.
+    // <save_dir>\<year>\Clips\<name>.mp4 or ...\Sessions\<name>.mp4, the name from the template in Options with the
+    // label as {game}. The year is the year the footage starts in.
     // A preview goes in the playback cache as preview-<id>.mp4.
     SYSTEMTIME t = local_time(clip_start);
     bool session = req.kind == SAVE_SESSION, preview = req.kind == SAVE_PREVIEW;
@@ -648,11 +694,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     }
     char stem[400];
     if (preview) snprintf(stem, sizeof stem, "preview-%u", req.id);
-    else if (session)
-        snprintf(stem, sizeof stem, "%s %04d-%02d-%02d %02d-%02d", label, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
-    else
-        snprintf(stem, sizeof stem, "%s %04d-%02d-%02d %02d-%02d-%02d", label, t.wYear, t.wMonth, t.wDay, t.wHour,
-                 t.wMinute, t.wSecond);
+    else save_name_expand(w->cfg.name_template, label, clip_start, stem, sizeof stem);
     wchar_t wstem[400];
     utf8_to_wide(stem, wstem, COUNT(wstem));
     // ffmpeg writes "<name>.mp4.part", renamed when complete, so the library never sees half a file.
@@ -1440,6 +1482,7 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     s->ffmpeg = ffmpeg;
     s->work_dir = g_app.paths.local_dir;
     s->play_dir = c.play_dir;
+    str_set(s->name_template, c.name_template);
     str_set(s->codec, c.codec.s);
     s->voice_mono = c.voice_mono;
     memcpy(s->inputs, c.inputs, sizeof s->inputs);
