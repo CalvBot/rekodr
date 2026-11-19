@@ -2181,6 +2181,48 @@ static void lib_calendar()
 
 static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask); // timeline.cpp
 
+// Each tile's poster (the frame at its middle), kept apart from the timeline's few frames, so the tiles have their
+// pictures at once whenever Sessions is shown again. One goes when its session is saved or gone from the buffer.
+struct UnsavedPoster {
+    u32                       id;
+    ID3D11ShaderResourceView *srv;
+};
+static UnsavedPoster g_posters[64];
+
+static ID3D11ShaderResourceView *lib_poster(u32 id)
+{
+    for (UnsavedPoster &p : g_posters)
+        if (p.srv && p.id == id) return p.srv;
+    return 0;
+}
+
+static void lib_poster_keep(u32 id, ID3D11ShaderResourceView *srv)
+{
+    UnsavedPoster *free_slot = 0;
+    for (UnsavedPoster &p : g_posters) {
+        if (p.srv && p.id == id) {
+            if (p.srv == srv) return;
+            p.srv->Release();
+            p.srv = 0;
+        }
+        if (!p.srv && !free_slot) free_slot = &p;
+    }
+    if (!free_slot) return;
+    srv->AddRef();
+    free_slot->id = id;
+    free_slot->srv = srv;
+}
+
+static void lib_posters_sweep()
+{
+    for (UnsavedPoster &p : g_posters) {
+        if (!p.srv) continue;
+        Session *s = session_find(p.id);
+        if (s && s->state != SES_SAVED) continue;
+        p.srv->Release();
+        p.srv = 0;
+    }
+}
 static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timeline.cpp
 
 // An unsaved session, drawn like a clip's card: its picture from the buffer (pointing scrubs through it, a click
@@ -2226,6 +2268,8 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
         if (shown_id == id) pic = timeline_keyframe(shown_t, false);
         if (!pic) pic = timeline_keyframe(mid, false);
     }
+    if (pic && !hover) lib_poster_keep(id, pic);
+    if (!pic) pic = lib_poster(id);
     if (!pic) g_lib_missing++;
     if (pic) dl->AddImageRounded((ImTextureID)pic, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
     else {
@@ -2347,6 +2391,7 @@ static bool lib_unsaved_row(f32 full_w)
     Sessions &ss = g_app.sessions;
     ImGuiIO &io = ImGui::GetIO();
     sessions_unsaved_take();
+    lib_posters_sweep();
     if (ss.row_count == 0) return false;
     f32 gap = kit_px(14), fh = ImGui::GetFrameHeight();
     i32 per = (i32)((full_w + gap) / (kit_px(280) + gap));
