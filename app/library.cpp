@@ -931,6 +931,7 @@ static void library_window_shown(bool shown)
         return;
     }
     library_close_player();
+    player_close(&g_app.library.hover);
     player_close(&g_app.editor.player); // the editor opens it again when it's next shown
     lib_free_textures();
 }
@@ -1260,12 +1261,24 @@ static void lib_popup_style_pop() { ImGui::PopStyleVar(3); }
 static void library_play(const LibItem &it, f64 from)
 {
     Library &lib = g_app.library;
+    player_close(&lib.hover);
     lib.playing = it;
     lib.player.id = 0;
     player_open(&lib.player, lib_item_path(it), from, true);
 }
 
 static void lib_rename_start(const LibItem &it, bool comment = false);
+
+// After the screen is drawn: the card preview gets its next frame, and stops once no card has the mouse.
+static void library_hover_end_frame()
+{
+    Library &lib = g_app.library;
+    if (lib.hover_frame != ImGui::GetFrameCount()) {
+        lib.hover_key = 0;
+        player_close(&lib.hover);
+    }
+    if (lib.hover.open) player_update(&lib.hover);
+}
 
 static void card_menu()
 {
@@ -1440,8 +1453,33 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         frac = (ImGui::GetIO().MousePos.x - t0.x) / w;
         frac = frac < 0 ? 0 : frac > 0.999f ? 0.999f : frac;
     }
-    bool scrub = over && lib_want_strip(it);
-    if (scrub) {
+    // Resting on the card: after half a second its video plays there, muted, from the mouse's point, until the
+    // mouse moves or leaves.
+    Player &hp = lib.hover;
+    bool live = false;
+    if (over) {
+        ImVec2 m = ImGui::GetIO().MousePos;
+        f64 now = ImGui::GetTime();
+        if (lib.hover_key != it.key || fabsf(m.x - lib.hover_mx) > 2 || fabsf(m.y - lib.hover_my) > 2) {
+            player_close(&hp);
+            lib.hover_key = it.key;
+            lib.hover_mx = m.x;
+            lib.hover_my = m.y;
+            lib.hover_since = now;
+        }
+        lib.hover_frame = ImGui::GetFrameCount();
+        if (!hp.open && !renaming && it.info.duration > 0) {
+            if (now - lib.hover_since >= 0.5) {
+                hp.id = 3;
+                if (player_open(&hp, lib_item_path(it), frac * it.info.duration, true)) hp.engine->SetMuted(TRUE);
+            } else ui_wake(2);
+        }
+        live = hp.open && hp.loaded && hp.frame_ready && hp.srv && !hp.paused && !hp.seeking && !hp.has_seek;
+    }
+    bool scrub = over && !live && lib_want_strip(it);
+    if (live) {
+        dl->AddImageRounded((ImTextureID)(intptr_t)hp.srv, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, round);
+    } else if (scrub) {
         i32 f = (i32)(frac * lib.strip_frames);
         f32 u0 = (f32)f / lib.strip_frames, u1 = (f32)(f + 1) / lib.strip_frames;
         dl->AddImageRounded((ImTextureID)(intptr_t)lib.strip, t0, t1, ImVec2(u0, 0), ImVec2(u1, 1), IM_COL32_WHITE, round);
@@ -1457,8 +1495,12 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     }
     char text[64];
     if (over) {
-        dl->AddRectFilled(t0, t1, IM_COL32(0, 0, 0, 50), round);
-        lib_play_mark(dl, ImVec2((t0.x + t1.x) / 2, (t0.y + t1.y) / 2), kit_px(24));
+        if (live) frac = it.info.duration > 0 ? (f32)(hp.pos / it.info.duration) : 0;
+        frac = frac < 0 ? 0 : frac > 0.999f ? 0.999f : frac;
+        if (!live) {
+            dl->AddRectFilled(t0, t1, IM_COL32(0, 0, 0, 50), round);
+            lib_play_mark(dl, ImVec2((t0.x + t1.x) / 2, (t0.y + t1.y) / 2), kit_px(24));
+        }
         // Where a click starts playing: a bar the whole width of the picture's bottom edge (the picture's own
         // rounded shape, clipped to a strip, so it follows the corners), and the time.
         f32 in = kit_px(10), bh = kit_px(4), by = t1.y - bh;

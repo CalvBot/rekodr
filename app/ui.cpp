@@ -1266,6 +1266,7 @@ static void ui_frame()
     case SCREEN_EDITOR: { FRAME_PART("editor screen"); screen_editor(); } break;
     case SCREEN_OPTIONS: { FRAME_PART("options screen"); screen_options(); } break;
     }
+    library_hover_end_frame(); // the Library cards' preview stops once no card has the mouse
     ImGui::EndChild();
     help_window();
     sessions_popup(); // "Save that session?" when a session has just ended

@@ -399,7 +399,7 @@ enum { PLAYER_MAX_TRACK_ENGINES = 8 };
 struct Player {
     bool              open;
     Path              path;
-    u8                id;  // which player (0 library, 1 editor): media events carry it
+    u8                id;  // which player (0 library, 1 editor, 2 timeline, 3 card preview): media events carry it
     u32               gen; // bumped on every open, so events from a closed file are dropped
     IMFMediaEngine   *engine;
     IMFMediaEngineEx *engine_ex;
@@ -491,6 +491,12 @@ struct Library {
     bool     message_error;
     Player   player;
     LibItem  playing;              // the item the player shows
+    // The muted preview that plays in a card the mouse has rested on.
+    Player   hover;
+    u64      hover_key;            // the card under the mouse (its key), 0 = none
+    f32      hover_mx, hover_my;   // where the mouse came to rest on it
+    f64      hover_since;          // ImGui time it came to rest there
+    i32      hover_frame;          // the frame a card last had the mouse
 };
 
 struct ShareFile {
