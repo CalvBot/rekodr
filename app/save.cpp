@@ -48,6 +48,7 @@ struct SaveRequest {
     i64      from_us, to_us;
     char     name[256];
     bool     recording; // the recorder says it's capturing, so the newest segment is still being written
+    u64      queued_ms; // GetTickCount64 when it was queued
     EditJob  edit;      // SAVE_KEEP and SAVE_SHARE
 };
 
@@ -104,6 +105,10 @@ struct SaveWork {
     i32          graph_len;
     bool         graph_full;
     wchar_t      args[32768];
+    // How the last ffmpeg run went, for the save's timing line: ms from its start to its first progress, ms it ran,
+    // and the last speed it reported ("1.23x")
+    u64          ff_first_ms, ff_ms;
+    char         ff_speed[24];
 };
 
 static SaveWork g_save_work;
@@ -473,6 +478,9 @@ static i32 run_ffmpeg(SaveWork *w, i64 total_us, char *error, i32 error_cap)
     }
     // A preview may be built while the playhead rests, so it gives way to everything else on the PC
     if (w->req.kind == SAVE_PREVIEW) SetPriorityClass(p.process, BELOW_NORMAL_PRIORITY_CLASS);
+    u64 started = GetTickCount64();
+    w->ff_first_ms = w->ff_ms = 0;
+    str_set(w->ff_speed, "?");
     char line[1024];
     i32 n = 0;
     i64 last_permille = -1;
@@ -501,8 +509,11 @@ static i32 run_ffmpeg(SaveWork *w, i64 total_us, char *error, i32 error_cap)
                 size_t have = strlen(error), add = strlen(line);
                 if (have + add + 3 >= (size_t)error_cap) have = 0;
                 snprintf(error + have, error_cap - have, "%s%s", have ? "; " : "", line);
+            } else if (starts_with(line, "speed=")) {
+                str_set(w->ff_speed, trim(line + 6));
             } else if (starts_with(line, "out_time_us=") && total_us > 0) {
                 i64 t = strtoll(line + 12, 0, 10);
+                if (!w->ff_first_ms && t > 0) w->ff_first_ms = GetTickCount64() - started;
                 i64 permille = t <= 0 ? 0 : t >= total_us ? 1000 : t * 1000 / total_us;
                 if (permille != last_permille) {
                     save_post(SAVE_EV_PROGRESS, w->req.id, permille, 0);
@@ -513,6 +524,7 @@ static i32 run_ffmpeg(SaveWork *w, i64 total_us, char *error, i32 error_cap)
     }
     i32 code = proc_wait(&p, INFINITE);
     proc_close(&p);
+    w->ff_ms = GetTickCount64() - started;
     return cancelled ? -2 : code;
 }
 
@@ -557,7 +569,8 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     // The segment covering `to` is still being written: wait for it to finish (a couple of seconds at most), so the
     // clip ends at the moment the save was asked for. "Being written" is the recorder saying it's capturing, or a
     // list.csv written moments ago (a recorder outside this process).
-    u64 deadline = GetTickCount64() + SEGMENT_US / 1000 + 2500;
+    u64 t_start = GetTickCount64(); // each stage is timed, logged when the save ends
+    u64 deadline = t_start + SEGMENT_US / 1000 + 2500;
     for (bool wait = req.kind != SAVE_PREVIEW; wait;) { // a preview takes what's there
         i64 end = 0, written = 0;
         bool known = buffer_video_newest_end(w->cfg.buffer_dir, &end, &written);
@@ -567,10 +580,12 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         Sleep(150);
     }
 
+    u64 t_waited = GetTickCount64();
     if (!buffer_read(w->cfg.buffer_dir, &w->buf)) {
         snprintf(out, out_cap, "out of memory reading the buffer");
         return SAVE_EV_FAILED;
     }
+    u64 t_read = GetTickCount64();
     BufferIdx &b = w->buf;
     i32 first = 0;
     while (first < b.seg_count && b.segs[first].end_us <= req.from_us) first++;
@@ -794,7 +809,9 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     log_line("save %u: %.1f s from %lld, %d video segments in %d pieces, %d audio streams on %d tracks, %d chapters -> %s",
              req.id, (f64)total_us / 1e6, clip_start, end - first, w->piece_count, w->stream_count,
              own_tracks + 1, chapter_count, final8);
+    u64 t_ready = GetTickCount64();
     i32 code = run_ffmpeg(w, total_us, out, out_cap);
+    u64 t_ran = GetTickCount64();
     i64 result;
     if (code == 0 && MoveFileExW(part_path.s, final_path.s, 0)) {
         snprintf(out, out_cap, "%s", final8);
@@ -812,6 +829,11 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         }
     }
     remove_work_files(work, w->stream_count);
+    u64 t_end = GetTickCount64();
+    log_line("save %u: times: queued %.2f s, waiting for footage %.2f s, buffer read %.2f s, lists and graph %.2f s, ffmpeg %.2f s "
+             "(first progress after %.2f s, speed %s), finishing %.2f s",
+             req.id, (t_start - req.queued_ms) / 1000.0, (t_waited - t_start) / 1000.0, (t_read - t_waited) / 1000.0, (t_ready - t_read) / 1000.0,
+             (t_ran - t_ready) / 1000.0, w->ff_first_ms / 1000.0, w->ff_speed, (t_end - t_ran) / 1000.0);
     return result;
 }
 
@@ -1410,6 +1432,7 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     r->to_us = to_us;
     str_set(r->name, name);
     r->recording = g_app.recorder.recording;
+    r->queued_ms = GetTickCount64();
     if (edit) r->edit = *edit;
     SaveSettings *s = &g_save_q.settings;
     s->buffer_dir = c.buffer_dir;
