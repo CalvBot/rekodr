@@ -42,6 +42,7 @@ struct LibShared {
     i32                task_count;
     bool               scan_running, scan_queued;
     Path               save_dir, cache_dir, ffmpeg; // copied with every scan request
+    char               name_template[128];
     LibItem            items[LIB_MAX_ITEMS];        // the newest scan's published list
     i32                item_count;
     u32                items_gen;
@@ -190,7 +191,7 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
 
 static int lib_item_newer(const void *a, const void *b)
 {
-    i64 x = ((const LibItem *)a)->mtime_us, y = ((const LibItem *)b)->mtime_us;
+    i64 x = ((const LibItem *)a)->when_us, y = ((const LibItem *)b)->when_us;
     return x > y ? -1 : x < y ? 1 : 0;
 }
 
@@ -332,7 +333,9 @@ static DWORD WINAPI lib_prober(void *param)
     }
 }
 
-static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg)
+static i64 lib_name_us(const char *tmpl, const char *name, i64 mtime_us);
+
+static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg, const char *tmpl)
 {
     LibItem *items = g_scan_items;
     i32 n = 0, by_hand = 0;
@@ -365,6 +368,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     it->kind = kind == 1 ? LIB_SESSIONS : LIB_CLIPS;
                     it->size = ((u64)f.nFileSizeHigh << 32) | f.nFileSizeLow;
                     it->mtime_us = filetime_us(f.ftLastWriteTime);
+                    it->when_us = lib_name_us(tmpl, it->name, it->mtime_us);
                     u64 k = fnv64(&it->size, sizeof it->size);
                     it->key = fnv64(&it->mtime_us, sizeof it->mtime_us, k);
                     char tagged[64];
@@ -595,6 +599,8 @@ static DWORD WINAPI lib_thread(void *)
         g_lib.task_count--;
         memmove(g_lib.tasks + pick, g_lib.tasks + pick + 1, (g_lib.task_count - pick) * sizeof g_lib.tasks[0]);
         Path save_dir = g_lib.save_dir, cache = g_lib.cache_dir, ffmpeg = g_lib.ffmpeg;
+        char tmpl[sizeof g_lib.name_template];
+        str_set(tmpl, g_lib.name_template);
         if (t.kind == LT_SCAN) {
             g_lib.scan_queued = false;
             g_lib.scan_running = true;
@@ -603,7 +609,7 @@ static DWORD WINAPI lib_thread(void *)
 
         if (t.kind == LT_SCAN) {
             u64 started = GetTickCount64();
-            lib_scan(save_dir, cache, ffmpeg);
+            lib_scan(save_dir, cache, ffmpeg, tmpl);
             AcquireSRWLockExclusive(&g_lib.lock);
             g_lib.scan_running = false;
             ReleaseSRWLockExclusive(&g_lib.lock);
@@ -657,6 +663,7 @@ static void library_rescan()
     AcquireSRWLockExclusive(&g_lib.lock);
     bool queued = g_lib.scan_queued;
     g_lib.save_dir = g_app.config.save_dir;
+    str_set(g_lib.name_template, g_app.config.name_template);
     g_lib.cache_dir = cache;
     g_lib.ffmpeg = ffmpeg;
     g_lib.scan_queued = true;
@@ -727,7 +734,7 @@ static int lib_sort_cmp(const void *pa, const void *pb)
     const Library &lib = g_app.library;
     const LibItem &a = lib.items[*(const i32 *)pa], &b = lib.items[*(const i32 *)pb];
     switch (lib.sort) {
-    case SORT_OLDEST: if (a.mtime_us != b.mtime_us) return a.mtime_us < b.mtime_us ? -1 : 1; break;
+    case SORT_OLDEST: if (a.when_us != b.when_us) return a.when_us < b.when_us ? -1 : 1; break;
     case SORT_LONGEST: if (a.info.duration != b.info.duration) return a.info.duration > b.info.duration ? -1 : 1; break;
     case SORT_BIGGEST: if (a.size != b.size) return a.size > b.size ? -1 : 1; break;
     case SORT_GAME: { // by game, A to Z, with no game last; newest first within each
@@ -740,7 +747,7 @@ static int lib_sort_cmp(const void *pa, const void *pb)
     }
     default: break;
     }
-    return a.mtime_us > b.mtime_us ? -1 : a.mtime_us < b.mtime_us ? 1 : 0;
+    return a.when_us > b.when_us ? -1 : a.when_us < b.when_us ? 1 : 0;
 }
 
 // Folders: groups of clips, and of sessions, made by hand (each view has its own). A card can be in several.
@@ -952,7 +959,7 @@ static void lib_refilter()
         const LibItem &it = lib.items[i];
         if (it.kind != lib.view) continue;
         lib.view_count++;
-        if (!lib_in_range(it.mtime_us)) continue;
+        if (!lib_in_range(it.when_us)) continue;
         lib.range_count++;
         u64 fm = lib_folder_mask(it.key);
         for (i32 f = 0; f < LIB_MAX_FOLDERS && fm >> f; f++)
@@ -1285,11 +1292,12 @@ static const char *const WEEKDAYS[] = {"Monday", "Tuesday", "Wednesday", "Thursd
 
 static void fmt_day(i64 us, char *out, i32 cap)
 {
-    SYSTEMTIME t;
-    i64 day = local_day(us, &t), today = local_day(now_us(), 0);
+    SYSTEMTIME t, now;
+    i64 day = local_day(us, &t), today = local_day(now_us(), &now);
     if (day == today) snprintf(out, cap, "Today");
     else if (day == today - 1) snprintf(out, cap, "Yesterday");
-    else snprintf(out, cap, "%s %d %s", WEEKDAYS[day % 7], t.wDay, month_name(t.wMonth)); // 1601-01-01 was a Monday
+    else if (t.wYear == now.wYear) snprintf(out, cap, "%s %d %s", WEEKDAYS[day % 7], t.wDay, month_name(t.wMonth)); // 1601-01-01 was a Monday
+    else snprintf(out, cap, "%s %d %s %d", WEEKDAYS[day % 7], t.wDay, month_name(t.wMonth), t.wYear);
 }
 
 // "today 9:04 pm", "yesterday 9:04 pm", "14 Nov 9:04 pm" (or 21:04, by the clock setting)
@@ -1358,11 +1366,13 @@ static bool name_match(const char *tmpl, const char *s, NameParts *p)
 
 // The name a clip or session is shown with: when its file name holds the date and time from the template in
 // Options, "Minecraft - today at 3 pm", "yesterday at 9:30 pm", a weekday within the week, then "19 Nov at 3 pm",
-// with the year when it isn't this one. Any other name is shown as it is. True when the name shown has a time.
-static bool lib_shown_name(const char *name, char *out, i32 cap)
+// with the year when it isn't this one. Any other name is shown as it is.
+// Reads a name with the template: false unless it holds a valid date. t gets the local date and time, copy a
+// " (2)" ending kept off it.
+static bool lib_name_read(const char *tmpl, const char *name, NameParts &p, SYSTEMTIME &t, char (&copy)[16])
 {
-    snprintf(out, cap, "%s", name);
-    char stem[300], copy[16] = ""; // " (2)": a second file of the same name
+    char stem[300]; // " (2)": a second file of the same name
+    copy[0] = 0;
     str_set(stem, name);
     size_t n = strlen(stem);
     if (n && stem[n - 1] == ')') {
@@ -1373,20 +1383,45 @@ static bool lib_shown_name(const char *name, char *out, i32 cap)
             stem[i - 2] = 0;
         }
     }
-    NameParts p = {0, 0, 0, 0, 0, -1, 0};
-    if (!name_match(g_app.config.name_template, stem, &p)) {
+    p = {0, 0, 0, 0, 0, -1, 0};
+    if (!name_match(tmpl, stem, &p)) {
         if (!copy[0]) return false;
         str_set(stem, name); // the " (n)" may belong to the name itself
         copy[0] = 0;
         p = {0, 0, 0, 0, 0, -1, 0};
-        if (!name_match(g_app.config.name_template, stem, &p)) return false;
+        if (!name_match(tmpl, stem, &p)) return false;
     }
     if (!p.year || p.month < 1 || p.month > 12 || p.day < 1 || p.day > 31 || p.hour > 23 || p.minute > 59) return false;
-    SYSTEMTIME t = {}, now;
+    if (p.game) p.game = name + (p.game - stem); // stem is a copy of the start of name
+    t = {};
     t.wYear = (WORD)p.year, t.wMonth = (WORD)p.month, t.wDay = (WORD)p.day;
     t.wHour = (WORD)(p.hour < 0 ? 0 : p.hour), t.wMinute = (WORD)p.minute;
     FILETIME ft;
-    if (!SystemTimeToFileTime(&t, &ft)) return false;
+    return SystemTimeToFileTime(&t, &ft) != 0;
+}
+
+// When a clip or session is from: the time in its name (by the template), else `mtime_us`
+static i64 lib_name_us(const char *tmpl, const char *name, i64 mtime_us)
+{
+    NameParts p;
+    SYSTEMTIME local, utc;
+    char copy[16];
+    if (!lib_name_read(tmpl, name, p, local, copy) || !TzSpecificLocalTimeToSystemTime(0, &local, &utc)) return mtime_us;
+    FILETIME ft;
+    SystemTimeToFileTime(&utc, &ft);
+    return ((((i64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) - 116444736000000000LL) / 10;
+}
+
+// The name a clip or session is shown with (see above). True when the name shown has a time.
+static bool lib_shown_name(const char *name, char *out, i32 cap)
+{
+    snprintf(out, cap, "%s", name);
+    NameParts p;
+    SYSTEMTIME t, now;
+    char copy[16];
+    if (!lib_name_read(g_app.config.name_template, name, p, t, copy)) return false;
+    FILETIME ft;
+    SystemTimeToFileTime(&t, &ft);
     i64 day = (i64)((((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 864000000000ull);
     i64 today = local_day(now_us(), &now);
     char when[64], at[24] = "";
@@ -2121,7 +2156,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (show_day && (lib.sort == SORT_NEWEST || lib.sort == SORT_OLDEST || lib.sort == SORT_GAME)) {
         char day[64];
         if (lib.sort == SORT_GAME) str_set(day, it.info.game);
-        else fmt_day(it.mtime_us, day, sizeof day);
+        else fmt_day(it.when_us, day, sizeof day);
         ImGui::PushFont(g_font_bold);
         dl->AddText(ImVec2(a.x, a.y + day_h - ImGui::GetFontSize() - kit_px(7)), col32(COL_DIM), day);
         ImGui::PopFont();
@@ -3538,7 +3573,7 @@ static void screen_library()
     // A day's (or game's) heading goes over its first card only, so rows of the same day read as one section
     auto group = [&](i32 idx) {
         const LibItem &it = lib.items[lib.shown[idx]];
-        return lib.sort == SORT_GAME ? (i64)fnv64(it.info.game, strlen(it.info.game)) : local_day(it.mtime_us, 0);
+        return lib.sort == SORT_GAME ? (i64)fnv64(it.info.game, strlen(it.info.game)) : local_day(it.when_us, 0);
     };
     for (i32 r = r0; r <= r1 && r < rows; r++) {
         for (i32 c = 0; c < cols; c++) {

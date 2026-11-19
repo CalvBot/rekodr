@@ -2712,6 +2712,7 @@ static void options_general()
                 str_set(c.name_template, t);
                 log_line("options: file names %s", c.name_template);
                 options_apply(0);
+                library_rescan(); // names are read with the template
             }
         }
         opt_row_end();

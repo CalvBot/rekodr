@@ -67,6 +67,12 @@ static void test_shown_names()
     lib_shown_name("Over 9 15-05 20-11-2020", out, sizeof out);
     T(!strcmp(out, "Over 9 - 20 Nov 2020 at 15:05"));
     T(lib_name_matches("Minecraft 15-05 20-11-2020", "nov 2020"));
+    // Sorting and day headings go by the name's time, or the file's when the name has none
+    i64 at = now_us() - 3600ll * 1000000;
+    save_name_expand(SAVE_NAME_DEFAULT, "Minecraft", at, name, sizeof name);
+    i64 got = lib_name_us(SAVE_NAME_DEFAULT, name, 5);
+    T(got <= at && at - got < 60ll * 1000000);
+    T(lib_name_us(SAVE_NAME_DEFAULT, "Minecraft 2026-11-19 21-30-00", 5) == 5);
     str_set(g_app.config.name_template, "{YYYY}-{MM}-{DD} {hh}.{mm} {game}");
     lib_shown_name("2020-11-20 15.05 Overwatch 2", out, sizeof out);
     T(!strcmp(out, "Overwatch 2 - 20 Nov 2020 at 15:05"));

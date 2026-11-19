@@ -441,6 +441,7 @@ struct LibItem {
     bool      probed;    // `info` is known
     u64       size;
     i64       mtime_us;
+    i64       when_us;   // when it's from: the time in its name (by the template in Options), else mtime_us
     u64       key;       // thumbnail cache key; changes when the file does, not when it's renamed
     MediaInfo info;
     char      comment[128]; // typed by hand (comments.txt); shown as its title
