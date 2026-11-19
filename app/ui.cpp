@@ -425,14 +425,16 @@ static void ui_show(Screen screen)
     DEV_LOG("show window, screen %d (was %s)", (int)screen, ui.shown ? "shown" : "hidden");
     ui.screen = screen;
     g_app.timeline.quick = false;
+    // A test copy (CLIPBACK_HOME) shows itself without taking the foreground, so tests leave the user's work alone
+    bool test = is_test_copy();
     if (!ui.shown) {
-        ShowWindow(ui.hwnd, IsZoomed(ui.hwnd) ? SW_SHOWMAXIMIZED : SW_SHOW);
+        ShowWindow(ui.hwnd, IsZoomed(ui.hwnd) ? SW_SHOWMAXIMIZED : test ? SW_SHOWNOACTIVATE : SW_SHOW);
         ui.shown = true;
         library_window_shown(true);
     }
-    if (IsIconic(ui.hwnd)) ShowWindow(ui.hwnd, SW_RESTORE);
+    if (IsIconic(ui.hwnd)) ShowWindow(ui.hwnd, test ? SW_SHOWNOACTIVATE : SW_RESTORE);
     // A second launch (Stream Deck, hotkey) gave us the right to take the foreground; the tray did too.
-    SetForegroundWindow(ui.hwnd);
+    if (!test) SetForegroundWindow(ui.hwnd);
     ui_wake(4);
 }
 
