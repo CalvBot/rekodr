@@ -34,10 +34,18 @@ struct TlPreviewReq {
     Path ffmpeg;
 };
 
+// Keyframes asked for in a batch (timeline_keyframes): at most this many queued, being read or read and not taken.
+enum { TL_BATCH_MAX = 20, TL_BATCH_THREADS = 4 };
+
+struct TlBatchDone {
+    i64 key;
+    u8 *px; // TL_FRAME_BYTES from malloc, the main thread frees it; 0 when ffmpeg gave no frame
+};
+
 // The only data shared between the main thread and the workers, always under `lock`.
 struct TlShared {
     SRWLOCK            lock;
-    CONDITION_VARIABLE index_wake, preview_wake;
+    CONDITION_VARIABLE index_wake, preview_wake, batch_wake;
     HANDLE             index_thread, preview_thread; // started on first use; main thread only
     bool               index_want;
     Path               buffer_dir;
@@ -49,9 +57,19 @@ struct TlShared {
     bool               result_ready, result_ok;
     i64                result_key;
     u8                 result_px[TL_FRAME_BYTES];
+    HANDLE             batch_threads[TL_BATCH_THREADS]; // started on first use; main thread only
+    TlPreviewReq       batch_q[TL_BATCH_MAX];           // waiting for a batch worker, oldest first
+    i32                batch_n;
+    TlBatchDone        batch_done[TL_BATCH_MAX];
+    i32                batch_done_n;
 };
 
 static TlShared g_tl;
+
+// Main thread only: the batch's keys asked for and not taken back yet, and those that gave no frame (the last
+// TL_BATCH_MAX of them, not asked again until the screen is left).
+static i64 g_tl_batch_asked[TL_BATCH_MAX], g_tl_batch_failed[TL_BATCH_MAX];
+static i32 g_tl_batch_asked_n, g_tl_batch_failed_n;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Workers
@@ -98,7 +116,7 @@ static DWORD WINAPI tl_index_thread(void *)
 // One frame, scaled and letterboxed to TL_FRAME_W x TL_FRAME_H, as raw BGRA on ffmpeg's stdout.
 static bool tl_extract(const TlPreviewReq &r, u8 *px)
 {
-    static wchar_t args[4096];
+    wchar_t args[4096];
     args[0] = 0;
     i32 cap = COUNT(args);
     static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-nostdin"};
@@ -159,6 +177,34 @@ static DWORD WINAPI tl_preview_thread(void *)
         g_tl.result_ok = ok;
         g_tl.result_key = req.key;
         g_tl.result_ready = true;
+        ReleaseSRWLockExclusive(&g_tl.lock);
+        Event e = {};
+        e.kind = EV_TIMELINE;
+        e.a = TL_EV_PREVIEW;
+        event_post(e);
+    }
+}
+
+// TL_BATCH_THREADS of these read the batch's keyframes, each with its own ffmpeg.
+static DWORD WINAPI tl_batch_thread(void *)
+{
+    TlPreviewReq req;
+    for (;;) {
+        AcquireSRWLockExclusive(&g_tl.lock);
+        while (!g_tl.batch_n) SleepConditionVariableSRW(&g_tl.batch_wake, &g_tl.lock, INFINITE, 0);
+        req = g_tl.batch_q[0];
+        g_tl.batch_n--;
+        memmove(g_tl.batch_q, g_tl.batch_q + 1, g_tl.batch_n * sizeof g_tl.batch_q[0]);
+        ReleaseSRWLockExclusive(&g_tl.lock);
+
+        u8 *px = (u8 *)malloc(TL_FRAME_BYTES);
+        if (px && !tl_extract(req, px)) {
+            free(px);
+            px = 0;
+        }
+        AcquireSRWLockExclusive(&g_tl.lock);
+        // Never full: the main thread keeps queued, running and done together at TL_BATCH_MAX at most
+        g_tl.batch_done[g_tl.batch_done_n++] = {req.key, px};
         ReleaseSRWLockExclusive(&g_tl.lock);
         Event e = {};
         e.kind = EV_TIMELINE;
@@ -298,6 +344,18 @@ static void tl_release()
         tl.frames[i] = {};
     }
     tl.pending_key = tl.shown_key = tl.failed_key = 0;
+    // The batch's queued keyframes are dropped; those being read come back and are let go
+    AcquireSRWLockExclusive(&g_tl.lock);
+    for (i32 i = 0; i < g_tl.batch_n; i++) {
+        for (i32 k = 0; k < g_tl_batch_asked_n; k++)
+            if (g_tl_batch_asked[k] == g_tl.batch_q[i].key) {
+                g_tl_batch_asked[k] = g_tl_batch_asked[--g_tl_batch_asked_n];
+                break;
+            }
+    }
+    g_tl.batch_n = 0;
+    ReleaseSRWLockExclusive(&g_tl.lock);
+    g_tl_batch_failed_n = 0;
     if (!tl.idx) return;
     AcquireSRWLockExclusive(&g_tl.lock);
     BufferIdx *spare = g_tl.spare, *ready = g_tl.ready, *last = g_tl.last;
@@ -354,9 +412,53 @@ static TimelineFrame *tl_frame_find(i64 key)
     return 0;
 }
 
+// Puts a frame in the cache, in place of the least recently shown one (free slots first: their `used` is 0).
+static void tl_frame_store(i64 key, ID3D11ShaderResourceView *srv)
+{
+    Timeline &tl = g_app.timeline;
+    TimelineFrame *slot = &tl.frames[0];
+    for (i32 i = 1; i < COUNT(tl.frames); i++)
+        if (tl.frames[i].used < slot->used) slot = &tl.frames[i];
+    if (slot->srv) slot->srv->Release();
+    slot->key = key;
+    slot->srv = srv;
+    slot->used = ++tl.frame_clock;
+}
+
+// The batch's keyframes that are back: into the cache, or onto the failed list.
+static void tl_take_batch()
+{
+    Timeline &tl = g_app.timeline;
+    TlBatchDone done[TL_BATCH_MAX];
+    AcquireSRWLockExclusive(&g_tl.lock);
+    i32 n = g_tl.batch_done_n;
+    memcpy(done, g_tl.batch_done, n * sizeof done[0]);
+    g_tl.batch_done_n = 0;
+    ReleaseSRWLockExclusive(&g_tl.lock);
+    for (i32 i = 0; i < n; i++) {
+        for (i32 k = 0; k < g_tl_batch_asked_n; k++)
+            if (g_tl_batch_asked[k] == done[i].key) {
+                g_tl_batch_asked[k] = g_tl_batch_asked[--g_tl_batch_asked_n];
+                break;
+            }
+        // Let go while the screen holds nothing (tl_release has run)
+        ID3D11ShaderResourceView *srv = done[i].px && tl.idx ? tl_upload(done[i].px) : 0;
+        free(done[i].px);
+        if (srv) tl_frame_store(done[i].key, srv);
+        else if (tl.idx) {
+            if (g_tl_batch_failed_n == TL_BATCH_MAX) {
+                memmove(g_tl_batch_failed, g_tl_batch_failed + 1, (TL_BATCH_MAX - 1) * sizeof g_tl_batch_failed[0]);
+                g_tl_batch_failed_n--;
+            }
+            g_tl_batch_failed[g_tl_batch_failed_n++] = done[i].key;
+        }
+    }
+}
+
 static void tl_take_preview()
 {
     Timeline &tl = g_app.timeline;
+    tl_take_batch();
     AcquireSRWLockExclusive(&g_tl.lock);
     bool have = g_tl.result_ready, ok = g_tl.result_ok;
     i64 key = g_tl.result_key;
@@ -369,14 +471,7 @@ static void tl_take_preview()
         tl.failed_key = key; // not asked again until something else is wanted
         return;
     }
-    // The least recently shown slot goes (free ones first: their `used` is 0).
-    TimelineFrame *slot = &tl.frames[0];
-    for (i32 i = 1; i < COUNT(tl.frames); i++)
-        if (tl.frames[i].used < slot->used) slot = &tl.frames[i];
-    if (slot->srv) slot->srv->Release();
-    slot->key = key;
-    slot->srv = srv;
-    slot->used = ++tl.frame_clock;
+    tl_frame_store(key, srv);
 }
 
 // A preview's cache key: the time it shows, doubled, plus 1 for an exact frame. A keyframe preview is keyed by its
@@ -507,6 +602,80 @@ static ID3D11ShaderResourceView *timeline_keyframe(i64 t, bool ask)
     }
     if (ask && !tl.pending_key) tl_want_frame(t, false);
     return 0;
+}
+
+// Asks for the keyframes timeline_keyframe would give for each of `ts` that aren't cached, read by up to
+// TL_BATCH_THREADS ffmpegs at once; timeline_keyframe(t, false) then gives each as it's read. Meant to be called
+// every frame with what's on screen: a keyframe still queued that isn't in `ts` is dropped. The cache holds
+// COUNT(Timeline::frames) frames, shared with the Timeline, so `ts` should be a page of tiles, not a whole list.
+static void timeline_keyframes(const i64 *ts, i32 n)
+{
+    Timeline &tl = g_app.timeline;
+    if (!tl.idx) {
+        tl_ask_index();
+        return;
+    }
+    const BufferIdx &b = *tl.idx;
+    i64 keys[TL_BATCH_MAX];
+    i32 segs[TL_BATCH_MAX], kn = 0;
+    for (i32 i = 0; i < n && kn < TL_BATCH_MAX; i++) {
+        i32 s = tl_seg_at(b, ts[i]);
+        if (s < 0) s = tl_seg_after(b, ts[i]);
+        if (s >= b.seg_count) continue;
+        i64 key = tl_frame_key(b.segs[s].start_us, false);
+        bool skip = tl_frame_find(key) != 0;
+        for (i32 k = 0; k < kn && !skip; k++) skip = keys[k] == key;
+        for (i32 k = 0; k < g_tl_batch_failed_n && !skip; k++) skip = g_tl_batch_failed[k] == key;
+        if (skip) continue;
+        keys[kn] = key;
+        segs[kn++] = s;
+    }
+
+    Path ffmpeg = {};
+    bool have_ffmpeg = kn && ffmpeg_find(g_app.config.ffmpeg, &ffmpeg);
+    AcquireSRWLockExclusive(&g_tl.lock);
+    // Queued ones no longer on screen go
+    i32 kept = 0;
+    for (i32 i = 0; i < g_tl.batch_n; i++) {
+        bool want = false;
+        for (i32 k = 0; k < kn && !want; k++) want = keys[k] == g_tl.batch_q[i].key;
+        if (want) {
+            g_tl.batch_q[kept++] = g_tl.batch_q[i];
+            continue;
+        }
+        for (i32 k = 0; k < g_tl_batch_asked_n; k++)
+            if (g_tl_batch_asked[k] == g_tl.batch_q[i].key) {
+                g_tl_batch_asked[k] = g_tl_batch_asked[--g_tl_batch_asked_n];
+                break;
+            }
+    }
+    g_tl.batch_n = kept;
+    i32 added = 0;
+    for (i32 i = 0; i < kn && have_ffmpeg && g_tl_batch_asked_n < TL_BATCH_MAX; i++) {
+        bool asked = false;
+        for (i32 k = 0; k < g_tl_batch_asked_n && !asked; k++) asked = g_tl_batch_asked[k] == keys[i];
+        if (asked) continue;
+        const VideoSeg &seg = b.segs[segs[i]];
+        wchar_t run[64], name[32];
+        utf8_to_wide(b.runs[seg.run].name, run, COUNT(run));
+        utf8_to_wide(seg.name, name, COUNT(name));
+        TlPreviewReq &r = g_tl.batch_q[g_tl.batch_n++];
+        r = {};
+        r.key = keys[i];
+        r.file = path_join(path_join(path_join(g_app.config.buffer_dir, L"video"), run), name);
+        r.ffmpeg = ffmpeg;
+        g_tl_batch_asked[g_tl_batch_asked_n++] = keys[i];
+        added++;
+    }
+    if (added) WakeAllConditionVariable(&g_tl.batch_wake);
+    ReleaseSRWLockExclusive(&g_tl.lock);
+    if (kn && !have_ffmpeg) {
+        static bool told;
+        if (!told) log_line("timeline: ffmpeg not found, so no preview frames");
+        told = true;
+    }
+    if (added && !g_tl.batch_threads[0])
+        for (i32 i = 0; i < TL_BATCH_THREADS; i++) g_tl.batch_threads[i] = thread_start(tl_batch_thread, 0);
 }
 
 // Main thread, once a second.
