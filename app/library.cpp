@@ -258,7 +258,7 @@ static void lib_set_display_name(LibItem *it)
 // Comments on clips and sessions: <config_dir>\comments.txt holds a line "<key in hex> | <file name> | <comment>" for
 // each, keyed as games.txt is. The comment goes last so it can hold '|'; its line breaks are written \n and its
 // backslashes \\. Loaded on the UI thread with the folders, and only read there.
-enum { LIB_COMMENT_MAX = 1000 };
+enum { LIB_COMMENT_MAX = 4000 };
 struct ClipComment {
     u64   key;
     char  name[256];
@@ -2136,8 +2136,7 @@ static bool lib_dialog_begin(const char *id);
 static void lib_dialog_end();
 static i32 lib_dialog_pair(const char *action, KitKind kind, f32 right);
 
-// The Comment dialog: the card's name, a box for the comment (several lines, up to LIB_COMMENT_MAX characters) and
-// Cancel / Save. lib_comment_open asks for it; lib_comment_dialog draws it, where the card menu and the player are.
+// The Comment dialog: the card's name, a box for the comment (several lines) and Cancel / Save. lib_comment_open asks for it; lib_comment_dialog draws it, where the card menu and the player are.
 static LibItem g_comment_item;
 static char    g_comment_buf[LIB_COMMENT_MAX + 1];
 static bool    g_comment_ask, g_comment_focus;
@@ -2200,10 +2199,6 @@ static void lib_comment_dialog()
     }
     lib_comment_box("##comment", g_comment_buf, sizeof g_comment_buf, w, 7 * ImGui::GetTextLineHeight() + 2 * ImGui::GetStyle().FramePadding.y);
     ImGui::Dummy(ImVec2(1, kit_px(8)));
-    f32 y = ImGui::GetCursorScreenPos().y, bh = kit_px(34);
-    char count[32];
-    snprintf(count, sizeof count, "%d / %d", (i32)strlen(g_comment_buf), (i32)LIB_COMMENT_MAX);
-    ImGui::GetWindowDrawList()->AddText(ImVec2(n.x, floorf(y + (bh - ImGui::GetTextLineHeight()) / 2)), col32(COL_FAINT), count);
     i32 b = lib_dialog_pair(ICON_SAVE "  Save", KIT_PRIMARY, n.x + w);
     if (b == 1) library_set_comment(it.key, g_comment_buf, it.name);
     if (b) ImGui::CloseCurrentPopup();

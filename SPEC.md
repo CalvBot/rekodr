@@ -63,7 +63,7 @@ Keep a whole session from start to finish.
   left in the order they were added (`favourites.txt` in the config folder).
 - **Display names:** a card can carry a name typed by hand, shown in place of its file name; the file keeps its
   name. They're kept in `names.txt` in the config folder, keyed by each file's size and time.
-- **Comments:** a clip or session can carry a note of up to 1000 characters, over several lines, separate from its
+- **Comments:** a clip or session can carry a note, over several lines, separate from its
   display name. It's written from the card's menu (Comment...) or the editor's side panel, shown under the
   player's title and as a note mark on the card, and search finds it. Kept in `comments.txt` in the config folder.
 - **Selecting:** cards can be selected to act on together, with the tick box in a card's corner, Ctrl + click,
