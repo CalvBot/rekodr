@@ -809,7 +809,8 @@ static i64 tl_max_span(const BufferIdx &b, i64 now)
     return have > TL_DAY ? have : TL_DAY;
 }
 
-// Keeps the view within the buffer, and follows now once its right edge reaches it.
+// Keeps the view within the buffer. A view following now keeps its right edge there; only Back to now starts
+// following, never a pan or zoom that reaches now.
 static void tl_clamp_view(i64 now)
 {
     Timeline &tl = g_app.timeline;
@@ -819,10 +820,7 @@ static void tl_clamp_view(i64 now)
     if (tl.view_span_us > max_span) tl.view_span_us = max_span;
     i64 margin = tl.view_span_us / 30; // room to see the now edge
     i64 latest = now + margin;
-    if (tl.follow || tl.view_end_us >= latest) {
-        tl.follow = true;
-        tl.view_end_us = latest;
-    }
+    if (tl.follow) tl.view_end_us = latest;
     i64 earliest = (b.oldest_us ? b.oldest_us : now - TL_DAY) - margin + tl.view_span_us;
     if (tl.view_end_us < earliest) tl.view_end_us = earliest;
     if (tl.view_end_us > latest) tl.view_end_us = latest;
@@ -832,13 +830,14 @@ static void tl_zoom(f64 factor, i64 around, i64 now)
 {
     Timeline &tl = g_app.timeline;
     i64 start = tl.view_end_us - tl.view_span_us;
-    f64 frac = tl.view_span_us ? (f64)(around - start) / (f64)tl.view_span_us : 1;
+    // The time zoomed around keeps its place on screen, or comes to the middle if it was off it
+    f64 frac = tl.view_span_us && around >= start && around <= tl.view_end_us ? (f64)(around - start) / (f64)tl.view_span_us : 0.5;
     i64 span = (i64)((f64)tl.view_span_us * factor);
     i64 max_span = tl_max_span(*tl.idx, now);
     if (span < TL_MIN_SPAN) span = TL_MIN_SPAN;
     if (span > max_span) span = max_span;
     tl.view_span_us = span;
-    // A view following now keeps following; otherwise the time under the mouse stays put.
+    // A view following now keeps following; otherwise the time zoomed around stays put.
     if (!tl.follow) tl.view_end_us = around + (i64)((1 - frac) * (f64)span);
     tl_clamp_view(now);
 }
@@ -909,8 +908,9 @@ static void timeline_quick()
     ui_show(SCREEN_TIMELINE);
     i64 now = now_us();
     tl.quick = true;
-    tl.follow = true;
+    tl.follow = false;
     tl.view_span_us = 120 * TL_SEC;
+    tl.view_end_us = now + tl.view_span_us / 30;
     if (!(tl.sel_in && tl.sel_out > tl.sel_in && now - tl.sel_out < 60 * TL_SEC)) {
         tl.sel_out = tl_whole_sec(now) - TL_SEC;
         tl.sel_in = tl.sel_out - 30 * TL_SEC;
@@ -1180,7 +1180,7 @@ static void screen_timeline()
     }
     if (!tl.view_span_us) {
         tl.view_span_us = TL_DEFAULT_SPAN;
-        tl.follow = true;
+        tl.view_end_us = now + tl.view_span_us / 30;
     }
     tl_check_job();
     const BufferIdx &b = *tl.idx;
@@ -1204,12 +1204,13 @@ static void screen_timeline()
     Config &cfg = g_app.config;
     const f32 gap = 12 * s;
     const f32 pad_r = 14 * s, ruler_h = 28 * s, video_h = 34 * s, saved_h = 8 * s;
+    const f32 zoom_bar_h = 10 * s, zoom_bar_room = zoom_bar_h + 6 * s;
     const f32 line_max = 40 * s, line_min = 20 * s; // a sound lane: as tall as fits, between these
-    const f32 min_tracks = 8 * s + ruler_h + video_h + saved_h + 10 * s + TL_LANES * line_min + 10 * s;
+    const f32 min_tracks = 8 * s + zoom_bar_room + ruler_h + video_h + saved_h + 10 * s + TL_LANES * line_min + 10 * s;
     const f32 top_min = 160 * s;
     auto top_height = [&]() {
         // By default the tracks get what they use at their tallest and the preview the rest
-        const f32 tracks_full = 8 * s + ruler_h + video_h + saved_h + 10 * s + TL_LANES * line_max + 10 * s;
+        const f32 tracks_full = 8 * s + zoom_bar_room + ruler_h + video_h + saved_h + 10 * s + TL_LANES * line_max + 10 * s;
         f32 h = cfg.timeline_top > 0 ? avail.y * cfg.timeline_top : avail.y - fh - 2 * gap - tracks_full;
         if (h > avail.y - fh - 2 * gap - min_tracks) h = avail.y - fh - 2 * gap - min_tracks;
         if (h < top_min) h = top_min;
@@ -1255,7 +1256,7 @@ static void screen_timeline()
     TlCanvas c = {};
     c.dl = dl;
     c.x1 = card_z.x - pad_r;
-    f32 y_ruler = origin.y + 8 * s, y_video = y_ruler + ruler_h, y_saved = y_video + video_h;
+    f32 y_zoom = origin.y + 8 * s, y_ruler = y_zoom + zoom_bar_room, y_video = y_ruler + ruler_h, y_saved = y_video + video_h;
     f32 y_snd = y_saved + saved_h + 10 * s;
     f32 y_bottom = card_z.y - 10 * s;
     bool names_hot = false;
@@ -1344,9 +1345,94 @@ static void screen_timeline()
         dl->AddLine(ImVec2(x, y_video), ImVec2(x, y_bottom), col32(COL_DIM), 1.5f * s);
     }
 
+    // --- The zoom bar: the whole buffer, with a window on the part shown. Drag the window to pan, either end to
+    // zoom, beside it to bring it there; double-click shows everything. --------------------------------------------
+    {
+        static i32 grab;              // 1 the left end, 2 the right end, 3 the window
+        static i64 grab_off, grab_span, held_lo, held_hi;
+        i64 lo = (b.oldest_us ? b.oldest_us : now - TL_DAY) - c.span / 30, hi = now + c.span / 30;
+        if (c.start < lo) lo = c.start;
+        if (c.start + c.span > hi) hi = c.start + c.span;
+        f32 bx0 = c.x0, bw = c.x1 - c.x0;
+        ImGui::SetCursorScreenPos(ImVec2(bx0, y_zoom - 4 * s));
+        ImGui::InvisibleButton("##zoombar", ImVec2(bw, zoom_bar_h + 8 * s));
+        bool active = ImGui::IsItemActive(), hot = ImGui::IsItemHovered() || active;
+        if (active && grab) { lo = held_lo; hi = held_hi; } // still for the whole drag
+        f64 whole = (f64)(hi - lo);
+        auto bx = [&](i64 t) { return bx0 + (f32)((f64)(t - lo) / whole * bw); };
+        auto bt = [&](f32 x) { return lo + (i64)((f64)(x - bx0) / bw * whole); };
+        // The window is drawn at least wide enough for its two grips
+        auto window = [&](f32 *wa, f32 *wb) {
+            *wa = bx(tl.view_end_us - tl.view_span_us);
+            *wb = bx(tl.view_end_us);
+            if (*wb - *wa < 14 * s) {
+                f32 m = (*wa + *wb) / 2;
+                *wa = m - 7 * s;
+                *wb = m + 7 * s;
+            }
+        };
+        f32 wa, wb, mx = io.MousePos.x;
+        window(&wa, &wb);
+        i32 over = fabsf(mx - wa) <= 7 * s && mx < (wa + wb) / 2 ? 1 : fabsf(mx - wb) <= 7 * s ? 2 : mx > wa && mx < wb ? 3 : 0;
+        if (ImGui::IsItemActivated()) {
+            held_lo = lo;
+            held_hi = hi;
+            grab = over;
+            grab_span = tl.view_span_us;
+            tl.follow = false;
+            if (!grab) { // beside the window: it comes here and is held
+                tl.view_end_us = bt(mx) + grab_span / 2;
+                tl_clamp_view(now);
+                grab = 3;
+            }
+            grab_off = bt(mx) - (grab == 2 ? tl.view_end_us : tl.view_end_us - tl.view_span_us);
+        }
+        if (active && grab && ImGui::IsMousePosValid()) {
+            i64 t = bt(mx) - grab_off, end = tl.view_end_us, start = end - tl.view_span_us;
+            if (grab == 1) {
+                if (t > end - TL_MIN_SPAN) t = end - TL_MIN_SPAN;
+                tl.view_span_us = end - t;
+            } else if (grab == 2) {
+                if (t < start + TL_MIN_SPAN) t = start + TL_MIN_SPAN;
+                tl.view_end_us = t;
+                tl.view_span_us = t - start;
+            } else {
+                tl.view_end_us = t + grab_span;
+            }
+            tl.follow = false;
+            tl_clamp_view(now);
+        }
+        if (ImGui::IsItemDeactivated()) grab = 0;
+        if (hot && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            i64 have = now - (b.oldest_us ? b.oldest_us : now - TL_DAY);
+            tl.view_span_us = have * 30 / 28; // the whole buffer inside the margins
+            tl.view_end_us = now + tl.view_span_us / 30;
+            tl.follow = false;
+            tl_clamp_view(now);
+        }
+        if ((hot && !active && (over == 1 || over == 2)) || (active && (grab == 1 || grab == 2)))
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        set_view();
+
+        f32 r = zoom_bar_h / 2, y1 = y_zoom + zoom_bar_h;
+        dl->AddRectFilled(ImVec2(bx0, y_zoom), ImVec2(bx0 + bw, y1), col32(COL_PANEL2), r);
+        if (has_sel) { // the selection, faintly, to show where it sits in the whole buffer
+            f32 sa = ImClamp(bx(tl.sel_in), bx0, bx0 + bw), sz = ImClamp(bx(tl.sel_out), bx0, bx0 + bw);
+            dl->AddRectFilled(ImVec2(sa, y_zoom), ImVec2(ImMax(sz, sa + 1 * s), y1), col32(COL_ACCENT, 0.35f));
+        }
+        window(&wa, &wb);
+        dl->AddRectFilled(ImVec2(wa, y_zoom), ImVec2(wb, y1), hot ? col32(COL_TEXT, 0.55f) : col32(COL_DIM), r);
+        f32 grips[2] = {wa + 4 * s, wb - 4 * s};
+        for (f32 gx : grips)
+            dl->AddLine(ImVec2(floorf(gx) + 0.5f, y_zoom + 2.5f * s), ImVec2(floorf(gx) + 0.5f, y1 - 2.5f * s),
+                        IM_COL32(255, 255, 255, 190), 1.5f * s);
+        f32 px = ImClamp(bx(tl_playhead()), bx0, bx0 + bw);
+        dl->AddRectFilled(ImVec2(px - 1 * s, y_zoom), ImVec2(px + 1 * s, y1), IM_COL32(255, 255, 255, 230));
+    }
+
     // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
-    ImGui::SetCursorScreenPos(ImVec2(c.x0, origin.y));
-    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, card_h),
+    ImGui::SetCursorScreenPos(ImVec2(c.x0, y_ruler));
+    ImGui::InvisibleButton("bar", ImVec2(c.x1 - c.x0, card_z.y - y_ruler),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
                                ImGuiButtonFlags_MouseButtonMiddle);
     bool bar_hovered = ImGui::IsItemHovered();
@@ -1416,7 +1502,16 @@ static void screen_timeline()
         }
         tl.drag = TL_DRAG_NONE;
     }
-    if (bar_hovered && io.MouseWheel != 0) tl_zoom(pow(0.8, (f64)io.MouseWheel), mouse_t, now);
+    // The wheel pans; with Alt it zooms around the playhead, with Alt and Shift around the mouse
+    if (bar_hovered && io.MouseWheel != 0) {
+        if (io.KeyAlt) {
+            tl_zoom(pow(0.75, (f64)io.MouseWheel), io.KeyShift ? mouse_t : tl_playhead(), now);
+        } else {
+            tl.follow = false;
+            tl.view_end_us -= (i64)((f64)tl.view_span_us * 0.15 * io.MouseWheel);
+            tl_clamp_view(now);
+        }
+    }
     if (tl.drag == TL_DRAG_IN || tl.drag == TL_DRAG_OUT || (bar_hovered && tl.drag == TL_DRAG_NONE && (near_in || near_out)))
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     else if (tl.drag == TL_DRAG_PAN) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
@@ -1801,7 +1896,7 @@ static void screen_timeline()
             tl_clamp_view(now);
         }
         ImGui::SameLine(0, 2 * s);
-        kit_next_tip("Back to now", "Home");
+        kit_next_tip("Follow the recording", "Home");
         if (kit_icon_button(ICON_NOW, "##now", KIT_GHOST, !tl.follow)) {
             tl.follow = true;
             tl_clamp_view(now);

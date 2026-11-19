@@ -356,6 +356,10 @@ static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ui_wake();
         return 0;
     }
+    case WM_SYSCOMMAND:
+        // Alt alone would open the window menu and take the next key; Alt is held to zoom the timelines
+        if ((wp & 0xFFF0) == SC_KEYMENU && lp == 0) return 0;
+        break;
     case WM_GETMINMAXINFO: {
         MINMAXINFO *m = (MINMAXINFO *)lp;
         m->ptMinTrackSize.x = (LONG)(850 * g_dpi_scale);
@@ -983,8 +987,10 @@ static void help_window()
             {"[Ctrl]+[A]", "Select every key"},
             {"[Ctrl]+[C] / [Ctrl]+[V]", "Copy keys / paste at the playhead"},
             {"[Ctrl]+[Z] / [Ctrl]+[Y]", "Undo / redo"},
-            {"Wheel, [+] / [-]", "Zoom the timeline at the mouse"},
-            {"Middle-drag, [Ctrl]+wheel", "Pan the timeline"},
+            {"Mouse wheel, middle-drag", "Pan the timeline"},
+            {"[Alt]+wheel, [+] / [-]", "Zoom around the playhead"},
+            {"[Alt]+[Shift]+wheel", "Zoom around the mouse"},
+            {"Drag the view bar", "Pan; drag its ends to zoom, double-click for all"},
             {"Wheel over the track names", "Scroll the sound tracks"},
             {"[Shift]+wheel", "Taller or shorter lanes"},
             {"[Left] / [Right]", "Previous / next key or trim end"},
@@ -997,14 +1003,17 @@ static void help_window()
             {"Drag across the tracks", "Select a range (drag its edges to adjust)"},
             {"Click on the tracks", "Move the playhead"},
             {"[Space]", "Play or pause from the playhead"},
-            {"Mouse wheel", "Zoom in and out around the mouse"},
+            {"Mouse wheel", "Pan earlier or later"},
+            {"[Alt]+wheel", "Zoom around the playhead"},
+            {"[Alt]+[Shift]+wheel", "Zoom around the mouse"},
+            {"Drag the zoom bar", "Pan; drag its ends to zoom, double-click for all"},
             {"Wheel over the names", "Scroll the sound tracks"},
             {"Right or middle drag", "Pan earlier or later"},
             {"[Left] / [Right]", "Move the selection 1 s (with Shift 10 s)"},
             {"[I] / [O]", "Set the start / end at the mouse, or the playhead"},
             {"[Enter]", "Save the selection as a clip"},
             {"[+] / [-]", "Zoom in / out"},
-            {"[Home]", "Back to now"},
+            {"[Home]", "Follow the recording"},
         };
         // The hotkeys set in Options, their keys as caps: "Ctrl+Alt+S" becomes [Ctrl]+[Alt]+[S]
         static char hotkey_keys[COUNT(g_app.config.hotkeys)][96];

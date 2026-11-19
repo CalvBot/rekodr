@@ -749,11 +749,12 @@ static void ed_view_clamp()
     if (ed.view_from < 0) ed.view_from = 0;
 }
 
-// Zooms the view by `factor`, keeping time `at` where it is on screen.
+// Zooms the view by `factor` around time `at`.
 static void ed_view_zoom(f64 factor, f64 at)
 {
     Editor &ed = g_app.editor;
-    f64 frac = ed.view_span > 0 ? (at - ed.view_from) / ed.view_span : 0.5;
+    // `at` keeps its place on screen, or comes to the middle if it was off it
+    f64 frac = ed.view_span > 0 && at >= ed.view_from && at <= ed.view_from + ed.view_span ? (at - ed.view_from) / ed.view_span : 0.5;
     ed.view_span *= factor;
     ed_view_clamp();
     ed.view_from = at - frac * ed.view_span;
@@ -963,21 +964,21 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
 
-    // The wheel zooms at the mouse; Shift sets the lanes' height, over the sound tracks' names it scrolls them (when
-    // they don't all fit), and with Ctrl or Alt, or sideways, it pans.
+    // The wheel pans; with Alt it zooms around the playhead, with Alt and Shift around the mouse. Shift alone sets
+    // the lanes' height, and over the sound tracks' names the wheel scrolls them (when they don't all fit).
     if (over && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
         f32 wh = io.MouseWheel;
-        if (wh && io.KeyShift) {
+        if (wh && io.KeyAlt) {
+            ed_view_zoom(pow(0.75, wh), io.KeyShift && mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
+        } else if (wh && io.KeyShift) {
             Config &cfg = g_app.config;
             i32 v = (i32)(lane_h / kit_px(1) + 0.5f) + (wh > 0 ? 6 : -6);
             cfg.editor_lane = v < 36 ? 36 : v > 160 ? 160 : v;
             config_save(cfg, g_app.paths);
         } else if (wh && my >= area0 && my < area1 && mx < bx0 && max_scroll > 0) {
             ed.lane_scroll -= wh * lane_h * 0.6f;
-        } else if (wh && !io.KeyCtrl && !io.KeyAlt) {
-            ed_view_zoom(pow(0.8, wh), mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
         } else {
-            ed.view_from -= (wh + io.MouseWheelH) * span * 0.1;
+            ed.view_from -= (wh + io.MouseWheelH) * span * 0.15;
             ed_view_clamp();
         }
     }
