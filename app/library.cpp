@@ -1890,9 +1890,11 @@ static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timel
 
 // An unsaved session, drawn like a clip's card: its picture from the buffer (pointing scrubs through it, a click
 // looks at it on the timeline), then its icon, the file name it gets when saved, and its length and times. Save sits
-// on the right of the caption. `ask` lets this one read a frame it hasn't got (one tile asks at a time).
+// on the right of the caption and asks for a title first. `ask` lets this one read a frame it hasn't got (one tile
+// asks at a time).
 static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
 {
+    Sessions &ss = g_app.sessions;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight(), round = kit_px(10);
     Session *s = session_find(id);
@@ -1989,7 +1991,41 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     f32 by = floorf(y + (isz - fh) / 2), bx = a.x + w - fh;
     ImGui::SetCursorScreenPos(ImVec2(bx, by));
     kit_next_tip(saved ? "Saved" : "Save the session");
-    if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) session_save(s);
+    if (kit_icon_button(saved ? ICON_CHECK : ICON_SAVE, "##save", saved ? KIT_GHOST : KIT_PRIMARY, !saving && !saved)) {
+        ss.title_buf[0] = 0;
+        ss.title_focus = true;
+        ImGui::OpenPopup("##savetitle");
+    }
+    // The save prompt, under the button: a title for its card (the file keeps its name). Enter saves, with the title
+    // or, left empty, none; Esc or a click away doesn't save.
+    f32 pw = kit_px(300);
+    ImGui::SetNextWindowPos(ImVec2(ImMax(bx + fh - pw - 2 * kit_px(14), kit_px(8)), by + fh + kit_px(6)));
+    lib_popup_style_push(14);
+    bool prompt = ImGui::BeginPopup("##savetitle");
+    lib_popup_style_pop();
+    if (prompt) {
+        kit_label("TITLE");
+        ImGui::SetNextItemWidth(pw);
+        if (ss.title_focus) {
+            ImGui::SetKeyboardFocusHere();
+            ss.title_focus = false;
+        }
+        bool enter = ImGui::InputTextWithHint("##title", "Optional", ss.title_buf, sizeof ss.title_buf,
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::Dummy(ImVec2(0, kit_px(2)));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pw - kit_px(96));
+        bool go = kit_button("Save", KIT_PRIMARY, ImVec2(kit_px(96), 0));
+        if (enter || go) {
+            for (char *c = ss.title_buf; *c; c++)
+                if (*c == '\t' || *c == '|') *c = ' ';
+            str_set(s->comment, trim(ss.title_buf));
+            ss.dirty = true;
+            log_line("session %u: saving%s", s->id, s->comment[0] ? " with a title" : "");
+            session_save(s);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     f32 tx = a.x + isz + kit_px(10), tw = bx - kit_px(8) - tx;
     char file[300];
     save_file_name(s->exe, s->name, s->start_us, file, sizeof file); // as session_save names it

@@ -653,6 +653,8 @@ struct Sessions {
     u32     rows[256];
     i32     row_count;
     f32     scroll, scroll_to; // how far along the row is slid, and where it's gliding to (px)
+    bool    title_focus;       // the save prompt's title field takes the keyboard next frame
+    char    title_buf[128];    // the title being typed in the save prompt
     i32     drawn_frame;
 };
 
