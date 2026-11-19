@@ -3184,10 +3184,11 @@ static void lib_player_view()
     }
 
     // The picture, as big as fits, on black.
+    // Under it the controls, then the seek bar along the bottom as wide as the picture's area; fixed heights.
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + head_h + kit_px(18)));
-    f32 bar_h = fh + kit_px(16);
+    f32 ctl_gap = kit_px(10), seek_gap = kit_px(6), seek_h = kit_px(20);
     ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImVec2 area(full_w, ImGui::GetContentRegionAvail().y - bar_h - kit_px(12));
+    ImVec2 area(full_w, ImGui::GetContentRegionAvail().y - ctl_gap - fh - seek_gap - seek_h);
     if (area.y < 1) area.y = 1;
     dl->AddRectFilled(pos, ImVec2(pos.x + area.x, pos.y + area.y), IM_COL32(0, 0, 0, 255), kit_px(10));
     ImVec2 a, b;
@@ -3197,11 +3198,10 @@ static void lib_player_view()
     player_draw(p, a, b);
     if (p.loaded && p.paused && !p.error[0]) lib_play_mark(dl, ImVec2((a.x + b.x) / 2, (a.y + b.y) / 2), kit_px(34));
 
-    // The transport bar: play, the time, the seek bar, the sound, the volume. Fixed widths but the seek bar's.
-    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + area.y + kit_px(12)));
-    ImVec2 r0 = ImGui::GetCursorScreenPos();
-    dl->AddRectFilled(r0, ImVec2(r0.x + full_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
-    f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
+    // The controls: back, play, forward, the speed and the time on the left; the sound and the volume on the right.
+    // Fixed widths, lined up with the picture's area.
+    ImVec2 r0(pos.x, pos.y + area.y + ctl_gap);
+    f32 pad = 0, y = r0.y;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
     kit_next_tip("Back 10 s", "Shift+Left");
     if (kit_icon_button(ICON_BACK10, "##back10", KIT_GHOST)) player_seek(&p, p.pos - 10);
@@ -3223,7 +3223,7 @@ static void lib_player_view()
     fmt_time(p.pos, t1, sizeof t1);
     fmt_time(p.duration > 0 ? p.duration : lib.playing.info.duration, t2, sizeof t2);
     snprintf(tm, sizeof tm, "%s / %s", t1, t2);
-    f32 time_x = r0.x + pad + 3 * fh + kit_px(46) + 3 * kit_px(2) + kit_px(10), time_w = kit_px(104);
+    f32 time_x = r0.x + pad + 3 * fh + kit_px(46) + 3 * kit_px(2) + kit_px(10);
     ImVec2 ts = ImGui::CalcTextSize(tm);
     dl->AddText(ImVec2(time_x, floorf(y + (fh - ts.y) / 2)), col32(COL_DIM), tm);
 
@@ -3231,10 +3231,9 @@ static void lib_player_view()
     i32 tracks = p.audio_count ? p.audio_count : mi.track_count;
     f32 vol_w = kit_px(96), sound_w = tracks > 1 ? kit_px(180) : 0;
     f32 right_w = sound_w + (sound_w > 0 ? kit_px(12) : 0) + fh + vol_w;
-    f32 seek_x = time_x + time_w + kit_px(8), seek_w = r0.x + full_w - pad - right_w - kit_px(16) - seek_x;
-    if (seek_w < kit_px(60)) seek_w = kit_px(60);
-    ImGui::SetCursorScreenPos(ImVec2(seek_x, y));
-    scrub_bar("##seek", &p, seek_w, fh);
+    // The seek bar, edge to edge under the controls
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, y + fh + seek_gap));
+    scrub_bar("##seek", &p, full_w, seek_h, 0);
     f32 x = r0.x + full_w - pad - right_w;
     bool tracks_changed = false;
     if (tracks > 1) { // which audio tracks are heard: tick any of them

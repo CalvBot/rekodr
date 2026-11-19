@@ -484,14 +484,15 @@ static void fmt_time(f64 s, char *out, i32 cap, bool tenths = false)
 }
 
 // A seek bar: a thin track, the played part in the accent, a knob at the playhead; track and knob grow under the
-// mouse. Dragging scrubs (approximate seeks while held, exact when let go). Returns true while held.
-static bool scrub_bar(const char *id, Player *p, f32 width, f32 height)
+// mouse. Dragging scrubs (approximate seeks while held, exact when let go). `inset`: how far in from the ends the
+// line runs (default: room for the knob). Returns true while held.
+static bool scrub_bar(const char *id, Player *p, f32 width, f32 height, f32 inset = -1)
 {
     ImVec2 a = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(id, ImVec2(width, height));
     bool held = ImGui::IsItemActive();
     bool hot = held || ImGui::IsItemHovered();
-    f32 pad = kit_px(7); // the knob stays inside the item
+    f32 pad = inset >= 0 ? inset : kit_px(7); // how far in the line starts; by default the knob stays inside the item
     f32 x0 = a.x + pad, x1 = a.x + width - pad, len = x1 - x0 > 1 ? x1 - x0 : 1;
     f64 dur = p->duration;
     if (held && dur > 0) {
