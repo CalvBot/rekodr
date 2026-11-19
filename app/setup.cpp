@@ -297,8 +297,6 @@ static void setup_window()
     f32 foot_h = ImGui::GetFrameHeight() + dp(20);
     f32 body_h = fmaxf(dp(100), top.y + avail.y - foot_h - y);
     ImGui::SetCursorScreenPos(ImVec2(x0, y));
-    f32 keep_max = g_card_max_w;
-    g_card_max_w = w;
     bool hotkeys = ui.setup_step == SETUP_STEPS - 1;
     ImGui::BeginChild("##setupbody", ImVec2(w, body_h), ImGuiChildFlags_None,
                       hotkeys ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
@@ -311,7 +309,6 @@ static void setup_window()
     case 4: options_hotkeys(); break;
     }
     ImGui::EndChild();
-    g_card_max_w = keep_max;
     if (g_app.options.capture_slot) ui_wake(); // keep drawing while waiting for keys
 
     // The buttons, always in the same places: Skip on the left, Back and Next (Finish on the last step) on the right.

@@ -240,13 +240,12 @@ static void opt_pill(ImDrawList *dl, ImVec2 p, const char *text, u32 fill, u32 i
 // Cards: a raised panel as tall as what's drawn in it. The draw list is split so the panel goes under its rows.
 struct OptCard { ImVec2 a; f32 w; i32 rows; };
 static OptCard g_card;
-static f32 g_card_max_w = FLT_MAX; // settings pages keep their cards to a readable width; lists use the whole page
 
 static void opt_card_begin()
 {
     g_card = {};
     g_card.a = ImGui::GetCursorScreenPos();
-    g_card.w = fminf(ImGui::GetContentRegionAvail().x, g_card_max_w);
+    g_card.w = ImGui::GetContentRegionAvail().x;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->ChannelsSplit(2);
     dl->ChannelsSetCurrent(1);
@@ -2440,7 +2439,7 @@ static void options_integrations()
         plugin_with_us = streamdeck_plugin_source(&p);
     }
     i32 keys = pipe_clients("streamdeck"), others = pipe_clients(0) - keys;
-    f32 fh = ImGui::GetFrameHeight(), bw = dp(150), sw = fminf(dp(300), g_card_max_w * 0.4f);
+    f32 fh = ImGui::GetFrameHeight(), bw = dp(150), sw = dp(300);
 
     opt_section("STREAM DECK");
     opt_card_begin();
@@ -2839,9 +2838,13 @@ static void screen_options()
     char count[8];
     snprintf(count, sizeof count, new_apps > 99 ? "99+" : "%d", new_apps);
 
+    // Every tab is one column of the same width, in the middle of the window
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
     f32 avail = ImGui::GetContentRegionAvail().x, tab_h = dp(34), gap = dp(28);
+    f32 col_w = fminf(avail, dp(1080));
+    a.x = floorf(a.x + (avail - col_w) / 2);
+    avail = col_w;
     dl->AddLine(ImVec2(a.x, a.y + tab_h - 0.5f), ImVec2(a.x + avail, a.y + tab_h - 0.5f), col32(COL_LINE));
     f32 x = a.x;
     for (i32 t = 0; t < OPT_TAB_COUNT; t++) {
@@ -2877,12 +2880,13 @@ static void screen_options()
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + tab_h));
     ImGui::Dummy(ImVec2(avail, dp(6)));
 
-    // List pages fit their page and turn pages; the others scroll if the window is short. Lists stop at a width
-    // whose rows can still be read across, as the settings cards do at theirs.
+    // List pages fit their page and turn pages; the others scroll if the window is short. A scrollbar goes to the
+    // right of the column, so the cards keep the column's width (whether it scrolls is known from the last frame).
     bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS;
-    g_card_max_w = list ? FLT_MAX : dp(860);
-    f32 page_w = list ? fminf(ImGui::GetContentRegionAvail().x, dp(1180)) : 0;
-    ImGui::BeginChild("page", ImVec2(page_w, 0), ImGuiChildFlags_None,
+    static bool scrolls;
+    f32 bar = !list && scrolls ? ImGui::GetStyle().ScrollbarSize : 0;
+    ImGui::SetCursorScreenPos(ImVec2(a.x, ImGui::GetCursorScreenPos().y));
+    ImGui::BeginChild("page", ImVec2(col_w + bar, 0), ImGuiChildFlags_None,
                       list ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
     switch (o.tab) {
     case OPT_APPS: options_apps(); break;
@@ -2892,6 +2896,7 @@ static void screen_options()
     case OPT_GENERAL: options_general(); break;
     default: break;
     }
+    scrolls = ImGui::GetScrollMaxY() > 0;
     ImGui::EndChild();
     if (o.capture_slot) ui_wake(); // keep drawing while waiting for keys
 }
