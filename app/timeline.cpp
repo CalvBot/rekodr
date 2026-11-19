@@ -1486,8 +1486,7 @@ static void screen_timeline()
     }
 
     // --- Top left over the track names, a toggle: lit, every app has its own lane; off, the sound is in four lanes
-    // (every app summed into its kind's). Its icon is drawn: three staggered track bars. Beside it "View", faintly: it
-    // only changes what is shown, never what a clip has.
+    // (every app summed into its kind's). Its icon is drawn: three staggered track bars.
     if (!tl.quick) {
         f32 bs = 24 * s;
         bool all = !cfg.timeline_simple;
@@ -1507,9 +1506,6 @@ static void screen_timeline()
             f32 y = a.y + (7 + 4.5f * k) * s;
             dl->AddRectFilled(ImVec2(a.x + bars[k][0] * s, floorf(y)), ImVec2(a.x + bars[k][1] * s, floorf(y) + 2 * s), ink, 1 * s);
         }
-        ImGui::PushFont(g_font_small);
-        dl->AddText(ImVec2(a.x + bs + 6 * s, floorf(a.y + (bs - ImGui::GetTextLineHeight()) / 2)), col32(COL_FAINT), "View");
-        ImGui::PopFont();
     }
 
     // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
