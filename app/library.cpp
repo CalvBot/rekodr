@@ -290,6 +290,42 @@ static Path lib_file_path(const Path &save_dir, const LibItem &it)
     return p;
 }
 
+// The probing part of a scan, shared by its probers. Each takes the next unprobed item, probes a copy of it without
+// the lock (ffprobe is the slow part) and puts it back under the lock, which the scan holds while it publishes.
+enum { LIB_PROBERS = 4 };
+struct LibProbeRun {
+    SRWLOCK       lock;
+    LibItem      *items;
+    i32           n;
+    volatile LONG next;
+    i32           probed;
+    Path          save_dir, cache, ffprobe;
+};
+
+static DWORD WINAPI lib_prober(void *param)
+{
+    LibProbeRun &run = *(LibProbeRun *)param;
+    for (;;) {
+        i32 i = (i32)InterlockedIncrement(&run.next) - 1;
+        if (i >= run.n) return 0;
+        LibItem it = run.items[i];
+        if (it.probed) continue;
+        char tagged[64];
+        if (lib_probe(run.ffprobe, lib_file_path(run.save_dir, it), &it.info, tagged, sizeof tagged)) {
+            lib_cache_write(run.cache, it.key, it.info, tagged);
+        } else {
+            log_line("library: couldn't probe %s%s", it.name, it.ext);
+            it.info.duration = 0; // shown without a length rather than asked again and again this scan
+        }
+        it.probed = true;
+        lib_set_game(&it, tagged);
+        AcquireSRWLockExclusive(&run.lock);
+        run.items[i] = it;
+        run.probed++;
+        ReleaseSRWLockExclusive(&run.lock);
+    }
+}
+
 static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg)
 {
     LibItem *items = g_scan_items;
@@ -339,34 +375,30 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
     lib_publish(items, n);
     if (g_game_override_count) DEV_LOG("library: games.txt names %d files, %d of them here", g_game_override_count, by_hand);
 
-    // Files not seen before: ffprobe them, newest first, showing them as they come.
+    // Files not seen before: ffprobe them, LIB_PROBERS at once, newest first, showing them as they come.
     if (!ffmpeg.s[0]) return;
-    Path ffprobe = ffprobe_for(ffmpeg);
-    i32 probed = 0;
-    u64 last = GetTickCount64();
-    for (i32 i = 0; i < n; i++) {
-        LibItem *it = &items[i];
-        if (it->probed) continue;
-        Path file = lib_file_path(save_dir, *it);
-        char tagged[64];
-        if (lib_probe(ffprobe, file, &it->info, tagged, sizeof tagged)) {
-            lib_cache_write(cache, it->key, it->info, tagged);
-        } else {
-            log_line("library: couldn't probe %s%s", it->name, it->ext);
-            it->info.duration = 0; // shown without a length rather than asked again and again this scan
-        }
-        it->probed = true;
-        lib_set_game(it, tagged);
-        probed++;
-        if (GetTickCount64() - last > 400) {
-            lib_publish(items, n);
-            last = GetTickCount64();
-        }
-    }
-    if (probed) {
+    LibProbeRun run = {};
+    run.items = items;
+    run.n = n;
+    run.save_dir = save_dir;
+    run.cache = cache;
+    run.ffprobe = ffprobe_for(ffmpeg);
+    i32 todo = 0;
+    for (i32 i = 0; i < n; i++) todo += !items[i].probed;
+    if (!todo) return;
+    HANDLE threads[LIB_PROBERS];
+    i32 started = 0;
+    for (i32 i = 0; i < LIB_PROBERS && i < todo; i++)
+        if ((threads[started] = CreateThread(0, 0, lib_prober, &run, 0, 0))) started++;
+    if (!started) lib_prober(&run);
+    while (started && WaitForMultipleObjects(started, threads, TRUE, 400) == WAIT_TIMEOUT) {
+        AcquireSRWLockShared(&run.lock);
         lib_publish(items, n);
-        log_line("library: %d files, %d probed", n, probed);
+        ReleaseSRWLockShared(&run.lock);
     }
+    for (i32 i = 0; i < started; i++) CloseHandle(threads[i]);
+    lib_publish(items, n);
+    log_line("library: %d files, %d probed", n, run.probed);
 }
 
 // Decodes a JPEG to BGRA with WIC. Returns HeapAlloc'd pixels, or 0.
