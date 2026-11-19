@@ -508,6 +508,59 @@ static bool gamedb_by_name(const char *name, GameInfo *out)
     return found;
 }
 
+// How well a game's name answers a search, from its letters: 0 the same, 1 starts with it, 2 a word starts with it,
+// 3 holds it, -1 not at all. `name` is the name as written, for its word starts.
+static i32 gamedb_match_rank(const char *name, const char *own, const char *want, i32 wl)
+{
+    if (!strcmp(own, want)) return 0;
+    if (!strncmp(own, want, wl)) return 1;
+    for (const char *p = name; *p; p++) {
+        if (isalnum((u8)*p) && (p == name || !isalnum((u8)p[-1]))) {
+            char word[128];
+            gdb_letters(p, word, sizeof word);
+            if (!strncmp(word, want, wl)) return 2;
+        }
+    }
+    return strstr(own, want) ? 3 : -1;
+}
+
+// Games in the list whose name answers a search, best first: by how well it matches, then the ones on Steam (the
+// list's better-known games), then the shortest name. Fast enough to run on every key. Main thread.
+static i32 gamedb_find_local(const char *q, char (*names)[128], i32 max)
+{
+    char want[128];
+    i32 wl = gdb_letters(q, want, sizeof want);
+    if (wl < 1 || max <= 0) return 0;
+    struct Hit { i32 row, rank, len; bool steam; } hits[16];
+    i32 n = 0, cap = max < (i32)COUNT(hits) ? max : (i32)COUNT(hits);
+    auto better = [](const Hit &a, const Hit &b) {
+        if (a.rank != b.rank) return a.rank < b.rank;
+        if (a.steam != b.steam) return a.steam;
+        return a.len < b.len;
+    };
+    AcquireSRWLockShared(&g_gamedb.lock);
+    const GameIndex *ix = g_gamedb.index;
+    for (i32 i = 0; ix && i < ix->row_count; i++) {
+        const GameRow &r = ix->rows[i];
+        char own[128];
+        i32 ol = gdb_letters(r.name, own, sizeof own);
+        if (ol < wl) continue;
+        i32 rank = gamedb_match_rank(r.name, own, want, wl);
+        if (rank < 0) continue;
+        Hit h = {i, rank, ol, r.steam != 0};
+        if (n == cap && !better(h, hits[n - 1])) continue;
+        i32 at = n < cap ? n++ : n - 1;
+        while (at > 0 && better(h, hits[at - 1])) {
+            hits[at] = hits[at - 1];
+            at--;
+        }
+        hits[at] = h;
+    }
+    for (i32 i = 0; i < n; i++) snprintf(names[i], 128, "%s", ix->rows[hits[i].row].name);
+    ReleaseSRWLockShared(&g_gamedb.lock);
+    return n;
+}
+
 // The game an exe is. `path` is where it runs from (UTF-8, either slash; "" = not known), `cmdline` and `title`
 // its command line and window title when the caller has them ("" otherwise). An entry that names folders wants the
 // path, when there is one, to end with them; one that names a command line wants it there. With several that fit, the most exact wins.

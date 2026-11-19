@@ -556,6 +556,16 @@ static void test_gamedb()
     T(gamedb_by_name("counter strike 2", &g) && !strcmp(g.id, "2") && g.steam == 730 && !strcmp(g.cover, "cc"));
     T(gamedb_by_name("Minecraft Launcher", &g) && !strcmp(g.id, "1"));
     T(!gamedb_by_name("Counter-Strike", &g));
+    // A search from the list, as typed: the same name first, then a start, then a word's start, then inside
+    {
+        char found[4][128];
+        T(gamedb_find_local("minecraft", found, 4) == 1 && !strcmp(found[0], "Minecraft"));
+        T(gamedb_find_local("Mine", found, 4) == 1 && !strcmp(found[0], "Minecraft"));
+        T(gamedb_find_local("strike", found, 4) == 1 && !strcmp(found[0], "Counter-Strike 2"));
+        T(gamedb_find_local("u", found, 4) == 2 && !strcmp(found[0], "Rust") && !strcmp(found[1], "Counter-Strike 2"));
+        T(gamedb_find_local("zzz", found, 4) == 0 && gamedb_find_local("", found, 4) == 0);
+        T(gamedb_find_local("u", found, 1) == 1 && !strcmp(found[0], "Rust"));
+    }
     // An exe: with no path the file name is enough; with one, the folders must be right
     T(gamedb_by_exe("cs2.exe", "", "", "", &g) && !strcmp(g.name, "Counter-Strike 2"));
     T(gamedb_by_exe("CS2.exe", "E:\\Steam\\game\\bin\\win64\\cs2.exe", "", "", &g));
