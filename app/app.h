@@ -571,7 +571,7 @@ struct Timeline {
     TimelineRow   rows[64];
     i32           row_count;
     i16           stream_row[1024]; // the row of each idx->streams entry, -1 = none
-    TimelineFrame frames[16];
+    TimelineFrame frames[48]; // the preview and the frames along the video row
     u32           frame_clock;
     i64           pending_key, failed_key, shown_key;
     char          session_name[128];
