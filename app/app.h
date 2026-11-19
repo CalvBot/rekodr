@@ -72,6 +72,7 @@ static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev"; // clipback-a
 struct Config {
     Path save_dir;     // <Videos>\Clips, holding 2026\Clips, 2026\Sessions, 2026\Data
     Path buffer_dir;   // the rolling buffer
+    Path play_dir;     // the Timeline's Play files (preview-*.mp4); the local folder unless moved to a faster drive
     bool buffer_by_size; // the buffer is limited by buffer_gb, else by buffer_hours; never both
     f32  buffer_hours; // keep this much footage (24)
     f32  buffer_gb;    // or this much (100)
@@ -540,6 +541,15 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     i32        undo_count, redo_count;
 };
 // timeline.cpp: the buffer and a range to save. Times are wall-clock us; 0 = not set.
+// A stretch of the buffer built for the Timeline's Play. Its file is the video segments end to end from file_start, so
+// gaps in recording are skipped.
+struct PlayPiece {
+    u32  job;        // its build; 0 once done, or none
+    Path path;       // the finished file, deleted when done with
+    i64  file_start; // wall clock of the file's first frame (its first segment's start)
+    i64  at, to;     // built from here (where it starts playing) to here
+};
+
 struct TimelineRow {   // one audio row: every stream of one exe (or the mic)
     char exe[64];
     char name[64];
@@ -588,14 +598,16 @@ struct Timeline {
     bool          suggest_was_open; // the arrow was pressed while they showed, so it closes them
     bool          suggest_close;    // close them next frame
     bool          suggest_refocus;  // put the cursor back in the box next frame
-    // Play: a stretch of the buffer rendered with its sound (SAVE_PREVIEW), then played here. The file is the video
-    // segments end to end from play_file_start, so gaps in recording are skipped.
+    // Play (timeline.cpp): the buffer built a piece at a time with its sound mixed (SAVE_PREVIEW) and played here.
     Player        player;          // id 2
-    u32           play_job;        // the render being made; 0 = none
-    i64           play_file_start; // wall clock of the file's first frame (its first segment's start)
-    i64           play_at, play_to; // asked from here (where it starts playing) to here
+    PlayPiece     play;            // the piece playing, or being built to play now
+    PlayPiece     next;            // the one after it, built while it plays
+    PlayPiece     rest;            // built ahead at a playhead left still, for Play to take
+    i64           play_end;        // Play stops here: the selection's end when it started in it
     i64           play_set_us;     // the playhead as playing last left it, so a click elsewhere can be told apart
-    Path          play_path;       // the file played, deleted when done with
+    i64           rest_us;         // the playhead as last seen while not playing
+    u64           rest_since;      // GetTickCount64 when it got there
+    bool          rest_tried;      // its piece was built (or couldn't be): not again until it moves
     char          play_error[160];
 };
 // sessions.cpp: detecting sessions, the save popup, unsaved sessions (SPEC.md, "1. Whole sessions").

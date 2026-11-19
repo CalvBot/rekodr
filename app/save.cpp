@@ -30,6 +30,7 @@ struct SaveSettings {
     Path    save_dir;
     Path    ffmpeg;   // empty = not found
     Path    work_dir; // temp lists and graphs (under local_dir, so test copies keep to CLIPBACK_HOME)
+    Path    play_dir; // previews (Config::play_dir)
     char    codec[64];
     u8      vendor; // the H.264 encoder Keep and Share use when they re-encode (Vendor)
     bool    voice_mono;
@@ -364,7 +365,8 @@ static void make_tracks(SaveWork *w)
 
 // The filter graph for the audio tracks. Input 0 is the video; stream i is input i + 1. A stream's concat input
 // starts at its first remaining segment, and each stretch of it is trimmed and delayed to its place in the file.
-static void make_graph(SaveWork *w, i64 total_us)
+// `mix_only` (a preview): the Mix and nothing else, so no track is written on its own.
+static void make_graph(SaveWork *w, i64 total_us, bool mix_only)
 {
     w->graph_len = 0;
     w->graph_full = false;
@@ -417,7 +419,8 @@ static void make_graph(SaveWork *w, i64 total_us)
             graph_add(w, "apad=whole_dur=%s,atrim=duration=%s[t%d];\n", total, total, t);
         }
         // The Mix takes the track as it is; a mono track is only its own copy, both channels averaged.
-        if (w->tracks[t].mono)
+        if (mix_only) graph_add(w, "[t%d]anull[m%d];\n", t, t);
+        else if (w->tracks[t].mono)
             graph_add(w, "[t%d]asplit=2[c%d][m%d];\n[c%d]pan=mono|c0=0.5*c0+0.5*c1[o%d];\n", t, t, t, t, t);
         else graph_add(w, "[t%d]asplit=2[o%d][m%d];\n", t, t, t);
     }
@@ -468,6 +471,8 @@ static i32 run_ffmpeg(SaveWork *w, i64 total_us, char *error, i32 error_cap)
         snprintf(error, error_cap, "couldn't start ffmpeg");
         return -1;
     }
+    // A preview may be built while the playhead rests, so it gives way to everything else on the PC
+    if (w->req.kind == SAVE_PREVIEW) SetPriorityClass(p.process, BELOW_NORMAL_PRIORITY_CLASS);
     char line[1024];
     i32 n = 0;
     i64 last_permille = -1;
@@ -613,11 +618,11 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 
     // <save_dir>\<year>\Clips\<label> 2026-11-15 21-04-10.mp4, or ...\Sessions\<label> 2026-11-15 19-02.mp4. The
     // year is the year the footage starts in.
-    // A preview goes in the local folder as preview-<id>.mp4.
+    // A preview goes in the playback cache as preview-<id>.mp4.
     SYSTEMTIME t = local_time(clip_start);
     bool session = req.kind == SAVE_SESSION, preview = req.kind == SAVE_PREVIEW;
     Path dir = {};
-    if (preview) dir = w->cfg.work_dir;
+    if (preview) dir = w->cfg.play_dir;
     else swprintf(dir.s, MAX_PATH, L"%s\\%d\\%s", w->cfg.save_dir.s, t.wYear, session ? L"Sessions" : L"Clips");
     int made = SHCreateDirectoryExW(0, dir.s, 0);
     if (made != ERROR_SUCCESS && made != ERROR_ALREADY_EXISTS && made != ERROR_FILE_EXISTS) {
@@ -707,7 +712,8 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
             prev = e.exe;
         }
     }
-    chapter_count = chapters_text(w->pieces, w->piece_count, total_us, chapters, chapter_count, game, chapter_meta,
+    if (preview) chapter_count = 0; // nothing to jump between while it plays
+    else chapter_count = chapters_text(w->pieces, w->piece_count, total_us, chapters, chapter_count, game, chapter_meta,
                                   sizeof chapter_meta);
     if (chapter_count) {
         f = _wfopen(path_join(work, L"chapters.txt").s, L"wb");
@@ -715,7 +721,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         else chapter_count = 0;
     }
 
-    make_graph(w, total_us);
+    make_graph(w, total_us, preview);
     f = w->graph_full ? 0 : _wfopen(path_join(work, L"graph.txt").s, L"wb");
     if (!f) {
         snprintf(out, out_cap, w->graph_full ? "the audio graph is too big" : "couldn't write the save's work files");
@@ -750,11 +756,12 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     arg_pair(a, cap, "-c:v", "copy");
     if (!strcmp(w->cfg.codec, "hevc")) arg_pair(a, cap, "-tag:v", "hvc1"); // so Apple and browser players take it
     arg_pair(a, cap, "-map", "[mix]");
-    for (i32 tr = 0; tr < w->track_count; tr++) arg_pair(a, cap, "-map", "[o%d]", tr);
+    i32 own_tracks = preview ? 0 : w->track_count; // a preview is only played here: its Mix is enough
+    for (i32 tr = 0; tr < own_tracks; tr++) arg_pair(a, cap, "-map", "[o%d]", tr);
     arg_pair(a, cap, "-c:a", "aac");
     arg_pair(a, cap, "-b:a", "192k");
     arg_pair(a, cap, "-ar", "48000");
-    for (i32 i = 0; i <= w->track_count; i++) {
+    for (i32 i = 0; i <= own_tracks; i++) {
         const char *title = i == 0 ? "Mix" : w->tracks[i - 1].title;
         char key[48];
         if (i > 0 && w->tracks[i - 1].mono) {
@@ -786,7 +793,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 
     log_line("save %u: %.1f s from %lld, %d video segments in %d pieces, %d audio streams on %d tracks, %d chapters -> %s",
              req.id, (f64)total_us / 1e6, clip_start, end - first, w->piece_count, w->stream_count,
-             w->track_count + 1, chapter_count, final8);
+             own_tracks + 1, chapter_count, final8);
     i32 code = run_ffmpeg(w, total_us, out, out_cap);
     i64 result;
     if (code == 0 && MoveFileExW(part_path.s, final_path.s, 0)) {
@@ -1355,7 +1362,8 @@ static SaveJobView *save_view(u32 id)
 static bool save_job_held(u32 id)
 {
     if (id == g_app.editor.keep_job || id == g_app.editor.share_job) return true;
-    if (id == g_app.timeline.job || id == g_app.timeline.play_job) return true;
+    const Timeline &tl = g_app.timeline;
+    if (id == tl.job || id == tl.play.job || id == tl.next.job || id == tl.rest.job) return true;
     const Sessions &ss = g_app.sessions;
     for (i32 i = 0; i < COUNT(ss.items); i++)
         if (ss.items[i].state == SES_SAVING && ss.items[i].job == id) return true;
@@ -1408,6 +1416,7 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     s->save_dir = c.save_dir;
     s->ffmpeg = ffmpeg;
     s->work_dir = g_app.paths.local_dir;
+    s->play_dir = c.play_dir;
     str_set(s->codec, c.codec.s);
     s->voice_mono = c.voice_mono;
     memcpy(s->inputs, c.inputs, sizeof s->inputs);

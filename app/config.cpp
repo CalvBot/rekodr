@@ -51,6 +51,7 @@ static void config_defaults(Config *c, const Paths &paths)
         CoTaskMemFree(videos);
         c->buffer_dir = path_join(paths.local_dir, L"buffer");
     }
+    c->play_dir = paths.local_dir;
     c->buffer_hours = 24;
     c->popup_monitor = -2;
     c->buffer_gb = 100;
@@ -269,6 +270,7 @@ static void config_set(Config *c, const char *key, char *value)
 
     if (!strcmp(key, "save_dir")) path(&c->save_dir);
     else if (!strcmp(key, "buffer_dir")) path(&c->buffer_dir);
+    else if (!strcmp(key, "play_dir")) path(&c->play_dir);
     else if (!strcmp(key, "buffer_hours")) real(&c->buffer_hours);
     else if (!strcmp(key, "buffer_gb")) real(&c->buffer_gb);
     else if (!strcmp(key, "buffer_by_size")) boolean(&c->buffer_by_size);
@@ -442,6 +444,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "# clipback settings. Options writes this file; it's safe to edit while clipback is closed.\n\n");
     path("save_dir", c.save_dir);
     path("buffer_dir", c.buffer_dir);
+    path("play_dir", c.play_dir);
     boolean("buffer_by_size", c.buffer_by_size);
     fprintf(f, "buffer_hours = %g\nbuffer_gb = %g\n", c.buffer_hours, c.buffer_gb);
     fprintf(f, "min_free_gb = %g\n", c.min_free_gb);

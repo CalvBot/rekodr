@@ -2698,6 +2698,9 @@ static void options_general()
     opt_card_begin();
     if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
     if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
+    if (opt_row_folder("Playback cache", "Where the Timeline builds what it plays; a fast drive starts sooner", "play",
+                       &c.play_dir))
+        options_apply(0);
     if (opt_row_f32("Keep share copies for", "The small copies Share makes; older ones are deleted", "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);

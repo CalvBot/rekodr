@@ -252,6 +252,7 @@ static void tl_take_index(i64 ms)
 }
 
 static void tl_play_stop();
+static void tl_play_sweep();
 
 // Opens the timeline on a stretch of the buffer, to look at it before saving: the stretch is selected and fills
 // the view, the playhead is at its start, and the session box has its name. The session popup's Review, and the
@@ -498,6 +499,13 @@ static void timeline_tick()
 {
     Timeline &tl = g_app.timeline;
     tl_check_job();
+    // Play's files left over (from a crash, or a build cut short) are deleted at the start and whenever it opens,
+    // so names aren't taken when save ids start again from 1
+    static bool started, was_shown;
+    bool shown = tl_visible();
+    if (!started || (shown && !was_shown)) tl_play_sweep();
+    started = true;
+    was_shown = shown;
     if (!tl_visible()) {
         if (tl_wanted_by_library()) {
             if (tl.ticks++ % 3 == 0) tl_ask_index();
@@ -599,54 +607,101 @@ static void tl_save(SaveKind kind, bool edit)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Play: the buffer's segments have no sound of their own and are 2 s each, so Play renders a stretch (up to a minute,
-// or to the end of the selection) with its sound mixed, the way a save does, then plays that file. It takes a
-// second or two to start.
+// Play: the buffer's segments have no sound of their own and are 2 s each, so Play builds a piece of the buffer with
+// its sound mixed into one track (a SAVE_PREVIEW) and plays that. The first piece is 10 s, so it starts in about a
+// second; while a piece plays the next one (a minute) is built, so they follow on without a stop. A playhead left
+// still for a moment has its first piece built ahead, given up as soon as it moves, so Play can start at once.
 
 static i64 tl_playhead();
 
-static const i64 TL_PLAY_CHUNK = 60 * TL_SEC, TL_PLAY_MAX = 300 * TL_SEC;
+static const i64 TL_PLAY_FIRST = 10 * TL_SEC, TL_PLAY_CHUNK = 60 * TL_SEC;
+static const u64 TL_PLAY_REST_MS = 750;
 
-// Deletes preview files left in the local folder, except the one being played.
+// Deletes preview files, finished or half written, left in the playback cache, except the ones in use.
 static void tl_play_sweep()
 {
     Timeline &tl = g_app.timeline;
+    const Path &dir = g_app.config.play_dir;
     WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW(path_join(g_app.paths.local_dir, L"preview-*.mp4").s, &fd);
+    HANDLE h = FindFirstFileW(path_join(dir, L"preview-*").s, &fd);
     if (h == INVALID_HANDLE_VALUE) return;
     do {
-        Path f = path_join(g_app.paths.local_dir, fd.cFileName);
-        if (tl.player.open && !_wcsicmp(f.s, tl.play_path.s)) continue;
-        DeleteFileW(f.s);
+        Path f = path_join(dir, fd.cFileName);
+        const Path *used[] = {&tl.play.path, &tl.next.path, &tl.rest.path};
+        bool keep = false;
+        for (const Path *u : used) keep |= u->s[0] && !_wcsicmp(f.s, u->s);
+        if (!keep) DeleteFileW(f.s);
     } while (FindNextFileW(h, &fd));
     FindClose(h);
 }
 
-// Stops playing and the render, and deletes the file.
+// Gives up a piece: its build cancelled, its file deleted.
+static void tl_piece_drop(PlayPiece &pc)
+{
+    if (pc.job) save_cancel(pc.job);
+    if (pc.path.s[0]) DeleteFileW(pc.path.s);
+    pc = {};
+}
+
+// Starts building a piece from `at` (the footage after it when it's in a gap), at most `len` long and not past `end`
+// or the newest footage. 1 when started, 0 when it couldn't be queued, -1 when there's under a second of footage.
+static i32 tl_piece_build(PlayPiece &pc, i64 at, i64 len, i64 end)
+{
+    const BufferIdx &b = *g_app.timeline.idx;
+    pc = {};
+    i32 first = tl_seg_after(b, at);
+    if (first >= b.seg_count) return -1;
+    if (at < b.segs[first].start_us) at = b.segs[first].start_us;
+    i64 to = ImMin(at + len, ImMin(end, b.newest_us));
+    if (to - at < TL_SEC) return -1;
+    pc.job = save_range(at, to, SAVE_PREVIEW, "");
+    if (!pc.job) return 0;
+    pc.file_start = b.segs[first].start_us;
+    pc.at = at;
+    pc.to = to;
+    return 1;
+}
+
+// Where Play asked at `at` starts: at the live edge, 30 s back; never before the oldest footage.
+static i64 tl_play_from(i64 at)
+{
+    const BufferIdx &b = *g_app.timeline.idx;
+    if (at >= b.newest_us - TL_SEC) at = b.newest_us - 30 * TL_SEC;
+    return at < b.oldest_us ? b.oldest_us : at;
+}
+
+// Where Play from `at` stops: the selection's end when `at` is in it, else wherever the footage ends.
+static i64 tl_play_end(i64 at)
+{
+    const Timeline &tl = g_app.timeline;
+    return tl.sel_in && at >= tl.sel_in && at < tl.sel_out ? tl.sel_out : INT64_MAX / 2;
+}
+
+// Stops playing and every build, and deletes their files.
 static void tl_play_stop()
 {
     Timeline &tl = g_app.timeline;
-    if (tl.play_job) save_cancel(tl.play_job);
-    tl.play_job = 0;
-    bool had = tl.player.open || tl.play_path.s[0];
+    bool had = tl.player.open || tl.play.job || tl.play.path.s[0] || tl.next.job || tl.next.path.s[0] || tl.rest.job ||
+               tl.rest.path.s[0];
     player_close(&tl.player);
-    if (tl.play_path.s[0]) DeleteFileW(tl.play_path.s);
-    tl.play_path = {};
+    tl_piece_drop(tl.play);
+    tl_piece_drop(tl.next);
+    tl_piece_drop(tl.rest);
     if (had) tl_play_sweep();
 }
 
-// Where the file's `pos` seconds are on the wall clock: its segments end to end from play_file_start.
+// Where the playing file's `pos` seconds are on the wall clock: its segments end to end from its file_start.
 static i64 tl_play_wall(f64 pos)
 {
     Timeline &tl = g_app.timeline;
     const BufferIdx &b = *tl.idx;
     i64 left = (i64)(pos * 1e6);
-    for (i32 i = tl_seg_after(b, tl.play_file_start); i < b.seg_count && b.segs[i].start_us < tl.play_to; i++) {
+    for (i32 i = tl_seg_after(b, tl.play.file_start); i < b.seg_count && b.segs[i].start_us < tl.play.to; i++) {
         i64 len = b.segs[i].end_us - b.segs[i].start_us;
         if (left < len) return b.segs[i].start_us + left;
         left -= len;
     }
-    return tl.play_to;
+    return tl.play.to;
 }
 
 // The other way: the file's time at `t`, the next footage when `t` is in a gap; -1 when the file doesn't reach it.
@@ -654,9 +709,9 @@ static f64 tl_play_pos(i64 t)
 {
     Timeline &tl = g_app.timeline;
     const BufferIdx &b = *tl.idx;
-    if (t < tl.play_file_start) return -1;
+    if (t < tl.play.file_start) return -1;
     i64 acc = 0;
-    for (i32 i = tl_seg_after(b, tl.play_file_start); i < b.seg_count && b.segs[i].start_us < tl.play_to; i++) {
+    for (i32 i = tl_seg_after(b, tl.play.file_start); i < b.seg_count && b.segs[i].start_us < tl.play.to; i++) {
         const VideoSeg &g = b.segs[i];
         if (t < g.start_us) return (f64)acc / 1e6;
         if (t < g.end_us) return (f64)(acc + t - g.start_us) / 1e6;
@@ -665,7 +720,21 @@ static f64 tl_play_pos(i64 t)
     return -1;
 }
 
-// Renders from `at`: to the selection's end when `at` is in it (5 min at most), else a minute.
+// Plays the finished piece in tl.play from where it was asked, and starts building the one after it.
+static void tl_play_open()
+{
+    Timeline &tl = g_app.timeline;
+    const BufferIdx &b = *tl.idx;
+    tl.player.id = 2;
+    f64 pos = tl_play_pos(tl.play.at);
+    player_open(&tl.player, tl.play.path, pos > 0 ? pos : 0, true);
+    tl.playhead_us = tl.play_set_us = tl.play.at;
+    tl_piece_drop(tl.next);
+    if (tl.play.to < ImMin(tl.play_end, b.newest_us) - 2 * TL_SEC)
+        tl_piece_build(tl.next, tl.play.to, TL_PLAY_CHUNK, tl.play_end);
+}
+
+// Plays from `at`: builds its first piece.
 static void tl_play_render(i64 at)
 {
     Timeline &tl = g_app.timeline;
@@ -673,24 +742,11 @@ static void tl_play_render(i64 at)
     tl_play_stop();
     tl.play_error[0] = 0;
     if (!b.seg_count) return;
-    if (at >= b.newest_us - TL_SEC) at = b.newest_us - 30 * TL_SEC; // at the live edge: the last 30 s
-    if (at < b.oldest_us) at = b.oldest_us;
-    i32 first = tl_seg_after(b, at);
-    if (first >= b.seg_count) return;
-    if (at < b.segs[first].start_us) at = b.segs[first].start_us; // in a gap: from the footage after it
-    bool in_sel = tl.sel_in && at >= tl.sel_in && at < tl.sel_out;
-    i64 to = in_sel ? ImMin(tl.sel_out, at + TL_PLAY_MAX) : at + TL_PLAY_CHUNK;
-    if (to > b.newest_us) to = b.newest_us;
-    if (to - at < TL_SEC) return;
-    tl.play_job = save_range(at, to, SAVE_PREVIEW, "");
-    if (!tl.play_job) {
-        str_set(tl.play_error, "Couldn't start the preview");
-        return;
-    }
-    tl.play_file_start = b.segs[first].start_us;
-    tl.play_at = at;
-    tl.play_to = to;
-    tl.playhead_us = tl.play_set_us = at;
+    at = tl_play_from(at);
+    tl.play_end = tl_play_end(at);
+    i32 r = tl_piece_build(tl.play, at, TL_PLAY_FIRST, tl.play_end);
+    if (r == 0) str_set(tl.play_error, "Couldn't start the preview");
+    if (r > 0) tl.playhead_us = tl.play_set_us = tl.play.at;
 }
 
 // Play or Pause.
@@ -698,7 +754,7 @@ static void tl_play_toggle()
 {
     Timeline &tl = g_app.timeline;
     Player &p = tl.player;
-    if (tl.play_job) { // still rendering: Pause gives up on it
+    if (tl.play.job) { // still building: Pause gives up on it
         tl_play_stop();
         return;
     }
@@ -713,29 +769,71 @@ static void tl_play_toggle()
         player_play(&p);
         return;
     }
+    // The piece built while the playhead rested here: play it, or as soon as it's done
+    if ((tl.rest.job || tl.rest.path.s[0]) && tl.rest_us == tl.playhead_us) {
+        PlayPiece r = tl.rest;
+        tl.rest = {};
+        tl_play_stop();
+        tl.play = r;
+        tl.play_error[0] = 0;
+        tl.play_end = tl_play_end(r.at);
+        tl.playhead_us = tl.play_set_us = r.at;
+        if (!r.job) tl_play_open();
+        return;
+    }
     tl_play_render(at);
 }
 
-// Every frame: open the render once it's done, and keep the playhead on the playing video.
+// Every frame: take the builds that finished, keep the playhead on the playing video, go on to the next piece at the
+// end of one, and build ahead at a resting playhead.
 static void tl_play_update()
 {
     Timeline &tl = g_app.timeline;
     Player &p = tl.player;
-    if (tl.play_job) {
-        SaveJobView *v = save_view(tl.play_job);
-        if (v && v->state < SAVE_DONE) return;
-        tl.play_job = 0;
-        if (!v || v->state != SAVE_DONE) {
-            snprintf(tl.play_error, sizeof tl.play_error, "%s", v && v->state == SAVE_FAILED ? v->error : "The preview stopped");
-            return;
+    char why[160] = "";
+    // 1 = just done (its path set), -1 = failed or cancelled (why says), 0 = still building or none
+    auto settle = [&](PlayPiece &pc) {
+        if (!pc.job) return 0;
+        SaveJobView *v = save_view(pc.job);
+        if (v && v->state < SAVE_DONE) return 0;
+        pc.job = 0;
+        if (v && v->state == SAVE_DONE) {
+            utf8_to_wide(v->path, pc.path.s, MAX_PATH);
+            return 1;
         }
-        utf8_to_wide(v->path, tl.play_path.s, MAX_PATH);
-        p.id = 2;
-        f64 pos = tl_play_pos(tl.play_at);
-        player_open(&p, tl.play_path, pos > 0 ? pos : 0, true);
+        str_set(why, v && v->state == SAVE_FAILED ? v->error : "The preview stopped");
+        pc = {};
+        return -1;
+    };
+    i32 r = settle(tl.play);
+    if (r < 0) str_set(tl.play_error, why);
+    if (r > 0) {
+        tl_play_open();
         return;
     }
-    if (!p.open) return;
+    if (settle(tl.next) < 0) str_set(tl.play_error, why);
+    settle(tl.rest);
+    if (tl.play.job) return;
+
+    if (!p.open) {
+        // A playhead left still: its first piece built ahead, one at a time, given up as soon as the playhead moves.
+        // Not at the live edge, which moves on.
+        u64 ms = GetTickCount64();
+        if (tl.playhead_us != tl.rest_us || tl.drag != TL_DRAG_NONE) {
+            tl_piece_drop(tl.rest);
+            tl.rest_us = tl.playhead_us;
+            tl.rest_since = ms;
+            tl.rest_tried = false;
+        } else if (!tl.rest_tried && ms - tl.rest_since >= TL_PLAY_REST_MS) {
+            tl.rest_tried = true;
+            const BufferIdx &b = *tl.idx;
+            if (b.seg_count && tl.playhead_us && tl.playhead_us < b.newest_us - TL_SEC) {
+                i64 at = tl_play_from(tl.playhead_us);
+                tl_piece_build(tl.rest, at, TL_PLAY_FIRST, tl_play_end(at));
+            }
+        }
+        return;
+    }
     player_update(&p);
     if (!p.loaded) return;
     if (tl.playhead_us != tl.play_set_us) { // moved by hand
@@ -753,12 +851,16 @@ static void tl_play_update()
         return;
     }
     tl.playhead_us = tl.play_set_us = tl_play_wall(p.pos);
-    // At the end of a minute's stretch, the next one (not past a selection's end, and not at the live edge).
+    // At the end of a piece, the next one once it's built; none means the end (of the selection, the footage, or a
+    // build that failed).
     if (p.ended && p.autoplay) {
-        bool sel_end = tl.sel_in && tl.play_at >= tl.sel_in && tl.play_to >= tl.sel_out;
-        const BufferIdx &b = *tl.idx;
-        if (!sel_end && tl.play_to < b.newest_us - 2 * TL_SEC) tl_play_render(tl.play_to);
-        else p.autoplay = false;
+        if (tl.next.path.s[0]) {
+            player_close(&p);
+            DeleteFileW(tl.play.path.s);
+            tl.play = tl.next;
+            tl.next = {};
+            tl_play_open();
+        } else if (!tl.next.job) p.autoplay = false;
     }
 }
 
@@ -2141,7 +2243,7 @@ static void screen_timeline()
     } else {
         // Hovering shows the keyframe under the mouse (quick); otherwise the exact frame at the playhead. While Play
         // gets ready the last frame stays.
-        bool busy_play = tl.play_job || pl.open;
+        bool busy_play = tl.play.job || pl.open;
         bool exact = !tl.hovering;
         i64 want_t = tl.hovering && !busy_play ? tl.hover_us : play;
         i64 want_key = b.seg_count && want_t && !busy_play ? tl_want_frame(want_t, exact) : 0;
@@ -2177,7 +2279,7 @@ static void screen_timeline()
         f32 ty = y_tools, x = top.x, mid = floorf(ty + (fh - ImGui::GetFontSize()) / 2);
         const char *clock_w = g_app.config.clock_24h ? "00:00:00" : "00:00:00 pm";
 
-        bool active = tl.play_job || (pl.open && !pl.paused);
+        bool active = tl.play.job || (pl.open && !pl.paused);
         ImGui::SetCursorScreenPos(ImVec2(x, ty));
         kit_next_tip(active ? "Pause" : "Play", "Space");
         if (kit_icon_button(active ? ICON_PAUSE : ICON_PLAY, "##play", KIT_PRIMARY, b.seg_count > 0)) tl_play_toggle();
@@ -2266,8 +2368,9 @@ static void screen_timeline()
         const char *icon = 0;
         f32 progress = -1;
         SaveJobView *v = save_view(tl.job);
-        if (tl.play_job) {
-            SaveJobView *pv = save_view(tl.play_job);
+        u32 building = tl.play.job ? tl.play.job : pl.open && pl.ended ? tl.next.job : 0; // waited for
+        if (building) {
+            SaveJobView *pv = save_view(building);
             if (pv && pv->state == SAVE_RUNNING) snprintf(status, sizeof status, "Getting it ready  %d%%", (int)(pv->progress * 100));
             else str_set(status, "Waiting for a save to finish");
         } else if (tl.play_error[0]) {
