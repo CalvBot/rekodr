@@ -1796,7 +1796,12 @@ static bool lib_game_picker(const char *id, LibItem &it)
         ID3D11ShaderResourceView *icon = game_db_icon(names[i]);
         if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1),
                                       IM_COL32_WHITE, kit_px(5));
-        else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), kit_px(5));
+        else if (!strcmp(names[i], "Desktop")) { // no game: the monitor glyph, as in the Games list
+            ImGui::PushFont(g_font_icon);
+            ImVec2 gs = ImGui::CalcTextSize(ICON_MONITOR);
+            dl->AddText(ImVec2(floorf(i0.x + (is - gs.x) / 2), floorf(i0.y + (is - gs.y) / 2)), col32(COL_DIM), ICON_MONITOR);
+            ImGui::PopFont();
+        } else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), kit_px(5));
         char note[16] = "";
         if (typed_row && i == n - 1) str_set(note, "As typed");
         else if (from_lib[i]) str_set(note, "In the library");
@@ -2269,7 +2274,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     // No game ("Desktop", "Other") gets a plain glyph rather than whatever icon the name looks up.
     bool desktop = !strcmp(it.info.game, "Desktop"), no_game = desktop || !strcmp(it.info.game, "Other");
     ID3D11ShaderResourceView *icon = it.info.game[0] && !no_game ? game_icon(it.info.game) : 0;
-    const char *glyph = desktop ? ICON_WINDOW : ICON_VIDEO;
+    const char *glyph = desktop ? ICON_MONITOR : ICON_VIDEO;
     if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
                                   IM_COL32_WHITE, kit_px(6));
     else {
@@ -3437,8 +3442,11 @@ static void screen_library()
             const char *name = c == 0 ? "All games" : lib.games[c - 1];
             bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
             ImGui::PushID(c);
-            if (lib_game_item(c == 0 ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
-                              side_w - kit_px(12), collapsed))
+            // No game gets a built-in glyph: a monitor for Desktop, a video for files not ours
+            bool none = c > 0 && game_is_none(name);
+            const char *glyph = !none ? 0 : !strcmp(name, "Desktop") ? ICON_MONITOR : ICON_VIDEO;
+            if (lib_game_item(c == 0 || none ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
+                              side_w - kit_px(12), collapsed, glyph))
                 pick = c;
             ImGui::PopID();
         }

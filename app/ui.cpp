@@ -106,6 +106,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_STAR      "\xEE\x9C\xB4" // E734
 #define ICON_UNDO      "\xEE\x9E\xA7" // E7A7
 #define ICON_WINDOW    "\xEE\x9C\xB7" // E737
+#define ICON_MONITOR   "\xEE\x9F\xB4" // E7F4 TV monitor
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_START     "\xEE\xA2\x92" // E892
 #define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
