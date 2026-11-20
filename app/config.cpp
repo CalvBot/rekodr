@@ -322,6 +322,11 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "setup_done")) boolean(&c->setup_done);
     else if (!strcmp(key, "sgdb_key")) str_set(c->sgdb_key, value);
     else if (!strcmp(key, "art_service")) str_set(c->art_service.s, value);
+    else if (!strcmp(key, "r2_account")) str_set(c->r2_account, value);
+    else if (!strcmp(key, "r2_access_key")) str_set(c->r2_access_key, value);
+    else if (!strcmp(key, "r2_bucket")) str_set(c->r2_bucket, value);
+    else if (!strcmp(key, "r2_public_url")) str_set(c->r2_public_url, value);
+    else if (!strcmp(key, "r2_budget")) real(&c->r2_budget);
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "start_with_windows")) boolean(&c->start_with_windows);
@@ -479,6 +484,8 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("setup_done", c.setup_done);
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed
+    fprintf(f, "r2_account = %s\nr2_access_key = %s\nr2_bucket = %s\nr2_public_url = %s\nr2_budget = %g\n",
+            c.r2_account, c.r2_access_key, c.r2_bucket, c.r2_public_url, c.r2_budget);
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\n", c.popup_monitor);
     boolean("voice_mono", c.voice_mono);

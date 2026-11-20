@@ -122,6 +122,12 @@ struct Config {
     bool share_names;    // "Help name games": naming a game the art service wasn't sure of tells it (gamedb_confirm)
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only
     Str64 art_service;   // host of the art service gamedb.cpp asks for the art Discord and Steam don't have; "" = none
+    // Links (r2.cpp): the player's own Cloudflare R2 bucket. The secret key is in Windows' Credential Manager.
+    char r2_account[40];     // Cloudflare account ID
+    char r2_access_key[72];  // the R2 API token's access key ID
+    char r2_bucket[64];
+    char r2_public_url[256]; // the bucket's public address: https://pub-<id>.r2.dev or a custom domain
+    f32  r2_budget;          // dollars a month to spend on storage; 0 = the free 10 GB
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)

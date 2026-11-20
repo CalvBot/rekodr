@@ -1755,8 +1755,10 @@ static SaveJobView *save_view(u32 id)
 
 // A finished job whose result something on screen or a session still follows (by id). Its slot isn't reused, or
 // that reader would find the job gone and take it as failed.
+static bool r2_holds_save(u32 id);
 static bool save_job_held(u32 id)
 {
+    if (r2_holds_save(id)) return true;
     if (id == g_app.editor.keep_job || id == g_app.editor.share_job) return true;
     const Timeline &tl = g_app.timeline;
     if (id == tl.job || id == tl.play.job || id == tl.next.job || id == tl.rest.job) return true;

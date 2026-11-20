@@ -140,7 +140,7 @@ static void run_command(const char *text)
 
 static void handle_event(const Event &e)
 {
-    static const char *const kinds[] = {"none", "command", "log", "recorder", "audio", "save", "library", "timeline", "gamedb"};
+    static const char *const kinds[] = {"none", "command", "log", "recorder", "audio", "save", "library", "timeline", "gamedb", "r2"};
     if (e.kind != EV_LOG && e.kind != EV_COMMAND)
         DEV_LOG("event %s %lld %lld", (u32)e.kind < (u32)COUNT(kinds) ? kinds[e.kind] : "?", e.a, e.b);
     switch (e.kind) {
@@ -148,10 +148,11 @@ static void handle_event(const Event &e)
     case EV_LOG: log_line("%s", e.text); break;
     case EV_RECORDER: recorder_on_event(e); break;
     case EV_AUDIO: audio_on_event(e); break;
-    case EV_SAVE: save_on_event(e); editor_on_save_event(e); break;
+    case EV_SAVE: save_on_event(e); editor_on_save_event(e); r2_on_save_event(e); break;
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
     case EV_GAMEDB: gamedb_on_event(e); break;
+    case EV_R2: r2_on_event(e); break;
     default: break;
     }
     pipe_publish();
@@ -418,6 +419,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     pipe_stop();
     sessions_stop();
     gamedb_stop();
+    r2_stop();
     audio_stop();
     recorder_stop();
     save_stop();

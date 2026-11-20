@@ -17,6 +17,7 @@
 #include <wincodec.h>
 #include <winhttp.h>
 #include <bcrypt.h>
+#include <wincred.h>
 #include <tlhelp32.h>
 #include <shellscalingapi.h>
 
@@ -76,6 +77,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "pipe.cpp"
 #include "buffer.cpp"
 #include "save.cpp"
+#include "r2.cpp"
 #include "hotkeys.cpp"
 #include "tray.cpp"
 #include "diag.cpp"

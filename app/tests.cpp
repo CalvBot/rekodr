@@ -782,6 +782,93 @@ static void put_file(const Path &p, const char *text)
 }
 
 // Minecraft's modpacks: what is read from a game's folder, and what goes to the art service
+// Links (r2.cpp): request signing, names, the history file, limits and what cleanup removes
+static void test_r2()
+{
+    // AWS's own example for Signature V4 (GET Object, S3 docs)
+    SigHeader h[] = {{"host", "examplebucket.s3.amazonaws.com"},
+                     {"range", "bytes=0-9"},
+                     {"x-amz-content-sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+                     {"x-amz-date", "20130524T000000Z"}};
+    char auth[512];
+    sigv4_auth("GET", "/test.txt", "", h, COUNT(h), h[2].value, "AKIAIOSFODNN7EXAMPLE",
+               "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "20130524T000000Z", "us-east-1", "s3", auth, sizeof auth);
+    T(strstr(auth, "Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request") != 0);
+    T(strstr(auth, "SignedHeaders=host;range;x-amz-content-sha256;x-amz-date") != 0);
+    T(strstr(auth, "Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41") != 0);
+
+    char enc[64];
+    r2_uri_encode("a+b/c=d~e", enc, sizeof enc);
+    T(!strcmp(enc, "a%2Bb%2Fc%3Dd~e"));
+    char code[32];
+    T(r2_xml("<Error><Code>NoSuchBucket</Code></Error>", "Code", code, sizeof code) && !strcmp(code, "NoSuchBucket"));
+
+    // Names: 22 letters and digits + .mp4, never the same twice
+    char a[32], b[32];
+    r2_new_key(a);
+    r2_new_key(b);
+    T(strlen(a) == 26 && !strcmp(a + 22, ".mp4") && strcmp(a, b));
+    bool plain = true;
+    for (i32 i = 0; i < 22; i++) plain &= isalnum((u8)a[i]) != 0;
+    T(plain);
+    char url[128];
+    r2_make_url("https://pub-x.r2.dev/", "k.mp4", 1, url, sizeof url);
+    T(!strcmp(url, "https://pub-x.r2.dev/k.mp4"));
+    r2_make_url("https://clips.example.com", "k.mp4", 3, url, sizeof url);
+    T(!strcmp(url, "https://clips.example.com/k.mp4?v=3"));
+
+    // Limits: free 10 GB, then $0.015 a GB-month
+    T(r2_limit_for_budget(0) == 10 * R2_GB);
+    T(r2_limit_for_budget(1.35) / R2_GB == 100 || r2_limit_for_budget(1.35) / R2_GB == 99);
+    T(fabs(r2_cost_for(100 * R2_GB) - 1.35) < 1e-9 && r2_cost_for(5 * R2_GB) == 0);
+
+    // Cleanup: oldest unpinned first, until it fits
+    static R2Share s[4];
+    for (i32 i = 0; i < 4; i++) {
+        s[i] = {};
+        s[i].bytes = 4 * R2_GB;
+        s[i].uploaded_us = 100 - i; // the last is the oldest
+    }
+    s[3].pinned = true;
+    i32 plan[4];
+    T(r2_plan_cleanup(s, 4, 16 * R2_GB, 0, -1, plan, 4) == 0);
+    i32 n = r2_plan_cleanup(s, 4, 10 * R2_GB, 0, 0, plan, 4); // 16 GB, keep 0, 3 pinned: the oldest of 1 and 2 goes
+    T(n == 2 && plan[0] == 2 && plan[1] == 1);
+    s[2].removed = true;
+    n = r2_plan_cleanup(s, 4, 12 * R2_GB, 4 * R2_GB, -1, plan, 4); // 12 + 4 incoming: 1 goes, then 0
+    T(n == 1 && plan[0] == 1);
+    T(r2_plan_cleanup(s, 4, 6 * R2_GB, 4 * R2_GB, -1, plan, 4) == -1); // pinned 4 + incoming 4 > 6
+
+    // History file round trip, a tab in a title made a space
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path file = {};
+    swprintf(file.s, MAX_PATH, L"%sclipback-tests-%lu-shares.tsv", temp, GetCurrentProcessId());
+    static R2Share w[2], r[4];
+    w[0] = {};
+    str_set(w[0].key, "abc.mp4");
+    str_set(w[0].url, "https://x/abc.mp4?v=2");
+    str_set(w[0].title, "ace\tround");
+    str_set(w[0].game, "Valorant");
+    str_set(w[0].path, "C:\\Clips\\ace round.mp4");
+    w[0].bytes = 123456789012;
+    w[0].uploaded_us = 1700000000000000;
+    w[0].pinned = true;
+    w[0].version = 2;
+    w[0].lib_key = 18446744073709551615ull;
+    w[1] = {};
+    str_set(w[1].key, "def.mp4");
+    w[1].removed = true;
+    w[1].version = 1;
+    T(r2_history_write(file, w, 2));
+    T(r2_history_read(file, r, 4) == 2);
+    T(!strcmp(r[0].key, "abc.mp4") && !strcmp(r[0].url, w[0].url) && !strcmp(r[0].title, "ace round"));
+    T(!strcmp(r[0].game, "Valorant") && !strcmp(r[0].path, w[0].path) && r[0].bytes == w[0].bytes);
+    T(r[0].uploaded_us == w[0].uploaded_us && r[0].pinned && !r[0].removed && r[0].version == 2);
+    T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
+    DeleteFileW(file.s);
+}
+
 static void test_mcpack()
 {
     char v[256];
@@ -1290,6 +1377,7 @@ int main()
     test_wave_chunks();
     test_gamedb();
     test_mcpack();
+    test_r2();
     test_storeids();
     test_markers();
     printf("%d checks, %d failed\n", g_checked, g_failed);
