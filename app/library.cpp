@@ -2529,7 +2529,7 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
         char when[48], size[24], line[200];
         fmt_when(s.uploaded_us, when, sizeof when);
         fmt_size((u64)s.bytes, size, sizeof size);
-        if (s.removed) snprintf(line, sizeof line, "Removed, over the size limit  -  %s", size);
+        if (s.removed) snprintf(line, sizeof line, "Removed, over size limit  -  %s", size);
         else if (s.game[0]) snprintf(line, sizeof line, "%s  -  %s  -  %s", s.game, when, size);
         else snprintf(line, sizeof line, "%s  -  %s", when, size);
         ImGui::PushFont(g_font_small);
