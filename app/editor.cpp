@@ -492,7 +492,7 @@ static void editor_open(const LibItem &item)
     ed.undo_count = ed.redo_count = 0;
     ed.aiming = false;
     ed.result[0] = 0;
-    ed.result_path[0] = 0;
+    ed.result_path[0] = ed.result_url[0] = 0;
     ed.result_error = false;
     str_set(ed.out_name, ed.item.name);
     ed.player.id = 1;
@@ -574,7 +574,7 @@ static void editor_on_save_event(const Event &e)
     bool share = id == ed.share_job;
     const char *name = strrchr(e.text, '\\');
     name = name ? name + 1 : e.text;
-    ed.result_path[0] = 0;
+    ed.result_path[0] = ed.result_url[0] = 0;
     if (e.a == SAVE_EV_DONE) {
         str_set(ed.result_path, e.text);
         if (share) {
@@ -642,11 +642,62 @@ static void ed_start(SaveKind kind)
     u32 id = save_edit(kind, j);
     if (kind == SAVE_KEEP) ed.keep_job = id;
     else ed.share_job = id;
+    ed.result_url[0] = 0;
     if (!id) {
         str_set(ed.result, "Too many saves are waiting; try again in a moment.");
         ed.result_error = true;
     } else {
         ed.result[0] = 0;
+    }
+}
+
+// Shares the edit as a link: r2 makes a copy Discord plays (save_link), uploads it to the player's bucket, and the
+// link goes on the clipboard when it's there (ed_link_poll).
+static void ed_start_link()
+{
+    Editor &ed = g_app.editor;
+    ed_save_record();
+    MediaInfo info = ed.item.info;
+    if (ed.player.duration > 0) info.duration = ed.player.duration;
+    const char *title = ed.out_name[0] ? ed.out_name : ed.item.name;
+    ed.link_job = r2_share_file(ed.path.s, title, ed.item.info.game, 0, &info, &ed.edit);
+    ed.result_path[0] = ed.result_url[0] = 0;
+    if (!ed.link_job) {
+        str_set(ed.result, "Too many links are waiting; try again in a moment.");
+        ed.result_error = true;
+    } else {
+        ed.result[0] = 0;
+    }
+}
+
+static bool ed_link_busy()
+{
+    Editor &ed = g_app.editor;
+    if (!ed.link_job) return false;
+    R2Job j = r2_job(ed.link_job);
+    return j.id && j.state < R2_DONE;
+}
+
+// Follows the link being made, on whichever tab: once it's up, it goes on the clipboard; a failure says why.
+static void ed_link_poll()
+{
+    Editor &ed = g_app.editor;
+    if (!ed.link_job) return;
+    R2Job j = r2_job(ed.link_job);
+    if (j.id && j.state < R2_DONE) {
+        ui_wake();
+        return;
+    }
+    ed.link_job = 0;
+    ed.result_path[0] = ed.result_url[0] = 0;
+    if (j.state == R2_DONE) {
+        ImGui::SetClipboardText(j.url);
+        str_set(ed.result_url, j.url);
+        str_set(ed.result, "Link copied, ready to paste.");
+        ed.result_error = false;
+    } else {
+        snprintf(ed.result, sizeof ed.result, "Link failed: %s", j.id ? j.error : "it was lost");
+        ed.result_error = true;
     }
 }
 
@@ -2072,6 +2123,27 @@ static void ed_file_actions(const char *path, f32 right, f32 y)
     }
 }
 
+// A link's actions, right-aligned at `right` on the row at y: copy it, open it in the browser.
+static void ed_link_actions(const char *url, f32 right, f32 y)
+{
+    Editor &ed = g_app.editor;
+    f32 fh = ImGui::GetFrameHeight(), gap = kit_px(2);
+    ImGui::SetCursorScreenPos(ImVec2(right - 2 * fh - gap, y));
+    kit_next_tip("Copy the link");
+    if (kit_icon_button(ICON_COPY, "##copy_link", KIT_GHOST)) {
+        ImGui::SetClipboardText(url);
+        str_set(ed.result, "Link copied, ready to paste.");
+        ed.result_error = false;
+    }
+    ImGui::SameLine(0, gap);
+    kit_next_tip("Open the link");
+    if (kit_icon_button(ICON_LINK, "##open_link", KIT_GHOST)) {
+        wchar_t w[512];
+        utf8_to_wide(url, w, COUNT(w));
+        ShellExecuteW(0, L"open", w, 0, 0, SW_SHOWNORMAL);
+    }
+}
+
 // The height of a card's title row
 static f32 ed_card_head_h() { return ImGui::GetTextLineHeight() + kit_px(2) + g_font_small->FontSize; }
 
@@ -2091,14 +2163,15 @@ static void ed_card_head(const char *icon, const char *title, const char *line, 
 }
 
 // Keep and Share. Keep makes a full-quality copy of the trim in Clips; Share makes a small one in the temp share
-// folder and puts it on the clipboard. Neither touches the original, so a share can be made again at another size.
+// folder and puts it on the clipboard, or (Link) uploads a copy to the player's bucket and puts its link there.
+// None touches the original, so a share can be made again at another size.
 static void ed_share_tab(f32 w)
 {
     Editor &ed = g_app.editor;
     const ImGuiStyle &st = ImGui::GetStyle();
     f32 fh = ImGui::GetFrameHeight();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    bool keeping = ed_job_busy(ed.keep_job), sharing = ed_job_busy(ed.share_job);
+    bool keeping = ed_job_busy(ed.keep_job), sharing = ed_job_busy(ed.share_job), linking = ed_link_busy();
     f32 iw = w;
 
     // The name both use
@@ -2130,10 +2203,15 @@ static void ed_share_tab(f32 w)
 
     // Share: the title row says what it comes out as, with the button beside it; the size chips under it
     {
+        bool link = ed.share_size == 3, ready = !link || r2_ready();
         f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
         SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
+        if (link) plan.fits = true; // a link has no size to fit
         char est[96];
-        if (plan.fits) {
+        if (link) {
+            if (ready) snprintf(est, sizeof est, "A link that plays in Discord, %s", len_s);
+            else str_set(est, "Set up sharing in Options");
+        } else if (plan.fits) {
             char size[24];
             fmt_size((u64)plan.estimate_bytes, size, sizeof size);
             snprintf(est, sizeof est, "About %s, %dp%.0f, %.1f Mbps", size, plan.side, plan.fps, plan.video_kbps / 1000.0);
@@ -2144,16 +2222,19 @@ static void ed_share_tab(f32 w)
         }
         ImVec2 top = ImGui::GetCursorScreenPos();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
-        ed_card_head(ICON_SHARE, "Share", est, iw - bw - gap, plan.fits ? 0 : col32(0xff8a92));
+        ed_card_head(ICON_SHARE, "Share", est, iw - bw - gap, plan.fits && ready ? 0 : col32(0xff8a92));
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
-        if (kit_button(sharing ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(bw, 0), !sharing && plan.fits))
-            ed_start(SAVE_SHARE);
+        bool busy = link ? linking : sharing;
+        if (kit_button(busy ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(bw, 0), !busy && plan.fits && ready)) {
+            if (link) ed_start_link();
+            else ed_start(SAVE_SHARE);
+        }
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
 
-        static const char *const sizes[] = {"20 MB", "50 MB", "Custom"};
+        static const char *const sizes[] = {"20 MB", "50 MB", "Custom", "Link"};
         // The size field keeps its width beside the chips, greyed with the preset's size until Custom.
         f32 mb_w = kit_px(84);
-        kit_segmented("##size", sizes, 3, &ed.share_size, (iw - mb_w - st.ItemSpacing.x - kit_px(6)) / 3);
+        kit_segmented("##size", sizes, 4, &ed.share_size, (iw - mb_w - st.ItemSpacing.x - kit_px(6)) / 4);
         ImGui::SameLine();
         if (ed.custom_mb <= 0) ed.custom_mb = 25;
         ImGui::SetNextItemWidth(mb_w);
@@ -2161,7 +2242,7 @@ static void ed_share_tab(f32 w)
         else {
             f32 shown = ed_share_mb();
             ImGui::BeginDisabled();
-            ImGui::InputFloat("##mb", &shown, 0, 0, "%.0f MB");
+            ImGui::InputFloat("##mb", &shown, 0, 0, link ? "Any size" : "%.0f MB");
             ImGui::EndDisabled();
         }
         if (ed.custom_mb < 1) ed.custom_mb = 1;
@@ -2171,13 +2252,17 @@ static void ed_share_tab(f32 w)
 
     // Progress, or the last result with its file's actions: always one row, in its place.
     SaveJobView *v = save_view(sharing ? ed.share_job : keeping ? ed.keep_job : 0);
+    R2Job lj = linking && !v ? r2_job(ed.link_job) : R2Job{};
     ImVec2 a = ImGui::GetCursorScreenPos();
     f32 line_h = ImGui::GetTextLineHeight(), bar_h = kit_px(4);
     f32 ty = floorf(a.y + (fh - line_h) / 2);
-    if (v) {
+    if (v || lj.id) {
         char label[64], pc[16];
-        f32 frac = v->progress;
-        snprintf(label, sizeof label, "%s%s", v->kind == SAVE_SHARE ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
+        f32 frac = v ? v->progress : lj.progress;
+        if (v)
+            snprintf(label, sizeof label, "%s%s", v->kind == SAVE_SHARE ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
+        else
+            str_set(label, lj.state == R2_UPLOADING ? "Uploading" : lj.state == R2_QUEUED ? "Link, waiting" : "Making the link's copy");
         snprintf(pc, sizeof pc, "%.0f%%", frac * 100);
         dl->AddText(ImVec2(a.x, a.y), col32(COL_DIM), label);
         dl->AddText(ImVec2(a.x + w - ImGui::CalcTextSize(pc).x, a.y), col32(COL_DIM), pc);
@@ -2186,11 +2271,12 @@ static void ed_share_tab(f32 w)
         if (frac > 0) dl->AddRectFilled(ImVec2(a.x, by), ImVec2(a.x + w * (frac > 1 ? 1 : frac), by + bar_h), col32(COL_ACCENT), bar_h);
         ImGui::Dummy(ImVec2(w, fh));
     } else if (ed.result[0]) {
-        bool file = ed.result_path[0] && !ed.result_error;
-        f32 text_w = file ? w - 3 * fh - kit_px(12) : w;
+        bool file = ed.result_path[0] && !ed.result_error, url = ed.result_url[0] && !ed.result_error;
+        f32 text_w = file ? w - 3 * fh - kit_px(12) : url ? w - 2 * fh - kit_px(12) : w;
         text_clipped(dl, ImVec2(a.x, ty), text_w, col32(ed.result_error ? 0xff8a92 : COL_OK), ed.result);
         ImGui::PushID("result");
         if (file) ed_file_actions(ed.result_path, a.x + w, a.y);
+        else if (url) ed_link_actions(ed.result_url, a.x + w, a.y);
         else ImGui::Dummy(ImVec2(w, fh));
         ImGui::PopID();
         ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + fh + st.ItemSpacing.y));
@@ -2275,6 +2361,7 @@ static void screen_editor()
     Player &p = ed.player;
     ImGuiIO &io = ImGui::GetIO();
     ed_check_pending();
+    ed_link_poll();
     if (!ed.open && ed.pending[0]) {
         kit_dim("Opening the saved file...");
         ui_wake(10); // look again soon: the scan posts its results, but probing can lag them

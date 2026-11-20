@@ -59,10 +59,13 @@ Keep a whole session from start to finish.
   - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
     where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix
     track is rebuilt from the volumes. Sessions are cut into clips this way.
-  - **Share:** encodes a small copy (Discord 10 MB, 50 MB, or a custom size) with one stereo mix. It goes to
+  - **Share:** encodes a small copy (Discord 20 MB, 50 MB, or a custom size) with one stereo mix. It goes to
     `%TEMP%\clipback\share\` and onto the clipboard, ready to paste. Share copies never go in the Clips folder. A
     *Recent shares* list keeps them for re-copying until they're cleared (setting, default 7 days). If a share copy
     is gone, it is encoded again from the original.
+  - **Link:** Share's fourth choice, once sharing is set up in Options. The edit is made into a copy Discord plays
+    (H.264, the Mix only, stream-copied when the file already is that and only trimmed), uploaded to the player's
+    own R2 bucket, and its link goes on the clipboard. It embeds at any size.
 - **Favourites:** games and folders can be favourites, marked with a star and kept at the top of the list on the
   left in the order they were added (`favourites.txt` in the config folder).
 - **Display names:** a card can carry a name typed by hand, shown in place of its file name; the file keeps its

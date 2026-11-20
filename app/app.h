@@ -578,11 +578,13 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     bool       heard_set;       // heard holds something (cleared when engines change)
     char       pending[MAX_PATH * 3]; // a file to open once the library's scan has it (Timeline's "Save and edit")
     u64        pending_since;   // GetTickCount64 when it was asked for
-    i32        share_size;      // 0 = 20 MB (Discord's free limit), 1 = 50 MB (Nitro Basic), 2 = custom
+    i32        share_size;      // 0 = 20 MB (Discord's free limit), 1 = 50 MB (Nitro Basic), 2 = custom, 3 = a link
     f32        custom_mb;
     u32        keep_job, share_job;
-    char       result[300];     // what the last Keep or Share did
+    u32        link_job;        // the last link's r2 job
+    char       result[300];     // what the last Keep, Share or link did
     char       result_path[MAX_PATH * 2]; // the file it made, for Copy, Play and Show; empty when it made none
+    char       result_url[512]; // the link it made, for Copy and Open; empty when it made none
     char       out_name[160];   // what Keep and Share call the file
     bool       result_error;
     ShareFile  shares[64];      // Recent shares, newest first
