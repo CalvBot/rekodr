@@ -2414,7 +2414,7 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
     static R2Share list[R2_MAX_SHARES];
     static i32 count = -1, page = 0;
     static u32 gen;
-    static char del_key[32];
+    static char del_key[R2_KEY_MAX];
     if (count < 0 || gen != r2_history_gen()) {
         gen = r2_history_gen();
         count = r2_history(list, R2_MAX_SHARES);

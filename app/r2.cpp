@@ -1,13 +1,14 @@
 // Links: a clip shared as a plain https link to an MP4 that Discord plays in place. The file goes to the player's
-// own Cloudflare R2 bucket, under a random name nobody can guess, and the link points at the bucket's public
-// address (r2.dev or the player's own domain). Viewers only ever reach Cloudflare.
+// own Cloudflare R2 bucket as clipback/<random folder>/clip.mp4, so a link names no player, game or date and can't
+// be guessed, and the link points at the bucket's public address (r2.dev or the player's own domain). Viewers only
+// ever reach Cloudflare.
 //
 // A share runs in three steps:
 //   preparing  save_link (save.cpp) makes an H.264 copy with the Mix only, played from the start while it loads
 //   uploading  the copy goes to the bucket over R2's S3 API (signed with AWS Signature V4), in parts when large;
 //              the copy is deleted after
-//   cleanup    while the bucket holds more than the player's limit, the oldest clips that aren't pinned are deleted
-//              from it; their history entries stay, marked removed, and can be shared again under the same name
+//   cleanup    while the bucket's clipback/ folder holds more than the player's limit (its real total, listed after
+//              each upload), the oldest clips that aren't pinned are deleted from it; their history entries stay, marked removed, and can be shared again under the same name
 //
 // The access key, account and bucket are in settings.txt; the secret key only in Windows' Credential Manager.
 // History is <config_dir>\shares.tsv. Network work runs on one worker thread; the main thread owns the jobs'
@@ -29,10 +30,10 @@ struct R2View {
     char        text[256]; // ready to show
 };
 
-enum { R2_MAX_SHARES = 1024 };
+enum { R2_MAX_SHARES = 1024, R2_KEY_MAX = 48 };
 
 struct R2Share {
-    char key[32];     // object name in the bucket: 22 random letters and digits + ".mp4"
+    char key[R2_KEY_MAX]; // object name in the bucket: "clipback/<16 random letters and digits>/clip.mp4"
     char url[512];    // the link as given out
     char title[256];
     char game[64];
@@ -68,7 +69,7 @@ enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_DELETE, R2_T_TEST };
 struct R2Task {
     R2TaskKind kind;
     i32        slot;    // the job's slot (probe, upload)
-    char       key[32]; // delete: the share; upload: the name to reuse ("" = a new one)
+    char       key[R2_KEY_MAX]; // delete: the share; upload: the name to reuse ("" = a new one)
     Path       file;    // probe: the file; upload: the copy to send (deleted after)
     Path       ffprobe;
     R2Conf     conf;
@@ -83,7 +84,7 @@ struct R2Work {
     EditRecord edit;
     char       title[256], game[64];
     u64        lib_key;
-    char       reuse[32]; // the removed share it brings back
+    char       reuse[R2_KEY_MAX]; // the removed share it brings back
 };
 
 static struct {
@@ -119,8 +120,9 @@ static f64 r2_cost_for(i64 bytes)
 }
 
 // Which shares to delete so the bucket fits `limit` once `incoming` more bytes are in it: the oldest that aren't
-// pinned, removed or at index `keep`. Writes their indexes to out and returns how many, or -1 when the pinned
-// shares, `keep` and `incoming` alone are over the limit.
+// pinned, removed or at index `keep`. `incoming` also carries what's in the bucket's clipback/ folder that the
+// history doesn't know of. Writes their indexes to out and returns how many, or -1 when the pinned shares, `keep`
+// and `incoming` alone are over the limit.
 static i32 r2_plan_cleanup(const R2Share *s, i32 n, i64 limit, i64 incoming, i32 keep, i32 *out, i32 cap)
 {
     i64 used = incoming, fixed = incoming;
@@ -149,18 +151,26 @@ static i32 r2_plan_cleanup(const R2Share *s, i32 n, i64 limit, i64 incoming, i32
 // ---------------------------------------------------------------------------------------------------------------
 // Names and links
 
-// 22 random letters and digits (about 131 bits) + ".mp4".
-static void r2_new_key(char out[32])
+// `n` random letters and digits (16 is about 95 bits).
+static void r2_random(char *out, i32 n)
 {
     static const char abc[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    i32 n = 0;
-    while (n < 22) {
+    i32 have = 0;
+    while (have < n) {
         u8 b[32];
         BCryptGenRandom(0, b, sizeof b, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-        for (i32 i = 0; i < 32 && n < 22; i++)
-            if (b[i] < 248) out[n++] = abc[b[i] % 62]; // 248 = 4 * 62: no letter more likely than another
+        for (i32 i = 0; i < 32 && have < n; i++)
+            if (b[i] < 248) out[have++] = abc[b[i] % 62]; // 248 = 4 * 62: no letter more likely than another
     }
-    memcpy(out + 22, ".mp4", 5);
+    out[n] = 0;
+}
+
+// A new clip's name in the bucket: clipback/<16 random>/clip.mp4.
+static void r2_new_key(char out[R2_KEY_MAX])
+{
+    char folder[17];
+    r2_random(folder, 16);
+    snprintf(out, R2_KEY_MAX, "clipback/%s/clip.mp4", folder);
 }
 
 static void r2_make_url(const char *public_url, const char *key, i32 version, char *out, i32 cap)
@@ -463,6 +473,43 @@ static void r2_why(u32 status, const char *resp, const R2Conf &c, char *out, i32
 
 static bool r2_ok(u32 status) { return status >= 200 && status < 300; }
 
+// The total size of everything in the bucket's clipback/ folder (ListObjectsV2), -1 if it couldn't be listed.
+static i64 r2_folder_bytes(const R2Conf &c)
+{
+    const i32 cap = 1 << 20;
+    char *resp = (char *)malloc(cap);
+    char token[1024] = "";
+    i64 total = 0;
+    for (i32 page = 0; page < 1000 && total >= 0; page++) {
+        char query[2200], enc[2048];
+        r2_uri_encode(token, enc, sizeof enc);
+        if (token[0]) snprintf(query, sizeof query, "continuation-token=%s&list-type=2&prefix=clipback%%2F", enc);
+        else snprintf(query, sizeof query, "list-type=2&prefix=clipback%%2F");
+        u32 status = r2_send(c, "GET", "", query, R2Body{}, 0, resp, cap);
+        if (!r2_ok(status)) {
+            log_line("r2: couldn't list the bucket (%u)", status);
+            total = -1;
+            break;
+        }
+        for (const char *p = strstr(resp, "<Size>"); p; p = strstr(p + 6, "<Size>")) total += _atoi64(p + 6);
+        if (!strstr(resp, "<IsTruncated>true</IsTruncated>") ||
+            !r2_xml(resp, "NextContinuationToken", token, sizeof token))
+            break;
+    }
+    free(resp);
+    return total;
+}
+
+// What's in the bucket's clipback/ folder that the history doesn't count (under the lock): `folder` less the live
+// shares, 0 when the folder couldn't be listed.
+static i64 r2_untracked_locked(i64 folder)
+{
+    if (folder < 0) return 0;
+    for (i32 i = 0; i < g_r2.count; i++)
+        if (!g_r2.shares[i].removed) folder -= g_r2.shares[i].bytes;
+    return folder > 0 ? folder : 0;
+}
+
 static bool r2_delete_object(const R2Conf &c, const char *key)
 {
     char resp[1024];
@@ -583,7 +630,7 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 11 && strlen(f[0]) < 32) {
+        if (count == 11 && strlen(f[0]) < R2_KEY_MAX) {
             R2Share &s = out[n++];
             s = {};
             str_set(s.key, f[0]);
@@ -672,12 +719,11 @@ static void r2_test_end(bool ok, const char *text)
 
 static void r2_run_test(const R2Conf &c)
 {
-    char key[64], body[64], resp[2048], why[256];
-    r2_new_key(key);
-    key[22] = 0;
+    char key[17], body[64], resp[2048], why[256];
+    r2_random(key, 16);
     snprintf(body, sizeof body, "clipback %s", key);
     char name[64];
-    snprintf(name, sizeof name, "clipback-test-%s.txt", key);
+    snprintf(name, sizeof name, "clipback/test-%s.txt", key);
     u32 status = r2_send(c, "PUT", name, "", R2Body{body, 0, 0, (i64)strlen(body)}, "text/plain", resp, sizeof resp);
     if (!r2_ok(status)) {
         r2_why(status, resp, c, why, sizeof why);
@@ -734,14 +780,16 @@ static void r2_run_upload(const R2Task &t)
     WIN32_FILE_ATTRIBUTE_DATA fa = {};
     i64 bytes = GetFileAttributesExW(t.file.s, GetFileExInfoStandard, &fa)
                     ? ((i64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow : 0;
-    char key[32], err[256] = "";
+    char key[R2_KEY_MAX], err[256] = "";
     i32 plan[R2_MAX_SHARES];
 
     // Room first: the pinned clips must leave space for this one.
+    i64 folder = r2_folder_bytes(t.conf);
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
     i32 reuse = t.key[0] ? r2_find_locked(t.key) : -1;
-    if (r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, bytes, -1, plan, COUNT(plan)) < 0)
+    i64 untracked = r2_untracked_locked(folder);
+    if (r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, bytes + untracked, -1, plan, COUNT(plan)) < 0)
         str_set(err, bytes > t.conf.limit ? "The clip is bigger than your limit: raise it in Options"
                                           : "Pinned clips fill your limit: unpin some or raise it");
     ReleaseSRWLockExclusive(&g_r2.lock);
@@ -749,6 +797,7 @@ static void r2_run_upload(const R2Task &t)
     else r2_new_key(key);
 
     if (!err[0]) r2_put_file(t.conf, key, t.file, job, err, sizeof err);
+    if (!err[0]) folder = r2_folder_bytes(t.conf); // the real total, with this clip in it
     DeleteFileW(t.file.s);
     if (err[0]) {
         r2_job_end(job, false, "", err);
@@ -785,8 +834,9 @@ static void r2_run_upload(const R2Task &t)
     wide_to_utf8(w.src.s, s.path, sizeof s.path);
     r2_make_url(t.conf.public_url, key, s.version, s.url, sizeof s.url);
     str_set(url, s.url);
-    i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, 0, at, plan, COUNT(plan));
-    static char gone[R2_MAX_SHARES][32];
+    i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), at, plan,
+                            COUNT(plan));
+    static char gone[R2_MAX_SHARES][R2_KEY_MAX];
     for (i32 i = 0; i < n; i++) str_set(gone[i], g_r2.shares[plan[i]].key);
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);

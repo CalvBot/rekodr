@@ -803,13 +803,13 @@ static void test_r2()
     char code[32];
     T(r2_xml("<Error><Code>NoSuchBucket</Code></Error>", "Code", code, sizeof code) && !strcmp(code, "NoSuchBucket"));
 
-    // Names: 22 letters and digits + .mp4, never the same twice
-    char a[32], b[32];
+    // Names: clipback/<16 letters and digits>/clip.mp4, never the same twice
+    char a[R2_KEY_MAX], b[R2_KEY_MAX];
     r2_new_key(a);
     r2_new_key(b);
-    T(strlen(a) == 26 && !strcmp(a + 22, ".mp4") && strcmp(a, b));
+    T(strlen(a) == 34 && starts_with(a, "clipback/") && !strcmp(a + 25, "/clip.mp4") && strcmp(a, b));
     bool plain = true;
-    for (i32 i = 0; i < 22; i++) plain &= isalnum((u8)a[i]) != 0;
+    for (i32 i = 9; i < 25; i++) plain &= isalnum((u8)a[i]) != 0;
     T(plain);
     char url[128];
     r2_make_url("https://pub-x.r2.dev/", "k.mp4", 1, url, sizeof url);
@@ -846,7 +846,7 @@ static void test_r2()
     swprintf(file.s, MAX_PATH, L"%sclipback-tests-%lu-shares.tsv", temp, GetCurrentProcessId());
     static R2Share w[2], r[4];
     w[0] = {};
-    str_set(w[0].key, "abc.mp4");
+    str_set(w[0].key, "clipback/abcdefghijklmnop/clip.mp4");
     str_set(w[0].url, "https://x/abc.mp4?v=2");
     str_set(w[0].title, "ace\tround");
     str_set(w[0].game, "Valorant");
@@ -862,7 +862,7 @@ static void test_r2()
     w[1].version = 1;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
-    T(!strcmp(r[0].key, "abc.mp4") && !strcmp(r[0].url, w[0].url) && !strcmp(r[0].title, "ace round"));
+    T(!strcmp(r[0].key, w[0].key) && !strcmp(r[0].url, w[0].url) && !strcmp(r[0].title, "ace round"));
     T(!strcmp(r[0].game, "Valorant") && !strcmp(r[0].path, w[0].path) && r[0].bytes == w[0].bytes);
     T(r[0].uploaded_us == w[0].uploaded_us && r[0].pinned && !r[0].removed && r[0].version == 2);
     T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
