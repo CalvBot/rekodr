@@ -619,6 +619,14 @@ static void test_edit_volumes()
     e.pieces[0] = {1.5, 6};
     e.pieces[1] = {0.25, 1};
     e.piece_count = 2;
+    // Colour: as recorded without keys; eased between keys; brightness given to eq as an offset
+    T(color_at(e, COLOR_SATURATION, 3) == 1 && !edit_colored(e));
+    e.color[COLOR_SATURATION][0] = {2.0, 0.0f, EASE_LINEAR};
+    e.color[COLOR_SATURATION][1] = {4.0, 2.0f, EASE_LINEAR};
+    e.color_count[COLOR_SATURATION] = 2;
+    T(fabs(color_at(e, COLOR_SATURATION, 3) - 1) < 1e-6 && edit_colored(e));
+    T(color_eq(COLOR_BRIGHTNESS, 1) == 0 && fabs(color_eq(COLOR_BRIGHTNESS, 2) - EQ_BRIGHTNESS) < 1e-9);
+    T(color_eq(COLOR_CONTRAST, 1.5) == 1.5);
 
     wchar_t dir[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
@@ -633,6 +641,8 @@ static void test_edit_volumes()
     T(fabs(r.boost[2] - 0.5f) < 1e-4f);
     T(r.vol_count[EDIT_MASTER] == 1 && r.vol[EDIT_MASTER][0].ease == EASE_HOLD && r.vol[EDIT_MASTER][0].v == 0.5f);
     T(r.key_count == 1 && r.keys[0].ease == EASE_OUT && r.keys[0].x == 0.25);
+    T(r.color_count[COLOR_SATURATION] == 2 && r.color[COLOR_SATURATION][1].v == 2.0f &&
+      r.color[COLOR_SATURATION][1].ease == EASE_LINEAR && r.color_count[COLOR_BRIGHTNESS] == 0);
     T(edit_is_default(EditRecord{}));
 }
 

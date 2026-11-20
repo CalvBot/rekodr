@@ -349,6 +349,9 @@ struct VolKey {
 };
 enum { EDIT_MAX_VOL_KEYS = 48, EDIT_MASTER = MEDIA_MAX_TRACKS }; // volume slot EDIT_MASTER is the whole mix
 
+// The picture's colour, each kept as keys like a volume's (1 = as recorded, 0..2): brightness, contrast, saturation.
+enum { COLOR_BRIGHTNESS, COLOR_CONTRAST, COLOR_SATURATION, EDIT_COLORS };
+
 struct EditPiece {
     f64 from, to; // seconds into the video
 };
@@ -367,7 +370,13 @@ struct EditRecord {
     bool    muted[MEDIA_MAX_TRACKS + 1];
     VolKey  vol[MEDIA_MAX_TRACKS + 1][EDIT_MAX_VOL_KEYS];
     i32     vol_count[MEDIA_MAX_TRACKS + 1];
+    // The colour's keys (sorted by t), per EDIT_COLORS value; none means as recorded.
+    VolKey  color[EDIT_COLORS][EDIT_MAX_VOL_KEYS];
+    i32     color_count[EDIT_COLORS];
 };
+
+// The editor's keyed lanes: the zoom (0), each volume slot (1 + slot), then each colour (ED_COLOR + colour).
+enum { ED_COLOR = EDIT_MASTER + 2, ED_LANES = ED_COLOR + EDIT_COLORS };
 
 // A Keep, Share or Link job: everything the save worker needs, copied with the request.
 struct EditJob {
@@ -578,6 +587,7 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     Player     player;
     i32        tab;             // side panel: 0 edit, 1 keep and share
     i32        solo;            // the track heard alone, -1 = all (for listening only: not saved)
+    i32        color_pick;      // the colour value the timeline's Colour lane shows (COLOR_*)
     i32        share_page;
     bool       aiming;          // dragging the picture aims the zoom
     i32        aim_key;
@@ -602,13 +612,13 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     struct WaveData *wave;      // the tracks' waveforms (wave.cpp)
     f64        view_from, view_span; // seconds shown across the lanes
     f32        lane_scroll;     // the sound lanes scrolled up by, in pixels
-    u64        sel[EDIT_MASTER + 2]; // selected keys, a bit per key, per lane
+    u64        sel[ED_LANES];   // selected keys, a bit per key, per lane
     i32        lane_drag;       // what the mouse is doing on the timeline (ED_DRAG_*)
     i32        drag_lane, drag_key;
     f64        drag_t;          // the grabbed key's time (or the level) when the drag began
     f32        drag_mx, drag_my;
     bool       drag_moved;
-    u64        drag_sel[EDIT_MASTER + 2];
+    u64        drag_sel[ED_LANES];
     EditRecord drag_from;       // the record when the drag began
     i32        menu_lane, menu_key; // the right-click menu's target
     f64        menu_t, menu_v;

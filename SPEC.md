@@ -58,6 +58,10 @@ Keep a whole session from start to finish.
 - **Zoom views:** the picture shows the zoom in one of two views, chosen under Zoom; the result is the same.
   *Crop* keeps the whole footage still and moves and scales the kept frame over it. *Footage* keeps the frame
   still and moves and scales the footage behind it. Outside the frame is dimmed, and dragging aims.
+- **Colour:** brightness, contrast and saturation, each 0 to 200% (100% is as recorded), set with sliders under
+  Colour that key the value at the playhead. The timeline has one Colour lane that shows the value picked in its
+  gutter; its keys work like volume keys. The preview shows the colour, and Keep and Share render it. It isn't in
+  the Premiere/DaVinci XML.
 - **Two ways out of the editor:**
   - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
     where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix

@@ -1,4 +1,4 @@
-// Editor: trim, zoom keyframes and track volumes for one saved clip or session, then Keep or Share.
+// Editor: trim, zoom and colour keyframes and track volumes for one saved clip or session, then Keep or Share.
 //
 // An edit never touches the original. It's a small text file, <year>\Data\<name>.edit.txt, written whenever a
 // change settles (a slider let go, a key pressed), so it's there next time the file is opened. Keep and Share go
@@ -21,6 +21,8 @@ static bool edit_is_default(const EditRecord &e)
     if (e.piece_count || e.key_count) return false;
     for (i32 t = 0; t <= EDIT_MASTER; t++)
         if (e.muted[t] || e.boost[t] != 0 || e.vol_count[t]) return false;
+    for (i32 c = 0; c < EDIT_COLORS; c++)
+        if (e.color_count[c]) return false;
     return true;
 }
 
@@ -45,6 +47,18 @@ static void edit_read(const Path &file, EditRecord *e)
                 z.ease = (u8)(ease >= 0 && ease < EASE_COUNT ? ease : EASE_SMOOTH);
                 e->keys[e->key_count++] = z;
             }
+        } else if (!strcmp(k, "ckey")) { // b, c or s, then time value ease
+            i32 c = *v == 'b' ? COLOR_BRIGHTNESS : *v == 'c' ? COLOR_CONTRAST : *v == 's' ? COLOR_SATURATION : -1;
+            VolKey ck = {};
+            i32 ease = EASE_LINEAR;
+            if (c < 0 || e->color_count[c] >= EDIT_MAX_VOL_KEYS || sscanf_s(v + 1, "%lf %f %d", &ck.t, &ck.v, &ease) < 2) continue;
+            ck.v = ck.v < 0 ? 0 : ck.v > 2 ? 2 : ck.v;
+            ck.ease = (u8)(ease >= 0 && ease < EASE_COUNT ? ease : EASE_LINEAR);
+            i32 n = e->color_count[c], at = n;
+            while (at > 0 && e->color[c][at - 1].t > ck.t) at--;
+            memmove(e->color[c] + at + 1, e->color[c] + at, (n - at) * sizeof ck);
+            e->color[c][at] = ck;
+            e->color_count[c] = n + 1;
         } else if (!strcmp(k, "volume") || !strcmp(k, "vkey")) {
             // The track's number, or "m" for the whole mix.
             i32 t = *v == 'm' ? EDIT_MASTER : atoi(v);
@@ -94,6 +108,7 @@ static void edit_write(const Path &file, const EditRecord &e)
     }
     fprintf(f, "# clipback edit: pieces kept in the order they play (from to, seconds), zoom keys (time zoom x y ease),\n"
                "# volumes (track volume muted), volume keys (track time volume ease); track m is the whole mix;\n"
+               "# colour keys (b brightness, c contrast or s saturation, time value ease; 1 = as recorded);\n"
                "# eases 0 linear 1 smooth 2 in 3 out 4 hold\n");
     for (i32 i = 0; i < e.piece_count; i++) fprintf(f, "piece = %.3f %.3f\n", e.pieces[i].from, e.pieces[i].to);
     for (i32 k = 0; k < e.key_count; k++)
@@ -106,6 +121,9 @@ static void edit_write(const Path &file, const EditRecord &e)
         for (i32 k = 0; k < e.vol_count[t]; k++)
             fprintf(f, "vkey = %s %.3f %.3f %d\n", id, e.vol[t][k].t, e.vol[t][k].v, e.vol[t][k].ease);
     }
+    for (i32 c = 0; c < EDIT_COLORS; c++)
+        for (i32 k = 0; k < e.color_count[c]; k++)
+            fprintf(f, "ckey = %c %.3f %.3f %d\n", "bcs"[c], e.color[c][k].t, e.color[c][k].v, e.color[c][k].ease);
     fclose(f);
     MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
 }
@@ -142,15 +160,24 @@ static void zoom_uv(const EditRecord &e, f64 t, ImVec2 *uv0, ImVec2 *uv1)
     *uv1 = ImVec2((f32)(ox + w), (f32)(oy + w));
 }
 
-// Lanes: the zoom keys (lane 0) and each volume slot's keys (lane 1 + slot) read and written alike, so the
-// timeline's selecting, dragging, eases, copy and paste work the same on all of them. Values are a zoom (1..4) or a
-// volume (0..2, 1 = as recorded).
+// Lanes: the zoom keys (lane 0), each volume slot's keys (lane 1 + slot) and each colour's (ED_COLOR + colour) read
+// and written alike, so the timeline's selecting, dragging, eases, copy and paste work the same on all of them.
+// Values are a zoom (1..4), or a volume or a colour (0..2, 1 = as recorded).
 struct LaneKey {
     f64 t, v, x, y; // x, y: a zoom key's aim
     u8  ease;
 };
 
-static i32 ln_count(const EditRecord &e, i32 l) { return l ? e.vol_count[l - 1] : e.key_count; }
+static bool ln_is_volume(i32 l) { return l >= 1 && l <= 1 + EDIT_MASTER; }
+static const char *const COLOR_NAMES[EDIT_COLORS] = {"Brightness", "Contrast", "Saturation"};
+// A volume or colour lane's keys and their count (l != 0).
+static VolKey *ln_levels(EditRecord &e, i32 l) { return l >= ED_COLOR ? e.color[l - ED_COLOR] : e.vol[l - 1]; }
+static const VolKey *ln_levels(const EditRecord &e, i32 l) { return l >= ED_COLOR ? e.color[l - ED_COLOR] : e.vol[l - 1]; }
+static i32 &ln_level_count(EditRecord &e, i32 l) { return l >= ED_COLOR ? e.color_count[l - ED_COLOR] : e.vol_count[l - 1]; }
+static i32 ln_count(const EditRecord &e, i32 l)
+{
+    return !l ? e.key_count : l >= ED_COLOR ? e.color_count[l - ED_COLOR] : e.vol_count[l - 1];
+}
 static i32 ln_cap(i32 l) { return l ? EDIT_MAX_VOL_KEYS : EDIT_MAX_KEYS; }
 static f64 ln_lo(i32 l) { return l ? 0 : 1; }
 static f64 ln_hi(i32 l) { return l ? 2 : 4; }
@@ -159,7 +186,7 @@ static LaneKey ln_get(const EditRecord &e, i32 l, i32 k)
 {
     LaneKey q = {};
     if (l) {
-        const VolKey &v = e.vol[l - 1][k];
+        const VolKey &v = ln_levels(e, l)[k];
         q.t = v.t;
         q.v = v.v;
         q.x = q.y = 0.5;
@@ -178,7 +205,7 @@ static LaneKey ln_get(const EditRecord &e, i32 l, i32 k)
 static void ln_put(EditRecord &e, i32 l, i32 k, const LaneKey &q)
 {
     if (l) {
-        VolKey &v = e.vol[l - 1][k];
+        VolKey &v = ln_levels(e, l)[k];
         v.t = q.t;
         v.v = (f32)q.v;
         v.ease = q.ease;
@@ -194,6 +221,7 @@ static void ln_put(EditRecord &e, i32 l, i32 k, const LaneKey &q)
 
 static f64 ln_value_at(const EditRecord &e, i32 l, f64 t)
 {
+    if (l >= ED_COLOR) return color_at(e, l - ED_COLOR, t);
     if (l) return vol_at(e, l - 1, t);
     f64 z, x, y;
     zoom_at(e, t, &z, &x, &y);
@@ -223,8 +251,8 @@ static i32 ln_insert(EditRecord &e, i32 l, const LaneKey &q, u64 *sel)
     i32 at = n;
     while (at > 0 && ln_get(e, l, at - 1).t > q.t) at--;
     if (l) {
-        memmove(e.vol[l - 1] + at + 1, e.vol[l - 1] + at, (n - at) * sizeof(VolKey));
-        e.vol_count[l - 1]++;
+        memmove(ln_levels(e, l) + at + 1, ln_levels(e, l) + at, (n - at) * sizeof(VolKey));
+        ln_level_count(e, l)++;
     } else {
         memmove(e.keys + at + 1, e.keys + at, (n - at) * sizeof(ZoomKey));
         e.key_count++;
@@ -239,8 +267,8 @@ static void ln_erase(EditRecord &e, i32 l, i32 k, u64 *sel)
     i32 n = ln_count(e, l);
     if (k < 0 || k >= n) return;
     if (l) {
-        memmove(e.vol[l - 1] + k, e.vol[l - 1] + k + 1, (n - k - 1) * sizeof(VolKey));
-        e.vol_count[l - 1]--;
+        memmove(ln_levels(e, l) + k, ln_levels(e, l) + k + 1, (n - k - 1) * sizeof(VolKey));
+        ln_level_count(e, l)--;
     } else {
         memmove(e.keys + k, e.keys + k + 1, (n - k - 1) * sizeof(ZoomKey));
         e.key_count--;
@@ -719,12 +747,10 @@ static void ed_link_poll()
 
 // ---- The selection, copy and paste, undo ----
 
-enum { ED_LANES = EDIT_MASTER + 2 };
-
 // A lane the timeline shows for this file (copied keys aren't pasted onto a track it doesn't have).
 static bool ed_lane_shown(i32 l)
 {
-    if (l == 0 || l == 1 + EDIT_MASTER) return true;
+    if (l == 0 || l == 1 + EDIT_MASTER || l >= ED_COLOR) return true;
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 n = ed_tracks(g_app.editor.item.info, tracks, MEDIA_MAX_TRACKS);
     for (i32 i = 0; i < n; i++)
@@ -984,7 +1010,7 @@ static f64 ln_v_of(i32 l, f32 y, f32 y0, f32 y1)
     return ln_hi(l) - f * (ln_hi(l) - ln_lo(l));
 }
 
-// Kept in range and caught by 100% volume (or a whole zoom) within a few pixels; vh is the lane's value height.
+// Kept in range and caught by 100% (or a whole zoom) within a few pixels; vh is the lane's value height.
 static f64 ln_snap(i32 l, f64 v, f32 vh)
 {
     f64 lo = ln_lo(l), hi = ln_hi(l);
@@ -1086,9 +1112,9 @@ static TrackKind ed_track_kind(const char *title, i32 slot)
 static u32 ed_rgba(u32 rgb, i32 alpha) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, alpha); }
 
 struct EdRow {
-    i32         lane;  // 0 zoom, 1 + slot
+    i32         lane;  // 0 zoom, 1 + slot, ED_COLOR + colour
     i32         wave;  // the waveform's track, -1 none
-    i32         slot;  // the volume slot, -1 for the zoom
+    i32         slot;  // the volume slot, -1 for the zoom and the colour
     f32         y0, y1;
     bool        scrolls; // one of the sound tracks, in the scrolled area
     const char *name;
@@ -1109,6 +1135,81 @@ static void ed_refresh_wave()
     i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
     ed.wave = wave_open(ed.path, ed.item.key, ed.item.info.duration, tracks, n);
     log_line("editor: audio preview measured again for %s", ed.item.name);
+}
+
+// The preview's colour: the picture drawn again with a pixel shader in place of ImGui's, doing the sums of ffmpeg's eq
+// filter (save.cpp, color_filter). eq works on the coded, limited-range luma around its middle (0.5 coded is 0.509 of
+// the full range) and adds brightness in coded units (255/219 of the full range); it scales the chroma.
+static ID3D11PixelShader *g_color_ps;
+static ID3D11Buffer *g_color_cb;
+static bool g_color_failed;
+
+static bool color_shader_ready()
+{
+    if (g_color_ps && g_color_cb) return true;
+    if (g_color_failed || !g_gpu.device) return false;
+    static const char *const src =
+        "cbuffer C : register(b0) { float4 eqv; };\n"
+        "struct PS_INPUT { float4 pos : SV_POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
+        "sampler sampler0;\n"
+        "Texture2D texture0;\n"
+        "float4 main(PS_INPUT i) : SV_Target {\n"
+        "  float4 c = i.col * texture0.Sample(sampler0, i.uv);\n"
+        "  float y = dot(c.rgb, float3(0.2126, 0.7152, 0.0722));\n"
+        "  float3 ch = c.rgb - y;\n"
+        "  y = eqv.y * (y - 0.509) + 0.509 + eqv.x * 1.164;\n"
+        "  return float4(saturate(y + ch * eqv.z), c.a);\n"
+        "}\n";
+    ID3DBlob *blob = 0, *err = 0;
+    HRESULT hr = D3DCompile(src, strlen(src), 0, 0, 0, "main", "ps_4_0", 0, 0, &blob, &err);
+    if (FAILED(hr) && err) log_line("editor: colour shader: %s", (const char *)err->GetBufferPointer());
+    if (err) err->Release();
+    if (SUCCEEDED(hr)) hr = g_gpu.device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), 0, &g_color_ps);
+    if (blob) blob->Release();
+    D3D11_BUFFER_DESC d = {};
+    d.ByteWidth = 16;
+    d.Usage = D3D11_USAGE_DYNAMIC;
+    d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (SUCCEEDED(hr)) hr = g_gpu.device->CreateBuffer(&d, 0, &g_color_cb);
+    if (FAILED(hr)) {
+        log_line("editor: no colour preview (0x%08lx)", (unsigned long)hr);
+        g_color_failed = true;
+        return false;
+    }
+    return true;
+}
+
+// Runs while ImGui draws: the next draw (the picture) goes through the colour shader with the values given.
+static void color_shader_on(const ImDrawList *, const ImDrawCmd *cmd)
+{
+    ID3D11DeviceContext *ctx = g_gpu.context;
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ctx->Map(g_color_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+        memcpy(m.pData, cmd->UserCallbackData, 16);
+        ctx->Unmap(g_color_cb, 0);
+    }
+    ctx->PSSetShader(g_color_ps, 0, 0);
+    ctx->PSSetConstantBuffers(0, 1, &g_color_cb);
+}
+
+// The picture from a to b, with the colour at the playhead.
+static void ed_draw_picture(const Player &p, ImVec2 a, ImVec2 b)
+{
+    Editor &ed = g_app.editor;
+    player_draw(p, a, b);
+    f32 eqv[4] = {};
+    bool any = false;
+    for (i32 c = 0; c < EDIT_COLORS; c++) {
+        f64 v = color_at(ed.edit, c, p.pos);
+        if (fabs(v - 1) > 0.001) any = true;
+        eqv[c] = (f32)color_eq(c, v);
+    }
+    if (!any || !p.srv || !p.frame_ready || !color_shader_ready()) return;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddCallback(color_shader_on, eqv, sizeof eqv);
+    dl->AddImage((ImTextureID)(intptr_t)p.srv, a, b);
+    dl->AddCallback(ImDrawCallback_ResetRenderState, 0);
 }
 
 static void ed_timeline(ImVec2 o, f32 w, f32 h)
@@ -1161,14 +1262,14 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
     f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(6), video_y = ruler_y + ruler_h;
-    f32 zoom_y = video_y + video_h + gap, mix_y = zoom_y + lane_h + gap;
+    f32 zoom_y = video_y + video_h + gap, color_y = zoom_y + lane_h + gap, mix_y = color_y + lane_h + gap;
     f32 area0 = nt ? mix_y + lane_h + gap : mix_y;
     f32 content = nt * (lane_h + gap);
     f32 area1 = o.y + h;
     if (area1 > area0 + content) area1 = area0 + content;
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
-    f32 lanes_y1 = nt ? area1 : zoom_y + lane_h;
+    f32 lanes_y1 = nt ? area1 : color_y + lane_h;
 
     // The wheel pans; with Alt it zooms around the mouse, with Alt and Shift around the playhead. Shift alone sets
     // the lanes' height, and over the sound tracks' names the wheel scrolls them (when they don't all fit).
@@ -1430,10 +1531,13 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         dl->PopClipRect();
     }
 
-    // The lanes, top to bottom: the zoom, the mix, the sound tracks (scrolled).
-    EdRow rows[MEDIA_MAX_TRACKS + 2];
+    // The lanes, top to bottom: the zoom, the colour (the value picked in its gutter), the mix, the sound tracks
+    // (scrolled).
+    EdRow rows[MEDIA_MAX_TRACKS + 3];
     i32 nr = 0;
     rows[nr++] = {0, -1, -1, zoom_y, zoom_y + lane_h, false, "Zoom"};
+    ed.color_pick = ed.color_pick < 0 || ed.color_pick >= EDIT_COLORS ? 0 : ed.color_pick;
+    rows[nr++] = {ED_COLOR + ed.color_pick, -1, -1, color_y, color_y + lane_h, false, COLOR_NAMES[ed.color_pick]};
     if (nt) rows[nr++] = {1 + EDIT_MASTER, -1, EDIT_MASTER, mix_y, mix_y + lane_h, false, "Mix"};
     for (i32 i = 0; i < nt; i++) {
         f32 ry = area0 + i * (lane_h + gap) - ed.lane_scroll;
@@ -1516,7 +1620,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                     ed.lane_drag = ED_DRAG_STRETCH;
                     ed.drag_key = seg;
                     ed.drag_t = ln_get(ed.edit, l, seg).v;
-                } else if (l && !n) {
+                } else if (ln_is_volume(l) && !n) {
                     ed.lane_drag = ED_DRAG_LEVEL;
                     ed.drag_t = 1 + ed.edit.boost[l - 1];
                 } else {
@@ -1534,12 +1638,12 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         i32 l = ed.drag_lane;
         if (ed.lane_drag == ED_DRAG_KEYS && ed.drag_moved) {
             ed_drag_keys((mx - ed.drag_mx) / bw * span, dfrac, (f32)(bw / span), vh, io.KeyShift, io.KeyCtrl);
-        } else if (ed.lane_drag == ED_DRAG_LEVEL && ed.drag_moved && l > 0) {
+        } else if (ed.lane_drag == ED_DRAG_LEVEL && ed.drag_moved && ln_is_volume(l)) {
             ed.edit.boost[l - 1] = (f32)(ln_snap(l, ed.drag_t + dfrac * 2, vh) - 1);
             ed.dirty = true;
         } else if (ed.lane_drag == ED_DRAG_STRETCH && ed.drag_moved && l > 0 && ed.drag_key + 1 < ln_count(ed.edit, l)) {
             f32 v = (f32)ln_snap(l, ed.drag_t + dfrac * 2, vh);
-            ed.edit.vol[l - 1][ed.drag_key].v = ed.edit.vol[l - 1][ed.drag_key + 1].v = v;
+            ln_levels(ed.edit, l)[ed.drag_key].v = ln_levels(ed.edit, l)[ed.drag_key + 1].v = v;
             ed.dirty = true;
         } else if (ed.lane_drag == ED_DRAG_SEEK) {
             if (mt < p.pos - 0.02 || mt > p.pos + 0.02) player_seek(&p, mt);
@@ -1604,17 +1708,16 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 ed.sel[l] = bits_all(ln_count(ed.edit, l));
             }
             ImGui::Separator();
-            if (lib_menu_item(ICON_UNDO, l ? "Reset the volume" : "Reset the zoom", true)) {
-                if (l) {
-                    ed.edit.vol_count[l - 1] = 0;
-                    ed.edit.boost[l - 1] = 0;
-                } else {
-                    ed.edit.key_count = 0;
-                }
+            static const char *const resets[EDIT_COLORS] = {"Reset the brightness", "Reset the contrast", "Reset the saturation"};
+            const char *reset = !l ? "Reset the zoom" : l >= ED_COLOR ? resets[l - ED_COLOR] : "Reset the volume";
+            if (lib_menu_item(ICON_UNDO, reset, true)) {
+                if (l) ln_level_count(ed.edit, l) = 0;
+                else ed.edit.key_count = 0;
+                if (ln_is_volume(l)) ed.edit.boost[l - 1] = 0;
                 ed.sel[l] = 0;
                 ed.dirty = true;
             }
-            if (l && lib_menu_item(ICON_VOLUME, "Refresh the audio preview")) ed_refresh_wave();
+            if (ln_is_volume(l) && lib_menu_item(ICON_VOLUME, "Refresh the audio preview")) ed_refresh_wave();
         }
         ImGui::EndPopup();
     }
@@ -1654,6 +1757,17 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 ed.solo = solo ? -1 : s;
                 log_line("editor: solo %d", ed.solo);
             }
+        } else if (l >= ED_COLOR) {
+            ImGui::SetCursorScreenPos(ImVec2(gx, by));
+            kit_next_tip("Which colour this lane shows");
+            if (kit_icon_button(ICON_SLIDERS, "##pick", KIT_GHOST)) ImGui::OpenPopup("color_pick");
+            lib_popup_style_push(6);
+            if (ImGui::BeginPopup("color_pick")) {
+                for (i32 c = 0; c < EDIT_COLORS; c++)
+                    if (lib_menu_item(c == ed.color_pick ? ICON_CHECK : "", COLOR_NAMES[c])) ed.color_pick = c;
+                ImGui::EndPopup();
+            }
+            lib_popup_style_pop();
         }
         i32 here = ln_key_at(ed.edit, l, p.pos);
         ImGui::SetCursorScreenPos(ImVec2(gx + 2 * (fh + kit_px(2)), by));
@@ -1729,7 +1843,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 pts[npt++] = ImVec2(x, ln_y(l, ln_value_at(ed.edit, l, t_of(x)), y0, y1));
                 if (x >= bx1) break;
             }
-            u32 lc = !l ? col32(COL_BLUE) : muted ? col32(COL_FAINT) : col32(COL_TEXT);
+            u32 lc = !l ? col32(COL_BLUE) : l >= ED_COLOR ? col32(COL_WARN) : muted ? col32(COL_FAINT) : col32(COL_TEXT);
             dl->AddPolyline(pts, npt, lc, ImDrawFlags_None, kit_px(1.5f));
         }
         // The keys.
@@ -1740,7 +1854,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             ImVec2 c(kx, ln_y(l, q.v, y0, y1));
             bool on = (ed.sel[l] >> k) & 1;
             key_shape(dl, c, r0 + kit_px(2), q.ease, on ? IM_COL32_WHITE : IM_COL32(0, 0, 0, 170));
-            key_shape(dl, c, r0, q.ease, col32(on ? COL_ACCENT : !l ? COL_BLUE : muted ? COL_FAINT : 0xd6d9de));
+            key_shape(dl, c, r0, q.ease, col32(on ? COL_ACCENT : !l ? COL_BLUE : l >= ED_COLOR ? COL_WARN : muted ? COL_FAINT : 0xd6d9de));
         }
         dl->PopClipRect();
         if (row.scrolls) ImGui::PopClipRect();
@@ -1804,6 +1918,7 @@ static void ed_caption(const char *label)
 }
 
 // Open in Premiere Pro or DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which both import.
+// TODO: colour in XML
 // One video track with the zoom as Basic Motion keys, and each recorded track (the Mix left out) with its volume
 // times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written as keys a fifth
 // of a second apart. Key times count frames from the start of the file.
@@ -2060,6 +2175,46 @@ static void ed_edit_tab(f32 w)
     if (kit_segmented("##zoom_view", views, 2, &g_app.config.editor_zoom_view, (w - kit_px(6)) / 2))
         config_save(g_app.config, g_app.paths);
     kit_dim(g_app.config.editor_zoom_view ? "Drag the footage to aim" : "Drag the frame to aim");
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // Colour at the playhead: a slider for each value that keys it there (double-click puts it back to 100%); the
+    // one last moved is the one the timeline's Colour lane shows.
+    ed_caption("COLOUR");
+    f32 cname_w = kit_px(84), lh = ImGui::GetTextLineHeight();
+    for (i32 c = 0; c < EDIT_COLORS; c++) {
+        ImGui::PushID(c);
+        i32 l = ED_COLOR + c;
+        f32 cv = (f32)color_at(ed.edit, c, p.pos);
+        ImVec2 cp = ImGui::GetCursorScreenPos();
+        dl->AddText(ImVec2(cp.x, floorf(cp.y + (fh - lh) / 2)), col32(c == ed.color_pick ? COL_TEXT : COL_DIM), COLOR_NAMES[c]);
+        ImGui::Dummy(ImVec2(cname_w, fh));
+        ImGui::SameLine(0, 0);
+        bool reset = false;
+        if (lib_slider("##color", &cv, 0.f, 2.f, w - cname_w - val_w, fh)) {
+            if (cv > 0.97f && cv < 1.03f) cv = 1; // caught by 100%
+            ed.color_pick = c;
+            reset = true;
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            cv = 1;
+            reset = true;
+        }
+        if (reset) {
+            i32 k = ln_key_at(ed.edit, l, p.pos);
+            if (k < 0) k = ed_put_key(l, p.pos, cv);
+            if (k >= 0) {
+                ed.edit.color[c][k].v = cv;
+                ed.dirty = true;
+            }
+        }
+        ImGui::SameLine(0, 0);
+        char ct[16];
+        snprintf(ct, sizeof ct, "%.0f%%", cv * 100);
+        ImVec2 vp = ImGui::GetCursorScreenPos(), vs = ImGui::CalcTextSize(ct);
+        dl->AddText(ImVec2(vp.x + val_w - vs.x, floorf(vp.y + (fh - vs.y) / 2)), col32(COL_TEXT), ct);
+        ImGui::Dummy(ImVec2(val_w, fh));
+        ImGui::PopID();
+    }
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // The selected keys: how they ease into and out of the next, then copy and delete.
@@ -2562,7 +2717,7 @@ static void screen_editor()
         k1 = ImVec2(a.x + uv1.x * (b.x - a.x), a.y + uv1.y * (b.y - a.y));
     }
     dl->PushClipRect(pos, pos1, true);
-    player_draw(p, f0, f1);
+    ed_draw_picture(p, f0, f1);
     ImU32 shade = IM_COL32(0, 0, 0, 150);
     ImVec2 c0(f0.x > pos.x ? f0.x : pos.x, f0.y > pos.y ? f0.y : pos.y);
     ImVec2 c1(f1.x < pos1.x ? f1.x : pos1.x, f1.y < pos1.y ? f1.y : pos1.y);

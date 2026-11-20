@@ -933,12 +933,12 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 // ---------------------------------------------------------------------------------------------------------------
 // Keep and Share: an edit of a saved file.
 //
-// Keep is the edit at full quality into <year>\Clips, every track kept. With one piece the video is stream-copied
-// when there's no zoom (cut at the keyframe before the start), else re-encoded at a constant quality; the audio is
-// copied as it is when no volume was touched, else the Mix is rebuilt from the edited tracks and the separate
-// tracks are copied as recorded. With several pieces everything is re-encoded, each stream cut into the pieces and
-// joined, since a copy can only cut at keyframes. Share is a small file in the share folder: the pieces joined,
-// zoomed, scaled down and encoded to the size asked for, with one stereo mix of the edited tracks.
+// Keep is the edit at full quality into <year>\Clips, every track kept. With one piece the video is stream-copied when
+// there's no zoom or colour (cut at the keyframe before the start), else re-encoded at a constant quality; the audio is
+// copied as it is when no volume was touched, else the Mix is rebuilt from the edited tracks and the separate tracks
+// are copied as recorded. With several pieces everything is re-encoded, each stream cut into the pieces and joined,
+// since a copy can only cut at keyframes. Share is a small file in the share folder: the pieces joined, zoomed,
+// coloured, scaled down and encoded to the size asked for, with one stereo mix of the edited tracks.
 
 
 // Pieces: the parts of a video an edit keeps, played one after another. Times on the joined result ("output time")
@@ -1150,13 +1150,10 @@ static bool ease_expr(u8 from, u8 to, const char *u, char *out, i32 cap)
     return true;
 }
 
-// A track's volume (or the mix's, at EDIT_MASTER) at `t`, before muting: its keys, holding before the first and
-// after the last, or its one level when it has none.
-static f64 vol_at(const EditRecord &e, i32 track, f64 t)
+// A level's keys at `t`: eased between them, holding before the first and after the last, `rest` when there are none.
+static f64 level_at(const VolKey *k, i32 n, f64 rest, f64 t)
 {
-    i32 n = e.vol_count[track];
-    const VolKey *k = e.vol[track];
-    if (!n) return 1.0 + e.boost[track];
+    if (!n) return rest;
     if (t <= k[0].t) return k[0].v;
     for (i32 i = 1; i < n; i++)
         if (t < k[i].t) {
@@ -1164,6 +1161,29 @@ static f64 vol_at(const EditRecord &e, i32 track, f64 t)
             return k[i - 1].v + (k[i].v - k[i - 1].v) * ease_curve(k[i - 1].ease, k[i].ease, (t - k[i - 1].t) / (span > 0.001 ? span : 0.001));
         }
     return k[n - 1].v;
+}
+
+// A track's volume (or the mix's, at EDIT_MASTER) at `t`, before muting: its keys, or its one level when it has none.
+static f64 vol_at(const EditRecord &e, i32 track, f64 t)
+{
+    return level_at(e.vol[track], e.vol_count[track], 1.0 + e.boost[track], t);
+}
+
+// A colour value at `t`, 1 = as recorded.
+static f64 color_at(const EditRecord &e, i32 c, f64 t) { return level_at(e.color[c], e.color_count[c], 1, t); }
+
+// What ffmpeg's eq filter is given for a colour value v (0..2, 1 = as recorded): brightness is added (-0.3..0.3),
+// contrast and saturation multiply. The editor's preview applies the same.
+static const f64 EQ_BRIGHTNESS = 0.3;
+static f64 color_eq(i32 c, f64 v) { return c == COLOR_BRIGHTNESS ? (v - 1) * EQ_BRIGHTNESS : v; }
+
+// Whether the edit changes the picture's colour anywhere.
+static bool edit_colored(const EditRecord &e)
+{
+    for (i32 c = 0; c < EDIT_COLORS; c++)
+        for (i32 k = 0; k < e.color_count[c]; k++)
+            if (fabs(e.color[c][k].v - 1) > 0.001) return true;
+    return false;
 }
 
 // What's heard of a track at `t`: its volume, 0 when muted.
@@ -1211,28 +1231,56 @@ static void smooth_expr(SaveWork *w, const EditRecord &e, i32 field, const char 
 
 // A volume filter for a track (or the mix at EDIT_MASTER) cut from `start` seconds: a plain level, or a ramp
 // between its keys evaluated every frame (ffmpeg's t starts at 0 at the cut).
+// A level's keys (n > 0) as an expression of the time `t`, each value v written as v * mul + add.
+static void level_expr(SaveWork *w, const VolKey *k, i32 n, const char *t, f64 mul, f64 add)
+{
+    graph_add(w, "if(lt(%s,%.4f),%.4f,", t, k[0].t, k[0].v * mul + add);
+    for (i32 i = 1; i < n; i++) {
+        f64 span = k[i].t - k[i - 1].t, a = k[i - 1].v * mul + add, b = k[i].v * mul + add;
+        char u[128], c[480];
+        snprintf(u, sizeof u, "clip((%s-%.4f)/%.4f,0,1)", t, k[i - 1].t, span > 0.001 ? span : 0.001);
+        if (span < 0.001 || !ease_expr(k[i - 1].ease, k[i].ease, u, c, sizeof c))
+            graph_add(w, "if(lt(%s,%.4f),%.4f,", t, k[i].t, span < 0.001 ? b : a);
+        else graph_add(w, "if(lt(%s,%.4f),%.4f+(%.4f)*(%s),", t, k[i].t, a, b - a, c);
+    }
+    graph_add(w, "%.4f", k[n - 1].v * mul + add);
+    for (i32 i = 0; i < n; i++) graph_add(w, ")");
+}
+
 static void vol_filter(SaveWork *w, const EditRecord &e, i32 track, f64 start)
 {
     i32 n = e.vol_count[track];
-    const VolKey *k = e.vol[track];
     if (!n) {
         graph_add(w, "volume=%.4f", 1.0 + e.boost[track]);
         return;
     }
     char t[48];
     snprintf(t, sizeof t, "(t+%.4f)", start);
-    graph_add(w, "volume='if(lt(%s,%.4f),%.4f,", t, k[0].t, k[0].v);
-    for (i32 i = 1; i < n; i++) {
-        f64 span = k[i].t - k[i - 1].t;
-        char u[128], c[480];
-        snprintf(u, sizeof u, "clip((%s-%.4f)/%.4f,0,1)", t, k[i - 1].t, span > 0.001 ? span : 0.001);
-        if (span < 0.001 || !ease_expr(k[i - 1].ease, k[i].ease, u, c, sizeof c))
-            graph_add(w, "if(lt(%s,%.4f),%.4f,", t, k[i].t, span < 0.001 ? k[i].v : k[i - 1].v);
-        else graph_add(w, "if(lt(%s,%.4f),%.4f+(%.4f)*(%s),", t, k[i].t, k[i - 1].v, k[i].v - k[i - 1].v, c);
-    }
-    graph_add(w, "%.4f", k[n - 1].v);
-    for (i32 i = 0; i < n; i++) graph_add(w, ")");
+    graph_add(w, "volume='");
+    level_expr(w, e.vol[track], n, t, 1, 0);
     graph_add(w, "':eval=frame");
+}
+
+// The colour as an eq filter, each value a plain number or an expression of the frame's time, for input cut from
+// `start` seconds. eq works on planar YUV, so the picture is put in that first.
+static void color_filter(SaveWork *w, const EditRecord &e, f64 fps, f64 start)
+{
+    static const char *const names[EDIT_COLORS] = {"brightness", "contrast", "saturation"};
+    char t[64];
+    snprintf(t, sizeof t, "(n/%.4f+%.4f)", fps > 1 ? fps : 30, start);
+    graph_add(w, "format=yuv420p,eq=");
+    for (i32 c = 0; c < EDIT_COLORS; c++) {
+        graph_add(w, "%s%s=", c ? ":" : "", names[c]);
+        if (!e.color_count[c]) {
+            graph_add(w, "%.4f", color_eq(c, 1));
+            continue;
+        }
+        graph_add(w, "'");
+        if (c == COLOR_BRIGHTNESS) level_expr(w, e.color[c], e.color_count[c], t, EQ_BRIGHTNESS, -EQ_BRIGHTNESS);
+        else level_expr(w, e.color[c], e.color_count[c], t, 1, 0);
+        graph_add(w, "'");
+    }
+    graph_add(w, ":eval=frame,");
 }
 
 // The zoom as a perspective filter that crops the view and stretches it to the whole frame, each frame.
@@ -1462,9 +1510,9 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     wide_to_utf8(final_path.s, final8, sizeof final8);
     save_post(SAVE_EV_PATH, req.id, 0, final8);
 
-    bool zoom = edit_zoomed(j.edit);
+    bool zoom = edit_zoomed(j.edit), colored = edit_colored(j.edit);
     bool touched = edit_audio_touched(j.edit, m);
-    bool reencode = share || zoom || cuts || (link && !link_video_ok);
+    bool reencode = share || zoom || colored || cuts || (link && !link_video_ok);
     SharePlan plan = {};
     i32 video_kbps = 0, side = 0;
     bool reduce_fps = false;
@@ -1499,6 +1547,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         if (reencode) {
             graph_add(w, "[0:v]");
             if (zoom) zoom_filter(w, j.edit, m.fps, from);
+            if (colored) color_filter(w, j.edit, m.fps, from);
             if (share) {
                 if (portrait) graph_add(w, "scale='min(%d,iw)':-2:flags=lanczos,", side);
                 else graph_add(w, "scale=-2:'min(%d,ih)':flags=lanczos,", side);
@@ -1545,7 +1594,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             graph_add(w, ";\n");
         }
         if (w->graph_full) {
-            snprintf(out, out_cap, "the zoom has too many keyframes");
+            snprintf(out, out_cap, "the zoom or colour has too many keyframes");
             RemoveDirectoryW(work.s);
             return SAVE_EV_FAILED;
         }
@@ -1645,9 +1694,9 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         arg_pair(a, cap, "-f", "mp4");
         cmd_arg(a, cap, part_path.s);
 
-        log_line("%s %u: %.1f s in %d piece%s from %.2f s, zoom %d, audio %s, %s -> %s",
+        log_line("%s %u: %.1f s in %d piece%s from %.2f s, zoom %d, colour %s, audio %s, %s -> %s",
                  share ? "share" : link ? "link" : "keep", req.id, dur, np, np == 1 ? "" : "s", from,
-                 zoom ? j.edit.key_count : 0, mix ? "re-mixed" : "as recorded", reencode ? "re-encoded" : "copied", final8);
+                 zoom ? j.edit.key_count : 0, colored ? "changed" : "as recorded", mix ? "re-mixed" : "as recorded", reencode ? "re-encoded" : "copied", final8);
         if (link) log_line("link %u: source %s / %s", req.id, vcodec[0] ? vcodec : "-", acodec[0] ? acodec : "-");
         if (share)
             log_line("share %u: %g MB asked, attempt %d: video %d kbps at %dp%g%s%s, audio %d kbps", req.id,
