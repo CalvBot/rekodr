@@ -2373,11 +2373,12 @@ static bool editor_exe(bool premiere, Path *out)
     return editor_find(premiere, out);
 }
 
-static bool pick_exe(const Path &start, Path *out)
+// A file of one type ("Programs", "*.exe"), starting in start's folder. False when none was picked.
+static bool pick_file(const Path &start, Path *out, const wchar_t *kind, const wchar_t *spec)
 {
     IFileOpenDialog *d = 0;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) return false;
-    COMDLG_FILTERSPEC types[] = {{L"Programs", L"*.exe"}};
+    COMDLG_FILTERSPEC types[] = {{kind, spec}};
     d->SetFileTypes(1, types);
     DWORD opts = 0;
     d->GetOptions(&opts);
@@ -2419,10 +2420,38 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
     opt_text_at(dl, g_font, ImVec2(x, y), col == COL_DIM ? COL_DIM : COL_TEXT, text, right);
 }
 
-// Sharing: links to clips, uploaded to the player's own Cloudflare R2 bucket (r2.cpp). The secret key goes to
-// Windows' Credential Manager, never settings.txt. The budget picks the most the bucket holds: past it the oldest
-// unpinned links are removed.
+// Sharing: links to clips (r2.cpp). With no setup they go to the free public hosts and the player's uploaders (ShareX
+// .sxcu files) in link_hosts; with the player's
+// own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
+// The budget picks the most the bucket holds: past it the oldest unpinned links are removed.
 static const i32 R2_STEPS_GB[] = {10, 25, 50, 100, 250, 500, 1000};
+
+// The hosts as chips from the row's left, the free ones then the uploaders, each one on numbered by when it's
+// tried; a click turns one off, or on as the last tried. Chips that don't fit the row aren't drawn.
+static void opt_link_hosts()
+{
+    Config &c = g_app.config;
+    i32 n = link_host_names();
+    // The numbers count only hosts that are there: a name in link_hosts with no uploader behind it is skipped
+    i32 at[16];
+    for (i32 i = 0; i < n; i++) at[i] = hosts_find(c.link_hosts, g_link_names[i].name);
+    f32 x = g_row.x0, y = opt_row_frame_y(), gap = dp(8);
+    for (i32 i = 0; i < n; i++) {
+        i32 rank = 0;
+        for (i32 k = 0; k < n; k++) rank += at[k] >= 0 && at[k] < at[i];
+        char num[8], id[96];
+        snprintf(num, sizeof num, "%d", rank + 1);
+        snprintf(id, sizeof id, "%s##host_%s", g_link_names[i].label, g_link_names[i].name);
+        f32 w = ImGui::CalcTextSize(id, ImGui::FindRenderedTextEnd(id)).x + dp(8 + 14 * 2) + ImGui::CalcTextSize("9").x;
+        if (x + w > g_row.x1) break;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        x += w + gap;
+        if (!kit_chip(id, at[i] >= 0, at[i] >= 0 ? num : 0, w)) continue;
+        hosts_toggle(c.link_hosts, sizeof c.link_hosts, g_link_names[i].name);
+        log_line("options: link hosts \"%s\"", c.link_hosts);
+        options_apply(0);
+    }
+}
 
 static void options_sharing()
 {
@@ -2430,7 +2459,58 @@ static void options_sharing()
     f32 fw = dp(360), bw = dp(150);
     opt_section("SHARING");
     opt_card_begin();
-    opt_row_begin("Links to clips", "Make an R2 bucket, give it a public address and an API token for it", bw);
+    static char added[200]; // what Add uploader did, in place of the row's line
+    {
+        opt_row_begin("Free links",
+                      added[0] ? added : "No setup. Public: anyone with the link can watch. Tried in the order numbered", bw);
+        if (kit_button(ICON_ADD "  Add uploader...##addup", KIT_SECONDARY, ImVec2(bw, 0))) {
+            Path file = {};
+            if (pick_file(file, &file, L"ShareX uploaders", L"*.sxcu")) {
+                char stem[64], why[160];
+                if (uploader_add(file.s, stem, sizeof stem, why, sizeof why)) {
+                    if (hosts_find(c.link_hosts, stem) < 0) hosts_toggle(c.link_hosts, sizeof c.link_hosts, stem);
+                    g_link_name_count = -1;
+                    snprintf(added, sizeof added, "Added %s, tried after the others", stem);
+                    options_apply(0);
+                } else snprintf(added, sizeof added, "Couldn't add it: %s", why);
+                log_line("options: uploader: %s", added);
+            }
+        }
+        opt_row_end();
+        opt_row_begin(0, 0, 0, 0, false);
+        opt_link_hosts();
+        opt_row_end();
+    }
+    {
+        char most[24], sub[96];
+        lib_r2_size(free_host(HOST_CATBOX)->max_bytes, most, sizeof most);
+        snprintf(sub, sizeof sub, "Clips up to %s. Kept for good: a link can't be deleted", most);
+        opt_row_value("Catbox", sub, "");
+    }
+    {
+        static const char *const hours[] = {"1 h", "12 h", "24 h", "72 h"};
+        static const i32 hour_v[] = {1, 12, 24, 72};
+        char most[24], sub[96];
+        lib_r2_size(free_host(HOST_LITTERBOX)->max_bytes, most, sizeof most);
+        snprintf(sub, sizeof sub, "Clips up to %s. Gone after this long", most);
+        f32 w = dp(240);
+        opt_row_begin("Litterbox", sub, w);
+        i32 on = 3, cur = free_hours(c.litterbox_hours);
+        for (i32 i = 0; i < 4; i++)
+            if (hour_v[i] == cur) on = i;
+        i32 hit = lib_segments("##litterbox", hours, 4, w, ImGui::GetFrameHeight(), on, COL_PANEL2, COL_HOVER, COL_HOVER);
+        if (hit >= 0 && hour_v[hit] != c.litterbox_hours) {
+            c.litterbox_hours = hour_v[hit];
+            log_line("options: Litterbox keeps links %d hours", c.litterbox_hours);
+            options_apply(0);
+        }
+        opt_row_end();
+    }
+    opt_card_end();
+
+    opt_section("YOUR OWN CLOUDFLARE");
+    opt_card_begin();
+    opt_row_begin("More space, private, deletable", "Make an R2 bucket, give it a public address and an API token for it", bw);
     if (kit_button("Open Cloudflare##r2site", KIT_SECONDARY, ImVec2(bw, 0)))
         open_url("https://www.cloudflare.com/developer-platform/products/r2/");
     opt_row_end();
@@ -2537,7 +2617,8 @@ static void options_sharing()
         lib_r2_size(u.used_bytes, used, sizeof used);
         lib_r2_size(u.limit_bytes, lim, sizeof lim);
         snprintf(t, sizeof t, "Using %s of %s", used, lim);
-        opt_row_value("Space", "What the links take up in the bucket", t, COL_TEXT);
+        if (r2_ready()) opt_row_value("Space", "What the links take up in the bucket", t, COL_TEXT);
+        else opt_row_value("Space", "What the links take up in the bucket", "Not set up", COL_DIM);
     }
     opt_card_end();
 }
@@ -2620,7 +2701,7 @@ static void options_integrations()
         opt_row_begin(ed_names[e], have ? shown : "Not found: pick its exe to open clips in it", bw * 2 + dp(8));
         if (kit_button(have ? "Change##pick" : "Choose its exe##pick", KIT_SECONDARY, ImVec2(bw, 0))) {
             Path picked = {};
-            if (pick_exe(exe, &picked)) {
+            if (pick_file(exe, &picked, L"Programs", L"*.exe")) {
                 set = picked;
                 char u[MAX_PATH * 3];
                 wide_to_utf8(picked.s, u, sizeof u);
