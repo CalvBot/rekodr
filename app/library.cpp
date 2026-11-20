@@ -2378,6 +2378,24 @@ static void hosts_toggle(char *hosts, i32 cap, const char *name)
 }
 
 // A link can be made: R2 is set up, or a host in link_hosts is there to take it.
+// Share's sizes: the three from Options (Config.share_sizes_mb), a link, or the editor's own number
+enum { SHARE_LINK = 3, SHARE_CUSTOM = 4 };
+
+// The size Share aims for, in MiB (what Discord means by MB). A link has none; the first size stands in for it.
+static f32 share_target_mb(i32 share_size, f32 custom_mb)
+{
+    const Config &c = g_app.config;
+    f32 mb = share_size >= 0 && share_size < 3 ? c.share_sizes_mb[share_size] : share_size == SHARE_CUSTOM ? custom_mb : c.share_sizes_mb[0];
+    return mb < 1 ? 1 : mb;
+}
+
+// A size as its chip shows it: "50 MB", "1 GB", "1.5 GB"
+static void share_size_label(f32 mb, char *out, i32 cap)
+{
+    if (mb >= 1024) snprintf(out, cap, "%g GB", floorf(mb / 1024 * 10 + 0.5f) / 10);
+    else snprintf(out, cap, "%.0f MB", mb);
+}
+
 static bool links_any_host()
 {
     if (r2_ready()) return true;
@@ -3823,8 +3841,7 @@ static void lib_player_view()
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
     // Copy opens a menu: the file on the clipboard, a link to it, and for one bigger than the share size a share copy.
     const Editor &ed = g_app.editor;
-    f32 share_mb = ed.share_size == 0 ? 20.f : ed.share_size == 1 ? 50.f : ed.custom_mb;
-    if (share_mb < 1) share_mb = 1;
+    f32 share_mb = share_target_mb(ed.share_size, ed.custom_mb);
     bool big = lib.playing.size > (u64)(share_mb * 1024 * 1024);
     ImVec2 copy_at = ImGui::GetCursorScreenPos();
     kit_next_tip("Copy");
@@ -3842,7 +3859,9 @@ static void lib_player_view()
     if (ImGui::BeginPopup("copy_menu")) {
         char as_is[64], share_label[64];
         snprintf(as_is, sizeof as_is, "Copy the file (%s)", size);
-        snprintf(share_label, sizeof share_label, "Make a share copy (under %.0f MB)", share_mb);
+        char mb_s[24];
+        share_size_label(share_mb, mb_s, sizeof mb_s);
+        snprintf(share_label, sizeof share_label, "Make a share copy (under %s)", mb_s);
         if (lib_menu_item(ICON_COPY, as_is)) {
             if (clipboard_copy_file(p.path.s)) lib_note(false, "Copied %s to the clipboard", lib.playing.name);
             else lib_note(true, "Couldn't copy %s", lib.playing.name);

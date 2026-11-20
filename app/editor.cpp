@@ -626,12 +626,7 @@ static bool ed_job_busy(u32 id)
 }
 
 // The size Share aims for, in MiB (what Discord means by MB).
-static f32 ed_share_mb()
-{
-    Editor &ed = g_app.editor;
-    f32 mb = ed.share_size == 0 ? 20.f : ed.share_size == 1 ? 50.f : ed.custom_mb;
-    return mb < 1 ? 1 : mb;
-}
+static f32 ed_share_mb() { return share_target_mb(g_app.editor.share_size, g_app.editor.custom_mb); }
 
 // Keep, Share, or with small a Keep at the share size: a smaller clip kept in Clips for good, not a share copy.
 static void ed_start(SaveKind kind, bool small_keep = false)
@@ -2240,7 +2235,7 @@ static void ed_share_tab(f32 w)
     // Share: the title row says what it comes out as, with the button beside it; the size chips under it
     {
         // A link goes to the player's bucket, or without one to the free public hosts (link_hosts)
-        bool link = ed.share_size == 3, own = r2_ready();
+        bool link = ed.share_size == SHARE_LINK, own = r2_ready();
         i64 free_max = link && !own ? free_max_bytes(g_app.config.link_hosts) : 0;
         bool ready = !link || links_any_host();
         f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
@@ -2274,19 +2269,25 @@ static void ed_share_tab(f32 w)
         }
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
 
-        static const char *const sizes[] = {"20 MB", "50 MB", "Custom", "Link"};
-        // The size field keeps its width beside the chips, greyed with the preset's size until Custom.
+        // The three sizes from Options and Link as chips, then Custom: a button in the size field's place until
+        // picked, then the field itself (the same width, so nothing moves).
+        char size_s[3][24];
+        const char *sizes[4];
+        for (i32 i = 0; i < 3; i++) {
+            share_size_label(g_app.config.share_sizes_mb[i], size_s[i], sizeof size_s[i]);
+            sizes[i] = size_s[i];
+        }
+        sizes[3] = "Link";
         f32 mb_w = kit_px(84);
         kit_segmented("##size", sizes, 4, &ed.share_size, (iw - mb_w - st.ItemSpacing.x - kit_px(6)) / 4);
         ImGui::SameLine();
         if (ed.custom_mb <= 0) ed.custom_mb = 25;
-        ImGui::SetNextItemWidth(mb_w);
-        if (ed.share_size == 2) ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
-        else {
-            f32 shown = ed_share_mb();
-            ImGui::BeginDisabled();
-            ImGui::InputFloat("##mb", &shown, 0, 0, link ? "Any size" : "%.0f MB");
-            ImGui::EndDisabled();
+        if (ed.share_size == SHARE_CUSTOM) {
+            ImGui::SetNextItemWidth(mb_w);
+            ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
+        } else {
+            kit_next_tip("Your own size");
+            if (kit_button("Custom##mb", KIT_SECONDARY, ImVec2(mb_w, 0))) ed.share_size = SHARE_CUSTOM;
         }
         if (ed.custom_mb < 1) ed.custom_mb = 1;
         if (ed.custom_mb > 4000) ed.custom_mb = 4000;

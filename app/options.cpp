@@ -2459,6 +2459,22 @@ static void options_sharing()
     f32 fw = dp(360), bw = dp(150);
     opt_section("SHARING");
     opt_card_begin();
+    // Share's three sizes, the editor's chips
+    {
+        f32 fw3 = dp(OPT_FIELD_W), g3 = dp(8);
+        opt_row_begin("Share sizes", "The three sizes Share offers, in MB (1024 MB is 1 GB)",
+                      3 * fw3 + 2 * g3 + dp(8 + OPT_UNIT_W));
+        static const char *const ids[] = {"##size0", "##size1", "##size2"};
+        for (i32 i = 0; i < 3; i++) {
+            if (i) ImGui::SameLine(0, g3);
+            if (opt_f32(ids[i], &c.share_sizes_mb[i], 1, 4000, fw3)) {
+                log_line("options: share sizes %g, %g, %g MB", c.share_sizes_mb[0], c.share_sizes_mb[1], c.share_sizes_mb[2]);
+                options_apply(0);
+            }
+        }
+        opt_unit("MB");
+        opt_row_end();
+    }
     static char added[200]; // what Add uploader did, in place of the row's line
     {
         opt_row_begin("Free links",

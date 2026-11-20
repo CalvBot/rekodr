@@ -136,6 +136,7 @@ struct Config {
     bool free_links_seen;    // the player was told free links are public
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
+    f32 share_sizes_mb[3]; // Share's three sizes, in MiB as Discord counts (20, 50, 1024)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
 
@@ -586,7 +587,7 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     bool       heard_set;       // heard holds something (cleared when engines change)
     char       pending[MAX_PATH * 3]; // a file to open once the library's scan has it (Timeline's "Save and edit")
     u64        pending_since;   // GetTickCount64 when it was asked for
-    i32        share_size;      // 0 = 20 MB (Discord's free limit), 1 = 50 MB (Nitro Basic), 2 = custom, 3 = a link
+    i32        share_size;      // 0..2 = Config.share_sizes_mb, SHARE_LINK = a link, SHARE_CUSTOM = custom_mb
     f32        custom_mb;
     u32        keep_job, share_job;
     u32        link_job;        // the last link's r2 job
