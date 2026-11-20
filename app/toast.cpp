@@ -476,6 +476,9 @@ static bool toast_window(Toast &t)
     t.hwnd = CreateWindowExW(ex, L"clipback_toast", L"clipback", WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, 0, 0, inst, 0);
     if (!t.hwnd) return false;
     SetWindowLongPtrW(t.hwnd, GWLP_USERDATA, (LONG_PTR)&t);
+    // Left out of every capture, ours included, so a toast over a game never ends up in a clip. Windows before
+    // 10 2004 refuse it and show the toast as before.
+    SetWindowDisplayAffinity(t.hwnd, 0x11 /* WDA_EXCLUDEFROMCAPTURE */);
     // Corners rounded by Windows 11 (TOAST_ROUND), which smooths them; a window region's are jagged. Windows 10
     // leaves them square.
     i32 round = 2; // DWMWCP_ROUND
