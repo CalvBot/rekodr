@@ -101,6 +101,9 @@ static void run_command(const char *text)
             for (i32 i = 0; i < atoi(trim(arg + 6)) && i < lib.shown_count; i++) lib_sel_set(lib.items[lib.shown[i]].key, true);
             if (lib.selected_count) lib.select_anchor = lib.items[lib.shown[0]].key;
         }
+        else if (starts_with(arg, "free-links")) { // the first free link's notice, for the first clip shown
+            if (lib.shown_count) links_ask_first(ASK_ITEM, &lib.items[lib.shown[0]]);
+        }
         else if (starts_with(arg, "session-toast")) { // session-toast [<more>]: Session ended for a made-up session
             Session s = {};
             str_set(s.name, "Minecraft");
@@ -132,7 +135,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, session-toast, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, session-toast, free-links, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {

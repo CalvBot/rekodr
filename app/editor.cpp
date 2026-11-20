@@ -2206,7 +2206,7 @@ static void ed_share_tab(f32 w)
         // A link goes to the player's bucket, or without one to the free public hosts (link_hosts)
         bool link = ed.share_size == 3, own = r2_ready();
         i64 free_max = link && !own ? free_max_bytes(g_app.config.link_hosts) : 0;
-        bool ready = !link || own || free_max > 0;
+        bool ready = !link || links_any_host();
         f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
         SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
         if (link) plan.fits = true; // a link has no size to fit
@@ -2215,6 +2215,7 @@ static void ed_share_tab(f32 w)
             if (own) snprintf(est, sizeof est, "A link that plays in Discord, %s", len_s);
             else if (free_max >= 1000000000) snprintf(est, sizeof est, "Free link: public, up to %g GB", free_max / 1e9);
             else if (free_max > 0) snprintf(est, sizeof est, "Free link: public, up to %d MB", (i32)(free_max / 1000000));
+            else if (ready) str_set(est, "A public link, through your uploader");
             else str_set(est, "Set up sharing in Options");
         } else if (plan.fits) {
             char size[24];
@@ -2231,8 +2232,9 @@ static void ed_share_tab(f32 w)
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
         bool busy = link ? linking : sharing;
         if (kit_button(busy ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(bw, 0), !busy && plan.fits && ready)) {
-            if (link) ed_start_link();
-            else ed_start(SAVE_SHARE);
+            if (link) {
+                if (!links_ask_first(ASK_EDITOR, 0)) ed_start_link();
+            } else ed_start(SAVE_SHARE);
         }
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
 

@@ -1370,6 +1370,7 @@ static void ui_frame()
     }
     library_hover_end_frame(); // the Library cards' preview stops once no card has the mouse
     ImGui::EndChild();
+    links_notice_draw();
     help_window();
     ImGui::End();
 

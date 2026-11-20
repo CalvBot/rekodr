@@ -2253,8 +2253,9 @@ static void lib_comment_dialog()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Links (r2.cpp): Copy link uploads a file to the player's own bucket and puts its address on the clipboard. The
-// uploads under way, then "Link copied" or why one failed, show in a note at the bottom of the window.
+// Links (r2.cpp): Copy link uploads a file to the player's own bucket, or without one to a free public host, and puts
+// its address on the clipboard. The uploads under way, then "Link copied" or why one failed, show in a note at the
+// bottom of the window.
 
 enum { LIB_UPLOADS_MAX = 8 };
 struct LibUpload {
@@ -2310,21 +2311,136 @@ static void lib_open_sharing()
     ui_show(SCREEN_OPTIONS);
 }
 
-// Copy link on a card or in the player. A file already up gets its link at once.
-static void lib_link_item(const LibItem &it)
+// The hosts a link can go to without R2: the free ones, then the player's uploaders (.sxcu), each by its name in
+// link_hosts and the one shown. Read again every few seconds, and at once after an uploader is added.
+struct LinkHostName {
+    char name[64], label[64];
+};
+static LinkHostName g_link_names[16];
+static i32 g_link_name_count = -1;
+static f64 g_link_names_at;
+
+static i32 link_host_names()
+{
+    f64 t = ImGui::GetTime();
+    if (g_link_name_count >= 0 && t - g_link_names_at < 3) return g_link_name_count;
+    g_link_names_at = t;
+    i32 n = 0;
+    for (const FreeHost &f : FREE_HOSTS) {
+        str_set(g_link_names[n].name, f.name);
+        str_set(g_link_names[n].label, f.label);
+        n++;
+    }
+    static char stems[14][64];
+    static Uploader u;
+    i32 m = uploader_list(stems, COUNT(stems));
+    for (i32 i = 0; i < m && n < (i32)COUNT(g_link_names); i++, n++) {
+        char why[160];
+        str_set(g_link_names[n].name, stems[i]);
+        str_set(g_link_names[n].label, uploader_load(stems[i], &u, why, sizeof why) && u.name[0] ? u.name : stems[i]);
+    }
+    return g_link_name_count = n;
+}
+
+// Where `name` is in a link_hosts list, -1 when it isn't.
+static i32 hosts_find(const char *hosts, const char *name)
+{
+    i32 at = 0;
+    size_t nl = strlen(name);
+    for (const char *p = hosts; *p; at++) {
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len == nl && !_strnicmp(p, name, len)) return at;
+        if (!end) break;
+        p = end + 1;
+    }
+    return -1;
+}
+
+// Takes `name` out of a link_hosts list, or puts it on the end when it isn't there.
+static void hosts_toggle(char *hosts, i32 cap, const char *name)
+{
+    char out[256] = "";
+    bool had = false;
+    for (const char *p = hosts; *p;) {
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p), l = strlen(out);
+        if (len == strlen(name) && !_strnicmp(p, name, len)) had = true;
+        else if (len) snprintf(out + l, sizeof out - l, "%s%.*s", l ? "," : "", (int)len, p);
+        if (!end) break;
+        p = end + 1;
+    }
+    if (!had) {
+        size_t l = strlen(out);
+        snprintf(out + l, sizeof out - l, "%s%s", l ? "," : "", name);
+    }
+    snprintf(hosts, cap, "%s", out);
+}
+
+// A link can be made: R2 is set up, or a host in link_hosts is there to take it.
+static bool links_any_host()
+{
+    if (r2_ready()) return true;
+    i32 n = link_host_names();
+    for (i32 i = 0; i < n; i++)
+        if (hosts_find(g_app.config.link_hosts, g_link_names[i].name) >= 0) return true;
+    return false;
+}
+
+// The host a share went to as shown: "Catbox", an uploader's name, "" for R2.
+static void share_host_label(const R2Share &s, char *out, i32 cap)
+{
+    out[0] = 0;
+    if (const FreeHost *f = free_host(s.host)) snprintf(out, cap, "%s", f->label);
+    else if (s.host == HOST_CUSTOM) {
+        const char *slash = strchr(s.key, '/');
+        snprintf(out, cap, "%.*s", (int)(slash ? slash - s.key : (i64)strlen(s.key)), s.key);
+        i32 n = link_host_names();
+        for (i32 i = 0; i < n; i++)
+            if (!_stricmp(g_link_names[i].name, out)) snprintf(out, cap, "%s", g_link_names[i].label);
+    }
+}
+
+// The first link to a free host asks first (links_notice_draw): what's waiting for the answer.
+enum LinksAsk : u8 { ASK_NONE, ASK_ITEM, ASK_EDITOR };
+static LinksAsk g_links_ask;
+static LibItem g_links_ask_item;
+static bool g_links_ask_open; // the dialog opens on the next frame
+
+static void ed_start_link(); // editor.cpp
+
+static void lib_link_now(const LibItem &it)
 {
     const char *name = it.display_name[0] ? it.display_name : it.name;
-    if (!r2_ready()) {
-        lib_open_sharing();
-        lib_note(true, "Set up Sharing first");
-        return;
-    }
     if (g_lib_upload_count >= LIB_UPLOADS_MAX) {
         lib_note(true, "Wait for an upload to finish");
         return;
     }
     Path path = lib_item_path(it);
     lib_upload_add(r2_share_file(path.s, name, it.info.game, it.key, &it.info), name);
+}
+
+// True when a link would go to a free host and the player hasn't yet been told what that means: the dialog opens,
+// and `ask` runs once they agree.
+static bool links_ask_first(LinksAsk ask, const LibItem *it)
+{
+    if (r2_ready() || g_app.config.free_links_seen || !links_any_host()) return false;
+    g_links_ask = ask;
+    if (it) g_links_ask_item = *it;
+    g_links_ask_open = true;
+    ui_wake(6);
+    return true;
+}
+
+// Copy link on a card or in the player. A file already up gets its link at once.
+static void lib_link_item(const LibItem &it)
+{
+    if (!links_any_host()) {
+        lib_open_sharing();
+        lib_note(true, "Turn on a free host or set up Cloudflare first");
+        return;
+    }
+    if (!links_ask_first(ASK_ITEM, &it)) lib_link_now(it);
 }
 
 // Follows the uploads: a finished one copies its link, a failed one says why. Each frame of the library, and on
@@ -2405,16 +2521,27 @@ static void lib_note_draw()
 
 static void library_r2_event() { lib_uploads_poll(); }
 
+// "Expires in 5 h", "Expires in 20 min"
+static void lib_expires_in(i64 left_us, char *out, i32 cap)
+{
+    i64 min = (left_us + 59999999) / 60000000;
+    if (min < 60) snprintf(out, cap, "Expires in %d min", (i32)(min < 1 ? 1 : min));
+    else snprintf(out, cap, "Expires in %d h", (i32)((min + 59) / 60));
+}
+
 // The Shared list: every file uploaded, newest first, a page at a time. A row has the game's picture, the name, and
-// under it the game, when it went up and its size; on the right Copy link, Pin (kept whatever the limit) and
-// Delete. One removed to stay under the limit is greyed, with Reshare while the file is still on this PC. Over the
-// list, on the right, how much of the limit is used.
+// under it the host when it isn't R2, when its link ends, the game, when it went up and its size. On the right Copy link,
+// Pin (kept whatever the bucket's limit; R2 only) and Delete, which for a free host only takes it off the list. One
+// removed to stay under the limit, or past a free host's time, is greyed, with Share again while the file is still
+// on this PC. Over the list, on the right, how much of the bucket's limit is used.
 static void lib_shared_view(ImVec2 h0, f32 full_w)
 {
     static R2Share list[R2_MAX_SHARES];
     static i32 count = -1, page = 0;
     static u32 gen;
     static char del_key[R2_KEY_MAX];
+    static char del_host[64]; // the host shown, "" for R2
+    static bool del_expires;
     if (count < 0 || gen != r2_history_gen()) {
         gen = r2_history_gen();
         count = r2_history(list, R2_MAX_SHARES);
@@ -2426,8 +2553,8 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight(), gap = kit_px(4);
 
-    // How much of the limit is used, on the header's right, once there's a bucket
-    if (r2_ready() || count > 0) {
+    // How much of the limit is used, on the header's right, when there's a bucket
+    if (r2_ready()) {
         R2Usage u = r2_usage();
         char used[24], lim[24], t[80];
         lib_r2_size(u.used_bytes, used, sizeof used);
@@ -2446,9 +2573,9 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
     ImVec2 l0(h0.x, h0.y + fh + kit_px(16));
     ImGui::SetCursorScreenPos(l0);
     f32 avail = ImGui::GetContentRegionAvail().y - fh - kit_px(8);
-    if (!r2_ready() && count == 0) {
+    if (!links_any_host() && count == 0) {
         f32 cy = l0.y + avail / 3;
-        const char *t1 = "Share clips as links", *t2 = "Copy link uploads a clip to your own Cloudflare R2 bucket";
+        const char *t1 = "Share clips as links", *t2 = "Turn on a free host or set up your own Cloudflare";
         ImGui::PushFont(g_font_big);
         f32 w1 = ImGui::CalcTextSize(t1).x;
         dl->AddText(ImVec2(floorf(h0.x + (full_w - w1) / 2), cy), col32(COL_TEXT), t1);
@@ -2475,7 +2602,11 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
         f32 tw = ImGui::CalcTextSize(t).x;
         dl->AddText(ImVec2(floorf(h0.x + (full_w - tw) / 2), l0.y + avail / 3), col32(COL_DIM), t);
     }
-    f32 acts_w = 3 * fh + 2 * gap, is = kit_px(36);
+    // Share again stands where Copy link and Pin are, wider when it needs to be; Delete stays put
+    const char *again = ICON_REFRESH "  Share again##again";
+    f32 again_w = ImGui::CalcTextSize(again, ImGui::FindRenderedTextEnd(again)).x + kit_px(24);
+    f32 acts_w = ImMax(3 * fh + 2 * gap, again_w + gap + fh), is = kit_px(36);
+    i64 now = now_us();
     bool del_open = false;
     for (i32 r = 0; r < per; r++) {
         i32 k = page * per + r;
@@ -2514,11 +2645,14 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
             continue;
         }
         const R2Share &s = list[k - g_lib_upload_count];
-        u32 ink = s.removed ? COL_FAINT : COL_TEXT, dim = s.removed ? COL_FAINT : COL_DIM;
+        bool live = r2_share_live(s, now);
+        char host[64];
+        share_host_label(s, host, sizeof host);
+        u32 ink = live ? COL_TEXT : COL_FAINT, dim = live ? COL_DIM : COL_FAINT;
         ID3D11ShaderResourceView *srv = s.game[0] ? game_db_icon(s.game) : 0;
         if (srv)
             dl->AddImageRounded((ImTextureID)srv, ImVec2(ix, iy), ImVec2(ix + is, iy + is), ImVec2(0, 0), ImVec2(1, 1),
-                                s.removed ? IM_COL32(255, 255, 255, 90) : IM_COL32_WHITE, kit_px(6));
+                                live ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 90), kit_px(6));
         else {
             dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + is, iy + is), col32(COL_HOVER), kit_px(6));
             ImVec2 gs = g_font_icon->CalcTextSizeA(g_font_icon->FontSize, FLT_MAX, 0, ICON_VIDEO);
@@ -2526,43 +2660,60 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
                         col32(dim), ICON_VIDEO);
         }
         text_clipped(dl, ImVec2(tx, ty), tw, col32(ink), s.title);
-        char when[48], size[24], line[200];
+        char when[48], size[24], ends[32] = "", line[200];
         fmt_when(s.uploaded_us, when, sizeof when);
         fmt_size((u64)s.bytes, size, sizeof size);
+        if (live && s.expires_us) {
+            lib_expires_in(s.expires_us - now, ends, sizeof ends);
+            strncat(ends, "  -  ", sizeof ends - strlen(ends) - 1);
+        }
         if (s.removed) snprintf(line, sizeof line, "Removed, over size limit  -  %s", size);
-        else if (s.game[0]) snprintf(line, sizeof line, "%s  -  %s  -  %s", s.game, when, size);
-        else snprintf(line, sizeof line, "%s  -  %s", when, size);
+        else if (!live) snprintf(line, sizeof line, "Expired  -  %s", size);
+        else if (s.game[0]) snprintf(line, sizeof line, "%s%s  -  %s  -  %s", ends, s.game, when, size);
+        else snprintf(line, sizeof line, "%s%s  -  %s", ends, when, size);
         ImGui::PushFont(g_font_small);
-        text_clipped(dl, ImVec2(tx, sy), tw, col32(s.removed ? COL_WARN : dim), line);
+        f32 lx = tx;
+        if (host[0]) { // the host when it isn't R2, as a chip before the line
+            f32 cw = ImGui::CalcTextSize(host).x + kit_px(12), ch = g_font_small->FontSize + kit_px(2);
+            dl->AddRectFilled(ImVec2(lx, sy - kit_px(1)), ImVec2(lx + cw, sy - kit_px(1) + ch), col32(COL_HOVER), ch / 2);
+            dl->AddText(ImVec2(lx + kit_px(6), sy), col32(dim), host);
+            lx += cw + kit_px(8);
+        }
+        text_clipped(dl, ImVec2(lx, sy), tw - (lx - tx), col32(live ? dim : COL_WARN), line);
         ImGui::PopFont();
 
-        ImGui::SetCursorScreenPos(ImVec2(b.x - kit_px(12) - acts_w, by));
-        if (s.removed) {
+        if (!live) {
             wchar_t wp[1040];
             bool here = MultiByteToWideChar(CP_UTF8, 0, s.path, -1, wp, 1040) > 0 &&
                         GetFileAttributesW(wp) != INVALID_FILE_ATTRIBUTES;
+            ImGui::SetCursorScreenPos(ImVec2(b.x - kit_px(12) - fh - gap - again_w, by));
             if (!here) kit_next_tip("The file isn't on this PC any more");
-            if (kit_button(ICON_REFRESH "  Reshare##reshare", KIT_SECONDARY, ImVec2(2 * fh + gap, 0), here)) {
+            if (kit_button(again, KIT_SECONDARY, ImVec2(again_w, 0), here)) {
                 if (g_lib_upload_count >= LIB_UPLOADS_MAX) lib_note(true, "Wait for an upload to finish");
                 else lib_upload_add(r2_reshare(s.key), s.title);
             }
         } else {
+            ImGui::SetCursorScreenPos(ImVec2(b.x - kit_px(12) - 3 * fh - 2 * gap, by));
             kit_next_tip("Copy link");
             if (kit_icon_button(ICON_LINK, "##copy", KIT_GHOST)) {
                 ImGui::SetClipboardText(s.url);
                 lib_note(false, "Link copied: %s", s.title);
             }
-            ImGui::SameLine(0, gap);
-            kit_next_tip(s.pinned ? "Pinned: kept whatever the limit" : "Pin: keep it whatever the limit");
-            if (kit_icon_button(s.pinned ? ICON_PINNED : ICON_PIN, "##pin", KIT_GHOST, true, s.pinned)) {
-                r2_pin(s.key, !s.pinned);
-                log_line("library: link %s %s", s.key, s.pinned ? "unpinned" : "pinned");
+            if (s.host == HOST_R2) { // a free host keeps what it keeps: nothing to pin
+                ImGui::SameLine(0, gap);
+                kit_next_tip(s.pinned ? "Pinned: kept whatever the limit" : "Pin: keep it whatever the limit");
+                if (kit_icon_button(s.pinned ? ICON_PINNED : ICON_PIN, "##pin", KIT_GHOST, true, s.pinned)) {
+                    r2_pin(s.key, !s.pinned);
+                    log_line("library: link %s %s", s.key, s.pinned ? "unpinned" : "pinned");
+                }
             }
         }
-        ImGui::SameLine(0, gap);
-        kit_next_tip("Delete the link");
+        ImGui::SetCursorScreenPos(ImVec2(b.x - kit_px(12) - fh, by));
+        kit_next_tip(host[0] ? "Remove from the list" : "Delete the link");
         if (kit_icon_button(ICON_DELETE, "##delete", KIT_GHOST)) {
             snprintf(del_key, sizeof del_key, "%s", s.key);
+            snprintf(del_host, sizeof del_host, "%s", host);
+            del_expires = s.expires_us != 0;
             del_open = true;
         }
         ImGui::PopID();
@@ -2570,8 +2721,14 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
     if (del_open) ImGui::OpenPopup("shared_delete");
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("shared_delete")) {
-        if (lib_menu_item(ICON_DELETE, "Delete it from the bucket", true, kit_px(240))) {
-            log_line("library: link %s deleted", del_key);
+        bool f = del_host[0] != 0;
+        if (f) {
+            ImGui::PushFont(g_font_small);
+            kit_dim(del_expires ? "  The file stays on %s until it ends" : "  The file stays on %s", del_host);
+            ImGui::PopFont();
+        }
+        if (lib_menu_item(ICON_DELETE, f ? "Remove from the list" : "Delete it from the bucket", true, kit_px(240))) {
+            log_line("library: link %s %s", del_key, f ? "taken off the list" : "deleted");
             r2_delete(del_key);
         }
         lib_menu_item(ICON_CLOSE, "Keep it", false, kit_px(240));
@@ -2781,6 +2938,76 @@ static bool lib_dialog_check(const char *label, bool *v, bool enabled)
     dl->AddText(ImVec2(b0.x + box + gap, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)),
                 col32(enabled ? COL_TEXT : COL_FAINT), label);
     return hit;
+}
+
+// What a free link means, before the first one: public, and per host whether it can be deleted or when it ends.
+// "Share it" shares and doesn't ask again; Cancel shares nothing and asks next time. Drawn on every screen.
+static void links_notice_draw()
+{
+    if (g_links_ask_open) {
+        ImGui::OpenPopup("free_links");
+        g_links_ask_open = false;
+    }
+    if (!lib_dialog_begin("free_links")) return;
+    // The hosts on, in the order they're tried, the free ones with how much they take
+    char where[400] = "", what[256] = "", note[900];
+    struct { i32 at, i; } on[16];
+    i32 n = 0, names = link_host_names();
+    for (i32 i = 0; i < names; i++) {
+        i32 at = hosts_find(g_app.config.link_hosts, g_link_names[i].name);
+        if (at < 0) continue;
+        i32 k = n++;
+        for (; k > 0 && on[k - 1].at > at; k--) on[k] = on[k - 1];
+        on[k] = {at, i};
+    }
+    for (i32 k = 0; k < n; k++) {
+        const LinkHostName &h = g_link_names[on[k].i];
+        const FreeHost *f = 0;
+        for (const FreeHost &x : FREE_HOSTS)
+            if (!strcmp(x.name, h.name)) f = &x;
+        size_t l = strlen(where);
+        char most[24] = "";
+        if (f) lib_r2_size(f->max_bytes, most, sizeof most);
+        snprintf(where + l, sizeof where - l, "%s%s%s%s%s", k ? ", " : "", h.label, f ? " (up to " : "", most, f ? ")" : "");
+        l = strlen(what);
+        if (f && f->expires)
+            snprintf(what + l, sizeof what - l, "%s links end after %d hours. ", f->label, free_hours(g_app.config.litterbox_hours));
+        else if (f) snprintf(what + l, sizeof what - l, "%s links can't be deleted. ", f->label);
+    }
+    snprintf(note, sizeof note,
+             "Your clip goes to a public host, the first of these that takes it: %s. Anyone with the link can watch "
+             "it. %sFor private links you can delete, set up your own Cloudflare in Options.",
+             where, what);
+    const char *name = g_links_ask == ASK_ITEM ? (g_links_ask_item.display_name[0] ? g_links_ask_item.display_name
+                                                                                   : g_links_ask_item.name)
+                                               : "";
+    f32 w = kit_px(440);
+    ImGui::PushFont(g_font_title);
+    ImGui::TextUnformatted("Free links are public");
+    ImGui::PopFont();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    if (name[0]) {
+        ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
+        text_clipped(ImGui::GetWindowDrawList(), a, w, col32(COL_DIM), name);
+    }
+    ImGui::PushTextWrapPos(a.x - ImGui::GetWindowPos().x + w);
+    ImGui::TextUnformatted(note);
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(w, kit_px(12)));
+    i32 r = lib_dialog_pair(ICON_LINK "  Share it", KIT_PRIMARY, a.x + w);
+    if (r) {
+        LinksAsk ask = g_links_ask;
+        g_links_ask = ASK_NONE;
+        ImGui::CloseCurrentPopup();
+        if (r > 0) {
+            g_app.config.free_links_seen = true;
+            config_save(g_app.config, g_app.paths);
+            log_line("library: free links agreed to");
+            if (ask == ASK_ITEM) lib_link_now(g_links_ask_item);
+            else if (ask == ASK_EDITOR) ed_start_link();
+        }
+    }
+    lib_dialog_end();
 }
 
 // Renames lib.target to what's in lib.rename_buf, with its edit. True when done (renamed, or the name didn't
