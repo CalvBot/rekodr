@@ -95,6 +95,7 @@ static void run_command(const char *text)
         else if (!strcmp(arg, "delete")) g_show_dialog = 1; // the first card's Delete dialog
         else if (!strcmp(arg, "sound")) g_lib_sound_show = true; // the player's sound menu
         else if (!strcmp(arg, "comment") && lib.shown_count > 0) lib_comment_open(lib.items[lib.shown[0]]); // its Comment
+        else if (!strcmp(arg, "tags") && lib.shown_count > 0) lib_tags_open(lib.items[lib.shown[0]]); // its Tags
         else if (starts_with(arg, "select")) { // select <n>: the first n cards selected, with the selection bar
             ui_show(SCREEN_LIBRARY);
             lib_sel_clear();
@@ -138,7 +139,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, session-toast, saved-toast, free-links, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, free-links, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {

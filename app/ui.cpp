@@ -109,6 +109,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_MONITOR   "\xEE\x9F\xB4" // E7F4 TV monitor
 #define ICON_CHAT      "\xEE\xA2\xBD" // E8BD
 #define ICON_TAG       "\xEE\xA3\xAC" // E8EC
+#define ICON_FONT      "\xEE\xA3\x92" // E8D2
 #define ICON_STAR_FILL "\xEE\x9C\xB5" // E735
 #define ICON_COMMENT   "\xEE\xA4\x8A" // E90A
 #define ICON_START     "\xEE\xA2\x92" // E892

@@ -343,6 +343,85 @@ static bool lib_comments_save()
     return fclose(f) == 0;
 }
 
+// Tags on clips and sessions ("ace", "funny"), found by search: <config_dir>\tags.txt holds a line
+// "<key in hex> | <file name> | ace,funny" for each, keyed as comments.txt is. A tag is lower case and holds no comma
+// or '|'. Loaded on the UI thread with the comments, and only read there.
+enum { LIB_TAGS_MAX = 256, LIB_TAG_MAX = 32 };
+struct ClipTags {
+    u64  key;
+    char name[256];
+    char tags[LIB_TAGS_MAX]; // comma-separated
+};
+static ClipTags *g_clip_tags;
+static i32       g_clip_tag_count, g_clip_tag_cap;
+
+// A file's tags, comma-separated, or "".
+static const char *lib_tags(u64 key)
+{
+    for (i32 i = 0; i < g_clip_tag_count; i++)
+        if (g_clip_tags[i].key == key) return g_clip_tags[i].tags;
+    return "";
+}
+
+// Is tag one of tags (a comma-separated list)? An empty tag matches any file with a tag.
+static bool lib_tag_has(const char *tags, const char *tag)
+{
+    if (!*tag) return *tags != 0;
+    size_t n = strlen(tag);
+    for (const char *s = tags; *s;) {
+        const char *e = strchr(s, ',');
+        size_t len = e ? (size_t)(e - s) : strlen(s);
+        if (len == n && !_strnicmp(s, tag, n)) return true;
+        if (!e) break;
+        s = e + 1;
+    }
+    return false;
+}
+
+// Sets (or, with no tags, takes off) a file's tags in memory.
+static void lib_tags_put(u64 key, const char *name, const char *tags)
+{
+    i32 i = 0;
+    while (i < g_clip_tag_count && g_clip_tags[i].key != key) i++;
+    if (!*tags) {
+        if (i < g_clip_tag_count) g_clip_tags[i] = g_clip_tags[--g_clip_tag_count];
+        return;
+    }
+    if (i == g_clip_tag_count) {
+        if (g_clip_tag_count == g_clip_tag_cap) {
+            g_clip_tag_cap = g_clip_tag_cap ? 2 * g_clip_tag_cap : 64;
+            g_clip_tags = (ClipTags *)realloc(g_clip_tags, g_clip_tag_cap * sizeof *g_clip_tags);
+        }
+        g_clip_tags[g_clip_tag_count++] = {key};
+    }
+    str_set(g_clip_tags[i].name, name);
+    str_set(g_clip_tags[i].tags, tags);
+}
+
+static void lib_tags_load()
+{
+    g_clip_tag_count = 0;
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"tags.txt").s, L"rb");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long key = 0;
+        char name[256] = "", tags[LIB_TAGS_MAX] = "";
+        if (sscanf(line, "%llx | %255[^|] | %255[^\r\n]", &key, name, tags) != 3 || !key) continue;
+        lib_tags_put(key, trim(name), trim(tags));
+    }
+    fclose(f);
+}
+
+static bool lib_tags_save()
+{
+    FILE *f = _wfopen(path_join(g_app.paths.config_dir, L"tags.txt").s, L"wb");
+    if (!f) return false;
+    for (i32 i = 0; i < g_clip_tag_count; i++)
+        fprintf(f, "%llx | %s | %s\r\n", (unsigned long long)g_clip_tags[i].key, g_clip_tags[i].name, g_clip_tags[i].tags);
+    return fclose(f) == 0;
+}
+
 // A file's game: the one given by hand, else its own tag, else what its name says.
 static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
 {
@@ -789,6 +868,13 @@ static bool lib_matches(const char *hay, const char *needle)
     return false;
 }
 
+// Does a file's tags answer the search? "#ace" asks for the tag ace itself ("#" for any tag); other text is looked
+// for in them as it is in names.
+static bool lib_tags_match(const char *tags, const char *search)
+{
+    return search[0] == '#' ? lib_tag_has(tags, search + 1) : lib_matches(tags, search);
+}
+
 enum LibRange : i32 { RANGE_ALL, RANGE_TODAY, RANGE_WEEK, RANGE_MONTH, RANGE_CUSTOM };
 enum LibSort : i32 { SORT_NEWEST, SORT_OLDEST, SORT_LONGEST, SORT_BIGGEST, SORT_GAME, SORT_COUNT };
 
@@ -930,6 +1016,7 @@ static void lib_folders_load()
     log_line("library: %d folders, %d cards in them", lib.folder_count, lib.filed_count);
     lib_favourites_load();
     lib_comments_load();
+    lib_tags_load();
 }
 
 static void lib_folders_save()
@@ -1163,7 +1250,8 @@ static void lib_refilter()
         }
         // The list on the left picks by folder or by game, whichever it shows.
         if (by_folder ? in_folder >= 0 && !(fm >> in_folder & 1) : lib.game[0] && strcmp(lib.game, g)) continue;
-        if (!lib_name_matches(it.name, lib.search) && !lib_matches(g, lib.search) && !lib_matches(lib_comment(it.key), lib.search))
+        if (!lib_name_matches(it.name, lib.search) && !lib_matches(g, lib.search) && !lib_matches(lib_comment(it.key), lib.search) &&
+            !lib_tags_match(lib_tags(it.key), lib.search))
             continue;
         lib.shown[lib.shown_count++] = i;
     }
@@ -2252,6 +2340,157 @@ static void lib_comment_dialog()
     lib_dialog_end();
 }
 
+// The Tags dialog: the card's name, a chip for every tag in the library (lit when the card has it, a click puts it on
+// or takes it off), a box that adds a new one on Enter, and Cancel / Save. The chips sit in a box of a set height so
+// nothing below them moves as tags are added. lib_tags_open asks for it; lib_tags_dialog draws it.
+static LibItem g_tags_item;
+static char    g_tags_buf[LIB_TAGS_MAX], g_tags_new[LIB_TAG_MAX];
+static bool    g_tags_ask, g_tags_focus;
+
+static void lib_tags_open(const LibItem &it)
+{
+    g_tags_item = it;
+    str_set(g_tags_buf, lib_tags(it.key));
+    g_tags_new[0] = 0;
+    g_tags_ask = g_tags_focus = true;
+}
+
+// A tag as typed made into one: lower case, no '#' in front, no comma or '|', no spaces at either end.
+static void lib_tag_clean(const char *in, char *out, i32 cap)
+{
+    i32 n = 0;
+    while (*in == ' ' || *in == '#') in++;
+    for (; *in && n < cap - 1; in++)
+        if (*in != ',' && *in != '|') out[n++] = (char)tolower((unsigned char)*in);
+    while (n && out[n - 1] == ' ') n--;
+    out[n] = 0;
+}
+
+// Puts tag on or takes it off a comma-separated list. False when the list has no room for it.
+static bool lib_tag_set(char *tags, i32 cap, const char *tag, bool on)
+{
+    if (!*tag || lib_tag_has(tags, tag) == on) return true;
+    if (on) {
+        i32 n = (i32)strlen(tags), k = (i32)strlen(tag);
+        if (n + (n ? 1 : 0) + k >= cap) return false;
+        snprintf(tags + n, cap - n, "%s%s", n ? "," : "", tag);
+        return true;
+    }
+    char out[LIB_TAGS_MAX] = "";
+    i32 o = 0;
+    size_t len = strlen(tag);
+    for (const char *s = tags; *s;) {
+        const char *e = strchr(s, ',');
+        size_t l = e ? (size_t)(e - s) : strlen(s);
+        if (!(l == len && !_strnicmp(s, tag, len)) && o + (i32)l + 1 < (i32)sizeof out)
+            o += snprintf(out + o, sizeof out - o, "%s%.*s", o ? "," : "", (int)l, s);
+        if (!e) break;
+        s = e + 1;
+    }
+    snprintf(tags, cap, "%s", out);
+    return true;
+}
+
+// Saves a file's tags (empty takes them off).
+static bool library_set_tags(u64 key, const char *tags, const char *name)
+{
+    if (!strcmp(tags, lib_tags(key))) return true;
+    lib_tags_put(key, name, tags);
+    log_line("library: tags on %s %s", name, *tags ? "set" : "removed");
+    lib_refilter();
+    if (lib_tags_save()) return true;
+    lib_message(true, "Couldn't save the tags on %s", name);
+    return false;
+}
+
+static int lib_tag_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+
+// Every tag in the library and in list, each once, in A-Z order. The count.
+static i32 lib_tag_names(const char *list, char (*out)[LIB_TAG_MAX], i32 max)
+{
+    i32 n = 0;
+    for (i32 i = -1; i < g_clip_tag_count; i++) {
+        const char *tags = i < 0 ? list : g_clip_tags[i].tags;
+        for (const char *s = tags; *s && n < max;) {
+            const char *e = strchr(s, ',');
+            i32 l = e ? (i32)(e - s) : (i32)strlen(s);
+            char t[LIB_TAG_MAX];
+            snprintf(t, sizeof t, "%.*s", l, s);
+            i32 k = 0;
+            while (k < n && strcmp(out[k], t)) k++;
+            if (k == n && t[0]) snprintf(out[n++], LIB_TAG_MAX, "%s", t);
+            if (!e) break;
+            s = e + 1;
+        }
+    }
+    qsort(out, n, sizeof out[0], lib_tag_cmp);
+    return n;
+}
+
+static void lib_tags_dialog()
+{
+    if (g_tags_ask) ImGui::OpenPopup("Tags");
+    g_tags_ask = false;
+    if (!lib_dialog_begin("Tags")) return;
+    f32 w = kit_px(460);
+    ImGui::PushFont(g_font_title);
+    ImGui::TextUnformatted("Tags");
+    ImGui::PopFont();
+    char shown[300];
+    const LibItem &it = g_tags_item;
+    if (it.display_name[0]) str_set(shown, it.display_name);
+    else lib_shown_name(it.name, shown, sizeof shown);
+    ImVec2 n = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
+    text_clipped(ImGui::GetWindowDrawList(), n, w, col32(COL_DIM), shown);
+    ImGui::Dummy(ImVec2(1, kit_px(4)));
+
+    // The chips, wrapped, in a box three rows high that scrolls past that
+    static char names[128][LIB_TAG_MAX];
+    i32 count = lib_tag_names(g_tags_buf, names, COUNT(names));
+    f32 fh = ImGui::GetFrameHeight(), gap = kit_px(6);
+    ImGui::BeginChild("##tag_chips", ImVec2(w, 3 * fh + 2 * gap), ImGuiChildFlags_None);
+    if (!count) ImGui::TextColored(rgb(COL_FAINT), "No tags yet. Type one below");
+    f32 x0 = ImGui::GetCursorScreenPos().x, right = x0 + w - ImGui::GetStyle().ScrollbarSize;
+    for (i32 i = 0; i < count; i++) {
+        char label[LIB_TAG_MAX + 8];
+        snprintf(label, sizeof label, "%s##tag%d", names[i], i);
+        f32 cw = ImGui::CalcTextSize(names[i]).x + 2 * kit_px(14);
+        if (i) {
+            ImGui::SameLine(0, gap);
+            if (ImGui::GetCursorScreenPos().x + cw > right) ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y + fh + gap));
+        }
+        bool on = lib_tag_has(g_tags_buf, names[i]);
+        if (kit_chip(label, on)) lib_tag_set(g_tags_buf, sizeof g_tags_buf, names[i], !on);
+    }
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(1, kit_px(2)));
+
+    // A new tag: Enter puts it on and keeps the box for the next
+    if (g_tags_focus) {
+        ImGui::SetKeyboardFocusHere();
+        g_tags_focus = false;
+    }
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::InputText("##new_tag", g_tags_new, sizeof g_tags_new, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        char t[LIB_TAG_MAX];
+        lib_tag_clean(g_tags_new, t, sizeof t);
+        if (lib_tag_set(g_tags_buf, sizeof g_tags_buf, t, true)) g_tags_new[0] = 0;
+        ImGui::SetKeyboardFocusHere(-1);
+    }
+    if (!g_tags_new[0] && !ImGui::IsItemActive()) {
+        ImVec2 pad = ImGui::GetStyle().FramePadding;
+        ImGui::GetWindowDrawList()->AddText(ImVec2(a.x + pad.x, a.y + pad.y), col32(COL_FAINT), "Add a tag");
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+    i32 b = lib_dialog_pair(ICON_SAVE "  Save", KIT_PRIMARY, n.x + w);
+    if (b == 1) library_set_tags(it.key, g_tags_buf, it.name);
+    if (b) ImGui::CloseCurrentPopup();
+    else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+    lib_dialog_end();
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Links (r2.cpp): Copy link uploads a file to the player's own bucket, or without one to a free public host, and puts
 // its address on the clipboard. The uploads under way, then "Link copied" or why one failed, show in a note at the
@@ -2762,7 +3001,7 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, display_name = false, del = false, folders = false, game = false, comment = false;
+    bool rename = false, display_name = false, del = false, folders = false, game = false, comment = false, tags = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -2780,7 +3019,8 @@ static void card_menu()
         if (lib_menu_item(ICON_ADD, "Add to a folder")) folders = true;
         if (lib_menu_item(ICON_GAME, "Change game")) game = true;
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
-        if (lib_menu_item(ICON_TAG, it.display_name[0] ? "Change the display name" : "Add a display name")) display_name = true;
+        if (lib_menu_item(ICON_FONT, it.display_name[0] ? "Change the display name" : "Add a display name")) display_name = true;
+        if (lib_menu_item(ICON_TAG, "Tags...")) tags = true;
         if (lib_menu_item(ICON_COMMENT, "Comment...")) comment = true;
         if (lib_menu_item(ICON_DELETE, "Delete...", true)) del = true;
         ImGui::EndPopup();
@@ -2790,6 +3030,8 @@ static void card_menu()
     if (display_name) lib_rename_start(lib.target, true);
     if (comment) lib_comment_open(lib.target);
     lib_comment_dialog();
+    if (tags) lib_tags_open(lib.target);
+    lib_tags_dialog();
     if (del) ImGui::OpenPopup("Delete");
     if (game) ImGui::OpenPopup("card_game");
     if (lib_game_picker("card_game", lib.target)) lib_message(false, "%s is filed under %s", lib.target.name, lib.target.info.game);
@@ -3818,6 +4060,32 @@ static void lib_player_view()
         }
         one[k] = 0;
         f32 cx = tx + lw + kit_px(18), room = tx + tw - cx;
+        // Its tags ("#ace #funny"), when it has any: a click opens Tags
+        const char *tg = lib_tags(lib.playing.key);
+        if (tg[0] && room > kit_px(40)) {
+            char hash[LIB_TAGS_MAX * 2];
+            i32 k2 = 0;
+            hash[k2++] = '#';
+            for (const char *s = tg; *s && k2 < (i32)sizeof hash - 3; s++) {
+                if (*s == ',') { hash[k2++] = ' '; hash[k2++] = '#'; }
+                else hash[k2++] = *s;
+            }
+            hash[k2] = 0;
+            ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_TAG);
+            f32 gw = ImMin(gs.x + kit_px(6) + ImGui::CalcTextSize(hash).x, room);
+            ImVec2 save = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(cx, my));
+            bool hit = ImGui::InvisibleButton("##player_tags", ImVec2(ImMax(gw, 1.f), fs));
+            bool hot = ImGui::IsItemHovered();
+            if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            dl->AddText(g_font_icon, fs, ImVec2(cx, floorf(my + (fs - gs.y) / 2 + kit_px(1))), col32(hot ? COL_TEXT : COL_DIM), ICON_TAG);
+            f32 tx2 = cx + gs.x + kit_px(6);
+            text_clipped(dl, ImVec2(tx2, my), cx + room - tx2, col32(hot ? COL_ACCENT : COL_TEXT), hash);
+            if (hit) lib_tags_open(lib.playing);
+            ImGui::SetCursorScreenPos(save);
+            cx += gw + kit_px(18);
+            room = tx + tw - cx;
+        }
         if (room > kit_px(40)) {
             const char *shown_c = one[0] ? one : "Add a comment";
             ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_COMMENT);
@@ -3838,6 +4106,7 @@ static void lib_player_view()
     }
     ImGui::PopFont();
     lib_comment_dialog();
+    lib_tags_dialog();
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
     // Copy opens a menu: the file on the clipboard, a link to it, and for one bigger than the share size a share copy.
     const Editor &ed = g_app.editor;

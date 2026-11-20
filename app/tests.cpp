@@ -89,6 +89,25 @@ static void test_select_range()
     T(!lib_range_bounds(keys, 5, 20, 99, &lo, &hi));                      // the card isn't shown
 }
 
+// Tags: how a typed one is made into a tag, putting tags on and off a list, and searching for them
+static void test_tags()
+{
+    char t[LIB_TAG_MAX];
+    lib_tag_clean("  #Ace,|Shot ", t, sizeof t);
+    T(!strcmp(t, "aceshot"));
+    char tags[LIB_TAGS_MAX] = "";
+    T(lib_tag_set(tags, sizeof tags, "ace", true) && !strcmp(tags, "ace"));
+    T(lib_tag_set(tags, sizeof tags, "funny", true) && !strcmp(tags, "ace,funny"));
+    T(lib_tag_set(tags, sizeof tags, "ace", true) && !strcmp(tags, "ace,funny")); // already on
+    T(lib_tag_has(tags, "funny") && !lib_tag_has(tags, "fun") && lib_tag_has(tags, ""));
+    T(!lib_tag_has("", ""));
+    T(lib_tags_match(tags, "#ace") && !lib_tags_match(tags, "#fun") && lib_tags_match(tags, "fun"));
+    T(lib_tag_set(tags, sizeof tags, "ace", false) && !strcmp(tags, "funny"));
+    T(lib_tag_set(tags, sizeof tags, "funny", false) && !strcmp(tags, ""));
+    char small_list[8] = "abc";
+    T(!lib_tag_set(small_list, sizeof small_list, "defgh", true) && !strcmp(small_list, "abc")); // no room
+}
+
 // Clicks on cards: which select, which play, and where the anchor goes. Keys 1 to 10 in the grid's order.
 static void test_card_clicks()
 {
@@ -1419,6 +1438,7 @@ int main()
     InitializeSRWLock(&g_log_lock);
     test_lengths();
     test_select_range();
+    test_tags();
     test_card_clicks();
     test_sound_plan();
     test_unique_keys();
