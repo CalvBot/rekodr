@@ -63,9 +63,10 @@ Keep a whole session from start to finish.
     `%TEMP%\clipback\share\` and onto the clipboard, ready to paste. Share copies never go in the Clips folder. A
     *Recent shares* list keeps them for re-copying until they're cleared (setting, default 7 days). If a share copy
     is gone, it is encoded again from the original.
-  - **Link:** Share's fourth choice, once sharing is set up in Options. The edit is made into a copy Discord plays
-    (H.264, the Mix only, stream-copied when the file already is that and only trimmed), uploaded to the player's
-    own R2 bucket, and its link goes on the clipboard. It embeds at any size.
+  - **Link:** Share's fourth choice. The edit is made into a copy Discord plays (H.264, the Mix only, stream-copied
+    when the file already is that and only trimmed), uploaded, and its link goes on the clipboard. It goes to the
+    player's own R2 bucket when sharing is set up in Options, at any size; without it, to the free public hosts,
+    which take up to 1 GB, and the card says so. A clip too big for them fails with the reason.
 - **Favourites:** games and folders can be favourites, marked with a star and kept at the top of the list on the
   left in the order they were added (`favourites.txt` in the config folder).
 - **Display names:** a card can carry a name typed by hand, shown in place of its file name; the file keeps its

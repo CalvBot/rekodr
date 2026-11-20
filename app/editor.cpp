@@ -2203,13 +2203,18 @@ static void ed_share_tab(f32 w)
 
     // Share: the title row says what it comes out as, with the button beside it; the size chips under it
     {
-        bool link = ed.share_size == 3, ready = !link || r2_ready();
+        // A link goes to the player's bucket, or without one to the free public hosts (link_hosts)
+        bool link = ed.share_size == 3, own = r2_ready();
+        i64 free_max = link && !own ? free_max_bytes(g_app.config.link_hosts) : 0;
+        bool ready = !link || own || free_max > 0;
         f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
         SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
         if (link) plan.fits = true; // a link has no size to fit
         char est[96];
         if (link) {
-            if (ready) snprintf(est, sizeof est, "A link that plays in Discord, %s", len_s);
+            if (own) snprintf(est, sizeof est, "A link that plays in Discord, %s", len_s);
+            else if (free_max >= 1000000000) snprintf(est, sizeof est, "Free link: public, up to %g GB", free_max / 1e9);
+            else if (free_max > 0) snprintf(est, sizeof est, "Free link: public, up to %d MB", (i32)(free_max / 1000000));
             else str_set(est, "Set up sharing in Options");
         } else if (plan.fits) {
             char size[24];
