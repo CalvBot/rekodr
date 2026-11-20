@@ -127,6 +127,19 @@ static void test_card_clicks()
     lib.item_count = lib.shown_count = 0;
 }
 
+// Copies of a file (same size and time) each get a key of their own; the first keeps the plain one.
+static void test_unique_keys()
+{
+    static u64 seen[LIB_MAX_ITEMS * 2];
+    memset(seen, 0, sizeof seen);
+    u64 a = lib_key_unique(seen, 42, "Clip");
+    u64 b = lib_key_unique(seen, 42, "Clip - Copy");
+    u64 c = lib_key_unique(seen, 42, "Clip"); // the same name again, in another folder
+    T(a == 42 && b != 42 && c != 42 && c != b);
+    T(lib_key_unique(seen, 7, "Other") == 7);
+    T(lib_key_unique(seen, 42 + LIB_MAX_ITEMS * 2, "Same slot") == 42 + LIB_MAX_ITEMS * 2);
+}
+
 // The player's sound menu: all of a file's tracks ticked plays its Mix, any fewer plays the ticked ones.
 static void test_sound_plan()
 {
@@ -1169,6 +1182,7 @@ int main()
     test_select_range();
     test_card_clicks();
     test_sound_plan();
+    test_unique_keys();
     test_game_pick();
     test_game_from_name();
     test_save_names();

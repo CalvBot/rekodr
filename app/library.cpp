@@ -406,10 +406,30 @@ static DWORD WINAPI lib_prober(void *param)
 
 static i64 lib_name_us(const char *tmpl, const char *name, i64 mtime_us);
 
+// A file's key is its size and time, so a renamed file keeps its comment, folders and pictures. A copy has the same
+// size and time, though, and would share all of that and a tick box with it: so each file whose key is already in
+// `seen` (a table of LIB_MAX_ITEMS * 2 keys, 0 = empty) gets its name mixed in until it isn't. Returns the key used.
+static u64 lib_key_unique(u64 *seen, u64 key, const char *name)
+{
+    enum { SLOTS = LIB_MAX_ITEMS * 2 };
+    for (;;) {
+        if (!key) key = 1;
+        u32 i = (u32)(key % SLOTS);
+        while (seen[i] && seen[i] != key) i = (i + 1) % SLOTS;
+        if (!seen[i]) {
+            seen[i] = key;
+            return key;
+        }
+        key = fnv64(name, strlen(name), key);
+    }
+}
+
 static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg, const char *tmpl)
 {
     LibItem *items = g_scan_items;
     i32 n = 0, by_hand = 0;
+    static u64 seen[LIB_MAX_ITEMS * 2];
+    memset(seen, 0, sizeof seen);
     lib_overrides_load();
     lib_names_load();
     WIN32_FIND_DATAW fd;
@@ -441,7 +461,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     it->mtime_us = filetime_us(f.ftLastWriteTime);
                     it->when_us = lib_name_us(tmpl, it->name, it->mtime_us);
                     u64 k = fnv64(&it->size, sizeof it->size);
-                    it->key = fnv64(&it->mtime_us, sizeof it->mtime_us, k);
+                    it->key = lib_key_unique(seen, fnv64(&it->mtime_us, sizeof it->mtime_us, k), it->name);
                     char tagged[64];
                     it->probed = lib_cache_read(cache, it->key, &it->info, tagged, sizeof tagged);
                     by_hand += lib_set_game(it, it->probed ? tagged : "", tmpl);
