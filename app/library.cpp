@@ -2566,8 +2566,9 @@ static bool lib_range_bounds(const u64 *keys, i32 n, u64 anchor, u64 to, i32 *lo
     return true;
 }
 
-// Shift + click: with nothing selected, this card alone, and it becomes the anchor. Otherwise every card from the
-// anchor to this one, in the grid's order, is added; the anchor stays, so the next Shift + click ranges from it too.
+// Shift + click: every card from the anchor to this one, in the grid's order, takes the opposite of this card's state
+// (ticked when it's unticked, unticked when it's ticked), and this card becomes the anchor. With nothing selected,
+// that's this card alone.
 static void lib_sel_range(u64 to)
 {
     Library &lib = g_app.library;
@@ -2576,12 +2577,13 @@ static void lib_sel_range(u64 to)
     for (i32 s = 0; s < lib.shown_count; s++) keys[s] = lib.items[lib.shown[s]].key;
     i32 lo, hi;
     if (!lib_range_bounds(keys, lib.shown_count, lib.select_anchor, to, &lo, &hi)) return;
-    if (lo == hi) lib.select_anchor = to; // the anchor wasn't shown
-    for (i32 s = lo; s <= hi; s++) lib_sel_set(keys[s], true);
+    bool on = !lib_selected(to);
+    for (i32 s = lo; s <= hi; s++) lib_sel_set(keys[s], on);
+    lib.select_anchor = to;
 }
 
-// A left click on card `key` (on its tick box when `on_box`). Shift + click, on the box or not, selects the range
-// from the anchor (lib_sel_range). A click on the box, Ctrl + click, or any click while cards are selected ticks or
+// A left click on card `key` (on its tick box when `on_box`). Shift + click, on the box or not, ticks or unticks the
+// range from the anchor (lib_sel_range). A click on the box, Ctrl + click, or any click while cards are selected ticks or
 // unticks the card, and it becomes the anchor. False when the click plays the card instead.
 static bool lib_card_click(u64 key, bool shift, bool ctrl, bool on_box)
 {
@@ -2855,7 +2857,7 @@ static f32 lib_meta_h() { return kit_px(8) + g_font_bold->FontSize + kit_px(2) +
 // One card: the day above it (on the first card of a day), the picture, the name and one dim line.
 // Under the mouse the picture scrubs through the file (a click plays from there); a right-click opens its menu.
 // A tick box in the picture's top left corner, under the mouse or while any card is selected, selects it; while
-// any is, a click on a card ticks it too (Ctrl + click always, Shift + click a range).
+// any is, a click on a card ticks it too (Ctrl + click always, Shift + click a range on or off).
 static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h, bool show_day)
 {
     Library &lib = g_app.library;
