@@ -115,7 +115,6 @@ static f32 g_dpi_scale = 1;
 #define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
 #define ICON_FWD30     "\xEE\xB4\xBD" // ED3D skip forward 30
 #define ICON_SOLO      "\xEE\x9F\xB6" // E7F6 headphone
-#define ICON_CUT       "\xEE\xA3\x86" // E8C6 scissors
 
 // The kinds of sound track, in the order their lanes go, and how each is shown wherever tracks are: the Timeline,
 // the editor, and the app categories in Options.
@@ -1080,12 +1079,7 @@ static void help_window()
         };
         static const HelpRow editor[] = {
             {"[Space]", "Play / pause"},
-            {"[I] / [O]", "Simple: trim start / end at the playhead"},
-            {"[S] or [Ctrl]+[K]", "Advanced: split the piece at the playhead"},
-            {"Click a piece", "Select it; with [Shift] or [Ctrl], add more"},
-            {"Drag a piece's edge", "Trim it; the pieces after it close up"},
-            {"[Shift]+drag a piece's edge", "Catch the playhead or another piece's edge"},
-            {"Drag a piece", "Move it earlier or later"},
+            {"[I] / [O]", "Trim start / end at the playhead"},
             {"Click or drag on the ruler or picture strip", "Move the playhead"},
             {"[Shift]+drag there", "Set a new in and out"},
             {"Drag the in and out's band or ends", "Move them"},
@@ -1100,7 +1094,7 @@ static void help_window()
             {"Drag a flat stretch", "Its level, both keys at once"},
             {"Right-click a key", "Ease, copy, delete"},
             {"[1] to [5]", "Ease: linear, smooth, in, out, hold"},
-            {"[Delete]", "Delete the selected pieces or keys"},
+            {"[Delete]", "Delete the selected keys"},
             {"[Ctrl]+[A]", "Select every key"},
             {"[Ctrl]+[C] / [Ctrl]+[V]", "Copy keys / paste at the playhead"},
             {"[Ctrl]+[Z] / [Ctrl]+[Y]", "Undo / redo"},
@@ -1112,7 +1106,7 @@ static void help_window()
             {"[Shift]+drag an end of it", "Zoom around the playhead"},
             {"Wheel over the track names", "Scroll the sound tracks"},
             {"[Shift]+wheel", "Taller or shorter lanes"},
-            {"[Left] / [Right]", "Previous / next key, trim end or piece"},
+            {"[Left] / [Right]", "Previous / next key or trim end"},
             {"[,] / [.]", "Step one frame"},
             {"[Shift]+[Left] / [Right]", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},

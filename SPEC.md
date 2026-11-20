@@ -52,11 +52,9 @@ Keep a whole session from start to finish.
 - **Edits never change the original.** An edit is a small record: the pieces of the video kept, in the order they
   play, plus zoom keyframes and per-track volume and mute. It's saved automatically in the year's `Data` folder and
   reopens with the clip.
-- **Simple and Advanced:** a switch in the editor, remembered. Simple has one in and one out. Advanced cuts the clip
-  into pieces: split at the playhead, select pieces, ripple-delete them, trim their edges and drag them into a new
-  order. The timeline, playhead and playback show the pieces joined, as they will be written. Keys stay on the
-  moment of the video they were set on and go with a deleted piece. A clip with cuts always opens in Advanced;
-  Simple keeps the cuts and hides the tools.
+- **Simple and Advanced:** the editor is Simple: one in and one out, set with the handles, I and O, and cleared with
+  Clear. The Advanced side of the switch is greyed out. An edit with more than one piece is shown and played with
+  the pieces joined, and keys stay on the moment of the video they were set on.
 - **Two ways out of the editor:**
   - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
     where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix
@@ -213,7 +211,7 @@ One window with a header (status, pause, Help, Options):
 - **Library:** Clips and Sessions, with date, game and order dropdowns, search, a scrolling grid and a player.
 - **Sessions *Not saved* list:** sessions still in the buffer, with Save and how long until each is gone.
 - **Timeline:** the buffer, a range selection, Save and Edit.
-- **Editor:** Simple trim or Advanced pieces, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
+- **Editor:** trim, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
 - **Options:**
   - apps and their categories (new apps first; right-click opens the file location)
   - hotkeys

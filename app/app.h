@@ -145,7 +145,6 @@ struct Config {
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default
     f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default
     i32 editor_lane;    // Editor: a timeline lane's height, in pixels at 100% (Shift + wheel); 0 = the default
-    bool editor_advanced; // Editor: Advanced (the clip cut into pieces) rather than Simple (an in and an out)
 
     Hotkey hotkeys[16];
     i32    hotkey_count;
@@ -599,13 +598,7 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     EditRecord settled;         // the record as of the last settled change (what undo goes back from)
     EditRecord undo[20], redo[20];
     i32        undo_count, redo_count;
-    // Pieces (Advanced): the timeline shows them joined, in the order they play.
-    bool       advanced;        // Advanced mode: split, delete, trim and reorder pieces
-    u64        piece_sel;       // selected pieces, a bit per piece
-    i32        drag_piece;      // the piece whose edge or body is dragged
-    bool       drag_end;        // the edge dragged is its end
-    i32        move_to;         // where a dragged piece goes in the order, -1 none yet
-    i32        play_piece;      // the piece the playhead is in, -1 not known
+    i32        play_piece;      // the piece the playhead is in (more than one piece plays them joined), -1 not known
 };
 // timeline.cpp: the buffer and a range to save. Times are wall-clock us; 0 = not set.
 // A stretch of the buffer built for the Timeline's Play. Its file is the video segments end to end from file_start, so
