@@ -309,6 +309,52 @@ static f64 ed_frame()
     return 1 / (fps > 1 ? fps : 60);
 }
 
+// The timeline's axis. With more than one piece, or in Advanced, it's the pieces joined in the order they play
+// ("output time", u); otherwise it's the file's own time. Keys and pieces are kept in the file's time (t).
+static bool ed_joined()
+{
+    Editor &ed = g_app.editor;
+    return ed.advanced || ed.edit.piece_count > 1;
+}
+
+static f64 ed_axis_len() { return ed_joined() ? pieces_len(g_app.editor.edit, ed_duration()) : ed_duration(); }
+
+// A moment in the file on the axis; -1 when it's cut out.
+static f64 ed_u(f64 t)
+{
+    if (!ed_joined()) return t;
+    f64 u;
+    return piece_out(g_app.editor.edit, ed_duration(), t, &u) ? u : -1;
+}
+
+// A place on the axis as a moment in the file.
+static f64 ed_s(f64 u) { return ed_joined() ? piece_src(g_app.editor.edit, ed_duration(), u) : u; }
+
+// The playhead on the axis, in the piece it's playing: a piece's end that's also another one's start stays where
+// it was reached.
+static f64 ed_play_u()
+{
+    Editor &ed = g_app.editor;
+    f64 pos = ed.player.pos;
+    if (!ed_joined()) return pos;
+    EditPiece pc[EDIT_MAX_PIECES];
+    i32 np = pieces_of(ed.edit, ed_duration(), pc), i = ed.play_piece;
+    if (i >= 0 && i < np && pos >= pc[i].from - 0.001 && pos <= pc[i].to + 0.001) {
+        f64 d = pos - pc[i].from, len = pc[i].to - pc[i].from;
+        return piece_start(ed.edit, ed_duration(), i) + (d < 0 ? 0 : d > len ? len : d);
+    }
+    f64 u = ed_u(pos);
+    return u >= 0 ? u : 0;
+}
+
+// Moves the playhead to a place on the axis.
+static void ed_seek_u(f64 u)
+{
+    Editor &ed = g_app.editor;
+    if (ed_joined()) player_seek(&ed.player, piece_src(ed.edit, ed_duration(), u, &ed.play_piece));
+    else player_seek(&ed.player, u);
+}
+
 // The key on lane l at t (within half a frame), or -1.
 static i32 ln_key_at(const EditRecord &e, i32 l, f64 t)
 {
@@ -445,6 +491,9 @@ static void editor_open(const LibItem &item)
     ed.solo = -1;
     ed.view_from = ed.view_span = 0;
     memset(ed.sel, 0, sizeof ed.sel);
+    ed.advanced = g_app.config.editor_advanced || ed.edit.piece_count > 1; // a clip with cuts opens with its tools
+    ed.piece_sel = 0;
+    ed.drag_piece = ed.move_to = ed.play_piece = -1;
     ed.settled = ed.edit;
     ed.undo_count = ed.redo_count = 0;
     ed.aiming = false;
@@ -621,7 +670,11 @@ static bool ed_lane_shown(i32 l)
     return false;
 }
 
-static void ed_sel_clear() { memset(g_app.editor.sel, 0, sizeof g_app.editor.sel); }
+static void ed_sel_clear()
+{
+    memset(g_app.editor.sel, 0, sizeof g_app.editor.sel);
+    g_app.editor.piece_sel = 0;
+}
 
 static i32 ed_sel_count()
 {
@@ -754,15 +807,101 @@ static void ed_undo(bool redo)
     ed.settled = ed.edit;
     ed.dirty = true;
     ed.heard_set = false;
+    ed.play_piece = -1;
     ed_sel_clear();
 }
 
-// ---- The view: which seconds the lanes show ----
+// ---- Pieces: split, delete, and playing them one after another ----
+
+// Splits the piece under the playhead there.
+static void ed_split()
+{
+    Editor &ed = g_app.editor;
+    f64 u = ed_play_u();
+    if (!pieces_split(&ed.edit, ed_duration(), u)) return;
+    ed.piece_sel = 0;
+    ed.dirty = true;
+    piece_src(ed.edit, ed_duration(), u, &ed.play_piece); // the playhead is at the second one's start
+}
+
+// Takes the selected pieces out and the rest close up. A playhead on what's gone stays at its place on the axis.
+static void ed_delete_pieces()
+{
+    Editor &ed = g_app.editor;
+    f64 dur = ed_duration(), u = ed_play_u(), nu;
+    if (!pieces_delete(&ed.edit, dur, ed.piece_sel)) return;
+    ed_sel_clear(); // keys may have gone with the pieces
+    ed.dirty = true;
+    ed.heard_set = false;
+    ed.play_piece = -1;
+    if (!piece_out(ed.edit, dur, ed.player.pos, &nu)) {
+        f64 len = pieces_len(ed.edit, dur);
+        ed_seek_u(u < len ? u : len);
+    }
+}
+
+// Play or pause. On the joined pieces, Play from the end or from a cut starts again at the first piece.
+static void ed_toggle()
+{
+    Editor &ed = g_app.editor;
+    Player &p = ed.player;
+    f64 u;
+    if (p.paused && ed_joined() &&
+        (!piece_out(ed.edit, ed_duration(), p.pos, &u) || ed_play_u() >= ed_axis_len() - 0.05))
+        ed_seek_u(0);
+    player_toggle(&p);
+}
+
+// While the joined pieces play: at a piece's end, on to the next one's start (no seek when it carries straight on
+// in the file), and a pause at the last one's end.
+static void ed_follow_pieces()
+{
+    Editor &ed = g_app.editor;
+    Player &p = ed.player;
+    if (!ed_joined() || !p.loaded) {
+        ed.play_piece = -1;
+        return;
+    }
+    EditPiece pc[EDIT_MAX_PIECES];
+    f64 dur = ed_duration(), pos = p.pos, u;
+    i32 np = pieces_of(ed.edit, dur, pc), cur = ed.play_piece;
+    if (cur >= np) cur = -1;
+    bool playing = !p.paused && !p.scrubbing && !p.has_seek && !p.seeking;
+    if (playing && cur >= 0 && pos >= pc[cur].to - 0.02 && pos < pc[cur].to + 0.25) {
+        if (cur + 1 < np) {
+            if (fabs(pc[cur + 1].from - pc[cur].to) > 0.02) player_seek(&p, pc[cur + 1].from);
+            cur++;
+        } else {
+            player_pause(&p);
+            player_seek(&p, pc[cur].to);
+        }
+    } else if (cur < 0 || pos < pc[cur].from - 0.02 || pos > pc[cur].to + 0.02) {
+        i32 at = -1;
+        if (piece_out(ed.edit, dur, pos, &u, &at)) {
+            cur = at;
+        } else if (playing) { // in a cut: on to the piece that starts next in the file, or stop
+            i32 next = -1;
+            for (i32 k = 0; k < np; k++)
+                if (pc[k].from > pos && (next < 0 || pc[k].from < pc[next].from)) next = k;
+            if (next >= 0) {
+                player_seek(&p, pc[next].from);
+                cur = next;
+            } else {
+                cur = np - 1;
+                player_pause(&p);
+                player_seek(&p, pc[cur].to);
+            }
+        }
+    }
+    ed.play_piece = cur;
+}
+
+// ---- The view: which stretch of the axis the lanes show ----
 
 static void ed_view_clamp()
 {
     Editor &ed = g_app.editor;
-    f64 dur = ed_duration();
+    f64 dur = ed_axis_len();
     if (dur <= 0) {
         ed.view_from = 0;
         ed.view_span = 1;
@@ -852,11 +991,12 @@ static void key_shape(ImDrawList *dl, ImVec2 c, f32 r, u8 ease, u32 col)
 
 enum {
     ED_DRAG_NONE, ED_DRAG_IN, ED_DRAG_OUT, ED_DRAG_RANGE, ED_DRAG_NEW, ED_DRAG_MENU, ED_DRAG_SEEK, ED_DRAG_KEYS,
-    ED_DRAG_LEVEL, ED_DRAG_STRETCH, ED_DRAG_PAN, ED_DRAG_BAR, ED_DRAG_BAR_IN, ED_DRAG_BAR_OUT
+    ED_DRAG_LEVEL, ED_DRAG_STRETCH, ED_DRAG_PAN, ED_DRAG_BAR, ED_DRAG_BAR_IN, ED_DRAG_BAR_OUT, ED_DRAG_PIECE,
+    ED_DRAG_PIECE_EDGE
 };
 
-// The selected keys moved by the drag so far, from where they were when it began. The grabbed key lands on a frame
-// (or the playhead, with Shift) and its value snaps; the rest keep their places relative to it.
+// The selected keys moved by the drag so far (dt on the axis), from where they were when it began. The grabbed key
+// lands on a frame (or the playhead, with Shift) and its value snaps; the rest keep their places relative to it.
 static void ed_drag_keys(f64 dt, f64 dfrac, f32 px_per_s, f32 vh, bool time_only, bool value_only)
 {
     Editor &ed = g_app.editor;
@@ -866,7 +1006,7 @@ static void ed_drag_keys(f64 dt, f64 dfrac, f32 px_per_s, f32 vh, bool time_only
     LaneKey g = ln_get(ed.drag_from, ed.drag_lane, ed.drag_key);
     if (value_only) dt = 0;
     if (time_only) dfrac = 0;
-    f64 nt = g.t + dt, fr = ed_frame();
+    f64 nt = ed_joined() ? ed_s(ed_u(g.t) + dt) : g.t + dt, fr = ed_frame();
     nt = floor(nt / fr + 0.5) * fr;
     if (time_only && fabs(nt - ed.player.pos) * px_per_s < kit_px(8)) nt = ed.player.pos;
     if (value_only) nt = g.t;
@@ -921,7 +1061,7 @@ struct EdRow {
     const char *name;
 };
 
-// The timeline: a bar for the view, a ruler, the video with the trim, the zoom's lane, a lane for each sound track
+// The timeline: a bar for the view, a ruler, the video with the trim or the pieces, the zoom's lane, a lane for each sound track
 // (its waveform and its volume) and one for the whole mix. Lanes have their name and buttons on the left.
 // Measures the waveforms again, from the file rather than the cache
 static void ed_refresh_wave()
@@ -948,9 +1088,21 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     f32 fh = ImGui::GetFrameHeight();
     f64 dur = ed_duration();
     if (dur <= 0) return;
+    // The axis (u) is the joined pieces' or the file's (ed_joined); keys and pieces are in the file's time (t).
+    bool joined = ed_joined(), cutting = ed.advanced;
+    f64 alen = ed_axis_len(), play_u = ed_play_u();
+    EditPiece pc[EDIT_MAX_PIECES];
+    f64 pstart[EDIT_MAX_PIECES + 1] = {}; // where each piece starts on the axis
+    i32 np = 0;
+    auto read_pieces = [&]() {
+        np = pieces_of(ed.edit, dur, pc);
+        for (i32 i = 0; i < np; i++) pstart[i + 1] = pstart[i] + pc[i].to - pc[i].from;
+        alen = ed_axis_len();
+    };
+    read_pieces();
     ed_view_clamp();
-    if (!p.paused && ed.lane_drag == ED_DRAG_NONE && (p.pos < ed.view_from || p.pos > ed.view_from + ed.view_span)) {
-        ed.view_from = p.pos - ed.view_span * 0.05; // follow the playhead a page at a time
+    if (!p.paused && ed.lane_drag == ED_DRAG_NONE && (play_u < ed.view_from || play_u > ed.view_from + ed.view_span)) {
+        ed.view_from = play_u - ed.view_span * 0.05; // follow the playhead a page at a time
         ed_view_clamp();
     }
     f64 from = ed.view_from, span = ed.view_span;
@@ -959,10 +1111,31 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     f32 bx0 = o.x + gut, bx1 = o.x + w, bw = bx1 - bx0;
     if (bw < kit_px(40)) return;
     f32 bar_h = wa_viewbar_h(), ruler_h = wa_ruler_h(), video_h = kit_px(46), lane_h = ed_lane_h(), vh = lane_h - 2 * ln_pad();
-    auto x_of = [&](f64 t) { return bx0 + (f32)((t - from) / span) * bw; };
-    auto t_of = [&](f32 x) {
-        f64 t = from + (f64)(x - bx0) / bw * span;
-        return t < 0 ? 0 : t > dur ? dur : t;
+    auto xu_of = [&](f64 u) { return bx0 + (f32)((u - from) / span) * bw; };
+    auto u_of = [&](f32 x) {
+        f64 u = from + (f64)(x - bx0) / bw * span;
+        return u < 0 ? 0 : u > alen ? alen : u;
+    };
+    // A moment in the file on screen (far off it when it's cut out), and the moment under x.
+    auto x_of = [&](f64 t) {
+        f64 u = ed_u(t);
+        return u < 0 ? -1e7f : xu_of(u);
+    };
+    auto t_of = [&](f32 x) { return ed_s(u_of(x)); };
+    // The piece under x on the strip, and the edge in reach (-1 none): each piece's own side of a cut, within a
+    // quarter of its width.
+    auto piece_at = [&](f32 x, i32 *edge, bool *end) -> i32 {
+        i32 hit = -1;
+        *edge = -1;
+        *end = false;
+        f32 best = 1e9f;
+        for (i32 i = 0; i < np; i++) {
+            f32 xa = xu_of(pstart[i]), xz = xu_of(pstart[i + 1]), reach = ImMin(wa_grab(), (xz - xa) / 4);
+            if (x >= xa && x < xz) hit = i;
+            if (x >= xa - 1 && x - xa <= reach && x - xa < best) { best = x - xa; *edge = i; *end = false; }
+            if (x <= xz + 1 && xz - x <= reach && xz - x < best) { best = xz - x; *edge = i; *end = true; }
+        }
+        return hit;
     };
     f32 mx = io.MousePos.x, my = io.MousePos.y;
     bool over = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h), false);
@@ -984,7 +1157,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     if (over && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
         f32 wh = io.MouseWheel;
         if (wh && io.KeyAlt) {
-            ed_view_zoom(pow(0.75, wh), !io.KeyShift && mx >= bx0 && mx < bx1 ? t_of(mx) : p.pos);
+            ed_view_zoom(pow(0.75, wh), !io.KeyShift && mx >= bx0 && mx < bx1 ? u_of(mx) : play_u);
         } else if (wh && io.KeyShift) {
             Config &cfg = g_app.config;
             i32 v = (i32)(lane_h / kit_px(1) + 0.5f) + (wh > 0 ? 6 : -6);
@@ -1013,20 +1186,20 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     }
     ed.lane_scroll = ed.lane_scroll < 0 ? 0 : ed.lane_scroll > max_scroll ? max_scroll : ed.lane_scroll;
 
-    // The view bar: the whole file, with a window on the work area (the part shown). Drag the window to pan,
+    // The view bar: the whole axis, with a window on the work area (the part shown). Drag the window to pan,
     // either end to zoom (with Shift around the playhead, which keeps its place on screen), beside it to bring it
     // there; double-click shows everything.
     ImGui::SetCursorScreenPos(ImVec2(bx0, bar_y - kit_px(4)));
     ImGui::InvisibleButton("##view", ImVec2(bw, bar_h + kit_px(8)));
     {
-        auto bx = [&](f64 t) { return bx0 + (f32)(t / dur) * bw; };
+        auto bx = [&](f64 t) { return bx0 + (f32)(t / alen) * bw; };
         f32 tx0 = bx(ed.view_from), tx1 = bx(ed.view_from + ed.view_span), grip = wa_grab();
         static f64 held_from, held_to, held_play;
         if (ImGui::IsItemActivated()) {
             ed.drag_mx = mx;
             held_from = ed.view_from;
             held_to = ed.view_from + ed.view_span;
-            held_play = p.pos;
+            held_play = play_u;
             if (fabsf(mx - tx0) <= grip && mx < (tx0 + tx1) / 2) {
                 ed.lane_drag = ED_DRAG_BAR_IN;
                 ed.drag_t = ed.view_from + ed.view_span;
@@ -1035,7 +1208,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 ed.drag_t = ed.view_from;
             } else {
                 if (mx < tx0 || mx > tx1) {
-                    ed.view_from = (mx - bx0) / bw * dur - ed.view_span / 2;
+                    ed.view_from = (mx - bx0) / bw * alen - ed.view_span / 2;
                     ed_view_clamp();
                 }
                 ed.lane_drag = ED_DRAG_BAR;
@@ -1043,13 +1216,13 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             }
         }
         if (ImGui::IsItemActive()) {
-            f64 bt = (f64)(mx - bx0) / bw * dur;
-            bt = bt < 0 ? 0 : bt > dur ? dur : bt;
+            f64 bt = (f64)(mx - bx0) / bw * alen;
+            bt = bt < 0 ? 0 : bt > alen ? alen : bt;
             f64 a, z;
             bool end = ed.lane_drag == ED_DRAG_BAR_IN || ed.lane_drag == ED_DRAG_BAR_OUT;
-            if (ed.lane_drag == ED_DRAG_BAR) ed.view_from = ed.drag_t + (mx - ed.drag_mx) / bw * dur;
+            if (ed.lane_drag == ED_DRAG_BAR) ed.view_from = ed.drag_t + (mx - ed.drag_mx) / bw * alen;
             else if (end && io.KeyShift &&
-                     wa_scale(held_play, held_from, held_to, ed.lane_drag == ED_DRAG_BAR_IN, bt, 0, dur, 0.5, &a, &z)) {
+                     wa_scale(held_play, held_from, held_to, ed.lane_drag == ED_DRAG_BAR_IN, bt, 0, alen, 0.5, &a, &z)) {
                 ed.view_from = a;
                 ed.view_span = z - a;
             } else if (ed.lane_drag == ED_DRAG_BAR_IN && bt < ed.drag_t) {
@@ -1064,32 +1237,40 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         }
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             ed.view_from = 0;
-            ed.view_span = dur;
+            ed.view_span = alen;
         }
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if (hot && (fabsf(mx - tx0) <= grip || fabsf(mx - tx1) <= grip))
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-        wa_draw_viewbar(dl, bx0, bx1, bar_y, bx(ed.view_from), bx(ed.view_from + ed.view_span), hot, bx(ed_in()),
-                        bx(ed_out()), bx(p.pos));
+        wa_draw_viewbar(dl, bx0, bx1, bar_y, bx(ed.view_from), bx(ed.view_from + ed.view_span), hot,
+                        bx(joined ? 0 : ed_in()), bx(joined ? alen : ed_out()), bx(play_u));
     }
     from = ed.view_from;
     span = ed.view_span;
 
     // Shift and a drag on the ruler or the picture's strip draws a new in and out, as on the Timeline. On the ruler
     // their ends and the band between are taken hold of; everywhere else a press moves the playhead. Shift on an end
-    // lands it on the clip's start or end or the playhead when close; the band lands on the playhead when close. Dragging an end or the band shows its frame, and the playhead goes back once it's let go.
+    // lands it on the clip's start or end or the playhead when close; the band lands on the playhead when close.
+    // Dragging an end or the band shows its frame, and the playhead goes back once it's let go. On joined pieces
+    // there's no in and out; in Advanced the strip holds the pieces: a click selects one (Shift or Ctrl adds more),
+    // an edge drags to trim it (Shift catches the playhead and the other pieces' edges), and the body drags it to
+    // another place in the order.
     ImGui::SetCursorScreenPos(ImVec2(bx0, ruler_y));
     ImGui::InvisibleButton("##scrub", ImVec2(bw, ruler_h + video_h), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool scrub_hot = ImGui::IsItemHovered();
     f64 mouse_t = t_of(mx);
     bool on_ruler = my >= ruler_y && my < video_y;
     f32 grab = wa_grab();
-    bool near_in = on_ruler && fabsf(mx - x_of(ed_in())) <= grab;
-    bool near_out = on_ruler && !near_in && fabsf(mx - x_of(ed_out())) <= grab;
-    bool on_band = on_ruler && !near_in && !near_out && mouse_t > ed_in() && mouse_t < ed_out();
+    bool near_in = !joined && on_ruler && fabsf(mx - x_of(ed_in())) <= grab;
+    bool near_out = !joined && on_ruler && !near_in && fabsf(mx - x_of(ed_out())) <= grab;
+    bool on_band = !joined && on_ruler && !near_in && !near_out && mouse_t > ed_in() && mouse_t < ed_out();
+    i32 hov_piece = -1, hov_edge = -1;
+    bool hov_end = false;
+    if (cutting && scrub_hot && !on_ruler) hov_piece = piece_at(mx, &hov_edge, &hov_end);
     {
         const f64 least = 0.2;
-        static f64 grab_play, grab_in, grab_out, grab_off;
+        static f64 grab_play, grab_in, grab_out, grab_off, grab_u, grab_scale;
+        static bool piece_keep; // the press chose the piece selection, so letting go without moving leaves it
         auto near_play = [&](f64 t) { return fabsf(x_of(t) - x_of(grab_play)) <= grab; };
         // With Shift, an end catches the nearest edge that comes close on screen: the clip's start or end, or the
         // playhead (where it was when the drag began)
@@ -1111,11 +1292,33 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             grab_in = ed_in();
             grab_out = ed_out();
             grab_off = mouse_t - grab_in;
+            grab_u = play_u;
+            grab_scale = span / bw;
             ed.drag_t = mouse_t;
+            piece_keep = false;
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) ed.lane_drag = ED_DRAG_MENU;
-            else if (near_in) ed.lane_drag = ED_DRAG_IN;
+            else if (hov_edge >= 0) {
+                ed.lane_drag = ED_DRAG_PIECE_EDGE;
+                ed.drag_piece = hov_edge;
+                ed.drag_end = hov_end;
+                ed.drag_from = ed.edit;
+                ed.drag_t = hov_end ? pc[hov_edge].to : pc[hov_edge].from;
+            } else if (hov_piece >= 0) {
+                memset(ed.sel, 0, sizeof ed.sel); // pieces or keys are selected, not both
+                u64 bit = 1ull << hov_piece;
+                if (io.KeyShift || io.KeyCtrl) {
+                    ed.piece_sel ^= bit;
+                    piece_keep = true;
+                } else if (!(ed.piece_sel & bit)) {
+                    ed.piece_sel = bit;
+                    piece_keep = true;
+                }
+                ed.lane_drag = ED_DRAG_PIECE;
+                ed.drag_piece = hov_piece;
+                ed.move_to = -1;
+            } else if (near_in) ed.lane_drag = ED_DRAG_IN;
             else if (near_out) ed.lane_drag = ED_DRAG_OUT;
-            else if (io.KeyShift) ed.lane_drag = ED_DRAG_NEW;
+            else if (io.KeyShift && !joined) ed.lane_drag = ED_DRAG_NEW;
             else if (on_band) ed.lane_drag = ED_DRAG_RANGE;
             else {
                 ed.lane_drag = ED_DRAG_SEEK;
@@ -1128,7 +1331,35 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             bool keep = io.KeyShift;
             f64 show = -1; // the frame to show while dragging
             if (ed.lane_drag == ED_DRAG_SEEK) {
-                if (mouse_t < p.pos - 0.02 || mouse_t > p.pos + 0.02) player_seek(&p, mouse_t);
+                if (mouse_t < p.pos - 0.02 || mouse_t > p.pos + 0.02) ed_seek_u(u_of(mx));
+            } else if (ed.lane_drag == ED_DRAG_PIECE_EDGE) {
+                // From where the edge was, at the scale the drag began with, so the view changing under it
+                // doesn't run away with it
+                f64 t = ed.drag_t + (mx - ed.drag_mx) * grab_scale;
+                if (keep) {
+                    EditPiece q[EDIT_MAX_PIECES];
+                    i32 nq = pieces_of(ed.drag_from, dur, q);
+                    f64 best = kit_px(10) * grab_scale, to = t;
+                    auto take = [&](f64 c) {
+                        if (fabs(c - t) <= best) { best = fabs(c - t); to = c; }
+                    };
+                    take(grab_play);
+                    for (i32 k = 0; k < nq; k++)
+                        if (k != ed.drag_piece) { take(q[k].from); take(q[k].to); }
+                    t = to;
+                }
+                ed.edit = ed.drag_from;
+                f64 at = pieces_trim(&ed.edit, dur, ed.drag_piece, ed.drag_end, t);
+                ed.dirty = true;
+                show = ed.drag_end ? at - ed_frame() : at;
+                if (show < 0) show = 0;
+            } else if (ed.lane_drag == ED_DRAG_PIECE && ed.drag_moved) {
+                // The place it goes: after every other piece whose middle is left of the mouse
+                f64 mu = u_of(mx);
+                i32 to = 0;
+                for (i32 k = 0; k < np; k++)
+                    if (k != ed.drag_piece && (pstart[k] + pstart[k + 1]) / 2 < mu) to++;
+                ed.move_to = to;
             } else if (ed.lane_drag == ED_DRAG_NEW && ed.drag_moved) {
                 f64 a = ImMin(ed.drag_t, mouse_t), z = ImMax(ed.drag_t, mouse_t);
                 if (z - a < least) z = ImMin(a + least, dur);
@@ -1160,15 +1391,50 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         }
         if (ImGui::IsItemDeactivated()) {
             bool moved_ends = ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT || ed.lane_drag == ED_DRAG_RANGE;
-            if (ed.lane_drag == ED_DRAG_MENU && !ed.drag_moved && on_ruler && mouse_t >= ed_in() && mouse_t <= ed_out())
+            bool edge = ed.lane_drag == ED_DRAG_PIECE_EDGE;
+            if (ed.lane_drag == ED_DRAG_MENU && !ed.drag_moved && !joined && on_ruler && mouse_t >= ed_in() &&
+                mouse_t <= ed_out())
                 ImGui::OpenPopup("##inout_menu"); // a right click on the in and out
-            if (p.scrubbing || moved_ends) {
+            if (ed.lane_drag == ED_DRAG_MENU && !ed.drag_moved && cutting && !on_ruler && hov_piece >= 0) {
+                if (!((ed.piece_sel >> hov_piece) & 1)) {
+                    memset(ed.sel, 0, sizeof ed.sel);
+                    ed.piece_sel = 1ull << hov_piece;
+                }
+                ImGui::OpenPopup("##piece_menu");
+            }
+            if (ed.lane_drag == ED_DRAG_PIECE) {
+                if (ed.drag_moved && ed.move_to >= 0 && ed.move_to != ed.drag_piece) {
+                    pieces_move(&ed.edit, dur, ed.drag_piece, ed.move_to);
+                    ed.piece_sel = 1ull << ed.move_to;
+                    ed.play_piece = -1;
+                    ed.dirty = true;
+                } else if (!ed.drag_moved) {
+                    if (!piece_keep) ed.piece_sel = 1ull << ed.drag_piece;
+                    if (!io.KeyShift && !io.KeyCtrl) ed_seek_u(u_of(ed.drag_mx));
+                }
+                ed.move_to = -1;
+            }
+            if (p.scrubbing || moved_ends || edge) {
                 p.scrubbing = false;
-                player_seek(&p, moved_ends ? grab_play : p.pos);
+                f64 u;
+                if (!edge || piece_out(ed.edit, dur, grab_play, &u)) {
+                    player_seek(&p, moved_ends || edge ? grab_play : p.pos);
+                } else { // what the playhead was on was trimmed away: it keeps its place on the axis
+                    f64 len = pieces_len(ed.edit, dur);
+                    ed_seek_u(grab_u < len ? grab_u : len);
+                }
+                if (edge) ed.play_piece = -1;
             }
             ed.lane_drag = ED_DRAG_NONE;
         }
-        if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT || (scrub_hot && ed.lane_drag == ED_DRAG_NONE && (near_in || near_out)))
+        bool idle_strip = scrub_hot && ed.lane_drag == ED_DRAG_NONE;
+        if (ed.lane_drag == ED_DRAG_PIECE_EDGE || (idle_strip && hov_edge >= 0))
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        else if (ed.lane_drag == ED_DRAG_PIECE && ed.drag_moved)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        else if (idle_strip && hov_piece >= 0)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT || (scrub_hot && ed.lane_drag == ED_DRAG_NONE && (near_in || near_out)))
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         else if (ed.lane_drag == ED_DRAG_RANGE || (scrub_hot && ed.lane_drag == ED_DRAG_NONE && on_band))
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
@@ -1178,7 +1444,22 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         if (lib_menu_item(ICON_CLOSE, "Clear in and out")) ed_clear_trim();
         ImGui::EndPopup();
     }
+    if (ImGui::BeginPopup("##piece_menu")) {
+        if (lib_menu_item(ICON_CUT, "Split at the playhead")) ed_split();
+        i32 n = 0;
+        for (u64 m = ed.piece_sel; m; m &= m - 1) n++;
+        if (n && n < np && lib_menu_item(ICON_DELETE, n == 1 ? "Delete the piece" : "Delete the pieces", true))
+            ed_delete_pieces();
+        ImGui::Separator();
+        if (lib_menu_item(ICON_UNDO, "Keep the whole video", true)) {
+            ed_clear_trim();
+            ed_sel_clear();
+            ed.play_piece = -1;
+        }
+        ImGui::EndPopup();
+    }
     lib_popup_style_pop();
+    read_pieces(); // as the drags and the menu left them
     f32 in_x = x_of(ed_in()), out_x = x_of(ed_out());
 
     // The ruler: a label every 70 px or more, small ticks between.
@@ -1192,7 +1473,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         dl->PushClipRect(ImVec2(bx0, ruler_y), ImVec2(bx1, ruler_y + ruler_h), true);
         ImGui::PushFont(g_font_small);
         for (i64 i = (i64)floor(from / minor), last = (i64)ceil((from + span) / minor); i <= last; i++) {
-            f32 x = floorf(x_of(i * minor));
+            f32 x = floorf(xu_of(i * minor));
             bool major = i % 5 == 0;
             f32 th = major ? ruler_h * 0.42f : ruler_h * 0.2f;
             dl->AddRectFilled(ImVec2(x, ruler_y + ruler_h - th), ImVec2(x + kit_px(1), ruler_y + ruler_h), col32(major ? COL_DIM : COL_FAINT));
@@ -1220,6 +1501,25 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 f = f < 0 ? 0 : f >= lib.strip_frames ? lib.strip_frames - 1 : f;
                 f32 u0 = (f32)f / lib.strip_frames, u1 = (f32)(f + 1) / lib.strip_frames;
                 dl->AddImage((ImTextureID)(intptr_t)lib.strip, ImVec2(x, y0), ImVec2(x + tile, y1), ImVec2(u0, 0), ImVec2(u1, 1));
+            }
+        }
+        // The pieces: a gap at each cut, the selected ones outlined, the one being moved dimmed, and the edge in
+        // reach (or being dragged) lit
+        if (joined) {
+            f32 gw = kit_px(4), line = kit_px(2);
+            for (i32 i = 0; i < np; i++) {
+                f32 xa = xu_of(pstart[i]) + (i ? gw / 2 : 0), xz = xu_of(pstart[i + 1]) - (i + 1 < np ? gw / 2 : 0);
+                if (ed.lane_drag == ED_DRAG_PIECE && ed.drag_moved && i == ed.drag_piece)
+                    dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xz, y1), IM_COL32(0, 0, 0, 140));
+                if ((ed.piece_sel >> i) & 1)
+                    dl->AddRect(ImVec2(xa + line / 2, y0 + line / 2), ImVec2(xz - line / 2, y1 - line / 2), col32(COL_ACCENT),
+                                kit_px(3), 0, line);
+                if (i) dl->AddRectFilled(ImVec2(xa - gw, y0), ImVec2(xa, y1), col32(COL_BG));
+                bool lit_a = false, lit_z = false;
+                if (ed.lane_drag == ED_DRAG_PIECE_EDGE && ed.drag_piece == i) (ed.drag_end ? lit_z : lit_a) = true;
+                else if (ed.lane_drag == ED_DRAG_NONE && hov_edge == i) (hov_end ? lit_z : lit_a) = true;
+                if (lit_a) dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xa + line, y1), col32(COL_TEXT));
+                if (lit_z) dl->AddRectFilled(ImVec2(xz - line, y0), ImVec2(xz, y1), col32(COL_TEXT));
             }
         }
         dl->PopClipRect();
@@ -1485,9 +1785,9 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         // tracks as they're mixed. Not yet measured: a faint stub.
         if (s >= 0 && ed.wave) {
             f32 step = floorf(kit_px(2)) > 1 ? floorf(kit_px(2)) : 1, reach = y1 - y0 - kit_px(3);
-            f32 end_x = x_of(dur);
+            f32 end_x = xu_of(alen);
             for (f32 x = bx0; x < bx1 && x < end_x; x += step) {
-                f64 t0 = t_of(x), t1 = t_of(x + step), tm = (t0 + t1) / 2;
+                f64 t0 = t_of(x), t1 = t0 + step * span / bw, tm = (t0 + t1) / 2;
                 f32 pk = 0;
                 bool got = false;
                 if (s == EDIT_MASTER) {
@@ -1501,7 +1801,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 } else {
                     got = wave_peak(ed.wave, row.wave, t0, t1, &pk);
                 }
-                bool kept = t1 > in_s && t0 < out_s;
+                bool kept = joined || (t1 > in_s && t0 < out_s);
                 if (!got) {
                     dl->AddRectFilled(ImVec2(x, y1 - kit_px(2)), ImVec2(x + step, y1), IM_COL32(142, 147, 156, 40));
                     continue;
@@ -1517,15 +1817,15 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         f32 rest = ln_y(l, 1, y0, y1);
         dl->AddRectFilled(ImVec2(bx0, rest), ImVec2(bx1, rest + kit_px(1)), col32(COL_LINE));
         {
-            i32 np = 0;
+            i32 npt = 0;
             f32 lstep = kit_px(3);
-            for (f32 x = bx0; np < COUNT(pts) - 1; x += lstep) {
+            for (f32 x = bx0; npt < COUNT(pts) - 1; x += lstep) {
                 if (x > bx1) x = bx1;
-                pts[np++] = ImVec2(x, ln_y(l, ln_value_at(ed.edit, l, t_of(x)), y0, y1));
+                pts[npt++] = ImVec2(x, ln_y(l, ln_value_at(ed.edit, l, t_of(x)), y0, y1));
                 if (x >= bx1) break;
             }
             u32 lc = !l ? col32(COL_BLUE) : muted ? col32(COL_FAINT) : col32(COL_TEXT);
-            dl->AddPolyline(pts, np, lc, ImDrawFlags_None, kit_px(1.5f));
+            dl->AddPolyline(pts, npt, lc, ImDrawFlags_None, kit_px(1.5f));
         }
         // The keys.
         for (i32 k = 0; k < ln_count(ed.edit, l); k++) {
@@ -1541,24 +1841,42 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         if (row.scrolls) ImGui::PopClipRect();
     }
 
-    // The in and out, the playhead, and the time under the mouse (or at the end being dragged) on the ruler
+    // The in and out (or the cuts, faint across the lanes, and where a dragged piece goes), the playhead, and the
+    // time under the mouse (or at the end being dragged) on the ruler
     dl->PushClipRect(ImVec2(bx0 - kit_px(6), ruler_y), ImVec2(bx1 + kit_px(6), lanes_y1), true);
     bool idle = scrub_hot && ed.lane_drag == ED_DRAG_NONE;
-    wa_draw_inout(dl, in_x, out_x, ruler_y, video_y, lanes_y1, ed.lane_drag == ED_DRAG_IN || (idle && near_in),
-                  ed.lane_drag == ED_DRAG_OUT || (idle && near_out));
-    f32 px = x_of(p.pos);
+    if (!joined)
+        wa_draw_inout(dl, in_x, out_x, ruler_y, video_y, lanes_y1, ed.lane_drag == ED_DRAG_IN || (idle && near_in),
+                      ed.lane_drag == ED_DRAG_OUT || (idle && near_out));
+    else {
+        for (i32 i = 1; i < np; i++) {
+            f32 x = floorf(xu_of(pstart[i]));
+            dl->AddRectFilled(ImVec2(x, video_y + video_h), ImVec2(x + kit_px(1), lanes_y1), col32(COL_TEXT, 0.12f));
+        }
+        if (ed.lane_drag == ED_DRAG_PIECE && ed.drag_moved && ed.move_to >= 0 && ed.move_to != ed.drag_piece) {
+            // The others in order; it goes before the move_to'th of them, or after the last
+            i32 others[EDIT_MAX_PIECES], no = 0;
+            for (i32 k = 0; k < np; k++)
+                if (k != ed.drag_piece) others[no++] = k;
+            f32 x = ed.move_to < no ? xu_of(pstart[others[ed.move_to]]) : xu_of(pstart[others[no - 1] + 1]);
+            dl->AddRectFilled(ImVec2(x - kit_px(1.5f), ruler_y), ImVec2(x + kit_px(1.5f), video_y + video_h), col32(COL_ACCENT));
+        }
+    }
+    play_u = ed_play_u();
+    f32 px = xu_of(play_u);
     if (px >= bx0 - 1 && px <= bx1 + 1) wa_draw_playhead(dl, px, video_y, lanes_y1);
-    f64 pill_t = -1;
-    if (idle) pill_t = mouse_t;
-    else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_RANGE) pill_t = ed_in();
-    else if (ed.lane_drag == ED_DRAG_OUT) pill_t = ed_out();
-    else if (ed.lane_drag == ED_DRAG_SEEK) pill_t = p.pos;
-    else if (ed.lane_drag == ED_DRAG_NEW && ed.drag_moved) pill_t = mouse_t;
-    if (pill_t >= 0) {
-        f32 x = x_of(pill_t);
+    f64 pill_u = -1;
+    if (idle) pill_u = u_of(mx);
+    else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_RANGE) pill_u = ed_in();
+    else if (ed.lane_drag == ED_DRAG_OUT) pill_u = ed_out();
+    else if (ed.lane_drag == ED_DRAG_SEEK) pill_u = play_u;
+    else if (ed.lane_drag == ED_DRAG_NEW && ed.drag_moved) pill_u = u_of(mx);
+    else if (ed.lane_drag == ED_DRAG_PIECE_EDGE && ed.drag_piece < np) pill_u = pstart[ed.drag_piece + (ed.drag_end ? 1 : 0)];
+    if (pill_u >= 0) {
+        f32 x = xu_of(pill_u);
         if (idle) dl->AddLine(ImVec2(x, video_y), ImVec2(x, lanes_y1), col32(COL_TEXT, 0.3f));
         char when[32];
-        fmt_time(pill_t, when, sizeof when, true);
+        fmt_time(pill_u, when, sizeof when, true);
         ImGui::PushFont(g_font_small);
         wa_pill(dl, x, ruler_y + kit_px(2), bx0, bx1, when, col32(COL_HOVER), col32(COL_TEXT));
         ImGui::PopFont();
@@ -2098,19 +2416,26 @@ static void ed_share_tab(f32 w)
     }
 }
 
-// Where Left or Right goes from `at`: the nearest key on a lane shown, or end of the trim, that way.
+// Where Left or Right goes from `at` on the axis: the nearest key on a lane shown, end of the trim or start of a
+// piece, that way.
 static f64 ed_next_stop(f64 at, i32 dir)
 {
     Editor &ed = g_app.editor;
-    f64 best = dir > 0 ? ed_duration() : 0, eps = ed_frame() * 0.5;
-    auto take = [&](f64 t) {
-        if (dir > 0 ? t > at + eps && t < best : t < at - eps && t > best) best = t;
+    f64 best = dir > 0 ? ed_axis_len() : 0, eps = ed_frame() * 0.5;
+    auto take = [&](f64 u) {
+        if (u >= 0 && (dir > 0 ? u > at + eps && u < best : u < at - eps && u > best)) best = u;
     };
-    take(ed_in());
-    take(ed_out());
+    if (ed_joined()) {
+        EditPiece pc[EDIT_MAX_PIECES];
+        i32 np = pieces_of(ed.edit, ed_duration(), pc);
+        for (i32 i = 1; i < np; i++) take(piece_start(ed.edit, ed_duration(), i));
+    } else {
+        take(ed_in());
+        take(ed_out());
+    }
     for (i32 l = 0; l < ED_LANES; l++) {
         if (!ed_lane_shown(l)) continue;
-        for (i32 k = 0; k < ln_count(ed.edit, l); k++) take(ln_get(ed.edit, l, k).t);
+        for (i32 k = 0; k < ln_count(ed.edit, l); k++) take(ed_u(ln_get(ed.edit, l, k).t));
     }
     return best;
 }
@@ -2143,28 +2468,50 @@ static void screen_editor()
         ed_apply_volumes();
         ed.tracks_ready = true;
     }
-    p.loop_from = ed_in();
-    p.stop_at = ed_out();
+    // One piece plays from the in to the out; joined pieces play one after another (ed_follow_pieces).
+    bool joined = ed_joined();
+    p.loop_from = joined ? ed_s(0) : ed_in();
+    p.stop_at = joined ? 0 : ed_out();
     player_update(&p);
+    ed_follow_pieces();
     // Every half second everything is handed over again, for a track engine that's only just loaded.
     static u64 heard_at;
     if (GetTickCount64() - heard_at > 500) { heard_at = GetTickCount64(); ed.heard_set = false; }
     if (ed.tracks_ready) ed_apply_volumes();
     // While the waveforms are measured, what's on screen goes first (each chunk measured wakes the window).
-    if (ed.wave && !ed.wave->state) wave_view(ed.wave, ed.view_from, ed.view_from + ed.view_span);
+    if (ed.wave && !ed.wave->state) {
+        f64 wa = ed_s(ed.view_from), wz = ed_s(ed.view_from + ed.view_span);
+        wave_view(ed.wave, wa < wz ? wa : wz, wa < wz ? wz : wa);
+    }
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     Config &cfg = g_app.config;
 
-    // Header: back, the name, and the game and when under it.
+    // Header: back, the name, and the game and when under it; Simple or Advanced on the right.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
     f32 head_h = fmaxf(fh, g_font_big->FontSize + g_font_small->FontSize + kit_px(4));
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
     kit_next_tip("Back to the library", "Esc");
     bool back = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
-    f32 tx = h0.x + fh + kit_px(14), tw = avail.x - (tx - h0.x);
+    f32 mode_w = kit_px(196);
+    {
+        static const char *const modes[] = {"Simple", "Advanced"};
+        ImGui::SetCursorScreenPos(ImVec2(h0.x + avail.x - mode_w, h0.y + (head_h - fh) / 2));
+        kit_next_tip(ed.advanced ? "Simple: an in and an out" : "Advanced: cut the clip into pieces");
+        if (lib_switch("##mode", modes, mode_w, fh, ed.advanced, COL_PANEL2, COL_HOVER, 0x3a3d44)) {
+            ed.advanced = !ed.advanced;
+            cfg.editor_advanced = ed.advanced;
+            config_save(cfg, g_app.paths);
+            ed.piece_sel = 0;
+            ed.play_piece = -1;
+            ed.view_from = ed.view_span = 0; // the axis changed: show all of it
+            joined = ed_joined();
+            log_line("editor: %s", ed.advanced ? "advanced" : "simple");
+        }
+    }
+    f32 tx = h0.x + fh + kit_px(14), tw = avail.x - (tx - h0.x) - mode_w - kit_px(14);
     f32 ty = h0.y + (head_h - g_font_big->FontSize - g_font_small->FontSize - kit_px(4)) / 2;
     ImGui::PushFont(g_font_big);
     text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), ed.item.name);
@@ -2231,7 +2578,7 @@ static void screen_editor()
         k.y = ny < 0 ? 0 : ny > 1 ? 1 : ny;
         ed.dirty = true;
     } else if (ImGui::IsItemDeactivated()) {
-        if (!ed.aiming) player_toggle(&p);
+        if (!ed.aiming) ed_toggle();
         ed.aiming = false;
     }
     ImVec2 uv0, uv1;
@@ -2244,42 +2591,59 @@ static void screen_editor()
     }
 
     // The transport bar, as the Timeline's: Play and the playhead's time, zoom, then the in and out and their
-    // length on the right with a button to clear them. Fixed places, so nothing moves.
+    // length on the right with a button to clear them (with pieces: how many and their length, and in Advanced
+    // Split and Delete). Fixed places, so nothing moves.
     ImVec2 r0(pos.x, pos.y + video_h + kit_px(10));
     dl->AddRectFilled(r0, ImVec2(r0.x + main_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
     kit_next_tip(p.paused ? "Play" : "Pause", "Space");
-    if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_PRIMARY)) player_toggle(&p);
-    f64 dur = ed_duration();
+    if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_PRIMARY)) ed_toggle();
+    f64 dur = ed_duration(), alen = ed_axis_len();
     char t1[32];
-    fmt_time(p.pos, t1, sizeof t1, true);
+    fmt_time(ed_play_u(), t1, sizeof t1, true);
     f32 x = r0.x + pad + fh + kit_px(12);
     ImGui::PushFont(g_font_bold);
     dl->AddText(ImVec2(x, floorf(y + (fh - ImGui::GetFontSize()) / 2)), col32(COL_TEXT), t1);
-    fmt_time(dur, t1, sizeof t1, true);
+    fmt_time(dur, t1, sizeof t1, true); // the file's length holds the place in either mode, so nothing moves
     x += ImGui::CalcTextSize(t1).x + kit_px(18);
     ImGui::PopFont();
     ImGui::SetCursorScreenPos(ImVec2(x, y));
     kit_next_tip("Zoom out", "-");
-    if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, ed.view_span < dur)) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
+    if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, ed.view_span < alen)) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
     ImGui::SameLine(0, kit_px(2));
     kit_next_tip("Zoom in", "+");
     if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, ed.view_span > 0.51)) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
     {
-        bool trimmed = ed.edit.piece_count > 0;
-        f32 x_clear = r0.x + main_w - pad - fh;
-        ImGui::SetCursorScreenPos(ImVec2(x_clear, y));
-        kit_next_tip("Clear in and out");
-        if (kit_icon_button(ICON_CLOSE, "##clear_inout", KIT_GHOST, trimmed)) ed_clear_trim();
+        bool lit = ed.edit.piece_count > 0;
+        f32 x_clear = r0.x + main_w - pad - fh, x_split = x_clear - fh - kit_px(2), text_r = x_clear;
         char ta[32], tz[32], len[32], sel[112];
-        fmt_time(ed_in(), ta, sizeof ta, true);
-        fmt_time(ed_out(), tz, sizeof tz, true);
-        fmt_time(ed_out() - ed_in(), len, sizeof len, true);
-        snprintf(sel, sizeof sel, "%s - %s   %s", ta, tz, len);
+        if (!joined) {
+            ImGui::SetCursorScreenPos(ImVec2(x_clear, y));
+            kit_next_tip("Clear in and out");
+            if (kit_icon_button(ICON_CLOSE, "##clear_inout", KIT_GHOST, lit)) ed_clear_trim();
+            fmt_time(ed_in(), ta, sizeof ta, true);
+            fmt_time(ed_out(), tz, sizeof tz, true);
+            fmt_time(ed_out() - ed_in(), len, sizeof len, true);
+            snprintf(sel, sizeof sel, "%s - %s   %s", ta, tz, len);
+        } else {
+            if (ed.advanced) {
+                ImGui::SetCursorScreenPos(ImVec2(x_split, y));
+                kit_next_tip("Split at the playhead", "S");
+                if (kit_icon_button(ICON_CUT, "##split", KIT_GHOST)) ed_split();
+                ImGui::SetCursorScreenPos(ImVec2(x_clear, y));
+                kit_next_tip("Delete the selected pieces", "Delete");
+                if (kit_icon_button(ICON_DELETE, "##cut_delete", KIT_GHOST, ed.piece_sel != 0)) ed_delete_pieces();
+                text_r = x_split;
+            }
+            EditPiece pc[EDIT_MAX_PIECES];
+            i32 np = pieces_of(ed.edit, dur, pc);
+            fmt_time(alen, len, sizeof len, true);
+            snprintf(sel, sizeof sel, "%d piece%s   %s", np, np == 1 ? "" : "s", len);
+        }
         ImVec2 ks = ImGui::CalcTextSize(sel);
-        f32 kx = x_clear - kit_px(6) - ks.x;
-        dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(trimmed ? COL_TEXT : COL_DIM), sel);
+        f32 kx = text_r - kit_px(6) - ks.x;
+        dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(lit ? COL_TEXT : COL_DIM), sel);
     }
 
     // The side panel: Edit, or Keep & share.
@@ -2353,12 +2717,16 @@ static void screen_editor()
     // Keys (never while typing or with a menu open).
     if (!io.WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {
         bool ctrl = io.KeyCtrl;
-        if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) player_toggle(&p);
-        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_I, false) && p.pos < ed_out() - 0.2) ed_set_trim(p.pos, ed_out());
-        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false) && p.pos > ed_in() + 0.2) ed_set_trim(ed_in(), p.pos);
+        joined = ed_joined();
+        if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) ed_toggle();
+        if (!joined && !ctrl && ImGui::IsKeyPressed(ImGuiKey_I, false) && p.pos < ed_out() - 0.2) ed_set_trim(p.pos, ed_out());
+        if (!joined && !ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false) && p.pos > ed_in() + 0.2) ed_set_trim(ed_in(), p.pos);
         if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_K, false)) ed_add_key(p.pos);
+        if (ed.advanced && ((!ctrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) || (ctrl && ImGui::IsKeyPressed(ImGuiKey_K, false))))
+            ed_split();
         if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
-            if (ed_sel_count()) ed_delete_selected();
+            if (ed.piece_sel) ed_delete_pieces();
+            else if (ed_sel_count()) ed_delete_selected();
             else ed_delete_key(ed_key_at(p.pos));
         }
         for (i32 i = 0; i < EASE_COUNT; i++)
@@ -2370,19 +2738,22 @@ static void screen_editor()
         if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) ed_undo(true);
         if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
         if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
-        // Left and Right jump between keys and the trim's ends (a second with Shift); comma and period step a frame
+        // Left and Right jump between keys, the trim's ends and the pieces (a second with Shift); comma and period
+        // step a frame. All on the axis, so cuts are stepped over.
         for (i32 dir = -1; dir <= 1; dir += 2) {
+            f64 u = ed_play_u(), axis = ed_axis_len();
+            auto in_axis = [&](f64 v) { return v < 0 ? 0 : v > axis ? axis : v; };
             if (ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_LeftArrow : ImGuiKey_RightArrow)) {
                 player_pause(&p);
-                player_seek(&p, io.KeyShift ? p.pos + dir : ed_next_stop(p.pos, dir));
+                ed_seek_u(io.KeyShift ? in_axis(u + dir) : ed_next_stop(u, dir));
             }
             if (!ctrl && ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_Comma : ImGuiKey_Period)) {
                 player_pause(&p);
-                player_seek(&p, p.pos + dir * ed_frame());
+                ed_seek_u(in_axis(u + dir * ed_frame()));
             }
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-            if (ed_sel_count()) ed_sel_clear();
+            if (ed.piece_sel || ed_sel_count()) ed_sel_clear();
             else back = true;
         }
     }

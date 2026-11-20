@@ -289,6 +289,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "editor_top")) real(&c->editor_top);
     else if (!strcmp(key, "editor_side")) real(&c->editor_side);
     else if (!strcmp(key, "editor_lane")) c->editor_lane = atoi(value);
+    else if (!strcmp(key, "editor_advanced")) c->editor_advanced = atoi(value) != 0;
     else if (!strcmp(key, "min_free_gb")) real(&c->min_free_gb);
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
@@ -487,7 +488,8 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "timeline_lane = %d\n", c.timeline_lane);
     fprintf(f, "timeline_top = %g\ntimeline_names = %d\ntimeline_simple = %d\n", c.timeline_top, c.timeline_names,
             c.timeline_simple ? 1 : 0);
-    fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\n", c.editor_top, c.editor_side, c.editor_lane);
+    fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\neditor_advanced = %d\n", c.editor_top, c.editor_side,
+            c.editor_lane, c.editor_advanced ? 1 : 0);
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
