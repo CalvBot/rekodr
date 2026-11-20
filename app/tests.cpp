@@ -838,6 +838,22 @@ static void test_r2()
     n = r2_plan_cleanup(s, 4, 12 * R2_GB, 4 * R2_GB, -1, plan, 4); // 12 + 4 incoming: 1 goes, then 0
     T(n == 1 && plan[0] == 1);
     T(r2_plan_cleanup(s, 4, 6 * R2_GB, 4 * R2_GB, -1, plan, 4) == -1); // pinned 4 + incoming 4 > 6
+    s[1].host = HOST_LITTERBOX; // a free host's clip isn't in the bucket
+    T(r2_plan_cleanup(s, 4, 8 * R2_GB, 0, -1, plan, 4) == 0);
+
+    // Free hosts: link_hosts' order, unknown and repeated names skipped; Litterbox's hours
+    const FreeHost *order[HOST_COUNT];
+    T(free_order("litterbox, catbox", order, HOST_COUNT) == 1 && order[0]->host == HOST_LITTERBOX);
+    T(free_order("Catbox,nope,litterbox,catbox", order, HOST_COUNT) == 2 && order[0]->host == HOST_CATBOX &&
+      order[1]->host == HOST_LITTERBOX);
+    T(free_order("", order, HOST_COUNT) == 0 && free_max_bytes("") == 0);
+    T(free_max_bytes("catbox") == 200000000 && free_max_bytes("catbox,litterbox") == 1000000000);
+    T(free_hours(0) == 1 && free_hours(5) == 12 && free_hours(72) == 72 && free_hours(500) == 72);
+    R2Share live = {};
+    live.expires_us = 1000;
+    T(r2_share_live(live, 999) && !r2_share_live(live, 1000));
+    live.expires_us = 0;
+    T(r2_share_live(live, 1ll << 60));
 
     // History file round trip, a tab in a title made a space
     wchar_t temp[MAX_PATH];
@@ -860,12 +876,15 @@ static void test_r2()
     str_set(w[1].key, "def.mp4");
     w[1].removed = true;
     w[1].version = 1;
+    w[1].host = HOST_LITTERBOX;
+    w[1].expires_us = 1700000259200000;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
     T(!strcmp(r[0].key, w[0].key) && !strcmp(r[0].url, w[0].url) && !strcmp(r[0].title, "ace round"));
     T(!strcmp(r[0].game, "Valorant") && !strcmp(r[0].path, w[0].path) && r[0].bytes == w[0].bytes);
     T(r[0].uploaded_us == w[0].uploaded_us && r[0].pinned && !r[0].removed && r[0].version == 2);
     T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
+    T(r[0].host == HOST_R2 && !r[0].expires_us && r[1].host == HOST_LITTERBOX && r[1].expires_us == w[1].expires_us);
     DeleteFileW(file.s);
 }
 

@@ -74,6 +74,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_gap_min = 5;
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
+    str_set(c->link_hosts, "catbox,litterbox");
+    c->litterbox_hours = 72;
     c->wave_keep_days = 30;
     c->game_lookup = true;
     c->tooltips = true;
@@ -327,6 +329,9 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "r2_bucket")) str_set(c->r2_bucket, value);
     else if (!strcmp(key, "r2_public_url")) str_set(c->r2_public_url, value);
     else if (!strcmp(key, "r2_budget")) real(&c->r2_budget);
+    else if (!strcmp(key, "link_hosts")) str_set(c->link_hosts, value);
+    else if (!strcmp(key, "litterbox_hours")) c->litterbox_hours = atoi(value);
+    else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "start_with_windows")) boolean(&c->start_with_windows);
@@ -486,6 +491,8 @@ static bool config_save(const Config &c, const Paths &paths)
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed
     fprintf(f, "r2_account = %s\nr2_access_key = %s\nr2_bucket = %s\nr2_public_url = %s\nr2_budget = %g\n",
             c.r2_account, c.r2_access_key, c.r2_bucket, c.r2_public_url, c.r2_budget);
+    fprintf(f, "link_hosts = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_hosts, c.litterbox_hours,
+            c.free_links_seen ? "true" : "false");
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\n", c.popup_monitor);
     boolean("voice_mono", c.voice_mono);

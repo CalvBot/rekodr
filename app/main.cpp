@@ -31,6 +31,11 @@ static void run_command(const char *text)
         ui_show(SCREEN_EDITOR);
         editor_open_file(arg);
     }
+    else if (!strcmp(cmd, "link") && *arg) { // link <path>: shares a file as a link; the log gets the address
+        wchar_t w[MAX_PATH];
+        utf8_to_wide(arg, w, MAX_PATH);
+        if (!r2_share_file(w, "", "", 0)) log_line("link: every link job is busy");
+    }
     else if (!strcmp(cmd, "open-in") && g_app.ui.screen == SCREEN_EDITOR) // open-in premiere|davinci: the editor's XML in it
         ed_open_in(!strcmp(arg, "premiere"));
     else if (!strcmp(cmd, "save")) {
