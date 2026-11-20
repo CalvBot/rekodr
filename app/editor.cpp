@@ -435,7 +435,8 @@ static void ed_save_record()
     ed.dirty = false;
 }
 
-// Recent shares: the share folder's files, newest first. Copies older than share_keep_days are cleared.
+// Recent shares: the share folder's files, last shared first. Copies not shared for share_keep_days are cleared;
+// copying one again counts as sharing it (ed_share_touch).
 static void editor_refresh_shares()
 {
     Editor &ed = g_app.editor;
@@ -468,6 +469,21 @@ static void editor_refresh_shares()
     } while (FindNextFileW(h, &f));
     FindClose(h);
     if (cleared) log_line("editor: cleared %d share copies older than %g days", cleared, g_app.config.share_keep_days);
+}
+
+// A share copy copied again was shared just now: its time is moved up, so it stays share_keep_days from today.
+static void ed_share_touch(const wchar_t *path)
+{
+    const Path &dir = g_app.paths.share_dir;
+    size_t n = wcslen(dir.s);
+    if (_wcsnicmp(path, dir.s, n) || path[n] != L'\\') return;
+    HANDLE h = CreateFileW(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) return;
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    SetFileTime(h, 0, 0, &ft);
+    CloseHandle(h);
+    editor_refresh_shares();
 }
 
 static void editor_open(const LibItem &item)
@@ -617,7 +633,8 @@ static f32 ed_share_mb()
     return mb < 1 ? 1 : mb;
 }
 
-static void ed_start(SaveKind kind)
+// Keep, Share, or with small a Keep at the share size: a smaller clip kept in Clips for good, not a share copy.
+static void ed_start(SaveKind kind, bool small_keep = false)
 {
     Editor &ed = g_app.editor;
     ed_save_record();
@@ -627,11 +644,15 @@ static void ed_start(SaveKind kind)
     j.info = ed.item.info;
     if (ed.player.duration > 0) j.info.duration = ed.player.duration;
     j.edit = ed.edit;
-    if (kind == SAVE_KEEP) {
+    if (kind == SAVE_KEEP || small_keep) {
         swprintf(j.out_dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, ed.item.year);
-        // Kept beside clips that may hold the original: its own name, or the original's with " edit"
+        // Kept beside clips that may hold the original: its own name, or the original's with " edit" (" small")
         if (ed.out_name[0] && strcmp(ed.out_name, ed.item.name)) snprintf(j.stem, sizeof j.stem, "%s", ed.out_name);
-        else snprintf(j.stem, sizeof j.stem, "%s edit", ed.item.name);
+        else snprintf(j.stem, sizeof j.stem, "%s %s", ed.item.name, small_keep ? "small" : "edit");
+        if (small_keep) {
+            kind = SAVE_SHARE; // made as a share copy is, into Clips
+            j.share_mb = ed_share_mb();
+        }
     } else {
         j.out_dir = g_app.paths.share_dir;
         snprintf(j.stem, sizeof j.stem, "%s", ed.out_name[0] ? ed.out_name : ed.item.name);
@@ -640,7 +661,7 @@ static void ed_start(SaveKind kind)
     clean_name(j.stem); // the name is typed: drop what a file name can't hold
     if (!j.stem[0]) snprintf(j.stem, sizeof j.stem, "%s", ed.item.name);
     u32 id = save_edit(kind, j);
-    if (kind == SAVE_KEEP) ed.keep_job = id;
+    if (kind == SAVE_KEEP || small_keep) ed.keep_job = id;
     else ed.share_job = id;
     ed.result_url[0] = 0;
     if (!id) {
@@ -2110,6 +2131,7 @@ static void ed_file_actions(const char *path, f32 right, f32 y)
     kit_next_tip("Copy the file");
     if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) {
         bool ok = clipboard_copy_file(w);
+        if (ok) ed_share_touch(w);
         snprintf(ed.result, sizeof ed.result, ok ? "Copied %s" : "Couldn't copy %s", name);
         ed.result_error = !ok;
         str_set(ed.result_path, path);
@@ -2190,17 +2212,27 @@ static void ed_share_tab(f32 w)
     char len_s[32];
     fmt_time(len, len_s, sizeof len_s);
 
-    // Keep: the title row with its button beside it
+    // Keep: the title row with its buttons beside it. Keep small makes the share size's copy into Clips, kept for good.
     f32 head_h = ed_card_head_h(), bw = kit_px(120), gap = kit_px(12);
     f32 keep_row = head_h > fh ? head_h : fh;
     {
         char line[96];
-        snprintf(line, sizeof line, "Full quality, %s, saved in Clips", len_s);
+        snprintf(line, sizeof line, "Full quality, %s", len_s);
+        f32 kw = kit_px(92), small_mb = ed_share_mb();
+        f64 kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
+        bool small_fits = share_plan(len, small_mb, m.track_count > 0, m.width, m.height, m.fps, kbps).fits;
         ImVec2 top = ImGui::GetCursorScreenPos();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
-        ed_card_head(ICON_SAVE, "Keep", line, iw - bw - gap);
-        ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
-        if (kit_button(keeping ? "Keeping..." : "Keep", KIT_SECONDARY, ImVec2(bw, 0), !keeping)) ed_start(SAVE_KEEP);
+        ed_card_head(ICON_SAVE, "Keep", line, iw - 2 * kw - gap - kit_px(8));
+        ImGui::SetCursorScreenPos(ImVec2(top.x + iw - 2 * kw - kit_px(8), top.y + (keep_row - fh) / 2));
+        char small_tip[96];
+        snprintf(small_tip, sizeof small_tip, small_fits ? "A copy under %.0f MB, kept in Clips for good" :
+                                                           "Too long for %.0f MB: trim it shorter", small_mb);
+        kit_next_tip(small_tip);
+        if (kit_button("Keep small", KIT_SECONDARY, ImVec2(kw, 0), !keeping && small_fits)) ed_start(SAVE_KEEP, true);
+        ImGui::SameLine(0, kit_px(8));
+        kit_next_tip("Full quality, saved in Clips");
+        if (kit_button(keeping ? "Keeping..." : "Keep", KIT_SECONDARY, ImVec2(kw, 0), !keeping)) ed_start(SAVE_KEEP);
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
     }
     ImGui::Dummy(ImVec2(1, kit_px(4)));
@@ -2271,7 +2303,7 @@ static void ed_share_tab(f32 w)
         char label[64], pc[16];
         f32 frac = v ? v->progress : lj.progress;
         if (v)
-            snprintf(label, sizeof label, "%s%s", v->kind == SAVE_SHARE ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
+            snprintf(label, sizeof label, "%s%s", sharing ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
         else
             str_set(label, lj.state == R2_UPLOADING ? "Uploading" : lj.state == R2_QUEUED ? "Link, waiting" : "Making the link's copy");
         snprintf(pc, sizeof pc, "%.0f%%", frac * 100);
@@ -2332,7 +2364,7 @@ static void ed_share_tab(f32 w)
         } else {
             if (i == 0) {
                 char none[64];
-                snprintf(none, sizeof none, "Nothing in the last %g days", g_app.config.share_keep_days);
+                snprintf(none, sizeof none, "Nothing shared in the last %g days", g_app.config.share_keep_days);
                 ImVec2 ts = ImGui::CalcTextSize(none);
                 dl->AddText(ImVec2(at.x, floorf(at.y + (fh - ts.y) / 2)), col32(COL_FAINT), none);
             }

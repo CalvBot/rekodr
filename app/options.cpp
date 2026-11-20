@@ -2943,7 +2943,7 @@ static void options_general()
     if (opt_row_folder("Playback cache", "Where the Timeline builds what it plays; a fast drive starts sooner", "play",
                        &c.play_dir))
         options_apply(0);
-    if (opt_row_f32("Keep share copies for", "The small copies Share makes; older ones are deleted", "##share", &c.share_keep_days, 0.1, 365, "days")) {
+    if (opt_row_f32("Keep share copies for", "Share's small copies go this long after they were last shared. Clips stay", "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);
     }
