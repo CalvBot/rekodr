@@ -49,11 +49,17 @@ Keep a whole session from start to finish.
 ### 3. Library, editing and sharing
 - **Library:** clips and sessions, newest first, filtered by game or session name, with search. It's a fixed-size
   scrolling grid with hover-scrub and a player.
-- **Edits never change the original.** An edit is a small record: trim in/out, zoom keyframes, per-track volume and
-  mute. It's saved automatically in the year's `Data` folder and reopens with the clip.
+- **Edits never change the original.** An edit is a small record: the pieces of the video kept, in the order they
+  play, plus zoom keyframes and per-track volume and mute. It's saved automatically in the year's `Data` folder and
+  reopens with the clip.
+- **Simple and Advanced:** a switch in the editor, remembered. Simple has one in and one out. Advanced cuts the clip
+  into pieces: split at the playhead, select pieces, ripple-delete them, trim their edges and drag them into a new
+  order. The timeline, playhead and playback show the pieces joined, as they will be written. Keys stay on the
+  moment of the video they were set on and go with a deleted piece. A clip with cuts always opens in Advanced;
+  Simple keeps the cuts and hides the tools.
 - **Two ways out of the editor:**
-  - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. Trims are stream-copied
-    where possible. A zoom forces a re-encode, done at the recording's quality. Every track is kept, and the Mix
+  - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
+    where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix
     track is rebuilt from the volumes. Sessions are cut into clips this way.
   - **Share:** encodes a small copy (Discord 10 MB, 50 MB, or a custom size) with one stereo mix. It goes to
     `%TEMP%\clipback\share\` and onto the clipboard, ready to paste. Share copies never go in the Clips folder. A
@@ -88,7 +94,7 @@ Everything clipback saves goes under one folder (setting, default `<Videos>\Clip
 ```
 
 `Data` holds one small text file per clip or session, named after the video:
-- **Edit records:** trim, zoom keyframes, track volumes.
+- **Edit records:** pieces, zoom keyframes, track volumes.
 - **Session records:** name, whether it's a game or custom, the real start and end, and which part has footage.
   This includes sessions not saved yet, so a session can be defined before, or without, saving its video.
 
@@ -207,7 +213,7 @@ One window with a header (status, pause, Help, Options):
 - **Library:** Clips and Sessions, with date, game and order dropdowns, search, a scrolling grid and a player.
 - **Sessions *Not saved* list:** sessions still in the buffer, with Save and how long until each is gone.
 - **Timeline:** the buffer, a range selection, Save and Edit.
-- **Editor:** trim, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
+- **Editor:** Simple trim or Advanced pieces, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
 - **Options:**
   - apps and their categories (new apps first; right-click opens the file location)
   - hotkeys
