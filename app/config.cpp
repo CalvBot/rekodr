@@ -14,6 +14,7 @@ static void paths_init(Paths *p)
         swprintf(p->config_dir.s, MAX_PATH, L"%s\\config", home);
         swprintf(p->local_dir.s, MAX_PATH, L"%s\\local", home);
         swprintf(p->share_dir.s, MAX_PATH, L"%s\\share", home);
+        swprintf(p->link_dir.s, MAX_PATH, L"%s\\link", home);
     } else {
         wchar_t *roaming = 0, *local = 0;
         SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, 0, &roaming);
@@ -25,6 +26,7 @@ static void paths_init(Paths *p)
         wchar_t temp[MAX_PATH];
         GetTempPathW(MAX_PATH, temp); // ends in a backslash
         swprintf(p->share_dir.s, MAX_PATH, L"%sclipback\\share", temp);
+        swprintf(p->link_dir.s, MAX_PATH, L"%sclipback\\link", temp);
     }
     p->settings = path_join(p->config_dir, L"settings.txt");
     SHCreateDirectoryExW(0, p->config_dir.s, 0);

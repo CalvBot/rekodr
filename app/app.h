@@ -294,6 +294,7 @@ enum SaveKind : u8 {
     SAVE_KEEP,    // the editor's Keep: an edit of a saved file, at full quality, into <year>\Clips
     SAVE_SHARE,   // the editor's Share: a small copy with one stereo mix, into the share folder
     SAVE_PREVIEW, // a stretch of the buffer into the local folder, for the timeline's Play; not a saved file
+    SAVE_LINK,    // a copy for a link: H.264 with the Mix only, played from the start while it loads, into the link folder
 };
 
 enum SaveState : u8 { SAVE_QUEUED, SAVE_RUNNING, SAVE_DONE, SAVE_FAILED, SAVE_CANCELLED };
@@ -353,10 +354,10 @@ struct EditRecord {
     i32     vol_count[MEDIA_MAX_TRACKS + 1];
 };
 
-// A Keep or Share job: everything the save worker needs, copied with the request.
+// A Keep, Share or Link job: everything the save worker needs, copied with the request.
 struct EditJob {
     Path       src;       // the original
-    Path       out_dir;   // <year>\Clips for Keep, the share folder for Share
+    Path       out_dir;   // <year>\Clips for Keep, the share folder for Share, the link folder for Link
     char       stem[256]; // the output's name without ".mp4" (made unique if taken)
     MediaInfo  info;
     EditRecord edit;
@@ -400,6 +401,7 @@ struct Paths {
     Path local_dir;  // %LOCALAPPDATA%\clipback (or %CLIPBACK_HOME%\local): log, thumbnail cache
     Path settings;   // config_dir\settings.txt
     Path share_dir;  // %TEMP%\clipback\share
+    Path link_dir;   // %TEMP%\clipback\link: copies made for a link, until they're uploaded
 };
 
 // Screens, one struct each, owned by the file of the same name (included from ui.cpp).

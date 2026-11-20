@@ -568,7 +568,8 @@ static void editor_on_save_event(const Event &e)
     Editor &ed = g_app.editor;
     u32 id = (u32)(e.b & 0xffffffff);
     const SaveJobView *job = save_view(id);
-    if (e.a == SAVE_EV_DONE && !(job && job->kind == SAVE_PREVIEW)) library_rescan(); // a new clip, session or Keep
+    if (e.a == SAVE_EV_DONE && !(job && (job->kind == SAVE_PREVIEW || job->kind == SAVE_LINK)))
+        library_rescan(); // a new clip, session or Keep
     if (!id || (id != ed.keep_job && id != ed.share_job)) return;
     bool share = id == ed.share_job;
     const char *name = strrchr(e.text, '\\');

@@ -556,7 +556,7 @@ static void toast_place(Toast &t, const RECT &work)
 // A save finished: Clip saved, unless clipback's own window is in front (it shows the save itself).
 static void toast_saved(SaveKind kind, const char *path)
 {
-    if (kind == SAVE_PREVIEW) return;
+    if (kind == SAVE_PREVIEW || kind == SAVE_LINK) return;
     if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
     Toast &t = g_toast_saved;
     RECT work;

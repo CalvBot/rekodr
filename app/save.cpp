@@ -49,7 +49,7 @@ struct SaveRequest {
     char     name[256];
     bool     recording; // the recorder says it's capturing, so the newest segment is still being written
     u64      queued_ms; // GetTickCount64 when it was queued
-    EditJob  edit;      // SAVE_KEEP and SAVE_SHARE
+    EditJob  edit;      // SAVE_KEEP, SAVE_SHARE and SAVE_LINK
 };
 
 // The only data shared between the main thread and the worker, always under `lock`.
@@ -639,7 +639,7 @@ static void arg_pair(wchar_t *a, i32 cap, const char *key, const char *fmt, ...)
 }
 
 // Runs one job. Returns the event to finish with; `out` gets the path saved or the error.
-static i64 edit_run(SaveWork *w, char *out, i32 out_cap); // Keep and Share, below
+static i64 edit_run(SaveWork *w, char *out, i32 out_cap); // Keep, Share and Link, below
 
 static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 {
@@ -649,7 +649,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         snprintf(out, out_cap, "ffmpeg not found (install it with winget install Gyan.FFmpeg, or set it in Options)");
         return SAVE_EV_FAILED;
     }
-    if (req.kind == SAVE_KEEP || req.kind == SAVE_SHARE) return edit_run(w, out, out_cap);
+    if (req.kind == SAVE_KEEP || req.kind == SAVE_SHARE || req.kind == SAVE_LINK) return edit_run(w, out, out_cap);
 
     // The segment covering `to` is still being written: wait for it to finish (a couple of seconds at most), so the
     // clip ends at the moment the save was asked for. "Being written" is the recorder saying it's capturing, or a
@@ -1397,12 +1397,38 @@ static void edit_encoder_args(wchar_t *a, i32 cap, u8 vendor, i32 kbps)
     }
 }
 
+// The codecs of a file's video and first audio stream ("h264", "aac"), by ffprobe; empty where there's none.
+static void file_codecs(const Path &ffmpeg, const Path &file, char (&video)[16], char (&audio)[16])
+{
+    static char out[4096];
+    static wchar_t args[1024];
+    video[0] = audio[0] = 0;
+    args[0] = 0;
+    static const char *const head[] = {"-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of", "default"};
+    arg_list(args, COUNT(args), head, COUNT(head));
+    cmd_arg(args, COUNT(args), file.s);
+    if (proc_run(ffprobe_for(ffmpeg).s, args, 20000, out, sizeof out) != 0) return;
+    char name[16] = {};
+    char *ctx = 0;
+    for (char *line = strtok_s(out, "\r\n", &ctx); line; line = strtok_s(0, "\r\n", &ctx)) {
+        if (!strncmp(line, "codec_name=", 11)) snprintf(name, sizeof name, "%s", line + 11);
+        else if (!strcmp(line, "codec_type=video") && !video[0]) snprintf(video, sizeof video, "%s", name);
+        else if (!strcmp(line, "codec_type=audio") && !audio[0]) snprintf(audio, sizeof audio, "%s", name);
+    }
+}
+
 static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 {
     const SaveRequest &req = w->req;
     const EditJob &j = req.edit;
     const MediaInfo &m = j.info;
     bool share = req.kind == SAVE_SHARE;
+    // A link is played by Discord's player: H.264 and one track of sound. It's copied as it is when the file is that
+    // already and the edit leaves the picture and the sound alone, else made at about the source's quality.
+    bool link = req.kind == SAVE_LINK;
+    char vcodec[16] = {}, acodec[16] = {};
+    if (link) file_codecs(w->cfg.ffmpeg, j.src, vcodec, acodec);
+    bool link_video_ok = !strcmp(vcodec, "h264"), link_audio_ok = !acodec[0] || !strcmp(acodec, "aac");
     // The input is read from the earliest piece's start to the latest one's end (`from`, `span`); `dur` is the
     // joined length.
     EditPiece pc[EDIT_MAX_PIECES];
@@ -1438,7 +1464,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 
     bool zoom = edit_zoomed(j.edit);
     bool touched = edit_audio_touched(j.edit, m);
-    bool reencode = share || zoom || cuts;
+    bool reencode = share || zoom || cuts || (link && !link_video_ok);
     SharePlan plan = {};
     i32 video_kbps = 0, side = 0;
     bool reduce_fps = false;
@@ -1488,12 +1514,12 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                               pc[i].to - from, i);
             } else graph_add(w, "[v];\n");
         }
-        bool mix = (share || touched) && edit_audio_graph(w, j, from);
+        bool mix = (share || touched || (link && (cuts || !link_audio_ok))) && edit_audio_graph(w, j, from);
         // With cuts, the audio streams written, in order: -1 for the rebuilt mix [a], else a track as recorded. Each
         // is cut into the pieces, and the pieces of the video and of every stream are joined into [v] and [o<n>].
         i32 streams[MEDIA_MAX_TRACKS + 1], ns = 0;
         if (cuts) {
-            if (share) {
+            if (share || link) {
                 if (mix) streams[ns++] = -1;
             } else {
                 i32 first = 0;
@@ -1573,12 +1599,17 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 snprintf(key, sizeof key, "-disposition:a:%d", s);
                 arg_pair(a, cap, key, s ? "0" : "default");
             }
-        } else if (share) {
+        } else if (share || (link && mix)) {
             if (mix) {
                 arg_pair(a, cap, "-map", "[a]");
                 arg_pair(a, cap, "-c:a", "aac");
-                arg_pair(a, cap, "-b:a", "%dk", plan.audio_kbps);
+                arg_pair(a, cap, "-b:a", "%dk", share ? plan.audio_kbps : 192);
                 arg_pair(a, cap, "-ar", "48000");
+            }
+        } else if (link) {
+            if (m.track_count > 0) { // the Mix as it is
+                arg_pair(a, cap, "-map", "0:a:0");
+                arg_pair(a, cap, "-c:a", "copy");
             }
         } else if (!touched) {
             if (m.track_count > 0) {
@@ -1608,16 +1639,16 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             arg_pair(a, cap, "-metadata:s:a:0", "handler_name=Mix");
             arg_pair(a, cap, "-disposition:a:0", "default");
         }
-        // Keep with one piece carries the original's chapters; Share and cuts have none
-        if (share || cuts) arg_pair(a, cap, "-map_chapters", "-1");
+        // Keep with one piece carries the original's chapters; Share, Link and cuts have none
+        if (share || link || cuts) arg_pair(a, cap, "-map_chapters", "-1");
         arg_pair(a, cap, "-movflags", "+faststart");
         arg_pair(a, cap, "-f", "mp4");
         cmd_arg(a, cap, part_path.s);
 
-        log_line("%s %u: %.1f s in %d piece%s from %.2f s, zoom %d, audio %s, %s -> %s", share ? "share" : "keep", req.id,
-                 dur, np, np == 1 ? "" : "s", from,
-                 zoom ? j.edit.key_count : 0, touched ? "re-mixed" : "as recorded",
-                 share ? "re-encoded" : reencode ? "re-encoded" : "copied", final8);
+        log_line("%s %u: %.1f s in %d piece%s from %.2f s, zoom %d, audio %s, %s -> %s",
+                 share ? "share" : link ? "link" : "keep", req.id, dur, np, np == 1 ? "" : "s", from,
+                 zoom ? j.edit.key_count : 0, mix ? "re-mixed" : "as recorded", reencode ? "re-encoded" : "copied", final8);
+        if (link) log_line("link %u: source %s / %s", req.id, vcodec[0] ? vcodec : "-", acodec[0] ? acodec : "-");
         if (share)
             log_line("share %u: %g MB asked, attempt %d: video %d kbps at %dp%g%s%s, audio %d kbps", req.id,
                      j.share_mb, attempt + 1, video_kbps, side, plan.fps, plan.shrunk ? " (shrunk)" : "",
@@ -1821,6 +1852,25 @@ static u32 save_edit(SaveKind kind, const EditJob &job)
     return save_queue(kind, 0, 0, job.stem, &job);
 }
 
+// Queues a copy of `src` for a link, with `edit` applied (an empty record for the file as it is): H.264 with the
+// first (Mix) track only, +faststart, in the link folder as <stem>.mp4. The file is stream-copied when it's already
+// H.264 and AAC and the edit only trims; anything else is encoded at about the source's quality, with no size to
+// fit. Follow it with save_view(id) like any save; the caller deletes the file once it's done with it. Returns the
+// job id, or 0 if it couldn't be queued.
+static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &edit, const char *stem)
+{
+    static EditJob j;
+    j = {};
+    j.src = src;
+    j.out_dir = g_app.paths.link_dir;
+    j.info = info;
+    j.edit = edit;
+    str_set(j.stem, stem);
+    clean_name(j.stem);
+    if (!j.stem[0]) str_set(j.stem, "clip");
+    return save_queue(SAVE_LINK, 0, 0, j.stem, &j);
+}
+
 // Saves the last `secs` seconds of the buffer as a clip in <save_dir>\<year>\Clips. A start before the oldest
 // footage is moved up to it, so the saved line says what the clip holds.
 static void save_last(i64 secs)
@@ -2019,7 +2069,7 @@ static void save_on_event(const Event &e)
         v->state = SAVE_DONE;
         v->progress = 1;
         str_set(v->path, e.text);
-        if (v->kind != SAVE_PREVIEW) str_set(g_app.saving.last_saved, e.text);
+        if (v->kind != SAVE_PREVIEW && v->kind != SAVE_LINK) str_set(g_app.saving.last_saved, e.text);
         g_app.saving.jobs_running--;
         log_line("save %u: saved %s", id, e.text);
         saved_add(v->kind, v->from_us, v->to_us, e.text);

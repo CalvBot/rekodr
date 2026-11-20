@@ -103,7 +103,7 @@ static void pipe_publish()
 // v is the job, or 0 for a clip that failed before it was queued.
 static void pipe_saved(SaveKind kind, bool ok, const char *file_or_error, const SaveJobView *v = 0)
 {
-    if (kind == SAVE_PREVIEW) return;
+    if (kind == SAVE_PREVIEW || kind == SAVE_LINK) return; // not saved files
     static const char *const kinds[] = {"clip", "session", "keep", "share"};
     char text[1100], range[128] = "", line[1400];
     json_escape(file_or_error, text, sizeof text);
