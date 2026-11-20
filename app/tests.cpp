@@ -121,6 +121,19 @@ static void test_card_clicks()
     lib.item_count = lib.shown_count = 0;
 }
 
+// The player's sound menu: all of a file's tracks ticked plays its Mix, any fewer plays the ticked ones.
+static void test_sound_plan()
+{
+    i32 out[MEDIA_MAX_TRACKS];
+    T(lib_sound_plan(true, 4, 0, out) == -1);                          // Mix + 3, all ticked: the Mix
+    T(lib_sound_plan(true, 4, 0xe, out) == -1);                        // every bit set is the same
+    T(lib_sound_plan(true, 4, 0xa, out) == 2 && out[0] == 1 && out[1] == 3); // two of three
+    T(lib_sound_plan(true, 4, 0x4, out) == 1 && out[0] == 2);          // one
+    T(lib_sound_plan(false, 3, 0, out) == 3 && out[0] == 0 && out[2] == 2); // no Mix: all of them, each
+    T(lib_sound_plan(false, 3, 0x2, out) == 1 && out[0] == 1);
+    T(lib_sound_plan(false, 1, 0, out) == 1 && out[0] == 0);           // one track
+}
+
 static void test_lengths()
 {
     T(parse_length_secs("30s") == 30);
@@ -1149,6 +1162,7 @@ int main()
     test_lengths();
     test_select_range();
     test_card_clicks();
+    test_sound_plan();
     test_game_pick();
     test_game_from_name();
     test_save_names();

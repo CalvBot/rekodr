@@ -158,10 +158,9 @@ static void clean_name(char *s)
     for (size_t n = strlen(s); n && s[n - 1] == '.'; n--) s[n - 1] = 0; // Windows drops trailing dots
 }
 
-// A readable name: the one set in Options, else "Overwatch" from overwatch.exe.
-static void display_name(const SaveSettings &c, const char *exe, char *out, i32 cap)
+// A readable name: the one set in Options (`a`, its entry, may be 0), else "Overwatch" from overwatch.exe.
+static void display_name_of(const AppInfo *a, const char *exe, char *out, i32 cap)
 {
-    const AppInfo *a = save_app(c, exe);
     if (a && (a->name.s[0] || a->desc.s[0])) {
         snprintf(out, cap, "%s", a->name.s[0] ? a->name.s : a->desc.s);
     } else {
@@ -171,6 +170,11 @@ static void display_name(const SaveSettings &c, const char *exe, char *out, i32 
         out[0] = (char)toupper((u8)out[0]);
     }
     clean_name(out);
+}
+
+static void display_name(const SaveSettings &c, const char *exe, char *out, i32 cap)
+{
+    display_name_of(save_app(c, exe), exe, out, cap);
 }
 
 static SYSTEMTIME local_time(i64 us)

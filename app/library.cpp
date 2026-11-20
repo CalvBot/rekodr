@@ -3072,6 +3072,84 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
 static f32 g_lib_volume = 1;
 static bool g_lib_muted;
 static u32 g_lib_volume_gen = 0xffffffff; // the player gen it was last given to
+static u32 g_lib_sound_gen = 0xffffffff;  // the player gen its tracks were last picked for
+static bool g_lib_sound_show;              // `show sound`: the sound menu opens
+
+static TrackKind ed_track_kind(const char *title, i32 slot); // editor.cpp
+
+// What plays for the ticked tracks in `mask` (one bit per audio track, 0 = all ticked). The file's own tracks come
+// after its Mix when it has one: with all of them ticked the Mix plays (-1), else the ticked ones go in `out` and
+// their count comes back.
+static i32 lib_sound_plan(bool has_mix, i32 tracks, u32 mask, i32 *out)
+{
+    i32 n = 0;
+    bool all = true;
+    for (i32 t = has_mix ? 1 : 0; t < tracks && t < MEDIA_MAX_TRACKS; t++) {
+        if (!mask || mask >> t & 1) out[n++] = t;
+        else all = false;
+    }
+    return has_mix && all ? -1 : n;
+}
+
+// A saved track's picture: a game's art, else the icon of the app it was saved from (found by the name it was
+// saved under), a Discord person's being Discord's. 0 when there's none, for the kind's symbol.
+static ID3D11ShaderResourceView *lib_track_icon(const char *title, TrackKind kind)
+{
+    if (kind == KIND_MIC || kind == KIND_MIX) return 0;
+    char base[128];
+    snprintf(base, sizeof base, "%s", title);
+    size_t n = strlen(base);
+    if (kind != KIND_APP && n >= 7) base[n - 7] = 0; // " (game)", " (chat)"
+    if (kind == KIND_GAME)
+        if (ID3D11ShaderResourceView *srv = game_db_icon(base)) return srv;
+    const Config &c = g_app.config;
+    for (i32 i = 0; i < c.app_count; i++) {
+        char dn[128];
+        display_name_of(&c.apps[i], c.apps[i].exe.s, dn, sizeof dn);
+        if (strcmp(dn, base)) continue;
+        return app_icon(!strncmp(c.apps[i].exe.s, "discord-", 8) ? "discord.exe" : c.apps[i].exe.s);
+    }
+    return 0;
+}
+
+// A row of the sound menu: a tick box, the track's icon and its name. True when clicked; the menu stays open.
+static bool lib_track_row(i32 t, const char *title, bool ticked, f32 w)
+{
+    f32 h = kit_px(34), box = kit_px(16), is = kit_px(20);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::PushID(t);
+    bool clicked = ImGui::Selectable("##track", false, ImGuiSelectableFlags_NoAutoClosePopups, ImVec2(w, h));
+    bool hot = ImGui::IsItemHovered();
+    ImGui::PopID();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
+    if (clicked) dev_click("track", title);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 b0(a.x + kit_px(10), floorf(a.y + (h - box) / 2)), b1(b0.x + box, b0.y + box);
+    if (ticked) {
+        dl->AddRectFilled(b0, b1, col32(hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(4));
+        ImVec2 cs = g_font_icon->CalcTextSizeA(box * 0.6f, FLT_MAX, 0, ICON_CHECK);
+        dl->AddText(g_font_icon, box * 0.6f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
+                    IM_COL32_WHITE, ICON_CHECK);
+    } else {
+        dl->AddRectFilled(b0, b1, col32(COL_BG), kit_px(4));
+        dl->AddRect(b0, b1, col32(hot ? COL_DIM : COL_FAINT), kit_px(4), 0, kit_px(1.5f));
+    }
+    TrackKind kind = ed_track_kind(title, t);
+    f32 ix = b1.x + kit_px(12), iy = floorf(a.y + (h - is) / 2);
+    if (ID3D11ShaderResourceView *srv = lib_track_icon(title, kind)) {
+        dl->AddImageRounded((ImTextureID)srv, ImVec2(ix, iy), ImVec2(ix + is, iy + is), ImVec2(0, 0), ImVec2(1, 1),
+                            IM_COL32_WHITE, kit_px(4));
+    } else {
+        const char *g = KIND_LOOK[kind].icon;
+        ImVec2 gs = g_font_icon->CalcTextSizeA(g_font_icon->FontSize, FLT_MAX, 0, g);
+        dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(floorf(ix + (is - gs.x) / 2), floorf(a.y + (h - gs.y) / 2)),
+                    col32(KIND_LOOK[kind].rgb), g);
+    }
+    f32 tx = ix + is + kit_px(10);
+    text_clipped(dl, ImVec2(tx, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), a.x + w - kit_px(10) - tx,
+                 col32(ticked ? COL_TEXT : COL_DIM), title);
+    return clicked;
+}
 
 static void lib_player_view()
 {
@@ -3224,45 +3302,52 @@ static void lib_player_view()
 
     const MediaInfo &mi = lib.playing.info;
     i32 tracks = p.audio_count ? p.audio_count : mi.track_count;
-    f32 vol_w = kit_px(96), sound_w = tracks > 1 ? kit_px(180) : 0;
+    bool has_mix = edit_has_mix(mi) && tracks >= 2;
+    i32 first_real = has_mix ? 1 : 0, real = tracks - first_real;
+    f32 vol_w = kit_px(96), sound_w = real > 1 ? kit_px(180) : 0;
     f32 right_w = sound_w + (sound_w > 0 ? kit_px(12) : 0) + fh + vol_w;
     // The seek bar, edge to edge under the controls
     ImGui::SetCursorScreenPos(ImVec2(pos.x, y + fh + seek_gap));
     scrub_bar("##seek", &p, full_w, seek_h, 0);
     f32 x = r0.x + full_w - pad - right_w;
     bool tracks_changed = false;
-    if (tracks > 1) { // which audio tracks are heard: tick any of them
+    if (real > 1) { // which of the file's tracks are heard: all of them is its Mix
         ImGui::SetCursorScreenPos(ImVec2(x, y));
-        u32 mask = p.sound_mask ? p.sound_mask : 1u << p.sound;
-        i32 on = 0, first = -1;
-        for (i32 t = 0; t < tracks && t < MEDIA_MAX_TRACKS; t++)
-            if (mask & (1u << t)) {
+        u32 all = 0;
+        i32 on = 0, one = -1;
+        for (i32 t = first_real; t < tracks && t < MEDIA_MAX_TRACKS; t++) {
+            all |= 1u << t;
+            if (!p.sound_mask || p.sound_mask >> t & 1) {
                 on++;
-                if (first < 0) first = t;
+                one = t;
             }
+        }
         char cur[64];
-        if (on > 1) snprintf(cur, sizeof cur, "%d tracks", on);
-        else if (first >= 0 && first < mi.track_count) snprintf(cur, sizeof cur, "%s", mi.tracks[first]);
-        else snprintf(cur, sizeof cur, "Track %d", first + 1);
-        ImGui::SetNextItemWidth(sound_w);
-        ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
-        if (ImGui::BeginCombo("##sound", cur)) {
-            for (i32 t = 0; t < tracks && t < MEDIA_MAX_TRACKS; t++) {
+        if (on >= real) snprintf(cur, sizeof cur, "All tracks");
+        else if (on > 1) snprintf(cur, sizeof cur, "%d tracks", on);
+        else if (one >= 0 && one < mi.track_count) snprintf(cur, sizeof cur, "%s", mi.tracks[one]);
+        else snprintf(cur, sizeof cur, "Track %d", one + 1);
+        if (lib_pill("##sound", cur, sound_w, on < real) || g_lib_sound_show) ImGui::OpenPopup("sound");
+        g_lib_sound_show = false;
+        ImGui::SetNextWindowPos(ImVec2(x + sound_w, y - kit_px(6)), 0, ImVec2(1, 1)); // above it, right-aligned
+        lib_popup_style_push(8);
+        bool sound_open = ImGui::BeginPopup("sound");
+        lib_popup_style_pop();
+        if (sound_open) {
+            for (i32 t = first_real; t < tracks && t < MEDIA_MAX_TRACKS; t++) {
                 char name[48];
-                if (t < mi.track_count) snprintf(name, sizeof name, "%s##%d", mi.tracks[t], t);
-                else snprintf(name, sizeof name, "Track %d##%d", t + 1, t);
-                bool ticked = (mask & (1u << t)) != 0;
-                if (ImGui::Checkbox(name, &ticked)) {
-                    u32 m = ticked ? mask | (1u << t) : mask & ~(1u << t);
-                    if (m) { // at least one stays on
-                        p.sound_mask = m;
-                        tracks_changed = true;
-                    }
+                if (t < mi.track_count) snprintf(name, sizeof name, "%s", mi.tracks[t]);
+                else snprintf(name, sizeof name, "Track %d", t + 1);
+                u32 m = p.sound_mask ? p.sound_mask : all;
+                if (!lib_track_row(t, name, m >> t & 1, kit_px(240))) continue;
+                m ^= 1u << t;
+                if (m & all) { // at least one stays on
+                    p.sound_mask = (m & all) == all ? 0 : m & all;
+                    tracks_changed = true;
                 }
             }
-            ImGui::EndCombo();
+            ImGui::EndPopup();
         }
-        ImGui::PopStyleColor();
         x += sound_w + kit_px(12);
     }
     ImGui::SetCursorScreenPos(ImVec2(x, y));
@@ -3277,15 +3362,15 @@ static void lib_player_view()
         g_lib_muted = false;
         vol_changed = true;
     }
-    if (tracks_changed && p.engine && p.loaded) {
-        // One track plays on the video's engine; several each get their own engine, mixed by Windows.
-        i32 list[MEDIA_MAX_TRACKS], n = 0;
-        for (i32 t = 0; t < p.audio_count && t < MEDIA_MAX_TRACKS; t++)
-            if (p.sound_mask & (1u << t)) list[n++] = t;
+    if (p.engine && p.loaded && (tracks_changed || g_lib_sound_gen != p.gen)) {
+        // The Mix or one track plays on the video's engine; several each get their own engine, mixed by Windows.
+        i32 list[MEDIA_MAX_TRACKS];
+        i32 n = lib_sound_plan(has_mix, p.audio_count, p.sound_mask, list);
         if (n <= 1) {
             player_clear_tracks(&p);
-            player_set_sound(&p, n ? list[0] : 0);
+            player_set_sound(&p, n == 1 ? list[0] : 0);
         } else player_set_tracks(&p, list, n);
+        g_lib_sound_gen = p.gen;
         vol_changed = true;
     }
     if (p.engine && p.loaded && (vol_changed || g_lib_volume_gen != p.gen)) {
