@@ -260,8 +260,13 @@ One window with a header (status, pause, Help, Options):
 - An HTTP API (the current `127.0.0.1:47820` endpoints go away).
 - Web or Edge pages.
 - A separate UI process.
-- Cloud upload.
 - Recording more than one monitor at once.
+- Accounts or logging in to clipback.
+- Joining several clips into one video (montages).
+- Cropping to vertical for Shorts or TikTok.
+- Play-time stats per game.
+- Posting straight to YouTube, TikTok or X.
+- Sending an edit to Premiere or DaVinci directly: the XML export covers it.
 
 ## Open questions
 1. Cuts snap to the 2 s keyframes today. Should they be frame-exact, by re-encoding only the first part?
