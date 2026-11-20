@@ -343,6 +343,7 @@ static void test_settings_round_trip()
     a.timeline_names = 220;
     a.editor_top = 0.6f;
     a.editor_lane = 60;
+    a.editor_zoom_view = 1;
     str_set(a.codec.s, "hevc");
     a.hotkey_count = 1;
     str_set(a.hotkeys[0].keys.s, "Alt+F10");
@@ -401,6 +402,7 @@ static void test_settings_round_trip()
     T(b.timeline_names == 220);
     T(b.editor_top == 0.6f);
     T(b.editor_lane == 60);
+    T(b.editor_zoom_view == 1);
     T(b.input_count == 1 && !strcmp(b.inputs[0].id, "{0.0.1.00000000}.{a}") &&
       !strcmp(b.inputs[0].name, "Line (RODE AI-1)") && b.inputs[0].mode == INPUT_STEREO);
     char short_name[64];

@@ -2039,7 +2039,11 @@ static void ed_edit_tab(f32 w)
     ImVec2 zp = ImGui::GetCursorScreenPos(), zs = ImGui::CalcTextSize(zt);
     dl->AddText(ImVec2(zp.x + val_w - zs.x, floorf(zp.y + (fh - zs.y) / 2)), col32(COL_TEXT), zt);
     ImGui::Dummy(ImVec2(val_w, fh));
-    kit_dim("Drag the picture to aim");
+    // How the picture shows it; the result is the same either way.
+    static const char *const views[] = {"Crop", "Footage"};
+    if (kit_segmented("##zoom_view", views, 2, &g_app.config.editor_zoom_view, (w - kit_px(6)) / 2))
+        config_save(g_app.config, g_app.paths);
+    kit_dim(g_app.config.editor_zoom_view ? "Drag the footage to aim" : "Drag the frame to aim");
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // The selected keys: how they ease into and out of the next, then copy and delete.
@@ -2467,12 +2471,23 @@ static void screen_editor()
     f32 video_h = top_h - bar_h - kit_px(10);
     if (video_h < 1) video_h = 1;
 
-    // The picture, as it will be rendered (zoomed at the playhead), on black.
-    ImVec2 pos(h0.x, body_y), a, b;
-    dl->AddRectFilled(pos, ImVec2(pos.x + main_w, pos.y + video_h), IM_COL32(0, 0, 0, 255), kit_px(10));
-    player_fit(p, pos, ImVec2(main_w, video_h), &a, &b);
-    ImGui::SetCursorScreenPos(a);
-    ImGui::InvisibleButton("picture", ImVec2(b.x - a.x > 1 ? b.x - a.x : 1, b.y - a.y > 1 ? b.y - a.y : 1));
+    // The picture with the zoom at the playhead, on black, in one of two views (editor_zoom_view):
+    //   Crop: the whole footage stays put and the frame that's kept moves and scales over it, the rest dimmed;
+    //   Footage: the frame stays put (a little inside the panel) and the footage moves and scales behind it, what
+    //   falls outside dimmed. Dragging aims either way: the frame or the footage follows the mouse.
+    bool footage_view = cfg.editor_zoom_view == 1;
+    ImVec2 pos(h0.x, body_y), pos1(pos.x + main_w, pos.y + video_h), a, b;
+    dl->AddRectFilled(pos, pos1, IM_COL32(0, 0, 0, 255), kit_px(10));
+    if (footage_view) {
+        ImVec2 m(main_w * 0.1f, video_h * 0.1f);
+        player_fit(p, ImVec2(pos.x + m.x, pos.y + m.y), ImVec2(main_w - 2 * m.x, video_h - 2 * m.y), &a, &b);
+        ImGui::SetCursorScreenPos(pos);
+        ImGui::InvisibleButton("picture", ImVec2(main_w > 1 ? main_w : 1, video_h > 1 ? video_h : 1));
+    } else {
+        player_fit(p, pos, ImVec2(main_w, video_h), &a, &b);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::InvisibleButton("picture", ImVec2(b.x - a.x > 1 ? b.x - a.x : 1, b.y - a.y > 1 ? b.y - a.y : 1));
+    }
     f64 z, cx, cy;
     zoom_at(ed.edit, p.pos, &z, &cx, &cy);
     if (ImGui::IsItemActivated()) {
@@ -2488,8 +2503,10 @@ static void screen_editor()
     }
     if (ImGui::IsItemActive() && ed.aiming && ed.aim_key < ed.edit.key_count) {
         ZoomKey &k = ed.edit.keys[ed.aim_key];
-        f64 nx = ed.aim_kx - (io.MousePos.x - ed.aim_mx) / (b.x - a.x) / k.z;
-        f64 ny = ed.aim_ky - (io.MousePos.y - ed.aim_my) / (b.y - a.y) / k.z;
+        // The footage follows the mouse at the zoom's scale; the frame follows it over the unzoomed footage
+        f64 s = footage_view ? -1 / k.z : 1;
+        f64 nx = ed.aim_kx + (io.MousePos.x - ed.aim_mx) / (b.x - a.x) * s;
+        f64 ny = ed.aim_ky + (io.MousePos.y - ed.aim_my) / (b.y - a.y) * s;
         k.x = nx < 0 ? 0 : nx > 1 ? 1 : nx;
         k.y = ny < 0 ? 0 : ny > 1 ? 1 : ny;
         ed.dirty = true;
@@ -2499,7 +2516,29 @@ static void screen_editor()
     }
     ImVec2 uv0, uv1;
     zoom_uv(ed.edit, p.pos, &uv0, &uv1);
-    player_draw(p, a, b, uv0, uv1); // nothing drawn over it: an editor needs to see the whole picture
+    // The kept frame (k0..k1) and the whole footage (f0..f1) on screen
+    ImVec2 k0, k1, f0, f1;
+    if (footage_view) {
+        k0 = a, k1 = b;
+        f32 sx = (b.x - a.x) / (uv1.x - uv0.x), sy = (b.y - a.y) / (uv1.y - uv0.y);
+        f0 = ImVec2(a.x - uv0.x * sx, a.y - uv0.y * sy);
+        f1 = ImVec2(f0.x + sx, f0.y + sy);
+    } else {
+        f0 = a, f1 = b;
+        k0 = ImVec2(a.x + uv0.x * (b.x - a.x), a.y + uv0.y * (b.y - a.y));
+        k1 = ImVec2(a.x + uv1.x * (b.x - a.x), a.y + uv1.y * (b.y - a.y));
+    }
+    dl->PushClipRect(pos, pos1, true);
+    player_draw(p, f0, f1);
+    ImU32 shade = IM_COL32(0, 0, 0, 150);
+    ImVec2 c0(f0.x > pos.x ? f0.x : pos.x, f0.y > pos.y ? f0.y : pos.y);
+    ImVec2 c1(f1.x < pos1.x ? f1.x : pos1.x, f1.y < pos1.y ? f1.y : pos1.y);
+    dl->AddRectFilled(c0, ImVec2(c1.x, k0.y), shade);
+    dl->AddRectFilled(ImVec2(c0.x, k1.y), c1, shade);
+    dl->AddRectFilled(ImVec2(c0.x, k0.y), ImVec2(k0.x, k1.y), shade);
+    dl->AddRectFilled(ImVec2(k1.x, k0.y), ImVec2(c1.x, k1.y), shade);
+    if (z > 1.001 || footage_view) dl->AddRect(k0, k1, IM_COL32(255, 255, 255, 200), 0, 0, kit_px(1.5f));
+    dl->PopClipRect();
     if (z > 1.001) {
         char zt[32];
         snprintf(zt, sizeof zt, "%.1fx", z);

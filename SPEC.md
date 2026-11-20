@@ -55,6 +55,9 @@ Keep a whole session from start to finish.
 - **Simple and Advanced:** the editor is Simple: one in and one out, set with the handles, I and O, and cleared with
   Clear. The Advanced side of the switch is greyed out. An edit with more than one piece is shown and played with
   the pieces joined, and keys stay on the moment of the video they were set on.
+- **Zoom views:** the picture shows the zoom in one of two views, chosen under Zoom; the result is the same.
+  *Crop* keeps the whole footage still and moves and scales the kept frame over it. *Footage* keeps the frame
+  still and moves and scales the footage behind it. Outside the frame is dimmed, and dragging aims.
 - **Two ways out of the editor:**
   - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
     where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix

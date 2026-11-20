@@ -155,6 +155,8 @@ struct Config {
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default
     f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default
     i32 editor_lane;    // Editor: a timeline lane's height, in pixels at 100% (Shift + wheel); 0 = the default
+    i32 editor_zoom_view; // Editor: how the picture shows the zoom: 0 = a frame over the whole footage (Crop),
+                          // 1 = the footage moved and scaled behind a fixed frame (Footage). The result is the same.
 
     Hotkey hotkeys[16];
     i32    hotkey_count;
