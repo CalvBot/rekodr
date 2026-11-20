@@ -18,7 +18,7 @@ static i32 ed_tracks(const MediaInfo &m, i32 *out, i32 cap)
 
 static bool edit_is_default(const EditRecord &e)
 {
-    if (e.in_s > 0 || e.out_s > 0 || e.key_count) return false;
+    if (e.piece_count || e.key_count) return false;
     for (i32 t = 0; t <= EDIT_MASTER; t++)
         if (e.muted[t] || e.boost[t] != 0 || e.vol_count[t]) return false;
     return true;
@@ -35,9 +35,10 @@ static void edit_read(const Path &file, EditRecord *e)
         if (!eq) continue;
         *eq = 0;
         char *k = trim(line), *v = trim(eq + 1);
-        if (!strcmp(k, "in")) e->in_s = atof(v);
-        else if (!strcmp(k, "out")) e->out_s = atof(v);
-        else if (!strcmp(k, "key") && e->key_count < EDIT_MAX_KEYS) {
+        if (!strcmp(k, "piece") && e->piece_count < EDIT_MAX_PIECES) {
+            EditPiece p = {};
+            if (sscanf_s(v, "%lf %lf", &p.from, &p.to) == 2 && p.to > p.from) e->pieces[e->piece_count++] = p;
+        } else if (!strcmp(k, "key") && e->key_count < EDIT_MAX_KEYS) {
             ZoomKey z = {};
             i32 ease = EASE_SMOOTH;
             if (sscanf_s(v, "%lf %lf %lf %lf %d", &z.t, &z.z, &z.x, &z.y, &ease) == 5) {
@@ -91,9 +92,10 @@ static void edit_write(const Path &file, const EditRecord &e)
         log_line("editor: couldn't write the edit");
         return;
     }
-    fprintf(f, "# clipback edit: trim in seconds, zoom keys (time zoom x y ease), volumes (track volume muted),\n"
-               "# volume keys (track time volume ease); track m is the whole mix; eases 0 linear 1 smooth 2 in 3 out 4 hold\n");
-    fprintf(f, "in = %.3f\nout = %.3f\n", e.in_s, e.out_s);
+    fprintf(f, "# clipback edit: pieces kept in the order they play (from to, seconds), zoom keys (time zoom x y ease),\n"
+               "# volumes (track volume muted), volume keys (track time volume ease); track m is the whole mix;\n"
+               "# eases 0 linear 1 smooth 2 in 3 out 4 hold\n");
+    for (i32 i = 0; i < e.piece_count; i++) fprintf(f, "piece = %.3f %.3f\n", e.pieces[i].from, e.pieces[i].to);
     for (i32 k = 0; k < e.key_count; k++)
         fprintf(f, "key = %.3f %.3f %.4f %.4f %d\n", e.keys[k].t, e.keys[k].z, e.keys[k].x, e.keys[k].y, e.keys[k].ease);
     for (i32 t = 0; t <= EDIT_MASTER; t++) {
@@ -271,10 +273,34 @@ static f64 ed_duration()
     return ed.player.duration > 0 ? ed.player.duration : ed.item.info.duration;
 }
 
+// The trim in and out: the first piece's start and end.
+static f64 ed_in()
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    pieces_of(g_app.editor.edit, ed_duration(), p);
+    return p[0].from;
+}
+
 static f64 ed_out()
 {
+    EditPiece p[EDIT_MAX_PIECES];
+    pieces_of(g_app.editor.edit, ed_duration(), p);
+    return p[0].to;
+}
+
+static void ed_set_trim(f64 a, f64 z)
+{
     Editor &ed = g_app.editor;
-    return ed.edit.out_s > 0 ? ed.edit.out_s : ed_duration();
+    EditPiece p = {a < 0 ? 0 : a, z};
+    pieces_store(&ed.edit, &p, 1, ed_duration());
+    ed.dirty = true;
+}
+
+static void ed_clear_trim()
+{
+    Editor &ed = g_app.editor;
+    ed.edit.piece_count = 0;
+    ed.dirty = true;
 }
 
 static f64 ed_frame()
@@ -427,7 +453,7 @@ static void editor_open(const LibItem &item)
     ed.result_error = false;
     str_set(ed.out_name, ed.item.name);
     ed.player.id = 1;
-    player_open(&ed.player, ed.path, ed.edit.in_s, false);
+    player_open(&ed.player, ed.path, ed_in(), false);
     editor_refresh_shares();
     // The waveforms of the tracks the timeline shows, measured (or read from the cache) in the background.
     wave_close(&ed.wave);
@@ -1043,7 +1069,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if (hot && (fabsf(mx - tx0) <= grip || fabsf(mx - tx1) <= grip))
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-        wa_draw_viewbar(dl, bx0, bx1, bar_y, bx(ed.view_from), bx(ed.view_from + ed.view_span), hot, bx(ed.edit.in_s),
+        wa_draw_viewbar(dl, bx0, bx1, bar_y, bx(ed.view_from), bx(ed.view_from + ed.view_span), hot, bx(ed_in()),
                         bx(ed_out()), bx(p.pos));
     }
     from = ed.view_from;
@@ -1058,9 +1084,9 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     f64 mouse_t = t_of(mx);
     bool on_ruler = my >= ruler_y && my < video_y;
     f32 grab = wa_grab();
-    bool near_in = on_ruler && fabsf(mx - x_of(ed.edit.in_s)) <= grab;
+    bool near_in = on_ruler && fabsf(mx - x_of(ed_in())) <= grab;
     bool near_out = on_ruler && !near_in && fabsf(mx - x_of(ed_out())) <= grab;
-    bool on_band = on_ruler && !near_in && !near_out && mouse_t > ed.edit.in_s && mouse_t < ed_out();
+    bool on_band = on_ruler && !near_in && !near_out && mouse_t > ed_in() && mouse_t < ed_out();
     {
         const f64 least = 0.2;
         static f64 grab_play, grab_in, grab_out, grab_off;
@@ -1077,16 +1103,12 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             }
             return to;
         };
-        auto set = [&](f64 a, f64 z) {
-            ed.edit.in_s = a < 0 ? 0 : a;
-            ed.edit.out_s = z >= dur - 0.01 ? 0 : z;
-            ed.dirty = true;
-        };
+        auto set = [&](f64 a, f64 z) { ed_set_trim(a, z); };
         if (ImGui::IsItemActivated()) {
             ed.drag_mx = mx;
             ed.drag_moved = false;
             grab_play = p.pos;
-            grab_in = ed.edit.in_s;
+            grab_in = ed_in();
             grab_out = ed_out();
             grab_off = mouse_t - grab_in;
             ed.drag_t = mouse_t;
@@ -1122,9 +1144,9 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 f64 t = keep ? snap_edge(mouse_t) : mouse_t;
                 if (ed.lane_drag == ED_DRAG_IN) {
                     set(ImMin(t, ed_out() - least), ed_out());
-                    show = ed.edit.in_s;
+                    show = ed_in();
                 } else {
-                    set(ed.edit.in_s, ImMax(t, ed.edit.in_s + least));
+                    set(ed_in(), ImMax(t, ed_in() + least));
                     show = ed_out();
                 }
             }
@@ -1138,7 +1160,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         }
         if (ImGui::IsItemDeactivated()) {
             bool moved_ends = ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_OUT || ed.lane_drag == ED_DRAG_RANGE;
-            if (ed.lane_drag == ED_DRAG_MENU && !ed.drag_moved && on_ruler && mouse_t >= ed.edit.in_s && mouse_t <= ed_out())
+            if (ed.lane_drag == ED_DRAG_MENU && !ed.drag_moved && on_ruler && mouse_t >= ed_in() && mouse_t <= ed_out())
                 ImGui::OpenPopup("##inout_menu"); // a right click on the in and out
             if (p.scrubbing || moved_ends) {
                 p.scrubbing = false;
@@ -1153,14 +1175,11 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     }
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("##inout_menu")) {
-        if (lib_menu_item(ICON_CLOSE, "Clear in and out")) {
-            ed.edit.in_s = ed.edit.out_s = 0;
-            ed.dirty = true;
-        }
+        if (lib_menu_item(ICON_CLOSE, "Clear in and out")) ed_clear_trim();
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
-    f32 in_x = x_of(ed.edit.in_s), out_x = x_of(ed_out());
+    f32 in_x = x_of(ed_in()), out_x = x_of(ed_out());
 
     // The ruler: a label every 70 px or more, small ticks between.
     dl->AddRectFilled(ImVec2(bx0, ruler_y), ImVec2(bx1, ruler_y + ruler_h), col32(COL_PANEL), round, ImDrawFlags_RoundCornersTop);
@@ -1397,7 +1416,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     lib_popup_style_pop();
 
     // Each lane: its gutter (mute, solo, a key at the playhead, the name and the value there), then its body.
-    f64 in_s = ed.edit.in_s, out_s = ed_out();
+    f64 in_s = ed_in(), out_s = ed_out();
     static ImVec2 pts[4096];
     for (i32 r = 0; r < nr; r++) {
         const EdRow &row = rows[r];
@@ -1531,7 +1550,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
     if (px >= bx0 - 1 && px <= bx1 + 1) wa_draw_playhead(dl, px, video_y, lanes_y1);
     f64 pill_t = -1;
     if (idle) pill_t = mouse_t;
-    else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_RANGE) pill_t = ed.edit.in_s;
+    else if (ed.lane_drag == ED_DRAG_IN || ed.lane_drag == ED_DRAG_RANGE) pill_t = ed_in();
     else if (ed.lane_drag == ED_DRAG_OUT) pill_t = ed_out();
     else if (ed.lane_drag == ED_DRAG_SEEK) pill_t = p.pos;
     else if (ed.lane_drag == ED_DRAG_NEW && ed.drag_moved) pill_t = mouse_t;
@@ -1601,27 +1620,31 @@ static void xml_pathurl(FILE *f, const char *path)
     }
 }
 
-// The times a curve is written at between the trim's ends, a fifth of a second apart (wider on long files).
-static i32 xml_samples(f64 in_s, f64 out_s, f64 *at, i32 cap)
+// The times a curve is written at over a piece, a fifth of a second apart (wider on long pieces).
+static i32 xml_samples(f64 from, f64 to, f64 *at, i32 cap)
 {
-    f64 step = (out_s - in_s) / (cap - 1) > 0.2 ? (out_s - in_s) / (cap - 1) : 0.2;
+    f64 step = (to - from) / (cap - 1) > 0.2 ? (to - from) / (cap - 1) : 0.2;
     i32 n = 0;
-    for (f64 t = in_s; t < out_s && n < cap - 1; t += step) at[n++] = t;
-    at[n++] = out_s;
+    for (f64 t = from; t < to && n < cap - 1; t += step) at[n++] = t;
+    at[n++] = to;
     return n;
 }
 
 static void xml_rate(FILE *f, i32 fps) { fprintf(f, "<rate><timebase>%d</timebase><ntsc>FALSE</ntsc></rate>", fps); }
 
-// Writes <video name>.xml next to the video
+// Writes <video name>.xml next to the video: a sequence of the pieces one after another, each a clipitem of the
+// file on the video track and on each audio channel's track.
 static bool ed_export_xml(Path *out)
 {
     Editor &ed = g_app.editor;
     const MediaInfo &m = ed.item.info;
     const EditRecord &e = ed.edit;
     i32 fps = m.fps > 1 ? (i32)(m.fps + 0.5) : 60;
-    f64 in_s = e.in_s, out_s = ed_out();
     auto fr = [&](f64 t) { return (i64)(t * fps + 0.5); };
+    EditPiece pc[EDIT_MAX_PIECES];
+    i32 np = pieces_of(e, ed_duration(), pc);
+    i64 starts[EDIT_MAX_PIECES + 1] = {}; // where each piece goes on the sequence, in frames
+    for (i32 i = 0; i < np; i++) starts[i + 1] = starts[i] + fr(pc[i].to) - fr(pc[i].from);
     *out = ed.path;
     wchar_t *dot = wcsrchr(out->s, L'.');
     if (!dot || dot < wcsrchr(out->s, L'\\')) return false;
@@ -1632,97 +1655,110 @@ static bool ed_export_xml(Path *out)
     wide_to_utf8(ed.path.s, src, sizeof src);
     const char *slash = strrchr(src, '\\');
     str_set(file_name, slash ? slash + 1 : src);
-    i64 len = fr(out_s) - fr(in_s), file_len = fr(m.duration);
+    i64 file_len = fr(m.duration);
     static f64 at[2000];
-    i32 na = xml_samples(in_s, out_s, at, COUNT(at));
 
     fputs("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n<xmeml version=\"5\">\n<sequence id=\"sequence-1\">\n<name>", f);
     xml_text(f, ed.item.name);
-    fprintf(f, "</name>\n<duration>%lld</duration>", len);
+    fprintf(f, "</name>\n<duration>%lld</duration>", starts[np]);
     xml_rate(f, fps);
     fputs("\n<media>\n<video>\n<format><samplecharacteristics>", f);
     xml_rate(f, fps);
     fprintf(f, "<width>%d</width><height>%d</height><pixelaspectratio>square</pixelaspectratio></samplecharacteristics></format>\n",
             m.width, m.height);
-    auto clip_head = [&](i32 id, bool enabled, const char *channel_type) {
+    auto clip_head = [&](i32 id, i32 piece, bool enabled, const char *channel_type) {
         fprintf(f, "<clipitem id=\"clipitem-%d\"%s%s%s>\n<name>", id, channel_type ? " premiereChannelType=\"" : "",
                 channel_type ? channel_type : "", channel_type ? "\"" : "");
         xml_text(f, file_name);
         fprintf(f, "</name><enabled>%s</enabled><duration>%lld</duration>", enabled ? "TRUE" : "FALSE", file_len);
         xml_rate(f, fps);
-        fprintf(f, "<start>0</start><end>%lld</end><in>%lld</in><out>%lld</out>\n", len, fr(in_s), fr(out_s));
+        fprintf(f, "<start>%lld</start><end>%lld</end><in>%lld</in><out>%lld</out>\n", starts[piece], starts[piece + 1],
+                fr(pc[piece].from), fr(pc[piece].to));
     };
     // The video, and the file (written in full once, then referred to by its id)
-    fputs("<track>\n", f);
-    clip_head(1, true, 0);
-    fputs("<file id=\"file-1\"><name>", f);
-    xml_text(f, file_name);
-    fputs("</name><pathurl>", f);
-    xml_pathurl(f, src);
-    fputs("</pathurl>", f);
-    xml_rate(f, fps);
-    fprintf(f, "<duration>%lld</duration>\n<media><video><samplecharacteristics>", file_len);
-    xml_rate(f, fps);
-    fprintf(f, "<width>%d</width><height>%d</height></samplecharacteristics></video>", m.width, m.height);
     auto chans = [&](i32 t) { return m.channels[t] == 1 ? 1 : 2; };
-    for (i32 t = 0; t < m.track_count; t++)
-        fprintf(f, "<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>"
-                "<channelcount>%d</channelcount></audio>", chans(t));
-    fputs("</media></file>\n", f);
-    if (e.key_count) {
-        // Scale in percent; Center moves the picture's middle, in fractions of the frame from the middle
-        fputs("<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory>"
-              "<effecttype>motion</effecttype><mediatype>video</mediatype>\n"
-              "<parameter><parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax>"
-              "<value>100</value>\n", f);
-        for (i32 i = 0; i < na; i++) {
-            f64 z, x, y;
-            zoom_at(e, at[i], &z, &x, &y);
-            fprintf(f, "<keyframe><when>%lld</when><value>%.2f</value></keyframe>\n", fr(at[i]), z * 100);
+    fputs("<track>\n", f);
+    for (i32 i = 0; i < np; i++) {
+        clip_head(1 + i, i, true, 0);
+        if (!i) {
+            fputs("<file id=\"file-1\"><name>", f);
+            xml_text(f, file_name);
+            fputs("</name><pathurl>", f);
+            xml_pathurl(f, src);
+            fputs("</pathurl>", f);
+            xml_rate(f, fps);
+            fprintf(f, "<duration>%lld</duration>\n<media><video><samplecharacteristics>", file_len);
+            xml_rate(f, fps);
+            fprintf(f, "<width>%d</width><height>%d</height></samplecharacteristics></video>", m.width, m.height);
+            for (i32 t = 0; t < m.track_count; t++)
+                fprintf(f, "<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>"
+                        "<channelcount>%d</channelcount></audio>", chans(t));
+            fputs("</media></file>\n", f);
+        } else fputs("<file id=\"file-1\"/>\n", f);
+        if (e.key_count) {
+            // Scale in percent; Center moves the picture's middle, in fractions of the frame from the middle
+            i32 na = xml_samples(pc[i].from, pc[i].to, at, COUNT(at));
+            fputs("<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory>"
+                  "<effecttype>motion</effecttype><mediatype>video</mediatype>\n"
+                  "<parameter><parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax>"
+                  "<value>100</value>\n", f);
+            for (i32 k = 0; k < na; k++) {
+                f64 z, x, y;
+                zoom_at(e, at[k], &z, &x, &y);
+                fprintf(f, "<keyframe><when>%lld</when><value>%.2f</value></keyframe>\n", fr(at[k]), z * 100);
+            }
+            fputs("</parameter>\n<parameter><parameterid>center</parameterid><name>Center</name>"
+                  "<value><horiz>0</horiz><vert>0</vert></value>\n", f);
+            for (i32 k = 0; k < na; k++) {
+                ImVec2 a, b;
+                zoom_uv(e, at[k], &a, &b);
+                f64 z = b.x - a.x > 0.001f ? 1.0 / (b.x - a.x) : 1;
+                f64 cx = (0.5 - (a.x + b.x) / 2) * z, cy = (0.5 - (a.y + b.y) / 2) * z;
+                fprintf(f, "<keyframe><when>%lld</when><value><horiz>%.4f</horiz><vert>%.4f</vert></value></keyframe>\n",
+                        fr(at[k]), cx, cy);
+            }
+            fputs("</parameter></effect></filter>\n", f);
         }
-        fputs("</parameter>\n<parameter><parameterid>center</parameterid><name>Center</name>"
-              "<value><horiz>0</horiz><vert>0</vert></value>\n", f);
-        for (i32 i = 0; i < na; i++) {
-            ImVec2 a, b;
-            zoom_uv(e, at[i], &a, &b);
-            f64 z = b.x - a.x > 0.001f ? 1.0 / (b.x - a.x) : 1;
-            f64 cx = (0.5 - (a.x + b.x) / 2) * z, cy = (0.5 - (a.y + b.y) / 2) * z;
-            fprintf(f, "<keyframe><when>%lld</when><value><horiz>%.4f</horiz><vert>%.4f</vert></value></keyframe>\n",
-                    fr(at[i]), cx, cy);
-        }
-        fputs("</parameter></effect></filter>\n", f);
+        fputs("</clipitem>\n", f);
     }
-    fputs("</clipitem>\n</track>\n</video>\n<audio>\n", f);
+    fputs("</track>\n</video>\n<audio>\n", f);
 
-    // The audio: each recorded track's channels, from the same file
+    // The audio: each recorded track's channels, from the same file, a track each. The clipitem of piece i on
+    // sequence track s (from 1) is 1 + np * s + i.
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(m, tracks, MEDIA_MAX_TRACKS);
     bool master_keys = e.vol_count[EDIT_MASTER] > 0;
-    i32 clip_id = 2, seq_track = 1, slots = 1;
+    i32 seq_track = 1, slots = 1;
+    auto clip_id = [&](i32 track, i32 piece) { return 1 + np * track + piece; };
     for (i32 t = 0; t < m.track_count; t++) slots = ImMax(slots, chans(t));
-    for (i32 i = 0; i < nt; i++) {
-        i32 t = tracks[i], n = chans(t);
+    for (i32 ti = 0; ti < nt; ti++) {
+        i32 t = tracks[ti], n = chans(t);
         for (i32 c = 0; c < n; c++) {
             fprintf(f, "<track premiereTrackType=\"%s\" currentExplodedTrackIndex=\"%d\" totalExplodedTrackCount=\"%d\">\n",
                     n == 2 ? "Stereo" : "Mono", c, n);
-            clip_head(clip_id + c, !e.muted[t] && !e.muted[EDIT_MASTER], n == 2 ? "stereo" : "mono");
-            fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
-                    slots * t + c + 1);
-            if (n == 2) // the pair stays together
-                for (i32 l = 0; l < 2; l++)
-                    fprintf(f, "<link><linkclipref>clipitem-%d</linkclipref><mediatype>audio</mediatype><trackindex>%d</trackindex>"
-                            "<clipindex>1</clipindex><groupindex>1</groupindex></link>\n", clip_id + l, seq_track + l);
-            fputs("<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels"
-                  "</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\n<parameter>"
-                  "<parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax>", f);
-            fprintf(f, "<value>%.4f</value>\n", vol_at(e, t, in_s) * vol_at(e, EDIT_MASTER, in_s));
-            if (e.vol_count[t] || master_keys)
-                for (i32 k = 0; k < na; k++)
-                    fprintf(f, "<keyframe><when>%lld</when><value>%.4f</value></keyframe>\n", fr(at[k]),
-                            vol_at(e, t, at[k]) * vol_at(e, EDIT_MASTER, at[k]));
-            fputs("</parameter></effect></filter>\n</clipitem>\n</track>\n", f);
+            for (i32 i = 0; i < np; i++) {
+                clip_head(clip_id(seq_track + c, i), i, !e.muted[t] && !e.muted[EDIT_MASTER], n == 2 ? "stereo" : "mono");
+                fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
+                        slots * t + c + 1);
+                if (n == 2) // the pair stays together
+                    for (i32 l = 0; l < 2; l++)
+                        fprintf(f, "<link><linkclipref>clipitem-%d</linkclipref><mediatype>audio</mediatype><trackindex>%d</trackindex>"
+                                "<clipindex>%d</clipindex><groupindex>1</groupindex></link>\n", clip_id(seq_track + l, i),
+                                seq_track + l, i + 1);
+                fputs("<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels"
+                      "</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\n<parameter>"
+                      "<parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax>", f);
+                fprintf(f, "<value>%.4f</value>\n", vol_at(e, t, pc[i].from) * vol_at(e, EDIT_MASTER, pc[i].from));
+                if (e.vol_count[t] || master_keys) {
+                    i32 na = xml_samples(pc[i].from, pc[i].to, at, COUNT(at));
+                    for (i32 k = 0; k < na; k++)
+                        fprintf(f, "<keyframe><when>%lld</when><value>%.4f</value></keyframe>\n", fr(at[k]),
+                                vol_at(e, t, at[k]) * vol_at(e, EDIT_MASTER, at[k]));
+                }
+                fputs("</parameter></effect></filter>\n</clipitem>\n", f);
+            }
+            fputs("</track>\n", f);
         }
-        clip_id += n;
         seq_track += n;
     }
     fputs("</audio>\n</media>\n</sequence>\n</xmeml>\n", f);
@@ -1926,10 +1962,7 @@ static void ed_share_tab(f32 w)
 
     // How long the trim is, for both cards
     const MediaInfo &m = ed.item.info;
-    f64 in_s = ed.edit.in_s > 0 ? ed.edit.in_s : 0, len = m.duration;
-    if (ed.player.duration > 0) len = ed.player.duration;
-    if (ed.edit.out_s > in_s) len = ed.edit.out_s;
-    len -= in_s;
+    f64 len = pieces_len(ed.edit, ed_duration());
     char len_s[32];
     fmt_time(len, len_s, sizeof len_s);
 
@@ -2073,7 +2106,7 @@ static f64 ed_next_stop(f64 at, i32 dir)
     auto take = [&](f64 t) {
         if (dir > 0 ? t > at + eps && t < best : t < at - eps && t > best) best = t;
     };
-    take(ed.edit.in_s);
+    take(ed_in());
     take(ed_out());
     for (i32 l = 0; l < ED_LANES; l++) {
         if (!ed_lane_shown(l)) continue;
@@ -2100,7 +2133,7 @@ static void screen_editor()
     if (!p.open) { // closed while the window was hidden
         p.id = 1;
         ed.tracks_ready = false;
-        player_open(&p, ed.path, ed.edit.in_s, false);
+        player_open(&p, ed.path, ed_in(), false);
     }
     if (p.loaded && !ed.tracks_ready) {
         i32 tracks[MEDIA_MAX_TRACKS];
@@ -2110,7 +2143,7 @@ static void screen_editor()
         ed_apply_volumes();
         ed.tracks_ready = true;
     }
-    p.loop_from = ed.edit.in_s;
+    p.loop_from = ed_in();
     p.stop_at = ed_out();
     player_update(&p);
     // Every half second everything is handed over again, for a track engine that's only just loaded.
@@ -2234,18 +2267,15 @@ static void screen_editor()
     kit_next_tip("Zoom in", "+");
     if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, ed.view_span > 0.51)) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
     {
-        bool trimmed = ed.edit.in_s > 0 || ed.edit.out_s > 0;
+        bool trimmed = ed.edit.piece_count > 0;
         f32 x_clear = r0.x + main_w - pad - fh;
         ImGui::SetCursorScreenPos(ImVec2(x_clear, y));
         kit_next_tip("Clear in and out");
-        if (kit_icon_button(ICON_CLOSE, "##clear_inout", KIT_GHOST, trimmed)) {
-            ed.edit.in_s = ed.edit.out_s = 0;
-            ed.dirty = true;
-        }
+        if (kit_icon_button(ICON_CLOSE, "##clear_inout", KIT_GHOST, trimmed)) ed_clear_trim();
         char ta[32], tz[32], len[32], sel[112];
-        fmt_time(ed.edit.in_s, ta, sizeof ta, true);
+        fmt_time(ed_in(), ta, sizeof ta, true);
         fmt_time(ed_out(), tz, sizeof tz, true);
-        fmt_time(ed_out() - ed.edit.in_s, len, sizeof len, true);
+        fmt_time(ed_out() - ed_in(), len, sizeof len, true);
         snprintf(sel, sizeof sel, "%s - %s   %s", ta, tz, len);
         ImVec2 ks = ImGui::CalcTextSize(sel);
         f32 kx = x_clear - kit_px(6) - ks.x;
@@ -2324,11 +2354,8 @@ static void screen_editor()
     if (!io.WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {
         bool ctrl = io.KeyCtrl;
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) player_toggle(&p);
-        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_I, false) && p.pos < ed_out() - 0.2) { ed.edit.in_s = p.pos; ed.dirty = true; }
-        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false) && p.pos > ed.edit.in_s + 0.2) {
-            ed.edit.out_s = p.pos >= ed_duration() - 0.01 ? 0 : p.pos;
-            ed.dirty = true;
-        }
+        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_I, false) && p.pos < ed_out() - 0.2) ed_set_trim(p.pos, ed_out());
+        if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false) && p.pos > ed_in() + 0.2) ed_set_trim(ed_in(), p.pos);
         if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_K, false)) ed_add_key(p.pos);
         if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
             if (ed_sel_count()) ed_delete_selected();

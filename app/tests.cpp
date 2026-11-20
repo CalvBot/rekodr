@@ -520,6 +520,74 @@ static void test_lanes()
     T(g.v == 2 && g.x == 0.25 && g.y == 0.75 && g.ease == EASE_HOLD);
 }
 
+// Pieces: output time and source time both ways, split, ripple delete (with the keys in what's removed), trim held
+// by the neighbours, and reorder.
+static void test_pieces()
+{
+    static EditRecord e;
+    e = {};
+    const f64 dur = 10;
+    EditPiece p[EDIT_MAX_PIECES];
+    auto same = [](f64 a, f64 b) { return fabs(a - b) < 1e-9; };
+    T(pieces_of(e, dur, p) == 1 && p[0].from == 0 && p[0].to == dur);
+    T(same(pieces_len(e, dur), 10));
+
+    // Split at 4, then at 7: 0-4, 4-7, 7-10.
+    T(pieces_split(&e, dur, 4) && e.piece_count == 2);
+    T(pieces_split(&e, dur, 7) && e.piece_count == 3);
+    T(!pieces_split(&e, dur, 7.05)); // too close to an edge
+    T(same(e.pieces[1].from, 4) && same(e.pieces[1].to, 7));
+    T(same(pieces_len(e, dur), 10));
+
+    // Ripple delete the middle: 0-4, 7-10, 7 s long; the keys at 5 go, the ones at 3 and 4 (an edge kept) stay.
+    e.keys[0] = {3.0, 2.0, 0.5, 0.5, EASE_LINEAR};
+    e.keys[1] = {5.0, 2.0, 0.5, 0.5, EASE_LINEAR};
+    e.key_count = 2;
+    e.vol[1][0] = {4.0, 0.5f, EASE_LINEAR};
+    e.vol[1][1] = {5.5, 0.5f, EASE_LINEAR};
+    e.vol_count[1] = 2;
+    static EditRecord before;
+    before = e;
+    T(pieces_delete(&e, dur, 0b010));
+    T(e.piece_count == 2 && same(pieces_len(e, dur), 7));
+    T(e.key_count == 1 && e.keys[0].t == 3.0);
+    T(e.vol_count[1] == 1 && e.vol[1][0].t == 4.0);
+    T(!pieces_delete(&e, dur, 0b11)); // never all of them
+    T(!pieces_delete(&e, dur, 0));
+
+    // Output and source time: 5 s out is 8 s in; 8 s in is 5 s out; 5 s in is cut.
+    i32 at = -1;
+    f64 u = 0;
+    T(same(piece_src(e, dur, 5, &at), 8) && at == 1);
+    T(piece_out(e, dur, 8, &u, &at) && same(u, 5) && at == 1);
+    T(!piece_out(e, dur, 5, &u));
+    T(piece_out(e, dur, 10, &u) && same(u, 7)); // the end is the last piece's
+    T(same(piece_src(e, dur, 99), 10) && same(piece_src(e, dur, -1), 0));
+    T(same(piece_start(e, dur, 1), 4));
+
+    // Trim: the first piece's end stops at the second's start once they're in the same place.
+    T(same(pieces_trim(&e, dur, 0, true, 5.5), 5.5));
+    T(same(pieces_len(e, dur), 8.5));
+    T(same(pieces_trim(&e, dur, 1, false, 2), 5.5)); // held by the first piece's end
+    T(same(pieces_trim(&e, dur, 1, true, 9.95), 9.95));
+    T(same(pieces_trim(&e, dur, 1, true, 3), 5.5 + PIECE_LEAST)); // never shorter than the least
+    pieces_trim(&e, dur, 1, true, 10);
+
+    // Reorder: 5.5-10 first, then 0-5.5; keys stay on their moment, so the key at 3 s plays at 7.5.
+    pieces_move(&e, dur, 1, 0);
+    T(same(e.pieces[0].from, 5.5) && same(e.pieces[1].to, 5.5));
+    T(piece_out(e, dur, 3, &u, &at) && same(u, 7.5) && at == 1);
+    pieces_move(&e, dur, 0, 1);
+    T(same(e.pieces[0].from, 0));
+
+    // Joined back into one whole piece it's stored as none; undo is a copy of the record, keys and all.
+    pieces_delete(&e, dur, 0b10);
+    pieces_trim(&e, dur, 0, true, 10);
+    T(e.piece_count == 0);
+    e = before;
+    T(e.piece_count == 3 && e.key_count == 2 && e.vol_count[1] == 2);
+}
+
 static void test_edit_volumes()
 {
     T(ease_curve(EASE_LINEAR, EASE_LINEAR, 0.25) == 0.25);
@@ -546,7 +614,9 @@ static void test_edit_volumes()
     e.vol_count[EDIT_MASTER] = 1;
     e.keys[0] = {2.0, 2.0, 0.25, 0.75, EASE_OUT};
     e.key_count = 1;
-    e.in_s = 1.5;
+    e.pieces[0] = {1.5, 6};
+    e.pieces[1] = {0.25, 1};
+    e.piece_count = 2;
 
     wchar_t dir[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
@@ -556,7 +626,7 @@ static void test_edit_volumes()
     static EditRecord r;
     edit_read(file, &r);
     DeleteFileW(file.s);
-    T(r.in_s == 1.5);
+    T(r.piece_count == 2 && r.pieces[0].from == 1.5 && r.pieces[0].to == 6 && r.pieces[1].from == 0.25);
     T(r.vol_count[2] == 2 && r.vol[2][1].t == 3.0 && r.vol[2][1].v == 2.0f);
     T(fabs(r.boost[2] - 0.5f) < 1e-4f);
     T(r.vol_count[EDIT_MASTER] == 1 && r.vol[EDIT_MASTER][0].ease == EASE_HOLD && r.vol[EDIT_MASTER][0].v == 0.5f);
@@ -1110,8 +1180,8 @@ static void test_edit_xml()
     m.channels[1] = 1;
     m.channels[2] = 2;
     EditRecord &e = ed.edit;
-    e.in_s = 1;
-    e.out_s = 9;
+    e.pieces[0] = {1, 9};
+    e.piece_count = 1;
     e.keys[0] = {2.0, 1.0, 0.5, 0.5, EASE_LINEAR};
     e.keys[1] = {4.0, 2.0, 0.25, 0.75, EASE_SMOOTH};
     e.key_count = 2;
@@ -1151,6 +1221,25 @@ static void test_edit_xml()
     T(strstr(text, "premiereChannelType=\"mono\"") && strstr(text, "premiereChannelType=\"stereo\""));
     T(strstr(text, "<linkclipref>clipitem-4</linkclipref>"));
     T(strstr(text, "<channelcount>1</channelcount>"));
+
+    // Two pieces, the second first: each a clipitem one after the other on every track.
+    e.pieces[0] = {6, 8};
+    e.pieces[1] = {1, 3};
+    e.piece_count = 2;
+    T(ed_export_xml(&xml));
+    f = _wfopen(xml.s, L"rb");
+    n = f ? fread(text, 1, sizeof text - 1, f) : 0;
+    if (f) fclose(f);
+    text[n] = 0;
+    DeleteFileW(xml.s);
+    T(xml_balanced(text));
+    T(strstr(text, "<duration>240</duration>"));                      // 4 s at 60 fps
+    T(strstr(text, "<start>0</start><end>120</end><in>360</in><out>480</out>"));
+    T(strstr(text, "<start>120</start><end>240</end><in>60</in><out>180</out>"));
+    i32 items = 0;
+    for (const char *p = text; (p = strstr(p, "<clipitem ")); p++) items++;
+    T(items == 8);                                                     // video, Mic, the game's two; twice
+    T(strstr(text, "<clipindex>2</clipindex>"));
     ed = blank;
 }
 
@@ -1192,6 +1281,7 @@ int main()
     test_fields();
     test_hotkeys();
     test_settings_round_trip();
+    test_pieces();
     test_edit_volumes();
     test_edit_xml();
     test_lanes();

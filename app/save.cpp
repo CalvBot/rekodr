@@ -933,11 +933,192 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 // ---------------------------------------------------------------------------------------------------------------
 // Keep and Share: an edit of a saved file.
 //
-// Keep is the edit at full quality into <year>\Clips, every track kept: the video is stream-copied when there's no
-// zoom (the trim is then cut at the keyframe before the start), else re-encoded at a constant quality; the audio is
+// Keep is the edit at full quality into <year>\Clips, every track kept. With one piece the video is stream-copied
+// when there's no zoom (cut at the keyframe before the start), else re-encoded at a constant quality; the audio is
 // copied as it is when no volume was touched, else the Mix is rebuilt from the edited tracks and the separate
-// tracks are copied as recorded. Share is a small file in the share folder: zoomed, scaled down and encoded to the
-// size asked for, with one stereo mix of the edited tracks.
+// tracks are copied as recorded. With several pieces everything is re-encoded, each stream cut into the pieces and
+// joined, since a copy can only cut at keyframes. Share is a small file in the share folder: the pieces joined,
+// zoomed, scaled down and encoded to the size asked for, with one stereo mix of the edited tracks.
+
+
+// Pieces: the parts of a video an edit keeps, played one after another. Times on the joined result ("output time")
+// run from 0 at the first piece's start; times in the file ("source time") are what keys and pieces are stored in,
+// so a key stays on its moment whatever is cut around it. `dur` is the video's length.
+static const f64 PIECE_LEAST = 0.1; // the shortest a piece gets
+
+// The pieces as they play: the whole video when there are none, each held inside the video, an end within 0.01 s of
+// the video's end taken as the end.
+static i32 pieces_of(const EditRecord &e, f64 dur, EditPiece *out)
+{
+    i32 n = 0;
+    for (i32 i = 0; i < e.piece_count && i < EDIT_MAX_PIECES; i++) {
+        EditPiece p = e.pieces[i];
+        if (p.from < 0) p.from = 0;
+        if (dur > 0 && p.to >= dur - 0.01) p.to = dur;
+        if (p.to > p.from) out[n++] = p;
+    }
+    if (!n) out[n++] = {0, dur};
+    return n;
+}
+
+// Stores pieces; one that is the whole video is stored as none.
+static void pieces_store(EditRecord *e, const EditPiece *p, i32 n, f64 dur)
+{
+    if (n > EDIT_MAX_PIECES) n = EDIT_MAX_PIECES;
+    if (n == 1 && p[0].from <= 0.0005 && p[0].to >= dur - 0.01) n = 0;
+    memmove(e->pieces, p, n * sizeof *p);
+    e->piece_count = n;
+}
+
+static f64 pieces_len(const EditRecord &e, f64 dur)
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(e, dur, p);
+    f64 len = 0;
+    for (i32 i = 0; i < n; i++) len += p[i].to - p[i].from;
+    return len;
+}
+
+// Output time to source time, and the piece it's in. Before the start is the first piece's start, past the end the
+// last piece's end.
+static f64 piece_src(const EditRecord &e, f64 dur, f64 u, i32 *at = 0)
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(e, dur, p);
+    f64 o = 0;
+    for (i32 i = 0; i < n; i++) {
+        f64 len = p[i].to - p[i].from;
+        if (u < o + len || i == n - 1) {
+            if (at) *at = i;
+            f64 d = u - o;
+            return p[i].from + (d < 0 ? 0 : d > len ? len : d);
+        }
+        o += len;
+    }
+    if (at) *at = 0;
+    return 0;
+}
+
+// Source time to output time; false when no piece holds it. A moment that is one piece's end and the next one's
+// start is the next one's.
+static bool piece_out(const EditRecord &e, f64 dur, f64 s, f64 *u, i32 *at = 0)
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(e, dur, p);
+    for (i32 pass = 0; pass < 2; pass++) {
+        f64 o = 0;
+        for (i32 i = 0; i < n; i++) {
+            if (s >= p[i].from && (s < p[i].to || (pass && s <= p[i].to))) {
+                *u = o + (s - p[i].from);
+                if (at) *at = i;
+                return true;
+            }
+            o += p[i].to - p[i].from;
+        }
+    }
+    return false;
+}
+
+// Where piece i starts in output time.
+static f64 piece_start(const EditRecord &e, f64 dur, i32 i)
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(e, dur, p);
+    f64 o = 0;
+    for (i32 k = 0; k < i && k < n; k++) o += p[k].to - p[k].from;
+    return o;
+}
+
+// Splits the piece under output time u in two there; false when u is too close to its edges or there's no room.
+static bool pieces_split(EditRecord *e, f64 dur, f64 u)
+{
+    EditPiece p[EDIT_MAX_PIECES + 1];
+    i32 n = pieces_of(*e, dur, p), i = 0;
+    if (n >= EDIT_MAX_PIECES) return false;
+    f64 s = piece_src(*e, dur, u, &i);
+    if (s - p[i].from < PIECE_LEAST || p[i].to - s < PIECE_LEAST) return false;
+    memmove(p + i + 2, p + i + 1, (n - i - 1) * sizeof *p);
+    p[i + 1] = {s, p[i].to};
+    p[i].to = s;
+    pieces_store(e, p, n + 1, dur);
+    return true;
+}
+
+// Removes the pieces in `mask` (bit i for piece i) and the rest close up. Keys that were only in removed pieces go
+// with them. False when that would remove them all.
+static bool pieces_delete(EditRecord *e, f64 dur, u64 mask)
+{
+    EditPiece p[EDIT_MAX_PIECES], gone[EDIT_MAX_PIECES];
+    i32 n = pieces_of(*e, dur, p), kept = 0, ng = 0;
+    for (i32 i = 0; i < n; i++) {
+        if (mask >> i & 1) gone[ng++] = p[i];
+        else p[kept++] = p[i];
+    }
+    if (!ng || !kept) return false;
+    auto inside = [](const EditPiece *q, i32 count, f64 t) {
+        for (i32 i = 0; i < count; i++)
+            if (t >= q[i].from && t <= q[i].to) return true;
+        return false;
+    };
+    auto drop = [&](f64 t) { return inside(gone, ng, t) && !inside(p, kept, t); };
+    i32 nk = 0;
+    for (i32 k = 0; k < e->key_count; k++)
+        if (!drop(e->keys[k].t)) e->keys[nk++] = e->keys[k];
+    e->key_count = nk;
+    for (i32 t = 0; t <= EDIT_MASTER; t++) {
+        i32 nv = 0;
+        for (i32 k = 0; k < e->vol_count[t]; k++)
+            if (!drop(e->vol[t][k].t)) e->vol[t][nv++] = e->vol[t][k];
+        e->vol_count[t] = nv;
+    }
+    pieces_store(e, p, kept, dur);
+    return true;
+}
+
+// The furthest one edge of piece i can go: as far as the video, or the edge of another piece in the way, and never
+// closer than PIECE_LEAST to its other edge.
+static void piece_edge_range(const EditPiece *p, i32 n, f64 dur, i32 i, bool end, f64 *lo, f64 *hi)
+{
+    if (end) {
+        *lo = p[i].from + PIECE_LEAST;
+        *hi = dur;
+        for (i32 k = 0; k < n; k++)
+            if (k != i && p[k].from >= p[i].to - 0.0005 && p[k].from < *hi) *hi = p[k].from;
+    } else {
+        *lo = 0;
+        *hi = p[i].to - PIECE_LEAST;
+        for (i32 k = 0; k < n; k++)
+            if (k != i && p[k].to <= p[i].from + 0.0005 && p[k].to > *lo) *lo = p[k].to;
+    }
+}
+
+// Moves the start or end of piece i to source time s, held in its range. Returns where it went.
+static f64 pieces_trim(EditRecord *e, f64 dur, i32 i, bool end, f64 s)
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(*e, dur, p);
+    if (i < 0 || i >= n) return s;
+    f64 lo, hi;
+    piece_edge_range(p, n, dur, i, end, &lo, &hi);
+    s = s < lo ? lo : s > hi ? hi : s;
+    (end ? p[i].to : p[i].from) = s;
+    pieces_store(e, p, n, dur);
+    return s;
+}
+
+// Moves piece i to place `to` in the order.
+static void pieces_move(EditRecord *e, f64 dur, i32 i, i32 to)
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(*e, dur, p);
+    if (i < 0 || i >= n) return;
+    to = to < 0 ? 0 : to >= n ? n - 1 : to;
+    EditPiece m = p[i];
+    if (to > i) memmove(p + i, p + i + 1, (to - i) * sizeof *p);
+    else memmove(p + to + 1, p + to, (i - to) * sizeof *p);
+    p[to] = m;
+    pieces_store(e, p, n, dur);
+}
 
 // Whether a file has the clipback layout: track 1 is a Mix of the tracks after it.
 static bool edit_has_mix(const MediaInfo &m) { return m.track_count >= 2 && !strcmp(m.tracks[0], "Mix"); }
@@ -1083,8 +1264,9 @@ static void zoom_filter(SaveWork *w, const EditRecord &e, f64 fps, f64 start)
     graph_add(w, ":interpolation=linear:eval=frame,");
 }
 
-// The audio of a share, or Keep's rebuilt Mix, as [a]. Returns false if the file has no audio.
-static bool edit_audio_graph(SaveWork *w, const EditJob &j)
+// The audio of a share, or Keep's rebuilt Mix, as [a], for input cut from `start` seconds. Returns false if the
+// file has no audio.
+static bool edit_audio_graph(SaveWork *w, const EditJob &j, f64 start)
 {
     const MediaInfo &m = j.info;
     if (m.track_count <= 0) return false;
@@ -1093,7 +1275,6 @@ static bool edit_audio_graph(SaveWork *w, const EditJob &j)
         return true;
     }
     i32 first = edit_has_mix(m) ? 1 : 0, n = 0;
-    f64 start = j.edit.in_s > 0 ? j.edit.in_s : 0;
     for (i32 t = first; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
         if (j.edit.muted[t]) continue;
         graph_add(w, "[0:a:%d]", t);
@@ -1222,9 +1403,17 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     const EditJob &j = req.edit;
     const MediaInfo &m = j.info;
     bool share = req.kind == SAVE_SHARE;
-    f64 in_s = j.edit.in_s > 0 ? j.edit.in_s : 0;
-    f64 out_s = j.edit.out_s > in_s ? j.edit.out_s : m.duration;
-    f64 dur = out_s - in_s;
+    // The input is read from the earliest piece's start to the latest one's end (`from`, `span`); `dur` is the
+    // joined length.
+    EditPiece pc[EDIT_MAX_PIECES];
+    i32 np = pieces_of(j.edit, m.duration, pc);
+    bool cuts = np > 1;
+    f64 from = pc[0].from, to = pc[0].to;
+    for (i32 i = 1; i < np; i++) {
+        if (pc[i].from < from) from = pc[i].from;
+        if (pc[i].to > to) to = pc[i].to;
+    }
+    f64 span = to - from, dur = pieces_len(j.edit, m.duration);
     if (dur <= 0.05) {
         snprintf(out, out_cap, "the trim leaves nothing to save");
         return SAVE_EV_FAILED;
@@ -1249,7 +1438,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 
     bool zoom = edit_zoomed(j.edit);
     bool touched = edit_audio_touched(j.edit, m);
-    bool reencode = share || zoom;
+    bool reencode = share || zoom || cuts;
     SharePlan plan = {};
     i32 video_kbps = 0, side = 0;
     bool reduce_fps = false;
@@ -1283,15 +1472,52 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         w->graph[0] = 0;
         if (reencode) {
             graph_add(w, "[0:v]");
-            if (zoom) zoom_filter(w, j.edit, m.fps, in_s);
+            if (zoom) zoom_filter(w, j.edit, m.fps, from);
             if (share) {
                 if (portrait) graph_add(w, "scale='min(%d,iw)':-2:flags=lanczos,", side);
                 else graph_add(w, "scale=-2:'min(%d,ih)':flags=lanczos,", side);
                 if (reduce_fps) graph_add(w, "fps=%g,", plan.fps);
             }
-            graph_add(w, "format=%s[v];\n", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p");
+            graph_add(w, "format=%s", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p");
+            if (cuts) {
+                graph_add(w, ",split=%d", np);
+                for (i32 i = 0; i < np; i++) graph_add(w, "[c%d]", i);
+                graph_add(w, ";\n");
+                for (i32 i = 0; i < np; i++)
+                    graph_add(w, "[c%d]trim=start=%.4f:end=%.4f,setpts=PTS-STARTPTS[v%d];\n", i, pc[i].from - from,
+                              pc[i].to - from, i);
+            } else graph_add(w, "[v];\n");
         }
-        bool mix = (share || touched) && edit_audio_graph(w, j);
+        bool mix = (share || touched) && edit_audio_graph(w, j, from);
+        // With cuts, the audio streams written, in order: -1 for the rebuilt mix [a], else a track as recorded. Each
+        // is cut into the pieces, and the pieces of the video and of every stream are joined into [v] and [o<n>].
+        i32 streams[MEDIA_MAX_TRACKS + 1], ns = 0;
+        if (cuts) {
+            if (share) {
+                if (mix) streams[ns++] = -1;
+            } else {
+                i32 first = 0;
+                if (touched) { streams[ns++] = -1; first = edit_has_mix(m) ? 1 : 0; }
+                for (i32 t = first; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) streams[ns++] = t;
+            }
+            for (i32 s = 0; s < ns; s++) {
+                if (streams[s] < 0) graph_add(w, "[a]");
+                else graph_add(w, "[0:a:%d]", streams[s]);
+                graph_add(w, "asplit=%d", np);
+                for (i32 i = 0; i < np; i++) graph_add(w, "[d%d_%d]", s, i);
+                graph_add(w, ";\n");
+                for (i32 i = 0; i < np; i++)
+                    graph_add(w, "[d%d_%d]atrim=start=%.4f:end=%.4f,asetpts=PTS-STARTPTS[e%d_%d];\n", s, i,
+                              pc[i].from - from, pc[i].to - from, s, i);
+            }
+            for (i32 i = 0; i < np; i++) {
+                graph_add(w, "[v%d]", i);
+                for (i32 s = 0; s < ns; s++) graph_add(w, "[e%d_%d]", s, i);
+            }
+            graph_add(w, "concat=n=%d:v=1:a=%d[v]", np, ns);
+            for (i32 s = 0; s < ns; s++) graph_add(w, "[o%d]", s);
+            graph_add(w, ";\n");
+        }
         if (w->graph_full) {
             snprintf(out, out_cap, "the zoom has too many keyframes");
             RemoveDirectoryW(work.s);
@@ -1313,10 +1539,11 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         a[0] = 0;
         static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"};
         arg_list(a, cap, head, COUNT(head));
-        arg_pair(a, cap, "-ss", "%.3f", in_s);
+        arg_pair(a, cap, "-ss", "%.3f", from);
+        if (cuts) arg_pair(a, cap, "-t", "%.3f", span); // the input's end; the output is the joined pieces
         cmd_arg8(a, cap, "-i");
         cmd_arg(a, cap, j.src.s);
-        arg_pair(a, cap, "-t", "%.3f", dur);
+        if (!cuts) arg_pair(a, cap, "-t", "%.3f", span);
         if (w->graph_len) {
             cmd_arg8(a, cap, "-/filter_complex");
             cmd_arg(a, cap, graph.s);
@@ -1329,7 +1556,24 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             arg_pair(a, cap, "-c:v", "copy");
         }
         i32 outs = 0; // audio streams written
-        if (share) {
+        if (cuts) {
+            for (i32 s = 0; s < ns; s++) {
+                char key[32];
+                arg_pair(a, cap, "-map", "[o%d]", s);
+                snprintf(key, sizeof key, "-c:a:%d", s);
+                arg_pair(a, cap, key, "aac");
+                snprintf(key, sizeof key, "-b:a:%d", s);
+                arg_pair(a, cap, key, "%dk", share ? plan.audio_kbps : 192);
+                snprintf(key, sizeof key, "-ar:a:%d", s);
+                arg_pair(a, cap, key, "48000");
+                const char *title = streams[s] < 0 ? "Mix" : m.tracks[streams[s]];
+                snprintf(key, sizeof key, "-metadata:s:a:%d", s);
+                arg_pair(a, cap, key, "title=%s", title);
+                arg_pair(a, cap, key, "handler_name=%s", title);
+                snprintf(key, sizeof key, "-disposition:a:%d", s);
+                arg_pair(a, cap, key, s ? "0" : "default");
+            }
+        } else if (share) {
             if (mix) {
                 arg_pair(a, cap, "-map", "[a]");
                 arg_pair(a, cap, "-c:a", "aac");
@@ -1364,12 +1608,14 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             arg_pair(a, cap, "-metadata:s:a:0", "handler_name=Mix");
             arg_pair(a, cap, "-disposition:a:0", "default");
         }
-        if (share) arg_pair(a, cap, "-map_chapters", "-1"); // Keep carries the original's chapters; Share has none
+        // Keep with one piece carries the original's chapters; Share and cuts have none
+        if (share || cuts) arg_pair(a, cap, "-map_chapters", "-1");
         arg_pair(a, cap, "-movflags", "+faststart");
         arg_pair(a, cap, "-f", "mp4");
         cmd_arg(a, cap, part_path.s);
 
-        log_line("%s %u: %.1f s from %.2f s, zoom %d, audio %s, %s -> %s", share ? "share" : "keep", req.id, dur, in_s,
+        log_line("%s %u: %.1f s in %d piece%s from %.2f s, zoom %d, audio %s, %s -> %s", share ? "share" : "keep", req.id,
+                 dur, np, np == 1 ? "" : "s", from,
                  zoom ? j.edit.key_count : 0, touched ? "re-mixed" : "as recorded",
                  share ? "re-encoded" : reencode ? "re-encoded" : "copied", final8);
         if (share)

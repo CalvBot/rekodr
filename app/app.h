@@ -301,7 +301,7 @@ enum SaveState : u8 { SAVE_QUEUED, SAVE_RUNNING, SAVE_DONE, SAVE_FAILED, SAVE_CA
 // ---------------------------------------------------------------------------------------------------------------
 // Saved files and edits (library.cpp probes files, editor.cpp edits them, save.cpp renders Keep and Share)
 
-enum { MEDIA_MAX_TRACKS = 32, EDIT_MAX_KEYS = 64 };
+enum { MEDIA_MAX_TRACKS = 32, EDIT_MAX_KEYS = 64, EDIT_MAX_PIECES = 64 };
 
 // What ffprobe says about a saved file (cached next to its thumbnails).
 struct MediaInfo {
@@ -333,9 +333,16 @@ struct VolKey {
 };
 enum { EDIT_MAX_VOL_KEYS = 48, EDIT_MASTER = MEDIA_MAX_TRACKS }; // volume slot EDIT_MASTER is the whole mix
 
+struct EditPiece {
+    f64 from, to; // seconds into the video
+};
+
 // An edit never changes the original: it's this small record, kept in <year>\Data\<video name>.edit.txt.
 struct EditRecord {
-    f64     in_s, out_s;             // trim, seconds into the video; out_s 0 = to the end
+    // The parts of the video kept, in the order they play, each a span of the video in seconds; they never
+    // overlap. None means the whole video.
+    EditPiece pieces[EDIT_MAX_PIECES];
+    i32     piece_count;
     ZoomKey keys[EDIT_MAX_KEYS];     // sorted by t
     i32     key_count;
     // Per audio track, and the whole mix at EDIT_MASTER: the volume while there are no keys (volume - 1, so zero
