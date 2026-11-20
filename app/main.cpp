@@ -111,6 +111,9 @@ static void run_command(const char *text)
             s.start_us = s.end_us - (i64)(83 * 60e6);
             toast_session(s, atoi(trim(arg + 13)));
         }
+        else if (starts_with(arg, "saved-toast")) { // saved-toast [small]: Clip saved for a made-up clip
+            toast_saved_show(SAVE_CLIP, "C:\\Clips\\Minecraft 2026-11-21 20-14-03.mp4", strstr(arg, "small") != 0);
+        }
         else if (starts_with(arg, "delete-folder")) { // on the list of folders, which it belongs to
             g_app.config.side_folders = true;
             g_app.config.games_collapsed = false;
@@ -135,7 +138,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, session-toast, free-links, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, session-toast, saved-toast, free-links, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {

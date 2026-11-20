@@ -14,6 +14,8 @@
 // typed, as does clicking away; Escape leaves the marker plain. Tab steps through the colours.
 // Every toast has a Dismiss button (an X) at the bottom left: it closes the toast as ignoring it would, and on the
 // marker window it is Escape.
+// With Options > General > Small in games on, Clip saved over a game is only its tile, title and line: no buttons, gone
+// after 3 s, and a click closes it. Popups in games picks another monitor for every toast while a game is in front.
 
 enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
 // The parts a click lands on: the buttons counted from the right, Dismiss at the left, then the marker's colours
@@ -35,6 +37,7 @@ struct Toast {
     u8        colour;
     i32       hot;                // the part under the mouse
     bool      open, tracking, held; // held: the mouse is on it, so the countdown waits
+    bool      brief;              // Clip saved over a game: no button row (Config.toast_small_in_game)
     u64       start_ms;           // the countdown's start (GetTickCount64)
     HBITMAP   base;               // the toast drawn without its dial, base_w x base_h; redrawn when dirty
     i32       base_w, base_h;
@@ -45,7 +48,7 @@ struct Toast {
 };
 static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
 static const UINT_PTR TOAST_TICK = 1;
-static const UINT     TOAST_LIFE_MS = 5000, TOAST_TICK_MS = 33; // the dial moves at 30 fps
+static const UINT     TOAST_LIFE_MS = 5000, TOAST_SMALL_LIFE_MS = 3000, TOAST_TICK_MS = 33; // the dial moves at 30 fps
 static const f32      TOAST_DIAL = 24, TOAST_DIAL_RING = 2;
 
 // Clip saved and Session ended leave the keyboard where it is; the marker window takes it.
@@ -72,9 +75,10 @@ static COLORREF toast_rgb(u32 c) { return RGB((c >> 16) & 0xff, (c >> 8) & 0xff,
 static i32 toast_px(const Toast &t, f32 v) { return (i32)(v * t.scale + 0.5f); }
 
 // At 100%
-static f32 toast_height(ToastKind kind)
+static f32 toast_height(const Toast &t)
 {
-    return TOAST_PAD + TOAST_TILE + TOAST_GAP + (kind == TOAST_MARKER ? TOAST_FIELD_H + TOAST_GAP : 0) + TOAST_BUTTON_H + TOAST_PAD;
+    if (t.brief) return TOAST_PAD + TOAST_TILE + TOAST_PAD;
+    return TOAST_PAD + TOAST_TILE + TOAST_GAP + (t.kind == TOAST_MARKER ? TOAST_FIELD_H + TOAST_GAP : 0) + TOAST_BUTTON_H + TOAST_PAD;
 }
 
 // A part's rectangle in client pixels
@@ -82,8 +86,9 @@ static RECT toast_rect(const Toast &t, i32 part)
 {
     i32 w = toast_px(t, TOAST_W), pad = toast_px(t, TOAST_PAD), tile = toast_px(t, TOAST_TILE);
     i32 bw = toast_px(t, TOAST_BUTTON_W), bh = toast_px(t, TOAST_BUTTON_H), gap = toast_px(t, TOAST_BUTTON_GAP);
-    i32 row = toast_px(t, toast_height(t.kind) - TOAST_PAD - TOAST_BUTTON_H);
+    i32 row = toast_px(t, toast_height(t) - TOAST_PAD - TOAST_BUTTON_H);
     if (part == TR_TILE) return {pad, pad, pad + tile, pad + tile};
+    if (t.brief) return {}; // no buttons
     if (part == TR_DIAL) { // round the Dismiss X, inside its button
         i32 d = toast_px(t, TOAST_DIAL), x = pad + (bh - d) / 2, y = row + (bh - d) / 2;
         return {x, y, x + d, y + d};
@@ -106,6 +111,7 @@ static RECT toast_rect(const Toast &t, i32 part)
 static i32 toast_hit(const Toast &t, LPARAM lp)
 {
     POINT p = {(i16)LOWORD(lp), (i16)HIWORD(lp)};
+    if (t.brief) return TP_NONE;
     i32 parts[8], n = 0;
     parts[n++] = TP_MAIN;
     parts[n++] = TP_DISMISS;
@@ -218,9 +224,9 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
         }
     }
     // The buttons, as the window's own: the main one in the accent, the other secondary
-    brush(t.hot == TP_MAIN ? COL_ACCENT_HOVER : COL_ACCENT);
-    rounded(TP_MAIN, TOAST_BUTTON_ROUND);
-    if (quiet) {
+    if (!t.brief) brush(t.hot == TP_MAIN ? COL_ACCENT_HOVER : COL_ACCENT);
+    if (!t.brief) rounded(TP_MAIN, TOAST_BUTTON_ROUND);
+    if (quiet && !t.brief) {
         brush(t.hot == TP_SECOND ? COL_HOVER : COL_PANEL2);
         rounded(TP_SECOND, TOAST_BUTTON_ROUND);
     }
@@ -256,6 +262,13 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
 
     RECT dismiss = toast_rect(t, TP_DISMISS);
     if (!quiet) toast_draw_x(t, dc, dismiss); // a quiet toast's X goes in with its dial
+    if (t.brief) {
+        SelectObject(dc, old_font);
+        SelectObject(big, old_big);
+        DeleteObject(big_bmp);
+        DeleteDC(big);
+        return;
+    }
 
     RECT main = toast_rect(t, TP_MAIN);
     SelectObject(dc, t.strong);
@@ -340,7 +353,7 @@ static void toast_paint(Toast &t)
         toast_draw(t, wdc, dc, r);
         t.dirty = false;
     }
-    bool dial = toast_quiet(t);
+    bool dial = toast_quiet(t) && !t.brief;
     if (dial) {
         RECT d = toast_rect(t, TR_DIAL);
         ExcludeClipRect(wdc, d.left, d.top, d.right, d.bottom);
@@ -442,12 +455,12 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (on || t.held) t.start_ms = now;
         if (on != t.held) t.held = on;
         else if (on) return 0; // still held: the dial is already full
-        if (now - t.start_ms >= TOAST_LIFE_MS) {
+        if (now - t.start_ms >= (t.brief ? TOAST_SMALL_LIFE_MS : TOAST_LIFE_MS)) {
             if (t.kind == TOAST_SESSION) toast_session_close(TP_NONE);
             else toast_hide(t);
             return 0;
         }
-        InvalidateRect(hwnd, &d, FALSE);
+        if (!t.brief) InvalidateRect(hwnd, &d, FALSE);
         return 0;
     }
     case WM_ACTIVATE:
@@ -515,13 +528,15 @@ static void toast_fonts(Toast &t, f32 s)
 }
 
 // The monitor toasts go on: Config.popup_monitor, an output index or -2 the one recorded. -1 turns Clip saved off;
-// the others then go on the one recorded. A test copy's go on the monitor furthest right. False when there's none.
+// the others then go on the one recorded. While a game is in front, Config.popup_monitor_game picks instead unless
+// it is -3. A test copy's go on the monitor furthest right. False when there's none.
 static bool toast_monitor(ToastKind kind, RECT *work)
 {
     HMONITOR right;
+    if (g_app.config.popup_monitor == -1 && kind == TOAST_SAVED) return false;
     if (is_test_copy()) return rightmost_monitor(work, &right);
     i32 out = g_app.config.popup_monitor;
-    if (out == -1 && kind == TOAST_SAVED) return false;
+    if (g_app.config.popup_monitor_game != -3 && sessions_game_in_front()) out = g_app.config.popup_monitor_game;
     if (out < 0) out = g_app.config.output_idx;
     i32 w, h, hz;
     u64 hmon = 0;
@@ -537,7 +552,7 @@ static void toast_place(Toast &t, const RECT &work)
 {
     SetWindowPos(t.hwnd, HWND_TOPMOST, work.right - 2, work.bottom - 2, 1, 1, SWP_NOACTIVATE);
     toast_fonts(t, GetDpiForWindow(t.hwnd) / 96.f);
-    i32 w = toast_px(t, TOAST_W), h = toast_px(t, toast_height(t.kind)), m = toast_px(t, TOAST_MARGIN);
+    i32 w = toast_px(t, TOAST_W), h = toast_px(t, toast_height(t)), m = toast_px(t, TOAST_MARGIN);
     i32 bottom = work.bottom - m;
     const Toast *others[] = {&g_toast_saved, &g_toast_marker, &g_toast_session};
     for (const Toast *other : others) {
@@ -556,15 +571,14 @@ static void toast_place(Toast &t, const RECT &work)
     toast_redraw(t);
 }
 
-// A save finished: Clip saved, unless clipback's own window is in front (it shows the save itself).
-static void toast_saved(SaveKind kind, const char *path)
+// Clip saved for path, brief (no buttons) or with its buttons
+static void toast_saved_show(SaveKind kind, const char *path, bool brief)
 {
-    if (kind == SAVE_PREVIEW || kind == SAVE_LINK) return;
-    if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
     Toast &t = g_toast_saved;
     RECT work;
     if (!toast_monitor(TOAST_SAVED, &work) || !toast_window(t)) return;
     str_set(t.path, path);
+    t.brief = brief;
     utf8_to_wide(kind == SAVE_SESSION ? "Session saved" : "Clip saved", t.title, COUNT(t.title));
     const char *name = strrchr(path, '\\');
     utf8_to_wide(name ? name + 1 : path, t.line, COUNT(t.line));
@@ -572,6 +586,14 @@ static void toast_saved(SaveKind kind, const char *path)
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
     toast_countdown(t);
+}
+
+// A save finished: Clip saved, unless clipback's own window is in front (it shows the save itself).
+static void toast_saved(SaveKind kind, const char *path)
+{
+    if (kind == SAVE_PREVIEW || kind == SAVE_LINK) return;
+    if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
+    toast_saved_show(kind, path, g_app.config.toast_small_in_game && sessions_game_in_front());
 }
 
 // Session ended was answered: Save (TP_MAIN), Review (TP_SECOND), or dismissed, closed or ignored (anything else). Every

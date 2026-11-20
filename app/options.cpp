@@ -2829,6 +2829,41 @@ static bool accent_swatches(i32 *sel)
 
 static f32 swatches_w() { return (f32)ACCENT_COUNT * ImGui::GetFrameHeight() + (f32)(ACCENT_COUNT - 1) * dp(8); }
 
+// A monitor combo for where the toasts go (Config.popup_monitor, popup_monitor_game). game: the first entry is "As
+// Popups" (-3); otherwise it is "No Clip saved" (-1). Then the monitor recorded (-2) and each monitor.
+static void opt_popup_monitor(const char *label, const char *sub, const char *id, i32 *value, bool game)
+{
+    OptionsUi &o = g_app.options;
+    f32 wide = dp(300);
+    const char *first = game ? "As Popups" : "No Clip saved";
+    i32 first_v = game ? -3 : -1;
+    char preview[160];
+    if (*value == first_v) str_set(preview, first);
+    else if (*value == -2) str_set(preview, "The monitor recorded");
+    else if (*value >= 0 && *value < o.monitor_count) monitor_label(*value, preview, sizeof preview);
+    else snprintf(preview, sizeof preview, "%d. not connected", *value + 1);
+    opt_row_begin(label, sub, wide);
+    if (opt_combo_begin(id, preview, wide, wide)) {
+        if (ImGui::IsWindowAppearing()) options_list_monitors();
+        i32 pick = *value;
+        if (opt_combo_item(first, "", *value == first_v)) pick = first_v;
+        if (opt_combo_item("The monitor recorded", "", *value == -2)) pick = -2;
+        for (i32 i = 0; i < o.monitor_count; i++) {
+            char name[96], note[64];
+            monitor_label(i, name, sizeof name);
+            monitor_note(i, note, sizeof note);
+            if (opt_combo_item(name, note, *value == i)) pick = i;
+        }
+        if (pick != *value) {
+            *value = pick;
+            log_line("options: %s %d", game ? "popups in games" : "popups", pick);
+            options_apply(0);
+        }
+        opt_combo_end();
+    }
+    opt_row_end();
+}
+
 static void options_general()
 {
     Config &c = g_app.config;
@@ -2854,35 +2889,16 @@ static void options_general()
         options_apply(0);
     }
     // Where the toasts go: Clip saved, Session ended and the marker window, on the monitor recorded or another one.
-    // Off turns Clip saved off; the others then go on the monitor recorded.
-    {
-        OptionsUi &o = g_app.options;
-        f32 wide = dp(300);
-        char preview[160];
-        if (c.popup_monitor == -1) str_set(preview, "No Clip saved");
-        else if (c.popup_monitor == -2) str_set(preview, "The monitor recorded");
-        else if (c.popup_monitor < o.monitor_count) monitor_label(c.popup_monitor, preview, sizeof preview);
-        else snprintf(preview, sizeof preview, "%d. not connected", c.popup_monitor + 1);
-        opt_row_begin("Popups", "Clip saved, Session ended and the marker window, in a corner of this monitor", wide);
-        if (opt_combo_begin("##popups", preview, wide, wide)) {
-            if (ImGui::IsWindowAppearing()) options_list_monitors();
-            i32 pick = c.popup_monitor;
-            if (opt_combo_item("No Clip saved", "", c.popup_monitor == -1)) pick = -1;
-            if (opt_combo_item("The monitor recorded", "", c.popup_monitor == -2)) pick = -2;
-            for (i32 i = 0; i < o.monitor_count; i++) {
-                char label[96], note[64];
-                monitor_label(i, label, sizeof label);
-                monitor_note(i, note, sizeof note);
-                if (opt_combo_item(label, note, c.popup_monitor == i)) pick = i;
-            }
-            if (pick != c.popup_monitor) {
-                c.popup_monitor = pick;
-                log_line("options: popups %d", pick);
-                options_apply(0);
-            }
-            opt_combo_end();
-        }
-        opt_row_end();
+    // Off turns Clip saved off; the others then go on the monitor recorded. In games picks another one while a game
+    // is in front, and Small in games keeps Clip saved to one line there.
+    opt_popup_monitor("Popups", "Clip saved, Session ended and the marker window, in a corner of this monitor",
+                      "##popups", &c.popup_monitor, false);
+    opt_popup_monitor("Popups in games", "Where they go while a game is in front", "##popups_game",
+                      &c.popup_monitor_game, true);
+    if (opt_row_toggle("Small in games", "Clip saved without its buttons over a game, gone after 3 s", "##toast_small",
+                       &c.toast_small_in_game)) {
+        log_line("options: small toasts in games %s", c.toast_small_in_game ? "on" : "off");
+        options_apply(0);
     }
     opt_card_end();
 

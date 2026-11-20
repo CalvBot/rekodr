@@ -56,6 +56,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->play_dir = paths.local_dir;
     c->buffer_hours = 24;
     c->popup_monitor = -2;
+    c->popup_monitor_game = -3;
     c->buffer_gb = 100;
     c->min_free_gb = 50;
     c->fps = 60;
@@ -298,6 +299,8 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
     else if (!strcmp(key, "popup_monitor")) c->popup_monitor = atoi(value);
+    else if (!strcmp(key, "popup_monitor_game")) c->popup_monitor_game = atoi(value);
+    else if (!strcmp(key, "toast_small_in_game")) boolean(&c->toast_small_in_game);
     else if (!strcmp(key, "fps")) c->fps = atoi(value);
     else if (!strcmp(key, "height")) c->height = atoi(value);
     else if (!strcmp(key, "codec")) str_set(c->codec.s, value);
@@ -495,7 +498,8 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "link_hosts = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_hosts, c.litterbox_hours,
             c.free_links_seen ? "true" : "false");
     boolean("clock_24h", c.clock_24h);
-    fprintf(f, "popup_monitor = %d\n", c.popup_monitor);
+    fprintf(f, "popup_monitor = %d\npopup_monitor_game = %d\n", c.popup_monitor, c.popup_monitor_game);
+    boolean("toast_small_in_game", c.toast_small_in_game);
     boolean("voice_mono", c.voice_mono);
     boolean("start_with_windows", c.start_with_windows);
     boolean("dev_log", c.dev_log);
