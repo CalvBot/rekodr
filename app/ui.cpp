@@ -115,6 +115,9 @@ static f32 g_dpi_scale = 1;
 #define ICON_BACK10    "\xEE\xB4\xBC" // ED3C skip back 10
 #define ICON_FWD30     "\xEE\xB4\xBD" // ED3D skip forward 30
 #define ICON_SOLO      "\xEE\x9F\xB6" // E7F6 headphone
+#define ICON_PIN       "\xEE\x9C\x98" // E718
+#define ICON_PINNED    "\xEE\xA1\x80" // E840
+#define ICON_REFRESH   "\xEE\x9C\xAC" // E72C
 
 // The kinds of sound track, in the order their lanes go, and how each is shown wherever tracks are: the Timeline,
 // the editor, and the app categories in Options.

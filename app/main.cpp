@@ -75,10 +75,11 @@ static void run_command(const char *text)
         Library &lib = g_app.library;
         g_app.ui.help_close = true;
         if (g_app.ui.setup_open && !starts_with(arg, "setup")) setup_finish("left for another page"); // it covers every page
-        if (!strcmp(arg, "clips") || !strcmp(arg, "sessions")) {
+        if (!strcmp(arg, "clips") || !strcmp(arg, "sessions") || !strcmp(arg, "shared")) {
             library_close_player();
             ui_show(SCREEN_LIBRARY);
-            lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
+            g_lib_shared = !strcmp(arg, "shared");
+            if (!g_lib_shared) lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
         } else if (!strcmp(arg, "player")) { // the newest clip, playing in the library
             ui_show(SCREEN_LIBRARY);
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]]);
@@ -152,7 +153,7 @@ static void handle_event(const Event &e)
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
     case EV_GAMEDB: gamedb_on_event(e); break;
-    case EV_R2: r2_on_event(e); break;
+    case EV_R2: r2_on_event(e); library_r2_event(); break;
     default: break;
     }
     pipe_publish();

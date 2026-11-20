@@ -2419,6 +2419,129 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
     opt_text_at(dl, g_font, ImVec2(x, y), col == COL_DIM ? COL_DIM : COL_TEXT, text, right);
 }
 
+// Sharing: links to clips, uploaded to the player's own Cloudflare R2 bucket (r2.cpp). The secret key goes to
+// Windows' Credential Manager, never settings.txt. The budget picks the most the bucket holds: past it the oldest
+// unpinned links are removed.
+static const i32 R2_STEPS_GB[] = {10, 25, 50, 100, 250, 500, 1000};
+
+static void options_sharing()
+{
+    Config &c = g_app.config;
+    f32 fw = dp(360), bw = dp(150);
+    opt_section("SHARING");
+    opt_card_begin();
+    opt_row_begin("Links to clips", "Make an R2 bucket, give it a public address and an API token for it", bw);
+    if (kit_button("Open Cloudflare##r2site", KIT_SECONDARY, ImVec2(bw, 0)))
+        open_url("https://www.cloudflare.com/developer-platform/products/r2/");
+    opt_row_end();
+    struct Field {
+        const char *name, *sub, *id, *hint;
+        char *v;
+        i32 cap;
+    } fields[] = {
+        {"Account ID", "On the R2 page of the Cloudflare dashboard", "##r2account", 0, c.r2_account, (i32)sizeof c.r2_account},
+        {"Access key", "The API token's Access Key ID", "##r2access", 0, c.r2_access_key, (i32)sizeof c.r2_access_key},
+        {"Bucket", 0, "##r2bucket", 0, c.r2_bucket, (i32)sizeof c.r2_bucket},
+        {"Public address", "The bucket's r2.dev address or your own domain", "##r2public", "https://", c.r2_public_url,
+         (i32)sizeof c.r2_public_url},
+    };
+    for (i32 i = 0; i < (i32)COUNT(fields); i++) {
+        Field &f = fields[i];
+        opt_row_begin(f.name, f.sub, fw);
+        char t[MAX_PATH * 3];
+        if (opt_text(f.id, f.v, fw, 0, f.hint, t, sizeof t)) {
+            char *v = trim(t);
+            if (strcmp(v, f.v)) {
+                snprintf(f.v, f.cap, "%s", v);
+                log_line("options: R2 %s %s", f.name, v[0] ? "set" : "cleared");
+                options_apply(0);
+            }
+        }
+        opt_row_end();
+        if (i == 1) { // the secret key after the access key: masked, kept by Windows
+            bool has = r2_has_secret();
+            f32 field_w = fw - ImGui::GetFrameHeight() - dp(8);
+            opt_row_begin("Secret key", "Kept in Windows' Credential Manager", fw);
+            char s[256];
+            if (opt_text("##r2secret", "", field_w, ImGuiInputTextFlags_Password, has ? "Saved" : "The Secret Access Key", s,
+                         sizeof s) && trim(s)[0]) {
+                r2_secret_set(trim(s));
+                log_line("options: R2 secret key saved");
+            }
+            if (ImGui::IsItemDeactivated()) SecureZeroMemory(g_app.options.edit, sizeof g_app.options.edit);
+            SecureZeroMemory(s, sizeof s);
+            ImGui::SameLine(0, dp(8));
+            kit_next_tip("Forget the secret key");
+            if (kit_icon_button(ICON_DELETE, "##r2forget", KIT_GHOST, has)) {
+                r2_secret_set("");
+                log_line("options: R2 secret key removed");
+            }
+            opt_row_end();
+        }
+    }
+
+    // Test: a clear ok or failed, from the fields as they are
+    {
+        opt_row_begin("Test", 0, bw);
+        R2View v = r2_test_view();
+        bool ready = r2_ready();
+        const char *text = !ready ? "Fill in everything above" : v.state == R2_TEST_IDLE ? "Not tested" : v.text;
+        u32 col = !ready || v.state == R2_TEST_IDLE || v.state == R2_TEST_BUSY ? COL_DIM
+                  : v.state == R2_TEST_OK                                        ? COL_OK
+                                                                                 : COL_WARN;
+        opt_status(text, col, g_row.x1 - bw - dp(16), g_row.x0 + dp(80));
+        if (kit_button("Test##r2test", KIT_SECONDARY, ImVec2(bw, 0), ready && v.state != R2_TEST_BUSY)) {
+            log_line("options: R2 test");
+            r2_test();
+        }
+        if (v.state == R2_TEST_BUSY) ui_wake();
+        opt_row_end();
+    }
+
+    // The budget: steps of the most the bucket holds, the first being Cloudflare's free 10 GB
+    {
+        f32 sw = dp(170), lw = dp(220);
+        opt_row_begin("Monthly budget", "Past it the oldest links that aren't pinned are removed", sw + dp(12) + lw);
+        i32 n = (i32)COUNT(R2_STEPS_GB), cur = 0;
+        f64 best = 1e30;
+        for (i32 i = 0; i < n; i++) {
+            f64 d = fabs(r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB) - c.r2_budget);
+            if (d < best) {
+                best = d;
+                cur = i;
+            }
+        }
+        f32 v = (f32)cur;
+        ImVec2 at = ImGui::GetCursorScreenPos();
+        if (lib_slider("##r2budget", &v, 0, (f32)(n - 1), sw, ImGui::GetFrameHeight())) {
+            i32 i = (i32)(v + 0.5f);
+            c.r2_budget = i == 0 ? 0 : (f32)r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB);
+            cur = i;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            log_line("options: R2 budget $%.2f a month", c.r2_budget);
+            options_apply(0);
+        }
+        char t[64];
+        if (cur == 0) snprintf(t, sizeof t, "Free, %d GB", R2_STEPS_GB[0]);
+        else if (R2_STEPS_GB[cur] >= 1000)
+            snprintf(t, sizeof t, "%d TB, about $%.2f a month", R2_STEPS_GB[cur] / 1000, r2_cost_for((i64)R2_STEPS_GB[cur] * R2_GB));
+        else snprintf(t, sizeof t, "%d GB, about $%.2f a month", R2_STEPS_GB[cur], r2_cost_for((i64)R2_STEPS_GB[cur] * R2_GB));
+        opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(at.x + sw + dp(12), opt_row_text_y(g_font)), COL_TEXT, t,
+                    g_row.x1);
+        opt_row_end();
+    }
+    {
+        R2Usage u = r2_usage();
+        char used[32], lim[32], t[96];
+        lib_r2_size(u.used_bytes, used, sizeof used);
+        lib_r2_size(u.limit_bytes, lim, sizeof lim);
+        snprintf(t, sizeof t, "Using %s of %s", used, lim);
+        opt_row_value("Space", "What the links take up in the bucket", t, COL_TEXT);
+    }
+    opt_card_end();
+}
+
 static void options_integrations()
 {
     Config &c = g_app.config;
@@ -2517,6 +2640,8 @@ static void options_integrations()
         ImGui::PopID();
     }
     opt_card_end();
+
+    options_sharing();
 
     if (others > 0) {
         opt_section("OTHER PROGRAMS");

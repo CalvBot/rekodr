@@ -1889,6 +1889,32 @@ static bool lib_switch(const char *id, const char *const *labels, f32 w, f32 h, 
     return clicked;
 }
 
+// A row of `n` equal segments, `on` lit, like lib_switch. Returns the segment clicked, else -1.
+static i32 lib_segments(const char *id, const char *const *labels, i32 n, f32 w, f32 h, i32 on, u32 track, u32 track_hot,
+                        u32 lit)
+{
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h)) && !kit_closed_here(ImGui::GetItemID());
+    bool hot = ImGui::IsItemHovered();
+    i32 under = hot ? (i32)((ImGui::GetIO().MousePos.x - a.x) / w * n) : -1;
+    if (under >= n) under = n - 1;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 round = ImGui::GetStyle().FrameRounding, in = kit_px(3);
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? track_hot : track), round);
+    for (i32 s = 0; s < n; s++) {
+        ImVec2 p(a.x + floorf(s * w / n), a.y), q(a.x + floorf((s + 1) * w / n), a.y + h);
+        bool lit_s = s == on;
+        if (lit_s) dl->AddRectFilled(ImVec2(p.x + in, p.y + in), ImVec2(q.x - in, q.y - in), col32(lit), ImMax(round - in, 0.0f));
+        ImFont *font = lit_s ? g_font_bold : g_font;
+        ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, labels[s]);
+        dl->AddText(font, font->FontSize, ImVec2(floorf((p.x + q.x - ts.x) / 2), floorf(a.y + (h - ts.y) / 2)),
+                    col32(lit_s || s == under ? COL_TEXT : COL_DIM), labels[s]);
+    }
+    if (!clicked || under < 0) return -1;
+    dev_click("switch", labels[under]);
+    return under;
+}
+
 // Popup and dialog looks: roomy, rounded, no title bar.
 static void lib_popup_style_push(f32 pad)
 {
@@ -2226,6 +2252,338 @@ static void lib_comment_dialog()
     lib_dialog_end();
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Links (r2.cpp): Copy link uploads a file to the player's own bucket and puts its address on the clipboard. The
+// uploads under way, then "Link copied" or why one failed, show in a note at the bottom of the window.
+
+enum { LIB_UPLOADS_MAX = 8 };
+struct LibUpload {
+    u32  id;
+    char name[128];
+};
+static LibUpload g_lib_uploads[LIB_UPLOADS_MAX]; // oldest first
+static i32 g_lib_upload_count;
+static char g_lib_note[200];
+static bool g_lib_note_error;
+static i64 g_lib_note_us;  // when the note was set; it shows for a few seconds
+static bool g_lib_shared;  // the Shared list shows in place of the cards
+
+static void lib_note(bool error, const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(g_lib_note, sizeof g_lib_note, fmt, args);
+    va_end(args);
+    g_lib_note_error = error;
+    g_lib_note_us = now_us();
+    log_line("library: %s", g_lib_note);
+    ui_wake();
+}
+
+// What an upload is doing; its progress starts again at each step.
+static const char *lib_upload_verb(R2State s)
+{
+    return s == R2_QUEUED ? "Waiting to upload" : s == R2_PREPARING ? "Preparing" : "Uploading";
+}
+
+// A size as Cloudflare counts it, in thousands: "3.2 GB", "10 GB", "640 MB".
+static void lib_r2_size(i64 bytes, char *out, i32 cap)
+{
+    f64 gb = (f64)bytes / R2_GB;
+    if (gb >= 100 || (gb >= 1 && gb == (f64)(i64)gb)) snprintf(out, cap, "%.0f GB", gb);
+    else if (gb >= 1) snprintf(out, cap, "%.1f GB", gb);
+    else snprintf(out, cap, "%.0f MB", (f64)bytes / 1e6);
+}
+
+static void lib_upload_add(u32 id, const char *name)
+{
+    LibUpload &u = g_lib_uploads[g_lib_upload_count++];
+    u.id = id;
+    snprintf(u.name, sizeof u.name, "%s", name);
+    ui_wake();
+}
+
+// Options, on the page with Sharing.
+static void lib_open_sharing()
+{
+    g_app.options.tab = OPT_INTEGRATIONS;
+    ui_show(SCREEN_OPTIONS);
+}
+
+// Copy link on a card or in the player. A file already up gets its link at once.
+static void lib_link_item(const LibItem &it)
+{
+    const char *name = it.display_name[0] ? it.display_name : it.name;
+    if (!r2_ready()) {
+        lib_open_sharing();
+        lib_note(true, "Set up Sharing first");
+        return;
+    }
+    if (g_lib_upload_count >= LIB_UPLOADS_MAX) {
+        lib_note(true, "Wait for an upload to finish");
+        return;
+    }
+    Path path = lib_item_path(it);
+    lib_upload_add(r2_share_file(path.s, name, it.info.game, it.key, &it.info), name);
+}
+
+// Follows the uploads: a finished one copies its link, a failed one says why. Each frame of the library, and on
+// EV_R2 wherever the window is.
+static void lib_uploads_poll()
+{
+    for (i32 i = 0; i < g_lib_upload_count;) {
+        LibUpload &u = g_lib_uploads[i];
+        R2Job j = r2_job(u.id);
+        if (j.state == R2_DONE) {
+            ImGui::SetClipboardText(j.url);
+            lib_note(false, "Link copied: %s", u.name);
+        } else if (j.state == R2_FAILED) lib_note(true, "Couldn't share %s: %s", u.name, j.error);
+        else {
+            i++;
+            continue;
+        }
+        memmove(&g_lib_uploads[i], &g_lib_uploads[i + 1], (g_lib_upload_count - i - 1) * sizeof *g_lib_uploads);
+        g_lib_upload_count--;
+    }
+    if (g_lib_upload_count) ui_wake();
+}
+
+// The note at the bottom of the window, a fixed size: the oldest upload under way with how far it is, else the
+// last word for a few seconds.
+static void lib_note_draw()
+{
+    bool busy = g_lib_upload_count > 0;
+    if (!busy && (!g_lib_note[0] || now_us() - g_lib_note_us > 4000000)) return;
+    ui_wake(); // until it goes
+    char text[256], pct[16] = "";
+    f32 progress = -1;
+    const char *icon = ICON_LINK;
+    u32 ink = COL_ACCENT;
+    if (busy) {
+        R2Job j = r2_job(g_lib_uploads[0].id);
+        progress = j.state == R2_QUEUED ? 0 : j.progress;
+        const char *verb = lib_upload_verb(j.state);
+        if (g_lib_upload_count > 1)
+            snprintf(text, sizeof text, "%s %s, %d more after it", verb, g_lib_uploads[0].name, g_lib_upload_count - 1);
+        else snprintf(text, sizeof text, "%s %s", verb, g_lib_uploads[0].name);
+        if (j.state != R2_QUEUED) snprintf(pct, sizeof pct, "%d%%", (i32)(progress * 100 + 0.5f));
+    } else {
+        snprintf(text, sizeof text, "%s", g_lib_note);
+        if (g_lib_note_error) {
+            icon = ICON_WARNING;
+            ink = 0xff8a92;
+        }
+    }
+    ImGuiViewport *vp = ImGui::GetMainViewport();
+    ImDrawList *dl = ImGui::GetForegroundDrawList(vp);
+    f32 w = kit_px(420), h = kit_px(44), r = kit_px(10);
+    ImVec2 a(floorf(vp->Pos.x + (vp->Size.x - w) / 2), floorf(vp->Pos.y + vp->Size.y - h - kit_px(56)));
+    ImVec2 b(a.x + w, a.y + h);
+    dl->AddRectFilled(a, b, col32(COL_PANEL2), r);
+    dl->AddRect(a, b, col32(COL_LINE), r, 0, kit_px(1));
+    f32 fs = g_font_icon->FontSize;
+    ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
+    dl->AddText(g_font_icon, fs, ImVec2(a.x + kit_px(14), floorf(a.y + (h - gs.y) / 2)), col32(ink), icon);
+    f32 tx = a.x + kit_px(14) + gs.x + kit_px(10), right = b.x - kit_px(14);
+    if (pct[0]) {
+        f32 pw = ImGui::CalcTextSize(pct).x;
+        dl->AddText(ImVec2(right - pw, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), col32(COL_DIM), pct);
+        right -= kit_px(44);
+    }
+    // text_clipped draws on the window's list, under popups; the note goes over everything
+    char shown[256];
+    snprintf(shown, sizeof shown, "%s", text);
+    f32 room = right - tx;
+    for (size_t n = strlen(shown); n > 3 && ImGui::CalcTextSize(shown).x > room; n--) memcpy(shown + n - 4, "...", 4);
+    dl->AddText(ImVec2(tx, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), col32(COL_TEXT), shown);
+    if (progress >= 0) {
+        f32 y = b.y - kit_px(5), x0 = a.x + kit_px(14), x1 = b.x - kit_px(14);
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + kit_px(2)), col32(COL_HOVER), kit_px(1));
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + (x1 - x0) * progress, y + kit_px(2)), col32(COL_ACCENT), kit_px(1));
+    }
+}
+
+static void library_r2_event() { lib_uploads_poll(); }
+
+// The Shared list: every file uploaded, newest first, a page at a time. A row has the game's picture, the name, and
+// under it the game, when it went up and its size; on the right Copy link, Pin (kept whatever the limit) and
+// Delete. One removed to stay under the limit is greyed, with Reshare while the file is still on this PC. Over the
+// list, on the right, how much of the limit is used.
+static void lib_shared_view(ImVec2 h0, f32 full_w)
+{
+    static R2Share list[R2_MAX_SHARES];
+    static i32 count = -1, page = 0;
+    static u32 gen;
+    static char del_key[32];
+    if (count < 0 || gen != r2_history_gen()) {
+        gen = r2_history_gen();
+        count = r2_history(list, R2_MAX_SHARES);
+        qsort(list, count, sizeof *list, [](const void *x, const void *y) {
+            i64 a = ((const R2Share *)x)->uploaded_us, b = ((const R2Share *)y)->uploaded_us;
+            return a < b ? 1 : a > b ? -1 : 0;
+        });
+    }
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 fh = ImGui::GetFrameHeight(), gap = kit_px(4);
+
+    // How much of the limit is used, on the header's right, once there's a bucket
+    if (r2_ready() || count > 0) {
+        R2Usage u = r2_usage();
+        char used[24], lim[24], t[80];
+        lib_r2_size(u.used_bytes, used, sizeof used);
+        lib_r2_size(u.limit_bytes, lim, sizeof lim);
+        snprintf(t, sizeof t, "Using %s of %s", used, lim);
+        f32 bar_w = kit_px(120), right = h0.x + full_w, tw = ImGui::CalcTextSize(t).x;
+        f32 bx = right - bar_w, cy = floorf(h0.y + fh / 2);
+        f32 f = u.limit_bytes > 0 ? (f32)((f64)u.used_bytes / (f64)u.limit_bytes) : 0;
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        dl->AddRectFilled(ImVec2(bx, cy - kit_px(2)), ImVec2(right, cy + kit_px(2)), col32(COL_HOVER), kit_px(2));
+        dl->AddRectFilled(ImVec2(bx, cy - kit_px(2)), ImVec2(bx + bar_w * f, cy + kit_px(2)),
+                          col32(f > 0.9f ? COL_WARN : COL_ACCENT), kit_px(2));
+        dl->AddText(ImVec2(bx - kit_px(12) - tw, floorf(h0.y + (fh - ImGui::GetTextLineHeight()) / 2)), col32(COL_DIM), t);
+    }
+
+    ImVec2 l0(h0.x, h0.y + fh + kit_px(16));
+    ImGui::SetCursorScreenPos(l0);
+    f32 avail = ImGui::GetContentRegionAvail().y - fh - kit_px(8);
+    if (!r2_ready() && count == 0) {
+        f32 cy = l0.y + avail / 3;
+        const char *t1 = "Share clips as links", *t2 = "Copy link uploads a clip to your own Cloudflare R2 bucket";
+        ImGui::PushFont(g_font_big);
+        f32 w1 = ImGui::CalcTextSize(t1).x;
+        dl->AddText(ImVec2(floorf(h0.x + (full_w - w1) / 2), cy), col32(COL_TEXT), t1);
+        cy += ImGui::GetTextLineHeight() + kit_px(8);
+        ImGui::PopFont();
+        f32 w2 = ImGui::CalcTextSize(t2).x;
+        dl->AddText(ImVec2(floorf(h0.x + (full_w - w2) / 2), cy), col32(COL_DIM), t2);
+        cy += ImGui::GetTextLineHeight() + kit_px(18);
+        f32 bw = kit_px(160);
+        ImGui::SetCursorScreenPos(ImVec2(floorf(h0.x + (full_w - bw) / 2), cy));
+        if (kit_button("Set it up", KIT_PRIMARY, ImVec2(bw, 0))) lib_open_sharing();
+        return;
+    }
+
+    // Uploads under way head the first page
+    f32 row_h = kit_px(60), row_gap = kit_px(6);
+    i32 per = (i32)((avail + row_gap) / (row_h + row_gap));
+    if (per < 1) per = 1;
+    i32 total = g_lib_upload_count + count, pages = (total + per - 1) / per;
+    if (pages < 1) pages = 1;
+    if (page >= pages) page = pages - 1;
+    if (total == 0) {
+        const char *t = "Nothing shared yet: Copy link on a clip uploads it";
+        f32 tw = ImGui::CalcTextSize(t).x;
+        dl->AddText(ImVec2(floorf(h0.x + (full_w - tw) / 2), l0.y + avail / 3), col32(COL_DIM), t);
+    }
+    f32 acts_w = 3 * fh + 2 * gap, is = kit_px(36);
+    bool del_open = false;
+    for (i32 r = 0; r < per; r++) {
+        i32 k = page * per + r;
+        if (k >= total) break;
+        ImVec2 a(l0.x, l0.y + r * (row_h + row_gap));
+        ImVec2 b(a.x + full_w, a.y + row_h);
+        ImGui::PushID(k);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::InvisibleButton("##row", ImVec2(full_w - acts_w - kit_px(16), row_h));
+        bool hot = ImGui::IsItemHovered();
+        dl->AddRectFilled(a, b, col32(hot ? COL_PANEL2 : COL_PANEL), kit_px(10));
+        f32 ix = a.x + kit_px(12), iy = floorf(a.y + (row_h - is) / 2);
+        f32 tx = ix + is + kit_px(14), tw = b.x - acts_w - kit_px(28) - tx;
+        f32 ty = floorf(a.y + (row_h - ImGui::GetTextLineHeight() - kit_px(3) - g_font_small->FontSize) / 2);
+        f32 sy = ty + ImGui::GetTextLineHeight() + kit_px(3);
+        f32 by = floorf(a.y + (row_h - fh) / 2);
+        if (k < g_lib_upload_count) { // an upload under way
+            const LibUpload &u = g_lib_uploads[k];
+            R2Job j = r2_job(u.id);
+            dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + is, iy + is), col32(COL_HOVER), kit_px(6));
+            ImVec2 gs = g_font_icon->CalcTextSizeA(g_font_icon->FontSize, FLT_MAX, 0, ICON_LINK);
+            dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(floorf(ix + (is - gs.x) / 2), floorf(iy + (is - gs.y) / 2)),
+                        col32(COL_DIM), ICON_LINK);
+            text_clipped(dl, ImVec2(tx, ty), tw, col32(COL_TEXT), u.name);
+            char line[64];
+            if (j.state == R2_QUEUED) snprintf(line, sizeof line, "%s", lib_upload_verb(j.state));
+            else snprintf(line, sizeof line, "%s, %d%%", lib_upload_verb(j.state), (i32)(j.progress * 100 + 0.5f));
+            ImGui::PushFont(g_font_small);
+            text_clipped(dl, ImVec2(tx, sy), tw, col32(COL_DIM), line);
+            ImGui::PopFont();
+            f32 x0 = b.x - acts_w - kit_px(12), x1 = b.x - kit_px(12), cy = floorf(a.y + row_h / 2);
+            f32 pr = j.state == R2_QUEUED ? 0 : j.progress;
+            dl->AddRectFilled(ImVec2(x0, cy - kit_px(2)), ImVec2(x1, cy + kit_px(2)), col32(COL_HOVER), kit_px(2));
+            dl->AddRectFilled(ImVec2(x0, cy - kit_px(2)), ImVec2(x0 + (x1 - x0) * pr, cy + kit_px(2)), col32(COL_ACCENT), kit_px(2));
+            ImGui::PopID();
+            continue;
+        }
+        const R2Share &s = list[k - g_lib_upload_count];
+        u32 ink = s.removed ? COL_FAINT : COL_TEXT, dim = s.removed ? COL_FAINT : COL_DIM;
+        ID3D11ShaderResourceView *srv = s.game[0] ? game_db_icon(s.game) : 0;
+        if (srv)
+            dl->AddImageRounded((ImTextureID)srv, ImVec2(ix, iy), ImVec2(ix + is, iy + is), ImVec2(0, 0), ImVec2(1, 1),
+                                s.removed ? IM_COL32(255, 255, 255, 90) : IM_COL32_WHITE, kit_px(6));
+        else {
+            dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + is, iy + is), col32(COL_HOVER), kit_px(6));
+            ImVec2 gs = g_font_icon->CalcTextSizeA(g_font_icon->FontSize, FLT_MAX, 0, ICON_VIDEO);
+            dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(floorf(ix + (is - gs.x) / 2), floorf(iy + (is - gs.y) / 2)),
+                        col32(dim), ICON_VIDEO);
+        }
+        text_clipped(dl, ImVec2(tx, ty), tw, col32(ink), s.title);
+        char when[48], size[24], line[200];
+        fmt_when(s.uploaded_us, when, sizeof when);
+        fmt_size((u64)s.bytes, size, sizeof size);
+        if (s.removed) snprintf(line, sizeof line, "Removed, over the size limit  -  %s", size);
+        else if (s.game[0]) snprintf(line, sizeof line, "%s  -  %s  -  %s", s.game, when, size);
+        else snprintf(line, sizeof line, "%s  -  %s", when, size);
+        ImGui::PushFont(g_font_small);
+        text_clipped(dl, ImVec2(tx, sy), tw, col32(s.removed ? COL_WARN : dim), line);
+        ImGui::PopFont();
+
+        ImGui::SetCursorScreenPos(ImVec2(b.x - kit_px(12) - acts_w, by));
+        if (s.removed) {
+            wchar_t wp[1040];
+            bool here = MultiByteToWideChar(CP_UTF8, 0, s.path, -1, wp, 1040) > 0 &&
+                        GetFileAttributesW(wp) != INVALID_FILE_ATTRIBUTES;
+            if (!here) kit_next_tip("The file isn't on this PC any more");
+            if (kit_button(ICON_REFRESH "  Reshare##reshare", KIT_SECONDARY, ImVec2(2 * fh + gap, 0), here)) {
+                if (g_lib_upload_count >= LIB_UPLOADS_MAX) lib_note(true, "Wait for an upload to finish");
+                else lib_upload_add(r2_reshare(s.key), s.title);
+            }
+        } else {
+            kit_next_tip("Copy link");
+            if (kit_icon_button(ICON_LINK, "##copy", KIT_GHOST)) {
+                ImGui::SetClipboardText(s.url);
+                lib_note(false, "Link copied: %s", s.title);
+            }
+            ImGui::SameLine(0, gap);
+            kit_next_tip(s.pinned ? "Pinned: kept whatever the limit" : "Pin: keep it whatever the limit");
+            if (kit_icon_button(s.pinned ? ICON_PINNED : ICON_PIN, "##pin", KIT_GHOST, true, s.pinned)) {
+                r2_pin(s.key, !s.pinned);
+                log_line("library: link %s %s", s.key, s.pinned ? "unpinned" : "pinned");
+            }
+        }
+        ImGui::SameLine(0, gap);
+        kit_next_tip("Delete the link");
+        if (kit_icon_button(ICON_DELETE, "##delete", KIT_GHOST)) {
+            snprintf(del_key, sizeof del_key, "%s", s.key);
+            del_open = true;
+        }
+        ImGui::PopID();
+    }
+    if (del_open) ImGui::OpenPopup("shared_delete");
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("shared_delete")) {
+        if (lib_menu_item(ICON_DELETE, "Delete it from the bucket", true, kit_px(240))) {
+            log_line("library: link %s deleted", del_key);
+            r2_delete(del_key);
+        }
+        lib_menu_item(ICON_CLOSE, "Keep it", false, kit_px(240));
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+
+    // The pages, bottom right
+    ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - lib_pager_w(), l0.y + avail + kit_px(8)));
+    lib_pager("##shared_pages", &page, pages);
+}
+
 static void card_menu()
 {
     Library &lib = g_app.library;
@@ -2241,6 +2599,7 @@ static void card_menu()
             if (clipboard_copy_file(path.s)) lib_message(false, "Copied %s to the clipboard", it.name);
             else lib_message(true, "Couldn't copy to the clipboard");
         }
+        if (lib_menu_item(ICON_LINK, "Copy link")) lib_link_item(it);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
         if (lib_menu_item(ICON_ADD, "Add to a folder")) folders = true;
@@ -3235,18 +3594,14 @@ static void lib_player_view()
     ImGui::PopFont();
     lib_comment_dialog();
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
-    // Copy puts the file on the clipboard; one bigger than the share size offers a share copy first.
+    // Copy opens a menu: the file on the clipboard, a link to it, and for one bigger than the share size a share copy.
     const Editor &ed = g_app.editor;
     f32 share_mb = ed.share_size == 0 ? 20.f : ed.share_size == 1 ? 50.f : ed.custom_mb;
     if (share_mb < 1) share_mb = 1;
     bool big = lib.playing.size > (u64)(share_mb * 1024 * 1024);
     ImVec2 copy_at = ImGui::GetCursorScreenPos();
-    kit_next_tip("Copy the file");
-    if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) {
-        if (big) ImGui::OpenPopup("copy_big");
-        else if (clipboard_copy_file(p.path.s)) lib_message(false, "Copied %s to the clipboard", lib.playing.name);
-        else lib_message(true, "Couldn't copy %s", lib.playing.name);
-    }
+    kit_next_tip("Copy");
+    if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) ImGui::OpenPopup("copy_menu");
     ImGui::SameLine(0, gap);
     kit_next_tip("Edit");
     bool edit = kit_icon_button(ICON_EDIT, "##edit", KIT_GHOST);
@@ -3257,15 +3612,16 @@ static void lib_player_view()
     ImGui::SetNextWindowPos(ImVec2(h0.x + full_w, copy_at.y + fh + kit_px(4)), 0, ImVec2(1, 0)); // under the icons, right-aligned
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(6), kit_px(6)));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
-    if (ImGui::BeginPopup("copy_big")) {
+    if (ImGui::BeginPopup("copy_menu")) {
         char as_is[64], share_label[64];
-        snprintf(as_is, sizeof as_is, "Copy as it is (%s)", size);
+        snprintf(as_is, sizeof as_is, "Copy the file (%s)", size);
         snprintf(share_label, sizeof share_label, "Make a share copy (under %.0f MB)", share_mb);
-        if (lib_menu_item(ICON_SHARE, share_label)) share = true;
         if (lib_menu_item(ICON_COPY, as_is)) {
-            if (clipboard_copy_file(p.path.s)) lib_message(false, "Copied %s to the clipboard", lib.playing.name);
-            else lib_message(true, "Couldn't copy %s", lib.playing.name);
+            if (clipboard_copy_file(p.path.s)) lib_note(false, "Copied %s to the clipboard", lib.playing.name);
+            else lib_note(true, "Couldn't copy %s", lib.playing.name);
         }
+        if (lib_menu_item(ICON_LINK, "Copy link")) lib_link_item(lib.playing);
+        if (big && lib_menu_item(ICON_SHARE, share_label)) share = true;
         ImGui::EndPopup();
     }
     ImGui::PopStyleColor();
@@ -4214,6 +4570,8 @@ static void screen_library()
         lib_folders_load();
         lib_refilter();
     }
+    lib_uploads_poll();
+    lib_note_draw();
     if (lib.player.open) {
         lib_player_view();
         return;
@@ -4222,16 +4580,25 @@ static void screen_library()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 full_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
 
-    // Header, all of one height: the Clips / Sessions switch, then pills that each drop a list (the date range, the
+    // Header, all of one height: the Clips / Sessions / Shared switch, then pills that each drop a list (the date range, the
     // order), and the search on the right. A list that is narrowing what's shown is outlined.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
-    static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
+    static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions", ICON_LINK "  Shared"};
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
     static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
     f32 hgap = kit_px(8), view_w = kit_px(104), drop_w = kit_px(112);
     ImGui::SetCursorScreenPos(h0);
-    if (lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER, 0x3a3d44))
-        lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
+    i32 seg = lib_segments("##view", views, 3, 3 * view_w + kit_px(4), fh, g_lib_shared ? 2 : lib.view == LIB_SESSIONS,
+                           COL_PANEL2, COL_HOVER, 0x3a3d44);
+    if (seg == 2) g_lib_shared = true;
+    else if (seg >= 0) {
+        g_lib_shared = false;
+        lib_set_view(seg ? LIB_SESSIONS : LIB_CLIPS);
+    }
+    if (g_lib_shared) {
+        lib_shared_view(h0, full_w);
+        return;
+    }
 
     // While cards are selected, the selection bar takes the rest of the row (lib_sel_bar).
     lib_sel_track();
@@ -4249,7 +4616,7 @@ static void screen_library()
 
     // The date range; Custom opens the calendar
     i32 step;
-    ImVec2 range_at(h0.x + 2 * view_w + kit_px(4) + kit_px(16), h0.y);
+    ImVec2 range_at(h0.x + 3 * view_w + kit_px(4) + kit_px(16), h0.y);
     if (sel_n > 0) lib_sel_bar(range_at, h0.x + full_w, sel_n);
     else {
     ImGui::SetCursorScreenPos(range_at);
