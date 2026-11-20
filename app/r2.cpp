@@ -2,7 +2,7 @@
 //   free hosts  with nothing set up, the copy goes to a free public host, the first in the player's order
 //               (link_hosts) that takes its size: Catbox (up to 200 MB, kept, can't be deleted) or Litterbox (up to
 //               1 GB, gone after litterbox_hours). Anyone with the link can watch. A host that fails passes the clip
-//               to the next.
+//               to the next. link_hosts can also name the player's own uploaders (ShareX .sxcu files).
 //   R2          once the player has set up their own Cloudflare R2 bucket, every clip goes there instead, as
 //               clipback/<random folder>/clip.mp4, so a link names no player, game or date and can't be guessed.
 //               The link points at the bucket's public address (r2.dev or the player's own domain).
@@ -37,7 +37,7 @@ struct R2View {
 
 enum { R2_MAX_SHARES = 1024, R2_KEY_MAX = 48 };
 
-enum LinkHost : u8 { HOST_R2, HOST_CATBOX, HOST_LITTERBOX, HOST_COUNT };
+enum LinkHost : u8 { HOST_R2, HOST_CATBOX, HOST_LITTERBOX, HOST_CUSTOM, HOST_COUNT };
 
 // The free public hosts, used when R2 isn't set up.
 struct FreeHost {
@@ -56,7 +56,8 @@ static const FreeHost FREE_HOSTS[] = {
 
 struct R2Share {
     char key[R2_KEY_MAX]; // R2: object name in the bucket, "clipback/<16 random letters and digits>/clip.mp4";
-                          // a free host: "<host>/<the file's name there>"
+                          // a free host: "<host>/<the file's name there>"; a custom uploader:
+                          // "<its name in link_hosts>/<16 random>"
     char url[512];    // the link as given out
     char title[256];
     char game[64];
@@ -96,7 +97,7 @@ struct R2Task {
     i32        slot;    // the job's slot (probe, upload, free)
     char       key[R2_KEY_MAX]; // delete: the share; upload: the name to reuse ("" = a new one)
     char       replace[R2_KEY_MAX]; // upload, free: the history entry this share takes the place of
-    char       hosts[64]; // free: link_hosts
+    char       hosts[256]; // free: link_hosts
     i32        hours;     // free: litterbox_hours
     Path       file;    // probe: the file; upload: the copy to send (deleted after)
     Path       ffprobe;
@@ -954,40 +955,324 @@ static void r2_run_upload(const R2Task &t)
     if (n > 0) r2_post(R2_EV_HISTORY, 0);
 }
 
-// A form upload of `f` as fileToUpload ("clip.mp4", video/mp4) after `fields` (name, value pairs), read back into
-// resp. Returns the status, 0 if the host couldn't be reached.
-static u32 free_post(const FreeHost &h, const char *const *fields, i32 nfields, HANDLE f, i64 size,
-                     R2Progress *prog, char *resp, i32 cap)
+// ---------------------------------------------------------------------------------------------------------------
+// Custom uploaders: ShareX's .sxcu files in <config_dir>\uploaders, named in link_hosts by file name without
+// ".sxcu". What's taken of one: RequestMethod (POST, PUT or PATCH), RequestURL (https only), Parameters, Headers,
+// Body (MultipartFormData with Arguments and FileFormName, or Binary) and URL, the link made from the answer:
+// {response} / $response$ for all of it, {json:a.b[0].c} / $json:a.b[0].c$ for a value in it. {filename} in a
+// value is "clip.mp4".
+
+enum { UP_PAIRS = 12 };
+
+struct Uploader {
+    char name[64];
+    char method[8];
+    char url[1024];      // RequestURL with Parameters added
+    char form_name[64];  // "" = Binary: the file is the whole body
+    char result[512];    // URL
+    char pairs[2][UP_PAIRS][2][256]; // [0] Headers, [1] Arguments: name, value
+    i32  count[2];
+};
+
+// After a key in the object at j->p. False if there's none.
+static bool j_key(Json *j, const char *k, size_t kl)
+{
+    if (!j_eat(j, '{')) return false;
+    while (!j_eat(j, '}') && j->p < j->end) {
+        char name[128];
+        if (!j_string(j, name, sizeof name)) return false;
+        j_eat(j, ':');
+        if (strlen(name) == kl && !strncmp(name, k, kl)) { j_ws(j); return true; }
+        j_skip(j);
+        j_eat(j, ',');
+    }
+    return false;
+}
+
+// A string or number at a path with array indexes ("files[0].url", "[0].link"), as text.
+static bool json_path(const char *text, i64 len, const char *path, char *out, i32 cap)
+{
+    Json j = {text, text + len};
+    out[0] = 0;
+    for (const char *p = path; *p;) {
+        if (*p == '.') { p++; continue; }
+        if (*p == '[') {
+            i32 n = atoi(p + 1);
+            const char *close = strchr(p, ']');
+            if (!close || !j_eat(&j, '[')) return false;
+            for (i32 i = 0; i < n; i++) {
+                j_skip(&j);
+                if (!j_eat(&j, ',')) return false;
+            }
+            j_ws(&j);
+            p = close + 1;
+            continue;
+        }
+        size_t kl = strcspn(p, ".[");
+        if (!j_key(&j, p, kl)) return false;
+        p += kl;
+    }
+    j_ws(&j);
+    if (j.p >= j.end) return false;
+    if (*j.p == '"') return j_string(&j, out, cap) && out[0];
+    if (*j.p == '{' || *j.p == '[') return false;
+    i32 n = 0;
+    while (j.p < j.end && *j.p != ',' && *j.p != '}' && *j.p != ']' && (u8)*j.p > ' ' && n < cap - 1) out[n++] = *j.p++;
+    out[n] = 0;
+    return n > 0 && strcmp(out, "null");
+}
+
+// The link from an uploader's URL template and the host's answer. False when a {json:...} isn't in the answer.
+static bool uploader_result(const char *tmpl, const char *resp, char *out, i32 cap)
+{
+    i32 n = 0;
+    out[0] = 0;
+    char *body = (char *)resp;
+    while (*body && (u8)*body <= ' ') body++;
+    i32 blen = (i32)strlen(body);
+    while (blen > 0 && (u8)body[blen - 1] <= ' ') blen--;
+    if (!tmpl[0]) return snprintf(out, cap, "%.*s", blen, body) < cap && blen > 0;
+    for (const char *p = tmpl; *p && n < cap - 1;) {
+        bool dollar = *p == '$';
+        if ((*p == '{' || dollar) && (starts_with(p + 1, "json:") || starts_with(p + 1, "response"))) {
+            const char *end = strchr(p + 1, dollar ? '$' : '}');
+            if (!end) return false;
+            char val[1024] = "";
+            if (starts_with(p + 1, "response")) snprintf(val, sizeof val, "%.*s", blen, body);
+            else {
+                char path[256];
+                snprintf(path, sizeof path, "%.*s", (int)(end - p - 6), p + 6);
+                if (!json_path(resp, (i64)strlen(resp), path, val, sizeof val)) return false;
+            }
+            n += snprintf(out + n, cap - n, "%s", val);
+            if (n >= cap) n = cap - 1;
+            p = end + 1;
+        } else out[n++] = *p++;
+    }
+    out[n] = 0;
+    return n > 0;
+}
+
+// `{filename}` in a value becomes "clip.mp4".
+static void uploader_fill(const char *in, char *out, i32 cap)
+{
+    i32 n = 0;
+    for (const char *p = in; *p && n < cap - 1;) {
+        if (starts_with(p, "{filename}")) {
+            n += snprintf(out + n, cap - n, "clip.mp4");
+            if (n >= cap) n = cap - 1;
+            p += 10;
+        } else out[n++] = *p++;
+    }
+    out[n] = 0;
+}
+
+// The pairs of a top-level object ("Headers"), string values only. Returns how many.
+static i32 uploader_pairs(const char *text, i64 len, const char *key, char (*out)[2][256], i32 max)
+{
+    Json j = {text, text + len};
+    if (!j_key(&j, key, strlen(key)) || !j_eat(&j, '{')) return 0;
+    i32 n = 0;
+    while (!j_eat(&j, '}') && j.p < j.end) {
+        char k[256], v[256];
+        if (!j_string(&j, k, sizeof k)) break;
+        j_eat(&j, ':');
+        j_ws(&j);
+        if (j.p < j.end && *j.p == '"' && j_string(&j, v, sizeof v) && n < max) {
+            uploader_fill(k, out[n][0], 256);
+            uploader_fill(v, out[n][1], 256);
+            n++;
+        } else j_skip(&j);
+        j_eat(&j, ',');
+    }
+    return n;
+}
+
+// Reads an .sxcu file's text. False, with why, when clipback can't use it.
+static bool uploader_parse(const char *text, i64 len, Uploader *u, char *why, i32 cap)
+{
+    *u = {};
+    why[0] = 0;
+    char body[32] = "", reqtype[32] = "";
+    j_get(text, len, "Name", u->name, sizeof u->name);
+    if (!j_get(text, len, "RequestMethod", u->method, sizeof u->method) &&
+        !j_get(text, len, "RequestType", u->method, sizeof u->method))
+        str_set(u->method, "POST");
+    j_get(text, len, "RequestURL", u->url, sizeof u->url);
+    j_get(text, len, "Body", body, sizeof body);
+    j_get(text, len, "FileFormName", u->form_name, sizeof u->form_name);
+    j_get(text, len, "URL", u->result, sizeof u->result);
+    j_get(text, len, "DestinationType", reqtype, sizeof reqtype);
+    for (char *c = u->method; *c; c++) *c = (char)toupper((u8)*c);
+    u->count[0] = uploader_pairs(text, len, "Headers", u->pairs[0], UP_PAIRS);
+    u->count[1] = uploader_pairs(text, len, "Arguments", u->pairs[1], UP_PAIRS);
+    char params[UP_PAIRS][2][256];
+    i32 np = uploader_pairs(text, len, "Parameters", params, UP_PAIRS);
+    for (i32 i = 0; i < np; i++) {
+        char k[768], v[768];
+        r2_uri_encode(params[i][0], k, sizeof k);
+        r2_uri_encode(params[i][1], v, sizeof v);
+        i32 at = (i32)strlen(u->url);
+        snprintf(u->url + at, sizeof u->url - at, "%s%s=%s", strchr(u->url, '?') ? "&" : "?", k, v);
+    }
+    if (!body[0]) str_set(body, u->form_name[0] ? "MultipartFormData" : "Binary");
+    if (!starts_with(u->url, "https://")) snprintf(why, cap, "It must send to an https:// address");
+    else if (strcmp(u->method, "POST") && strcmp(u->method, "PUT") && strcmp(u->method, "PATCH"))
+        snprintf(why, cap, "It sends with %s: only POST, PUT and PATCH upload", u->method);
+    else if (!strcmp(body, "MultipartFormData") && !u->form_name[0])
+        snprintf(why, cap, "It has no FileFormName for the file");
+    else if (strcmp(body, "MultipartFormData") && strcmp(body, "Binary"))
+        snprintf(why, cap, "It sends its body as %s: only MultipartFormData and Binary carry a clip", body);
+    else if (strstr(u->result, "{regex:") || strstr(u->result, "$regex:") || strstr(u->result, "{xml:") ||
+             strstr(u->result, "$xml:"))
+        snprintf(why, cap, "Its URL reads the answer with regex or xml: only {response} and {json:...} work");
+    if (!strcmp(body, "Binary")) u->form_name[0] = 0;
+    if (!u->name[0]) str_set(u->name, "Custom uploader");
+    return !why[0];
+}
+
+static Path uploader_dir() { return path_join(g_app.paths.config_dir, L"uploaders"); }
+
+// Loads <config_dir>\uploaders\<stem>.sxcu. False, with why, when it's missing or unusable.
+static bool uploader_load(const char *stem, Uploader *u, char *why, i32 cap)
+{
+    wchar_t w[128], name[160];
+    utf8_to_wide(stem, w, COUNT(w));
+    swprintf(name, COUNT(name), L"%s.sxcu", w);
+    i64 len = 0;
+    char *text = wcspbrk(w, L"\\/:") ? 0 : read_file(path_join(uploader_dir(), name).s, &len);
+    if (!text) {
+        snprintf(why, cap, "There's no uploader named %s", stem);
+        return false;
+    }
+    bool ok = uploader_parse(text, len, u, why, cap);
+    free(text);
+    return ok;
+}
+
+// The uploaders in the folder, by file name without .sxcu, sorted. Returns how many.
+static i32 uploader_list(char (*stems)[64], i32 max)
+{
+    Path pattern = path_join(uploader_dir(), L"*.sxcu");
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern.s, &fd);
+    i32 n = 0;
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        char s[MAX_PATH];
+        wide_to_utf8(fd.cFileName, s, sizeof s);
+        char *dot = strrchr(s, '.');
+        if (dot) *dot = 0;
+        if (n < max && s[0] && strlen(s) < 64 && !strchr(s, ',')) str_set(stems[n++], s);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    qsort(stems, n, sizeof stems[0], [](const void *a, const void *b) { return _stricmp((const char *)a, (const char *)b); });
+    return n;
+}
+
+// Copies an .sxcu file into the uploaders folder after checking it. Returns the name to put in link_hosts, "" with
+// why when it can't be used.
+static bool uploader_add(const wchar_t *file, char *stem, i32 stem_cap, char *why, i32 cap)
+{
+    stem[0] = 0;
+    i64 len = 0;
+    char *text = read_file(file, &len);
+    if (!text) {
+        snprintf(why, cap, "Couldn't read the file");
+        return false;
+    }
+    Uploader u;
+    bool ok = uploader_parse(text, len, &u, why, cap);
+    free(text);
+    if (!ok) return false;
+    const wchar_t *base = wcsrchr(file, L'\\');
+    base = base ? base + 1 : file;
+    char name[MAX_PATH];
+    wide_to_utf8(base, name, sizeof name);
+    char *dot = strrchr(name, '.');
+    if (dot) *dot = 0;
+    for (char *c = name; *c; c++)
+        if (*c == ',' || *c == '/' || *c == '\\' || *c == ':') *c = '-';
+    for (const FreeHost &f : FREE_HOSTS)
+        if (!_stricmp(name, f.name)) strncat(name, "-custom", sizeof name - strlen(name) - 1);
+    snprintf(stem, stem_cap, "%.60s", name);
+    Path dir = uploader_dir();
+    CreateDirectoryW(dir.s, 0);
+    wchar_t w[128], target[160];
+    utf8_to_wide(stem, w, COUNT(w));
+    swprintf(target, COUNT(target), L"%s.sxcu", w);
+    if (!CopyFileW(file, path_join(dir, target).s, FALSE)) {
+        snprintf(why, cap, "Couldn't copy it to the uploaders folder");
+        stem[0] = 0;
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Uploads to free hosts and custom uploaders
+
+// One upload request: a form with the file in `form_name` ("clip.mp4", video/mp4) after `fields`, or with no
+// form_name the file as the whole body.
+struct UpRequest {
+    const char *method, *url;   // https://host[:port]/path?query
+    const char *headers;        // "Name: value\r\n..." or ""
+    const char *(*fields)[2];
+    i32         nfields;
+    const char *form_name;
+};
+
+// Sends the request with the file, the answer read into resp. Returns the status, 0 if the host couldn't be
+// reached.
+static u32 up_send(const UpRequest &q, HANDLE f, i64 size, R2Progress *prog, char *resp, i32 cap)
 {
     resp[0] = 0;
-    char boundary[48], pre[2048], post[64];
+    wchar_t wurl[1024], host[256], path[1024];
+    utf8_to_wide(q.url, wurl, COUNT(wurl));
+    URL_COMPONENTS uc = {sizeof uc};
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = COUNT(host);
+    uc.lpszUrlPath = path;
+    uc.dwUrlPathLength = COUNT(path);
+    wchar_t extra[1024] = L"";
+    uc.lpszExtraInfo = extra;
+    uc.dwExtraInfoLength = COUNT(extra);
+    if (!WinHttpCrackUrl(wurl, 0, 0, &uc) || uc.nScheme != INTERNET_SCHEME_HTTPS) return 0;
+    wcsncat(path, extra, COUNT(path) - wcslen(path) - 1);
+
+    char boundary[48], pre[8192], post[64];
+    i32 len = 0, post_len = 0;
+    wchar_t hdrs[2600];
     char rnd[25];
     r2_random(rnd, 24);
     snprintf(boundary, sizeof boundary, "clipback%s", rnd);
-    i32 len = 0;
-    for (i32 i = 0; i + 1 < nfields; i += 2)
+    if (q.form_name && q.form_name[0]) {
+        for (i32 i = 0; i < q.nfields; i++)
+            len += snprintf(pre + len, sizeof pre - len,
+                            "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", boundary,
+                            q.fields[i][0], q.fields[i][1]);
         len += snprintf(pre + len, sizeof pre - len,
-                        "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", boundary, fields[i],
-                        fields[i + 1]);
-    len += snprintf(pre + len, sizeof pre - len,
-                    "--%s\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"clip.mp4\"\r\n"
-                    "Content-Type: video/mp4\r\n\r\n",
-                    boundary);
-    i32 post_len = snprintf(post, sizeof post, "\r\n--%s--\r\n", boundary);
-    wchar_t hdrs[160];
-    swprintf(hdrs, COUNT(hdrs), L"Content-Type: multipart/form-data; boundary=%hs", boundary);
+                        "--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"clip.mp4\"\r\n"
+                        "Content-Type: video/mp4\r\n\r\n",
+                        boundary, q.form_name);
+        if (len >= (i32)sizeof pre) return 0;
+        post_len = snprintf(post, sizeof post, "\r\n--%s--\r\n", boundary);
+        swprintf(hdrs, COUNT(hdrs), L"%hsContent-Type: multipart/form-data; boundary=%hs", q.headers, boundary);
+    } else swprintf(hdrs, COUNT(hdrs), L"%hsContent-Type: video/mp4", q.headers);
+    wchar_t method[8];
+    utf8_to_wide(q.method, method, COUNT(method));
 
     u32 status = 0;
     HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
-    HINTERNET conn = session ? WinHttpConnect(session, h.server, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
-    HINTERNET req = conn ? WinHttpOpenRequest(conn, L"POST", h.path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
+    HINTERNET conn = session ? WinHttpConnect(session, host, uc.nPort, 0) : 0;
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, method, path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
     if (req) {
         WinHttpSetTimeouts(req, 15000, 15000, 120000, 300000); // the host answers once the whole file is in
         DWORD total = (DWORD)(len + size + post_len), wrote = 0;
         LARGE_INTEGER zero = {};
         bool sent = SetFilePointerEx(f, zero, 0, FILE_BEGIN) &&
                     WinHttpSendRequest(req, hdrs, (DWORD)-1L, 0, 0, total, 0) &&
-                    WinHttpWriteData(req, pre, len, &wrote) && wrote == (DWORD)len;
+                    (!len || (WinHttpWriteData(req, pre, len, &wrote) && wrote == (DWORD)len));
         static thread_local u8 *buf;
         if (!buf) buf = (u8 *)malloc(1 << 20);
         for (i64 left = size; sent && left > 0;) {
@@ -999,7 +1284,7 @@ static u32 free_post(const FreeHost &h, const char *const *fields, i32 nfields, 
             r2_set_progress(prog->job, (f32)((f64)prog->done / (f64)prog->total));
             if (g_r2.stop) sent = false;
         }
-        sent = sent && WinHttpWriteData(req, post, post_len, &wrote) && wrote == (DWORD)post_len;
+        sent = sent && (!post_len || (WinHttpWriteData(req, post, post_len, &wrote) && wrote == (DWORD)post_len));
         DWORD code = 0, clen = sizeof code;
         if (sent && WinHttpReceiveResponse(req, 0) &&
             WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &code, &clen, 0))
@@ -1011,7 +1296,7 @@ static u32 free_post(const FreeHost &h, const char *const *fields, i32 nfields, 
             have += (i32)got;
             resp[have] = 0;
         }
-        if (!status) DEV_LOG("r2: %hs: no answer (error %d)", h.name, (int)GetLastError());
+        if (!status) DEV_LOG("r2: %ls: no answer (error %d)", host, (int)GetLastError());
     }
     if (req) WinHttpCloseHandle(req);
     if (conn) WinHttpCloseHandle(conn);
@@ -1019,8 +1304,14 @@ static u32 free_post(const FreeHost &h, const char *const *fields, i32 nfields, 
     return status;
 }
 
-// The upload step of a job with no R2: the free hosts in the player's order, each that takes the size, until one
-// gives a link.
+// A link from what a host answered: a plain https address with nothing else on the line.
+static bool up_plain_link(const char *resp, char *out, i32 cap)
+{
+    return uploader_result("", resp, out, cap) && starts_with(out, "https://") && !strpbrk(out, " \r\n<\"");
+}
+
+// The upload step of a job with no R2: each host in link_hosts' order that takes the size (a free host, or a
+// custom uploader by name), until one gives a link.
 static void r2_run_free(const R2Task &t)
 {
     u32 job = 0;
@@ -1035,62 +1326,107 @@ static void r2_run_free(const R2Task &t)
     w.lib_key = g_r2.work[t.slot].lib_key;
     ReleaseSRWLockExclusive(&g_r2.lock);
 
-    char err[256] = "", url[512] = "";
-    const FreeHost *order[HOST_COUNT], *used = 0;
-    i32 n = free_order(t.hosts, order, COUNT(order));
+    char err[256] = "", url[512] = "", used_name[64] = "";
+    const FreeHost *used = 0;
     HANDLE f = CreateFileW(t.file.s, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
     LARGE_INTEGER size = {};
     if (f == INVALID_HANDLE_VALUE) str_set(err, "Couldn't open the copy to upload");
     else GetFileSizeEx(f, &size);
-    bool tried = false;
+    i32 tried = 0, named = 0;
     char hours[8];
     snprintf(hours, sizeof hours, "%dh", free_hours(t.hours));
-    for (i32 i = 0; i < n && !err[0] && !url[0] && !g_r2.stop; i++) {
-        const FreeHost &h = *order[i];
-        if (size.QuadPart > h.max_bytes) continue;
-        tried = true;
-        const char *fields[] = {"reqtype", "fileupload", "time", hours};
+    static thread_local char resp[16384];
+    static thread_local Uploader u;
+    for (const char *p = t.hosts; *p && !err[0] && !url[0] && !g_r2.stop;) {
+        const char *end = strchr(p, ',');
+        char name[64];
+        snprintf(name, sizeof name, "%.*s", end ? (int)(end - p) : (int)strlen(p), p);
+        p = end ? end + 1 : p + strlen(p);
+        char *nm = trim(name);
+        if (!nm[0]) continue;
+        named++;
+        const FreeHost *h = 0;
+        for (const FreeHost &fh : FREE_HOSTS)
+            if (!_stricmp(nm, fh.name)) h = &fh;
         R2Progress prog = {job, 0, size.QuadPart > 0 ? size.QuadPart : 1};
-        r2_set_progress(job, 0);
-        static thread_local char resp[4096];
-        u32 status = free_post(h, fields, h.expires ? 4 : 2, f, size.QuadPart, &prog, resp, sizeof resp);
-        char *r = trim(resp);
-        if (status == 200 && starts_with(r, "https://") && !strchr(r, ' ') && strlen(r) < sizeof url) {
-            str_set(url, r);
-            used = &h;
-        } else {
-            if (!status) snprintf(err, sizeof err, "Couldn't reach %s", h.label);
-            else snprintf(err, sizeof err, "%s answered %u: %.80s", h.label, status, r);
-            log_line("r2: %s", err);
-            if (i + 1 < n) err[0] = 0; // the next host gets the clip
+        char why[256] = "";
+        if (h) {
+            if (size.QuadPart > h->max_bytes) continue;
+            tried++;
+            const char *fields[][2] = {{"reqtype", "fileupload"}, {"time", hours}};
+            wchar_t wurl[300];
+            char curl[300];
+            swprintf(wurl, COUNT(wurl), L"https://%s%s", h->server, h->path);
+            wide_to_utf8(wurl, curl, sizeof curl);
+            UpRequest q = {"POST", curl, "", fields, h->expires ? 2 : 1, "fileToUpload"};
+            r2_set_progress(job, 0);
+            u32 status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
+            if (status == 200 && up_plain_link(resp, url, sizeof url)) used = h;
+            else if (!status) snprintf(why, sizeof why, "Couldn't reach %s", h->label);
+            else snprintf(why, sizeof why, "%s answered %u: %.80s", h->label, status, trim(resp));
+        } else if (uploader_load(nm, &u, why, sizeof why)) {
+            tried++;
+            char headers[2600] = "";
+            i32 hl = 0;
+            for (i32 i = 0; i < u.count[0]; i++)
+                hl += snprintf(headers + hl, sizeof headers - hl, "%s: %s\r\n", u.pairs[0][i][0], u.pairs[0][i][1]);
+            const char *fields[UP_PAIRS][2];
+            for (i32 i = 0; i < u.count[1]; i++) {
+                fields[i][0] = u.pairs[1][i][0];
+                fields[i][1] = u.pairs[1][i][1];
+            }
+            UpRequest q = {u.method, u.url, headers, fields, u.count[1], u.form_name};
+            r2_set_progress(job, 0);
+            u32 status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
+            char link[512];
+            if (status >= 200 && status < 300 && uploader_result(u.result, resp, link, sizeof link) &&
+                starts_with(link, "http") && !strpbrk(link, " \r\n<\"")) {
+                str_set(url, link);
+                snprintf(used_name, sizeof used_name, "%s", nm);
+            } else if (!status) snprintf(why, sizeof why, "Couldn't reach %s", u.name);
+            else if (status >= 200 && status < 300) snprintf(why, sizeof why, "%s answered without a link", u.name);
+            else snprintf(why, sizeof why, "%s answered %u: %.80s", u.name, status, trim(resp));
+        } else tried++;
+        if (!url[0] && why[0]) {
+            log_line("r2: %s", why);
+            str_set(err, why);
+            if (*p) err[0] = 0; // the next host gets the clip
         }
     }
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
     DeleteFileW(t.file.s);
     if (!url[0] && !err[0]) {
-        i64 most = free_max_bytes(t.hosts);
-        if (!n) str_set(err, "Turn on a free host or set up Cloudflare in Options");
-        else if (!tried) snprintf(err, sizeof err, "Free links take clips up to %lld MB: set up Cloudflare in Options for bigger ones", most / 1000000);
-        else str_set(err, g_r2.stop ? "Stopped" : "No free host took the clip");
+        if (!named) str_set(err, "Turn on a free host or set up Cloudflare in Options");
+        else if (!tried)
+            snprintf(err, sizeof err, "Free links take clips up to %lld MB: set up Cloudflare in Options for bigger ones",
+                     free_max_bytes(t.hosts) / 1000000);
+        else str_set(err, g_r2.stop ? "Stopped" : "No host took the clip");
     }
     if (!url[0]) {
         r2_job_end(job, false, "", err);
         return;
     }
 
-    const char *name = strrchr(url, '/');
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
     r2_replace_locked(t.replace);
     r2_room_locked();
     R2Share &s = g_r2.shares[g_r2.count++];
     s = {};
-    snprintf(s.key, sizeof s.key, "%s/%.*s", used->name, (int)(sizeof s.key - strlen(used->name) - 2), name + 1);
-    s.host = used->host;
+    if (used) {
+        const char *name = strrchr(url, '/');
+        snprintf(s.key, sizeof s.key, "%s/%.*s", used->name, (int)(sizeof s.key - strlen(used->name) - 2), name + 1);
+        s.host = used->host;
+    } else {
+        char rnd[17];
+        r2_random(rnd, 16);
+        snprintf(s.key, sizeof s.key, "%.30s/%s", used_name, rnd); // the uploader, and a name of its own
+        s.host = HOST_CUSTOM;
+    }
     s.version = 1;
     s.bytes = size.QuadPart;
     s.uploaded_us = now_us();
-    s.expires_us = used->expires ? s.uploaded_us + (i64)free_hours(t.hours) * 3600 * 1000000 : 0;
+    s.expires_us = used && used->expires ? s.uploaded_us + (i64)free_hours(t.hours) * 3600 * 1000000 : 0;
     s.lib_key = w.lib_key;
     str_set(s.url, url);
     str_set(s.title, w.title);

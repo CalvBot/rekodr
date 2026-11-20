@@ -128,7 +128,8 @@ struct Config {
     char r2_bucket[64];
     char r2_public_url[256]; // the bucket's public address: https://pub-<id>.r2.dev or a custom domain
     f32  r2_budget;          // dollars a month to spend on storage; 0 = the free 10 GB
-    char link_hosts[64];     // free hosts for links while R2 isn't set up, in order: "catbox,litterbox"; "" = none
+    char link_hosts[256];    // hosts for links while R2 isn't set up, in order: "catbox,litterbox" and the names
+                             // of uploaders in <config_dir>\uploaders (.sxcu files); "" = none
     i32  litterbox_hours;    // how long Litterbox keeps a clip: 1, 12, 24 or 72
     bool free_links_seen;    // the player was told free links are public
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)

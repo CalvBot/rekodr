@@ -855,6 +855,38 @@ static void test_r2()
     live.expires_us = 0;
     T(r2_share_live(live, 1ll << 60));
 
+    // Custom uploaders (.sxcu): what's read, what's refused, and links made from answers
+    const char *sx = "{\"Version\":\"16.0.1\",\"Name\":\"My host\",\"DestinationType\":\"ImageUploader, FileUploader\","
+                     "\"RequestMethod\":\"POST\",\"RequestURL\":\"https://up.example.com/api\","
+                     "\"Parameters\":{\"key\":\"a b\"},\"Headers\":{\"Authorization\":\"Bearer x\"},"
+                     "\"Body\":\"MultipartFormData\",\"Arguments\":{\"name\":\"{filename}\",\"n\":5},"
+                     "\"FileFormName\":\"file\",\"URL\":\"{json:files[1].url}\"}";
+    static Uploader up;
+    char why[256];
+    T(uploader_parse(sx, (i64)strlen(sx), &up, why, sizeof why));
+    T(!strcmp(up.name, "My host") && !strcmp(up.method, "POST") && !strcmp(up.form_name, "file"));
+    T(!strcmp(up.url, "https://up.example.com/api?key=a%20b"));
+    T(up.count[0] == 1 && !strcmp(up.pairs[0][0][0], "Authorization") && !strcmp(up.pairs[0][0][1], "Bearer x"));
+    T(up.count[1] == 1 && !strcmp(up.pairs[1][0][1], "clip.mp4")); // the number isn't a string: left out
+    const char *bin = "{\"RequestMethod\":\"PUT\",\"RequestURL\":\"https://x.example/{filename}\",\"Body\":\"Binary\"}";
+    T(uploader_parse(bin, (i64)strlen(bin), &up, why, sizeof why) && !up.form_name[0] && !strcmp(up.method, "PUT"));
+    const char *insecure = "{\"RequestURL\":\"http://x.example/\",\"FileFormName\":\"f\"}";
+    T(!uploader_parse(insecure, (i64)strlen(insecure), &up, why, sizeof why) && strstr(why, "https"));
+    const char *rx = "{\"RequestURL\":\"https://x.example/\",\"FileFormName\":\"f\",\"URL\":\"{regex:(.*)}\"}";
+    T(!uploader_parse(rx, (i64)strlen(rx), &up, why, sizeof why));
+    const char *js = "{\"Body\":\"JSON\",\"RequestURL\":\"https://x.example/\"}";
+    T(!uploader_parse(js, (i64)strlen(js), &up, why, sizeof why));
+
+    char link[256];
+    const char *ans = "{\"ok\":true,\"files\":[{\"url\":\"https://a/1\"},{\"url\":\"https://a/2.mp4\",\"n\":[1,2]}]}";
+    T(uploader_result("{json:files[1].url}", ans, link, sizeof link) && !strcmp(link, "https://a/2.mp4"));
+    T(uploader_result("$json:files[0].url$?x", ans, link, sizeof link) && !strcmp(link, "https://a/1?x"));
+    T(!uploader_result("{json:files[2].url}", ans, link, sizeof link));
+    T(uploader_result("", "  https://h/x.mp4\n", link, sizeof link) && !strcmp(link, "https://h/x.mp4"));
+    T(uploader_result("https://h/{response}", "abc\n", link, sizeof link) && !strcmp(link, "https://h/abc"));
+    T(json_path("[{\"link\":\"q\"}]", 15, "[0].link", link, sizeof link) && !strcmp(link, "q"));
+    T(up_plain_link("https://files.catbox.moe/ab12cd.mp4", link, sizeof link) && !up_plain_link("<html>", link, sizeof link));
+
     // History file round trip, a tab in a title made a space
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
