@@ -253,6 +253,28 @@ static void test_game_from_name()
     T(!strcmp(g, GAME_NOT_OURS));
 }
 
+// A made-up games list for game_guess: Overwatch, Overwatch 2 and Minecraft, by their letters
+static bool test_known(const char *name, char *out, i32 cap)
+{
+    char l[128];
+    gdb_letters(name, l, sizeof l);
+    const char *g = !strcmp(l, "overwatch2") ? "Overwatch 2" : !strcmp(l, "overwatch") ? "Overwatch" : !strcmp(l, "minecraft") ? "Minecraft" : 0;
+    if (g) snprintf(out, cap, "%s", g);
+    return g != 0;
+}
+
+static void test_game_guess()
+{
+    char g[64];
+    T(game_guess("Overwatch 2 2024.01.15 - 20.14.03.02.DVR", test_known, g, sizeof g) && !strcmp(g, "Overwatch 2"));
+    T(game_guess("Minecraft 2024-01-15 20-14-03", test_known, g, sizeof g) && !strcmp(g, "Minecraft"));
+    T(game_guess("Overwatch_20240115_201403", test_known, g, sizeof g) && !strcmp(g, "Overwatch"));
+    T(!game_guess("Minecraft castle tour 2024", test_known, g, sizeof g)); // words after the game: not sure
+    T(!game_guess("Minecraft", test_known, g, sizeof g));                  // no date or time after it
+    T(!game_guess("2024-01-15 20-14-03", test_known, g, sizeof g));        // OBS: no game in it
+    T(!game_guess("Holiday 2024-01-15", test_known, g, sizeof g));
+}
+
 static void test_buffer_names()
 {
     u32 n = 0;
@@ -1444,6 +1466,7 @@ int main()
     test_unique_keys();
     test_game_pick();
     test_game_from_name();
+    test_game_guess();
     test_save_names();
     test_buffer_names();
     test_shown_names();

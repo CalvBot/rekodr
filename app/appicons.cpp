@@ -373,6 +373,8 @@ static ID3D11ShaderResourceView *game_icon(const char *name)
     return slot->srv;
 }
 
+static void library_rescan(); // library.cpp
+
 // The games list has loaded, art has arrived, or a modpack has been named. Main thread.
 static void gamedb_on_event(const Event &e)
 {
@@ -380,7 +382,14 @@ static void gamedb_on_event(const Event &e)
         Config &c = g_app.config;
         bool changed = false;
         for (i32 i = 0; i < c.app_count; i++) changed |= gamedb_name_app(&c.apps[i]);
-        if (e.a == GAMEDB_LOADED) log_line("games list: %lld games", e.b);
+        if (e.a == GAMEDB_LOADED) {
+            log_line("games list: %lld games", e.b);
+            // Videos clipback didn't save may now be placed by their names (game_guess)
+            const Library &lib = g_app.library;
+            bool other = false;
+            for (i32 i = 0; i < lib.item_count && !other; i++) other = !strcmp(lib.items[i].info.game, GAME_NOT_OURS);
+            if (other) library_rescan();
+        }
         if (changed) {
             config_save(c, g_app.paths);
             audio_config_changed();

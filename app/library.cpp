@@ -422,7 +422,10 @@ static bool lib_tags_save()
     return fclose(f) == 0;
 }
 
-// A file's game: the one given by hand, else its own tag, else what its name says.
+// A file's game: the one given by hand, else its own tag, else what its name says, else for a video clipback didn't
+// save the game its name starts with, when that is sure (game_guess).
+static bool game_guess(const char *name, bool (*known)(const char *, char *, i32), char *out, i32 cap);
+static bool game_known(const char *name, char *out, i32 cap);
 static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
 {
     for (i32 i = 0; i < g_game_override_count; i++) {
@@ -432,6 +435,8 @@ static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
     }
     if (tagged[0]) str_set(it->info.game, tagged);
     else game_from_name(tmpl, it->name, it->info.game, sizeof it->info.game);
+    char guess[64];
+    if (!strcmp(it->info.game, GAME_NOT_OURS) && game_guess(it->name, game_known, guess, sizeof guess)) str_set(it->info.game, guess);
     return false;
 }
 
@@ -1713,6 +1718,57 @@ static void game_from_name(const char *tmpl, const char *name, char *out, i32 ca
     if (p.game) snprintf(g, sizeof g, "%.*s", (int)p.game_len, p.game);
     char *s = trim(g);
     snprintf(out, cap, "%s", !*s || !_stricmp(s, "Clip") ? GAME_DESKTOP : s);
+}
+
+// The game in the name of a video clipback didn't save, when it is sure: the name starts with a game `known` knows
+// and the rest is only numbers (a date and time) and words other recorders add, as in ShadowPlay's "Overwatch 2
+// 2024.01.15 - 20.14.03.02.DVR" or the Game Bar's "Minecraft 2024-01-15 20-14-03". The longest such start wins.
+// `known` puts a game's own name in its out and says whether it is one.
+static bool game_guess(const char *name, bool (*known)(const char *, char *, i32), char *out, i32 cap)
+{
+    static const char *const extra[] = {"dvr", "clip", "replay", "am", "pm"};
+    enum { MAX_WORDS = 24 };
+    i32 at[MAX_WORDS], len[MAX_WORDS], n = 0;
+    for (const char *s = name; *s && n < MAX_WORDS;) {
+        while (*s == ' ' || *s == '_' || *s == '-' || *s == '.') s++;
+        if (!*s) break;
+        const char *w = s;
+        while (*s && *s != ' ' && *s != '_' && *s != '-' && *s != '.') s++;
+        at[n] = (i32)(w - name), len[n++] = (i32)(s - w);
+    }
+    // The first word from which the rest is plain: every word numbers or one of the extra ones, with a number of
+    // two or more digits among them
+    i32 plain = n;
+    bool number = false;
+    for (i32 i = n - 1; i > 0; i--) {
+        const char *w = name + at[i];
+        bool digits = true;
+        for (i32 c = 0; c < len[i]; c++) digits = digits && isdigit((u8)w[c]);
+        bool word = false;
+        for (const char *e : extra) word = word || ((i32)strlen(e) == len[i] && !_strnicmp(w, e, len[i]));
+        if (!digits && !word) break;
+        if (digits && len[i] >= 2) number = true;
+        if (number) plain = i;
+    }
+    if (plain == n) return false;
+    for (i32 k = n - 1; k >= 1; k--) { // the start: words 0 to k-1, then plain words to the end
+        if (k < plain) break;
+        char start[128];
+        snprintf(start, sizeof start, "%.*s", at[k - 1] + len[k - 1], name);
+        bool letter = false;
+        for (const char *c = start; *c; c++) letter = letter || isalpha((u8)*c);
+        if (letter && known(start, out, cap)) return true;
+    }
+    return false;
+}
+
+// A game in the games list, by its name (gamedb_by_name), for game_guess.
+static bool game_known(const char *name, char *out, i32 cap)
+{
+    GameInfo g;
+    if (!gamedb_by_name(name, &g)) return false;
+    snprintf(out, cap, "%s", g.name);
+    return true;
 }
 
 // The name a clip or session is shown with (see above). True when the name shown has a time.
@@ -2998,6 +3054,8 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
     lib_pager("##shared_pages", &page, pages);
 }
 
+static bool g_card_pick_game; // "Pick a game" on a card was clicked: the picker opens for lib.target
+
 static void card_menu()
 {
     Library &lib = g_app.library;
@@ -3033,7 +3091,8 @@ static void card_menu()
     if (tags) lib_tags_open(lib.target);
     lib_tags_dialog();
     if (del) ImGui::OpenPopup("Delete");
-    if (game) ImGui::OpenPopup("card_game");
+    if (game || g_card_pick_game) ImGui::OpenPopup("card_game");
+    g_card_pick_game = false;
     if (lib_game_picker("card_game", lib.target)) lib_message(false, "%s is filed under %s", lib.target.name, lib.target.info.game);
     // The card's folders, ticked when it's in one: a click puts it in or takes it out. New folder makes one with
     // it in and names it in the list.
@@ -3927,12 +3986,29 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
                     ICON_COMMENT);
         line_w = tw - gs.x - kit_px(8);
     }
-    text_clipped(dl, ImVec2(tx, y), line_w, col32(err ? COL_RED : COL_DIM), line);
+    // A video with no game says "Pick a game" in its place, and a click on those words opens the game picker
+    bool pick = !err && !it.display_name[0] && !renaming && !picking && !strcmp(it.info.game, GAME_NOT_OURS);
+    ImVec2 p0, p1;
+    if (pick) {
+        const char *ask = "Pick a game";
+        f32 aw = ImMin(ImGui::CalcTextSize(ask).x, line_w);
+        p0 = ImVec2(tx, y), p1 = ImVec2(tx + aw, y + ImGui::GetFontSize());
+        bool hot = ImGui::IsMouseHoveringRect(p0, p1) && over;
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        text_clipped(dl, p0, line_w, col32(hot ? COL_ACCENT_HOVER : COL_ACCENT), ask);
+        const char *rest = line + strlen(GAME_NOT_OURS); // "  -  <when>  -  <size>"
+        f32 rx = tx + ImGui::CalcTextSize(ask).x;
+        if (rx < tx + line_w) text_clipped(dl, ImVec2(rx, y), tx + line_w - rx, col32(COL_DIM), rest);
+    } else text_clipped(dl, ImVec2(tx, y), line_w, col32(err ? COL_RED : COL_DIM), line);
     ImGui::PopFont();
     if (clicked) {
         ImVec2 c = io.MouseClickedPos[0];
         bool on_box = c.x >= b0.x - kit_px(4) && c.x < b1.x + kit_px(4) && c.y >= b0.y - kit_px(4) && c.y < b1.y + kit_px(4);
-        if (!lib_card_click(it.key, io.KeyShift, io.KeyCtrl, on_box)) library_play(it);
+        bool on_pick = pick && c.x >= p0.x && c.x < p1.x && c.y >= p0.y - kit_px(2) && c.y < p1.y + kit_px(2);
+        if (on_pick) {
+            lib.target = it;
+            g_card_pick_game = true;
+        } else if (!lib_card_click(it.key, io.KeyShift, io.KeyCtrl, on_box)) library_play(it);
     }
 }
 
