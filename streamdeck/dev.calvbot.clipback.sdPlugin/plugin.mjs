@@ -179,6 +179,9 @@ class Record extends Key {
         ? this.image(card({ accent: C.red, glow: 0.45, label: "NO VIDEO", body: cross(C.red) }))
         : this.image(card({ accent: C.grey, glow: 0.15, label: "STARTING", body: ring(C.grey) }));
     }
+    // Still recording, so the red dot stays; the frame and label say what needs a look
+    if (s.strain) return this.image(card({ accent: C.amber, label: "SLOW PC", body: dot(C.red) }));
+    if (s.backup === "failed") return this.image(card({ accent: C.amber, label: "BACKUP FAILED", body: dot(C.red) }));
     const held = bufferLength();
     this.image(card({ accent: C.red, label: held ? "REC  " + held : "REC", body: dot(C.red) }));
   }

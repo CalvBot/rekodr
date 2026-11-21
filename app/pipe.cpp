@@ -74,8 +74,10 @@ static void pipe_send(const char *line)
     ReleaseSRWLockExclusive(&g_pipe.lock);
 }
 
+static const char *backup_state_name(); // backup.cpp
+
 // Main thread: sends the state if it has changed since it was last sent. Called once a second and after every
-// command and event.
+// command and event. strain: the PC can't keep up while recording; backup: off, waiting, running, ok or failed.
 static void pipe_publish()
 {
     if (!g_pipe.thread) return;
@@ -86,9 +88,9 @@ static void pipe_publish()
     json_escape(r.last_error.s, error, sizeof error);
     snprintf(line, sizeof line,
              "{\"type\":\"state\",\"paused\":%s,\"recording\":%s,\"game\":\"%s\",\"oldest_us\":%lld,\"saving\":%d,"
-             "\"error\":\"%s\"}\n",
+             "\"error\":\"%s\",\"strain\":%s,\"backup\":\"%s\"}\n",
              r.paused ? "true" : "false", r.recording ? "true" : "false", game, r.oldest_us,
-             g_app.saving.jobs_running, error);
+             g_app.saving.jobs_running, error, r.strain.s[0] && r.recording ? "true" : "false", backup_state_name());
     AcquireSRWLockExclusive(&g_pipe.lock);
     bool changed = strcmp(line, g_pipe.state) != 0;
     if (changed) {

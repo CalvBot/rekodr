@@ -238,6 +238,18 @@ static void backup_stop()
     }
 }
 
+// For the pipe's state line (Stream Deck)
+static const char *backup_state_name()
+{
+    const Config &c = g_app.config;
+    LONG s = g_backup.state;
+    if (s == BACKUP_RUNNING) return "running";
+    if (!c.backup_on || !c.backup_dir.s[0]) return "off";
+    if (s == BACKUP_FAILED) return "failed";
+    if (s == BACKUP_DONE) return "ok";
+    return "waiting";
+}
+
 static void backup_size(u64 bytes, char *out, i32 cap)
 {
     if (bytes >= 1000000000ull) snprintf(out, cap, "%.1f GB", bytes / 1e9);
