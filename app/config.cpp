@@ -82,6 +82,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->litterbox_hours = 72;
     c->wave_keep_days = 30;
     c->game_lookup = true;
+    c->auto_update = true;
     c->tooltips = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
@@ -349,6 +350,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
+    else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
     else if (!strcmp(key, "setup_done")) boolean(&c->setup_done);
     else if (!strcmp(key, "sgdb_key")) str_set(c->sgdb_key, value);
@@ -520,6 +522,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("share_names", c.share_names);
     boolean("send_stats", c.send_stats);
+    boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);
     boolean("setup_done", c.setup_done);
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);

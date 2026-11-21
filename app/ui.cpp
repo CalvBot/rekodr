@@ -1249,6 +1249,29 @@ static bool top_tab(const char *icon, const char *label, bool active, f32 h)
 
 // The bar across the top: the three screens as tabs, and on the right the recording switch with what the
 // recorder is doing, then Help.
+static bool update_status(char *ver, i32 cap); // update.cpp
+static bool update_apply(bool start_new);       // update.cpp
+
+// A save or share running, or a game in front: no time to offer a restart. The game check runs once a second.
+static bool update_busy()
+{
+    if (g_app.saving.jobs_running > 0) return true;
+    bool sharing = false;
+    AcquireSRWLockShared(&g_r2.lock);
+    for (i32 i = 0; i < COUNT(g_r2.jobs); i++)
+        if (g_r2.jobs[i].id && g_r2.jobs[i].state != R2_DONE && g_r2.jobs[i].state != R2_FAILED) sharing = true;
+    ReleaseSRWLockShared(&g_r2.lock);
+    if (sharing) return true;
+    static f64 checked = -10;
+    static bool game = false;
+    f64 now = ImGui::GetTime();
+    if (now - checked >= 1) {
+        checked = now;
+        game = sessions_game_in_front();
+    }
+    return game;
+}
+
 static void top_bar(f32 h)
 {
     Recorder &rec = g_app.recorder;
@@ -1290,11 +1313,15 @@ static void top_bar(f32 h)
     dl->AddText(ImVec2(tx, floorf(o.y + (h - ss.y) / 2)), col32(rec.paused ? COL_DIM : COL_TEXT), status);
     ImGui::PopFont();
 
-    // While the PC can't keep up: a chip left of the status that opens Options > Recording, the full line as its tip.
+    // Chips left of the status, right to left
+    f32 chip_r = dc.x - kit_px(16), ch = kit_px(26), cy = floorf(o.y + (h - ch) / 2);
+
+    // While the PC can't keep up: a chip that opens Options > Recording, the full line as its tip.
     if (rec.strain.s[0] && rec.recording && !rec.paused) {
         static const char label[] = ICON_WARNING "  Can't keep up";
         ImVec2 ls = ImGui::CalcTextSize(label);
-        f32 cw = ls.x + kit_px(20), ch = kit_px(26), cx = dc.x - kit_px(16) - cw, cy = floorf(o.y + (h - ch) / 2);
+        f32 cw = ls.x + kit_px(20), cx = chip_r - cw;
+        chip_r = cx - kit_px(8);
         ImGui::SetCursorScreenPos(ImVec2(cx, cy));
         if (ImGui::InvisibleButton("##strain", ImVec2(cw, ch))) {
             dev_click("top bar", "strain chip");
@@ -1305,6 +1332,24 @@ static void top_bar(f32 h)
         kit_tip(rec.strain.s);
         dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WARN, hot ? 0.32f : 0.2f), ch / 2);
         dl->AddText(ImVec2(cx + kit_px(10), floorf(cy + (ch - ls.y) / 2)), col32(COL_WARN), label);
+    }
+
+    // A verified update waiting: a quiet chip whose click restarts into it. Restarting stops recording for a few
+    // seconds, so it isn't offered while a save or share runs or a game is in front.
+    char ver[32];
+    if (update_status(ver, sizeof ver) && !update_busy()) {
+        char label[96];
+        snprintf(label, sizeof label, "clipback %s is ready, restart to update", ver);
+        ImVec2 ls = ImGui::CalcTextSize(label);
+        f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        if (ImGui::InvisibleButton("##update", ImVec2(cw, ch))) {
+            dev_click("top bar", "update chip");
+            if (!update_apply(true)) log_line("ui: the update didn't start, this copy carries on");
+        }
+        bool hot = ImGui::IsItemHovered();
+        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_TEXT, hot ? 0.14f : 0.07f), ch / 2);
+        dl->AddText(ImVec2(cx + kit_px(12), floorf(cy + (ch - ls.y) / 2)), col32(hot ? COL_TEXT : COL_DIM), label);
     }
 
     ImGui::SetCursorScreenPos(o);

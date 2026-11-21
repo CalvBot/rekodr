@@ -2225,6 +2225,8 @@ static void options_recording()
 // pipe) and the video editors a clip opens in.
 
 static void open_url(const char *url); // setup.cpp
+static void update_start(); // update.cpp
+static void update_stop();  // update.cpp
 static const char OPT_API_REPO_URL[] = "https://github.com/CalvBot/clipback-api"; // the art service's code
 static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/clipback";
 static const char OPT_SGDB_KEY_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
@@ -3187,9 +3189,16 @@ static void options_general()
     opt_section("ABOUT");
     opt_card_begin();
     f32 gh_w = text_w(g_font, "GitHub") + dp(32);
-    opt_row_begin("clipback", "Built " __DATE__, gh_w);
+    opt_row_begin("clipback " CLIPBACK_VERSION, "Built " __DATE__, gh_w);
     if (kit_button("GitHub##apprepo", KIT_SECONDARY, ImVec2(gh_w, 0))) open_url(OPT_APP_REPO_URL);
     opt_row_end();
+    if (opt_row_toggle("Update by itself", "Fetches new versions and checks they're signed. You choose when to restart",
+                       "##autoupdate", &c.auto_update)) {
+        log_line("options: update by itself %s", c.auto_update ? "on" : "off");
+        if (c.auto_update) update_start();
+        else update_stop();
+        options_apply(0);
+    }
     // The licence button only for the build clipback fetched (ffget.cpp); one found on the PATH has its own.
     Path licence = path_join(ffget_dir(), L"ffmpeg-8.1.1-full_build-shared\\LICENSE");
     bool fetched = GetFileAttributesW(licence.s) != INVALID_FILE_ATTRIBUTES;

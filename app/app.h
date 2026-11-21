@@ -126,6 +126,7 @@ struct Config {
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
     bool share_names;    // "Help name games": naming a game the art service wasn't sure of tells it (gamedb_confirm)
     bool send_stats;     // a daily usage report to the service (telemetry.cpp); off unless the player says yes
+    bool auto_update;    // fetch and verify new versions (update.cpp); the top bar then offers the restart
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only
     Str64 art_service;   // host of the art service gamedb.cpp asks for the art Discord and Steam don't have; "" = none
     // Links (r2.cpp): the player's own Cloudflare R2 bucket. The secret key is in Windows' Credential Manager.
@@ -366,8 +367,39 @@ struct EditPiece {
     f32 trans_len; // and over how long, in seconds
 };
 
+// Advanced edits: items, each a span of the video placed on a track of the sequence. Track 0 is the picture, 1 + t the
+// file's audio track t (a clipback file's Mix has none: it's rebuilt). Items on one track never overlap; time with no
+// item plays as black or silence.
+enum EditMode : u8 { EDIT_SIMPLE, EDIT_ADVANCED };
+enum { EDIT_MAX_ITEMS = 128, EDIT_MAX_ITEM_KEYS = 512 };
+
+struct EditItem {
+    f64 start;             // on the sequence, seconds
+    f64 from, to;          // seconds into the video
+    f32 fade_in, fade_out; // from and to black (or silence) at its ends, seconds
+    f32 cross;             // a crossfade from the item before it on its track, when that one ends where this starts
+    u16 id;                // its own number, which its keys name (never 0)
+    u16 link;              // items with the same link (not 0) move, trim and split together
+    u8  track;
+};
+
+// What an item's key sets: the zoom (v, centred on x y), a colour value (COLOR_* after IKEY_COLOR) or the volume.
+enum { IKEY_ZOOM, IKEY_COLOR, IKEY_VOLUME = IKEY_COLOR + EDIT_COLORS, IKEY_KINDS };
+
+// An item's key, in seconds into the video like the item's span, so it stays on its moment when the item is trimmed.
+// v is a zoom (1..4), a colour value or a volume (0..2, 1 = as recorded).
+struct ItemKey {
+    f64 t, v, x, y;
+    u16 item; // the item's id
+    u8  what; // IKEY_*
+    u8  ease;
+};
+
 // An edit never changes the original: it's this small record, kept in <year>\Data\<video name>.edit.txt.
+// A Simple edit is the pieces, keys and volumes; an Advanced one is the items and their keys, with muted[] per audio
+// track and the rest empty.
 struct EditRecord {
+    u8      mode; // EditMode
     // The parts of the video kept, in the order they play, each a span of the video in seconds; they never
     // overlap. None means the whole video.
     EditPiece pieces[EDIT_MAX_PIECES];
@@ -384,6 +416,10 @@ struct EditRecord {
     // The colour's keys (sorted by t), per EDIT_COLORS value; none means as recorded.
     VolKey  color[EDIT_COLORS][EDIT_MAX_VOL_KEYS];
     i32     color_count[EDIT_COLORS];
+    EditItem items[EDIT_MAX_ITEMS];
+    i32      item_count;
+    ItemKey  ikeys[EDIT_MAX_ITEM_KEYS]; // sorted by item, what, t
+    i32      ikey_count;
 };
 
 // The editor's keyed lanes: the zoom (0), each volume slot (1 + slot), then each colour (ED_COLOR + colour).

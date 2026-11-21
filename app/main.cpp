@@ -401,7 +401,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     recorder_start();
     audio_start();
     ffget_start(); // no ffmpeg found: fetch the pinned build
-    update_start();
+    if (g_app.config.auto_update) update_start();
     gamedb_start(g_app.config.game_lookup);
     pipe_start();
     if (g_app.ui.setup_open) ui_show(SCREEN_LIBRARY);
