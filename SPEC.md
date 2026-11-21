@@ -220,7 +220,8 @@ was moved), and a range that can't be saved still gets a failed `saved` line.
 - Asserts state what was expected and what was found, and go to the log.
 - A crash writes a minidump and the log line.
 - After a crash the app starts itself again (once, if the new copy also crashes within a minute).
-- Video keeps recording in ffmpeg. Audio capture and hotkeys come back with the restart.
+- ffmpeg stops with clipback, because it runs in a job that closes with it, so no orphan is left. The restarted
+  copy records again within a few seconds, and the buffer on disk is kept. A self-update leaves the same short gap.
 
 ## Screens
 One window with a header (status, pause, Help, Options):
