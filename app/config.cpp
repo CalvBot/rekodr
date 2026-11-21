@@ -83,6 +83,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->wave_keep_days = 30;
     c->game_lookup = true;
     c->auto_update = true;
+    c->start_with_windows = true; // the installer writes the Run value
     c->tooltips = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
