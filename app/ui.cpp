@@ -1251,6 +1251,7 @@ static bool top_tab(const char *icon, const char *label, bool active, f32 h)
 // recorder is doing, then Help.
 static bool update_status(char *ver, i32 cap); // update.cpp
 static bool update_apply(bool start_new);       // update.cpp
+static const char *update_error();              // update.cpp
 
 // A save or share running, or a game in front: no time to offer a restart. The game check runs once a second.
 static bool update_busy()
@@ -1336,8 +1337,22 @@ static void top_bar(f32 h)
 
     // A verified update waiting: a quiet chip whose click restarts into it. Restarting stops recording for a few
     // seconds, so it isn't offered while a save or share runs or a game is in front.
+    // After a failed restart (this copy carries on), the reason in its place until clicked away.
+    static bool apply_failed = false;
+    const char *why = apply_failed ? update_error() : 0;
+    if (why) {
+        char label[200];
+        snprintf(label, sizeof label, ICON_WARNING "  Couldn't update: %s", why);
+        ImVec2 ls = ImGui::CalcTextSize(label);
+        f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        if (ImGui::InvisibleButton("##updatefail", ImVec2(cw, ch))) apply_failed = false;
+        bool hot = ImGui::IsItemHovered();
+        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WARN, hot ? 0.32f : 0.2f), ch / 2);
+        dl->AddText(ImVec2(cx + kit_px(12), floorf(cy + (ch - ls.y) / 2)), col32(COL_WARN), label);
+    }
     char ver[32];
-    if (update_status(ver, sizeof ver) && !update_busy()) {
+    if (!why && update_status(ver, sizeof ver) && !update_busy()) {
         char label[96];
         snprintf(label, sizeof label, "clipback %s is ready, restart to update", ver);
         ImVec2 ls = ImGui::CalcTextSize(label);
@@ -1345,7 +1360,7 @@ static void top_bar(f32 h)
         ImGui::SetCursorScreenPos(ImVec2(cx, cy));
         if (ImGui::InvisibleButton("##update", ImVec2(cw, ch))) {
             dev_click("top bar", "update chip");
-            if (!update_apply(true)) log_line("ui: the update didn't start, this copy carries on");
+            apply_failed = !update_apply(true);
         }
         bool hot = ImGui::IsItemHovered();
         dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_TEXT, hot ? 0.14f : 0.07f), ch / 2);
