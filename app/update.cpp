@@ -264,23 +264,40 @@ static DWORD WINAPI update_thread(void *)
     return 0;
 }
 
-// From main, at start
+// From main at start, and when "Update by itself" is turned on
 static void update_start()
 {
-    wchar_t test_url[8];
-    if (!UPDATE_MANIFEST_URL[0] && !update_test_copy_override(L"CLIPBACK_UPDATE_MANIFEST", test_url, COUNT(test_url)))
-        return;
-    if (is_test_copy() && !test_url[0]) return; // a test copy checks only its own manifest
+    if (g_update.thread) {
+        if (!g_update.stop || WaitForSingleObject(g_update.thread, 0) != WAIT_OBJECT_0) return; // running, or still stopping
+        CloseHandle(g_update.thread);
+        CloseHandle(g_update.wake);
+        g_update.thread = g_update.wake = 0;
+    }
+    wchar_t test_url[600];
+    bool test = update_test_copy_override(L"CLIPBACK_UPDATE_MANIFEST", test_url, COUNT(test_url));
+    if (is_test_copy() ? !test : !UPDATE_MANIFEST_URL[0]) return; // a test copy checks only its own manifest
+    InterlockedExchange(&g_update.stop, 0);
     g_update.wake = CreateEventW(0, FALSE, FALSE, 0);
     g_update.thread = CreateThread(0, 0, update_thread, 0, 0, 0);
 }
 
+// From main at exit, and when "Update by itself" is turned off. A thread stuck in a download past 5 s keeps its
+// handles; update_start waits for it to go.
 static void update_stop()
 {
     if (!g_update.thread) return;
     InterlockedExchange(&g_update.stop, 1);
     SetEvent(g_update.wake);
-    WaitForSingleObject(g_update.thread, 5000);
+    if (WaitForSingleObject(g_update.thread, 5000) != WAIT_OBJECT_0) return;
+    CloseHandle(g_update.thread);
+    CloseHandle(g_update.wake);
+    g_update.thread = g_update.wake = 0;
+}
+
+// Why the last check, download or apply failed, or 0
+static const char *update_error()
+{
+    return g_update.state == UPDATE_FAILED ? g_update.error : 0;
 }
 
 // True once a verified update is ready to swap in, with its version in `ver`
