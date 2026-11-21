@@ -1035,6 +1035,24 @@ static void test_r2()
     T(r2_share_live(live, 999) && !r2_share_live(live, 1000));
     live.expires_us = 0;
     T(r2_share_live(live, 1ll << 60));
+    live.paused = 1;
+    T(!r2_share_live(live, 1));
+
+    // Automatic pause: past the day's plays, not when off or resumed by hand today; back the next day
+    R2Share ap = {};
+    ap.host = HOST_R2;
+    ap.plays_today = 50;
+    T(r2_auto_action(ap, 50, 20261121) == 1 && r2_auto_action(ap, 51, 20261121) == 0);
+    T(r2_auto_action(ap, 0, 20261121) == 0);
+    ap.pause_day = 20261121;
+    T(r2_auto_action(ap, 50, 20261121) == 0 && r2_auto_action(ap, 50, 20261122) == 1);
+    ap.paused = 2;
+    T(r2_auto_action(ap, 50, 20261121) == 0 && r2_auto_action(ap, 50, 20261122) == -1);
+    ap.paused = 1;
+    T(r2_auto_action(ap, 50, 20261122) == 0); // by hand: stays paused
+    ap.paused = 0;
+    ap.host = HOST_CATBOX;
+    T(r2_auto_action(ap, 1, 1) == 0);
 
     // Custom uploaders (.sxcu): what's read, what's refused, and links made from answers
     const char *sx = "{\"Version\":\"16.0.1\",\"Name\":\"My host\",\"DestinationType\":\"ImageUploader, FileUploader\","
@@ -1091,6 +1109,9 @@ static void test_r2()
     w[1].version = 1;
     w[1].host = HOST_LITTERBOX;
     w[1].expires_us = 1700000259200000;
+    w[0].paused = 2;
+    str_set(w[0].hidden, "clipback/qrstuvwxyzabcdef/clip.mp4");
+    w[0].pause_day = 20261121;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
     T(!strcmp(r[0].key, w[0].key) && !strcmp(r[0].url, w[0].url) && !strcmp(r[0].title, "ace round"));
@@ -1098,6 +1119,9 @@ static void test_r2()
     T(r[0].uploaded_us == w[0].uploaded_us && r[0].pinned && !r[0].removed && r[0].version == 2);
     T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
     T(r[0].host == HOST_R2 && !r[0].expires_us && r[1].host == HOST_LITTERBOX && r[1].expires_us == w[1].expires_us);
+    T(r[0].paused == 2 && !strcmp(r[0].hidden, w[0].hidden) && r[0].pause_day == 20261121 && !r[1].paused);
+    T(r[0].plays_today == -1 && r[0].plays_month == -1);
+    T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
     DeleteFileW(file.s);
 
     // The bucket's S3 secret from an API token
@@ -1154,10 +1178,22 @@ static void test_r2()
     T(f.bytes == 0 && f.class_a == 0 && f.class_b == 0);
     T(!r2_parse_usage("{\"data\":null,\"errors\":[{\"message\":\"not authorized\"}]}", &f));
     T(r2_op_class("UploadPart") == 'A' && r2_op_class("HeadObject") == 'B' && r2_op_class("DeleteObject") == 0);
-    char q[1600];
-    r2_usage_query("acc1", "clipback", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", q, sizeof q);
+    char q[2400];
+    r2_usage_query("acc1", "clipback", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", "2026-11-20T23:00:00Z", q,
+                   sizeof q);
+    T(strstr(q, "objectName") && strstr(q, "\"get\":\"GetObject\"") && strstr(q, "\"dayStart\":\"2026-11-20T23:00:00Z\""));
     T(strstr(q, "\"accountTag\":\"acc1\"") && strstr(q, "\"bucketName\":\"clipback\"") &&
       strstr(q, "r2OperationsAdaptiveGroups") && strstr(q, "\"startDate\":\"2026-11-01T00:00:00Z\""));
+
+    // Plays per file
+    const char *pl = "{\"data\":{\"viewer\":{\"accounts\":[{\"month\":[{\"sum\":{\"requests\":12},\"dimensions\":"
+                     "{\"objectName\":\"clipback/a/x.mp4\"}},{\"sum\":{\"requests\":3},\"dimensions\":{\"objectName\":"
+                     "\"b.mp4\"}}],\"today\":[{\"sum\":{\"requests\":4},\"dimensions\":{\"objectName\":\"b.mp4\"}}]}]}}}";
+    static char pk[4][R2_KEY_MAX];
+    i64 pc[4];
+    T(r2_parse_plays(pl, "month", pk, pc, 4) == 2 && !strcmp(pk[0], "clipback/a/x.mp4") && pc[0] == 12 && pc[1] == 3);
+    T(r2_parse_plays(pl, "today", pk, pc, 4) == 1 && !strcmp(pk[0], "b.mp4") && pc[0] == 4);
+    T(r2_parse_plays(pl, "month", pk, pc, 1) == 1);
 
     // A month's cost past the free allowances
     T(r2_month_cost(5 * R2_GB, 100, 100) == 0);

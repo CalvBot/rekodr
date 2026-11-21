@@ -2643,6 +2643,34 @@ static void options_sharing()
                     g_row.x1);
         opt_row_end();
     }
+
+    // Busy links: past this many plays in a day a link pauses until the next day (r2.cpp); the first step is off
+    {
+        static const i32 steps[] = {0, 100, 250, 500, 1000, 2500, 5000, 10000};
+        f32 sw = dp(170), lw = dp(220);
+        opt_row_begin("Pause busy links", "A link past this many plays in a day pauses until the next day",
+                      sw + dp(12) + lw);
+        i32 n = (i32)COUNT(steps), cur = 0;
+        for (i32 i = 0; i < n; i++)
+            if (abs(steps[i] - c.r2_pause_views_per_day) < abs(steps[cur] - c.r2_pause_views_per_day)) cur = i;
+        f32 v = (f32)cur;
+        ImVec2 at = ImGui::GetCursorScreenPos();
+        if (lib_slider("##r2pauseplays", &v, 0, (f32)(n - 1), sw, ImGui::GetFrameHeight())) {
+            cur = (i32)(v + 0.5f);
+            c.r2_pause_views_per_day = steps[cur];
+        }
+        if (ImGui::IsItemDeactivated()) {
+            log_line("options: R2 links pause past %d plays a day", c.r2_pause_views_per_day);
+            options_apply(0);
+        }
+        char t[64], num[32];
+        fmt_count(steps[cur], num, sizeof num);
+        if (cur == 0) snprintf(t, sizeof t, "Never");
+        else snprintf(t, sizeof t, "Past %s plays a day", num);
+        opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(at.x + sw + dp(12), opt_row_text_y(g_font)), COL_TEXT, t,
+                    g_row.x1);
+        opt_row_end();
+    }
     {
         R2Usage u = r2_usage();
         char used[32], lim[32], t[96], sub[160];
@@ -2653,7 +2681,7 @@ static void options_sharing()
             char a[32], b[32];
             fmt_count(u.class_a, a, sizeof a);
             fmt_count(u.class_b, b, sizeof b);
-            snprintf(sub, sizeof sub, "%s uploads, %s views this month, about $%.2f", a, b, u.month_cost);
+            snprintf(sub, sizeof sub, "%s uploads, %s plays this month, about $%.2f", a, b, u.month_cost);
         } else str_set(sub, "What the links take up in the bucket");
         if (r2_ready()) opt_row_value("Space", sub, t, COL_TEXT);
         else opt_row_value("Space", "What the links take up in the bucket", "Not set up", COL_DIM);

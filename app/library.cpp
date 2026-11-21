@@ -1832,6 +1832,7 @@ static f32 badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const c
 }
 
 static bool edit_is_advanced(const Path &edit_file); // editor.cpp
+static void fmt_count(i64 n, char *out, i32 cap); // options.cpp
 
 // Whether a card's edit is an Advanced one, for its badge. The edit file's first line is read again at most every
 // 2 s per card, so an edit saved in the editor shows up without a rescan.
@@ -3050,6 +3051,35 @@ static void lib_share_pending_check()
     }
 }
 
+// The R2 link made from a library item, if it has one still in the bucket: false when it has none.
+static bool lib_r2_link(u64 lib_key, R2Share *out)
+{
+    static R2Share list[R2_MAX_SHARES];
+    static i32 count = -1;
+    static u32 gen;
+    if (count < 0 || gen != r2_history_gen()) {
+        gen = r2_history_gen();
+        count = r2_history(list, R2_MAX_SHARES);
+    }
+    const R2Share *best = 0;
+    for (i32 i = 0; i < count; i++) {
+        const R2Share &s = list[i];
+        if (!lib_key || s.lib_key != lib_key || s.host != HOST_R2 || s.removed) continue;
+        if (!best || s.uploaded_us > best->uploaded_us) best = &s;
+    }
+    if (best) *out = *best;
+    return best != 0;
+}
+
+// Pauses or resumes a link (r2_pause, r2_resume): a paused one stops playing for anyone who has it.
+static void lib_link_pause(const R2Share &s)
+{
+    if (s.paused) r2_resume(s.key);
+    else r2_pause(s.key);
+    log_line("library: link %s %s", s.key, s.paused ? "resumed" : "paused");
+    lib_note(false, s.paused ? "Link playing again: %s" : "Link paused: %s", s.title);
+}
+
 // The Share menu, for one file, asked every time: Copy file at one of the share sizes or as it is (a size it already
 // fits says so), Copy link, and Show in folder. Opened with ImGui::OpenPopup(id) where it's drawn.
 static void lib_share_menu(const char *id, const LibItem &it)
@@ -3086,6 +3116,13 @@ static void lib_share_menu(const char *id, const LibItem &it)
     ImGui::Dummy(ImVec2(row_w, kit_px(2)));
     ImGui::Separator();
     if (lib_menu_item(ICON_LINK, "Copy link", false, row_w)) lib_link_item(it);
+    R2Share link;
+    if (lib_r2_link(it.key, &link)) { // stays in place, greyed, while a pause or resume runs
+        if (link.moving) ImGui::BeginDisabled();
+        if (lib_menu_item(link.paused ? ICON_PLAY : ICON_PAUSE, link.paused ? "Resume link" : "Pause link", false, row_w))
+            lib_link_pause(link);
+        if (link.moving) ImGui::EndDisabled();
+    }
     if (lib_menu_item(ICON_FOLDER, "Show in folder", false, row_w)) show_in_folder(lib_item_path(it).s);
     ImGui::EndPopup();
     lib_popup_style_pop();
@@ -3100,8 +3137,10 @@ static void lib_expires_in(i64 left_us, char *out, i32 cap)
 }
 
 // The Shared list: every file uploaded, newest first, a page at a time. A row has the game's picture, the name, and
-// under it the host when it isn't R2, when its link ends, the game, when it went up and its size. On the right Copy link,
-// Pin (kept whatever the bucket's limit; R2 only) and Delete, which for a free host only takes it off the list. One
+// under it the host when it isn't R2, when its link ends, the game, when it went up, its size and (R2) today's plays.
+// On the right Copy link, then for R2 Pause (the link stops playing until resumed) and Pin (kept whatever the bucket's
+// limit), and Delete, which for a free host only takes it off the list. A paused row is faded with a pause mark on its
+// picture and says so in amber. One
 // removed to stay under the limit, or past a free host's time, is greyed, with Share again while the file is still
 // on this PC. Over the list, on the right, how much of the bucket's limit is used.
 static void lib_shared_view(ImVec2 h0, f32 full_w)
@@ -3172,10 +3211,10 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
         f32 tw = ImGui::CalcTextSize(t).x;
         dl->AddText(ImVec2(floorf(h0.x + (full_w - tw) / 2), l0.y + avail / 3), col32(COL_DIM), t);
     }
-    // Share again stands where Copy link and Pin are, wider when it needs to be; Delete stays put
+    // Share again stands where Copy link, Pause and Pin are, wider when it needs to be; Delete stays put
     const char *again = ICON_REFRESH "  Share again##again";
     f32 again_w = ImGui::CalcTextSize(again, ImGui::FindRenderedTextEnd(again)).x + kit_px(24);
-    f32 acts_w = ImMax(3 * fh + 2 * gap, again_w + gap + fh), is = kit_px(36);
+    f32 acts_w = ImMax(4 * fh + 3 * gap, again_w + gap + fh), is = kit_px(36);
     i64 now = now_us();
     bool del_open = false;
     for (i32 r = 0; r < per; r++) {
@@ -3216,6 +3255,7 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
         }
         const R2Share &s = list[k - g_lib_upload_count];
         bool live = r2_share_live(s, now);
+        bool paused = s.host == HOST_R2 && s.paused && !s.removed;
         char host[64];
         share_host_label(s, host, sizeof host);
         u32 ink = live ? COL_TEXT : COL_FAINT, dim = live ? COL_DIM : COL_FAINT;
@@ -3229,6 +3269,13 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
             dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(floorf(ix + (is - gs.x) / 2), floorf(iy + (is - gs.y) / 2)),
                         col32(dim), ICON_VIDEO);
         }
+        if (paused) { // a pause mark on a dark disc over the picture
+            ImVec2 c(ix + is / 2, iy + is / 2);
+            dl->AddCircleFilled(c, is * 0.34f, IM_COL32(0, 0, 0, 160));
+            ImVec2 gs = g_font_icon->CalcTextSizeA(g_font_icon->FontSize, FLT_MAX, 0, ICON_PAUSE);
+            dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(floorf(c.x - gs.x / 2), floorf(c.y - gs.y / 2)),
+                        col32(COL_WARN), ICON_PAUSE);
+        }
         text_clipped(dl, ImVec2(tx, ty), tw, col32(ink), s.title);
         char when[48], size[24], ends[32] = "", line[200];
         fmt_when(s.uploaded_us, when, sizeof when);
@@ -3237,10 +3284,18 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
             lib_expires_in(s.expires_us - now, ends, sizeof ends);
             strncat(ends, "  -  ", sizeof ends - strlen(ends) - 1);
         }
+        char plays[40] = ""; // fetches of the file, so one play in Discord can count several times
+        if (s.host == HOST_R2 && s.plays_today >= 0) {
+            char n[32];
+            fmt_count(s.plays_today, n, sizeof n);
+            snprintf(plays, sizeof plays, "  -  %s %s today", n, s.plays_today == 1 ? "play" : "plays");
+        }
         if (s.removed) snprintf(line, sizeof line, "Removed, over size limit  -  %s", size);
+        else if (paused && s.paused == 2) snprintf(line, sizeof line, "Paused until tomorrow, over the day's plays%s", plays);
+        else if (paused) snprintf(line, sizeof line, "Paused, nobody can play it%s  -  %s", plays, size);
         else if (!live) snprintf(line, sizeof line, "Expired  -  %s", size);
-        else if (s.game[0]) snprintf(line, sizeof line, "%s%s  -  %s  -  %s", ends, s.game, when, size);
-        else snprintf(line, sizeof line, "%s%s  -  %s", ends, when, size);
+        else if (s.game[0]) snprintf(line, sizeof line, "%s%s  -  %s  -  %s%s", ends, s.game, when, size, plays);
+        else snprintf(line, sizeof line, "%s%s  -  %s%s", ends, when, size, plays);
         ImGui::PushFont(g_font_small);
         f32 lx = tx;
         if (host[0]) { // the host when it isn't R2, as a chip before the line
@@ -3252,7 +3307,7 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
         text_clipped(dl, ImVec2(lx, sy), tw - (lx - tx), col32(live ? dim : COL_WARN), line);
         ImGui::PopFont();
 
-        if (!live) {
+        if (!live && !paused) {
             wchar_t wp[1040];
             bool here = MultiByteToWideChar(CP_UTF8, 0, s.path, -1, wp, 1040) > 0 &&
                         GetFileAttributesW(wp) != INVALID_FILE_ATTRIBUTES;
@@ -3263,13 +3318,18 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
                 else lib_upload_add(r2_reshare(s.key), s.title);
             }
         } else {
-            ImGui::SetCursorScreenPos(ImVec2(b.x - kit_px(12) - 3 * fh - 2 * gap, by));
-            kit_next_tip("Copy link");
+            ImGui::SetCursorScreenPos(ImVec2(b.x - kit_px(12) - 4 * fh - 3 * gap, by));
+            kit_next_tip(paused ? "Copy link: it plays once resumed" : "Copy link");
             if (kit_icon_button(ICON_LINK, "##copy", KIT_GHOST)) {
                 ImGui::SetClipboardText(s.url);
                 lib_note(false, "Link copied: %s", s.title);
             }
-            if (s.host == HOST_R2) { // a free host keeps what it keeps: nothing to pin
+            if (s.host == HOST_R2) { // a free host keeps what it keeps: nothing to pause or pin
+                ImGui::SameLine(0, gap);
+                kit_next_tip(s.moving ? (s.paused ? "Resuming..." : "Pausing...")
+                             : s.paused ? "Paused: click to let it play again" : "Pause: nobody can play it until resumed");
+                if (kit_icon_button(s.paused ? ICON_PLAY : ICON_PAUSE, "##pause", KIT_GHOST, !s.moving, s.paused != 0))
+                    lib_link_pause(s);
                 ImGui::SameLine(0, gap);
                 kit_next_tip(s.pinned ? "Pinned: kept whatever the limit" : "Pin: keep it whatever the limit");
                 if (kit_icon_button(s.pinned ? ICON_PINNED : ICON_PIN, "##pin", KIT_GHOST, true, s.pinned)) {

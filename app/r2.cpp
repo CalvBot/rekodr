@@ -24,6 +24,8 @@
 #pragma comment(lib, "ws2_32.lib")
 
 static void open_url(const char *url); // setup.cpp
+static void r2_resume(const char *key);
+static void r2_auto_pause();
 
 enum R2State : u8 { R2_QUEUED, R2_PREPARING, R2_UPLOADING, R2_DONE, R2_FAILED };
 enum R2SetupState : u8 { R2_SETUP_IDLE, R2_SETUP_WAITING, R2_SETUP_BUSY, R2_SETUP_OK, R2_SETUP_FAILED };
@@ -78,6 +80,12 @@ struct R2Share {
     u64  lib_key;     // the library item it was made from, 0 for an editor render
     LinkHost host;
     i64  expires_us;  // when a free host drops it, 0 = kept
+    u8   paused;      // R2: 0 plays, 1 paused by hand, 2 paused past the day's plays (r2_pause_views_per_day)
+    char hidden[R2_KEY_MAX]; // while paused: where the file is in the bucket instead, a new random name
+    i32  pause_day;   // yyyymmdd (local): the day it was paused automatically, or resumed by hand
+    // Not kept in the history:
+    bool moving;      // a pause or resume is running
+    i64  plays_today, plays_month; // GET requests for the file (local day, this month), -1 until fetched
 };
 
 struct R2Usage {
@@ -112,7 +120,7 @@ struct R2Conf {
 };
 
 enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_FREE, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
-                        R2_T_SIGNOUT };
+                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME };
 
 struct R2Task {
     R2TaskKind kind;
@@ -129,6 +137,7 @@ struct R2Task {
                             // sign-out: the sign-in's refresh token
     char       code[1024];  // sign-in: the code the browser brought back
     char       verifier[64]; // sign-in: PKCE's verifier
+    u8         pause;   // pause: 1 by hand, 2 past the day's plays; resume: 1 by hand
 };
 
 // One link job's own data (main thread, except `info`, which the probe fills under the lock).
@@ -197,7 +206,28 @@ static bool r2_in_bucket(const R2Share &s) { return s.host == HOST_R2 && !s.remo
 // The link still plays: not removed and not past a free host's expiry.
 static bool r2_share_live(const R2Share &s, i64 now)
 {
-    return !s.removed && (!s.expires_us || now < s.expires_us);
+    return !s.removed && !s.paused && (!s.expires_us || now < s.expires_us);
+}
+
+// Where the share's file is in the bucket: its own name, or the hidden one while paused.
+static const char *r2_object_key(const R2Share &s) { return s.paused ? s.hidden : s.key; }
+
+// Today as yyyymmdd, local time.
+static i32 r2_today()
+{
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    return t.wYear * 10000 + t.wMonth * 100 + t.wDay;
+}
+
+// What the automatic pause does to a share with `limit` plays a day (0 = off): 1 pause, -1 resume, 0 nothing. One
+// paused automatically comes back the next day; one resumed by hand keeps playing for the rest of that day.
+static i32 r2_auto_action(const R2Share &s, i32 limit, i32 today)
+{
+    if (s.host != HOST_R2 || s.removed || s.moving) return 0;
+    if (s.paused == 2) return s.pause_day != today ? -1 : 0;
+    if (s.paused || limit <= 0 || s.pause_day == today) return 0;
+    return s.plays_today >= limit ? 1 : 0;
 }
 
 // Litterbox keeps files for 1, 12, 24 or 72 hours: the nearest of those at or above `hours`.
@@ -527,7 +557,7 @@ static void r2_set_progress(u32 job, f32 p)
 // answer); the answer's body (cut at resp_cap) goes to resp and its ETag to etag.
 static u32 r2_send(const R2Conf &c, const char *method, const char *key, const char *query, const R2Body &body,
                    const char *content_type, char *resp, i32 resp_cap, char *etag = 0, i32 etag_cap = 0,
-                   R2Progress *prog = 0)
+                   R2Progress *prog = 0, const char *copy_from = 0)
 {
     if (resp_cap) resp[0] = 0;
     if (etag_cap) etag[0] = 0;
@@ -538,11 +568,19 @@ static u32 r2_send(const R2Conf &c, const char *method, const char *key, const c
     GetSystemTime(&t);
     snprintf(date, sizeof date, "%04d%02d%02dT%02d%02d%02dZ", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute,
              t.wSecond);
-    SigHeader h[] = {{"host", host}, {"x-amz-content-sha256", "UNSIGNED-PAYLOAD"}, {"x-amz-date", date}};
-    sigv4_auth(method, uri, query, h, COUNT(h), "UNSIGNED-PAYLOAD", c.access, c.secret, date, "auto", "s3", auth,
-               sizeof auth);
-    snprintf(hdrs, sizeof hdrs, "x-amz-content-sha256: UNSIGNED-PAYLOAD\r\nx-amz-date: %s\r\nAuthorization: %s%s%s",
-             date, auth, content_type ? "\r\nContent-Type: " : "", content_type ? content_type : "");
+    // CopyObject names its source in x-amz-copy-source, signed with the rest (in name order)
+    char source[160] = "";
+    if (copy_from) snprintf(source, sizeof source, "/%s/%s", c.bucket, copy_from);
+    SigHeader h[] = {{"host", host},
+                     {"x-amz-content-sha256", "UNSIGNED-PAYLOAD"},
+                     {copy_from ? "x-amz-copy-source" : "x-amz-date", copy_from ? source : date},
+                     {"x-amz-date", date}};
+    sigv4_auth(method, uri, query, h, copy_from ? 4 : 3, "UNSIGNED-PAYLOAD", c.access, c.secret, date, "auto", "s3",
+               auth, sizeof auth);
+    snprintf(hdrs, sizeof hdrs,
+             "x-amz-content-sha256: UNSIGNED-PAYLOAD\r\nx-amz-date: %s\r\nAuthorization: %s%s%s%s%s", date, auth,
+             content_type ? "\r\nContent-Type: " : "", content_type ? content_type : "",
+             copy_from ? "\r\nx-amz-copy-source: " : "", source);
 
     wchar_t whost[128], wmethod[16], wpath[1024], whdrs[1024];
     char path[1024];
@@ -737,7 +775,8 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
 
 // ---------------------------------------------------------------------------------------------------------------
 // History: <config_dir>\shares.tsv, one share a line, oldest first:
-//   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  expires_us  url  title  game  path
+//   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  expires_us  paused  hidden  pause_day  url
+//   title  game  path
 
 static void r2_tsv_field(FILE *f, const char *s, bool last)
 {
@@ -752,8 +791,9 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
     FILE *f = _wfopen(part.s, L"wb");
     if (!f) return false;
     for (i32 i = 0; i < n; i++) {
-        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%lld\t", s[i].key, s[i].version, s[i].pinned ? 1 : 0,
-                s[i].removed ? 1 : 0, s[i].bytes, s[i].uploaded_us, s[i].lib_key, (int)s[i].host, s[i].expires_us);
+        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%lld\t%d\t%s\t%d\t", s[i].key, s[i].version,
+                s[i].pinned ? 1 : 0, s[i].removed ? 1 : 0, s[i].bytes, s[i].uploaded_us, s[i].lib_key, (int)s[i].host,
+                s[i].expires_us, (int)s[i].paused, s[i].hidden, s[i].pause_day);
         r2_tsv_field(f, s[i].url, false);
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
@@ -771,16 +811,17 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
     for (char *line = text; line && *line && n < max;) {
         char *next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char *f[13] = {};
+        char *f[16] = {};
         i32 count = 0;
-        for (char *p = line; count < 13;) {
+        for (char *p = line; count < 16;) {
             f[count++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 13 && strlen(f[0]) < R2_KEY_MAX && atoi(f[7]) >= 0 && atoi(f[7]) < HOST_COUNT) {
+        if (count == 16 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX && atoi(f[7]) >= 0 &&
+            atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
             str_set(s.key, f[0]);
@@ -792,10 +833,15 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.lib_key = _strtoui64(f[6], 0, 10);
             s.host = (LinkHost)atoi(f[7]);
             s.expires_us = _atoi64(f[8]);
-            str_set(s.url, f[9]);
-            str_set(s.title, f[10]);
-            str_set(s.game, f[11]);
-            str_set(s.path, f[12]);
+            s.paused = (u8)atoi(f[9]);
+            str_set(s.hidden, f[10]);
+            s.pause_day = atoi(f[11]);
+            if (s.paused > 2 || (s.paused && !s.hidden[0])) s.paused = 0;
+            str_set(s.url, f[12]);
+            str_set(s.title, f[13]);
+            str_set(s.game, f[14]);
+            str_set(s.path, f[15]);
+            s.plays_today = s.plays_month = -1;
         }
         line = next;
     }
@@ -846,7 +892,7 @@ static void r2_room_locked()
     i32 drop = 0;
     i64 now = now_us();
     for (i32 i = 0; i < g_r2.count; i++)
-        if (!r2_share_live(g_r2.shares[i], now)) { drop = i; break; }
+        if (!r2_share_live(g_r2.shares[i], now) && !r2_in_bucket(g_r2.shares[i])) { drop = i; break; }
     r2_drop_locked(drop);
 }
 
@@ -939,6 +985,8 @@ static void r2_run_upload(const R2Task &t)
     R2Share &s = g_r2.shares[at];
     s.version++;
     s.removed = false;
+    s.paused = 0;
+    s.hidden[0] = 0;
     s.host = HOST_R2;
     s.expires_us = 0;
     s.bytes = bytes;
@@ -952,17 +1000,25 @@ static void r2_run_upload(const R2Task &t)
     i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), at, plan,
                             COUNT(plan));
     static char gone[R2_MAX_SHARES][R2_KEY_MAX];
-    for (i32 i = 0; i < n; i++) str_set(gone[i], g_r2.shares[plan[i]].key);
+    static char gone_at[R2_MAX_SHARES][R2_KEY_MAX]; // where each is in the bucket
+    for (i32 i = 0; i < n; i++) {
+        str_set(gone[i], g_r2.shares[plan[i]].key);
+        str_set(gone_at[i], r2_object_key(g_r2.shares[plan[i]]));
+    }
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);
     r2_job_end(job, true, url, "");
 
     // Over the limit: the oldest unpinned clips leave the bucket.
     for (i32 i = 0; i < n; i++) {
-        if (!r2_delete_object(t.conf, gone[i])) continue;
+        if (!r2_delete_object(t.conf, gone_at[i])) continue;
         AcquireSRWLockExclusive(&g_r2.lock);
         i32 k = r2_find_locked(gone[i]);
-        if (k >= 0) g_r2.shares[k].removed = true;
+        if (k >= 0) {
+            g_r2.shares[k].removed = true;
+            g_r2.shares[k].paused = 0;
+            g_r2.shares[k].hidden[0] = 0;
+        }
         r2_save_locked();
         ReleaseSRWLockExclusive(&g_r2.lock);
         log_line("r2: removed %s to stay under the limit", gone[i]);
@@ -1459,9 +1515,11 @@ static void r2_run_delete(const R2Task &t)
     r2_load_locked();
     i32 i = r2_find_locked(t.key);
     bool remote = i >= 0 && r2_in_bucket(g_r2.shares[i]);
+    char at[R2_KEY_MAX] = "";
+    if (i >= 0) str_set(at, r2_object_key(g_r2.shares[i]));
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (i < 0) return;
-    if (remote && !r2_delete_object(t.conf, t.key)) {
+    if (remote && !r2_delete_object(t.conf, at)) {
         event_post_text(EV_LOG, "Couldn't delete the clip from the bucket");
         return;
     }
@@ -1640,19 +1698,44 @@ static bool r2_parse_usage(const char *resp, R2Fetched *out)
     return any || has_ops || strstr(resp, "\"storage\":[]") != 0;
 }
 
-// The GraphQL request for a bucket's storage and requests from `start` to `end` (ISO 8601, UTC).
-static void r2_usage_query(const char *account, const char *bucket, const char *start, const char *end, char *out,
-                           i32 cap)
+// The GraphQL request for a bucket from `start` to `end` (ISO 8601, UTC): its storage, its requests by type, and
+// the GET requests for each file (plays) over that time and since `day` (local midnight, in UTC).
+static void r2_usage_query(const char *account, const char *bucket, const char *start, const char *end,
+                           const char *day, char *out, i32 cap)
 {
     snprintf(out, cap,
-             "{\"query\":\"query($accountTag:string!,$bucketName:string,$startDate:Time,$endDate:Time){viewer{"
-             "accounts(filter:{accountTag:$accountTag}){"
+             "{\"query\":\"query($accountTag:string!,$bucketName:string,$startDate:Time,$endDate:Time,$dayStart:Time,"
+             "$get:string){viewer{accounts(filter:{accountTag:$accountTag}){"
              "storage:r2StorageAdaptiveGroups(limit:1,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
              "bucketName:$bucketName},orderBy:[datetime_DESC]){max{payloadSize metadataSize}} "
              "ops:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
-             "bucketName:$bucketName}){sum{requests} dimensions{actionType}}}}}\","
-             "\"variables\":{\"accountTag\":\"%s\",\"bucketName\":\"%s\",\"startDate\":\"%s\",\"endDate\":\"%s\"}}",
-             account, bucket, start, end);
+             "bucketName:$bucketName}){sum{requests} dimensions{actionType}} "
+             "month:r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
+             "bucketName:$bucketName,actionType:$get}){sum{requests} dimensions{objectName}} "
+             "today:r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$dayStart,datetime_leq:$endDate,"
+             "bucketName:$bucketName,actionType:$get}){sum{requests} dimensions{objectName}}}}}\","
+             "\"variables\":{\"accountTag\":\"%s\",\"bucketName\":\"%s\",\"startDate\":\"%s\",\"endDate\":\"%s\","
+             "\"dayStart\":\"%s\",\"get\":\"GetObject\"}}",
+             account, bucket, start, end, day);
+}
+
+// One list of per-file plays in the usage answer ("month" or "today"): each file's name and count. Returns how
+// many.
+static i32 r2_parse_plays(const char *resp, const char *list, char (*keys)[R2_KEY_MAX], i64 *counts, i32 max)
+{
+    i64 len = (i64)strlen(resp);
+    char path[96], v[32];
+    i32 n = 0;
+    for (i32 i = 0; n < max && i < 10000; i++) {
+        snprintf(path, sizeof path, "data.viewer.accounts[0].%s[%d].dimensions.objectName", list, i);
+        char key[256];
+        if (!json_path(resp, len, path, key, sizeof key)) break;
+        if (strlen(key) >= R2_KEY_MAX) continue;
+        snprintf(path, sizeof path, "data.viewer.accounts[0].%s[%d].sum.requests", list, i);
+        str_set(keys[n], key);
+        counts[n++] = json_path(resp, len, path, v, sizeof v) ? _atoi64(v) : 0;
+    }
+    return n;
 }
 
 // The dashboard page that makes an API token with what clipback needs already picked.
@@ -2167,18 +2250,39 @@ static void r2_run_usage(const R2Task &t)
     if (!t.oauth) str_set(bearer, t.token);
     SYSTEMTIME st;
     GetSystemTime(&st);
-    char start[32], end[32], body[1600];
+    char start[32], end[32], day[32], body[2400];
     snprintf(start, sizeof start, "%04d-%02d-01T00:00:00Z", st.wYear, st.wMonth);
     snprintf(end, sizeof end, "%04d-%02d-%02dT%02d:%02d:%02dZ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
              st.wSecond);
-    r2_usage_query(t.conf.account, t.conf.bucket, start, end, body, sizeof body);
-    static char resp[1 << 16];
+    SYSTEMTIME local, midnight;
+    GetLocalTime(&local);
+    local.wHour = local.wMinute = local.wSecond = local.wMilliseconds = 0;
+    if (!TzSpecificLocalTimeToSystemTime(0, &local, &midnight)) midnight = st;
+    snprintf(day, sizeof day, "%04d-%02d-%02dT%02d:%02d:%02dZ", midnight.wYear, midnight.wMonth, midnight.wDay,
+             midnight.wHour, midnight.wMinute, midnight.wSecond);
+    r2_usage_query(t.conf.account, t.conf.bucket, start, end, day, body, sizeof body);
+    static char resp[1 << 20];
     u32 s = r2_cf("POST", "/graphql", bearer, body, resp, sizeof resp);
     R2Fetched f;
     if (r2_ok(s) && r2_parse_usage(resp, &f)) {
+        static char keys[R2_MAX_SHARES][R2_KEY_MAX];
+        static i64 counts[R2_MAX_SHARES];
         AcquireSRWLockExclusive(&g_r2.lock);
         g_r2.fetched = f;
         g_r2.usage_us = now_us();
+        r2_load_locked();
+        for (i32 i = 0; i < g_r2.count; i++) {
+            R2Share &sh = g_r2.shares[i];
+            sh.plays_today = sh.plays_month = sh.host == HOST_R2 ? 0 : -1;
+        }
+        for (i32 pass = 0; pass < 2; pass++) {
+            i32 n = r2_parse_plays(resp, pass ? "today" : "month", keys, counts, R2_MAX_SHARES);
+            for (i32 i = 0; i < n; i++) {
+                i32 k = r2_find_locked(keys[i]);
+                if (k >= 0) (pass ? g_r2.shares[k].plays_today : g_r2.shares[k].plays_month) = counts[i];
+            }
+        }
+        g_r2.gen++;
         ReleaseSRWLockExclusive(&g_r2.lock);
         r2_post(R2_EV_USAGE, 0);
     } else log_line("r2: couldn't read the bucket's usage (%u)", s);
@@ -2194,6 +2298,60 @@ static void r2_run_usage(const R2Task &t)
         r2_post(R2_EV_STATUS, 0);
     }
     SecureZeroMemory(bearer, sizeof bearer);
+}
+
+// Pauses or resumes a share by moving its file in the bucket: a server-side copy to the other name, then a delete
+// of the first. Paused, the file is under a new random name, so the link stops answering.
+static void r2_run_move(const R2Task &t)
+{
+    bool pause = t.kind == R2_T_PAUSE;
+    char from[R2_KEY_MAX] = "", to[R2_KEY_MAX] = "";
+    AcquireSRWLockExclusive(&g_r2.lock);
+    i32 i = r2_find_locked(t.key);
+    bool go = i >= 0 && r2_in_bucket(g_r2.shares[i]) && (g_r2.shares[i].paused != 0) != pause;
+    if (go && pause) {
+        str_set(from, g_r2.shares[i].key);
+        r2_new_key(to);
+    } else if (go) {
+        str_set(from, g_r2.shares[i].hidden);
+        str_set(to, g_r2.shares[i].key);
+    }
+    if (i >= 0 && !go) g_r2.shares[i].moving = false;
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (!go) {
+        r2_post(R2_EV_HISTORY, 0);
+        return;
+    }
+    char resp[2048], why[256] = "";
+    u32 status = r2_send(t.conf, "PUT", to, "", R2Body{}, 0, resp, sizeof resp, 0, 0, 0, from);
+    bool ok = r2_ok(status) && !strstr(resp, "<Error>"); // a copy can fail with a 200 and an error body
+    if (ok && !r2_delete_object(t.conf, from)) {
+        r2_delete_object(t.conf, to); // the first is still there: as it was
+        ok = false;
+        snprintf(why, sizeof why, "the token can't delete from %s", t.conf.bucket);
+    } else if (!ok) r2_why(status, resp, t.conf, why, sizeof why);
+
+    AcquireSRWLockExclusive(&g_r2.lock);
+    i = r2_find_locked(t.key);
+    if (i >= 0) {
+        R2Share &sh = g_r2.shares[i];
+        sh.moving = false;
+        if (ok) {
+            sh.paused = pause ? t.pause : 0;
+            str_set(sh.hidden, pause ? to : "");
+            if (t.pause == 2 || (!pause && t.pause == 1)) sh.pause_day = r2_today();
+        }
+        r2_save_locked();
+    }
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (ok) log_line("r2: %s %s%s", pause ? "paused" : "resumed", t.key, t.pause == 2 ? " (past the day's plays)" : "");
+    else {
+        log_line("r2: couldn't %s %s: %s", pause ? "pause" : "resume", t.key, why);
+        char text[300];
+        snprintf(text, sizeof text, "Couldn't %s the link: %s", pause ? "pause" : "resume", why);
+        event_post_text(EV_LOG, text);
+    }
+    r2_post(R2_EV_HISTORY, 0);
 }
 
 // The loopback listener: waits for the browser to come back from Cloudflare's sign-in page, answers it with a
@@ -2319,6 +2477,8 @@ static DWORD WINAPI r2_thread(void *)
         case R2_T_SIGNIN: r2_run_signin(t); break;
         case R2_T_USAGE: r2_run_usage(t); break;
         case R2_T_SIGNOUT: r2_revoke(t.token, t.conf.access); break;
+        case R2_T_PAUSE:
+        case R2_T_RESUME: r2_run_move(t); break;
         }
         SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
         SecureZeroMemory(t.token, sizeof t.token);
@@ -2415,10 +2575,14 @@ static u32 r2_share_file(const wchar_t *path, const char *title, const char *gam
         i32 found = -1;
         for (i32 i = g_r2.count - 1; i >= 0 && found < 0; i--)
             if (g_r2.shares[i].lib_key == lib_key) found = i;
-        char url[512] = "";
+        char url[512] = "", resume[R2_KEY_MAX] = "";
         if (found >= 0 && r2_share_live(g_r2.shares[found], now_us())) str_set(url, g_r2.shares[found].url);
-        else if (found >= 0) str_set(w.reuse, g_r2.shares[found].key);
+        else if (found >= 0 && g_r2.shares[found].paused && !g_r2.shares[found].removed) {
+            str_set(url, g_r2.shares[found].url); // a paused one is brought back
+            str_set(resume, g_r2.shares[found].key);
+        } else if (found >= 0) str_set(w.reuse, g_r2.shares[found].key);
         ReleaseSRWLockExclusive(&g_r2.lock);
+        if (resume[0]) r2_resume(resume);
         if (url[0]) {
             u32 id = g_r2.jobs[slot].id;
             r2_job_end(id, true, url, "");
@@ -2557,11 +2721,66 @@ static void r2_on_event(const Event &e)
         log_line("r2: set up: bucket %s at %s", f.bucket, f.public_url);
         return;
     }
+    if (e.a == R2_EV_USAGE) {
+        r2_auto_pause();
+        return;
+    }
     if (e.a != R2_EV_PROBED) return; // the rest only wake the UI
     i32 slot = (i32)e.b;
     if (slot < 0 || slot >= COUNT(g_r2.work)) return;
     if (!g_r2.work[slot].has_info) r2_fail_now(slot, "Couldn't read the file");
     else r2_start_copy(slot);
+}
+
+// Queues a pause (how: 1 by hand, 2 past the day's plays) or a resume (how: 1 by hand, 0 automatic).
+static void r2_move(const char *key, bool pause, u8 how)
+{
+    static R2Task t;
+    t = {};
+    t.kind = pause ? R2_T_PAUSE : R2_T_RESUME;
+    t.pause = how;
+    str_set(t.key, key);
+    AcquireSRWLockExclusive(&g_r2.lock);
+    r2_load_locked();
+    i32 i = r2_find_locked(key);
+    bool go = i >= 0 && r2_in_bucket(g_r2.shares[i]) && !g_r2.shares[i].moving &&
+              (g_r2.shares[i].paused != 0) != pause;
+    if (go) {
+        g_r2.shares[i].moving = true;
+        g_r2.gen++;
+    }
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (!go) return;
+    if (!r2_conf(&t.conf) || !r2_queue(t)) {
+        AcquireSRWLockExclusive(&g_r2.lock);
+        i = r2_find_locked(key);
+        if (i >= 0) g_r2.shares[i].moving = false;
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        log_line("r2: couldn't %s %s now", pause ? "pause" : "resume", key);
+    }
+    SecureZeroMemory(&t, sizeof t);
+}
+
+// Pauses an R2 link: it stops answering until resumed. The file stays in the bucket (and in the budget).
+static void r2_pause(const char *key) { r2_move(key, true, 1); }
+
+static void r2_resume(const char *key) { r2_move(key, false, 1); }
+
+// After new plays came: pauses links past the day's plays, and brings back the ones paused on an earlier day.
+static void r2_auto_pause()
+{
+    static char keys[R2_MAX_SHARES][R2_KEY_MAX];
+    static i32 act[R2_MAX_SHARES];
+    i32 n = 0, today = r2_today(), limit = g_app.config.r2_pause_views_per_day;
+    AcquireSRWLockShared(&g_r2.lock);
+    for (i32 i = 0; i < g_r2.count; i++) {
+        i32 a = r2_auto_action(g_r2.shares[i], limit, today);
+        if (!a) continue;
+        str_set(keys[n], g_r2.shares[i].key);
+        act[n++] = a;
+    }
+    ReleaseSRWLockShared(&g_r2.lock);
+    for (i32 i = 0; i < n; i++) r2_move(keys[i], act[i] > 0, act[i] > 0 ? 2 : 0);
 }
 
 static void r2_status_set_now(R2SetupState state, const char *text)
