@@ -3149,7 +3149,7 @@ static void options_general()
         static i32 kind = 0;
         static char text[FB_TEXT_MAX + 1];
         bool busy = g_tel.fb_busy != 0;
-        f32 chip_w = dp(64), send_w = text_w(g_font, "Send") + dp(40), gap = dp(8);
+        f32 chip_w = dp(64), send_w = text_w(g_font, "Sending") + dp(32), gap = dp(8);
         opt_row_begin("A bug, an idea or anything else", c.game_lookup ? "Goes to clipback's service with the version number" : "Needs Look up games online",
                       3 * chip_w + 2 * gap + dp(16) + send_w);
         static const char *const labels[] = {"Bug##fbkind", "Idea##fbkind", "Other##fbkind"};
