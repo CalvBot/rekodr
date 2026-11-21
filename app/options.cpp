@@ -3001,13 +3001,24 @@ static void options_general()
     }
     opt_card_end();
 
-    opt_section("GAMES");
+    opt_section("PRIVACY");
     opt_card_begin();
     if (opt_row_toggle("Look up games online", "Names, icons and art from Discord, Steam, SteamGridDB and IGDB. Applies from the next start",
                        "##lookup", &c.game_lookup)) {
         log_line("options: look up games %s", c.game_lookup ? "on" : "off");
         options_apply(0);
     }
+    ImGui::BeginDisabled(!c.game_lookup);
+    if (opt_row_toggle("Send usage stats", "Once a day: the version, Windows build, encoder, and how many clips, saves, shares and links. No names or files",
+                       "##stats", &c.send_stats)) {
+        log_line("options: usage stats %s", c.send_stats ? "on" : "off");
+        options_apply(0);
+    }
+    ImGui::EndDisabled();
+    opt_card_end();
+
+    opt_section("GAMES");
+    opt_card_begin();
     ImGui::BeginDisabled(!c.game_lookup);
     bool service = c.art_service.s[0] != 0;
     if (opt_row_toggle("Art from clipback's service", "Art Discord and Steam don't have, from SteamGridDB and IGDB. Sends game names and store ids only",
@@ -3125,6 +3136,53 @@ static void options_general()
         reveal_file(log);
     }
     opt_row_end();
+    opt_card_end();
+
+    // Feedback: a kind, the text and Send; the answer shows under the box, where room is kept for it.
+    opt_section("FEEDBACK");
+    opt_card_begin();
+    {
+        static i32 kind = 0;
+        static char text[FB_TEXT_MAX + 1];
+        bool busy = g_tel.fb_busy != 0;
+        f32 chip_w = dp(64), send_w = text_w(g_font, "Send") + dp(40), gap = dp(8);
+        opt_row_begin("A bug, an idea or anything else", c.game_lookup ? "Goes to clipback's service with the version number" : "Needs Look up games online",
+                      3 * chip_w + 2 * gap + dp(16) + send_w);
+        static const char *const labels[] = {"Bug##fbkind", "Idea##fbkind", "Other##fbkind"};
+        for (i32 i = 0; i < 3; i++) {
+            if (i) ImGui::SameLine(0, gap);
+            if (kit_chip(labels[i], kind == i, 0, chip_w)) kind = i;
+        }
+        ImGui::SameLine(0, dp(16));
+        bool any = false;
+        for (const char *p = text; *p && !any; p++) any = !isspace((u8)*p);
+        bool can = c.game_lookup && !busy && any;
+        if (kit_button(busy ? "Sending##fbsend" : "Send##fbsend", KIT_PRIMARY, ImVec2(send_w, 0), can)) {
+            dev_click("feedback", FEEDBACK_KINDS[kind]);
+            feedback_send(kind, text);
+        }
+        opt_row_end();
+        f32 x0 = g_card.a.x + dp(OPT_PAD), box_w = g_card.w - 2 * dp(OPT_PAD);
+        ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y + dp(4)));
+        ImGui::BeginDisabled(!c.game_lookup || busy);
+        ImGui::InputTextMultiline("##fbtext", text, sizeof text, ImVec2(box_w, dp(96)));
+        ImGui::EndDisabled();
+        static bool cleared;
+        if (!busy && g_tel.fb_ok && !cleared) { // sent: the box empties once
+            text[0] = 0;
+            cleared = true;
+        }
+        if (busy) cleared = false;
+        f32 ly = ImGui::GetCursorScreenPos().y + dp(4);
+        char count[48];
+        snprintf(count, sizeof count, "%d of %d", (int)strlen(text), FB_TEXT_MAX);
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        if (!busy && g_tel.fb_result[0])
+            opt_text_at(dl, g_font_small, ImVec2(x0, ly), g_tel.fb_ok ? COL_OK : 0xff8a92, g_tel.fb_result, x0 + box_w - dp(100));
+        f32 cw = text_w(g_font_small, count);
+        opt_text_at(dl, g_font_small, ImVec2(x0 + box_w - cw, ly), COL_DIM, count, x0 + box_w + 1);
+        ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, ly + g_font_small->FontSize + dp(10)));
+    }
     opt_card_end();
 
     opt_section("ABOUT");

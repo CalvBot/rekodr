@@ -125,6 +125,7 @@ struct Config {
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
     bool share_names;    // "Help name games": naming a game the art service wasn't sure of tells it (gamedb_confirm)
+    bool send_stats;     // a daily usage report to the service (telemetry.cpp); off unless the player says yes
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only
     Str64 art_service;   // host of the art service gamedb.cpp asks for the art Discord and Steam don't have; "" = none
     // Links (r2.cpp): the player's own Cloudflare R2 bucket. The secret key is in Windows' Credential Manager.

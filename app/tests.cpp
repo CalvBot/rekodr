@@ -328,6 +328,24 @@ static void test_backup()
     SHFileOperationW(&op);
 }
 
+// Telemetry: the report and feedback bodies are the JSON the service takes, and feedback is cut to its limit.
+static void test_telemetry()
+{
+    static char out[8192];
+    StatCounts c = {3, 1, 2, 4, 5};
+    tel_stats_json(c, out, sizeof out);
+    T(strstr(out, "\"version\":\"" CLIPBACK_VERSION "\"") && strstr(out, "\"clips\":3,\"saves\":1,\"shares\":2,\"links\":4,\"strain\":5}"));
+    tel_feedback_json(1, "  it \"works\"\n", out, sizeof out);
+    T(!strcmp(out, "{\"version\":\"" CLIPBACK_VERSION "\",\"kind\":\"idea\",\"text\":\"it \\\"works\\\"\"}"));
+    static char longer[3000];
+    memset(longer, 'a', sizeof longer - 1);
+    longer[FB_TEXT_MAX - 1] = (char)0xc3; // a two-byte character across the limit is dropped whole
+    longer[FB_TEXT_MAX] = (char)0xa9;
+    tel_feedback_json(2, longer, out, sizeof out);
+    const char *t = strstr(out, "\"text\":\"") + 8;
+    T((i32)(strrchr(out, '"') - t) == FB_TEXT_MAX - 1);
+}
+
 static void test_first_run()
 {
     f32 gb, keep;
@@ -1595,6 +1613,7 @@ int main()
     test_game_from_name();
     test_game_guess();
     test_first_run();
+    test_telemetry();
     test_backup();
     test_save_names();
     test_buffer_names();

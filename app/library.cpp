@@ -2943,8 +2943,10 @@ static void lib_share_copy(const LibItem &it, f32 mb)
     char label[16];
     share_size_label(mb, label, sizeof label);
     if (mb <= 0 || it.size <= (u64)((f64)mb * 1024 * 1024)) {
-        if (clipboard_copy_file(path.s)) lib_note(false, "Copied %s to the clipboard", it.name);
-        else lib_note(true, "Couldn't copy %s", it.name);
+        if (clipboard_copy_file(path.s)) {
+            lib_note(false, "Copied %s to the clipboard", it.name);
+            telemetry_shared();
+        } else lib_note(true, "Couldn't copy %s", it.name);
         return;
     }
     const MediaInfo &m = it.info;

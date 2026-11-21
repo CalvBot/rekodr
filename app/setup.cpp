@@ -223,6 +223,28 @@ static void setup_window()
         ImGui::SetCursorScreenPos(ImVec2(x0, a.y + pic_h + dp(14)));
     }
 
+    // Usage stats, off unless the answer is yes
+    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+    opt_section("SEND USAGE STATS?");
+    {
+        ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+        static const char *const titles[] = {"Sure, send", "No thanks"};
+        static const char *const subs[] = {"Once a day: counts of clips, saves and links", "Send nothing"};
+        ImGui::BeginDisabled(!c.game_lookup);
+        i32 hit = setup_pair("stats", titles, subs, c.send_stats && c.game_lookup ? 0 : 1, w, dp(62));
+        ImGui::EndDisabled();
+        if (hit >= 0) {
+            c.send_stats = hit == 0;
+            log_line("setup: usage stats %s", c.send_stats ? "on" : "off");
+            options_apply(0);
+        }
+        ImGui::Dummy(ImVec2(0, dp(6)));
+        ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+        kit_dim("With the version, Windows build and encoder. No names, no files.");
+        ImGui::Dummy(ImVec2(0, dp(14)));
+        ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+    }
+
     // Where game art comes from, and the way to Options
     {
         const char *line = service ? "Game names and art come from clipback's service."

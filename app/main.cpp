@@ -162,7 +162,8 @@ static void handle_event(const Event &e)
     case EV_LOG: log_line("%s", e.text); break;
     case EV_RECORDER: recorder_on_event(e); break;
     case EV_AUDIO: audio_on_event(e); break;
-    case EV_SAVE: save_on_event(e); editor_on_save_event(e); library_on_save_event(e); r2_on_save_event(e); break;
+    case EV_SAVE: save_on_event(e); editor_on_save_event(e); library_on_save_event(e); r2_on_save_event(e);
+        telemetry_on_save(e); break;
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
     case EV_GAMEDB: gamedb_on_event(e); break;
@@ -182,6 +183,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             timeline_tick();
             ffget_tick();
             backup_tick();
+            telemetry_tick();
             pipe_publish();
         }
         return 0;
@@ -445,6 +447,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     r2_stop();
     ffget_stop();
     backup_stop();
+    telemetry_stop();
     audio_stop();
     recorder_stop();
     save_stop();

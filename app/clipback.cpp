@@ -83,6 +83,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "tray.cpp"
 #include "diag.cpp"
 #include "backup.cpp"
+#include "telemetry.cpp"
 #include "ui.cpp"
 #include "markers.cpp"
 #include "toast.cpp"

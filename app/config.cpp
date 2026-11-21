@@ -348,6 +348,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "wave_keep_days")) real(&c->wave_keep_days);
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
+    else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
     else if (!strcmp(key, "setup_done")) boolean(&c->setup_done);
     else if (!strcmp(key, "sgdb_key")) str_set(c->sgdb_key, value);
@@ -518,6 +519,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "wave_keep_days = %g\n", c.wave_keep_days);
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("share_names", c.share_names);
+    boolean("send_stats", c.send_stats);
     boolean("tooltips", c.tooltips);
     boolean("setup_done", c.setup_done);
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);
