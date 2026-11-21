@@ -337,6 +337,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         swprintf(dev_class, COUNT(dev_class), L"clipback.msg.dev.%08x", h);
         MSG_CLASS = dev_class;
     }
+    // install and uninstall (install.cpp) run on their own, beside a clipback that's running
+    {
+        i32 code = 0;
+        if (install_command(command, MSG_CLASS, COPYDATA_COMMAND, &code)) return code;
+    }
     HANDLE single = CreateMutexW(0, TRUE, mutex_name);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         for (i32 tries = 0; tries < 20; tries++) { // the running copy may still be starting
@@ -372,6 +377,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         log_line("clipback (native) starting: %ls, built %s %s, pid %lu%s%s", exe, __DATE__, __TIME__,
                  GetCurrentProcessId(), g_dev ? ", detailed log on" : "", g_after_crash ? ", restarted after a crash" : "");
     }
+    install_cleanup(); // the copy an install or update moved aside
     diag_watchdog_start();
     backup_init();
 

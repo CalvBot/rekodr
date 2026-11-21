@@ -6,9 +6,11 @@
 // The first-run setup's begging picture: 15 frames, 5 across and 3 down (setup.cpp).
 10 RCDATA "../assets/setup-beg.jpg"
 
+#include "version.h"
+
 1 VERSIONINFO
-FILEVERSION 0,2,0,0
-PRODUCTVERSION 0,2,0,0
+FILEVERSION CLIPBACK_VERSION_NUM
+PRODUCTVERSION CLIPBACK_VERSION_NUM
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -16,8 +18,8 @@ BEGIN
     BEGIN
       VALUE "ProductName", "clipback"
       VALUE "FileDescription", "clipback replay buffer"
-      VALUE "FileVersion", "0.2.0"
-      VALUE "ProductVersion", "0.2.0"
+      VALUE "FileVersion", CLIPBACK_VERSION
+      VALUE "ProductVersion", CLIPBACK_VERSION
     END
   END
   BLOCK "VarFileInfo"

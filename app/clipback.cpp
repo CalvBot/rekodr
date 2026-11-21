@@ -48,6 +48,7 @@ static void imgui_debug_print(const char *fmt, ...);
 
 #include "base.h"
 #include "app.h"
+#include "version.h"
 
 static void imgui_assert_failed(const char *expr, const char *file, int line)
 {
@@ -86,4 +87,5 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "markers.cpp"
 #include "toast.cpp"
 #include "ffget.cpp"
+#include "install.cpp"
 #include "main.cpp"
