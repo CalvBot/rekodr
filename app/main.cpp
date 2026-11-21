@@ -234,6 +234,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 // RegisterApplicationRestart, only acts on crashes that reach Windows Error Reporting; this handler ends the
 // process first.) The new copy is told the old one's pid in CLIPBACK_AFTER_CRASH and waits for it to be gone. A
 // copy that was itself a restart and crashes within a minute is not restarted, so a crash at startup can't loop.
+// A copy an update started that crashes within a minute restarts as the version before it (update_rollback).
 
 static u64  g_started_ms;
 static bool g_after_crash; // this copy was started by a crashing one
@@ -241,8 +242,10 @@ static bool g_after_crash; // this copy was started by a crashing one
 static void restart_after_crash()
 {
     static volatile LONG once;
-    if (InterlockedExchange(&once, 1) || g_app.quitting) return;
-    if (g_after_crash && GetTickCount64() - g_started_ms < 60000) {
+    if (InterlockedExchange(&once, 1)) return;
+    bool rolled_back = update_rollback(); // a new version that crashed straight away: the one before it restarts
+    if (g_app.quitting) return;
+    if (!rolled_back && g_after_crash && GetTickCount64() - g_started_ms < 60000) {
         log_line("not restarting: this copy was started after a crash and ran for under a minute");
         return;
     }
@@ -381,7 +384,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         log_line("clipback (native) starting: %ls, built %s %s, pid %lu%s%s", exe, __DATE__, __TIME__,
                  GetCurrentProcessId(), g_dev ? ", detailed log on" : "", g_after_crash ? ", restarted after a crash" : "");
     }
-    install_cleanup(); // the copy an install or update moved aside
+    update_cleanup(); // the copy an install or update moved aside
     diag_watchdog_start();
     backup_init();
 

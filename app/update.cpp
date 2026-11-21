@@ -34,6 +34,8 @@ struct Update {
     volatile LONG stop;
 };
 static Update g_update;
+static u64 g_update_started_ms;           // when this copy, started by an update, began; 0 otherwise
+static const u32 UPDATE_TRIAL_MS = 60000; // a crash this soon after an update puts the old exe back
 
 struct UpdateManifest {
     char version[32];
@@ -215,6 +217,17 @@ static bool update_check_once()
         return false;
     }
     Path dir = path_join(g_app.paths.local_dir, L"update"), part = {}, exe = {};
+    char skip[32] = {};
+    if (FILE *f = _wfopen(path_join(dir, L"skip.txt").s, L"r")) {
+        if (!fgets(skip, sizeof skip, f)) skip[0] = 0;
+        fclose(f);
+    }
+    skip[strcspn(skip, "\r\n")] = 0;
+    if (!strcmp(skip, m.version)) {
+        log_line("update: %s crashed here after an update, so it isn't fetched again", m.version);
+        InterlockedExchange(&g_update.state, UPDATE_IDLE);
+        return false;
+    }
     SHCreateDirectoryExW(0, dir.s, 0);
     swprintf(exe.s, MAX_PATH, L"%s\\clipback-%hs.exe", dir.s, m.version);
     swprintf(part.s, MAX_PATH, L"%s.part", exe.s);
@@ -347,6 +360,49 @@ static void update_wait_for_old()
         WaitForSingleObject(old, 15000);
         CloseHandle(old);
     }
+    g_update_started_ms = GetTickCount64();
+}
+
+// A file next to this exe
+static Path update_beside(const wchar_t *name)
+{
+    Path p = {};
+    GetModuleFileNameW(0, p.s, MAX_PATH);
+    if (wchar_t *slash = wcsrchr(p.s, L'\\')) wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - p.s), name);
+    return p;
+}
+
+// From main at start, in place of install_cleanup: a copy an update started keeps clipback.old.exe for its first
+// minute, so update_rollback can put it back.
+static void update_cleanup()
+{
+    if (!g_update_started_ms) {
+        install_cleanup();
+        return;
+    }
+    HANDLE t = CreateThread(0, 0, [](void *) -> DWORD { Sleep(UPDATE_TRIAL_MS); install_cleanup(); return 0; }, 0, 0, 0);
+    if (t) CloseHandle(t);
+}
+
+// From the crash handler. A copy an update started that crashes within its first minute puts the exe it replaced
+// back, and writes its own version to update\skip.txt so checks pass it by. True when the old exe is back.
+static bool update_rollback()
+{
+    if (!g_update_started_ms || GetTickCount64() - g_update_started_ms >= UPDATE_TRIAL_MS) return false;
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(0, self, MAX_PATH);
+    Path old = update_beside(L"clipback.old.exe"), bad = update_beside(L"clipback.bad.exe");
+    if (GetFileAttributesW(old.s) == INVALID_FILE_ATTRIBUTES) return false;
+    if (!install_swap(old.s, self, bad.s, true)) return false;
+    MoveFileExW(bad.s, old.s, MOVEFILE_REPLACE_EXISTING); // the next start deletes it
+    Path dir = path_join(g_app.paths.local_dir, L"update");
+    SHCreateDirectoryExW(0, dir.s, 0);
+    if (FILE *f = _wfopen(path_join(dir, L"skip.txt").s, L"w")) {
+        fprintf(f, "%s\n", CLIPBACK_VERSION);
+        fclose(f);
+    }
+    log_line("update: %s crashed in its first minute; the exe it replaced is back", CLIPBACK_VERSION);
+    return true;
 }
 
 // For main: `update-check [apply]`, one check in the foreground for tests. True if it was that command.
