@@ -1831,6 +1831,24 @@ static f32 badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const c
     return w;
 }
 
+static bool edit_is_advanced(const Path &edit_file); // editor.cpp
+
+// Whether a card's edit is an Advanced one, for its badge. The edit file's first line is read again at most every
+// 2 s per card, so an edit saved in the editor shows up without a rescan.
+static bool lib_is_advanced(const LibItem &it)
+{
+    struct Seen { u64 key; f64 at; bool advanced; };
+    static Seen seen[256];
+    Seen &s = seen[it.key % COUNT(seen)];
+    f64 now = ImGui::GetTime();
+    if (s.key != it.key || now - s.at >= 2) {
+        s.key = it.key;
+        s.at = now;
+        s.advanced = edit_is_advanced(lib_edit_path(it));
+    }
+    return s.advanced;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Controls the library, the player and the editor share. Generic enough to move to the kit in ui.cpp.
 
@@ -4143,6 +4161,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         fmt_time(it.info.duration, text, sizeof text);
         badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, text);
     }
+    // Bottom left, where nothing else goes: edited in Advanced mode
+    if (lib_is_advanced(it)) badge(dl, ImVec2(t0.x + kit_px(8), t1.y - kit_px(10)), false, true, "Advanced");
     // Selected: an accent ring round the picture. The tick box: filled with a tick when selected, else a ring.
     f32 box = kit_px(17);
     ImVec2 b0(t0.x + kit_px(10), t0.y + kit_px(10)), b1(b0.x + box, b0.y + box);
