@@ -757,6 +757,25 @@ static void test_edit_volumes()
     T(fabs(color_at(e, COLOR_SATURATION, 3) - 1) < 1e-6 && edit_colored(e));
     T(color_eq(COLOR_BRIGHTNESS, 1) == 0 && fabs(color_eq(COLOR_BRIGHTNESS, 2) - EQ_BRIGHTNESS) < 1e-9);
     T(color_eq(COLOR_CONTRAST, 1.5) == 1.5);
+    // Transitions: held to the pieces and, for a crossfade, to the footage past the cut; fades scale towards black
+    e.pieces[1].trans = TRANS_CROSS;
+    e.pieces[1].trans_len = 2;
+    e.fade_in = e.fade_out = 1;
+    {
+        EditPiece pc[EDIT_MAX_PIECES];
+        i32 np = pieces_of(e, 10, pc);
+        Transitions tr = transitions_of(e, pc, np, 10);
+        T(tr.into[1] == TRANS_CROSS && fabs(tr.len[1] - 0.5) < 1e-9); // 0.25 s before the second piece's start
+        T(tr.fade_in == 1 && fabs(tr.fade_out - 0.375) < 1e-9);         // half the 0.75 s last piece
+        T(fabs(fade_gain(e, 10, 0, 2.0) - 0.5) < 1e-6 && fade_gain(e, 10, 0, 4) == 1);
+        T(fabs(fade_gain(e, 10, 1, 1 - 0.1875) - 0.5) < 1e-6);
+        e.pieces[1].trans = TRANS_FADE;
+        np = pieces_of(e, 10, pc);
+        tr = transitions_of(e, pc, np, 10);
+        T(tr.into[1] == TRANS_FADE && fabs(tr.len[1] - 0.75) < 1e-9 && transitions_any(tr, np));
+        T(fabs(fade_gain(e, 10, 1, 0.25 + 0.1875) - 0.5) < 1e-6);
+        e.pieces[1].trans = TRANS_CROSS;
+    }
 
     wchar_t dir[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
@@ -773,6 +792,8 @@ static void test_edit_volumes()
     T(r.key_count == 1 && r.keys[0].ease == EASE_OUT && r.keys[0].x == 0.25);
     T(r.color_count[COLOR_SATURATION] == 2 && r.color[COLOR_SATURATION][1].v == 2.0f &&
       r.color[COLOR_SATURATION][1].ease == EASE_LINEAR && r.color_count[COLOR_BRIGHTNESS] == 0);
+    T(r.pieces[1].trans == TRANS_CROSS && r.pieces[1].trans_len == 2.0f && r.pieces[0].trans == TRANS_CUT);
+    T(r.fade_in == 1.0f && r.fade_out == 1.0f);
     T(edit_is_default(EditRecord{}));
 }
 
@@ -1520,6 +1541,23 @@ static void test_edit_xml()
     for (const char *p = text; (p = strstr(p, "<clipitem ")); p++) items++;
     T(items == 8);                                                     // video, Mic, the game's two; twice
     T(strstr(text, "<clipindex>2</clipindex>"));
+
+    // A crossfade into the second piece and a fade in: transitionitems on every track (video, Mic, the game's two)
+    e.pieces[1].trans = TRANS_CROSS;
+    e.pieces[1].trans_len = 1;
+    e.fade_in = 0.5f;
+    T(ed_export_xml(&xml));
+    f = _wfopen(xml.s, L"rb");
+    n = f ? fread(text, 1, sizeof text - 1, f) : 0;
+    if (f) fclose(f);
+    text[n] = 0;
+    DeleteFileW(xml.s);
+    T(xml_balanced(text));
+    T(strstr(text, "<start>90</start><end>150</end><alignment>center</alignment>"));
+    T(strstr(text, "<start>0</start><end>30</end><alignment>start-black</alignment>"));
+    i32 trans = 0;
+    for (const char *p = text; (p = strstr(p, "<transitionitem>")); p++) trans++;
+    T(trans == 8);
     ed = blank;
 }
 

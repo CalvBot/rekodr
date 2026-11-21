@@ -355,8 +355,14 @@ enum { EDIT_MAX_VOL_KEYS = 48, EDIT_MASTER = MEDIA_MAX_TRACKS }; // volume slot 
 // The picture's colour, each kept as keys like a volume's (1 = as recorded, 0..2): brightness, contrast, saturation.
 enum { COLOR_BRIGHTNESS, COLOR_CONTRAST, COLOR_SATURATION, EDIT_COLORS };
 
+// How one piece goes into the next: a cut, a fade through black, or a crossfade. At the very start and end only a
+// fade (from or to black) is possible.
+enum { TRANS_CUT, TRANS_FADE, TRANS_CROSS, TRANS_COUNT };
+
 struct EditPiece {
-    f64 from, to; // seconds into the video
+    f64 from, to;  // seconds into the video
+    u8  trans;     // how the piece before goes into this one (TRANS_*; none for the first)
+    f32 trans_len; // and over how long, in seconds
 };
 
 // An edit never changes the original: it's this small record, kept in <year>\Data\<video name>.edit.txt.
@@ -365,6 +371,7 @@ struct EditRecord {
     // overlap. None means the whole video.
     EditPiece pieces[EDIT_MAX_PIECES];
     i32     piece_count;
+    f32     fade_in, fade_out; // seconds of fade from black at the start and to black at the end; 0 = none
     ZoomKey keys[EDIT_MAX_KEYS];     // sorted by t
     i32     key_count;
     // Per audio track, and the whole mix at EDIT_MASTER: the volume while there are no keys (volume - 1, so zero

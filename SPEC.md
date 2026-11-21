@@ -62,6 +62,12 @@ Keep a whole session from start to finish.
   Colour that key the value at the playhead. The timeline has one Colour lane that shows the value picked in its
   gutter; its keys work like volume keys. The preview shows the colour, and Keep and Share render it. It isn't in
   the Premiere/DaVinci XML.
+- **Transitions:** Fade in and Fade out (from and to black) at the start and end, and at each cut a Cut, Fade
+  (through black) or Crossfade, each with a length, set under Transitions for the cut nearest the playhead. A
+  transition sits on its cut, half on each side, so the length of the edit doesn't change; a crossfade uses the
+  footage just past each side of the cut and is held to what the video has there. The timeline shades fades dark
+  and crossfades light. The preview shows the fades; a crossfade previews as a cut. Keep, Share and Link render
+  them, and the XML has them as transitions.
 - **Two ways out of the editor:**
   - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
     where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix

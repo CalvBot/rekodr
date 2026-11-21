@@ -18,7 +18,7 @@ static i32 ed_tracks(const MediaInfo &m, i32 *out, i32 cap)
 
 static bool edit_is_default(const EditRecord &e)
 {
-    if (e.piece_count || e.key_count) return false;
+    if (e.piece_count || e.key_count || e.fade_in > 0 || e.fade_out > 0) return false;
     for (i32 t = 0; t <= EDIT_MASTER; t++)
         if (e.muted[t] || e.boost[t] != 0 || e.vol_count[t]) return false;
     for (i32 c = 0; c < EDIT_COLORS; c++)
@@ -37,9 +37,17 @@ static void edit_read(const Path &file, EditRecord *e)
         if (!eq) continue;
         *eq = 0;
         char *k = trim(line), *v = trim(eq + 1);
-        if (!strcmp(k, "piece") && e->piece_count < EDIT_MAX_PIECES) {
+        if (!strcmp(k, "piece") && e->piece_count < EDIT_MAX_PIECES) { // from to, then f or x and a length
             EditPiece p = {};
-            if (sscanf_s(v, "%lf %lf", &p.from, &p.to) == 2 && p.to > p.from) e->pieces[e->piece_count++] = p;
+            char kind = 0;
+            if (sscanf_s(v, "%lf %lf %c %f", &p.from, &p.to, &kind, 1, &p.trans_len) < 2 || p.to <= p.from) continue;
+            p.trans = (u8)(kind == 'f' ? TRANS_FADE : kind == 'x' ? TRANS_CROSS : TRANS_CUT);
+            if (p.trans == TRANS_CUT || p.trans_len <= 0) p.trans = TRANS_CUT, p.trans_len = 0;
+            e->pieces[e->piece_count++] = p;
+        } else if (!strcmp(k, "fade")) { // in out
+            sscanf_s(v, "%f %f", &e->fade_in, &e->fade_out);
+            e->fade_in = e->fade_in > 0 ? e->fade_in : 0;
+            e->fade_out = e->fade_out > 0 ? e->fade_out : 0;
         } else if (!strcmp(k, "key") && e->key_count < EDIT_MAX_KEYS) {
             ZoomKey z = {};
             i32 ease = EASE_SMOOTH;
@@ -106,11 +114,17 @@ static void edit_write(const Path &file, const EditRecord &e)
         log_line("editor: couldn't write the edit");
         return;
     }
-    fprintf(f, "# clipback edit: pieces kept in the order they play (from to, seconds), zoom keys (time zoom x y ease),\n"
-               "# volumes (track volume muted), volume keys (track time volume ease); track m is the whole mix;\n"
+    fprintf(f, "# clipback edit: pieces kept in the order they play (from to, seconds; then f fade or x crossfade and\n"
+               "# its length when the piece before goes into it that way), fades from and to black (in out, seconds),\n"
+               "# zoom keys (time zoom x y ease), volumes (track volume muted), volume keys (track time volume ease); track m is the whole mix;\n"
                "# colour keys (b brightness, c contrast or s saturation, time value ease; 1 = as recorded);\n"
                "# eases 0 linear 1 smooth 2 in 3 out 4 hold\n");
-    for (i32 i = 0; i < e.piece_count; i++) fprintf(f, "piece = %.3f %.3f\n", e.pieces[i].from, e.pieces[i].to);
+    for (i32 i = 0; i < e.piece_count; i++) {
+        const EditPiece &p = e.pieces[i];
+        if (i && p.trans != TRANS_CUT) fprintf(f, "piece = %.3f %.3f %c %.3f\n", p.from, p.to, p.trans == TRANS_FADE ? 'f' : 'x', p.trans_len);
+        else fprintf(f, "piece = %.3f %.3f\n", p.from, p.to);
+    }
+    if (e.fade_in > 0 || e.fade_out > 0) fprintf(f, "fade = %.3f %.3f\n", e.fade_in, e.fade_out);
     for (i32 k = 0; k < e.key_count; k++)
         fprintf(f, "key = %.3f %.3f %.4f %.4f %d\n", e.keys[k].t, e.keys[k].z, e.keys[k].x, e.keys[k].y, e.keys[k].ease);
     for (i32 t = 0; t <= EDIT_MASTER; t++) {
@@ -428,6 +442,9 @@ static void ed_delete_key(i32 k)
     ed.dirty = true;
 }
 
+// The piece the playhead is in.
+static i32 ed_play_piece() { return ed_joined() ? g_app.editor.play_piece : 0; }
+
 static void ed_apply_volumes()
 {
     Editor &ed = g_app.editor;
@@ -437,7 +454,7 @@ static void ed_apply_volumes()
     i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
     // At the playhead: each track's volume times the whole mix's (the engines can't go past 100%). Only what's
     // changed is handed over, since this runs every frame while playing.
-    f64 master = vol_heard(ed.edit, EDIT_MASTER, p.pos);
+    f64 master = vol_heard(ed.edit, EDIT_MASTER, p.pos) * fade_gain(ed.edit, ed_duration(), ed_play_piece(), p.pos);
     for (i32 i = 0; i < n; i++) {
         i32 t = tracks[i];
         f32 v = (f32)(vol_heard(ed.edit, t, p.pos) * master);
@@ -1205,11 +1222,15 @@ static void ed_draw_picture(const Player &p, ImVec2 a, ImVec2 b)
         if (fabs(v - 1) > 0.001) any = true;
         eqv[c] = (f32)color_eq(c, v);
     }
-    if (!any || !p.srv || !p.frame_ready || !color_shader_ready()) return;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddCallback(color_shader_on, eqv, sizeof eqv);
-    dl->AddImage((ImTextureID)(intptr_t)p.srv, a, b);
-    dl->AddCallback(ImDrawCallback_ResetRenderState, 0);
+    if (any && p.srv && p.frame_ready && color_shader_ready()) {
+        dl->AddCallback(color_shader_on, eqv, sizeof eqv);
+        dl->AddImage((ImTextureID)(intptr_t)p.srv, a, b);
+        dl->AddCallback(ImDrawCallback_ResetRenderState, 0);
+    }
+    // Fades to black over it (a crossfade shows as a cut: one video plays at a time)
+    f64 g = fade_gain(ed.edit, ed_duration(), ed_play_piece(), p.pos);
+    if (g < 0.999) dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, (i32)((1 - g) * 255)));
 }
 
 static void ed_timeline(ImVec2 o, f32 w, f32 h)
@@ -1518,6 +1539,29 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 f = f < 0 ? 0 : f >= lib.strip_frames ? lib.strip_frames - 1 : f;
                 f32 u0 = (f32)f / lib.strip_frames, u1 = (f32)(f + 1) / lib.strip_frames;
                 dl->AddImage((ImTextureID)(intptr_t)lib.strip, ImVec2(x, y0), ImVec2(x + tile, y1), ImVec2(u0, 0), ImVec2(u1, 1));
+            }
+        }
+        // The transitions: black shading over the fades, a light band over each crossfade
+        {
+            Transitions tr = transitions_of(ed.edit, pc, np, dur);
+            f64 a0 = joined ? 0 : pc[0].from, a1 = joined ? alen : pc[0].to;
+            u32 dark = IM_COL32(0, 0, 0, 200), clear = IM_COL32(0, 0, 0, 0);
+            auto shade = [&](f64 u0, f64 u1, bool dark_left) {
+                f32 x0 = xu_of(u0), x1 = xu_of(u1);
+                if (x1 - x0 >= 1)
+                    dl->AddRectFilledMultiColor(ImVec2(x0, y0), ImVec2(x1, y1), dark_left ? dark : clear, dark_left ? clear : dark,
+                                                dark_left ? clear : dark, dark_left ? dark : clear);
+            };
+            if (tr.fade_in > 0) shade(a0, a0 + tr.fade_in, true);
+            if (tr.fade_out > 0) shade(a1 - tr.fade_out, a1, false);
+            for (i32 i = 1; joined && i < np; i++) {
+                f64 half = tr.len[i] / 2;
+                if (tr.into[i] == TRANS_FADE) {
+                    shade(pstart[i] - half, pstart[i], false);
+                    shade(pstart[i], pstart[i] + half, true);
+                } else if (tr.into[i] == TRANS_CROSS) {
+                    dl->AddRectFilled(ImVec2(xu_of(pstart[i] - half), y0), ImVec2(xu_of(pstart[i] + half), y1), col32(COL_TEXT, 0.25f));
+                }
             }
         }
         // The pieces: a gap at each cut
@@ -1918,13 +1962,16 @@ static void ed_caption(const char *label)
 }
 
 // Open in Premiere Pro or DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which both import.
-// TODO: colour in XML
 // One video track with the zoom as Basic Motion keys, and each recorded track (the Mix left out) with its volume
 // times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written as keys a fifth
 // of a second apart. Key times count frames from the start of the file.
+// Transitions are transitionitems on every track: a crossfade a Cross Dissolve (Cross Fade on the sound) centred on
+// its cut; a fade through black, and the fades at the start and end, dissolves to and from black (end-black,
+// start-black).
 // A stereo track is a linked pair of channel tracks marked Stereo (one stereo track once in Premiere), a mono Mic or
 // chat one track marked Mono. Premiere numbers a file's audio by slot, each track taking as many slots as the widest
 // one has channels: with any stereo track, track t's channel c is slot 2t + c + 1.
+// TODO: colour in XML
 
 static void xml_text(FILE *f, const char *s)
 {
@@ -1986,6 +2033,32 @@ static bool ed_export_xml(Path *out)
     str_set(file_name, slash ? slash + 1 : src);
     i64 file_len = fr(m.duration);
     static f64 at[2000];
+    Transitions tr = transitions_of(e, pc, np, ed_duration());
+    // A transition from `s` to `t` frames on the sequence, as a dissolve aligned `align`.
+    auto trans_item = [&](i64 s, i64 t, const char *align, bool audio) {
+        if (t <= s) return;
+        fputs("<transitionitem>", f);
+        xml_rate(f, fps);
+        fprintf(f, "<start>%lld</start><end>%lld</end><alignment>%s</alignment>", s, t, align);
+        if (audio)
+            fputs("<effect><name>Cross Fade (+3dB)</name><effectid>KGAudioTransCrossFade3dB</effectid>"
+                  "<effecttype>transition</effecttype><mediatype>audio</mediatype></effect>", f);
+        else
+            fputs("<effect><name>Cross Dissolve</name><effectid>Cross Dissolve</effectid><effectcategory>Dissolve</effectcategory>"
+                  "<effecttype>transition</effecttype><mediatype>video</mediatype></effect>", f);
+        fputs("</transitionitem>\n", f);
+    };
+    // The transitions on one track that go before piece i (and, after the last, at the end).
+    auto trans_before = [&](i32 i, bool audio) {
+        if (!i && tr.fade_in > 0) trans_item(0, fr(tr.fade_in), "start-black", audio);
+        if (i > 0 && i < np && tr.into[i] == TRANS_CROSS)
+            trans_item(starts[i] - fr(tr.len[i] / 2), starts[i] + fr(tr.len[i] / 2), "center", audio);
+        if (i > 0 && i < np && tr.into[i] == TRANS_FADE) {
+            trans_item(starts[i] - fr(tr.len[i] / 2), starts[i], "end-black", audio);
+            trans_item(starts[i], starts[i] + fr(tr.len[i] / 2), "start-black", audio);
+        }
+        if (i == np && tr.fade_out > 0) trans_item(starts[np] - fr(tr.fade_out), starts[np], "end-black", audio);
+    };
 
     fputs("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n<xmeml version=\"5\">\n<sequence id=\"sequence-1\">\n<name>", f);
     xml_text(f, ed.item.name);
@@ -2008,6 +2081,7 @@ static bool ed_export_xml(Path *out)
     auto chans = [&](i32 t) { return m.channels[t] == 1 ? 1 : 2; };
     fputs("<track>\n", f);
     for (i32 i = 0; i < np; i++) {
+        trans_before(i, false);
         clip_head(1 + i, i, true, 0);
         if (!i) {
             fputs("<file id=\"file-1\"><name>", f);
@@ -2050,6 +2124,7 @@ static bool ed_export_xml(Path *out)
         }
         fputs("</clipitem>\n", f);
     }
+    trans_before(np, false);
     fputs("</track>\n</video>\n<audio>\n", f);
 
     // The audio: each recorded track's channels, from the same file, a track each. The clipitem of piece i on
@@ -2066,6 +2141,7 @@ static bool ed_export_xml(Path *out)
             fprintf(f, "<track premiereTrackType=\"%s\" currentExplodedTrackIndex=\"%d\" totalExplodedTrackCount=\"%d\">\n",
                     n == 2 ? "Stereo" : "Mono", c, n);
             for (i32 i = 0; i < np; i++) {
+                trans_before(i, true);
                 clip_head(clip_id(seq_track + c, i), i, !e.muted[t] && !e.muted[EDIT_MASTER], n == 2 ? "stereo" : "mono");
                 fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
                         slots * t + c + 1);
@@ -2086,6 +2162,7 @@ static bool ed_export_xml(Path *out)
                 }
                 fputs("</parameter></effect></filter>\n</clipitem>\n", f);
             }
+            trans_before(np, true);
             fputs("</track>\n", f);
         }
         seq_track += n;
@@ -2214,6 +2291,64 @@ static void ed_edit_tab(f32 w)
         dl->AddText(ImVec2(vp.x + val_w - vs.x, floorf(vp.y + (fh - vs.y) / 2)), col32(COL_TEXT), ct);
         ImGui::Dummy(ImVec2(val_w, fh));
         ImGui::PopID();
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // Transitions: fades from black at the start and to black at the end, then how the cut nearest the playhead
+    // goes from one piece into the next. Lengths in seconds, 0 being none.
+    ed_caption("TRANSITIONS");
+    {
+        EditPiece pc[EDIT_MAX_PIECES];
+        i32 np = pieces_of(ed.edit, ed_duration(), pc);
+        auto length_row = [&](const char *name, const char *id, f32 *len, bool on) {
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            dl->AddText(ImVec2(cp.x, floorf(cp.y + (fh - lh) / 2)), col32(on ? COL_TEXT : COL_FAINT), name);
+            ImGui::Dummy(ImVec2(cname_w, fh));
+            ImGui::SameLine(0, 0);
+            ImGui::BeginDisabled(!on);
+            f32 v = *len;
+            if (lib_slider(id, &v, 0.f, 3.f, w - cname_w - val_w, fh)) {
+                *len = v < TRANS_LEAST ? 0 : floorf(v * 20 + 0.5f) / 20; // in twentieths of a second
+                ed.dirty = true;
+            }
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                *len = 0;
+                ed.dirty = true;
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine(0, 0);
+            char lt[16];
+            if (*len > 0) snprintf(lt, sizeof lt, "%.2f s", *len);
+            else str_set(lt, "Off");
+            ImVec2 vp = ImGui::GetCursorScreenPos(), vs = ImGui::CalcTextSize(lt);
+            dl->AddText(ImVec2(vp.x + val_w - vs.x, floorf(vp.y + (fh - vs.y) / 2)), col32(on ? COL_TEXT : COL_FAINT), lt);
+            ImGui::Dummy(ImVec2(val_w, fh));
+        };
+        length_row("Fade in", "##fade_in", &ed.edit.fade_in, true);
+        length_row("Fade out", "##fade_out", &ed.edit.fade_out, true);
+        // The cut nearest the playhead (none with one piece)
+        i32 cut = -1;
+        f64 best = 0, u = ed_play_u();
+        for (i32 i = 1; i < np; i++) {
+            f64 d = fabs(piece_start(ed.edit, ed_duration(), i) - u);
+            if (cut < 0 || d < best) cut = i, best = d;
+        }
+        static const char *const kinds[TRANS_COUNT] = {"Cut", "Fade", "Crossfade"};
+        static f32 no_len;
+        i32 kind = cut > 0 ? ed.edit.pieces[cut].trans : -1;
+        ImGui::BeginDisabled(cut < 0);
+        if (kit_segmented("##trans", kinds, TRANS_COUNT, &kind, (w - kit_px(6)) / (f32)TRANS_COUNT) && cut > 0) {
+            EditPiece &q = ed.edit.pieces[cut];
+            q.trans = (u8)kind;
+            if (kind == TRANS_CUT) q.trans_len = 0;
+            else if (q.trans_len <= 0) q.trans_len = 0.5f;
+            ed.dirty = true;
+        }
+        ImGui::EndDisabled();
+        bool len_on = cut > 0 && ed.edit.pieces[cut].trans != TRANS_CUT;
+        length_row("Length", "##trans_len", len_on ? &ed.edit.pieces[cut].trans_len : &no_len, len_on);
+        if (len_on && ed.edit.pieces[cut].trans_len <= 0) ed.edit.pieces[cut].trans = TRANS_CUT;
+        kit_dim(cut > 0 ? "At the cut nearest the playhead" : "Cuts get a transition here");
     }
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 

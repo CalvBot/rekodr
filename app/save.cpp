@@ -1071,6 +1071,12 @@ static bool pieces_delete(EditRecord *e, f64 dur, u64 mask)
             if (!drop(e->vol[t][k].t)) e->vol[t][nv++] = e->vol[t][k];
         e->vol_count[t] = nv;
     }
+    for (i32 c = 0; c < EDIT_COLORS; c++) {
+        i32 nc = 0;
+        for (i32 k = 0; k < e->color_count[c]; k++)
+            if (!drop(e->color[c][k].t)) e->color[c][nc++] = e->color[c][k];
+        e->color_count[c] = nc;
+    }
     pieces_store(e, p, kept, dur);
     return true;
 }
@@ -1118,6 +1124,74 @@ static void pieces_move(EditRecord *e, f64 dur, i32 i, i32 to)
     else memmove(p + to + 1, p + to, (i - to) * sizeof *p);
     p[to] = m;
     pieces_store(e, p, n, dur);
+}
+
+// Transitions as they play, for pieces p[0..n) of a video `dur` long. A transition sits on its cut, half before and
+// half after, so the joined length stays the pieces' own. A fade dips each side to black over its half; a crossfade
+// blends the two, so it also plays the footage past the first piece's end and before the second one's start, and is
+// held to what the video has there. Each half and each end fade is held to half its piece; anything under 0.05 s
+// is a cut. into[i] is the transition into piece i (into[0] none), with its length in len[i].
+struct Transitions {
+    u8  into[EDIT_MAX_PIECES];
+    f64 len[EDIT_MAX_PIECES];
+    f64 fade_in, fade_out;
+};
+
+static const f64 TRANS_LEAST = 0.05;
+
+static Transitions transitions_of(const EditRecord &e, const EditPiece *p, i32 n, f64 dur)
+{
+    Transitions t = {};
+    for (i32 i = 1; i < n; i++) {
+        f64 l = p[i].trans_len, a = p[i - 1].to - p[i - 1].from, b = p[i].to - p[i].from;
+        u8 k = p[i].trans < TRANS_COUNT ? p[i].trans : TRANS_CUT;
+        if (l > a) l = a;
+        if (l > b) l = b;
+        if (k == TRANS_CROSS) {
+            f64 after = dur - p[i - 1].to, before = p[i].from;
+            if (l > 2 * after) l = 2 * after;
+            if (l > 2 * before) l = 2 * before;
+        }
+        if (k == TRANS_CUT || l < TRANS_LEAST) k = TRANS_CUT, l = 0;
+        t.into[i] = k;
+        t.len[i] = l;
+    }
+    f64 first = p[0].to - p[0].from, last = p[n - 1].to - p[n - 1].from;
+    t.fade_in = e.fade_in < first / 2 ? e.fade_in : first / 2;
+    t.fade_out = e.fade_out < last / 2 ? e.fade_out : last / 2;
+    if (t.fade_in < TRANS_LEAST) t.fade_in = 0;
+    if (t.fade_out < TRANS_LEAST) t.fade_out = 0;
+    return t;
+}
+
+static bool transitions_any(const Transitions &t, i32 n)
+{
+    for (i32 i = 1; i < n; i++)
+        if (t.into[i] != TRANS_CUT) return true;
+    return t.fade_in > 0 || t.fade_out > 0;
+}
+
+// The fades into and out of black on piece i: from its start over `in` seconds and to its end over `out`.
+static void piece_fades(const Transitions &t, i32 n, i32 i, f64 *in, f64 *out)
+{
+    *in = !i ? t.fade_in : t.into[i] == TRANS_FADE ? t.len[i] / 2 : 0;
+    *out = i == n - 1 ? t.fade_out : t.into[i + 1] == TRANS_FADE ? t.len[i + 1] / 2 : 0;
+}
+
+// How much of the picture and sound is left by the fades at source time s in piece i (1 = all, 0 = black and
+// silent). A crossfade isn't a fade, so it leaves 1.
+static f64 fade_gain(const EditRecord &e, f64 dur, i32 i, f64 s)
+{
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(e, dur, p);
+    if (i < 0 || i >= n) return 1;
+    Transitions t = transitions_of(e, p, n, dur);
+    f64 in, out, g = 1;
+    piece_fades(t, n, i, &in, &out);
+    if (in > 0 && s < p[i].from + in) g = (s - p[i].from) / in;
+    if (out > 0 && s > p[i].to - out && (p[i].to - s) / out < g) g = (p[i].to - s) / out;
+    if (g < 0) g = 0;
+    return g;
 }
 
 // Whether a file has the clipback layout: track 1 is a Mix of the tracks after it.
@@ -1281,6 +1355,49 @@ static void color_filter(SaveWork *w, const EditRecord &e, f64 fps, f64 start)
         graph_add(w, "'");
     }
     graph_add(w, ":eval=frame,");
+}
+
+// Joins the pieces cut out of the input: the video's [v<i>] into [v] (stream -1), or audio stream s's [e<s>_<i>]
+// into [o<s>]. A crossfade overlaps the two pieces by its length (xfade, acrossfade); anything else follows on.
+static void seq_join(SaveWork *w, const Transitions &tr, const f64 *sa, const f64 *sb, i32 np, i32 s)
+{
+    bool audio = s >= 0;
+    auto piece = [&](i32 i) {
+        if (audio) graph_add(w, "[e%d_%d]", s, i);
+        else graph_add(w, "[v%d]", i);
+    };
+    auto result = [&]() {
+        if (audio) graph_add(w, "[o%d];\n", s);
+        else graph_add(w, "[v];\n");
+    };
+    bool cross = false;
+    for (i32 i = 1; i < np; i++) cross |= tr.into[i] == TRANS_CROSS;
+    if (!cross) {
+        for (i32 i = 0; i < np; i++) piece(i);
+        if (np == 1) graph_add(w, audio ? "anull" : "null");
+        else graph_add(w, "concat=n=%d:v=%d:a=%d", np, audio ? 0 : 1, audio ? 1 : 0);
+        result();
+        return;
+    }
+    f64 len = sb[0] - sa[0]; // the joined length so far
+    for (i32 i = 1; i < np; i++) {
+        if (i == 1) piece(0);
+        else if (audio) graph_add(w, "[ja%d_%d]", s, i - 1);
+        else graph_add(w, "[jv%d]", i - 1);
+        piece(i);
+        f64 l = tr.len[i];
+        if (tr.into[i] == TRANS_CROSS) {
+            if (audio) graph_add(w, "acrossfade=d=%.4f:c1=tri:c2=tri", l);
+            else graph_add(w, "xfade=transition=fade:duration=%.4f:offset=%.4f", l, len - l);
+            len += sb[i] - sa[i] - l;
+        } else {
+            graph_add(w, "concat=n=2:v=%d:a=%d", audio ? 0 : 1, audio ? 1 : 0);
+            len += sb[i] - sa[i];
+        }
+        if (i == np - 1) result();
+        else if (audio) graph_add(w, "[ja%d_%d];\n", s, i);
+        else graph_add(w, "[jv%d];\n", i);
+    }
 }
 
 // The zoom as a perspective filter that crops the view and stretches it to the whole frame, each frame.
@@ -1477,15 +1594,22 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     char vcodec[16] = {}, acodec[16] = {};
     if (link) file_codecs(w->cfg.ffmpeg, j.src, vcodec, acodec);
     bool link_video_ok = !strcmp(vcodec, "h264"), link_audio_ok = !acodec[0] || !strcmp(acodec, "aac");
-    // The input is read from the earliest piece's start to the latest one's end (`from`, `span`); `dur` is the
-    // joined length.
+    // Each piece is read from sa to sb: its own span, and half a crossfade past each cut that has one. The input is
+    // read from the earliest of those to the latest (`from`, `span`); `dur` is the joined length. With cuts or
+    // transitions (`seq`) every piece is cut out of the input and they're joined.
     EditPiece pc[EDIT_MAX_PIECES];
     i32 np = pieces_of(j.edit, m.duration, pc);
-    bool cuts = np > 1;
-    f64 from = pc[0].from, to = pc[0].to;
+    Transitions tr = transitions_of(j.edit, pc, np, m.duration);
+    bool cuts = np > 1, seq = cuts || transitions_any(tr, np);
+    f64 sa[EDIT_MAX_PIECES], sb[EDIT_MAX_PIECES];
+    for (i32 i = 0; i < np; i++) {
+        sa[i] = pc[i].from - (tr.into[i] == TRANS_CROSS ? tr.len[i] / 2 : 0);
+        sb[i] = pc[i].to + (i + 1 < np && tr.into[i + 1] == TRANS_CROSS ? tr.len[i + 1] / 2 : 0);
+    }
+    f64 from = sa[0], to = sb[0];
     for (i32 i = 1; i < np; i++) {
-        if (pc[i].from < from) from = pc[i].from;
-        if (pc[i].to > to) to = pc[i].to;
+        if (sa[i] < from) from = sa[i];
+        if (sb[i] > to) to = sb[i];
     }
     f64 span = to - from, dur = pieces_len(j.edit, m.duration);
     if (dur <= 0.05) {
@@ -1512,7 +1636,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 
     bool zoom = edit_zoomed(j.edit), colored = edit_colored(j.edit);
     bool touched = edit_audio_touched(j.edit, m);
-    bool reencode = share || zoom || colored || cuts || (link && !link_video_ok);
+    bool reencode = share || zoom || colored || seq || (link && !link_video_ok);
     SharePlan plan = {};
     i32 video_kbps = 0, side = 0;
     bool reduce_fps = false;
@@ -1554,20 +1678,26 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 if (reduce_fps) graph_add(w, "fps=%g,", plan.fps);
             }
             graph_add(w, "format=%s", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p");
-            if (cuts) {
+            if (seq) {
                 graph_add(w, ",split=%d", np);
                 for (i32 i = 0; i < np; i++) graph_add(w, "[c%d]", i);
                 graph_add(w, ";\n");
-                for (i32 i = 0; i < np; i++)
-                    graph_add(w, "[c%d]trim=start=%.4f:end=%.4f,setpts=PTS-STARTPTS[v%d];\n", i, pc[i].from - from,
-                              pc[i].to - from, i);
+                for (i32 i = 0; i < np; i++) {
+                    f64 in, fo;
+                    piece_fades(tr, np, i, &in, &fo);
+                    graph_add(w, "[c%d]trim=start=%.4f:end=%.4f,setpts=PTS-STARTPTS", i, sa[i] - from, sb[i] - from);
+                    if (in > 0) graph_add(w, ",fade=t=in:st=0:d=%.4f", in);
+                    if (fo > 0) graph_add(w, ",fade=t=out:st=%.4f:d=%.4f", sb[i] - sa[i] - fo, fo);
+                    graph_add(w, "[v%d];\n", i);
+                }
+                seq_join(w, tr, sa, sb, np, -1);
             } else graph_add(w, "[v];\n");
         }
-        bool mix = (share || touched || (link && (cuts || !link_audio_ok))) && edit_audio_graph(w, j, from);
-        // With cuts, the audio streams written, in order: -1 for the rebuilt mix [a], else a track as recorded. Each
-        // is cut into the pieces, and the pieces of the video and of every stream are joined into [v] and [o<n>].
+        bool mix = (share || touched || (link && (seq || !link_audio_ok))) && edit_audio_graph(w, j, from);
+        // With cuts or transitions, the audio streams written, in order: -1 for the rebuilt mix [a], else a track as
+        // recorded. Each is cut into the pieces, faded, and joined into [o<n>].
         i32 streams[MEDIA_MAX_TRACKS + 1], ns = 0;
-        if (cuts) {
+        if (seq) {
             if (share || link) {
                 if (mix) streams[ns++] = -1;
             } else {
@@ -1581,17 +1711,16 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 graph_add(w, "asplit=%d", np);
                 for (i32 i = 0; i < np; i++) graph_add(w, "[d%d_%d]", s, i);
                 graph_add(w, ";\n");
-                for (i32 i = 0; i < np; i++)
-                    graph_add(w, "[d%d_%d]atrim=start=%.4f:end=%.4f,asetpts=PTS-STARTPTS[e%d_%d];\n", s, i,
-                              pc[i].from - from, pc[i].to - from, s, i);
+                for (i32 i = 0; i < np; i++) {
+                    f64 in, fo;
+                    piece_fades(tr, np, i, &in, &fo);
+                    graph_add(w, "[d%d_%d]atrim=start=%.4f:end=%.4f,asetpts=PTS-STARTPTS", s, i, sa[i] - from, sb[i] - from);
+                    if (in > 0) graph_add(w, ",afade=t=in:st=0:d=%.4f", in);
+                    if (fo > 0) graph_add(w, ",afade=t=out:st=%.4f:d=%.4f", sb[i] - sa[i] - fo, fo);
+                    graph_add(w, "[e%d_%d];\n", s, i);
+                }
+                seq_join(w, tr, sa, sb, np, s);
             }
-            for (i32 i = 0; i < np; i++) {
-                graph_add(w, "[v%d]", i);
-                for (i32 s = 0; s < ns; s++) graph_add(w, "[e%d_%d]", s, i);
-            }
-            graph_add(w, "concat=n=%d:v=1:a=%d[v]", np, ns);
-            for (i32 s = 0; s < ns; s++) graph_add(w, "[o%d]", s);
-            graph_add(w, ";\n");
         }
         if (w->graph_full) {
             snprintf(out, out_cap, "the zoom or colour has too many keyframes");
@@ -1615,10 +1744,10 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"};
         arg_list(a, cap, head, COUNT(head));
         arg_pair(a, cap, "-ss", "%.3f", from);
-        if (cuts) arg_pair(a, cap, "-t", "%.3f", span); // the input's end; the output is the joined pieces
+        if (seq) arg_pair(a, cap, "-t", "%.3f", span); // the input's end; the output is the joined pieces
         cmd_arg8(a, cap, "-i");
         cmd_arg(a, cap, j.src.s);
-        if (!cuts) arg_pair(a, cap, "-t", "%.3f", span);
+        if (!seq) arg_pair(a, cap, "-t", "%.3f", span);
         if (w->graph_len) {
             cmd_arg8(a, cap, "-/filter_complex");
             cmd_arg(a, cap, graph.s);
@@ -1631,7 +1760,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             arg_pair(a, cap, "-c:v", "copy");
         }
         i32 outs = 0; // audio streams written
-        if (cuts) {
+        if (seq) {
             for (i32 s = 0; s < ns; s++) {
                 char key[32];
                 arg_pair(a, cap, "-map", "[o%d]", s);
@@ -1694,8 +1823,9 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         arg_pair(a, cap, "-f", "mp4");
         cmd_arg(a, cap, part_path.s);
 
-        log_line("%s %u: %.1f s in %d piece%s from %.2f s, zoom %d, colour %s, audio %s, %s -> %s",
+        log_line("%s %u: %.1f s in %d piece%s from %.2f s, transitions %s, zoom %d, colour %s, audio %s, %s -> %s",
                  share ? "share" : link ? "link" : "keep", req.id, dur, np, np == 1 ? "" : "s", from,
+                 transitions_any(tr, np) ? "yes" : "no",
                  zoom ? j.edit.key_count : 0, colored ? "changed" : "as recorded", mix ? "re-mixed" : "as recorded", reencode ? "re-encoded" : "copied", final8);
         if (link) log_line("link %u: source %s / %s", req.id, vcodec[0] ? vcodec : "-", acodec[0] ? acodec : "-");
         if (share)
