@@ -1,5 +1,6 @@
-# `build release` runs this after the build. It writes dist\clipback-<version>.exe, its .pdb (for reading crash
-# dumps from that version) and latest.txt, the manifest the update check reads (update.cpp):
+# `build release` runs this after the build. It writes dist\clipback-<version>.exe, the same exe as
+# clipback-setup.exe (the download for new players), its .pdb (for reading crash dumps from that version) and
+# latest.txt, the manifest the update check reads (update.cpp):
 #   version <version>
 #   url <where clipback-<version>.exe is downloaded from>
 #   size <bytes>
@@ -20,10 +21,11 @@ if ($built -notlike "$version*") { throw "$Build\clipback.exe says $built, versi
 New-Item -ItemType Directory -Force $Dist | Out-Null
 $exe = Join-Path $Dist "clipback-$version.exe"
 Copy-Item "$Build\clipback.exe" $exe
+Copy-Item "$Build\clipback.exe" (Join-Path $Dist "clipback-setup.exe") # the same exe; by this name it installs
 Copy-Item "$Build\clipback.pdb" (Join-Path $Dist "clipback-$version.pdb")
 $size = (Get-Item $exe).Length
 $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 # LF line ends and no BOM: the signature covers these exact bytes
 $text = "version $version`nurl $base/clipback-$version.exe`nsize $size`nsha256 $sha`n"
 [IO.File]::WriteAllText((Join-Path $Dist "latest.txt"), $text)
-Write-Host "$exe ($size bytes) and latest.txt, not signed yet"
+Write-Host "$exe ($size bytes), clipback-setup.exe and latest.txt, not signed yet"
