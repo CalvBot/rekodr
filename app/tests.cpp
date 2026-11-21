@@ -998,9 +998,9 @@ static void test_r2()
     r2_make_url("https://clips.example.com", "k.mp4", 3, url, sizeof url);
     T(!strcmp(url, "https://clips.example.com/k.mp4?v=3"));
 
-    // Limits: free 10 GB, then $0.015 a GB-month
-    T(r2_limit_for_budget(0) == 10 * R2_GB);
-    T(r2_limit_for_budget(1.35) / R2_GB == 100 || r2_limit_for_budget(1.35) / R2_GB == 99);
+    // Limits: free 10 GB, then $0.015 a GB-month, of which 80% is used
+    T(r2_limit_for_budget(0) == 8 * R2_GB);
+    T(r2_limit_for_budget(1.35) / R2_GB == 80 || r2_limit_for_budget(1.35) / R2_GB == 79);
     T(fabs(r2_cost_for(100 * R2_GB) - 1.35) < 1e-9 && r2_cost_for(5 * R2_GB) == 0);
 
     // Cleanup: oldest unpinned first, until it fits

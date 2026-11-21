@@ -136,10 +136,13 @@ static struct {
 // ---------------------------------------------------------------------------------------------------------------
 // Prices and limits
 
+// What may be stored for a monthly budget, in bytes. Only 80% of what the budget buys is used, leaving room for
+// Cloudflare's request charges and for files that are deleted but still billed for the rest of the month.
+static const f64 R2_HEADROOM = 0.8;
 static i64 r2_limit_for_budget(f64 dollars)
 {
     if (dollars < 0) dollars = 0;
-    return (i64)((R2_FREE_GB + dollars / R2_PRICE_GB) * (f64)R2_GB);
+    return (i64)(R2_HEADROOM * (R2_FREE_GB + dollars / R2_PRICE_GB) * (f64)R2_GB);
 }
 
 static f64 r2_cost_for(i64 bytes)

@@ -2426,7 +2426,8 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
 // Sharing: links to clips (r2.cpp). With no setup they go to the free public hosts and the player's uploaders (ShareX
 // .sxcu files) in link_hosts; with the player's
 // own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
-// The budget picks the most the bucket holds: past it the oldest unpinned links are removed.
+// The budget picks the most a month may cost; the bucket holds 80% of what that buys (r2_limit_for_budget), and past
+// that the oldest unpinned links are removed.
 static const i32 R2_STEPS_GB[] = {10, 25, 50, 100, 250, 500, 1000};
 
 // The hosts as chips from the row's left, the free ones then the uploaders, each one on numbered by when it's
@@ -2622,10 +2623,8 @@ static void options_sharing()
             options_apply(0);
         }
         char t[64];
-        if (cur == 0) snprintf(t, sizeof t, "Free, %d GB", R2_STEPS_GB[0]);
-        else if (R2_STEPS_GB[cur] >= 1000)
-            snprintf(t, sizeof t, "%d TB, about $%.2f a month", R2_STEPS_GB[cur] / 1000, r2_cost_for((i64)R2_STEPS_GB[cur] * R2_GB));
-        else snprintf(t, sizeof t, "%d GB, about $%.2f a month", R2_STEPS_GB[cur], r2_cost_for((i64)R2_STEPS_GB[cur] * R2_GB));
+        if (cur == 0) snprintf(t, sizeof t, "Free");
+        else snprintf(t, sizeof t, "At most $%.2f a month", r2_cost_for((i64)R2_STEPS_GB[cur] * R2_GB));
         opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(at.x + sw + dp(12), opt_row_text_y(g_font)), COL_TEXT, t,
                     g_row.x1);
         opt_row_end();
