@@ -89,4 +89,5 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "toast.cpp"
 #include "ffget.cpp"
 #include "install.cpp"
+#include "update.cpp"
 #include "main.cpp"

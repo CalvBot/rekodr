@@ -343,7 +343,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     {
         i32 code = 0;
         if (install_command(command, MSG_CLASS, COPYDATA_COMMAND, &code)) return code;
+        if (update_command(command, &code)) return code;
     }
+    update_wait_for_old(); // started by an update: the old copy is quitting
     HANDLE single = CreateMutexW(0, TRUE, mutex_name);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         for (i32 tries = 0; tries < 20; tries++) { // the running copy may still be starting
@@ -399,6 +401,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     recorder_start();
     audio_start();
     ffget_start(); // no ffmpeg found: fetch the pinned build
+    update_start();
     gamedb_start(g_app.config.game_lookup);
     pipe_start();
     if (g_app.ui.setup_open) ui_show(SCREEN_LIBRARY);
@@ -446,6 +449,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     gamedb_stop();
     r2_stop();
     ffget_stop();
+    update_stop();
     backup_stop();
     telemetry_stop();
     audio_stop();
