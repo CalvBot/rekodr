@@ -1290,6 +1290,23 @@ static void top_bar(f32 h)
     dl->AddText(ImVec2(tx, floorf(o.y + (h - ss.y) / 2)), col32(rec.paused ? COL_DIM : COL_TEXT), status);
     ImGui::PopFont();
 
+    // While the PC can't keep up: a chip left of the status that opens Options > Recording, the full line as its tip.
+    if (rec.strain.s[0] && rec.recording && !rec.paused) {
+        static const char label[] = ICON_WARNING "  Can't keep up";
+        ImVec2 ls = ImGui::CalcTextSize(label);
+        f32 cw = ls.x + kit_px(20), ch = kit_px(26), cx = dc.x - kit_px(16) - cw, cy = floorf(o.y + (h - ch) / 2);
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        if (ImGui::InvisibleButton("##strain", ImVec2(cw, ch))) {
+            dev_click("top bar", "strain chip");
+            g_app.ui.screen = SCREEN_OPTIONS;
+            g_app.options.tab = OPT_RECORDING;
+        }
+        bool hot = ImGui::IsItemHovered();
+        kit_tip(rec.strain.s);
+        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WARN, hot ? 0.32f : 0.2f), ch / 2);
+        dl->AddText(ImVec2(cx + kit_px(10), floorf(cy + (ch - ls.y) / 2)), col32(COL_WARN), label);
+    }
+
     ImGui::SetCursorScreenPos(o);
     ImGui::Dummy(ImVec2(w, h));
 }
