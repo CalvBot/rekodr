@@ -2459,6 +2459,18 @@ static void opt_link_hosts()
     }
 }
 
+// A count with thousands commas: 1,204
+static void fmt_count(i64 n, char *out, i32 cap)
+{
+    char d[32];
+    i32 len = snprintf(d, sizeof d, "%lld", n < 0 ? 0 : n), o = 0;
+    for (i32 i = 0; i < len && o < cap - 1; i++) {
+        if (i && (len - i) % 3 == 0 && o < cap - 2) out[o++] = ',';
+        out[o++] = d[i];
+    }
+    out[o] = 0;
+}
+
 static void options_sharing()
 {
     Config &c = g_app.config;
@@ -2532,20 +2544,57 @@ static void options_sharing()
 
     opt_section("YOUR OWN CLOUDFLARE");
     opt_card_begin();
-    opt_row_begin("More space, private, deletable", "Make an R2 bucket, give it a public address and an API token for it", bw);
-    if (kit_button("Open Cloudflare##r2site", KIT_SECONDARY, ImVec2(bw, 0)))
-        open_url("https://www.cloudflare.com/developer-platform/products/r2/");
+    R2Status st = r2_status();
+    bool signed_in = r2_signed_in(), has = r2_has_token(), waiting = st.state == R2_SETUP_WAITING;
+    // Sign in: the browser does the rest. While it waits the button says so, and a click gives up.
+    {
+        f32 sw = text_w(g_font, "Waiting for Cloudflare...") + dp(32);
+        opt_row_begin("More space, private, deletable", "Your own R2 bucket; clipback makes it and its keys", sw);
+        if (waiting) kit_next_tip("Stop waiting");
+        if (kit_button(waiting ? "Waiting for Cloudflare...##r2signin" : "Sign in with Cloudflare##r2signin",
+                       waiting ? KIT_SECONDARY : KIT_PRIMARY, ImVec2(sw, 0), waiting || (!signed_in && !has))) {
+            dev_click("options", waiting ? "r2 sign-in cancel" : "r2 sign in");
+            if (waiting) r2_sign_in_cancel();
+            else r2_sign_in();
+        }
+        opt_row_end();
+    }
+
+    // Status: who and which bucket, what the setup is doing, or what went wrong
+    {
+        opt_row_begin("Status", 0, bw);
+        char text[400];
+        if (!signed_in && !has && st.state == R2_SETUP_IDLE) str_set(text, "Not set up");
+        else if (st.state == R2_SETUP_IDLE) str_set(text, r2_ready() ? "Set up" : "Not set up");
+        else if (st.who[0] && st.state == R2_SETUP_OK) snprintf(text, sizeof text, "%s  -  %s", st.who, st.text);
+        else str_set(text, st.text);
+        u32 col = st.state == R2_SETUP_OK ? COL_OK : st.state == R2_SETUP_FAILED ? COL_WARN : COL_DIM;
+        opt_status(text, col, g_row.x1 - bw - dp(16), g_row.x0 + dp(80));
+        if (kit_button("Set up again##r2again", KIT_SECONDARY, ImVec2(bw, 0),
+                       (signed_in || has) && st.state != R2_SETUP_BUSY && !waiting)) {
+            log_line("options: R2 set up again");
+            r2_setup_again();
+        }
+        if (st.state == R2_SETUP_BUSY || waiting) ui_wake();
+        opt_row_end();
+    }
+
+    opt_row_begin("Sign out", "Removes clipback's access and forgets the keys. The bucket and its links stay", bw);
+    if (kit_button("Sign out##r2signout", KIT_SECONDARY, ImVec2(bw, 0), (signed_in || has) && !waiting)) {
+        log_line("options: R2 sign out");
+        r2_sign_out();
+    }
     opt_row_end();
+
     struct Field {
         const char *name, *sub, *id, *hint;
         char *v;
         i32 cap;
+        bool setup; // a change sets the bucket up again
     } fields[] = {
-        {"Account ID", "On the R2 page of the Cloudflare dashboard", "##r2account", 0, c.r2_account, (i32)sizeof c.r2_account},
-        {"Access key", "The API token's Access Key ID", "##r2access", 0, c.r2_access_key, (i32)sizeof c.r2_access_key},
-        {"Bucket", 0, "##r2bucket", 0, c.r2_bucket, (i32)sizeof c.r2_bucket},
-        {"Public address", "The bucket's r2.dev address or your own domain", "##r2public", "https://", c.r2_public_url,
-         (i32)sizeof c.r2_public_url},
+        {"Bucket", "Empty means clipback", "##r2bucket", "clipback", c.r2_bucket, (i32)sizeof c.r2_bucket, true},
+        {"Public address", "Your own domain; empty uses the bucket's r2.dev address", "##r2public", "https://",
+         c.r2_public_url, (i32)sizeof c.r2_public_url, false},
     };
     for (i32 i = 0; i < (i32)COUNT(fields); i++) {
         Field &f = fields[i];
@@ -2557,46 +2606,9 @@ static void options_sharing()
                 snprintf(f.v, f.cap, "%s", v);
                 log_line("options: R2 %s %s", f.name, v[0] ? "set" : "cleared");
                 options_apply(0);
+                if (f.setup && (r2_signed_in() || r2_has_token())) r2_setup_again();
             }
         }
-        opt_row_end();
-        if (i == 1) { // the secret key after the access key: masked, kept by Windows
-            bool has = r2_has_secret();
-            f32 field_w = fw - ImGui::GetFrameHeight() - dp(8);
-            opt_row_begin("Secret key", "Kept in Windows' Credential Manager", fw);
-            char s[256];
-            if (opt_text("##r2secret", "", field_w, ImGuiInputTextFlags_Password, has ? "Saved" : "The Secret Access Key", s,
-                         sizeof s) && trim(s)[0]) {
-                r2_secret_set(trim(s));
-                log_line("options: R2 secret key saved");
-            }
-            if (ImGui::IsItemDeactivated()) SecureZeroMemory(g_app.options.edit, sizeof g_app.options.edit);
-            SecureZeroMemory(s, sizeof s);
-            ImGui::SameLine(0, dp(8));
-            kit_next_tip("Forget the secret key");
-            if (kit_icon_button(ICON_DELETE, "##r2forget", KIT_GHOST, has)) {
-                r2_secret_set("");
-                log_line("options: R2 secret key removed");
-            }
-            opt_row_end();
-        }
-    }
-
-    // Test: a clear ok or failed, from the fields as they are
-    {
-        opt_row_begin("Test", 0, bw);
-        R2View v = r2_test_view();
-        bool ready = r2_ready();
-        const char *text = !ready ? "Fill in everything above" : v.state == R2_TEST_IDLE ? "Not tested" : v.text;
-        u32 col = !ready || v.state == R2_TEST_IDLE || v.state == R2_TEST_BUSY ? COL_DIM
-                  : v.state == R2_TEST_OK                                        ? COL_OK
-                                                                                 : COL_WARN;
-        opt_status(text, col, g_row.x1 - bw - dp(16), g_row.x0 + dp(80));
-        if (kit_button("Test##r2test", KIT_SECONDARY, ImVec2(bw, 0), ready && v.state != R2_TEST_BUSY)) {
-            log_line("options: R2 test");
-            r2_test();
-        }
-        if (v.state == R2_TEST_BUSY) ui_wake();
         opt_row_end();
     }
 
@@ -2633,12 +2645,65 @@ static void options_sharing()
     }
     {
         R2Usage u = r2_usage();
-        char used[32], lim[32], t[96];
-        lib_r2_size(u.used_bytes, used, sizeof used);
+        char used[32], lim[32], t[96], sub[160];
+        lib_r2_size(u.bucket_bytes >= 0 ? u.bucket_bytes : u.used_bytes, used, sizeof used);
         lib_r2_size(u.limit_bytes, lim, sizeof lim);
         snprintf(t, sizeof t, "Using %s of %s", used, lim);
-        if (r2_ready()) opt_row_value("Space", "What the links take up in the bucket", t, COL_TEXT);
+        if (u.class_a >= 0 && u.class_b >= 0) {
+            char a[32], b[32];
+            fmt_count(u.class_a, a, sizeof a);
+            fmt_count(u.class_b, b, sizeof b);
+            snprintf(sub, sizeof sub, "%s uploads, %s views this month, about $%.2f", a, b, u.month_cost);
+        } else str_set(sub, "What the links take up in the bucket");
+        if (r2_ready()) opt_row_value("Space", sub, t, COL_TEXT);
         else opt_row_value("Space", "What the links take up in the bucket", "Not set up", COL_DIM);
+    }
+
+    // Last in the card, so opening it moves nothing above: the token rows, for a token made by hand
+    static bool token_rows;
+    opt_row_begin(0, 0, 0, dp(36));
+    {
+        const char *link = token_rows ? "Hide the token rows" : "Use a token instead";
+        f32 lw = text_w(g_font_small, link);
+        ImVec2 at(g_row.x0, floorf(g_row.y + (g_row.h - g_font_small->FontSize) / 2));
+        ImGui::SetCursorScreenPos(at);
+        if (ImGui::InvisibleButton("##r2tokenrows", ImVec2(lw, g_font_small->FontSize))) token_rows = !token_rows;
+        bool hot = ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        opt_text_at(dl, g_font_small, at, hot ? COL_TEXT : COL_DIM, link, g_row.x1);
+        dl->AddLine(ImVec2(at.x, at.y + g_font_small->FontSize), ImVec2(at.x + lw, at.y + g_font_small->FontSize),
+                    col32(hot ? COL_TEXT : COL_DIM, 0.5f));
+    }
+    opt_row_end();
+    if (token_rows) {
+        opt_row_begin("Create token", "Opens Cloudflare with the right permissions; create it and paste it below", bw);
+        if (kit_button("Create token##r2token", KIT_SECONDARY, ImVec2(bw, 0))) {
+            dev_click("options", "r2 create token");
+            open_url(r2_token_link());
+        }
+        opt_row_end();
+
+        // The token: masked, kept by Windows; clipback makes the bucket and its keys from it
+        {
+            f32 field_w = fw - ImGui::GetFrameHeight() - dp(8);
+            opt_row_begin("API token", "Kept in Windows' Credential Manager", fw);
+            char s[512];
+            if (opt_text("##r2tok", "", field_w, ImGuiInputTextFlags_Password, has ? "Saved" : "Paste the token", s, sizeof s) &&
+                trim(s)[0]) {
+                r2_set_token(trim(s));
+                log_line("options: R2 token saved, setting up");
+            }
+            if (ImGui::IsItemDeactivated()) SecureZeroMemory(g_app.options.edit, sizeof g_app.options.edit);
+            SecureZeroMemory(s, sizeof s);
+            ImGui::SameLine(0, dp(8));
+            kit_next_tip("Forget the token");
+            if (kit_icon_button(ICON_DELETE, "##r2forget", KIT_GHOST, has)) {
+                r2_set_token("");
+                log_line("options: R2 token removed");
+            }
+            opt_row_end();
+        }
     }
     opt_card_end();
 }

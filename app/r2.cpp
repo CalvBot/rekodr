@@ -15,12 +15,18 @@
 //              listed after each upload), the oldest clips that aren't pinned are deleted from it; their history
 //              entries stay, marked removed, and can be shared again under the same name
 //
-// The access key, account and bucket are in settings.txt; the secret key only in Windows' Credential Manager.
+// The account, the token's id (the S3 access key), the bucket and its public address are in settings.txt; the
+// tokens only in Windows' Credential Manager. Setup takes a sign-in with Cloudflare or a pasted API token.
 // History is <config_dir>\shares.tsv. Network work runs on one worker thread; the main thread owns the jobs'
 // steps and is told by EV_R2. This file never touches the clipboard: the UI copies the link.
 
+#include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")
+
+static void open_url(const char *url); // setup.cpp
+
 enum R2State : u8 { R2_QUEUED, R2_PREPARING, R2_UPLOADING, R2_DONE, R2_FAILED };
-enum R2TestState : u8 { R2_TEST_IDLE, R2_TEST_BUSY, R2_TEST_OK, R2_TEST_FAILED };
+enum R2SetupState : u8 { R2_SETUP_IDLE, R2_SETUP_WAITING, R2_SETUP_BUSY, R2_SETUP_OK, R2_SETUP_FAILED };
 
 struct R2Job {
     u32     id; // 0 = no such job
@@ -30,9 +36,11 @@ struct R2Job {
     char    error[256];
 };
 
-struct R2View {
-    R2TestState state;
-    char        text[256]; // ready to show
+// The setup's state: waiting for the browser's sign-in, busy with a step, or how it ended
+struct R2Status {
+    R2SetupState state;
+    char         text[256]; // ready to show
+    char         who[128];  // the Cloudflare account's name, once known
 };
 
 enum { R2_MAX_SHARES = 1024, R2_KEY_MAX = 48 };
@@ -73,16 +81,29 @@ struct R2Share {
 };
 
 struct R2Usage {
-    i64 used_bytes, limit_bytes;
+    i64 used_bytes, limit_bytes; // what the links take up (the history), and what the budget allows
     f64 cost_per_gb_month, free_gb;
+    i64 bucket_bytes;            // Cloudflare's count of what the bucket holds, -1 until fetched
+    i64 class_a, class_b;        // requests to the bucket this month (UTC), -1 until fetched
+    i64 usage_us;                // when those were fetched, 0 = never
+    f64 month_cost;              // dollars this month at this rate, past the free allowances
 };
 
-static const f64 R2_FREE_GB = 10, R2_PRICE_GB = 0.015; // Cloudflare's R2 storage: 10 GB free, then per GB-month
+// What Cloudflare's analytics say about the bucket
+struct R2Fetched {
+    i64 bytes, class_a, class_b;
+};
+
+// Cloudflare's R2 prices: storage per GB-month, and per million Class A (writes, lists) and Class B (reads)
+// requests, each with a free amount a month
+static const f64 R2_FREE_GB = 10, R2_PRICE_GB = 0.015;
+static const f64 R2_FREE_A = 1e6, R2_PRICE_A = 4.50, R2_FREE_B = 1e7, R2_PRICE_B = 0.36;
+static const i64 R2_USAGE_EVERY_US = 3600ll * 1000000; // how often the analytics are asked
 static const i64 R2_GB = 1000000000;
 static const i64 R2_PART = 64ll << 20;       // multipart part size
 static const i64 R2_SINGLE_MAX = 100ll << 20; // larger files go up in parts
 
-enum R2EventKind : u8 { R2_EV_PROBED, R2_EV_JOB, R2_EV_TEST, R2_EV_HISTORY };
+enum R2EventKind : u8 { R2_EV_PROBED, R2_EV_JOB, R2_EV_STATUS, R2_EV_SETUP, R2_EV_HISTORY, R2_EV_USAGE };
 
 // What a network task needs of the settings, copied when the task is queued.
 struct R2Conf {
@@ -90,7 +111,8 @@ struct R2Conf {
     i64  limit;
 };
 
-enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_FREE, R2_T_DELETE, R2_T_TEST };
+enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_FREE, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
+                        R2_T_SIGNOUT };
 
 struct R2Task {
     R2TaskKind kind;
@@ -102,6 +124,11 @@ struct R2Task {
     Path       file;    // probe: the file; upload: the copy to send (deleted after)
     Path       ffprobe;
     R2Conf     conf;
+    bool       oauth;   // setup, usage: signed in with Cloudflare rather than a pasted token
+    char       token[1024]; // setup, sign-in: the API token (pasted, or the bucket's own); usage: the pasted token;
+                            // sign-out: the sign-in's refresh token
+    char       code[1024];  // sign-in: the code the browser brought back
+    char       verifier[64]; // sign-in: PKCE's verifier
 };
 
 // One link job's own data (main thread, except `info`, which the probe fills under the lock).
@@ -125,8 +152,21 @@ static struct {
     R2Job   jobs[16];
     R2Work  work[16];
     u32     next_id;
-    R2View  test;
-    i8      has_secret; // 0 unknown, 1 yes, -1 no
+    R2Status status;
+    R2Conf   found;      // what the setup found (account, token id as access key, bucket, public address)
+    R2Fetched fetched;
+    i64      usage_us;   // when `fetched` came, 0 = never
+    i64      usage_asked_us;
+    i8       has_token; // 0 unknown, 1 yes, -1 no
+    i8       signed_in; // the same for the sign-in's refresh token
+    char     access[2048]; // worker: the sign-in's access token, until access_until_us
+    i64      access_until_us;
+    struct {
+        HANDLE        thread; // listens on CF_OAUTH_PORT for the browser
+        volatile LONG cancel;
+        char          state[48];
+        R2Task        task; // the sign-in task, the code still to come
+    } signin;
     R2Task  tasks[32];
     i32     task_count;
     HANDLE  thread, wake;
@@ -266,20 +306,23 @@ static void r2_make_url(const char *public_url, const char *key, i32 version, ch
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The secret key, in Windows' Credential Manager. A test copy (CLIPBACK_HOME) keeps its own.
+// The API token and the sign-in's refresh token, in Windows' Credential Manager. A test copy (CLIPBACK_HOME) keeps
+// its own. The API token is the one pasted, or with a sign-in the one clipback made for the bucket. The bucket's S3
+// keys come from it: the access key is the token's id, the secret the SHA-256 of the token (r2_token_secret).
 
-static void r2_cred_target(wchar_t *out, i32 cap)
+static void r2_cred_target(wchar_t *out, i32 cap, bool signin)
 {
     u32 h = test_home_hash();
-    if (h) swprintf(out, cap, L"clipback-%08x/r2", h);
-    else swprintf(out, cap, L"clipback/r2");
+    const wchar_t *what = signin ? L"r2-signin" : L"r2";
+    if (h) swprintf(out, cap, L"clipback-%08x/%ls", h, what);
+    else swprintf(out, cap, L"clipback/%ls", what);
 }
 
-static bool r2_secret_get(char *out, i32 cap)
+static bool r2_token_get(char *out, i32 cap, bool signin = false)
 {
     out[0] = 0;
     wchar_t target[64];
-    r2_cred_target(target, COUNT(target));
+    r2_cred_target(target, COUNT(target), signin);
     CREDENTIALW *cred = 0;
     if (!CredReadW(target, CRED_TYPE_GENERIC, 0, &cred)) return false;
     i32 n = (i32)cred->CredentialBlobSize;
@@ -290,14 +333,15 @@ static bool r2_secret_get(char *out, i32 cap)
     return out[0] != 0;
 }
 
-// Stores the secret key; "" removes it.
-static void r2_secret_set(const char *s)
+// Stores the token; "" removes it.
+static void r2_token_store(const char *s, bool signin = false)
 {
     wchar_t target[64];
-    r2_cred_target(target, COUNT(target));
+    r2_cred_target(target, COUNT(target), signin);
+    i8 &cache = signin ? g_r2.signed_in : g_r2.has_token;
     if (!s || !s[0]) {
         CredDeleteW(target, CRED_TYPE_GENERIC, 0);
-        g_r2.has_secret = -1;
+        cache = -1;
         return;
     }
     CREDENTIALW cred = {};
@@ -307,37 +351,35 @@ static void r2_secret_set(const char *s)
     cred.CredentialBlob = (LPBYTE)s;
     cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
     cred.UserName = (wchar_t *)L"clipback";
-    if (CredWriteW(&cred, 0)) g_r2.has_secret = 1;
-    else log_line("r2: couldn't store the secret key (%d)", (int)GetLastError());
+    if (CredWriteW(&cred, 0)) cache = 1;
+    else log_line("r2: couldn't store the %s (%d)", signin ? "sign-in" : "API token", (int)GetLastError());
 }
 
-static bool r2_has_secret()
+static bool r2_has_token()
 {
-    if (!g_r2.has_secret) {
-        char s[96];
-        g_r2.has_secret = r2_secret_get(s, sizeof s) ? 1 : -1;
+    if (!g_r2.has_token) {
+        char s[256];
+        g_r2.has_token = r2_token_get(s, sizeof s) ? 1 : -1;
         SecureZeroMemory(s, sizeof s);
     }
-    return g_r2.has_secret > 0;
+    return g_r2.has_token > 0;
+}
+
+// Signed in with Cloudflare (a refresh token is kept), rather than with a pasted token.
+static bool r2_signed_in()
+{
+    if (!g_r2.signed_in) {
+        char s[1024];
+        g_r2.signed_in = r2_token_get(s, sizeof s, true) ? 1 : -1;
+        SecureZeroMemory(s, sizeof s);
+    }
+    return g_r2.signed_in > 0;
 }
 
 static bool r2_ready()
 {
     const Config &c = g_app.config;
-    return c.r2_account[0] && c.r2_access_key[0] && c.r2_bucket[0] && c.r2_public_url[0] && r2_has_secret();
-}
-
-static bool r2_conf(R2Conf *out)
-{
-    const Config &c = g_app.config;
-    *out = {};
-    str_set(out->account, c.r2_account);
-    str_set(out->access, c.r2_access_key);
-    str_set(out->bucket, c.r2_bucket);
-    str_set(out->public_url, c.r2_public_url);
-    out->limit = r2_limit_for_budget(c.r2_budget);
-    r2_secret_get(out->secret, sizeof out->secret);
-    return out->account[0] && out->access[0] && out->secret[0] && out->bucket[0] && out->public_url[0];
+    return c.r2_account[0] && c.r2_access_key[0] && c.r2_bucket[0] && c.r2_public_url[0] && r2_has_token();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -360,6 +402,30 @@ static bool r2_sha256(const void *data, size_t n, u8 out[32], const void *key = 
 static void r2_hex(const u8 *b, i32 n, char *out)
 {
     for (i32 i = 0; i < n; i++) snprintf(out + i * 2, 3, "%02x", b[i]);
+}
+
+// The bucket's S3 secret key for an API token: the token's SHA-256 in lower-case hex
+static void r2_token_secret(const char *token, char out[65])
+{
+    u8 h[32];
+    out[0] = 0;
+    if (r2_sha256(token, strlen(token), h)) r2_hex(h, 32, out);
+    SecureZeroMemory(h, sizeof h);
+}
+
+static bool r2_conf(R2Conf *out)
+{
+    const Config &c = g_app.config;
+    *out = {};
+    str_set(out->account, c.r2_account);
+    str_set(out->access, c.r2_access_key);
+    str_set(out->bucket, c.r2_bucket);
+    str_set(out->public_url, c.r2_public_url);
+    out->limit = r2_limit_for_budget(c.r2_budget);
+    char token[256];
+    if (r2_token_get(token, sizeof token)) r2_token_secret(token, out->secret);
+    SecureZeroMemory(token, sizeof token);
+    return out->account[0] && out->access[0] && out->secret[0] && out->bucket[0] && out->public_url[0];
 }
 
 struct SigHeader {
@@ -811,60 +877,6 @@ static void r2_job_end(u32 id, bool ok, const char *url, const char *error)
     if (!ok) log_line("r2: job %u failed: %s", id, error);
     else DEV_LOG("r2: job %u: %s", id, url);
     r2_post(R2_EV_JOB, id);
-}
-
-static void r2_test_end(bool ok, const char *text)
-{
-    AcquireSRWLockExclusive(&g_r2.lock);
-    g_r2.test.state = ok ? R2_TEST_OK : R2_TEST_FAILED;
-    str_set(g_r2.test.text, text);
-    ReleaseSRWLockExclusive(&g_r2.lock);
-    r2_post(R2_EV_TEST, ok);
-}
-
-static void r2_run_test(const R2Conf &c)
-{
-    char key[17], body[64], resp[2048], why[256];
-    r2_random(key, 16);
-    snprintf(body, sizeof body, "clipback %s", key);
-    char name[64];
-    snprintf(name, sizeof name, "clipback/test-%s.txt", key);
-    u32 status = r2_send(c, "PUT", name, "", R2Body{body, 0, 0, (i64)strlen(body)}, "text/plain", resp, sizeof resp);
-    if (!r2_ok(status)) {
-        r2_why(status, resp, c, why, sizeof why);
-        r2_test_end(false, why);
-        return;
-    }
-    // Fetched the way a viewer would
-    char url[512], fail[256] = "";
-    r2_make_url(c.public_url, name, 1, url, sizeof url);
-    wchar_t wurl[512], whost[256] = {}, wpath[512] = {};
-    utf8_to_wide(url, wurl, COUNT(wurl));
-    URL_COMPONENTSW parts = {};
-    parts.dwStructSize = sizeof parts;
-    parts.lpszHostName = whost;
-    parts.dwHostNameLength = COUNT(whost);
-    parts.lpszUrlPath = wpath;
-    parts.dwUrlPathLength = COUNT(wpath);
-    if (!starts_with(c.public_url, "https://") || !WinHttpCrackUrl(wurl, 0, 0, &parts)) {
-        snprintf(fail, sizeof fail, "The public address should start with https://");
-    } else {
-        char *got = 0;
-        u32 answer = http_get(whost, wpath, L"", 0, &got, 0);
-        if (answer != 200 || !got || strcmp(got, body))
-            snprintf(fail, sizeof fail,
-                     answer ? "Uploaded, but %ls answered %u: turn on public access for the bucket"
-                            : "Uploaded, but %ls didn't answer: check the public address",
-                     whost, answer);
-        free(got);
-    }
-    bool deleted = r2_delete_object(c, name);
-    if (fail[0]) r2_test_end(false, fail);
-    else if (!deleted) r2_test_end(false, "Works, but the keys can't delete: give the token Object Read & Write");
-    else {
-        snprintf(why, sizeof why, "Works: uploaded, played from %ls and deleted", whost);
-        r2_test_end(true, why);
-    }
 }
 
 // The upload step of a job, then the cleanup.
@@ -1461,6 +1473,809 @@ static void r2_run_delete(const R2Task &t)
     r2_post(R2_EV_HISTORY, 0);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Cloudflare's API (api.cloudflare.com) and sign-in (dash.cloudflare.com)
+
+// Sign in with Cloudflare: an OAuth public client with PKCE (S256), answered on a fixed loopback port. The
+// redirect address and scopes are the ones the client is registered with. The bucket's own token is a user API
+// token, made with user-api-tokens.write.
+static const char CF_OAUTH_CLIENT_ID[] = ""; // TODO: the registered client's id
+enum { CF_OAUTH_PORT = 8977 };
+static const char CF_OAUTH_REDIRECT[] = "http://127.0.0.1:8977/oauth/callback";
+static const char CF_OAUTH_SCOPES[] =
+    "account.read workers-r2.write account-analytics.read user-api-tokens.write offline_access";
+static const wchar_t CF_DASH_HOST[] = L"dash.cloudflare.com";
+static const i64 CF_SIGNIN_WAIT_US = 10ll * 60 * 1000000; // how long the browser has to come back
+
+// Permission groups: what the token link asks for, and what the bucket's own token gets (looked up by name when
+// signed in, this id if that fails)
+static const char CF_PERM_R2_WRITE[] = "bf7481a1826f439697cb59a20b22293e";  // Workers R2 Storage Write
+static const char CF_PERM_ANALYTICS[] = "b89a480218d04ceb98b4fe57ca29dc1f"; // Account Analytics Read
+static const char CF_PERM_BUCKET_ITEMS_NAME[] = "Workers R2 Storage Bucket Item Write";
+static const char CF_PERM_BUCKET_ITEMS[] = "2efd5506f9c8494dacb1fa10a3e7d5b6";
+
+// R2's error codes in Cloudflare's answers
+enum { CF_NO_SUCH_BUCKET = 10006, CF_BUCKET_EXISTS = 10073, CF_R2_OFF = 10042 };
+
+// The request classes Cloudflare bills R2 operations by: 'A', 'B', or 0 for free ones.
+static char r2_op_class(const char *action)
+{
+    static const char *A[] = {"ListBuckets", "PutBucket", "ListObjects", "PutObject", "CopyObject",
+                              "CompleteMultipartUpload", "CreateMultipartUpload", "LifecycleStorageTierTransition",
+                              "ListMultipartUploads", "UploadPart", "UploadPartCopy", "ListParts",
+                              "PutBucketEncryption", "PutBucketCors", "PutBucketLifecycleConfiguration"};
+    static const char *B[] = {"HeadBucket", "HeadObject", "GetObject", "UsageSummary", "GetBucketEncryption",
+                              "GetBucketLocation", "GetBucketCors", "GetBucketLifecycleConfiguration"};
+    for (const char *a : A)
+        if (!strcmp(action, a)) return 'A';
+    for (const char *b : B)
+        if (!strcmp(action, b)) return 'B';
+    return 0;
+}
+
+// Dollars for a month with this much stored and these requests, past the free allowances.
+static f64 r2_month_cost(i64 bytes, i64 class_a, i64 class_b)
+{
+    f64 a = (f64)class_a - R2_FREE_A, b = (f64)class_b - R2_FREE_B;
+    return r2_cost_for(bytes) + (a > 0 ? a / 1e6 * R2_PRICE_A : 0) + (b > 0 ? b / 1e6 * R2_PRICE_B : 0);
+}
+
+// R2's rule for bucket names: 3 to 63 lower-case letters, digits and hyphens, a letter or digit at each end.
+static bool r2_bucket_name_ok(const char *s)
+{
+    i32 n = (i32)strlen(s);
+    if (n < 3 || n > 63 || s[0] == '-' || s[n - 1] == '-') return false;
+    for (i32 i = 0; i < n; i++)
+        if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '-')) return false;
+    return true;
+}
+
+// The first error in an answer: its code (0 if none) and message.
+static i32 r2_cf_error(const char *resp, char *msg, i32 cap)
+{
+    char code[16];
+    msg[0] = 0;
+    i64 len = (i64)strlen(resp);
+    json_path(resp, len, "errors[0].message", msg, cap);
+    return json_path(resp, len, "errors[0].code", code, sizeof code) ? atoi(code) : 0;
+}
+
+// /user/tokens/verify or /accounts/<id>/tokens/verify: the token's id, while it's active.
+static bool r2_parse_verify(const char *resp, char *id, i32 cap)
+{
+    char status[32];
+    i64 len = (i64)strlen(resp);
+    return json_path(resp, len, "result.status", status, sizeof status) && !strcmp(status, "active") &&
+           json_path(resp, len, "result.id", id, cap);
+}
+
+// GET /accounts: their ids and names. Returns how many.
+static i32 r2_parse_accounts(const char *resp, char (*ids)[40], char (*names)[128], i32 max)
+{
+    i64 len = (i64)strlen(resp);
+    i32 n = 0;
+    for (; n < max; n++) {
+        char path[48];
+        snprintf(path, sizeof path, "result[%d].id", n);
+        if (!json_path(resp, len, path, ids[n], 40)) break;
+        snprintf(path, sizeof path, "result[%d].name", n);
+        json_path(resp, len, path, names[n], 128);
+    }
+    return n;
+}
+
+// The bucket's r2.dev address, and whether it's on.
+static bool r2_parse_domain(const char *resp, char *domain, i32 cap, bool *enabled)
+{
+    char on[8];
+    i64 len = (i64)strlen(resp);
+    *enabled = json_path(resp, len, "result.enabled", on, sizeof on) && !strcmp(on, "true");
+    return json_path(resp, len, "result.domain", domain, cap);
+}
+
+// The id of the permission group named `name` in a list of them.
+static bool r2_parse_perm_group(const char *resp, const char *name, char *id, i32 cap)
+{
+    i64 len = (i64)strlen(resp);
+    char path[48], n[128];
+    for (i32 i = 0; i < 2000; i++) {
+        snprintf(path, sizeof path, "result[%d].name", i);
+        if (!json_path(resp, len, path, n, sizeof n)) break;
+        snprintf(path, sizeof path, "result[%d].id", i);
+        if (!strcmp(n, name)) return json_path(resp, len, path, id, cap);
+    }
+    return false;
+}
+
+// A token just made: its id and value.
+static bool r2_parse_new_token(const char *resp, char *id, i32 id_cap, char *value, i32 value_cap)
+{
+    i64 len = (i64)strlen(resp);
+    return json_path(resp, len, "result.id", id, id_cap) && json_path(resp, len, "result.value", value, value_cap);
+}
+
+struct R2OAuth {
+    char access[2048], refresh[1024];
+    i64  expires_in; // seconds
+    char error[64];  // "invalid_grant" and the like
+};
+
+// The sign-in's token answer, to the code or a refresh.
+static bool r2_parse_oauth(const char *resp, R2OAuth *o)
+{
+    char n[24];
+    i64 len = (i64)strlen(resp);
+    *o = {};
+    json_path(resp, len, "error", o->error, sizeof o->error);
+    json_path(resp, len, "refresh_token", o->refresh, sizeof o->refresh);
+    o->expires_in = json_path(resp, len, "expires_in", n, sizeof n) ? _atoi64(n) : 0;
+    return json_path(resp, len, "access_token", o->access, sizeof o->access);
+}
+
+// The GraphQL answer to r2_usage_query: what the bucket holds (its last count this month) and the requests by class.
+static bool r2_parse_usage(const char *resp, R2Fetched *out)
+{
+    i64 len = (i64)strlen(resp);
+    char v[32], action[64];
+    *out = {};
+    const char *acc = "data.viewer.accounts[0].";
+    char path[96];
+    snprintf(path, sizeof path, "%sstorage[0].max.payloadSize", acc);
+    bool any = json_path(resp, len, path, v, sizeof v);
+    out->bytes = any ? _atoi64(v) : 0;
+    snprintf(path, sizeof path, "%sstorage[0].max.metadataSize", acc);
+    if (json_path(resp, len, path, v, sizeof v)) out->bytes += _atoi64(v);
+    bool has_ops = false;
+    for (i32 i = 0; i < 1000; i++) {
+        snprintf(path, sizeof path, "%sops[%d].dimensions.actionType", acc, i);
+        if (!json_path(resp, len, path, action, sizeof action)) break;
+        snprintf(path, sizeof path, "%sops[%d].sum.requests", acc, i);
+        i64 n = json_path(resp, len, path, v, sizeof v) ? _atoi64(v) : 0;
+        char cls = r2_op_class(action);
+        if (cls == 'A') out->class_a += n;
+        else if (cls == 'B') out->class_b += n;
+        has_ops = true;
+    }
+    // An empty month has empty lists; an error has no data at all
+    return any || has_ops || strstr(resp, "\"storage\":[]") != 0;
+}
+
+// The GraphQL request for a bucket's storage and requests from `start` to `end` (ISO 8601, UTC).
+static void r2_usage_query(const char *account, const char *bucket, const char *start, const char *end, char *out,
+                           i32 cap)
+{
+    snprintf(out, cap,
+             "{\"query\":\"query($accountTag:string!,$bucketName:string,$startDate:Time,$endDate:Time){viewer{"
+             "accounts(filter:{accountTag:$accountTag}){"
+             "storage:r2StorageAdaptiveGroups(limit:1,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
+             "bucketName:$bucketName},orderBy:[datetime_DESC]){max{payloadSize metadataSize}} "
+             "ops:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
+             "bucketName:$bucketName}){sum{requests} dimensions{actionType}}}}}\","
+             "\"variables\":{\"accountTag\":\"%s\",\"bucketName\":\"%s\",\"startDate\":\"%s\",\"endDate\":\"%s\"}}",
+             account, bucket, start, end);
+}
+
+// The dashboard page that makes an API token with what clipback needs already picked.
+static const char *r2_token_link()
+{
+    static char url[600];
+    if (!url[0]) {
+        char keys[256], enc[512];
+        snprintf(keys, sizeof keys, "[{\"key\":\"%s\",\"type\":\"edit\"},{\"key\":\"%s\",\"type\":\"read\"}]",
+                 CF_PERM_R2_WRITE, CF_PERM_ANALYTICS);
+        r2_uri_encode(keys, enc, sizeof enc);
+        snprintf(url, sizeof url, "https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%s&name=clipback",
+                 enc);
+    }
+    return url;
+}
+
+// base64url without padding, as PKCE uses.
+static void r2_b64url(const u8 *b, i32 n, char *out)
+{
+    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    i32 o = 0;
+    for (i32 i = 0; i < n; i += 3) {
+        u32 v = (u32)b[i] << 16 | (i + 1 < n ? (u32)b[i + 1] << 8 : 0) | (i + 2 < n ? b[i + 2] : 0);
+        out[o++] = T[v >> 18 & 63];
+        out[o++] = T[v >> 12 & 63];
+        if (i + 1 < n) out[o++] = T[v >> 6 & 63];
+        if (i + 2 < n) out[o++] = T[v & 63];
+    }
+    out[o] = 0;
+}
+
+// PKCE's S256 challenge for a verifier.
+static void r2_pkce_challenge(const char *verifier, char out[44])
+{
+    u8 h[32];
+    if (r2_sha256(verifier, strlen(verifier), h)) r2_b64url(h, 32, out);
+    else out[0] = 0;
+}
+
+// Undoes percent-encoding and '+' for a space.
+static void r2_url_decode(const char *s, i32 n, char *out, i32 cap)
+{
+    i32 o = 0;
+    for (i32 i = 0; i < n && o < cap - 1; i++) {
+        if (s[i] == '+') out[o++] = ' ';
+        else if (s[i] == '%' && i + 2 < n && isxdigit((u8)s[i + 1]) && isxdigit((u8)s[i + 2])) {
+            char hex[3] = {s[i + 1], s[i + 2], 0};
+            out[o++] = (char)strtol(hex, 0, 16);
+            i += 2;
+        } else out[o++] = s[i];
+    }
+    out[o] = 0;
+}
+
+// A query parameter's value, decoded. False when it isn't there.
+static bool r2_query_param(const char *query, const char *name, char *out, i32 cap)
+{
+    out[0] = 0;
+    size_t nl = strlen(name);
+    for (const char *p = query; p && *p;) {
+        const char *end = p + strcspn(p, "& ");
+        if (!strncmp(p, name, nl) && p[nl] == '=') {
+            r2_url_decode(p + nl + 1, (i32)(end - p - nl - 1), out, cap);
+            return true;
+        }
+        if (*end != '&') break;
+        p = end + 1;
+    }
+    return false;
+}
+
+enum R2Callback : u8 { R2_CB_OTHER, R2_CB_CODE, R2_CB_REFUSED };
+
+// What the browser sent to the loopback port: the sign-in's answer, or something else (a favicon). `request` is
+// the request's first line, "GET /oauth/callback?code=...&state=... HTTP/1.1". A refusal leaves Cloudflare's
+// reason in `code`.
+static R2Callback r2_callback_parse(const char *request, char *code, i32 code_cap, char *state, i32 state_cap)
+{
+    code[0] = state[0] = 0;
+    const char *p = "GET /oauth/callback?";
+    if (strncmp(request, p, strlen(p))) return R2_CB_OTHER;
+    const char *q = request + strlen(p);
+    r2_query_param(q, "state", state, state_cap);
+    char err[64];
+    if (r2_query_param(q, "error", err, sizeof err)) {
+        if (!r2_query_param(q, "error_description", code, code_cap)) snprintf(code, code_cap, "%s", err);
+        return R2_CB_REFUSED;
+    }
+    return r2_query_param(q, "code", code, code_cap) && code[0] ? R2_CB_CODE : R2_CB_OTHER;
+}
+
+// One HTTPS request with the body in memory; `headers` are "Name: value" lines joined by \r\n. Returns the status,
+// 0 = no answer; the answer's body (cut at cap) goes to resp.
+static u32 r2_https(const wchar_t *host, const char *method, const char *path, const char *headers, const char *body,
+                    char *resp, i32 cap)
+{
+    resp[0] = 0;
+    wchar_t wmethod[16], wpath[1024], whdrs[4096];
+    utf8_to_wide(method, wmethod, COUNT(wmethod));
+    utf8_to_wide(path, wpath, COUNT(wpath));
+    utf8_to_wide(headers, whdrs, COUNT(whdrs));
+    DWORD blen = body ? (DWORD)strlen(body) : 0;
+    u32 status = 0;
+    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET conn = session ? WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, wmethod, wpath, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
+    if (req) {
+        WinHttpSetTimeouts(req, 15000, 15000, 30000, 60000);
+        DWORD code = 0, len = sizeof code;
+        if (WinHttpSendRequest(req, whdrs, (DWORD)-1L, (void *)body, blen, blen, 0) &&
+            WinHttpReceiveResponse(req, 0) &&
+            WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &code, &len, 0))
+            status = code;
+        i32 have = 0;
+        while (status && cap) {
+            char chunk[4096];
+            DWORD got = 0;
+            if (!WinHttpReadData(req, chunk, sizeof chunk, &got) || !got) break;
+            i32 take = (i32)got < cap - 1 - have ? (i32)got : cap - 1 - have;
+            memcpy(resp + have, chunk, take);
+            have += take;
+            resp[have] = 0;
+        }
+        if (!status) log_line("r2: %s %ls%s: no answer (error %d)", method, host, path, (int)GetLastError());
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (conn) WinHttpCloseHandle(conn);
+    if (session) WinHttpCloseHandle(session);
+    SecureZeroMemory(whdrs, sizeof whdrs);
+    return status;
+}
+
+// A request to Cloudflare's API with a token: `path` after /client/v4, `body` JSON or null.
+static u32 r2_cf(const char *method, const char *path, const char *bearer, const char *body, char *resp, i32 cap)
+{
+    char full[512], hdrs[2200];
+    snprintf(full, sizeof full, "/client/v4%s", path);
+    snprintf(hdrs, sizeof hdrs, "Authorization: Bearer %s%s", bearer, body ? "\r\nContent-Type: application/json" : "");
+    u32 s = r2_https(L"api.cloudflare.com", method, full, hdrs, body, resp, cap);
+    SecureZeroMemory(hdrs, sizeof hdrs);
+    if (!r2_ok(s)) DEV_LOG("r2: %s %s: %u", method, path, s);
+    return s;
+}
+
+// A form post to the sign-in's /oauth2/<what>.
+static u32 r2_oauth_post(const char *what, const char *form, char *resp, i32 cap)
+{
+    char path[64];
+    snprintf(path, sizeof path, "/oauth2/%s", what);
+    return r2_https(CF_DASH_HOST, "POST", path, "Content-Type: application/x-www-form-urlencoded", form, resp, cap);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Setup, sign-in and usage (worker thread)
+
+static bool r2_queue(const R2Task &t);
+
+static void r2_set_status(R2SetupState state, const char *fmt, ...)
+{
+    char text[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    AcquireSRWLockExclusive(&g_r2.lock);
+    g_r2.status.state = state;
+    str_set(g_r2.status.text, text);
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (state == R2_SETUP_FAILED) log_line("r2: setup: %s", text);
+    else DEV_LOG("r2: setup: %s", text);
+    r2_post(R2_EV_STATUS, state);
+}
+
+static void r2_set_who(const char *who)
+{
+    AcquireSRWLockExclusive(&g_r2.lock);
+    str_set(g_r2.status.who, who);
+    ReleaseSRWLockExclusive(&g_r2.lock);
+}
+
+// Uploads a small file, fetches it from the public address, deletes it. A token just made can take a few seconds
+// to reach the bucket, so with `fresh` a refusal is tried again for a while.
+static void r2_run_probe(const R2Conf &c, bool fresh)
+{
+    char key[17], body[64], resp[2048], why[256];
+    r2_random(key, 16);
+    snprintf(body, sizeof body, "clipback %s", key);
+    char name[64];
+    snprintf(name, sizeof name, "clipback/test-%s.txt", key);
+    u32 status = 0;
+    for (i32 tries = fresh ? 10 : 1; tries > 0 && !g_r2.stop; tries--) {
+        status = r2_send(c, "PUT", name, "", R2Body{body, 0, 0, (i64)strlen(body)}, "text/plain", resp, sizeof resp);
+        if (status != 401 && status != 403) break;
+        if (tries > 1) Sleep(3000);
+    }
+    if (!r2_ok(status)) {
+        r2_why(status, resp, c, why, sizeof why);
+        r2_set_status(R2_SETUP_FAILED, "%s", why);
+        return;
+    }
+    // Fetched the way a viewer would
+    char url[512], fail[256] = "";
+    r2_make_url(c.public_url, name, 1, url, sizeof url);
+    wchar_t wurl[512], whost[256] = {}, wpath[512] = {};
+    utf8_to_wide(url, wurl, COUNT(wurl));
+    URL_COMPONENTSW parts = {};
+    parts.dwStructSize = sizeof parts;
+    parts.lpszHostName = whost;
+    parts.dwHostNameLength = COUNT(whost);
+    parts.lpszUrlPath = wpath;
+    parts.dwUrlPathLength = COUNT(wpath);
+    if (!starts_with(c.public_url, "https://") || !WinHttpCrackUrl(wurl, 0, 0, &parts)) {
+        snprintf(fail, sizeof fail, "The public address should start with https://");
+    } else {
+        // A new r2.dev address can take a moment to answer
+        for (i32 tries = fresh ? 10 : 1; tries > 0 && !g_r2.stop; tries--) {
+            char *got = 0;
+            u32 answer = http_get(whost, wpath, L"", 0, &got, 0);
+            bool same = answer == 200 && got && !strcmp(got, body);
+            free(got);
+            if (same) { fail[0] = 0; break; }
+            snprintf(fail, sizeof fail,
+                     answer ? "Uploaded, but %ls answered %u: turn on public access for the bucket"
+                            : "Uploaded, but %ls didn't answer: check the public address",
+                     whost, answer);
+            if (tries > 1) Sleep(3000);
+        }
+    }
+    bool deleted = r2_delete_object(c, name);
+    if (fail[0]) r2_set_status(R2_SETUP_FAILED, "%s", fail);
+    else if (!deleted) r2_set_status(R2_SETUP_FAILED, "Works, but the token can't delete from %s", c.bucket);
+    else r2_set_status(R2_SETUP_OK, "Works: bucket %s, played from %ls", c.bucket, whost);
+}
+
+// A failed API answer, for the player.
+static void r2_cf_fail(u32 status, const char *resp, const char *what)
+{
+    char msg[200];
+    i32 code = r2_cf_error(resp, msg, sizeof msg);
+    if (!status) r2_set_status(R2_SETUP_FAILED, "Couldn't reach Cloudflare");
+    else if (code == CF_R2_OFF) r2_set_status(R2_SETUP_FAILED, "Turn on R2 in the Cloudflare dashboard first");
+    else if (status == 401 || status == 403)
+        r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't allow %s%s%s", what, msg[0] ? ": " : "", msg);
+    else r2_set_status(R2_SETUP_FAILED, "Couldn't %s: %s", what, msg[0] ? msg : "Cloudflare said no");
+}
+
+static void r2_oauth_keep(const R2OAuth &o)
+{
+    str_set(g_r2.access, o.access);
+    g_r2.access_until_us = now_us() + (o.expires_in > 0 ? o.expires_in : 3600) * 1000000;
+    if (o.refresh[0]) r2_token_store(o.refresh, true); // they're used once: keep each new one at once
+}
+
+static bool r2_oauth_refresh(const char *refresh, R2OAuth *o)
+{
+    static char form[2048], enc[1536], resp[16384];
+    r2_uri_encode(refresh, enc, sizeof enc);
+    snprintf(form, sizeof form, "grant_type=refresh_token&refresh_token=%s&client_id=%s", enc, CF_OAUTH_CLIENT_ID);
+    u32 s = r2_oauth_post("token", form, resp, sizeof resp);
+    bool ok = r2_parse_oauth(resp, o) && r2_ok(s);
+    SecureZeroMemory(form, sizeof form);
+    SecureZeroMemory(enc, sizeof enc);
+    SecureZeroMemory(resp, sizeof resp);
+    if (!ok) log_line("r2: couldn't refresh the sign-in (%u %s)", s, o->error);
+    return ok;
+}
+
+// The sign-in's access token, refreshed when it's about to run out. False when there's no sign-in or Cloudflare
+// ended it (then the sign-in is forgotten).
+static bool r2_oauth_access(char *out, i32 cap)
+{
+    out[0] = 0;
+    if (!g_r2.access[0] || now_us() > g_r2.access_until_us - 60ll * 1000000) {
+        char refresh[1024];
+        if (!r2_token_get(refresh, sizeof refresh, true)) return false;
+        static R2OAuth o;
+        bool ok = r2_oauth_refresh(refresh, &o);
+        if (ok) r2_oauth_keep(o);
+        else if (!strcmp(o.error, "invalid_grant")) r2_token_store("", true);
+        SecureZeroMemory(refresh, sizeof refresh);
+        SecureZeroMemory(&o, sizeof o);
+        if (!ok) return false;
+    }
+    snprintf(out, cap, "%s", g_r2.access);
+    return true;
+}
+
+// The steps before the probe: the account, the token's id, the bucket, its public address and, with a sign-in,
+// the bucket's own token. Fills `c` (with its secret) and `token`; false once the status says what went wrong,
+// with `refused` when Cloudflare wouldn't make the bucket's token.
+static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char *token, i32 token_cap, bool *fresh,
+                           bool *refused)
+{
+    static char resp[1 << 18];
+    char path[256], body[512];
+    *fresh = *refused = false;
+    r2_set_status(R2_SETUP_BUSY, "Checking your account...");
+    u32 s = r2_cf("GET", "/accounts?per_page=50", bearer, 0, resp, sizeof resp);
+    char ids[8][40], names[8][128];
+    i32 n = r2_ok(s) ? r2_parse_accounts(resp, ids, names, 8) : 0;
+    if (!n) {
+        if (r2_ok(s)) r2_set_status(R2_SETUP_FAILED, "The token can't see any Cloudflare account");
+        else r2_cf_fail(s, resp, t.oauth ? "the sign-in" : "the token");
+        return false;
+    }
+    i32 pick = 0; // the account set up before, else the first
+    for (i32 i = 0; i < n; i++)
+        if (!strcmp(ids[i], t.conf.account)) pick = i;
+    if (n > 1) log_line("r2: the token reaches %d accounts; using %s", n, names[pick]);
+    str_set(c->account, ids[pick]);
+    r2_set_who(names[pick]);
+
+    char token_id[72] = "";
+    if (!t.oauth) {
+        snprintf(token, token_cap, "%s", t.token);
+        s = r2_cf("GET", "/user/tokens/verify", bearer, 0, resp, sizeof resp);
+        if (!r2_ok(s) || !r2_parse_verify(resp, token_id, sizeof token_id)) {
+            snprintf(path, sizeof path, "/accounts/%s/tokens/verify", c->account);
+            s = r2_cf("GET", path, bearer, 0, resp, sizeof resp);
+            if (!r2_ok(s) || !r2_parse_verify(resp, token_id, sizeof token_id)) {
+                r2_set_status(R2_SETUP_FAILED, "The token isn't active: make a new one");
+                return false;
+            }
+        }
+    }
+
+    str_set(c->bucket, t.conf.bucket[0] ? t.conf.bucket : "clipback");
+    if (!r2_bucket_name_ok(c->bucket)) {
+        r2_set_status(R2_SETUP_FAILED, "%s can't be a bucket name: use 3 to 63 lower-case letters, digits and hyphens",
+                      c->bucket);
+        return false;
+    }
+    r2_set_status(R2_SETUP_BUSY, "Finding the bucket %s...", c->bucket);
+    snprintf(path, sizeof path, "/accounts/%s/r2/buckets/%s", c->account, c->bucket);
+    s = r2_cf("GET", path, bearer, 0, resp, sizeof resp);
+    if (!r2_ok(s)) {
+        char msg[200];
+        i32 code = r2_cf_error(resp, msg, sizeof msg);
+        if (s != 404 && code != CF_NO_SUCH_BUCKET) {
+            r2_cf_fail(s, resp, "reading the bucket");
+            return false;
+        }
+        r2_set_status(R2_SETUP_BUSY, "Making the bucket %s...", c->bucket);
+        snprintf(path, sizeof path, "/accounts/%s/r2/buckets", c->account);
+        snprintf(body, sizeof body, "{\"name\":\"%s\"}", c->bucket);
+        s = r2_cf("POST", path, bearer, body, resp, sizeof resp);
+        if (!r2_ok(s) && r2_cf_error(resp, msg, sizeof msg) != CF_BUCKET_EXISTS) {
+            r2_cf_fail(s, resp, "making the bucket");
+            return false;
+        }
+    }
+
+    // The player's own domain stays; otherwise the bucket's r2.dev address, turned on
+    if (t.conf.public_url[0] && !strstr(t.conf.public_url, ".r2.dev")) str_set(c->public_url, t.conf.public_url);
+    else {
+        r2_set_status(R2_SETUP_BUSY, "Turning on the bucket's public address...");
+        snprintf(path, sizeof path, "/accounts/%s/r2/buckets/%s/domains/managed", c->account, c->bucket);
+        char domain[200] = "";
+        bool on = false;
+        s = r2_cf("GET", path, bearer, 0, resp, sizeof resp);
+        bool have = r2_ok(s) && r2_parse_domain(resp, domain, sizeof domain, &on);
+        if (have && !on) {
+            s = r2_cf("PUT", path, bearer, "{\"enabled\":true}", resp, sizeof resp);
+            have = r2_ok(s) && r2_parse_domain(resp, domain, sizeof domain, &on) && on;
+        }
+        if (!have) {
+            r2_cf_fail(s, resp, "turning on the public address");
+            return false;
+        }
+        snprintf(c->public_url, sizeof c->public_url, "https://%s", domain);
+    }
+
+    if (t.oauth) {
+        // The bucket's token made before, while it still works
+        if (t.token[0] && t.conf.access[0]) {
+            char id[72];
+            s = r2_cf("GET", "/user/tokens/verify", t.token, 0, resp, sizeof resp);
+            if (r2_ok(s) && r2_parse_verify(resp, id, sizeof id) && !strcmp(id, t.conf.access)) {
+                snprintf(token, token_cap, "%s", t.token);
+                str_set(token_id, id);
+            }
+        }
+        if (!token[0]) {
+            r2_set_status(R2_SETUP_BUSY, "Making a key for the bucket...");
+            if (t.conf.access[0]) {
+                snprintf(path, sizeof path, "/user/tokens/%s", t.conf.access);
+                r2_cf("DELETE", path, bearer, 0, resp, sizeof resp);
+            }
+            char group[40] = "";
+            s = r2_cf("GET", "/user/tokens/permission_groups", bearer, 0, resp, sizeof resp);
+            if (!r2_ok(s) || !r2_parse_perm_group(resp, CF_PERM_BUCKET_ITEMS_NAME, group, sizeof group))
+                str_set(group, CF_PERM_BUCKET_ITEMS);
+            snprintf(body, sizeof body,
+                     "{\"name\":\"clipback (%s)\",\"policies\":[{\"effect\":\"allow\",\"resources\":"
+                     "{\"com.cloudflare.edge.r2.bucket.%s_default_%s\":\"*\"},\"permission_groups\":[{\"id\":\"%s\"}]}]}",
+                     c->bucket, c->account, c->bucket, group);
+            s = r2_cf("POST", "/user/tokens", bearer, body, resp, sizeof resp);
+            if (!r2_ok(s) || !r2_parse_new_token(resp, token_id, sizeof token_id, token, token_cap)) {
+                char msg[200];
+                r2_cf_error(resp, msg, sizeof msg);
+                SecureZeroMemory(resp, sizeof resp);
+                *refused = true;
+                r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't let clipback make a key for the bucket%s%s. Use a token "
+                              "instead.", msg[0] ? ": " : "", msg);
+                return false;
+            }
+            SecureZeroMemory(resp, sizeof resp);
+            r2_token_store(token);
+            *fresh = true;
+        }
+    }
+    str_set(c->access, token_id);
+    r2_token_secret(token, c->secret);
+    c->limit = t.conf.limit;
+    return true;
+}
+
+// Revokes a sign-in: the bucket's token clipback made (`token_id`), then the refresh token.
+static void r2_revoke(const char *refresh, const char *token_id)
+{
+    char bearer[2048] = "";
+    static R2OAuth o;
+    if (g_r2.access[0] && now_us() < g_r2.access_until_us) str_set(bearer, g_r2.access);
+    else if (refresh[0] && r2_oauth_refresh(refresh, &o)) {
+        str_set(bearer, o.access);
+        refresh = o.refresh[0] ? o.refresh : refresh;
+    }
+    char path[128], resp[4096];
+    if (bearer[0] && token_id[0]) {
+        snprintf(path, sizeof path, "/user/tokens/%s", token_id);
+        u32 s = r2_cf("DELETE", path, bearer, 0, resp, sizeof resp);
+        if (!r2_ok(s)) log_line("r2: couldn't delete the bucket's token (%u)", s);
+    }
+    if (refresh[0]) {
+        static char form[2048], enc[1536];
+        r2_uri_encode(refresh, enc, sizeof enc);
+        snprintf(form, sizeof form, "token=%s&token_type_hint=refresh_token&client_id=%s", enc, CF_OAUTH_CLIENT_ID);
+        u32 s = r2_oauth_post("revoke", form, resp, sizeof resp);
+        if (!r2_ok(s)) log_line("r2: couldn't revoke the sign-in (%u)", s);
+        SecureZeroMemory(form, sizeof form);
+        SecureZeroMemory(enc, sizeof enc);
+    }
+    SecureZeroMemory(bearer, sizeof bearer);
+    SecureZeroMemory(&o, sizeof o);
+    SecureZeroMemory(g_r2.access, sizeof g_r2.access);
+    g_r2.access_until_us = 0;
+}
+
+// Setup, then the probe. When Cloudflare won't make the bucket's token, the sign-in is no use and is revoked.
+static void r2_run_setup(const R2Task &t, const char *bearer)
+{
+    static R2Conf c;
+    char token[256] = "";
+    bool fresh = false, refused = false;
+    c = {};
+    if (r2_setup_steps(t, bearer, &c, token, sizeof token, &fresh, &refused)) {
+        AcquireSRWLockExclusive(&g_r2.lock);
+        g_r2.found = c;
+        SecureZeroMemory(g_r2.found.secret, sizeof g_r2.found.secret);
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        r2_post(R2_EV_SETUP, 0);
+        r2_set_status(R2_SETUP_BUSY, "Testing...");
+        r2_run_probe(c, fresh);
+    } else if (refused) {
+        char refresh[1024];
+        if (r2_token_get(refresh, sizeof refresh, true)) r2_revoke(refresh, "");
+        r2_token_store("", true);
+        SecureZeroMemory(refresh, sizeof refresh);
+    }
+    SecureZeroMemory(token, sizeof token);
+    SecureZeroMemory(&c, sizeof c);
+}
+
+// Trades the browser's code for the sign-in's tokens, then sets up.
+static void r2_run_signin(const R2Task &t)
+{
+    r2_set_status(R2_SETUP_BUSY, "Signing in...");
+    static char form[3072], code[1536], redirect[128], resp[16384];
+    static R2OAuth o;
+    r2_uri_encode(t.code, code, sizeof code);
+    r2_uri_encode(CF_OAUTH_REDIRECT, redirect, sizeof redirect);
+    snprintf(form, sizeof form,
+             "grant_type=authorization_code&code=%s&redirect_uri=%s&client_id=%s&code_verifier=%s", code, redirect,
+             CF_OAUTH_CLIENT_ID, t.verifier);
+    u32 s = r2_oauth_post("token", form, resp, sizeof resp);
+    bool ok = r2_parse_oauth(resp, &o) && r2_ok(s);
+    SecureZeroMemory(form, sizeof form);
+    SecureZeroMemory(code, sizeof code);
+    SecureZeroMemory(resp, sizeof resp);
+    if (!ok) {
+        if (!s) r2_set_status(R2_SETUP_FAILED, "Couldn't reach Cloudflare");
+        else r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't finish the sign-in%s%s", o.error[0] ? ": " : "",
+                           o.error);
+    } else {
+        if (!o.refresh[0]) log_line("r2: the sign-in came without a refresh token");
+        r2_oauth_keep(o);
+        R2Task setup = t;
+        setup.oauth = true;
+        r2_run_setup(setup, o.access);
+        SecureZeroMemory(&setup, sizeof setup);
+    }
+    SecureZeroMemory(&o, sizeof o);
+}
+
+// The bucket's storage and requests this month, from Cloudflare's analytics; and the account's name when it isn't
+// known yet.
+static void r2_run_usage(const R2Task &t)
+{
+    char bearer[2048];
+    if (t.oauth ? !r2_oauth_access(bearer, sizeof bearer) : !t.token[0]) return;
+    if (!t.oauth) str_set(bearer, t.token);
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    char start[32], end[32], body[1600];
+    snprintf(start, sizeof start, "%04d-%02d-01T00:00:00Z", st.wYear, st.wMonth);
+    snprintf(end, sizeof end, "%04d-%02d-%02dT%02d:%02d:%02dZ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+             st.wSecond);
+    r2_usage_query(t.conf.account, t.conf.bucket, start, end, body, sizeof body);
+    static char resp[1 << 16];
+    u32 s = r2_cf("POST", "/graphql", bearer, body, resp, sizeof resp);
+    R2Fetched f;
+    if (r2_ok(s) && r2_parse_usage(resp, &f)) {
+        AcquireSRWLockExclusive(&g_r2.lock);
+        g_r2.fetched = f;
+        g_r2.usage_us = now_us();
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        r2_post(R2_EV_USAGE, 0);
+    } else log_line("r2: couldn't read the bucket's usage (%u)", s);
+
+    AcquireSRWLockShared(&g_r2.lock);
+    bool named = g_r2.status.who[0] != 0;
+    ReleaseSRWLockShared(&g_r2.lock);
+    char path[96], name[128];
+    snprintf(path, sizeof path, "/accounts/%s", t.conf.account);
+    if (!named && r2_ok(r2_cf("GET", path, bearer, 0, resp, sizeof resp)) &&
+        json_path(resp, (i64)strlen(resp), "result.name", name, sizeof name)) {
+        r2_set_who(name);
+        r2_post(R2_EV_STATUS, 0);
+    }
+    SecureZeroMemory(bearer, sizeof bearer);
+}
+
+// The loopback listener: waits for the browser to come back from Cloudflare's sign-in page, answers it with a
+// page that says it can be closed, and queues the sign-in task with the code.
+static DWORD WINAPI r2_signin_thread(void *)
+{
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in a = {};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(CF_OAUTH_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    BOOL excl = TRUE;
+    if (ls != INVALID_SOCKET) setsockopt(ls, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&excl, sizeof excl);
+    if (ls == INVALID_SOCKET || bind(ls, (sockaddr *)&a, sizeof a) || listen(ls, 4)) {
+        r2_set_status(R2_SETUP_FAILED, "Another program is using port %d: close it and sign in again", CF_OAUTH_PORT);
+        if (ls != INVALID_SOCKET) closesocket(ls);
+        WSACleanup();
+        return 0;
+    }
+    i64 deadline = now_us() + CF_SIGNIN_WAIT_US;
+    while (!g_r2.signin.cancel && !g_r2.stop) {
+        if (now_us() > deadline) {
+            r2_set_status(R2_SETUP_FAILED, "The sign-in took too long: try again");
+            break;
+        }
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(ls, &fds);
+        timeval tv = {0, 250000};
+        if (select(0, &fds, 0, 0, &tv) <= 0) continue;
+        SOCKET s = accept(ls, 0, 0);
+        if (s == INVALID_SOCKET) continue;
+        DWORD wait_ms = 5000;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&wait_ms, sizeof wait_ms);
+        static char req[8192];
+        i32 have = 0;
+        req[0] = 0;
+        while (have < (i32)sizeof req - 1) {
+            int got = recv(s, req + have, (int)sizeof req - 1 - have, 0);
+            if (got <= 0) break;
+            have += got;
+            req[have] = 0;
+            if (strstr(req, "\r\n\r\n")) break;
+        }
+        char code[1024], state[64];
+        R2Callback cb = r2_callback_parse(req, code, sizeof code, state, sizeof state);
+        bool ours = cb != R2_CB_OTHER && !strcmp(state, g_r2.signin.state);
+        const char *said = !ours                ? 0
+                           : cb == R2_CB_CODE   ? "Signed in. You can close this tab and go back to clipback."
+                                                : "The sign-in was cancelled. You can close this tab.";
+        char out[512];
+        if (said)
+            snprintf(out, sizeof out,
+                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"
+                     "Connection: close\r\n\r\n<!doctype html><title>clipback</title>"
+                     "<p style=\"font:16px sans-serif;margin:40px\">%s</p>",
+                     said);
+        else snprintf(out, sizeof out, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        send(s, out, (int)strlen(out), 0);
+        shutdown(s, SD_SEND);
+        closesocket(s);
+        SecureZeroMemory(req, sizeof req);
+        if (!ours) continue;
+        if (cb == R2_CB_REFUSED) r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't sign in: %s", code);
+        else {
+            static R2Task t;
+            t = g_r2.signin.task;
+            str_set(t.code, code);
+            r2_set_status(R2_SETUP_BUSY, "Signing in...");
+            if (!r2_queue(t)) r2_set_status(R2_SETUP_FAILED, "Busy: try again in a moment");
+            SecureZeroMemory(&t, sizeof t);
+        }
+        SecureZeroMemory(code, sizeof code);
+        break;
+    }
+    closesocket(ls);
+    WSACleanup();
+    return 0;
+}
+
 static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char *tagged, i32 tagged_cap);
 
 static DWORD WINAPI r2_thread(void *)
@@ -1494,9 +2309,20 @@ static DWORD WINAPI r2_thread(void *)
         case R2_T_UPLOAD: r2_run_upload(t); break;
         case R2_T_FREE: r2_run_free(t); break;
         case R2_T_DELETE: r2_run_delete(t); break;
-        case R2_T_TEST: r2_run_test(t.conf); break;
+        case R2_T_SETUP: {
+            static char bearer[2048];
+            if (!t.oauth) r2_run_setup(t, t.token);
+            else if (r2_oauth_access(bearer, sizeof bearer)) r2_run_setup(t, bearer);
+            else r2_set_status(R2_SETUP_FAILED, "Cloudflare ended the sign-in: sign in again");
+            SecureZeroMemory(bearer, sizeof bearer);
+        } break;
+        case R2_T_SIGNIN: r2_run_signin(t); break;
+        case R2_T_USAGE: r2_run_usage(t); break;
+        case R2_T_SIGNOUT: r2_revoke(t.token, t.conf.access); break;
         }
         SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
+        SecureZeroMemory(t.token, sizeof t.token);
+        SecureZeroMemory(t.code, sizeof t.code);
     }
     return 0;
 }
@@ -1715,6 +2541,22 @@ static void r2_on_save_event(const Event &e)
 
 static void r2_on_event(const Event &e)
 {
+    if (e.a == R2_EV_SETUP) {
+        // What the setup found goes to the settings
+        AcquireSRWLockExclusive(&g_r2.lock);
+        R2Conf f = g_r2.found;
+        g_r2.fetched = {};
+        g_r2.usage_us = g_r2.usage_asked_us = 0;
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        Config &c = g_app.config;
+        str_set(c.r2_account, f.account);
+        str_set(c.r2_access_key, f.access);
+        str_set(c.r2_bucket, f.bucket);
+        str_set(c.r2_public_url, f.public_url);
+        config_save(c, g_app.paths);
+        log_line("r2: set up: bucket %s at %s", f.bucket, f.public_url);
+        return;
+    }
     if (e.a != R2_EV_PROBED) return; // the rest only wake the UI
     i32 slot = (i32)e.b;
     if (slot < 0 || slot >= COUNT(g_r2.work)) return;
@@ -1722,25 +2564,128 @@ static void r2_on_event(const Event &e)
     else r2_start_copy(slot);
 }
 
-// Uploads a small file, fetches it from the public address, deletes it. Reads the settings as they are now.
-static void r2_test()
+static void r2_status_set_now(R2SetupState state, const char *text)
 {
-    R2Task t = {};
-    t.kind = R2_T_TEST;
-    bool ready = r2_conf(&t.conf);
     AcquireSRWLockExclusive(&g_r2.lock);
-    g_r2.test.state = ready ? R2_TEST_BUSY : R2_TEST_FAILED;
-    str_set(g_r2.test.text, ready ? "Testing..." : "Fill in every field and the secret key first");
+    g_r2.status.state = state;
+    str_set(g_r2.status.text, text);
     ReleaseSRWLockExclusive(&g_r2.lock);
-    if (ready && !r2_queue(t)) r2_test_end(false, "Busy: try again in a moment");
 }
 
-static R2View r2_test_view()
+static R2Status r2_status()
 {
     AcquireSRWLockShared(&g_r2.lock);
-    R2View v = g_r2.test;
+    R2Status s = g_r2.status;
     ReleaseSRWLockShared(&g_r2.lock);
-    return v;
+    return s;
+}
+
+// A setup task with the settings as they are now and the API token kept.
+static void r2_setup_task(R2Task *t, R2TaskKind kind)
+{
+    *t = {};
+    t->kind = kind;
+    r2_conf(&t->conf);
+    SecureZeroMemory(t->conf.secret, sizeof t->conf.secret);
+    r2_token_get(t->token, sizeof t->token);
+    t->oauth = kind == R2_T_SIGNIN || r2_signed_in();
+}
+
+// Sets up again with what's kept (the sign-in or the pasted token): after the bucket or address changes.
+static void r2_setup_again()
+{
+    static R2Task t;
+    r2_setup_task(&t, R2_T_SETUP);
+    if (!t.oauth && !t.token[0]) r2_status_set_now(R2_SETUP_IDLE, "");
+    else {
+        r2_status_set_now(R2_SETUP_BUSY, "Starting...");
+        if (!r2_queue(t)) r2_status_set_now(R2_SETUP_FAILED, "Busy: try again in a moment");
+    }
+    SecureZeroMemory(&t, sizeof t);
+}
+
+// Stops waiting for the browser.
+static void r2_sign_in_cancel()
+{
+    if (!g_r2.signin.thread) return;
+    InterlockedExchange(&g_r2.signin.cancel, 1);
+    WaitForSingleObject(g_r2.signin.thread, 2000);
+    CloseHandle(g_r2.signin.thread);
+    g_r2.signin.thread = 0;
+    SecureZeroMemory(&g_r2.signin.task, sizeof g_r2.signin.task);
+    if (r2_status().state == R2_SETUP_WAITING) r2_status_set_now(R2_SETUP_IDLE, "");
+}
+
+// Opens Cloudflare's sign-in page in the browser and waits for it to come back to CF_OAUTH_REDIRECT.
+static void r2_sign_in()
+{
+    r2_sign_in_cancel();
+    if (!CF_OAUTH_CLIENT_ID[0]) {
+        r2_status_set_now(R2_SETUP_FAILED, "Sign-in with Cloudflare isn't ready in this version: use a token instead");
+        return;
+    }
+    u8 raw[32];
+    BCryptGenRandom(0, raw, sizeof raw, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    r2_setup_task(&g_r2.signin.task, R2_T_SIGNIN);
+    r2_b64url(raw, 32, g_r2.signin.task.verifier);
+    SecureZeroMemory(raw, sizeof raw);
+    r2_random(g_r2.signin.state, 32);
+    char challenge[44], redirect[128], scopes[256], url[1024];
+    r2_pkce_challenge(g_r2.signin.task.verifier, challenge);
+    r2_uri_encode(CF_OAUTH_REDIRECT, redirect, sizeof redirect);
+    r2_uri_encode(CF_OAUTH_SCOPES, scopes, sizeof scopes);
+    snprintf(url, sizeof url,
+             "https://dash.cloudflare.com/oauth2/auth?response_type=code&client_id=%s&redirect_uri=%s&scope=%s"
+             "&state=%s&code_challenge=%s&code_challenge_method=S256",
+             CF_OAUTH_CLIENT_ID, redirect, scopes, g_r2.signin.state, challenge);
+    InterlockedExchange(&g_r2.signin.cancel, 0);
+    g_r2.signin.thread = thread_start(r2_signin_thread, 0);
+    r2_status_set_now(R2_SETUP_WAITING, "Waiting for Cloudflare in the browser...");
+    log_line("r2: signing in with Cloudflare");
+    open_url(url);
+}
+
+// Forgets the setup: the settings it made, the tokens, and the usage read. A sign-in is revoked at Cloudflare,
+// with the bucket's token clipback made; a pasted token stays the player's.
+static void r2_forget(bool revoke)
+{
+    r2_sign_in_cancel();
+    Config &c = g_app.config;
+    static R2Task t;
+    t = {};
+    if (revoke && r2_token_get(t.token, sizeof t.token, true)) {
+        t.kind = R2_T_SIGNOUT;
+        str_set(t.conf.account, c.r2_account);
+        str_set(t.conf.access, c.r2_access_key);
+        if (!r2_queue(t)) log_line("r2: too many tasks waiting; the sign-in wasn't revoked");
+    }
+    SecureZeroMemory(&t, sizeof t);
+    r2_token_store("", true);
+    r2_token_store("");
+    c.r2_account[0] = c.r2_access_key[0] = 0;
+    if (strstr(c.r2_public_url, ".r2.dev")) c.r2_public_url[0] = 0; // the player's own domain stays
+    config_save(c, g_app.paths);
+    AcquireSRWLockExclusive(&g_r2.lock);
+    g_r2.fetched = {};
+    g_r2.usage_us = g_r2.usage_asked_us = 0;
+    g_r2.status = {};
+    ReleaseSRWLockExclusive(&g_r2.lock);
+}
+
+// Signs out of Cloudflare, or forgets a pasted token.
+static void r2_sign_out()
+{
+    log_line("r2: signed out");
+    r2_forget(true);
+}
+
+// Keeps a pasted API token and sets up with it; "" forgets it. A sign-in gives way to it.
+static void r2_set_token(const char *token)
+{
+    if (r2_signed_in() || !token || !token[0]) r2_forget(true);
+    if (!token || !token[0]) return;
+    r2_token_store(token);
+    r2_setup_again();
 }
 
 static bool r2_link_for(u64 lib_key, char *url, i32 cap)
@@ -1801,16 +2746,41 @@ static void r2_delete(const char *key)
     if (!r2_queue(t)) log_line("r2: too many tasks waiting; %s not deleted", key);
 }
 
+// What the links take up and cost. With R2 set up, Cloudflare's own figures for this month are fetched at most
+// hourly; until they come, those fields are -1.
 static R2Usage r2_usage()
 {
     R2Usage u = {};
+    bool ask = false;
+    i64 now = now_us();
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
     for (i32 i = 0; i < g_r2.count; i++)
         if (r2_in_bucket(g_r2.shares[i])) u.used_bytes += g_r2.shares[i].bytes;
+    u.usage_us = g_r2.usage_us;
+    u.bucket_bytes = u.usage_us ? g_r2.fetched.bytes : -1;
+    u.class_a = u.usage_us ? g_r2.fetched.class_a : -1;
+    u.class_b = u.usage_us ? g_r2.fetched.class_b : -1;
+    if (r2_ready() && (!g_r2.usage_asked_us || now - g_r2.usage_asked_us > R2_USAGE_EVERY_US)) {
+        g_r2.usage_asked_us = now;
+        ask = true;
+    }
     ReleaseSRWLockExclusive(&g_r2.lock);
     u.limit_bytes = r2_limit_for_budget(g_app.config.r2_budget);
     u.cost_per_gb_month = R2_PRICE_GB;
     u.free_gb = R2_FREE_GB;
+    u.month_cost = r2_month_cost(u.bucket_bytes >= 0 ? u.bucket_bytes : u.used_bytes, u.class_a > 0 ? u.class_a : 0,
+                                 u.class_b > 0 ? u.class_b : 0);
+    if (ask) {
+        static R2Task t;
+        t = {};
+        t.kind = R2_T_USAGE;
+        r2_conf(&t.conf);
+        SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
+        t.oauth = r2_signed_in();
+        if (!t.oauth) r2_token_get(t.token, sizeof t.token);
+        r2_queue(t);
+        SecureZeroMemory(&t, sizeof t);
+    }
     return u;
 }

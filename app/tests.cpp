@@ -1099,6 +1099,94 @@ static void test_r2()
     T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
     T(r[0].host == HOST_R2 && !r[0].expires_us && r[1].host == HOST_LITTERBOX && r[1].expires_us == w[1].expires_us);
     DeleteFileW(file.s);
+
+    // The bucket's S3 secret from an API token
+    char secret[65];
+    r2_token_secret("abc", secret);
+    T(!strcmp(secret, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+
+    // Cloudflare's answers
+    char id[72], msg[128];
+    T(r2_parse_verify("{\"result\":{\"id\":\"0123456789abcdef0123456789abcd01\",\"status\":\"active\"},\"success\":true,"
+                      "\"errors\":[],\"messages\":[]}",
+                      id, sizeof id));
+    T(!strcmp(id, "0123456789abcdef0123456789abcd01"));
+    T(!r2_parse_verify("{\"result\":{\"id\":\"f267\",\"status\":\"disabled\"}}", id, sizeof id));
+    T(r2_cf_error("{\"success\":false,\"errors\":[{\"code\":10006,\"message\":\"The specified bucket does not exist.\"}]}",
+                  msg, sizeof msg) == CF_NO_SUCH_BUCKET);
+    T(!strcmp(msg, "The specified bucket does not exist."));
+    T(r2_cf_error("{\"success\":true,\"errors\":[],\"result\":{}}", msg, sizeof msg) == 0 && !msg[0]);
+    char ids[4][40], names[4][128];
+    T(r2_parse_accounts("{\"result\":[{\"id\":\"a1\",\"name\":\"Main\",\"settings\":{\"x\":1}},{\"id\":\"b2\",\"name\":\"Other\"}],"
+                        "\"success\":true}",
+                        ids, names, 4) == 2);
+    T(!strcmp(ids[0], "a1") && !strcmp(names[0], "Main") && !strcmp(ids[1], "b2") && !strcmp(names[1], "Other"));
+    T(r2_parse_accounts("{\"result\":[],\"success\":true}", ids, names, 4) == 0);
+    char domain[128];
+    bool on = true;
+    T(r2_parse_domain("{\"result\":{\"bucketId\":\"x\",\"domain\":\"pub-0123abcd.r2.dev\",\"enabled\":false}}", domain,
+                      sizeof domain, &on));
+    T(!strcmp(domain, "pub-0123abcd.r2.dev") && !on);
+    T(r2_parse_domain("{\"result\":{\"domain\":\"pub-0123abcd.r2.dev\",\"enabled\":true}}", domain, sizeof domain, &on) && on);
+    char value[128];
+    T(r2_parse_new_token("{\"result\":{\"id\":\"0123456789abcdef0123456789abcd02\",\"name\":\"clipback\","
+                         "\"value\":\"test-token-value-00000000000000000000000\"},\"success\":true}",
+                         id, sizeof id, value, sizeof value));
+    T(!strcmp(id, "0123456789abcdef0123456789abcd02") && !strcmp(value, "test-token-value-00000000000000000000000"));
+    char group[40];
+    T(r2_parse_perm_group("{\"result\":[{\"id\":\"6a01\",\"name\":\"Workers R2 Storage Bucket Item Read\"},"
+                          "{\"id\":\"2efd\",\"name\":\"Workers R2 Storage Bucket Item Write\",\"scopes\":[\"a\"]}]}",
+                          CF_PERM_BUCKET_ITEMS_NAME, group, sizeof group));
+    T(!strcmp(group, "2efd"));
+    T(!r2_parse_perm_group("{\"result\":[{\"id\":\"6a01\",\"name\":\"Other\"}]}", CF_PERM_BUCKET_ITEMS_NAME, group,
+                           sizeof group));
+
+    // Usage: the latest storage count, and requests by class (DeleteObject is free)
+    R2Fetched f;
+    T(r2_parse_usage("{\"data\":{\"viewer\":{\"accounts\":[{\"storage\":[{\"max\":{\"payloadSize\":1000,\"metadataSize\":24}}],"
+                     "\"ops\":[{\"sum\":{\"requests\":7},\"dimensions\":{\"actionType\":\"PutObject\"}},"
+                     "{\"sum\":{\"requests\":3},\"dimensions\":{\"actionType\":\"ListObjects\"}},"
+                     "{\"sum\":{\"requests\":40},\"dimensions\":{\"actionType\":\"GetObject\"}},"
+                     "{\"sum\":{\"requests\":5},\"dimensions\":{\"actionType\":\"DeleteObject\"}}]}]}},\"errors\":null}",
+                     &f));
+    T(f.bytes == 1024 && f.class_a == 10 && f.class_b == 40);
+    T(r2_parse_usage("{\"data\":{\"viewer\":{\"accounts\":[{\"storage\":[],\"ops\":[]}]}},\"errors\":null}", &f));
+    T(f.bytes == 0 && f.class_a == 0 && f.class_b == 0);
+    T(!r2_parse_usage("{\"data\":null,\"errors\":[{\"message\":\"not authorized\"}]}", &f));
+    T(r2_op_class("UploadPart") == 'A' && r2_op_class("HeadObject") == 'B' && r2_op_class("DeleteObject") == 0);
+    char q[1600];
+    r2_usage_query("acc1", "clipback", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", q, sizeof q);
+    T(strstr(q, "\"accountTag\":\"acc1\"") && strstr(q, "\"bucketName\":\"clipback\"") &&
+      strstr(q, "r2OperationsAdaptiveGroups") && strstr(q, "\"startDate\":\"2026-11-01T00:00:00Z\""));
+
+    // A month's cost past the free allowances
+    T(r2_month_cost(5 * R2_GB, 100, 100) == 0);
+    T(fabs(r2_month_cost(20 * R2_GB, 3000000, 20000000) - (0.15 + 9.0 + 3.6)) < 1e-9);
+
+    T(r2_bucket_name_ok("clipback") && r2_bucket_name_ok("my-clips-2"));
+    T(!r2_bucket_name_ok("ab") && !r2_bucket_name_ok("-clips") && !r2_bucket_name_ok("Clips") && !r2_bucket_name_ok("a_b"));
+    T(strstr(r2_token_link(), "permissionGroupKeys=%5B%7B%22key%22%3A%22bf7481a1826f439697cb59a20b22293e%22") != 0);
+
+    // Sign-in: PKCE (RFC 7636's example), the browser's callback, and the token answer
+    char challenge[44];
+    r2_pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", challenge);
+    T(!strcmp(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
+    char cb_code[256], state[64];
+    T(r2_callback_parse("GET /oauth/callback?code=ab%2Fc+d&scope=x&state=s123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", cb_code,
+                        sizeof cb_code, state, sizeof state) == R2_CB_CODE);
+    T(!strcmp(cb_code, "ab/c d") && !strcmp(state, "s123"));
+    T(r2_callback_parse("GET /oauth/callback?error=access_denied&error_description=The+user+said+no&state=s1 HTTP/1.1",
+                        cb_code, sizeof cb_code, state, sizeof state) == R2_CB_REFUSED);
+    T(!strcmp(cb_code, "The user said no") && !strcmp(state, "s1"));
+    T(r2_callback_parse("GET /favicon.ico HTTP/1.1", cb_code, sizeof cb_code, state, sizeof state) == R2_CB_OTHER);
+    T(r2_callback_parse("GET /oauth/callback?state=s1 HTTP/1.1", cb_code, sizeof cb_code, state, sizeof state) == R2_CB_OTHER);
+    static R2OAuth o;
+    T(r2_parse_oauth("{\"access_token\":\"at1\",\"expires_in\":3599,\"refresh_token\":\"rt1\",\"scope\":\"account.read\","
+                     "\"token_type\":\"bearer\"}",
+                     &o));
+    T(!strcmp(o.access, "at1") && !strcmp(o.refresh, "rt1") && o.expires_in == 3599 && !o.error[0]);
+    T(!r2_parse_oauth("{\"error\":\"invalid_grant\",\"error_description\":\"expired\"}", &o));
+    T(!strcmp(o.error, "invalid_grant"));
 }
 
 static void test_mcpack()
