@@ -85,9 +85,10 @@ static void run_command(const char *text)
             ui_show(SCREEN_LIBRARY);
             g_lib_shared = !strcmp(arg, "shared");
             if (!g_lib_shared) lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
-        } else if (!strcmp(arg, "player")) { // the newest clip, playing in the library
+        } else if (!strcmp(arg, "player") || !strcmp(arg, "share-menu")) { // the newest clip playing, [its Share menu]
             ui_show(SCREEN_LIBRARY);
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]]);
+            g_lib_share_ask = !strcmp(arg, "share-menu");
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
         else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
         else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail
@@ -139,7 +140,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, free-links, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, free-links, help, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {
@@ -161,7 +162,7 @@ static void handle_event(const Event &e)
     case EV_LOG: log_line("%s", e.text); break;
     case EV_RECORDER: recorder_on_event(e); break;
     case EV_AUDIO: audio_on_event(e); break;
-    case EV_SAVE: save_on_event(e); editor_on_save_event(e); r2_on_save_event(e); break;
+    case EV_SAVE: save_on_event(e); editor_on_save_event(e); library_on_save_event(e); r2_on_save_event(e); break;
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
     case EV_GAMEDB: gamedb_on_event(e); break;

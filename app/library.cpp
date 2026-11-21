@@ -2779,9 +2779,53 @@ static void lib_uploads_poll()
 
 // The note at the bottom of the window, a fixed size: the oldest upload under way with how far it is, else the
 // last word for a few seconds.
+// Share copies made from the library's Share menu (lib_share_copy): each goes on the clipboard when it's done. The
+// note at the bottom shows the first one being made.
+struct LibShareCopy {
+    u32  id;
+    char name[256];
+    char size[16]; // "20 MB"
+};
+static LibShareCopy g_lib_shares[8];
+static i32          g_lib_share_count;
+static bool         g_lib_share_ask;          // the player's Share menu opens next frame
+static char         g_lib_share_pending[512]; // a file Share was asked for (the toast's): played once the library has it
+static u64          g_lib_share_since;
+
 static void lib_note_draw()
 {
     bool busy = g_lib_upload_count > 0;
+    if (!busy && g_lib_share_count) { // a share copy being made, while no upload is
+        ui_wake();
+        const LibShareCopy &s = g_lib_shares[0];
+        const SaveJobView *v = save_view(s.id);
+        char text[300], pct[16] = "";
+        f32 progress = v && v->state == SAVE_RUNNING ? v->progress : 0;
+        snprintf(text, sizeof text, "Making a %s copy of %s", s.size, s.name);
+        if (v && v->state == SAVE_RUNNING) snprintf(pct, sizeof pct, "%d%%", (i32)(progress * 100 + 0.5f));
+        ImGuiViewport *vp = ImGui::GetMainViewport();
+        ImDrawList *dl = ImGui::GetForegroundDrawList(vp);
+        f32 w = kit_px(420), h = kit_px(44), r = kit_px(10);
+        ImVec2 a(floorf(vp->Pos.x + (vp->Size.x - w) / 2), floorf(vp->Pos.y + vp->Size.y - h - kit_px(56)));
+        ImVec2 b(a.x + w, a.y + h);
+        dl->AddRectFilled(a, b, col32(COL_PANEL2), r);
+        dl->AddRect(a, b, col32(COL_LINE), r, 0, kit_px(1));
+        f32 fs = g_font_icon->FontSize;
+        ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_SHARE);
+        dl->AddText(g_font_icon, fs, ImVec2(a.x + kit_px(14), floorf(a.y + (h - gs.y) / 2)), col32(COL_ACCENT), ICON_SHARE);
+        f32 tx = a.x + kit_px(14) + gs.x + kit_px(10), right = b.x - kit_px(14);
+        if (pct[0]) {
+            f32 pw = ImGui::CalcTextSize(pct).x;
+            dl->AddText(ImVec2(right - pw, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), col32(COL_DIM), pct);
+            right -= kit_px(44);
+        }
+        for (size_t n = strlen(text); n > 3 && ImGui::CalcTextSize(text).x > right - tx; n--) memcpy(text + n - 4, "...", 4);
+        dl->AddText(ImVec2(tx, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), col32(COL_TEXT), text);
+        f32 y = b.y - kit_px(5), x0 = a.x + kit_px(14), x1 = b.x - kit_px(14);
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + kit_px(2)), col32(COL_HOVER), kit_px(1));
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + (x1 - x0) * progress, y + kit_px(2)), col32(COL_ACCENT), kit_px(1));
+        return;
+    }
     if (!busy && (!g_lib_note[0] || now_us() - g_lib_note_us > 4000000)) return;
     ui_wake(); // until it goes
     char text[256], pct[16] = "";
@@ -2833,6 +2877,144 @@ static void lib_note_draw()
 }
 
 static void library_r2_event() { lib_uploads_poll(); }
+
+static void editor_refresh_shares(); // editor.cpp
+
+// Copy file at a share size: a file already under `mb` goes on the clipboard as it is; a bigger one gets a share copy
+// (the whole file, one stereo mix) that goes on the clipboard once it's made. mb 0 = the file as it is.
+static void lib_share_copy(const LibItem &it, f32 mb)
+{
+    Path path = lib_item_path(it);
+    char label[16];
+    share_size_label(mb, label, sizeof label);
+    if (mb <= 0 || it.size <= (u64)((f64)mb * 1024 * 1024)) {
+        if (clipboard_copy_file(path.s)) lib_note(false, "Copied %s to the clipboard", it.name);
+        else lib_note(true, "Couldn't copy %s", it.name);
+        return;
+    }
+    const MediaInfo &m = it.info;
+    f64 kbps = m.duration > 0 ? it.size * 8 / 1000.0 / m.duration : 0;
+    if (!share_plan(m.duration, mb, m.track_count > 0, m.width, m.height, m.fps, kbps).fits) {
+        lib_note(true, "%s is too long to fit in %s", it.name, label);
+        return;
+    }
+    if (g_lib_share_count == COUNT(g_lib_shares)) {
+        lib_note(true, "Too many copies are being made; try again in a moment");
+        return;
+    }
+    static EditJob j;
+    j = {};
+    j.src = path;
+    j.info = it.info;
+    j.out_dir = g_app.paths.share_dir;
+    snprintf(j.stem, sizeof j.stem, "%s", it.name);
+    clean_name(j.stem);
+    j.share_mb = mb;
+    u32 id = save_edit(SAVE_SHARE, j);
+    if (!id) {
+        lib_note(true, "Too many saves are waiting; try again in a moment");
+        return;
+    }
+    LibShareCopy &s = g_lib_shares[g_lib_share_count++];
+    s.id = id;
+    str_set(s.name, it.name);
+    str_set(s.size, label);
+    log_line("library: making a %s share copy of %s", label, it.name);
+    ui_wake();
+}
+
+// A save finished: a share copy from the Share menu goes on the clipboard.
+static void library_on_save_event(const Event &e)
+{
+    u32 id = (u32)(e.b & 0xffffffff);
+    i32 i = 0;
+    while (i < g_lib_share_count && g_lib_shares[i].id != id) i++;
+    if (!id || i == g_lib_share_count) return;
+    if (e.a != SAVE_EV_DONE && e.a != SAVE_EV_FAILED && e.a != SAVE_EV_CANCELLED) return;
+    LibShareCopy s = g_lib_shares[i];
+    for (; i + 1 < g_lib_share_count; i++) g_lib_shares[i] = g_lib_shares[i + 1];
+    g_lib_share_count--;
+    if (e.a == SAVE_EV_DONE) {
+        wchar_t w[MAX_PATH];
+        utf8_to_wide(e.text, w, MAX_PATH);
+        editor_refresh_shares();
+        if (clipboard_copy_file(w)) lib_note(false, "A %s copy of %s is on the clipboard, ready to paste", s.size, s.name);
+        else lib_note(true, "The %s copy of %s is made, but the clipboard was busy", s.size, s.name);
+    } else if (e.a == SAVE_EV_FAILED) lib_note(true, "Couldn't make a %s copy of %s: %s", s.size, s.name, e.text);
+}
+
+// Share for a file by its path (the Clip saved toast's): the library plays it with the Share menu open, once a scan
+// has it.
+static void library_share_file(const char *path)
+{
+    str_set(g_lib_share_pending, path);
+    g_lib_share_since = GetTickCount64();
+    library_rescan();
+    ui_show(SCREEN_LIBRARY);
+    log_line("library: Share asked for %s", path);
+}
+
+static void lib_share_pending_check()
+{
+    if (!g_lib_share_pending[0]) return;
+    Library &lib = g_app.library;
+    wchar_t want[MAX_PATH];
+    utf8_to_wide(g_lib_share_pending, want, MAX_PATH);
+    for (i32 i = 0; i < lib.item_count; i++) {
+        if (_wcsicmp(lib_item_path(lib.items[i]).s, want)) continue;
+        if (!lib.items[i].probed) return;
+        g_lib_share_pending[0] = 0;
+        g_lib_shared = false;
+        library_play(lib.items[i]);
+        g_lib_share_ask = true;
+        return;
+    }
+    if (GetTickCount64() - g_lib_share_since > 15000 && !lib.scanning) {
+        log_line("library: %s never turned up for Share", g_lib_share_pending);
+        g_lib_share_pending[0] = 0;
+    }
+}
+
+// The Share menu, for one file, asked every time: Copy file at one of the share sizes or as it is (a size it already
+// fits says so), Copy link, and Show in folder. Opened with ImGui::OpenPopup(id) where it's drawn.
+static void lib_share_menu(const char *id, const LibItem &it)
+{
+    lib_popup_style_push(8);
+    if (!ImGui::BeginPopup(id)) {
+        lib_popup_style_pop();
+        return;
+    }
+    const f32 *sizes = g_app.config.share_sizes_mb;
+    f32 chip_w = kit_px(72), gap = kit_px(6);
+    f32 row_w = 4 * chip_w + 3 * gap;
+    ImGui::PushFont(g_font_small);
+    ImGui::TextColored(rgb(COL_DIM), "Copy file");
+    ImGui::PopFont();
+    char full[24];
+    fmt_size(it.size, full, sizeof full);
+    for (i32 i = 0; i < 4; i++) {
+        char label[40];
+        if (i < 3) {
+            char mb[16];
+            share_size_label(sizes[i], mb, sizeof mb);
+            snprintf(label, sizeof label, "%s##share%d", mb, i);
+        } else snprintf(label, sizeof label, "Full##share%d", i);
+        if (i) ImGui::SameLine(0, gap);
+        if (kit_chip(label, false, 0, chip_w)) {
+            lib_share_copy(it, i < 3 ? sizes[i] : 0);
+            ImGui::CloseCurrentPopup();
+        }
+        if (i < 3 && it.size <= (u64)((f64)sizes[i] * 1024 * 1024)) kit_tip("It's under this already: copied as it is");
+        else if (i < 3) kit_tip("A smaller copy, made now");
+        else kit_tip(full);
+    }
+    ImGui::Dummy(ImVec2(row_w, kit_px(2)));
+    ImGui::Separator();
+    if (lib_menu_item(ICON_LINK, "Copy link", false, row_w)) lib_link_item(it);
+    if (lib_menu_item(ICON_FOLDER, "Show in folder", false, row_w)) show_in_folder(lib_item_path(it).s);
+    ImGui::EndPopup();
+    lib_popup_style_pop();
+}
 
 // "Expires in 5 h", "Expires in 20 min"
 static void lib_expires_in(i64 left_us, char *out, i32 cap)
@@ -3059,7 +3241,7 @@ static bool g_card_pick_game; // "Pick a game" on a card was clicked: the picker
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, display_name = false, del = false, folders = false, game = false, comment = false, tags = false;
+    bool rename = false, display_name = false, del = false, folders = false, game = false, comment = false, tags = false, share = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -3067,10 +3249,7 @@ static void card_menu()
         if (lib_menu_item(ICON_PLAY, "Play")) library_play(it);
         if (lib_menu_item(ICON_EDIT, "Edit")) editor_open(it);
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
-        if (lib_menu_item(ICON_COPY, "Copy the file")) {
-            if (clipboard_copy_file(path.s)) lib_message(false, "Copied %s to the clipboard", it.name);
-            else lib_message(true, "Couldn't copy to the clipboard");
-        }
+        if (lib_menu_item(ICON_SHARE, "Share...")) share = true;
         if (lib_menu_item(ICON_LINK, "Copy link")) lib_link_item(it);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
@@ -3090,6 +3269,8 @@ static void card_menu()
     lib_comment_dialog();
     if (tags) lib_tags_open(lib.target);
     lib_tags_dialog();
+    if (share) ImGui::OpenPopup("card_share");
+    lib_share_menu("card_share", lib.target);
     if (del) ImGui::OpenPopup("Delete");
     if (game || g_card_pick_game) ImGui::OpenPopup("card_game");
     g_card_pick_game = false;
@@ -4184,44 +4365,23 @@ static void lib_player_view()
     lib_comment_dialog();
     lib_tags_dialog();
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
-    // Copy opens a menu: the file on the clipboard, a link to it, and for one bigger than the share size a share copy.
-    const Editor &ed = g_app.editor;
-    f32 share_mb = share_target_mb(ed.share_size, ed.custom_mb);
-    bool big = lib.playing.size > (u64)(share_mb * 1024 * 1024);
-    ImVec2 copy_at = ImGui::GetCursorScreenPos();
-    kit_next_tip("Copy");
-    if (kit_icon_button(ICON_COPY, "##copy", KIT_GHOST)) ImGui::OpenPopup("copy_menu");
+    // Share opens the Share menu (lib_share_menu), under the icons and right-aligned; the toast's Share opens it too.
+    ImVec2 share_at = ImGui::GetCursorScreenPos();
+    kit_next_tip("Share");
+    if (kit_icon_button(ICON_SHARE, "##share", KIT_GHOST) || g_lib_share_ask) ImGui::OpenPopup("share_menu");
+    g_lib_share_ask = false;
     ImGui::SameLine(0, gap);
     kit_next_tip("Edit");
     bool edit = kit_icon_button(ICON_EDIT, "##edit", KIT_GHOST);
     ImGui::SameLine(0, gap);
     kit_next_tip("Show in folder");
     if (kit_icon_button(ICON_FOLDER, "##folder", KIT_GHOST)) show_in_folder(p.path.s);
-    bool share = false;
-    ImGui::SetNextWindowPos(ImVec2(h0.x + full_w, copy_at.y + fh + kit_px(4)), 0, ImVec2(1, 0)); // under the icons, right-aligned
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(6), kit_px(6)));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
-    if (ImGui::BeginPopup("copy_menu")) {
-        char as_is[64], share_label[64];
-        snprintf(as_is, sizeof as_is, "Copy the file (%s)", size);
-        char mb_s[24];
-        share_size_label(share_mb, mb_s, sizeof mb_s);
-        snprintf(share_label, sizeof share_label, "Make a share copy (under %s)", mb_s);
-        if (lib_menu_item(ICON_COPY, as_is)) {
-            if (clipboard_copy_file(p.path.s)) lib_note(false, "Copied %s to the clipboard", lib.playing.name);
-            else lib_note(true, "Couldn't copy %s", lib.playing.name);
-        }
-        if (lib_menu_item(ICON_LINK, "Copy link")) lib_link_item(lib.playing);
-        if (big && lib_menu_item(ICON_SHARE, share_label)) share = true;
-        ImGui::EndPopup();
-    }
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-    if (edit || share) {
+    ImGui::SetNextWindowPos(ImVec2(h0.x + full_w, share_at.y + fh + kit_px(4)), 0, ImVec2(1, 0));
+    lib_share_menu("share_menu", lib.playing);
+    if (edit) {
         LibItem it = lib.playing;
         library_close_player();
         editor_open(it);
-        if (share) g_app.editor.tab = 1; // straight to Keep and share
         return;
     }
 
@@ -5163,6 +5323,7 @@ static void screen_library()
     }
     lib_uploads_poll();
     lib_note_draw();
+    lib_share_pending_check();
     if (lib.player.open) {
         lib_player_view();
         return;

@@ -425,11 +425,14 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         i32 k = toast_hit(t, lp);
         if (saved) {
             toast_hide(t);
-            if (k == TP_MAIN || k == TP_SECOND) {
-                log_line("toast: %s %s", k == TP_SECOND ? "edit" : "share", t.path);
+            if (k == TP_MAIN) { // Share: the clip in the library, with the Share menu
+                log_line("toast: share %s", t.path);
+                library_share_file(t.path);
+            } else if (k == TP_SECOND) {
+                log_line("toast: edit %s", t.path);
                 ui_show(SCREEN_EDITOR);
                 editor_open_file(t.path);
-                g_app.editor.tab = k == TP_MAIN ? 1 : 0;
+                g_app.editor.tab = 0;
             }
         } else if (t.kind == TOAST_SESSION) {
             toast_session_close(k);
