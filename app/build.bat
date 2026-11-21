@@ -1,5 +1,6 @@
 @echo off
-rem Builds app\build\clipback.exe from the single translation unit clipback.cpp. `build debug` for a debug build.
+rem Builds app\build\clipback.exe from the single translation unit clipback.cpp. `build debug` for a debug build,
+rem `build release` for an optimised build plus dist\clipback-<version>.exe and its update manifest (release.ps1).
 setlocal
 cd /d "%~dp0"
 if not exist build mkdir build
@@ -26,3 +27,4 @@ powershell -NoProfile -Command "$bad = 0; Get-ChildItem *.cpp,*.h,*.rc,*.bat | F
 
 rc /nologo /fo build\clipback.res clipback.rc || exit /b 1
 cl %FLAGS% clipback.cpp build\clipback.res /Fobuild\ /Fdbuild\ /Febuild\clipback.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS% || exit /b 1
+if "%1"=="release" powershell -NoProfile -ExecutionPolicy Bypass -File release.ps1 || exit /b 1
