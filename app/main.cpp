@@ -181,6 +181,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             sessions_tick();
             timeline_tick();
             ffget_tick();
+            backup_tick();
             pipe_publish();
         }
         return 0;
@@ -372,6 +373,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
                  GetCurrentProcessId(), g_dev ? ", detailed log on" : "", g_after_crash ? ", restarted after a crash" : "");
     }
     diag_watchdog_start();
+    backup_init();
 
     WNDCLASSEXW wc = {sizeof wc};
     wc.lpfnWndProc = diag_wndproc<msg_wndproc_body>;
@@ -436,6 +438,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     gamedb_stop();
     r2_stop();
     ffget_stop();
+    backup_stop();
     audio_stop();
     recorder_stop();
     save_stop();

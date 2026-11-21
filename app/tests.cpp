@@ -263,6 +263,71 @@ static bool test_known(const char *name, char *out, i32 cap)
     return g != 0;
 }
 
+// Backup: new and newer files are copied, fresh ones and ones the backup already has are left, clips only when asked,
+// and nothing at the backup is deleted.
+static void test_backup()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path root = {};
+    swprintf(root.s, MAX_PATH, L"%sclipback-test-backup-%u", temp, GetCurrentProcessId());
+    Path from = path_join(root, L"from"), to = path_join(root, L"to");
+    auto put = [](const Path &dir, const wchar_t *name, const char *text, i64 age_s) {
+        SHCreateDirectoryExW(0, dir.s, 0);
+        Path p = path_join(dir, name);
+        FILE *f = _wfopen(p.s, L"wb");
+        if (f) { fputs(text, f); fclose(f); }
+        HANDLE h = CreateFileW(p.s, FILE_WRITE_ATTRIBUTES, 0, 0, OPEN_EXISTING, 0, 0);
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        u64 t = (((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) - (u64)age_s * 10000000;
+        ft.dwLowDateTime = (DWORD)t;
+        ft.dwHighDateTime = (DWORD)(t >> 32);
+        SetFileTime(h, 0, 0, &ft);
+        CloseHandle(h);
+    };
+    auto has = [](const Path &p) { return GetFileAttributesW(p.s) != INVALID_FILE_ATTRIBUTES; };
+    Path ses = path_join(path_join(from, L"2026"), L"Sessions"), clips = path_join(path_join(from, L"2026"), L"Clips");
+    Path bses = path_join(path_join(to, L"2026"), L"Sessions"), bclips = path_join(path_join(to, L"2026"), L"Clips");
+    put(ses, L"a.mp4", "a", 3600);
+    put(ses, L"fresh.mp4", "f", 10); // still being written, maybe
+    put(ses, L"b.mp4.part", "p", 3600);
+    put(clips, L"c.mp4", "c", 3600);
+    put(bses, L"old.mp4", "o", 3600); // only at the backup: stays
+
+    g_backup.from = from;
+    g_backup.to = to;
+    g_backup.clips = false;
+    g_backup.done = g_backup.total = g_backup.failed = 0;
+    g_backup.error[0] = 0;
+    InitializeCriticalSection(&g_backup.lock);
+    backup_thread(0);
+    T(g_backup.state == BACKUP_DONE && g_backup.done == 1 && g_backup.total == 1);
+    T(has(path_join(bses, L"a.mp4")) && !has(path_join(bses, L"fresh.mp4")) && !has(path_join(bses, L"b.mp4.part")));
+    T(!has(path_join(bclips, L"c.mp4")) && has(path_join(bses, L"old.mp4")));
+
+    g_backup.clips = true;
+    g_backup.done = g_backup.total = 0;
+    backup_thread(0);
+    T(g_backup.done == 1 && has(path_join(bclips, L"c.mp4"))); // a.mp4 is there already
+
+    put(ses, L"a.mp4", "a2", 600); // changed since
+    g_backup.done = g_backup.total = 0;
+    backup_thread(0);
+    T(g_backup.done == 1);
+    T(backup_same_folder(from, from) && !backup_same_folder(from, to));
+    DeleteCriticalSection(&g_backup.lock);
+    g_backup.state = BACKUP_IDLE;
+
+    SHFILEOPSTRUCTW op = {};
+    wchar_t dbl[MAX_PATH + 2] = {};
+    wcscpy_s(dbl, MAX_PATH, root.s);
+    op.wFunc = FO_DELETE;
+    op.pFrom = dbl;
+    op.fFlags = FOF_NO_UI;
+    SHFileOperationW(&op);
+}
+
 static void test_first_run()
 {
     f32 gb, keep;
@@ -1492,6 +1557,7 @@ int main()
     test_game_from_name();
     test_game_guess();
     test_first_run();
+    test_backup();
     test_save_names();
     test_buffer_names();
     test_shown_names();

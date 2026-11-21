@@ -3047,6 +3047,35 @@ static void options_general()
     opt_row_end();
     opt_card_end();
 
+    // Backup: a copy of sessions (and clips) on another drive or a NAS (backup.cpp). The status line moves while it runs.
+    opt_section("BACKUP");
+    opt_card_begin();
+    if (opt_row_toggle("Back up sessions", "Copies new ones every 30 minutes. Nothing at the backup is ever deleted",
+                       "##backup", &c.backup_on)) {
+        log_line("options: backup %s", c.backup_on ? "on" : "off");
+        options_apply(0);
+        if (c.backup_on) backup_now();
+    }
+    if (opt_row_folder("Backup folder", "Another drive, or a NAS folder such as \\\\nas\\clips", "backupdir", &c.backup_dir)) {
+        options_apply(0);
+        if (c.backup_on) backup_now();
+    }
+    if (opt_row_toggle("Clips too", "Not only sessions", "##backupclips", &c.backup_clips)) {
+        log_line("options: backup clips %s", c.backup_clips ? "on" : "off");
+        options_apply(0);
+    }
+    {
+        char status[300];
+        backup_status(status, sizeof status);
+        f32 now_w = text_w(g_font, "Back up now") + dp(32);
+        opt_row_begin("Status", status, now_w);
+        if (kit_button("Back up now##backupnow", KIT_SECONDARY, ImVec2(now_w, 0),
+                       c.backup_on && c.backup_dir.s[0] && g_backup.state != BACKUP_RUNNING))
+            backup_now();
+        opt_row_end();
+    }
+    opt_card_end();
+
     opt_section("STARTUP");
     // The Run value is read when this section comes into view and after the switch is turned, not every frame.
     static wchar_t now_value[MAX_PATH + 8];
