@@ -719,7 +719,7 @@ static DWORD WINAPI recorder_thread(void *)
         }
         Path ffmpeg;
         if (!ffmpeg_find(s.ffmpeg, &ffmpeg)) {
-            fail("ffmpeg wasn't found (set its path in Options, or install it with winget install ffmpeg)");
+            fail("waiting for ffmpeg (clipback is getting it, or set its path in Options)");
             rec_sleep(5000, true);
             continue;
         }

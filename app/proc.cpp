@@ -241,7 +241,27 @@ static i32 proc_run(const wchar_t *exe, const wchar_t *args, u32 timeout_ms, cha
 // ---------------------------------------------------------------------------------------------------------------
 // ffmpeg
 
-// Finds ffmpeg.exe: the configured path, then PATH, then winget's links folder. ffprobe is expected next to it.
+// Where clipback keeps the ffmpeg it fetches for itself (ffget.cpp): local_dir\ffmpeg. Worked out from the
+// environment, as paths_init does, so worker threads can call it without the app's paths.
+static Path ffget_dir()
+{
+    Path p = {};
+    wchar_t home[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
+        swprintf(p.s, MAX_PATH, L"%s\\local\\ffmpeg", home);
+    } else {
+        wchar_t *local = 0;
+        SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, &local);
+        swprintf(p.s, MAX_PATH, L"%s\\clipback\\ffmpeg", local ? local : L".");
+        CoTaskMemFree(local);
+    }
+    return p;
+}
+
+static Path ffget_exe() { return path_join(ffget_dir(), L"ffmpeg-8.1.1-full_build-shared\\bin\\ffmpeg.exe"); }
+
+// Finds ffmpeg.exe: the configured path, then PATH, then winget's links folder, then the one clipback fetched.
+// ffprobe is expected next to it.
 static bool ffmpeg_find(const Path &configured, Path *out)
 {
     *out = {};
@@ -256,6 +276,8 @@ static bool ffmpeg_find(const Path &configured, Path *out)
         swprintf(out->s, MAX_PATH, L"%s\\Microsoft\\WinGet\\Links\\ffmpeg.exe", local);
         if (GetFileAttributesW(out->s) != INVALID_FILE_ATTRIBUTES) return true;
     }
+    *out = ffget_exe();
+    if (GetFileAttributesW(out->s) != INVALID_FILE_ATTRIBUTES) return true;
     *out = {};
     return false;
 }

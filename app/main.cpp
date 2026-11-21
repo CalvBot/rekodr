@@ -31,6 +31,7 @@ static void run_command(const char *text)
         ui_show(SCREEN_EDITOR);
         editor_open_file(arg);
     }
+    else if (!strcmp(cmd, "fetch-ffmpeg")) ffget_start(true); // fetches the pinned ffmpeg even when one is found
     else if (!strcmp(cmd, "link") && *arg) { // link <path>: shares a file as a link; the log gets the address
         wchar_t w[MAX_PATH];
         utf8_to_wide(arg, w, MAX_PATH);
@@ -180,6 +181,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == TIMER_TICK) {
             sessions_tick();
             timeline_tick();
+            ffget_tick();
             pipe_publish();
         }
         return 0;
@@ -387,6 +389,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     if (!test_home_hash()) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
     audio_start();
+    ffget_start(); // no ffmpeg found: fetch the pinned build
     // On a first start the setup asks how games are looked up first; it starts the look-up when it closes.
     if (!g_app.ui.setup_open) gamedb_start(g_app.config.game_lookup);
     pipe_start();
@@ -434,6 +437,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     sessions_stop();
     gamedb_stop();
     r2_stop();
+    ffget_stop();
     audio_stop();
     recorder_stop();
     save_stop();

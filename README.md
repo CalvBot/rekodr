@@ -8,7 +8,7 @@ a file, and the window turns parts of the buffer into clips and whole game sessi
 
 ## Requirements
 - Windows 10 or 11.
-- ffmpeg 7 or later (`winget install Gyan.FFmpeg`), on the PATH or set in Options.
+- ffmpeg 7 or later. clipback uses one set in Options or found on the PATH; with none, it downloads a pinned build (FFmpeg 8.1.1, GPL) on first start.
 - To build: Visual Studio's C++ build tools.
 
 ## Build and run
