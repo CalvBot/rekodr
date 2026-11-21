@@ -503,12 +503,15 @@ static void detect_summary(const u8 *works, char *out, i32 cap)
     }
 }
 
-// A GPU driver can still be loading when Windows starts clipback, so finding no GPU encoder is retried 4 times,
-// 30 s apart. The recorder thread switches over when a retry finds one.
+// Until ffmpeg is found (being downloaded by ffget, or a path still to be set in Options) it is looked for every
+// 5 s, and the encoders are tested as soon as it is there. A GPU driver can still be loading when Windows starts
+// clipback, so finding no GPU encoder is then retried 4 times, 30 s apart. The recorder thread switches over when
+// a retry finds one.
 static DWORD WINAPI detect_thread(void *)
 {
     char last[256] = "";
-    for (i32 attempt = 0; attempt <= 4; attempt++) {
+    bool posted = false;
+    for (i32 attempt = 0;;) {
         AcquireSRWLockShared(&g_rec.lock);
         Path configured = g_rec.settings.ffmpeg;
         ReleaseSRWLockShared(&g_rec.lock);
@@ -516,7 +519,12 @@ static DWORD WINAPI detect_thread(void *)
         u8 works[CODEC_COUNT] = {};
         Path ffmpeg;
         u64 took = GetTickCount64();
-        if (ffmpeg_find(configured, &ffmpeg)) {
+        bool have = ffmpeg_find(configured, &ffmpeg);
+        if (!have && posted) { // nothing new to say: wait for it
+            if (rec_sleep(5000, false)) break;
+            continue;
+        }
+        if (have) {
             HANDLE threads[CODEC_COUNT];
             for (i32 c = 0; c < CODEC_COUNT; c++) {
                 g_detect_jobs[c].ffmpeg = ffmpeg;
@@ -546,10 +554,15 @@ static DWORD WINAPI detect_thread(void *)
         i64 packed = 0;
         for (i32 c = 0; c < CODEC_COUNT; c++) packed |= (i64)works[c] << (8 * c);
         rec_post(REC_DETECTED, packed, summary);
+        posted = true;
+        if (!have) {
+            if (rec_sleep(5000, false)) break;
+            continue;
+        }
 
         bool gpu = false;
         for (i32 c = 0; c < CODEC_COUNT; c++) gpu |= (works[c] & ~(1 << VENDOR_CPU)) != 0;
-        if (gpu || rec_sleep(30000, false)) break;
+        if (gpu || ++attempt > 4 || rec_sleep(30000, false)) break;
     }
     return 0;
 }
