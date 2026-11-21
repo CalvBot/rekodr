@@ -185,6 +185,8 @@ static void ffget_stop()
     }
 }
 
+static bool ffget_failed() { return g_ffget.state == FFGET_FAILED; } // Retry is offered
+
 // One line for the UI while ffmpeg is on its way or failed; false when there's nothing to say.
 static bool ffget_status(char *out, i32 cap, f32 *progress)
 {

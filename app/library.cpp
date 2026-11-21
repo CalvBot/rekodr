@@ -2792,6 +2792,61 @@ static bool         g_lib_share_ask;          // the player's Share menu opens n
 static char         g_lib_share_pending[512]; // a file Share was asked for (the toast's): played once the library has it
 static u64          g_lib_share_since;
 
+static bool ffget_status(char *out, i32 cap, f32 *progress); // ffget.cpp
+static void ffget_start(bool force);
+static bool ffget_failed();
+
+// While clipback fetches ffmpeg, or after that failed: a panel at the bottom, above the library's notes, with the
+// line from ffget_status, a progress line while it downloads and Retry after a failure. The library and the
+// first-run setup draw it.
+static void ffget_bar()
+{
+    char text[300];
+    f32 progress = 0;
+    if (!ffget_status(text, sizeof text, &progress)) return;
+    bool failed = ffget_failed();
+    if (!failed) ui_wake();
+    ImGuiViewport *vp = ImGui::GetMainViewport();
+    f32 w = kit_px(520), h = kit_px(44), r = kit_px(10), pad = kit_px(14);
+    ImVec2 a(floorf(vp->Pos.x + (vp->Size.x - w) / 2), floorf(vp->Pos.y + vp->Size.y - 2 * h - kit_px(64)));
+    ImGui::SetNextWindowPos(a);
+    ImGui::SetNextWindowSize(ImVec2(w, h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, 0);
+    ImGui::Begin("##ffget", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 b(a.x + w, a.y + h);
+    dl->AddRectFilled(a, b, col32(COL_PANEL2), r);
+    dl->AddRect(a, b, col32(COL_LINE), r, 0, kit_px(1));
+    const char *icon = failed ? ICON_WARNING : ICON_VIDEO;
+    f32 fs = g_font_icon->FontSize;
+    ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
+    dl->AddText(g_font_icon, fs, ImVec2(a.x + pad, floorf(a.y + (h - gs.y) / 2)), col32(failed ? 0xff8a92 : COL_ACCENT), icon);
+    f32 tx = a.x + pad + gs.x + kit_px(10), right = b.x - pad;
+    if (failed) {
+        f32 bw = ImGui::CalcTextSize("Retry").x + kit_px(28), fh = ImGui::GetFrameHeight();
+        right -= bw;
+        ImGui::SetCursorScreenPos(ImVec2(right, floorf(a.y + (h - fh) / 2)));
+        if (kit_button("Retry##ffget", KIT_SECONDARY, ImVec2(bw, 0))) {
+            dev_click("ffmpeg", "Retry");
+            ffget_start(false);
+        }
+        right -= kit_px(10);
+    }
+    for (size_t n = strlen(text); n > 3 && ImGui::CalcTextSize(text).x > right - tx; n--) memcpy(text + n - 4, "...", 4);
+    dl->AddText(ImVec2(tx, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), col32(COL_TEXT), text);
+    if (!failed) {
+        f32 y = b.y - kit_px(5), x0 = a.x + pad, x1 = b.x - pad;
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + kit_px(2)), col32(COL_HOVER), kit_px(1));
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + (x1 - x0) * fminf(progress, 1), y + kit_px(2)), col32(COL_ACCENT), kit_px(1));
+    }
+    ImGui::End();
+}
+
 static void lib_note_draw()
 {
     bool busy = g_lib_upload_count > 0;
@@ -5323,6 +5378,7 @@ static void screen_library()
     }
     lib_uploads_poll();
     lib_note_draw();
+    ffget_bar();
     lib_share_pending_check();
     if (lib.player.open) {
         lib_player_view();

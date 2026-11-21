@@ -263,6 +263,30 @@ static bool test_known(const char *name, char *out, i32 cap)
     return g != 0;
 }
 
+static void test_first_run()
+{
+    f32 gb, keep;
+    buffer_for_free(1000, &gb, &keep); // a big drive: the most
+    T(gb == 200 && keep == 50);
+    buffer_for_free(500, &gb, &keep); // a quarter, in tens
+    T(gb == 120 && keep == 50);
+    buffer_for_free(60, &gb, &keep); // a small drive keeps less free
+    T(gb == 10 && keep == 12);
+    buffer_for_free(5, &gb, &keep);
+    T(gb == 10 && keep == 1);
+
+    Config c = {};
+    char keys[64];
+    i32 secs = -1;
+    T(!setup_clip_key(c, keys, sizeof keys, &secs));
+    str_set(c.hotkeys[0].keys.s, "Alt+F9");
+    str_set(c.hotkeys[0].action.s, "timeline");
+    str_set(c.hotkeys[1].keys.s, "Alt+F10");
+    str_set(c.hotkeys[1].action.s, "save 45s");
+    c.hotkey_count = 2;
+    T(setup_clip_key(c, keys, sizeof keys, &secs) && !strcmp(keys, "Alt+F10") && secs == 45);
+}
+
 static void test_game_guess()
 {
     char g[64];
@@ -1467,6 +1491,7 @@ int main()
     test_game_pick();
     test_game_from_name();
     test_game_guess();
+    test_first_run();
     test_save_names();
     test_buffer_names();
     test_shown_names();

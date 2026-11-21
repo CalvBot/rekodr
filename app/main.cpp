@@ -80,7 +80,7 @@ static void run_command(const char *text)
     } else if (!strcmp(cmd, "show")) { // show <page>: a page or tab by name, for screenshots and Stream Deck keys
         Library &lib = g_app.library;
         g_app.ui.help_close = true;
-        if (g_app.ui.setup_open && !starts_with(arg, "setup")) setup_finish("left for another page"); // it covers every page
+        if (g_app.ui.setup_open && strcmp(arg, "setup")) setup_finish("left for another page"); // it covers every page
         if (!strcmp(arg, "clips") || !strcmp(arg, "sessions") || !strcmp(arg, "shared")) {
             library_close_player();
             ui_show(SCREEN_LIBRARY);
@@ -128,10 +128,9 @@ static void run_command(const char *text)
             g_game_pick_show = true;
         }
         else if (!strcmp(arg, "help")) { g_app.ui.help_open = true; g_app.ui.help_close = false; }
-        else if (starts_with(arg, "setup")) { // setup, setup2 .. setup5: the first-run setup at that step
+        else if (!strcmp(arg, "setup")) { // the first-run setup
             ui_show(SCREEN_LIBRARY);
             g_app.ui.setup_open = true;
-            g_app.ui.setup_step = arg[5] >= '1' && arg[5] <= '9' ? arg[5] - '1' : 0;
         }
         else {
             static const char *const tabs[] = {"apps", "recording", "hotkeys", "integrations", "general"};
@@ -390,8 +389,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     recorder_start();
     audio_start();
     ffget_start(); // no ffmpeg found: fetch the pinned build
-    // On a first start the setup asks how games are looked up first; it starts the look-up when it closes.
-    if (!g_app.ui.setup_open) gamedb_start(g_app.config.game_lookup);
+    gamedb_start(g_app.config.game_lookup);
     pipe_start();
     if (g_app.ui.setup_open) ui_show(SCREEN_LIBRARY);
     if (command[0]) run_command(command);

@@ -188,7 +188,6 @@ struct Ui {
     bool   help_open;
     bool   help_close; // a command asked for the help to close
     bool   setup_open; // the first-run setup (setup.cpp) covers the window
-    i32    setup_step;
     i32    frames_left; // frames still to draw after the last input or change (ImGui settles over a few)
     bool   animating;   // something moves on its own (playback, progress): keep drawing
 };

@@ -138,8 +138,17 @@ static AppInfo *config_app(Config *c, const char *exe)
     return a;
 }
 
-// The first settings, when there's no settings.txt yet: the defaults, with the usual chat apps sorted as Chat. The
-// caller saves them.
+// The buffer for a drive with free_gb free: a quarter of it, in steps of 10 GB, between 10 and 200 GB. The space
+// kept free is 50 GB, or a fifth of the free space on a small drive.
+static void buffer_for_free(f64 free_gb, f32 *buffer_gb, f32 *min_free_gb)
+{
+    f64 gb = floor(free_gb / 4 / 10) * 10;
+    *buffer_gb = (f32)(gb < 10 ? 10 : gb > 200 ? 200 : gb);
+    *min_free_gb = (f32)fmin(50, floor(free_gb / 5));
+}
+
+// The first settings, when there's no settings.txt yet: the defaults, the buffer sized to the free space on its
+// drive, and the usual chat apps sorted as Chat. The caller saves them.
 static void config_first_run(Config *c, const Paths &paths)
 {
     static const char *const chat[] = {
@@ -148,6 +157,15 @@ static void config_first_run(Config *c, const Paths &paths)
         "mumble.exe", "guilded.exe", "element.exe", "vesktop.exe",
     };
     config_defaults(c, paths);
+    wchar_t root[4] = {c->buffer_dir.s[0], L':', L'\\', 0};
+    ULARGE_INTEGER free_bytes;
+    if (c->buffer_dir.s[1] == L':' && GetDiskFreeSpaceExW(root, &free_bytes, 0, 0)) {
+        f64 free_gb = (f64)free_bytes.QuadPart / 1e9;
+        c->buffer_by_size = true;
+        buffer_for_free(free_gb, &c->buffer_gb, &c->min_free_gb);
+        log_line("first start: %.0f GB free on %ls, buffer %.0f GB, keeping %.0f GB free", free_gb, root, c->buffer_gb,
+                 c->min_free_gb);
+    }
     for (i32 i = 0; i < COUNT(chat); i++) {
         AppInfo *a = config_app(c, chat[i]);
         if (a) a->category = CAT_COMMUNICATION;

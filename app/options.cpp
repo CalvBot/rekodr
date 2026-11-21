@@ -2210,10 +2210,10 @@ static void options_recording()
     opt_row_begin("ffmpeg.exe", 0, wide);
     char ff[MAX_PATH * 3], text[MAX_PATH * 3];
     wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
-    if (opt_text("##ffmpeg", ff, wide, 0, "Found on the PATH", text, sizeof text)) {
+    if (opt_text("##ffmpeg", ff, wide, 0, "Found by itself", text, sizeof text)) {
         char *t = trim(text);
         utf8_to_wide(t, c.ffmpeg.s, MAX_PATH);
-        log_line("options: ffmpeg %s", t[0] ? t : "found on the PATH");
+        log_line("options: ffmpeg %s", t[0] ? t : "found by itself");
         options_apply(APPLY_RECORDER);
     }
     opt_row_end();
@@ -2225,6 +2225,9 @@ static void options_recording()
 // pipe) and the video editors a clip opens in.
 
 static void open_url(const char *url); // setup.cpp
+static const char OPT_API_REPO_URL[] = "https://github.com/CalvBot/clipback-api"; // the art service's code
+static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/clipback";
+static const char OPT_SGDB_KEY_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
 
 static const wchar_t SD_PLUGIN[] = L"dev.calvbot.clipback.sdPlugin";
 
@@ -3005,11 +3008,39 @@ static void options_general()
         log_line("options: look up games %s", c.game_lookup ? "on" : "off");
         options_apply(0);
     }
+    ImGui::BeginDisabled(!c.game_lookup);
+    bool service = c.art_service.s[0] != 0;
+    if (opt_row_toggle("Art from clipback's service", "Art Discord and Steam don't have, from SteamGridDB and IGDB. Sends game names and store ids only",
+                       "##artservice", &service)) {
+        str_set(c.art_service.s, service ? ART_SERVICE_HOST : "");
+        log_line("options: art service %s", service ? "on" : "off");
+        options_apply(0);
+    }
+    ImGui::BeginDisabled(!service);
     if (opt_row_toggle("Help name games", "When you name a game clipback couldn't place, that name helps name it for other players",
                        "##sharenames", &c.share_names)) {
         log_line("options: help name games %s", c.share_names ? "on" : "off");
         options_apply(0);
     }
+    f32 code_w = text_w(g_font, "View the code") + dp(32);
+    opt_row_begin("The service is open source", "Read exactly what it does with a request", code_w);
+    if (kit_button("View the code##repo", KIT_SECONDARY, ImVec2(code_w, 0))) open_url(OPT_API_REPO_URL);
+    opt_row_end();
+    ImGui::EndDisabled();
+    f32 key_w = fminf(dp(300), ImGui::GetContentRegionAvail().x * 0.45f);
+    opt_row_begin("Your own SteamGridDB key", "Optional, for art the service doesn't hand out yet. Stays in settings.txt", key_w);
+    char key[sizeof c.sgdb_key];
+    if (opt_text("##sgdbkey", c.sgdb_key, key_w, ImGuiInputTextFlags_Password, "Paste it here", key, sizeof key)) {
+        str_set(c.sgdb_key, trim(key));
+        log_line("options: own SteamGridDB key %s", c.sgdb_key[0] ? "set" : "cleared");
+        options_apply(0);
+    }
+    opt_row_end();
+    f32 sgdb_w = text_w(g_font, "Open SteamGridDB") + dp(32);
+    opt_row_begin("Get a key", "Sign in at steamgriddb.com, open Preferences > API, then Generate API Key", sgdb_w);
+    if (kit_button("Open SteamGridDB##sgdb", KIT_SECONDARY, ImVec2(sgdb_w, 0))) open_url(OPT_SGDB_KEY_URL);
+    opt_row_end();
+    ImGui::EndDisabled();
     opt_row_begin("Cached game art", "Names, icons and covers fetched so far", ImGui::GetFrameHeight());
     kit_next_tip("Open the folder");
     if (kit_icon_button(ICON_FOLDER, "##artdir", KIT_SECONDARY)) opt_open_dir(path_join(g_app.paths.local_dir, L"gamedb"));
@@ -3041,10 +3072,9 @@ static void options_general()
         read_frame = 0; // read it again
     }
     f32 sw = text_w(g_font, "Run again") + dp(32);
-    opt_row_begin("First-run setup", "Recording, game info, sharing, tooltips and hotkeys", sw);
+    opt_row_begin("First-run setup", "The clip key, tooltips and helping name games", sw);
     if (kit_button("Run again##setup", KIT_SECONDARY, ImVec2(sw, 0))) {
         g_app.ui.setup_open = true;
-        g_app.ui.setup_step = 0;
         log_line("options: setup run again");
     }
     opt_row_end();
@@ -3067,6 +3097,23 @@ static void options_general()
     }
     opt_row_end();
     opt_card_end();
+
+    opt_section("ABOUT");
+    opt_card_begin();
+    f32 gh_w = text_w(g_font, "GitHub") + dp(32);
+    opt_row_begin("clipback", "Built " __DATE__, gh_w);
+    if (kit_button("GitHub##apprepo", KIT_SECONDARY, ImVec2(gh_w, 0))) open_url(OPT_APP_REPO_URL);
+    opt_row_end();
+    // The licence button only for the build clipback fetched (ffget.cpp); one found on the PATH has its own.
+    Path licence = path_join(ffget_dir(), L"ffmpeg-8.1.1-full_build-shared\\LICENSE");
+    bool fetched = GetFileAttributesW(licence.s) != INVALID_FILE_ATTRIBUTES;
+    f32 lic_w = text_w(g_font, "Licence") + dp(32);
+    opt_row_begin("FFmpeg 8.1.1 (gyan.dev build), GPL", fetched ? "Records and saves the video" : "Records and saves the video. This one is yours, not the one clipback fetches",
+                  fetched ? lic_w : 0);
+    if (fetched && kit_button("Licence##fflicence", KIT_SECONDARY, ImVec2(lic_w, 0)))
+        ShellExecuteW(0, L"open", L"notepad.exe", licence.s, 0, SW_SHOWNORMAL);
+    opt_row_end();
+    opt_card_end(0);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

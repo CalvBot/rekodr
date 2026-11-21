@@ -1,9 +1,8 @@
-// The first-run setup: a few questions on a first start, before the library. Each step changes the same settings
-// Options does, as it goes; Finish or Skip marks it done. Options > General runs it again.
+// The first-run setup: one screen on a first start, over the library, while recording already runs on the
+// defaults. It shows the clip key and asks about tooltips and helping name games; the rest is in Options. Each
+// answer changes the setting at once; Done marks it finished. Options > General runs it again.
 
-static const char SETUP_REPO_URL[] = "https://github.com/CalvBot/clipback-api"; // the art service's code
-static const char SETUP_SGDB_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
-enum { SETUP_BEG_RESOURCE = 10, SETUP_STEPS = 5 };
+enum { SETUP_BEG_RESOURCE = 10 };
 // The begging picture (assets/setup-beg.jpg): 15 frames of 240 x 230, 5 across and 3 down, at 10 a second.
 static const i32 BEG_COLS = 5, BEG_ROWS = 3, BEG_FRAMES = 15, BEG_FPS = 10;
 
@@ -83,247 +82,172 @@ static void setup_finish(const char *how)
     Config &c = g_app.config;
     c.setup_done = true;
     g_app.ui.setup_open = false;
-    g_app.ui.setup_step = 0;
-    options_apply(APPLY_RECORDER);
-    if (!g_gamedb.thread) gamedb_start(c.game_lookup); // a first start waits for the answer before looking games up
+    options_apply(0);
     log_line("setup %s: look-up %s, art service %s, own key %s, help name games %s, tooltips %s", how,
              c.game_lookup ? "on" : "off", c.art_service.s[0] ? c.art_service.s : "none", c.sgdb_key[0] ? "set" : "none",
              c.share_names ? "on" : "off", c.tooltips ? "on" : "off");
 }
 
-static void setup_recording(f32 w)
+// The clip key: the first hotkey that saves, and how much it saves ("save 30s" -> 30). False with none.
+static bool setup_clip_key(const Config &c, char *keys, i32 cap, i32 *seconds)
 {
-    opt_section("VIDEO");
-    opt_card_begin();
-    opt_rows_video(fminf(dp(300), w * 0.45f));
-    opt_card_end();
-    opt_section("BUFFER");
-    opt_card_begin();
-    opt_rows_buffer();
-    opt_card_end(0);
+    for (i32 i = 0; i < c.hotkey_count; i++) {
+        if (strncmp(c.hotkeys[i].action.s, "save", 4)) continue;
+        snprintf(keys, cap, "%s", c.hotkeys[i].keys.s);
+        *seconds = atoi(c.hotkeys[i].action.s + 4);
+        return true;
+    }
+    return false;
 }
 
-static void setup_games(f32 w)
+// Two answers side by side, each half of w; returns the one clicked (0 or 1), else -1.
+static i32 setup_pair(const char *id, const char *const titles[2], const char *const subs[2], i32 chosen, f32 w, f32 h)
 {
-    Config &c = g_app.config;
-    i32 source = !c.game_lookup ? 2 : c.art_service.s[0] ? 0 : 1;
-    static const char *titles[] = {"clipback's art service", "Public lists only", "Nothing online"};
-    static const char *subs[] = {
-        "Discord's and Steam's lists, plus art they don't have from SteamGridDB and IGDB. Sends game names and store ids only",
-        "Discord's and Steam's own lists. Some games get no art",
-        "Only the names and pictures already on this PC",
-    };
-    f32 h = dp(66), gap = dp(8);
-    for (i32 i = 0; i < 3; i++) {
-        ImGui::PushID(i);
-        if (setup_choice("##source", titles[i], subs[i], source == i, w, h) && source != i) {
-            source = i;
-            c.game_lookup = i != 2;
-            str_set(c.art_service.s, i == 0 ? ART_SERVICE_HOST : "");
-            log_line("setup: game info from %s", titles[i]);
-            options_apply(0);
-        }
-        ImGui::PopID();
-        ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y));
-    }
-    ImGui::Dummy(ImVec2(0, dp(10)));
-
-    opt_section("YOUR OWN STEAMGRIDDB KEY (OPTIONAL)");
-    ImGui::BeginDisabled(!c.game_lookup);
-    opt_card_begin();
-    f32 field_w = fminf(dp(300), w * 0.45f);
-    opt_row_begin("API key", "For art the art service doesn't hand out yet. Stays in settings.txt", field_w);
-    char key[sizeof c.sgdb_key];
-    if (opt_text("##sgdbkey", c.sgdb_key, field_w, ImGuiInputTextFlags_Password, "Paste it here", key, sizeof key)) {
-        str_set(c.sgdb_key, trim(key));
-        log_line("setup: own SteamGridDB key %s", c.sgdb_key[0] ? "set" : "cleared");
-        options_apply(0);
-    }
-    opt_row_end();
-    f32 bw = text_w(g_font, "Open SteamGridDB") + dp(32);
-    opt_row_begin("Get a key", "Sign in at steamgriddb.com, open Preferences > API, then Generate API Key", bw);
-    if (kit_button("Open SteamGridDB##sgdb", KIT_SECONDARY, ImVec2(bw, 0))) open_url(SETUP_SGDB_URL);
-    opt_row_end();
-    opt_card_end();
-    ImGui::EndDisabled();
-
-    opt_section("IS IT SAFE?");
-    opt_card_begin();
-    bw = text_w(g_font, "View the code") + dp(32);
-    opt_row_begin("The art service is open source", "Read exactly what it does with a request before you turn it on", bw);
-    if (kit_button("View the code##repo", KIT_SECONDARY, ImVec2(bw, 0))) open_url(SETUP_REPO_URL);
-    opt_row_end();
-    opt_card_end(0);
-}
-
-static void setup_sharing(f32 w, f32 h)
-{
-    Config &c = g_app.config;
-    static ID3D11ShaderResourceView *beg;
-    static i32 beg_w, beg_h;
-    static bool tried;
-    if (!tried) {
-        beg = resource_texture(SETUP_BEG_RESOURCE, &beg_w, &beg_h);
-        tried = true;
-    }
-    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 gap = dp(10), half = floorf((w - gap) / 2);
     ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 fw = beg ? (f32)beg_w / BEG_COLS : 240, fh = beg ? (f32)beg_h / BEG_ROWS : 230;
-    f32 pic_h = fminf(h, dp(300)), pic_w = pic_h * fw / fh;
-    if (beg) {
-        i32 f = (i32)(ImGui::GetTime() * BEG_FPS) % BEG_FRAMES;
-        ImVec2 uv0((f32)(f % BEG_COLS) / BEG_COLS, (f32)(f / BEG_COLS) / BEG_ROWS);
-        ImVec2 uv1(uv0.x + 1.0f / BEG_COLS, uv0.y + 1.0f / BEG_ROWS);
-        dl->AddImageRounded((ImTextureID)beg, a, ImVec2(a.x + pic_w, a.y + pic_h), uv0, uv1, IM_COL32_WHITE, dp(10));
-        ui_wake(2); // keep drawing: it moves
-    } else {
-        dl->AddRectFilled(a, ImVec2(a.x + pic_w, a.y + pic_h), col32(COL_PANEL), dp(10));
-    }
-
-    f32 x = a.x + pic_w + dp(28), cw = w - pic_w - dp(28);
-    bool service = c.game_lookup && c.art_service.s[0];
-    ImGui::SetCursorScreenPos(ImVec2(x, a.y));
-    ImGui::PushTextWrapPos(x + cw - ImGui::GetWindowPos().x);
-    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
-    ImGui::TextUnformatted("When you name a game clipback couldn't place, it can tell the art service the game's exe "
-                           "and the name you gave it, so the next player gets it named. A random id goes with it, so "
-                           "each player counts once.\n\n"
-                           "Nothing else: no clips, no pictures of your screen, no account.");
-    ImGui::PopStyleColor();
-    ImGui::PopTextWrapPos();
-    ImGui::Dummy(ImVec2(0, dp(12)));
-
-    ImGui::BeginDisabled(!service);
-    static const char *titles[] = {"Sure, share", "No thanks"};
-    static const char *subs[] = {"Names you give games help everyone", "Keep them to myself"};
-    bool on = c.share_names && service;
+    i32 hit = -1;
+    ImGui::PushID(id);
     for (i32 i = 0; i < 2; i++) {
-        ImGui::SetCursorScreenPos(ImVec2(x, ImGui::GetCursorScreenPos().y));
+        ImGui::SetCursorScreenPos(ImVec2(a.x + i * (half + gap), a.y));
         ImGui::PushID(i);
-        if (setup_choice("##share", titles[i], subs[i], on == (i == 0), cw, dp(62)) && on != (i == 0)) {
-            c.share_names = i == 0;
-            log_line("setup: help name games %s", c.share_names ? "on" : "off");
-            options_apply(0);
-        }
+        if (setup_choice("##c", titles[i], subs[i], chosen == i, half, h) && chosen != i) hit = i;
         ImGui::PopID();
     }
-    ImGui::EndDisabled();
-    if (!service) {
-        ImGui::SetCursorScreenPos(ImVec2(x, ImGui::GetCursorScreenPos().y + dp(4)));
-        kit_dim("Needs clipback's art service (the step before)");
-    }
-    ImGui::SetCursorScreenPos(ImVec2(a.x, fmaxf(a.y + pic_h, ImGui::GetCursorScreenPos().y)));
-}
-
-static void setup_tooltips(f32 w)
-{
-    Config &c = g_app.config;
-    static const char *titles[] = {"Show tooltips", "I know what I'm doing"};
-    static const char *subs[] = {"Point at a button to see what it does and its key", "Get that off my screen"};
-    for (i32 i = 0; i < 2; i++) {
-        ImGui::PushID(i);
-        if (setup_choice("##tips", titles[i], subs[i], c.tooltips == (i == 0), w, dp(66)) && c.tooltips != (i == 0)) {
-            c.tooltips = i == 0;
-            log_line("setup: tooltips %s", c.tooltips ? "on" : "off");
-            options_apply(0);
-        }
-        ImGui::PopID();
-        ImGui::Dummy(ImVec2(0, dp(8) - ImGui::GetStyle().ItemSpacing.y));
-    }
-    ImGui::Dummy(ImVec2(0, dp(6)));
-    kit_dim("Either way, F1 lists every key. Change this any time in Options > General.");
+    ImGui::PopID();
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h));
+    return hit;
 }
 
 static void setup_window()
 {
-    Ui &ui = g_app.ui;
-    if (ui.setup_step < 0 || ui.setup_step >= SETUP_STEPS) ui.setup_step = 0;
-    static i32 last_frame;
-    i32 frame = ImGui::GetFrameCount();
-    if (!last_frame || frame - last_frame > 1) options_list_monitors(); // opened (again): monitors may have changed
-    last_frame = frame;
-    static const char *names[SETUP_STEPS] = {"Recording", "Games", "Sharing", "Tooltips", "Hotkeys"};
-    static const char *titles[SETUP_STEPS] = {"What to record", "Game names and art", "Share data about your games?",
-                                              "Tooltips", "Hotkeys"};
-    static const char *subs[SETUP_STEPS] = {
-        "Which screen, how sharp, and how much the buffer keeps. All of it is in Options later.",
-        "Where clipback gets names, icons and covers for the games you play.",
-        "Pretty please. It's small, and it makes clipback better for everyone.",
-        "The little labels that pop up when you point at a button.",
-        "Press one to save what just happened. Change them any time in Options > Hotkeys.",
-    };
-
+    Config &c = g_app.config;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(28), kit_px(24)));
-    ImGui::BeginChild("##setup", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::BeginChild("##setup", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
     ImGui::PopStyleVar();
     ImVec2 avail = ImGui::GetContentRegionAvail(), top = ImGui::GetCursorScreenPos();
-    f32 w = fminf(avail.x, dp(860)), x0 = floorf(top.x + (avail.x - w) / 2);
+    f32 w = fminf(avail.x, dp(640)), x0 = floorf(top.x + (avail.x - w) / 2);
     ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 y = top.y + dp(12);
 
-    // The steps, as the Options tabs: each as wide as its bold name, the current one underlined.
-    f32 tab_h = dp(36), gap = dp(26), x = x0;
-    dl->AddLine(ImVec2(x0, top.y + tab_h - 0.5f), ImVec2(x0 + w, top.y + tab_h - 0.5f), col32(COL_LINE));
-    for (i32 i = 0; i < SETUP_STEPS; i++) {
-        char label[32];
-        snprintf(label, sizeof label, "%d  %s", i + 1, names[i]);
-        f32 lw = text_w(g_font_bold, label);
-        bool active = i == ui.setup_step;
-        ImGui::SetCursorScreenPos(ImVec2(x - gap / 2, top.y));
-        ImGui::PushID(i);
-        ImGui::BeginDisabled(g_app.options.capture_slot != 0 && !active);
-        if (ImGui::InvisibleButton("##step", ImVec2(lw + gap, tab_h))) {
-            ui.setup_step = i;
-            dev_click("setup step", names[i]);
-        }
-        bool hot = ImGui::IsItemHovered();
-        ImGui::EndDisabled();
-        ImGui::PopID();
-        ImFont *font = active ? g_font_bold : g_font;
-        u32 ink = active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM;
-        opt_text_at(dl, font, ImVec2(x, floorf(top.y + (tab_h - dp(4) - font->FontSize) / 2)), ink, label, x + lw + 1);
-        if (active) dl->AddRectFilled(ImVec2(x, top.y + tab_h - dp(2)), ImVec2(x + lw, top.y + tab_h), col32(COL_ACCENT), dp(1));
-        x += lw + gap;
-    }
-
-    // The title and what the step is about
-    f32 y = top.y + tab_h + dp(22);
-    opt_text_at(dl, g_font_title, ImVec2(x0, y), COL_TEXT, titles[ui.setup_step], x0 + w);
+    opt_text_at(dl, g_font_title, ImVec2(x0, y), COL_TEXT, "Welcome to clipback", x0 + w);
     y += g_font_title->FontSize + dp(6);
-    opt_text_at(dl, g_font, ImVec2(x0, y), COL_DIM, subs[ui.setup_step], x0 + w);
+    opt_text_at(dl, g_font, ImVec2(x0, y), COL_DIM,
+                "It keeps the last while of your games, so you can save a clip after it happens.", x0 + w);
     y += g_font->FontSize + dp(22);
 
-    // The step itself, between the title and the buttons; it scrolls if the window is short.
-    f32 foot_h = ImGui::GetFrameHeight() + dp(20);
-    f32 body_h = fmaxf(dp(100), top.y + avail.y - foot_h - y);
-    ImGui::SetCursorScreenPos(ImVec2(x0, y));
-    bool hotkeys = ui.setup_step == SETUP_STEPS - 1;
-    ImGui::BeginChild("##setupbody", ImVec2(w, body_h), ImGuiChildFlags_None,
-                      hotkeys ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
-    f32 bw = ImGui::GetContentRegionAvail().x;
-    switch (ui.setup_step) {
-    case 0: setup_recording(bw); break;
-    case 1: setup_games(bw); break;
-    case 2: setup_sharing(bw, body_h); break;
-    case 3: setup_tooltips(bw); break;
-    case 4: options_hotkeys(); break;
+    // The clip key, as a key cap, and what it does
+    {
+        char keys[64] = "", line[96];
+        i32 secs = 0;
+        bool any = setup_clip_key(c, keys, sizeof keys, &secs);
+        if (!any) str_set(line, "No key saves a clip yet. Set one in Options > Hotkeys.");
+        else if (secs > 0) snprintf(line, sizeof line, "Press it in a game to save the last %d seconds as a clip.", secs);
+        else str_set(line, "Press it in a game to save what just happened as a clip.");
+        f32 ph = dp(76);
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + w, y + ph), col32(COL_PANEL), dp(10));
+        f32 kx = x0 + dp(20), kh = dp(40), kw = any ? text_w(g_font_bold, keys) + dp(32) : 0;
+        if (any) {
+            f32 ky = floorf(y + (ph - kh) / 2);
+            dl->AddRectFilled(ImVec2(kx, ky), ImVec2(kx + kw, ky + kh), col32(COL_PANEL2), dp(8));
+            dl->AddRect(ImVec2(kx, ky), ImVec2(kx + kw, ky + kh), col32(COL_ACCENT), dp(8), 0, dp(1.5f));
+            opt_text_at(dl, g_font_bold, ImVec2(kx + dp(16), floorf(ky + (kh - g_font_bold->FontSize) / 2)), COL_TEXT,
+                        keys, kx + kw);
+            kx += kw + dp(18);
+        }
+        opt_text_at(dl, g_font, ImVec2(kx, floorf(y + (ph - g_font->FontSize) / 2)), COL_TEXT, line, x0 + w - dp(16));
+        y += ph + dp(26);
     }
-    ImGui::EndChild();
-    if (g_app.options.capture_slot) ui_wake(); // keep drawing while waiting for keys
 
-    // The buttons, always in the same places: Skip on the left, Back and Next (Finish on the last step) on the right.
-    f32 by = top.y + avail.y - ImGui::GetFrameHeight();
-    f32 nw = dp(120), back_w = dp(100);
-    bool busy = g_app.options.capture_slot != 0;
-    ImGui::SetCursorScreenPos(ImVec2(x0, by));
-    if (kit_button("Skip setup", KIT_GHOST, ImVec2(dp(120), 0), !busy)) setup_finish("skipped");
-    ImGui::SetCursorScreenPos(ImVec2(x0 + w - nw - dp(8) - back_w, by));
-    if (kit_button("Back", KIT_SECONDARY, ImVec2(back_w, 0), ui.setup_step > 0 && !busy)) ui.setup_step--;
-    ImGui::SetCursorScreenPos(ImVec2(x0 + w - nw, by));
-    bool last = ui.setup_step == SETUP_STEPS - 1;
-    if (kit_button(last ? "Finish##next" : "Next##next", KIT_PRIMARY, ImVec2(nw, 0), !busy)) {
-        if (last) setup_finish("finished");
-        else ui.setup_step++;
+    // Tooltips
+    ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    opt_section("TOOLTIPS");
+    {
+        static const char *const titles[] = {"Show tooltips", "I know what I'm doing"};
+        static const char *const subs[] = {"Point at a button to see what it does", "Get them off my screen"};
+        ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+        i32 hit = setup_pair("tips", titles, subs, c.tooltips ? 0 : 1, w, dp(62));
+        if (hit >= 0) {
+            c.tooltips = hit == 0;
+            log_line("setup: tooltips %s", c.tooltips ? "on" : "off");
+            options_apply(0);
+        }
     }
+    ImGui::Dummy(ImVec2(0, dp(6)));
+    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+    kit_dim("Either way, F1 lists every key.");
+    ImGui::Dummy(ImVec2(0, dp(14)));
+
+    // Helping name games, with the begging picture beside the question
+    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+    opt_section("HELP NAME GAMES?");
+    bool service = c.game_lookup && c.art_service.s[0];
+    {
+        static ID3D11ShaderResourceView *beg;
+        static i32 beg_w, beg_h;
+        static bool tried;
+        if (!tried) {
+            beg = resource_texture(SETUP_BEG_RESOURCE, &beg_w, &beg_h);
+            tried = true;
+        }
+        ImVec2 a(x0, ImGui::GetCursorScreenPos().y);
+        f32 fw = beg ? (f32)beg_w / BEG_COLS : 240, fh = beg ? (f32)beg_h / BEG_ROWS : 230;
+        f32 pic_h = dp(124), pic_w = floorf(pic_h * fw / fh);
+        if (beg) {
+            i32 f = (i32)(ImGui::GetTime() * BEG_FPS) % BEG_FRAMES;
+            ImVec2 uv0((f32)(f % BEG_COLS) / BEG_COLS, (f32)(f / BEG_COLS) / BEG_ROWS);
+            ImVec2 uv1(uv0.x + 1.0f / BEG_COLS, uv0.y + 1.0f / BEG_ROWS);
+            dl->AddImageRounded((ImTextureID)beg, a, ImVec2(a.x + pic_w, a.y + pic_h), uv0, uv1, IM_COL32_WHITE, dp(10));
+            ui_wake(2); // keep drawing: it moves
+        } else {
+            dl->AddRectFilled(a, ImVec2(a.x + pic_w, a.y + pic_h), col32(COL_PANEL), dp(10));
+        }
+        f32 x = a.x + pic_w + dp(20), cw = x0 + w - x;
+        ImGui::SetCursorScreenPos(ImVec2(x, a.y));
+        ImGui::PushTextWrapPos(x + cw - ImGui::GetWindowPos().x);
+        ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
+        ImGui::TextUnformatted("When you name a game clipback couldn't place, its exe and your name for it go to "
+                               "clipback's service, so the next player gets it named. Nothing else is sent.");
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+        ImGui::SetCursorScreenPos(ImVec2(x, a.y + pic_h - dp(62)));
+        static const char *const titles[] = {"Sure, help", "No thanks"};
+        static const char *const subs[] = {"Names you give help everyone", "Keep them to myself"};
+        ImGui::BeginDisabled(!service);
+        i32 hit = setup_pair("share", titles, subs, c.share_names && service ? 0 : 1, cw, dp(62));
+        ImGui::EndDisabled();
+        if (hit >= 0) {
+            c.share_names = hit == 0;
+            log_line("setup: help name games %s", c.share_names ? "on" : "off");
+            options_apply(0);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(x0, a.y + pic_h + dp(14)));
+    }
+
+    // Where game art comes from, and the way to Options
+    {
+        const char *line = service ? "Game names and art come from clipback's service."
+                                   : "clipback's service is off, so helping name games is too.";
+        static const char link[] = "Change in Options";
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        f32 lx = p.x + text_w(g_font, line) + dp(8), link_w = text_w(g_font, link);
+        opt_text_at(dl, g_font, p, COL_DIM, line, x0 + w);
+        ImGui::SetCursorScreenPos(ImVec2(lx, p.y));
+        if (ImGui::InvisibleButton("##toopts", ImVec2(link_w, g_font->FontSize))) {
+            dev_click("setup", link);
+            setup_finish("left for Options");
+            g_app.ui.screen = SCREEN_OPTIONS;
+            g_app.options.tab = OPT_GENERAL;
+        }
+        bool hot = ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        opt_text_at(dl, g_font, ImVec2(lx, p.y), hot ? 0xffffff : COL_ACCENT, link, lx + link_w + 1);
+        ImGui::SetCursorScreenPos(ImVec2(x0, p.y + g_font->FontSize + dp(26)));
+    }
+
+    f32 bw = dp(120);
+    ImGui::SetCursorScreenPos(ImVec2(x0 + w - bw, ImGui::GetCursorScreenPos().y));
+    if (kit_button("Done##setupdone", KIT_PRIMARY, ImVec2(bw, 0))) setup_finish("finished");
+    ImGui::Dummy(ImVec2(0, dp(8)));
     ImGui::EndChild();
+    ffget_bar();
 }
