@@ -83,7 +83,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->wave_keep_days = 30;
     c->game_lookup = true;
     c->auto_update = true;
-    c->start_with_windows = true; // the installer writes the Run value
     c->tooltips = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
@@ -368,7 +367,6 @@ static void config_set(Config *c, const char *key, char *value)
         sscanf(value, "%f,%f,%f", &c->share_sizes_mb[0], &c->share_sizes_mb[1], &c->share_sizes_mb[2]);
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
-    else if (!strcmp(key, "start_with_windows")) boolean(&c->start_with_windows);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
         // hotkey = Alt+F10 | save 30s
@@ -537,7 +535,6 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "popup_monitor = %d\npopup_monitor_game = %d\n", c.popup_monitor, c.popup_monitor_game);
     boolean("toast_small_in_game", c.toast_small_in_game);
     boolean("voice_mono", c.voice_mono);
-    boolean("start_with_windows", c.start_with_windows);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %d\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);
     fprintf(f, "unsaved_collapsed = %d\nside_folders = %d\n", c.unsaved_collapsed ? 1 : 0, c.side_folders ? 1 : 0);

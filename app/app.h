@@ -147,7 +147,6 @@ struct Config {
 
     bool tooltips;     // hovering a control shows what it does and its key (asked in the first-run setup)
     bool setup_done;   // the first-run setup was finished or skipped; false only on a first start
-    bool start_with_windows;
     bool dev_log;      // the detailed log (dev mode, see base.h)
 
     // Look

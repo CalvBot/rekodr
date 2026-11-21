@@ -3107,11 +3107,14 @@ static void options_general()
     const char *runs = !set ? "Nothing runs at sign-in now" : !_wcsicmp(now_value, cmd) ? "This clipback runs at sign-in" : u;
     if (is_test_copy()) runs = "Test copy: the Run list is left alone";
     opt_card_begin();
-    if (opt_row_toggle("Start with Windows", runs, "##startup", &c.start_with_windows)) {
-        startup_set(c.start_with_windows);
-        options_apply(0);
+    // On is this exe in the Run list (the installer puts it there); nothing else keeps the setting.
+    bool on = set && !_wcsicmp(now_value, cmd);
+    ImGui::BeginDisabled(is_test_copy());
+    if (opt_row_toggle("Start with Windows", runs, "##startup", &on)) {
+        startup_set(on);
         read_frame = 0; // read it again
     }
+    ImGui::EndDisabled();
     f32 sw = text_w(g_font, "Run again") + dp(32);
     opt_row_begin("First-run setup", "The clip key, tooltips and helping name games", sw);
     if (kit_button("Run again##setup", KIT_SECONDARY, ImVec2(sw, 0))) {
