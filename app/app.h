@@ -208,6 +208,7 @@ struct Recorder {
     Str64  run;                // the run folder being written, "20261115_210654_504"
     i64    recording_since_us;
     Str256 last_error;         // why it isn't recording; empty while healthy
+    Str256 strain;             // recording, but the PC can't keep up (with a tip); empty while it can
     bool   encoders_known;     // the test encodes have finished
     u8     encoders_ok[CODEC_COUNT]; // per codec (h264, hevc, av1): a bit per Vendor whose test encode worked
     i64    oldest_us;          // the oldest buffered video, 0 = none (updated by the pruner every 30 s)

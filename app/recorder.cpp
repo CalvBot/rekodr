@@ -28,6 +28,7 @@ enum RecEvent : i64 {
     REC_STOPPED,      // ffmpeg isn't capturing any more
     REC_ERROR,        // text: what's wrong; empty when healthy again
     REC_BUFFER,       // b: oldest buffered video (us, 0 = none); text: "<buffer bytes> <free bytes>"
+    REC_STRAIN,       // text: the encoder can't keep up, with a tip; empty when it can again
 };
 
 static i32 codec_index(const char *codec)
@@ -565,6 +566,7 @@ struct StderrReader {
     char   last[512];
     volatile i64 segment_tick; // GetTickCount64 when ffmpeg last opened a segment (the stall watchdog reads it)
     volatile i64 frames, dups; // -progress totals: frames written, and how many of them were repeats
+    volatile i64 out_us;       // -progress out_time_us: how much video has been written
     volatile i64 progress_tick; // GetTickCount64 of the last -progress line: ffmpeg is still running its loop
 };
 
@@ -612,6 +614,7 @@ static DWORD WINAPI stderr_thread(void *arg)
             r->progress_tick = (i64)GetTickCount64();
             if (starts_with(line, "frame=")) r->frames = _atoi64(line + 6);
             else if (starts_with(line, "dup_frames=")) r->dups = _atoi64(line + 11);
+            else if (starts_with(line, "out_time_us=")) r->out_us = _atoi64(line + 12);
             continue;
         }
         if (starts_with(line, "  ")) continue;
@@ -777,14 +780,18 @@ static DWORD WINAPI recorder_thread(void *)
         g_reader.run_dir = run_dir;
         g_reader.log = path_join(s.local_dir, L"ffmpeg-video.log");
         g_reader.segment_tick = 0;
-        g_reader.frames = g_reader.dups = g_reader.progress_tick = 0;
+        g_reader.frames = g_reader.dups = g_reader.progress_tick = g_reader.out_us = 0;
         HANDLE reader = thread_start(stderr_thread, &g_reader);
 
         u64 started = GetTickCount64();
         bool announced = false;
         bool frozen = false, idle = false, renewed = false;
         u64 window_tick = started;
-        i64 window_frames = 0, window_dups = 0;
+        i64 window_frames = 0, window_dups = 0, window_out = 0;
+        // Strain: while a game is played, video should be written as fast as time passes. Three 10 s windows
+        // in a row under 92% of real time means the encoder is behind; three good ones clear it.
+        i32 slow_windows = 0, good_windows = 0;
+        bool strained = false;
         i32 code = -1;
         u32 generation = snap.generation;
         for (;;) {
@@ -836,8 +843,26 @@ static DWORD WINAPI recorder_thread(void *)
             // output side fills in repeats). A new capture picks it up again.
             u64 tick = GetTickCount64();
             if (tick - window_tick >= 10000) {
-                i64 f = g_reader.frames, d = g_reader.dups;
+                i64 f = g_reader.frames, d = g_reader.dups, o = g_reader.out_us;
                 bool same = f > window_frames && f - window_frames <= d - window_dups;
+                f64 pace = window_out && o > window_out ? (f64)(o - window_out) / ((f64)(tick - window_tick) * 1000) : 0;
+                window_out = o;
+                if (announced && now.s.game && pace > 0) {
+                    if (pace < 0.92) { slow_windows++; good_windows = 0; }
+                    else { good_windows++; slow_windows = 0; }
+                    if (!strained && slow_windows >= 3) {
+                        strained = true;
+                        char tip[200];
+                        snprintf(tip, sizeof tip, "The PC can't keep up: video is written at %d%% of real time. "
+                                 "Try a lower frame rate or size in Options > Video", (int)(pace * 100));
+                        log_line("recording strained: pace %.2f", pace);
+                        rec_post(REC_STRAIN, 0, tip);
+                    } else if (strained && good_windows >= 3) {
+                        strained = false;
+                        log_line("recording keeps up again");
+                        rec_post(REC_STRAIN, 0, "");
+                    }
+                }
                 window_tick = tick;
                 window_frames = f;
                 window_dups = d;
@@ -876,6 +901,7 @@ static DWORD WINAPI recorder_thread(void *)
         g_rec.run[0] = 0;
         ReleaseSRWLockExclusive(&g_rec.lock);
         if (announced) rec_post(REC_STOPPED, 0, "");
+        if (strained) rec_post(REC_STRAIN, 0, "");
         if (s.hwnd && code >= 0 && (!announced || frozen)) {
             bad_hwnd = s.hwnd;
             log_line("that game's window couldn't be recorded (%s): recording the monitor", frozen ? "no new frames" : g_reader.last);
@@ -1356,6 +1382,7 @@ static void recorder_on_event(const Event &e)
         r.run.s[0] = 0;
         break;
     case REC_ERROR: str_set(r.last_error.s, e.text); break;
+    case REC_STRAIN: str_set(r.strain.s, e.text); break;
     case REC_BUFFER:
         r.oldest_us = e.b;
         sscanf_s(e.text, "%lld %lld", &r.buffer_bytes, &r.free_bytes);
