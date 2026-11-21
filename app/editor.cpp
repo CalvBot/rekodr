@@ -18,12 +18,24 @@ static i32 ed_tracks(const MediaInfo &m, i32 *out, i32 cap)
 
 static bool edit_is_default(const EditRecord &e)
 {
+    if (e.mode == EDIT_ADVANCED) return false;
     if (e.piece_count || e.key_count || e.fade_in > 0 || e.fade_out > 0) return false;
     for (i32 t = 0; t <= EDIT_MASTER; t++)
         if (e.muted[t] || e.boost[t] != 0 || e.vol_count[t]) return false;
     for (i32 c = 0; c < EDIT_COLORS; c++)
         if (e.color_count[c]) return false;
     return true;
+}
+
+// Whether an edit file holds an Advanced edit: its first line says so.
+static bool edit_is_advanced(const Path &file)
+{
+    FILE *f = _wfopen(file.s, L"rb");
+    if (!f) return false;
+    char line[64] = {};
+    bool adv = fgets(line, sizeof line, f) && !strncmp(line, "mode = advanced", 15);
+    fclose(f);
+    return adv;
 }
 
 static void edit_read(const Path &file, EditRecord *e)
@@ -37,7 +49,44 @@ static void edit_read(const Path &file, EditRecord *e)
         if (!eq) continue;
         *eq = 0;
         char *k = trim(line), *v = trim(eq + 1);
-        if (!strcmp(k, "piece") && e->piece_count < EDIT_MAX_PIECES) { // from to, then f or x and a length
+        if (!strcmp(k, "mode")) {
+            e->mode = !strcmp(v, "advanced") ? EDIT_ADVANCED : EDIT_SIMPLE;
+        } else if (!strcmp(k, "item") && e->item_count < EDIT_MAX_ITEMS) {
+            // id track start from to link, then fade in, fade out and crossfade
+            EditItem it = {};
+            i32 id = 0, track = 0, link = 0;
+            if (sscanf_s(v, "%d %d %lf %lf %lf %d %f %f %f", &id, &track, &it.start, &it.from, &it.to, &link,
+                         &it.fade_in, &it.fade_out, &it.cross) < 6 ||
+                id <= 0 || id > 65535 || track < 0 || track > MEDIA_MAX_TRACKS || link < 0 || link > 65535 ||
+                it.to <= it.from)
+                continue;
+            it.id = (u16)id, it.track = (u8)track, it.link = (u16)link;
+            it.fade_in = ImMax(it.fade_in, 0.f), it.fade_out = ImMax(it.fade_out, 0.f), it.cross = ImMax(it.cross, 0.f);
+            e->items[e->item_count++] = it;
+        } else if (!strcmp(k, "ikey")) {
+            // item, then z time zoom x y ease, or b, c, s or v (a colour or the volume) time value ease
+            ItemKey q = {};
+            i32 id = 0, ease = EASE_LINEAR;
+            char what = 0;
+            i32 got = sscanf_s(v, "%d %c %lf %lf", &id, &what, 1, &q.t, &q.v);
+            const char *kinds = "zbcsv", *at = what ? strchr(kinds, what) : 0;
+            if (got < 4 || !at || id <= 0 || id > 65535) continue;
+            q.item = (u16)id, q.what = (u8)(at - kinds);
+            const char *rest = v;
+            for (i32 skip = 0; skip < 4 && *rest; skip++) { // past the four read
+                while (*rest && *rest != ' ') rest++;
+                while (*rest == ' ') rest++;
+            }
+            if (q.what == IKEY_ZOOM) {
+                if (sscanf_s(rest, "%lf %lf %d", &q.x, &q.y, &ease) < 2) continue;
+                q.v = q.v < 1 ? 1 : q.v > 4 ? 4 : q.v;
+            } else {
+                sscanf_s(rest, "%d", &ease);
+                q.v = q.v < 0 ? 0 : q.v > 2 ? 2 : q.v;
+            }
+            q.ease = (u8)(ease >= 0 && ease < EASE_COUNT ? ease : EASE_LINEAR);
+            ikey_add(e, q);
+        } else if (!strcmp(k, "piece") && e->piece_count < EDIT_MAX_PIECES) { // from to, then f or x and a length
             EditPiece p = {};
             char kind = 0;
             if (sscanf_s(v, "%lf %lf %c %f", &p.from, &p.to, &kind, 1, &p.trans_len) < 2 || p.to <= p.from) continue;
@@ -114,6 +163,30 @@ static void edit_write(const Path &file, const EditRecord &e)
         log_line("editor: couldn't write the edit");
         return;
     }
+    if (e.mode == EDIT_ADVANCED) {
+        fprintf(f, "mode = advanced\n"
+                   "# clipback edit, Advanced: items (id track start from to link, then fade in, fade out and crossfade\n"
+                   "# from the item before, seconds; track 0 the picture, 1 + n audio track n; start on the sequence,\n"
+                   "# from and to in the video), item keys (item z time zoom x y ease, or item b, c, s or v for\n"
+                   "# brightness, contrast, saturation or volume, then time value ease; times in the video),\n"
+                   "# muted tracks (volume = track 1 1); eases 0 linear 1 smooth 2 in 3 out 4 hold\n");
+        for (i32 i = 0; i < e.item_count; i++) {
+            const EditItem &it = e.items[i];
+            fprintf(f, "item = %d %d %.3f %.3f %.3f %d %.3f %.3f %.3f\n", it.id, it.track, it.start, it.from, it.to,
+                    it.link, it.fade_in, it.fade_out, it.cross);
+        }
+        for (i32 k = 0; k < e.ikey_count; k++) {
+            const ItemKey &q = e.ikeys[k];
+            if (q.what == IKEY_ZOOM)
+                fprintf(f, "ikey = %d z %.3f %.3f %.4f %.4f %d\n", q.item, q.t, q.v, q.x, q.y, q.ease);
+            else fprintf(f, "ikey = %d %c %.3f %.3f %d\n", q.item, "zbcsv"[q.what], q.t, q.v, q.ease);
+        }
+        for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++)
+            if (e.muted[t]) fprintf(f, "volume = %d 1 1\n", t);
+        fclose(f);
+        MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
+        return;
+    }
     fprintf(f, "# clipback edit: pieces kept in the order they play (from to, seconds; then f fade or x crossfade and\n"
                "# its length when the piece before goes into it that way), fades from and to black (in out, seconds),\n"
                "# zoom keys (time zoom x y ease), volumes (track volume muted), volume keys (track time volume ease); track m is the whole mix;\n"
@@ -143,24 +216,7 @@ static void edit_write(const Path &file, const EditRecord &e)
 }
 
 // The zoom at `t`: eased between keys with smoothstep, the same curve the render uses.
-static void zoom_at(const EditRecord &e, f64 t, f64 *z, f64 *x, f64 *y)
-{
-    *z = 1;
-    *x = *y = 0.5;
-    i32 n = e.key_count;
-    if (!n) return;
-    const ZoomKey *a = &e.keys[0], *b = a;
-    if (t <= e.keys[0].t) b = a;
-    else if (t >= e.keys[n - 1].t) a = b = &e.keys[n - 1];
-    else
-        for (i32 k = 0; k + 1 < n; k++)
-            if (t < e.keys[k + 1].t) { a = &e.keys[k]; b = &e.keys[k + 1]; break; }
-    f64 u = b->t > a->t ? ease_curve(a->ease, b->ease, (t - a->t) / (b->t - a->t)) : 0;
-    *z = a->z + (b->z - a->z) * u;
-    if (*z < 1) *z = 1;
-    *x = a->x + (b->x - a->x) * u;
-    *y = a->y + (b->y - a->y) * u;
-}
+static void zoom_at(const EditRecord &e, f64 t, f64 *z, f64 *x, f64 *y) { zoom_keys_at(e.keys, e.key_count, t, z, x, y); }
 
 static void zoom_uv(const EditRecord &e, f64 t, ImVec2 *uv0, ImVec2 *uv1)
 {

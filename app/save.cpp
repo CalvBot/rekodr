@@ -1285,17 +1285,494 @@ static bool edit_zoomed(const EditRecord &e)
     return false;
 }
 
-// One of a keyframe's values (0 z, 1 x, 2 y) at time `t` (an ffmpeg expression), eased between keys (smoothstep).
-static void smooth_expr(SaveWork *w, const EditRecord &e, i32 field, const char *t)
+// The zoom at `t` from keys k[0..n) (sorted by t): eased between them, the same curve the render uses; none is no
+// zoom.
+static void zoom_keys_at(const ZoomKey *k, i32 n, f64 t, f64 *z, f64 *x, f64 *y)
 {
-    auto val = [&](i32 k) { return field == 0 ? e.keys[k].z : field == 1 ? e.keys[k].x : e.keys[k].y; };
-    i32 n = e.key_count;
+    *z = 1;
+    *x = *y = 0.5;
+    if (!n) return;
+    const ZoomKey *a = &k[0], *b = a;
+    if (t >= k[n - 1].t) a = b = &k[n - 1];
+    else if (t > k[0].t)
+        for (i32 i = 0; i + 1 < n; i++)
+            if (t < k[i + 1].t) { a = &k[i]; b = &k[i + 1]; break; }
+    f64 u = b->t > a->t ? ease_curve(a->ease, b->ease, (t - a->t) / (b->t - a->t)) : 0;
+    *z = a->z + (b->z - a->z) * u;
+    if (*z < 1) *z = 1;
+    *x = a->x + (b->x - a->x) * u;
+    *y = a->y + (b->y - a->y) * u;
+}
+
+// ---- Advanced edits (EditItem in app.h) ----
+// `start` is on the sequence; from, to and the keys are in the video, so an item at sequence time u shows the video
+// at from + (u - start).
+
+static f64 item_end(const EditItem &i) { return i.start + (i.to - i.from); }
+
+// The items on one track by start, as indexes into e.items.
+static i32 track_items(const EditRecord &e, i32 track, i32 *out)
+{
+    i32 n = 0;
+    for (i32 i = 0; i < e.item_count; i++) {
+        if (e.items[i].track != track) continue;
+        i32 at = n++;
+        while (at > 0 && e.items[out[at - 1]].start > e.items[i].start) {
+            out[at] = out[at - 1];
+            at--;
+        }
+        out[at] = i;
+    }
+    return n;
+}
+
+// The sequence's length: to the end of its last item.
+static f64 adv_len(const EditRecord &e)
+{
+    f64 len = 0;
+    for (i32 i = 0; i < e.item_count; i++) len = ImMax(len, item_end(e.items[i]));
+    return len;
+}
+
+static i32 item_find(const EditRecord &e, u16 id)
+{
+    for (i32 i = 0; i < e.item_count; i++)
+        if (e.items[i].id == id) return i;
+    return -1;
+}
+
+static u16 item_new_id(const EditRecord &e)
+{
+    u16 id = 1;
+    for (i32 i = 0; i < e.item_count; i++)
+        if (e.items[i].id >= id) id = (u16)(e.items[i].id + 1);
+    return id;
+}
+
+// An item's keys of one kind: where they start in e.ikeys, and how many.
+static i32 ikey_range(const EditRecord &e, u16 id, i32 what, i32 *first)
+{
+    i32 n = 0;
+    *first = 0;
+    for (i32 k = 0; k < e.ikey_count; k++)
+        if (e.ikeys[k].item == id && e.ikeys[k].what == what) {
+            if (!n) *first = k;
+            n++;
+        }
+    return n;
+}
+
+// The same keys as levels or as zoom keys, for the curves and filters that take those.
+static i32 item_levels(const EditRecord &e, u16 id, i32 what, VolKey *out)
+{
+    i32 first, n = ikey_range(e, id, what, &first);
+    for (i32 k = 0; k < n; k++) {
+        const ItemKey &q = e.ikeys[first + k];
+        out[k] = {q.t, (f32)q.v, q.ease};
+    }
+    return n;
+}
+
+static i32 item_zooms(const EditRecord &e, u16 id, ZoomKey *out)
+{
+    i32 first, n = ikey_range(e, id, IKEY_ZOOM, &first);
+    for (i32 k = 0; k < n; k++) {
+        const ItemKey &q = e.ikeys[first + k];
+        out[k] = {q.t, q.v, q.x, q.y, q.ease};
+    }
+    return n;
+}
+
+// An item's level (a colour or the volume, 1 when it has no keys) or zoom at source time t.
+static f64 item_level_at(const EditRecord &e, u16 id, i32 what, f64 t)
+{
+    VolKey k[EDIT_MAX_ITEM_KEYS];
+    return level_at(k, item_levels(e, id, what, k), 1, t);
+}
+
+static void item_zoom_at(const EditRecord &e, u16 id, f64 t, f64 *z, f64 *x, f64 *y)
+{
+    ZoomKey k[EDIT_MAX_ITEM_KEYS];
+    zoom_keys_at(k, item_zooms(e, id, k), t, z, x, y);
+}
+
+static bool ikey_before(const ItemKey &a, const ItemKey &b)
+{
+    if (a.item != b.item) return a.item < b.item;
+    if (a.what != b.what) return a.what < b.what;
+    return a.t < b.t;
+}
+
+// Adds a key in order (after any at the same time); false when there's no room.
+static bool ikey_add(EditRecord *e, const ItemKey &k)
+{
+    if (e->ikey_count >= EDIT_MAX_ITEM_KEYS) return false;
+    i32 at = e->ikey_count;
+    while (at > 0 && ikey_before(k, e->ikeys[at - 1])) at--;
+    memmove(e->ikeys + at + 1, e->ikeys + at, (e->ikey_count - at) * sizeof k);
+    e->ikeys[at] = k;
+    e->ikey_count++;
+    return true;
+}
+
+// Removes item i and its keys.
+static void item_remove(EditRecord *e, i32 i)
+{
+    u16 id = e->items[i].id;
+    memmove(e->items + i, e->items + i + 1, (e->item_count - i - 1) * sizeof *e->items);
+    e->item_count--;
+    i32 n = 0;
+    for (i32 k = 0; k < e->ikey_count; k++)
+        if (e->ikeys[k].item != id) e->ikeys[n++] = e->ikeys[k];
+    e->ikey_count = n;
+}
+
+// Keeps an edit playable after a change: items held inside the video and at or after the sequence's start, an item
+// that runs over the start of the next one on its track cut back to it (dropped if that leaves under PIECE_LEAST),
+// and no keys left for items that are gone.
+static void adv_settle(EditRecord *e, f64 dur)
+{
+    for (i32 i = e->item_count - 1; i >= 0; i--) {
+        EditItem &it = e->items[i];
+        if (it.from < 0) it.from = 0;
+        if (dur > 0 && it.to > dur) it.to = dur;
+        if (it.start < 0) it.start = 0;
+        if (it.to - it.from < PIECE_LEAST - 0.0005) item_remove(e, i);
+    }
+    for (i32 tr = 0; tr <= MEDIA_MAX_TRACKS; tr++) {
+        i32 idx[EDIT_MAX_ITEMS], n = track_items(*e, tr, idx);
+        u16 gone[EDIT_MAX_ITEMS];
+        i32 ng = 0;
+        for (i32 k = 0; k + 1 < n; k++) {
+            EditItem &a = e->items[idx[k]];
+            const EditItem &b = e->items[idx[k + 1]];
+            if (item_end(a) <= b.start + 0.0005) continue;
+            a.to = a.from + (b.start - a.start);
+            if (a.to - a.from < PIECE_LEAST - 0.0005) gone[ng++] = a.id;
+        }
+        for (i32 g = 0; g < ng; g++) item_remove(e, item_find(*e, gone[g]));
+    }
+    i32 n = 0;
+    for (i32 k = 0; k < e->ikey_count; k++)
+        if (item_find(*e, e->ikeys[k].item) >= 0) e->ikeys[n++] = e->ikeys[k];
+    e->ikey_count = n;
+}
+
+// An item's transitions as they play: each fade held to half the item; a crossfade (which plays half its length
+// past the cut on each side) held to both items and to the footage there, and only where the item before ends
+// where this one starts. It takes the place of the fades at its cut. Anything under TRANS_LEAST is none.
+struct ItemFades {
+    f64 in, out, cross; // cross: from the item before
+};
+
+static void track_fades(const EditRecord &e, f64 dur, const i32 *idx, i32 n, ItemFades *out)
+{
+    for (i32 k = 0; k < n; k++) {
+        const EditItem &it = e.items[idx[k]];
+        f64 len = it.to - it.from;
+        out[k].in = ImMin((f64)it.fade_in, len / 2);
+        out[k].out = ImMin((f64)it.fade_out, len / 2);
+        out[k].cross = 0;
+        if (k && it.cross > 0) {
+            const EditItem &p = e.items[idx[k - 1]];
+            if (fabs(item_end(p) - it.start) < 0.001) {
+                f64 l = ImMin((f64)it.cross, ImMin(p.to - p.from, len));
+                l = ImMin(l, ImMin(2 * (dur - p.to), 2 * it.from));
+                out[k].cross = l >= TRANS_LEAST ? l : 0;
+            }
+        }
+        if (out[k].in < TRANS_LEAST) out[k].in = 0;
+        if (out[k].out < TRANS_LEAST) out[k].out = 0;
+    }
+    for (i32 k = 1; k < n; k++)
+        if (out[k].cross > 0) out[k].in = out[k - 1].out = 0;
+}
+
+// How much of item i is left by its fades at source time s (1 = all, 0 = black or silent).
+static f64 item_fade_gain(const EditRecord &e, f64 dur, i32 i, f64 s)
+{
+    if (i < 0 || i >= e.item_count) return 1;
+    i32 idx[EDIT_MAX_ITEMS], n = track_items(e, e.items[i].track, idx);
+    ItemFades f[EDIT_MAX_ITEMS];
+    track_fades(e, dur, idx, n, f);
+    for (i32 k = 0; k < n; k++) {
+        if (idx[k] != i) continue;
+        const EditItem &it = e.items[i];
+        f64 g = 1;
+        if (f[k].in > 0 && s < it.from + f[k].in) g = ImMax(0.0, (s - it.from) / f[k].in);
+        if (f[k].out > 0 && s > it.to - f[k].out) g = ImMin(g, ImMax(0.0, (it.to - s) / f[k].out));
+        return g;
+    }
+    return 1;
+}
+
+// The item on a track at sequence time u, -1 for none (a gap). Where one item ends and the next starts, the next.
+static i32 item_at(const EditRecord &e, i32 track, f64 u)
+{
+    i32 best = -1;
+    for (i32 i = 0; i < e.item_count; i++) {
+        const EditItem &it = e.items[i];
+        if (it.track == track && u >= it.start - 0.0005 && u < item_end(it) - 0.0005 &&
+            (best < 0 || it.start > e.items[best].start))
+            best = i;
+    }
+    return best;
+}
+
+// Keys for an item over [a, b] of the video from a curve with keys at kt[0..n) (eases ke) and values val(t, v, x,
+// y): the keys inside the span, and one at each end with the curve's value there (its ease the one of the stretch it
+// cuts into). A curve flat over the span is one key at a, or none when that's `rest` (as recorded).
+template <typename F>
+static void span_keys(EditRecord *e, u16 id, u8 what, f64 a, f64 b, const f64 *kt, const u8 *ke, i32 n, f64 rest,
+                      F val)
+{
+    i32 lo = 0, hi; // the keys inside: [lo, hi)
+    while (lo < n && kt[lo] < a - 0.0005) lo++;
+    hi = lo;
+    while (hi < n && kt[hi] <= b + 0.0005) hi++;
+    ItemKey k = {};
+    k.item = id;
+    k.what = what;
+    if (lo == hi) {
+        f64 va, xa, ya, vb, xb, yb;
+        val(a, &va, &xa, &ya);
+        val(b, &vb, &xb, &yb);
+        if (fabs(va - vb) < 1e-4 && fabs(xa - xb) < 1e-4 && fabs(ya - yb) < 1e-4) {
+            if (fabs(va - rest) < 1e-4) return;
+            k.t = a;
+            k.v = va, k.x = xa, k.y = ya;
+            k.ease = EASE_LINEAR;
+            ikey_add(e, k);
+            return;
+        }
+    }
+    if (lo == hi || kt[lo] > a + 0.0005) {
+        k.t = a;
+        val(a, &k.v, &k.x, &k.y);
+        k.ease = lo > 0 ? ke[lo - 1] : (u8)EASE_LINEAR;
+        ikey_add(e, k);
+    }
+    for (i32 i = lo; i < hi; i++) {
+        k.t = kt[i];
+        val(kt[i], &k.v, &k.x, &k.y);
+        k.ease = ke[i];
+        ikey_add(e, k);
+    }
+    if (lo == hi || kt[hi - 1] < b - 0.0005) {
+        k.t = b;
+        val(b, &k.v, &k.x, &k.y);
+        k.ease = hi < n ? ke[hi] : (u8)EASE_LINEAR;
+        ikey_add(e, k);
+    }
+}
+
+// Simple to Advanced: each piece becomes a linked set of items, the picture and every audio track, end to end. The
+// keys are split at the cuts, and each track's volume times the whole mix's goes into its items' volume keys (held
+// to 0..2); the whole mix muted mutes every track.
+static void edit_to_advanced(EditRecord *e, const MediaInfo &m)
+{
+    if (e->mode == EDIT_ADVANCED) return;
+    static EditRecord a;
+    a = {};
+    a.mode = EDIT_ADVANCED;
+    f64 dur = m.duration;
+    EditPiece pc[EDIT_MAX_PIECES];
+    i32 np = pieces_of(*e, dur, pc);
+    Transitions tr = transitions_of(*e, pc, np, dur);
+    i32 first = edit_has_mix(m) ? 1 : 0;
+    f64 kt[EDIT_MAX_KEYS + 2 * EDIT_MAX_VOL_KEYS];
+    u8 ke[EDIT_MAX_KEYS + 2 * EDIT_MAX_VOL_KEYS];
+    f64 at = 0;
+    u16 id = 1;
+    for (i32 i = 0; i < np; i++) {
+        f64 fin, fout;
+        piece_fades(tr, np, i, &fin, &fout);
+        for (i32 t = -1; t < m.track_count && t < MEDIA_MAX_TRACKS && a.item_count < EDIT_MAX_ITEMS; t++) {
+            if (t >= 0 && t < first) continue;
+            EditItem it = {};
+            it.start = at;
+            it.from = pc[i].from;
+            it.to = pc[i].to;
+            it.fade_in = (f32)fin;
+            it.fade_out = (f32)fout;
+            it.cross = tr.into[i] == TRANS_CROSS ? (f32)tr.len[i] : 0;
+            it.id = id++;
+            it.link = (u16)(i + 1);
+            it.track = (u8)(t + 1);
+            a.items[a.item_count++] = it;
+            if (t < 0) {
+                for (i32 k = 0; k < e->key_count; k++) kt[k] = e->keys[k].t, ke[k] = e->keys[k].ease;
+                span_keys(&a, it.id, IKEY_ZOOM, it.from, it.to, kt, ke, e->key_count, 1,
+                          [&](f64 s, f64 *v, f64 *x, f64 *y) { zoom_keys_at(e->keys, e->key_count, s, v, x, y); });
+                for (i32 c = 0; c < EDIT_COLORS; c++) {
+                    const VolKey *ck = e->color[c];
+                    i32 nc = e->color_count[c];
+                    for (i32 k = 0; k < nc; k++) kt[k] = ck[k].t, ke[k] = ck[k].ease;
+                    span_keys(&a, it.id, (u8)(IKEY_COLOR + c), it.from, it.to, kt, ke, nc, 1,
+                              [&](f64 s, f64 *v, f64 *x, f64 *y) { *v = level_at(ck, nc, 1, s), *x = *y = 0; });
+                }
+            } else {
+                // The track's keys and the mix's, merged in time; at the same time, the track's ease
+                const VolKey *tk = e->vol[t], *mk = e->vol[EDIT_MASTER];
+                i32 nt = e->vol_count[t], nm = e->vol_count[EDIT_MASTER], n = 0, p = 0, q = 0;
+                while (p < nt || q < nm) {
+                    bool take_t = q >= nm || (p < nt && tk[p].t <= mk[q].t + 0.0005);
+                    const VolKey &k = take_t ? tk[p] : mk[q];
+                    if (take_t && q < nm && fabs(tk[p].t - mk[q].t) <= 0.0005) q++;
+                    if (take_t) p++;
+                    else q++;
+                    kt[n] = k.t, ke[n] = k.ease, n++;
+                }
+                span_keys(&a, it.id, IKEY_VOLUME, it.from, it.to, kt, ke, n, 1, [&](f64 s, f64 *v, f64 *x, f64 *y) {
+                    f64 g = vol_at(*e, t, s) * vol_at(*e, EDIT_MASTER, s);
+                    *v = g > 2 ? 2 : g, *x = *y = 0;
+                });
+            }
+        }
+        at += pc[i].to - pc[i].from;
+    }
+    for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++) a.muted[t] = e->muted[t] || e->muted[EDIT_MASTER];
+    *e = a;
+}
+
+// Advanced to Simple, as near as Simple can say it: the picture's items become the pieces in their order (gaps
+// closed up), their crossfades and fades the transitions at the cuts, and each kind of key the keys of all the
+// items on its track, merged in time. Anything else is lost.
+static void edit_to_simple(EditRecord *e, const MediaInfo &m)
+{
+    if (e->mode != EDIT_ADVANCED) return;
+    static EditRecord s;
+    s = {};
+    i32 idx[EDIT_MAX_ITEMS], n = track_items(*e, 0, idx);
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 np = 0;
+    for (i32 k = 0; k < n && np < EDIT_MAX_PIECES; k++) {
+        const EditItem &it = e->items[idx[k]];
+        EditPiece q = {it.from, it.to};
+        if (k) {
+            const EditItem &prev = e->items[idx[k - 1]];
+            if (it.cross > 0) q.trans = TRANS_CROSS, q.trans_len = it.cross;
+            else if (prev.fade_out > 0 || it.fade_in > 0) q.trans = TRANS_FADE, q.trans_len = prev.fade_out + it.fade_in;
+        }
+        p[np++] = q;
+    }
+    if (np) {
+        s.fade_in = e->items[idx[0]].fade_in;
+        s.fade_out = e->items[idx[n - 1]].fade_out;
+        pieces_store(&s, p, np, m.duration);
+    }
+    // Every key of one kind on the items of a track, by time, one per moment
+    static ItemKey all[EDIT_MAX_ITEM_KEYS];
+    auto merged = [&](i32 track, i32 what, auto put) {
+        i32 ids[EDIT_MAX_ITEMS], ni = track_items(*e, track, ids), na = 0;
+        for (i32 i = 0; i < ni; i++) {
+            i32 first, c = ikey_range(*e, e->items[ids[i]].id, what, &first);
+            for (i32 k = 0; k < c; k++) {
+                const ItemKey &q = e->ikeys[first + k];
+                i32 at = na++;
+                while (at > 0 && all[at - 1].t > q.t) {
+                    all[at] = all[at - 1];
+                    at--;
+                }
+                all[at] = q;
+            }
+        }
+        for (i32 k = 0; k < na; k++)
+            if (!k || all[k].t - all[k - 1].t > 0.0005) put(all[k]);
+    };
+    merged(0, IKEY_ZOOM, [&](const ItemKey &q) {
+        if (s.key_count < EDIT_MAX_KEYS) s.keys[s.key_count++] = {q.t, q.v, q.x, q.y, q.ease};
+    });
+    for (i32 c = 0; c < EDIT_COLORS; c++)
+        merged(0, IKEY_COLOR + c, [&](const ItemKey &q) {
+            if (s.color_count[c] < EDIT_MAX_VOL_KEYS) s.color[c][s.color_count[c]++] = {q.t, (f32)q.v, q.ease};
+        });
+    for (i32 t = 0; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
+        merged(t + 1, IKEY_VOLUME, [&](const ItemKey &q) {
+            if (s.vol_count[t] < EDIT_MAX_VOL_KEYS) s.vol[t][s.vol_count[t]++] = {q.t, (f32)q.v, q.ease};
+        });
+        s.muted[t] = e->muted[t];
+    }
+    *e = s;
+}
+
+// Whether two Advanced edits play the same: the same items on each track (place, span and transitions as they
+// play), linked the same way, and the same zoom, colour and volume through each.
+static bool adv_same(const EditRecord &a, const EditRecord &b, const MediaInfo &m)
+{
+    if (a.item_count != b.item_count) return false;
+    f64 dur = m.duration;
+    static u16 ab[65536]; // a's link to b's
+    memset(ab, 0, sizeof ab);
+    for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++)
+        if (a.muted[t] != b.muted[t]) return false;
+    for (i32 tr = 0; tr <= MEDIA_MAX_TRACKS; tr++) {
+        i32 ia[EDIT_MAX_ITEMS], ib[EDIT_MAX_ITEMS];
+        i32 n = track_items(a, tr, ia);
+        if (track_items(b, tr, ib) != n) return false;
+        ItemFades fa[EDIT_MAX_ITEMS], fb[EDIT_MAX_ITEMS];
+        track_fades(a, dur, ia, n, fa);
+        track_fades(b, dur, ib, n, fb);
+        for (i32 k = 0; k < n; k++) {
+            const EditItem &x = a.items[ia[k]], &y = b.items[ib[k]];
+            if (fabs(x.start - y.start) > 0.001 || fabs(x.from - y.from) > 0.001 || fabs(x.to - y.to) > 0.001) return false;
+            if (fabs(fa[k].in - fb[k].in) > 0.001 || fabs(fa[k].out - fb[k].out) > 0.001 ||
+                fabs(fa[k].cross - fb[k].cross) > 0.001)
+                return false;
+            if (!x.link != !y.link) return false;
+            if (x.link) {
+                if (!ab[x.link]) ab[x.link] = y.link;
+                else if (ab[x.link] != y.link) return false;
+            }
+            // The curves, at both edits' keys and at even steps through the item
+            for (i32 what = 0; what < IKEY_KINDS; what++) {
+                if ((what == IKEY_VOLUME) != (tr > 0)) continue;
+                static f64 at[2 * EDIT_MAX_ITEM_KEYS + 17];
+                i32 na = 0;
+                for (i32 s = 0; s <= 16; s++) at[na++] = x.from + (x.to - x.from) * s / 16;
+                for (i32 side = 0; side < 2; side++) {
+                    const EditRecord &r = side ? b : a;
+                    i32 first, c = ikey_range(r, side ? y.id : x.id, what, &first);
+                    for (i32 q = 0; q < c; q++)
+                        if (r.ikeys[first + q].t > x.from && r.ikeys[first + q].t < x.to) at[na++] = r.ikeys[first + q].t;
+                }
+                for (i32 s = 0; s < na; s++) {
+                    if (what == IKEY_ZOOM) {
+                        f64 z1, x1, y1, z2, x2, y2;
+                        item_zoom_at(a, x.id, at[s], &z1, &x1, &y1);
+                        item_zoom_at(b, y.id, at[s], &z2, &x2, &y2);
+                        if (fabs(z1 - z2) > 0.002) return false;
+                        if (z1 > 1.001 && (fabs(x1 - x2) > 0.002 || fabs(y1 - y2) > 0.002)) return false;
+                    } else if (fabs(item_level_at(a, x.id, what, at[s]) - item_level_at(b, y.id, what, at[s])) > 0.002)
+                        return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// Whether going back to Simple keeps an Advanced edit as it is: to Simple and back again plays the same.
+static bool edit_round_trips(const EditRecord &e, const MediaInfo &m)
+{
+    if (e.mode != EDIT_ADVANCED) return true;
+    static EditRecord c;
+    c = e;
+    edit_to_simple(&c, m);
+    edit_to_advanced(&c, m);
+    return adv_same(e, c, m);
+}
+
+// One of a keyframe's values (0 z, 1 x, 2 y) of keys[0..n) at time `t` (an ffmpeg expression), eased between keys.
+static void smooth_expr(SaveWork *w, const ZoomKey *keys, i32 n, i32 field, const char *t)
+{
+    auto val = [&](i32 k) { return field == 0 ? keys[k].z : field == 1 ? keys[k].x : keys[k].y; };
     for (i32 k = 0; k + 1 < n; k++) {
-        f64 ta = e.keys[k].t, tb = e.keys[k + 1].t, a = val(k), b = val(k + 1);
+        f64 ta = keys[k].t, tb = keys[k + 1].t, a = val(k), b = val(k + 1);
         f64 span = tb - ta > 0.001 ? tb - ta : 0.001;
         char u[160], c[560];
         snprintf(u, sizeof u, "clip((%s-%.4f)/%.4f,0,1)", t, ta, span);
-        if (ease_expr(e.keys[k].ease, e.keys[k + 1].ease, u, c, sizeof c))
+        if (ease_expr(keys[k].ease, keys[k + 1].ease, u, c, sizeof c))
             graph_add(w, "if(lt(%s,%.4f),(%.5f+(%.5f)*(%s)),", t, tb, a, b - a, c);
         else graph_add(w, "if(lt(%s,%.4f),%.5f,", t, tb, a);
     }
@@ -1335,9 +1812,9 @@ static void vol_filter(SaveWork *w, const EditRecord &e, i32 track, f64 start)
     graph_add(w, "':eval=frame");
 }
 
-// The colour as an eq filter, each value a plain number or an expression of the frame's time, for input cut from
-// `start` seconds. eq works on planar YUV, so the picture is put in that first.
-static void color_filter(SaveWork *w, const EditRecord &e, f64 fps, f64 start)
+// The colour as an eq filter, each value (keys k[c][0..n[c]), none = as recorded) a plain number or an expression of
+// the frame's time, for input cut from `start` seconds. eq works on planar YUV, so the picture is put in that first.
+static void color_filter(SaveWork *w, const VolKey *const *k, const i32 *n, f64 fps, f64 start)
 {
     static const char *const names[EDIT_COLORS] = {"brightness", "contrast", "saturation"};
     char t[64];
@@ -1345,13 +1822,13 @@ static void color_filter(SaveWork *w, const EditRecord &e, f64 fps, f64 start)
     graph_add(w, "format=yuv420p,eq=");
     for (i32 c = 0; c < EDIT_COLORS; c++) {
         graph_add(w, "%s%s=", c ? ":" : "", names[c]);
-        if (!e.color_count[c]) {
+        if (!n[c]) {
             graph_add(w, "%.4f", color_eq(c, 1));
             continue;
         }
         graph_add(w, "'");
-        if (c == COLOR_BRIGHTNESS) level_expr(w, e.color[c], e.color_count[c], t, EQ_BRIGHTNESS, -EQ_BRIGHTNESS);
-        else level_expr(w, e.color[c], e.color_count[c], t, 1, 0);
+        if (c == COLOR_BRIGHTNESS) level_expr(w, k[c], n[c], t, EQ_BRIGHTNESS, -EQ_BRIGHTNESS);
+        else level_expr(w, k[c], n[c], t, 1, 0);
         graph_add(w, "'");
     }
     graph_add(w, ":eval=frame,");
@@ -1400,16 +1877,17 @@ static void seq_join(SaveWork *w, const Transitions &tr, const f64 *sa, const f6
     }
 }
 
-// The zoom as a perspective filter that crops the view and stretches it to the whole frame, each frame.
-static void zoom_filter(SaveWork *w, const EditRecord &e, f64 fps, f64 start)
+// The zoom (keys[0..n)) as a perspective filter that crops the view and stretches it to the whole frame, each frame,
+// for input cut from `start` seconds.
+static void zoom_filter(SaveWork *w, const ZoomKey *keys, i32 n, f64 fps, f64 start)
 {
     char t[64];
     snprintf(t, sizeof t, "(in/%.4f+%.4f)", fps > 1 ? fps : 30, start);
     // The view's top-left corner, kept inside the picture: x = clip(cx*W - W/(2z), 0, W - W/z).
-    auto z = [&]() { graph_add(w, "max(1,"); smooth_expr(w, e, 0, t); graph_add(w, ")"); };
+    auto z = [&]() { graph_add(w, "max(1,"); smooth_expr(w, keys, n, 0, t); graph_add(w, ")"); };
     auto corner = [&](const char *dim, i32 field, bool far_edge) {
         graph_add(w, "clip(");
-        smooth_expr(w, e, field, t);
+        smooth_expr(w, keys, n, field, t);
         graph_add(w, "*%s-%s/(2*", dim, dim);
         z();
         graph_add(w, "),0,%s-%s/", dim, dim);
@@ -1458,6 +1936,129 @@ static bool edit_audio_graph(SaveWork *w, const EditJob &j, f64 start)
     vol_filter(w, j.edit, EDIT_MASTER, start);
     graph_add(w, ",alimiter=limit=0.98:level=0[a];\n");
     return true;
+}
+
+// An Advanced edit's graph, for input cut from `from` seconds. Each track's items are cut out of the input (with half
+// of any crossfade past each end), zoomed and coloured or set to their volume, faded, and joined with black or
+// silence between them and up to the sequence's end. The picture then goes through `post` (filters, each ending in a
+// comma) into [v]. The sound is written as [o<s>]: the mix of the unmuted tracks first, then for Keep (`tracks`)
+// every track as edited; streams[s] is -1 for the mix, else the file's track. Returns how many.
+static i32 adv_graph(SaveWork *w, const EditJob &j, f64 from, const char *post, const char *vfmt, bool tracks,
+                     i32 *streams)
+{
+    const EditRecord &e = j.edit;
+    const MediaInfo &m = j.info;
+    f64 dur = m.duration, len = adv_len(e), fps = m.fps > 1 ? m.fps : 30;
+    static const char *const AFMT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+    static VolKey lv[EDIT_MAX_ITEM_KEYS], cks[EDIT_COLORS][EDIT_MAX_ITEM_KEYS];
+    static ZoomKey zk[EDIT_MAX_ITEM_KEYS];
+    // Track tr (0 the picture) from input `src`, its result's label put in `out`.
+    auto track = [&](i32 tr, const char *src, char (&out)[24]) {
+        bool audio = tr > 0;
+        const char *a = audio ? "a" : "";
+        i32 idx[EDIT_MAX_ITEMS], n = track_items(e, tr, idx);
+        ItemFades fd[EDIT_MAX_ITEMS];
+        track_fades(e, dur, idx, n, fd);
+        if (n) {
+            graph_add(w, "%s%ssplit=%d", src, a, n);
+            for (i32 k = 0; k < n; k++) graph_add(w, "[c%d_%d]", tr, k);
+            graph_add(w, ";\n");
+        }
+        f64 joined = 0;
+        i32 joins = 0, gaps = 0;
+        out[0] = 0;
+        auto join = [&](const char *next, f64 next_len, f64 cross) {
+            if (!out[0]) {
+                snprintf(out, sizeof out, "%s", next);
+                joined = next_len;
+                return;
+            }
+            char lab[24];
+            snprintf(lab, sizeof lab, "[j%d_%d]", tr, joins++);
+            if (cross > 0 && audio) graph_add(w, "%s%sacrossfade=d=%.4f:c1=tri:c2=tri%s;\n", out, next, cross, lab);
+            else if (cross > 0)
+                graph_add(w, "%s%sxfade=transition=fade:duration=%.4f:offset=%.4f%s;\n", out, next, cross, joined - cross, lab);
+            else graph_add(w, "%s%sconcat=n=2:v=%d:a=%d%s;\n", out, next, audio ? 0 : 1, audio ? 1 : 0, lab);
+            joined += next_len - cross;
+            snprintf(out, sizeof out, "%s", lab);
+        };
+        auto gap = [&](f64 d) {
+            char g[24];
+            snprintf(g, sizeof g, "[g%d_%d]", tr, gaps++);
+            if (audio) graph_add(w, "anullsrc=r=48000:cl=stereo,atrim=duration=%.4f,%s%s;\n", d, AFMT, g);
+            else
+                graph_add(w, "color=c=black:s=%dx%d:r=%.4f:d=%.4f,format=yuv420p,setsar=1,settb=AVTB%s;\n", m.width,
+                          m.height, fps, d, g);
+            join(g, d, 0);
+        };
+        for (i32 k = 0; k < n; k++) {
+            const EditItem &it = e.items[idx[k]];
+            f64 sa = it.from - fd[k].cross / 2, sb = it.to + (k + 1 < n ? fd[k + 1].cross / 2 : 0);
+            graph_add(w, "[c%d_%d]%strim=start=%.4f:end=%.4f,%ssetpts=PTS-STARTPTS,", tr, k, a, sa - from, sb - from, a);
+            if (!audio) {
+                i32 nz = item_zooms(e, it.id, zk);
+                bool zoomed = false, colored = false;
+                for (i32 q = 0; q < nz; q++) zoomed |= zk[q].z > 1.001;
+                if (zoomed) zoom_filter(w, zk, nz, fps, sa);
+                const VolKey *ck[EDIT_COLORS];
+                i32 nc[EDIT_COLORS];
+                for (i32 c = 0; c < EDIT_COLORS; c++) {
+                    nc[c] = item_levels(e, it.id, IKEY_COLOR + c, cks[c]);
+                    ck[c] = cks[c];
+                    for (i32 q = 0; q < nc[c]; q++) colored |= fabs(cks[c][q].v - 1) > 0.001;
+                }
+                if (colored) color_filter(w, ck, nc, fps, sa);
+                graph_add(w, "format=yuv420p,setsar=1,fps=%.4f,settb=AVTB", fps);
+            } else {
+                i32 nl = item_levels(e, it.id, IKEY_VOLUME, lv);
+                if (nl) {
+                    char t[48];
+                    snprintf(t, sizeof t, "(t+%.4f)", sa);
+                    graph_add(w, "volume='");
+                    level_expr(w, lv, nl, t, 1, 0);
+                    graph_add(w, "':eval=frame,");
+                }
+                graph_add(w, "%s", AFMT);
+            }
+            if (fd[k].in > 0) graph_add(w, ",%sfade=t=in:st=0:d=%.4f", a, fd[k].in);
+            if (fd[k].out > 0) graph_add(w, ",%sfade=t=out:st=%.4f:d=%.4f", a, sb - sa - fd[k].out, fd[k].out);
+            char p[24];
+            snprintf(p, sizeof p, "[p%d_%d]", tr, k);
+            graph_add(w, "%s;\n", p);
+            if (!fd[k].cross && it.start > joined + 0.0005) gap(it.start - joined);
+            join(p, sb - sa, fd[k].cross);
+        }
+        if (len > joined + 0.0005) gap(len - joined);
+    };
+    char v[24];
+    track(0, "[0:v]", v);
+    graph_add(w, "%s%sformat=%s[v];\n", v, post, vfmt);
+    if (m.track_count <= 0) return 0;
+    // The tracks: in the mix when unmuted and with something on them, and each written alone for Keep
+    i32 first = edit_has_mix(m) ? 1 : 0, mixed[MEDIA_MAX_TRACKS], nm = 0, ns = 1;
+    char lab[MEDIA_MAX_TRACKS][24];
+    streams[0] = -1;
+    for (i32 t = first; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
+        i32 idx[EDIT_MAX_ITEMS];
+        bool in_mix = !e.muted[t] && track_items(e, t + 1, idx) > 0;
+        if (!in_mix && !tracks) continue;
+        char src[24];
+        snprintf(src, sizeof src, "[0:a:%d]", t);
+        track(t + 1, src, lab[t]);
+        if (in_mix && tracks) {
+            graph_add(w, "%sasplit=2[o%d][x%d];\n", lab[t], ns, t);
+            snprintf(lab[t], sizeof lab[t], "[x%d]", t);
+        } else if (tracks) graph_add(w, "%sanull[o%d];\n", lab[t], ns);
+        if (tracks) streams[ns++] = t;
+        if (in_mix) mixed[nm++] = t;
+    }
+    if (!nm) graph_add(w, "anullsrc=r=48000:cl=stereo,atrim=duration=%.4f,%s[o0];\n", len, AFMT);
+    else {
+        for (i32 i = 0; i < nm; i++) graph_add(w, "%s", lab[mixed[i]]);
+        if (nm > 1) graph_add(w, "amix=inputs=%d:normalize=0:dropout_transition=0,", nm);
+        graph_add(w, "alimiter=limit=0.98:level=0[o0];\n");
+    }
+    return ns;
 }
 
 // How Share fits a size (ported from Compress for Discord's Planner). The size is in MiB, which is what Discord
@@ -1596,11 +2197,13 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     bool link_video_ok = !strcmp(vcodec, "h264"), link_audio_ok = !acodec[0] || !strcmp(acodec, "aac");
     // Each piece is read from sa to sb: its own span, and half a crossfade past each cut that has one. The input is
     // read from the earliest of those to the latest (`from`, `span`); `dur` is the joined length. With cuts or
-    // transitions (`seq`) every piece is cut out of the input and they're joined.
+    // transitions (`seq`) every piece is cut out of the input and they're joined. An Advanced edit (`adv`) is always
+    // cut up and joined, every track on its own (adv_graph).
+    bool adv = j.edit.mode == EDIT_ADVANCED;
     EditPiece pc[EDIT_MAX_PIECES];
     i32 np = pieces_of(j.edit, m.duration, pc);
     Transitions tr = transitions_of(j.edit, pc, np, m.duration);
-    bool cuts = np > 1, seq = cuts || transitions_any(tr, np);
+    bool cuts = np > 1 || adv, seq = cuts || transitions_any(tr, np);
     f64 sa[EDIT_MAX_PIECES], sb[EDIT_MAX_PIECES];
     for (i32 i = 0; i < np; i++) {
         sa[i] = pc[i].from - (tr.into[i] == TRANS_CROSS ? tr.len[i] / 2 : 0);
@@ -1611,7 +2214,21 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         if (sa[i] < from) from = sa[i];
         if (sb[i] > to) to = sb[i];
     }
-    f64 span = to - from, dur = pieces_len(j.edit, m.duration);
+    if (adv) {
+        from = m.duration, to = 0;
+        for (i32 t = 0; t <= MEDIA_MAX_TRACKS; t++) {
+            i32 idx[EDIT_MAX_ITEMS], n = track_items(j.edit, t, idx);
+            ItemFades fd[EDIT_MAX_ITEMS];
+            track_fades(j.edit, m.duration, idx, n, fd);
+            for (i32 k = 0; k < n; k++) {
+                const EditItem &it = j.edit.items[idx[k]];
+                from = ImMin(from, it.from - fd[k].cross / 2);
+                to = ImMax(to, it.to + (k + 1 < n ? fd[k + 1].cross / 2 : 0));
+            }
+        }
+        if (to < from) from = to = 0;
+    }
+    f64 span = to - from, dur = adv ? adv_len(j.edit) : pieces_len(j.edit, m.duration);
     if (dur <= 0.05) {
         snprintf(out, out_cap, "the trim leaves nothing to save");
         return SAVE_EV_FAILED;
@@ -1668,10 +2285,23 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         w->graph_len = 0;
         w->graph_full = false;
         w->graph[0] = 0;
-        if (reencode) {
+        // The audio streams written when the pieces are joined, in order: -1 for the rebuilt mix, else a track
+        i32 streams[MEDIA_MAX_TRACKS + 1], ns = 0;
+        if (adv) {
+            char post[128] = "";
+            if (share) {
+                if (portrait) snprintf(post, sizeof post, "scale='min(%d,iw)':-2:flags=lanczos,", side);
+                else snprintf(post, sizeof post, "scale=-2:'min(%d,ih)':flags=lanczos,", side);
+                if (reduce_fps) snprintf(post + strlen(post), sizeof post - strlen(post), "fps=%g,", plan.fps);
+            }
+            ns = adv_graph(w, j, from, post, w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p", !share && !link, streams);
+        } else if (reencode) {
             graph_add(w, "[0:v]");
-            if (zoom) zoom_filter(w, j.edit, m.fps, from);
-            if (colored) color_filter(w, j.edit, m.fps, from);
+            if (zoom) zoom_filter(w, j.edit.keys, j.edit.key_count, m.fps, from);
+            if (colored) {
+                const VolKey *ck[EDIT_COLORS] = {j.edit.color[0], j.edit.color[1], j.edit.color[2]};
+                color_filter(w, ck, j.edit.color_count, m.fps, from);
+            }
             if (share) {
                 if (portrait) graph_add(w, "scale='min(%d,iw)':-2:flags=lanczos,", side);
                 else graph_add(w, "scale=-2:'min(%d,ih)':flags=lanczos,", side);
@@ -1693,11 +2323,10 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 seq_join(w, tr, sa, sb, np, -1);
             } else graph_add(w, "[v];\n");
         }
-        bool mix = (share || touched || (link && (seq || !link_audio_ok))) && edit_audio_graph(w, j, from);
-        // With cuts or transitions, the audio streams written, in order: -1 for the rebuilt mix [a], else a track as
-        // recorded. Each is cut into the pieces, faded, and joined into [o<n>].
-        i32 streams[MEDIA_MAX_TRACKS + 1], ns = 0;
-        if (seq) {
+        bool mix = !adv && (share || touched || (link && (seq || !link_audio_ok))) && edit_audio_graph(w, j, from);
+        // With cuts or transitions each stream (the rebuilt mix [a], or a track as recorded) is cut into the pieces,
+        // faded, and joined into [o<n>].
+        if (seq && !adv) {
             if (share || link) {
                 if (mix) streams[ns++] = -1;
             } else {
@@ -1827,6 +2456,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                  share ? "share" : link ? "link" : "keep", req.id, dur, np, np == 1 ? "" : "s", from,
                  transitions_any(tr, np) ? "yes" : "no",
                  zoom ? j.edit.key_count : 0, colored ? "changed" : "as recorded", mix ? "re-mixed" : "as recorded", reencode ? "re-encoded" : "copied", final8);
+        if (adv) log_line("%s %u: advanced, %d items", share ? "share" : link ? "link" : "keep", req.id, j.edit.item_count);
         if (link) log_line("link %u: source %s / %s", req.id, vcodec[0] ? vcodec : "-", acodec[0] ? acodec : "-");
         if (share)
             log_line("share %u: %g MB asked, attempt %d: video %d kbps at %dp%g%s%s, audio %d kbps", req.id,

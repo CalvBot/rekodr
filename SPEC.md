@@ -55,6 +55,15 @@ Keep a whole session from start to finish.
 - **Simple and Advanced:** the editor is Simple: one in and one out, set with the handles, I and O, and cleared with
   Clear. The Advanced side of the switch is greyed out. An edit with more than one piece is shown and played with
   the pieces joined, and keys stay on the moment of the video they were set on.
+- **Advanced edits:** an Advanced edit is a sequence of items on tracks: V1, the picture, and one audio track per
+  recorded track (not the Mix, which is rebuilt). Each item is a span of the video placed at a time on the
+  sequence, with its own fade in, fade out and crossfade from the item before, and its own keys: zoom and colour on
+  the picture, volume on audio. Items made together are linked and move together. Empty time plays as black and
+  silence. Turning a Simple edit Advanced makes each piece a linked set, splits the keys at the cuts, and puts each
+  track's volume times the Mix's into its audio keys. Going back to Simple joins the items back into pieces; when
+  that would lose something (a gap, an unlinked move, keys that differ per item) it asks first. The edit file's
+  first line is `mode = advanced`. Keep, Share and Link render it with the same graph: each track's items cut out,
+  keyed and faded, then joined with xfade or concat; Keep writes every track as edited and a mix of the unmuted ones.
 - **Zoom views:** the picture shows the zoom in one of two views, chosen under Zoom; the result is the same.
   *Crop* keeps the whole footage still and moves and scales the kept frame over it. *Footage* keeps the frame
   still and moves and scales the footage behind it. Outside the frame is dimmed, and dragging aims.

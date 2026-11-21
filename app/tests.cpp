@@ -1477,6 +1477,122 @@ static bool xml_balanced(const char *s)
 }
 
 // The editor's XML for Premiere and DaVinci: well formed, the trim in frames, a track per recorded track
+// Advanced edits: Simple to Advanced and back, the record on disk, settling overlaps, and the render's graph.
+static void test_edit_advanced()
+{
+    static MediaInfo m;
+    m = {};
+    m.duration = 10, m.width = 1920, m.height = 1080, m.fps = 30, m.track_count = 3;
+    str_set(m.tracks[0], "Mix"), str_set(m.tracks[1], "Mic"), str_set(m.tracks[2], "Game");
+    m.channels[0] = 2, m.channels[1] = 1, m.channels[2] = 2;
+    auto about = [](f64 a, f64 b) { return fabs(a - b) < 1e-4; };
+
+    // Simple: 1-4 then 6-9 with a 1 s crossfade, a fade in, zoom keys at 2 and 7, the Mic at 150%, the mix at 50%
+    static EditRecord s;
+    s = {};
+    s.pieces[0] = {1, 4};
+    s.pieces[1] = {6, 9, TRANS_CROSS, 1.0f};
+    s.piece_count = 2;
+    s.fade_in = 0.5f;
+    s.keys[0] = {2, 2, 0.25, 0.5, EASE_LINEAR};
+    s.keys[1] = {7, 3, 0.75, 0.5, EASE_LINEAR};
+    s.key_count = 2;
+    s.boost[1] = 0.5f;
+    s.boost[EDIT_MASTER] = -0.5f;
+    s.muted[2] = true;
+    static EditRecord a;
+    a = s;
+    edit_to_advanced(&a, m);
+    T(a.mode == EDIT_ADVANCED && a.item_count == 6 && !a.piece_count && !a.key_count);
+    i32 idx[EDIT_MAX_ITEMS];
+    T(track_items(a, 0, idx) == 2 && about(a.items[idx[1]].start, 3) && about(a.items[idx[1]].cross, 1));
+    T(about(a.items[idx[0]].fade_in, 0.5) && a.items[idx[0]].link != a.items[idx[1]].link);
+    T(track_items(a, 1, idx) == 0 && track_items(a, 2, idx) == 2 && track_items(a, 3, idx) == 2);
+    T(a.muted[2] && !a.muted[1]);
+    // The Mic's 150% times the mix's 50%, flat: one key
+    i32 first, mic = idx[0];
+    track_items(a, 2, idx);
+    mic = idx[0];
+    T(ikey_range(a, a.items[mic].id, IKEY_VOLUME, &first) == 1 && about(a.ikeys[first].v, 0.75));
+    // The zoom split at the cuts: 1 (held at 2x), 2, and 4 (a fifth of the way from 2x to 3x)
+    track_items(a, 0, idx);
+    u16 v0 = a.items[idx[0]].id, v1 = a.items[idx[1]].id;
+    T(ikey_range(a, v0, IKEY_ZOOM, &first) == 3 && about(a.ikeys[first].t, 1) && about(a.ikeys[first].v, 2) &&
+      about(a.ikeys[first + 2].t, 4) && about(a.ikeys[first + 2].v, 2.4));
+    f64 z, x, y;
+    item_zoom_at(a, v1, 8, &z, &x, &y);
+    T(about(z, 3) && about(x, 0.75));
+    T(item_at(a, 0, 3.5) == idx[1] && item_at(a, 0, 2.99) == idx[0] && item_at(a, 0, 6.5) == -1);
+    T(about(adv_len(a), 6));
+    T(about(item_fade_gain(a, m.duration, idx[0], 1.25), 0.5));
+
+    // Back to Simple and again gives the same edit, so going back needs no asking
+    T(edit_round_trips(a, m));
+    static EditRecord b;
+    b = a;
+    edit_to_simple(&b, m);
+    T(b.mode == EDIT_SIMPLE && b.piece_count == 2 && b.pieces[1].trans == TRANS_CROSS && about(b.fade_in, 0.5));
+    T(!b.item_count && b.vol_count[1] == 2 && about(b.vol[1][0].v, 0.75) && b.muted[2]);
+    // An unlinked move of the Mic, a gap or a changed key does not
+    b = a;
+    track_items(b, 2, idx);
+    b.items[idx[1]].start += 0.5;
+    T(!edit_round_trips(b, m));
+    b = a;
+    track_items(b, 0, idx);
+    b.items[idx[1]].start += 1;
+    T(!edit_round_trips(b, m));
+
+    // The record on disk
+    wchar_t dir[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    Path file = {};
+    swprintf(file.s, MAX_PATH, L"%sclipback-test-adv-%u.edit.txt", dir, GetCurrentProcessId());
+    edit_write(file, a);
+    T(edit_is_advanced(file));
+    static EditRecord r;
+    edit_read(file, &r);
+    DeleteFileW(file.s);
+    T(r.mode == EDIT_ADVANCED && r.item_count == a.item_count && r.ikey_count == a.ikey_count && adv_same(r, a, m));
+    edit_write(file, s);
+    T(!edit_is_advanced(file));
+    DeleteFileW(file.s);
+
+    // An item run over the next one on its track is cut back to it; one left too short goes
+    b = a;
+    track_items(b, 0, idx);
+    b.items[idx[0]].to += 2; // now ends at 5 on the sequence, over the next item at 3
+    adv_settle(&b, m.duration);
+    track_items(b, 0, idx);
+    T(about(item_end(b.items[idx[0]]), 3));
+    b.items[idx[1]].start = 0.05; // over all but 0.05 s of the first
+    adv_settle(&b, m.duration);
+    T(track_items(b, 0, idx) == 1 && b.item_count == 5);
+    T(item_find(b, v0) < 0 && ikey_range(b, v0, IKEY_ZOOM, &first) == 0);
+
+    // The graph: the crossfade overlaps the first item's 3.5 s (half the crossfade past its end) by 1 s; with the
+    // second item moved on 1 s there's a black second between them instead.
+    static EditJob j;
+    j = {};
+    j.info = m;
+    j.edit = a;
+    SaveWork *w = &g_save_work;
+    w->graph_len = 0, w->graph_full = false, w->graph[0] = 0;
+    i32 streams[MEDIA_MAX_TRACKS + 1];
+    i32 ns = adv_graph(w, j, 0.5, "", "yuv420p", true, streams);
+    T(ns == 3 && streams[0] == -1 && streams[1] == 1 && streams[2] == 2);
+    T(strstr(w->graph, "xfade=transition=fade:duration=1.0000:offset=2.5000") != 0);
+    T(strstr(w->graph, "acrossfade=d=1.0000") != 0);
+    T(strstr(w->graph, "[c0_0]trim=start=0.5000:end=4.0000") != 0); // 1 to 4.5 in the video, read from 0.5
+    T(strstr(w->graph, "fade=t=in:st=0:d=0.5000") != 0);
+    T(strstr(w->graph, "amix") == 0 && strstr(w->graph, "[x1]alimiter") != 0); // the Game is muted: the Mic alone
+    j.edit.items[item_find(j.edit, v1)].start = 4;
+    w->graph_len = 0, w->graph[0] = 0;
+    adv_graph(w, j, 0.5, "", "yuv420p", false, streams);
+    T(strstr(w->graph, "color=c=black:s=1920x1080:r=30.0000:d=1.0000") != 0 && strstr(w->graph, "xfade") == 0);
+    T(strstr(w->graph, "[o1]") == 0);
+}
+
 static void test_edit_xml()
 {
     Editor &ed = g_app.editor;
@@ -1625,6 +1741,7 @@ int main()
     test_pieces();
     test_edit_volumes();
     test_edit_xml();
+    test_edit_advanced();
     test_lanes();
     test_share_plan();
     test_chapters();
