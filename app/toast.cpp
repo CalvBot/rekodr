@@ -5,8 +5,9 @@
 // test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
 //
 // Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
-// Both go after 5 s, counted down by a ring round their Dismiss X. While the mouse is on one the count holds at
-// full, and starts again from full when the mouse leaves.
+// Each goes after its own time (TOAST_LIFE_*): Session saved or ended 15 s, Clip saved 5 s, 10 s once a share failed.
+// A ring round the Dismiss X counts it down. While the mouse is on one the count holds at full, and starts again from
+// full when the mouse leaves.
 // Clip saved: Edit opens the file in the editor. Share does what share_decide picks and stays up while it runs, its
 // line showing the step and percent over a thin bar, then what went on the clipboard; then it counts down again. A
 // first link to a free host isn't agreed to here: the library opens on the clip with its Share menu instead.
@@ -44,6 +45,7 @@ struct Toast {
     u32       share;              // its share_start job
     i32       share_pct;          // the percent last drawn
     u64       start_ms;           // the countdown's start (GetTickCount64)
+    u32       life_ms;            // how long it shows once the countdown starts (TOAST_LIFE_*)
     HBITMAP   base;               // the toast drawn without its dial, base_w x base_h; redrawn when dirty
     i32       base_w, base_h;
     bool      dirty;
@@ -54,7 +56,10 @@ struct Toast {
 static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
 enum { TSH_NONE, TSH_PROBING, TSH_RUNNING, TSH_DONE };
 static const UINT_PTR TOAST_TICK = 1;
-static const UINT     TOAST_LIFE_MS = 5000, TOAST_SMALL_LIFE_MS = 3000, TOAST_TICK_MS = 33; // the dial moves at 30 fps
+static const UINT     TOAST_TICK_MS = 33; // the dial moves at 30 fps
+// How long each toast shows, by how much it matters: a session most, a failure next, a clip less, a brief one over
+// a game least
+static const u32      TOAST_LIFE_SESSION = 15000, TOAST_LIFE_FAILED = 10000, TOAST_LIFE_CLIP = 5000, TOAST_LIFE_BRIEF = 3000;
 static const f32      TOAST_DIAL = 24, TOAST_DIAL_RING = 2;
 
 // Clip saved and Session ended leave the keyboard where it is; the marker window takes it.
@@ -69,9 +74,10 @@ static void toast_redraw(Toast &t)
     InvalidateRect(t.hwnd, 0, FALSE);
 }
 
-// A toast that goes by itself starts its countdown
-static void toast_countdown(Toast &t)
+// A toast that goes by itself starts its countdown, of life_ms
+static void toast_countdown(Toast &t, u32 life_ms)
 {
+    t.life_ms = life_ms;
     t.start_ms = GetTickCount64();
     t.held = false;
     SetTimer(t.hwnd, TOAST_TICK, TOAST_TICK_MS, 0);
@@ -309,7 +315,7 @@ static void toast_draw_dial(Toast &t, HDC wdc)
     const i32 SS = TOAST_SS;
     RECT d = toast_rect(t, TR_DIAL);
     i32 w = d.right - d.left, h = d.bottom - d.top, W = w * SS, H = h * SS;
-    f32 left = t.held ? 1 : 1 - (f32)(GetTickCount64() - t.start_ms) / TOAST_LIFE_MS;
+    f32 left = t.held ? 1 : 1 - (f32)(GetTickCount64() - t.start_ms) / t.life_ms;
     left = left < 0 ? 0 : left;
     HDC big = CreateCompatibleDC(wdc), dc = CreateCompatibleDC(wdc);
     HBITMAP big_bmp = CreateCompatibleBitmap(wdc, W, H), bmp = CreateCompatibleBitmap(wdc, w, h);
@@ -428,7 +434,7 @@ static void toast_share_end(Toast &t, bool ok, const char *text)
 {
     t.sharing = (u8)(ok ? TSH_DONE : TSH_NONE);
     toast_line(t, text);
-    toast_countdown(t);
+    toast_countdown(t, ok ? TOAST_LIFE_CLIP : TOAST_LIFE_FAILED);
 }
 
 // Starts the Share once the clip is known: what share_decide picks for the whole file
@@ -607,7 +613,7 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (on || t.held) t.start_ms = now;
         if (on != t.held) t.held = on;
         else if (on) return 0; // still held: the dial is already full
-        if (now - t.start_ms >= (t.brief ? TOAST_SMALL_LIFE_MS : TOAST_LIFE_MS)) {
+        if (now - t.start_ms >= t.life_ms) {
             if (t.kind == TOAST_SESSION) toast_session_close(TP_NONE);
             else toast_hide(t);
             return 0;
@@ -738,7 +744,7 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     toast_place(t, work);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
-    toast_countdown(t);
+    toast_countdown(t, kind == SAVE_SESSION ? TOAST_LIFE_SESSION : brief ? TOAST_LIFE_BRIEF : TOAST_LIFE_CLIP);
 }
 
 // A save finished: Clip saved, unless clipback's own window is in front (it shows the save itself).
@@ -814,7 +820,7 @@ static bool toast_session(const Session &s, i32 more)
     toast_redraw(t);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
-    toast_countdown(t);
+    toast_countdown(t, TOAST_LIFE_SESSION);
     return true;
 }
 
