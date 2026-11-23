@@ -604,7 +604,8 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 // the clipper's name when the player set one), the video (or the picture when nothing small enough plays), and a
 // small grey "via" link. Other apps read the page's Open Graph tags instead.
 
-static const char R2_HOME_URL[] = "https://github.com/CalvBot/clipback";
+#define R2_HOME_URL "https://github.com/CalvBot/clipback"
+#define R2_RELEASES_URL "https://github.com/CalvBot/clipback/releases"
 enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
 static const u32 R2_CARD_ACCENT = 0x3BA4A0; // the card's edge colour. TODO: brand colour
 
@@ -810,8 +811,8 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
 // `embed` (the clip, or a small copy of it), or with none a card with the picture, and Discord's own card (`card`)
 // before them; the `note`, a session's Download link and the plain APP_DISPLAY word under it. A #t= in the address
 // (seconds, or m:ss or h:mm:ss) starts the clip there, which is where a preview's "Continue watching" lands. Paused,
-// the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the length, 0 if it didn't
-// fit.
+// the page names the clip and doesn't play it. Tiny GitHub and Releases links sit in the bottom corner, below the
+// clip, never on it. Kept from search engines. All ASCII. Returns the length, 0 if it didn't fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
 {
     if (cap < 2) return 0;
@@ -852,9 +853,11 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                     "<meta name=\"twitter:title\" content=\"%T\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
                     p, out, cap, &len);
     r2_page_put("<style>html,body{margin:0;min-height:100%;background:#0c0c0e;color:#7c7c86;"
+                "position:relative;"
                 "font:13px/1.5 system-ui,sans-serif}video{display:block;width:100%;max-height:calc(100vh - 44px);"
                 "background:#000}p{margin:0;padding:12px 16px;text-align:center;letter-spacing:.05em}"
-                "a{color:inherit}</style>\n"
+                "a{color:inherit}nav{position:absolute;right:12px;bottom:14px;font-size:11px;opacity:.6}"
+                "nav a{margin-left:10px;text-decoration:none}</style>\n"
                 "</head><body>\n",
                 p, out, cap, &len);
     if (!paused) {
@@ -874,7 +877,10 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                     p, out, cap, &len);
     }
     else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
-    r2_page_put("<p>" APP_DISPLAY "</p>\n</body></html>\n", p, out, cap, &len);
+    // TODO: a Support link beside these
+    r2_page_put("<p>" APP_DISPLAY "</p>\n<nav><a href=\"" R2_HOME_URL "\">GitHub</a><a href=\"" R2_RELEASES_URL
+                "\">Releases</a></nav>\n</body></html>\n",
+                p, out, cap, &len);
     return len < cap - 1 ? len : 0;
 }
 

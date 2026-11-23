@@ -1762,6 +1762,12 @@ static void test_r2()
     T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "<p>Clipback</p>"));
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
     T(!strstr(html, "thumb.jpg"));
+    // the corner links, paused or not
+    const char *nav = "<nav><a href=\"https://github.com/CalvBot/clipback\">GitHub</a>"
+                      "<a href=\"https://github.com/CalvBot/clipback/releases\">Releases</a></nav>";
+    T(strstr(html, nav) != 0);
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, nav) && strstr(html, nav) > strstr(html, "<video"));
     T(r2_page_html(pp, false, html, 64) == 0);
 
     // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag
