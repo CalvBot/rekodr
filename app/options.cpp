@@ -1232,14 +1232,15 @@ static void apps_rename_popup()
     ImGui::EndPopup();
 }
 
-// The controls on an app row: a switch that includes or excludes it, then the three categories an included app
-// can have, the app's own one filled in its colour. All of it keeps its place whatever is chosen.
+// The controls on an app row: an arrow that moves it between Included and Excluded, then the three categories an
+// included app can have, the app's own one filled in its colour. All of it keeps its place whatever is chosen.
 static const AppCategory ROW_CATS[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION};
 static f32 cat_pill_w() { return dp(84); }
 static f32 cat_pills_w() { return ImGui::GetFrameHeight() + dp(14) + COUNT(ROW_CATS) * cat_pill_w() + (COUNT(ROW_CATS) - 1) * dp(4); }
 
-// A mute button, then the categories. `own` is filled; `inherited` (a folder's rule, when there's no own one) is
-// only outlined. Unmuting makes it an App; picking a category of a muted one includes it too.
+// An arrow pointing the way the app would go along the tabs (right to Excluded, left back to Included), then the
+// categories. `own` is filled; `inherited` (a folder's rule, when there's no own one) is only outlined. Moving it
+// back makes it an App; picking a category of an excluded one includes it too.
 static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y, AppCategory *picked)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -1248,8 +1249,8 @@ static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y,
     AppCategory effective = own != CAT_NONE ? own : inherited;
     bool included = effective != CAT_IGNORED;
     ImGui::SetCursorScreenPos(ImVec2(x, y));
-    kit_next_tip(included ? "Don't record it" : "Record it");
-    if (kit_icon_button(included ? ICON_VOLUME : ICON_MUTE, "##mute", included ? KIT_GHOST : KIT_DANGER)) {
+    kit_next_tip(included ? "Move to Excluded" : "Move to Included");
+    if (kit_icon_button(included ? ICON_FORWARD : ICON_BACK, "##move", KIT_GHOST)) {
         *picked = included ? CAT_IGNORED : CAT_APP;
         changed = true;
     }
@@ -1284,6 +1285,9 @@ static bool cat_pills(AppInfo *a, f32 x, f32 y)
     AppCategory picked;
     if (!cat_pills_draw(a->category, app_category(g_app.config, *a), x, y, &picked)) return false;
     app_set_category(a, picked);
+    // One that now belongs under another tab goes there at once
+    OptionsUi &o = g_app.options;
+    if (!app_matches(*a, o.filter, o.search)) o.order_dirty = true;
     return true;
 }
 
@@ -1505,7 +1509,7 @@ static void options_apps()
                 if (o.search[0]) snprintf(msg, sizeof msg, "No match. Add %s with Add app.", o.search);
                 else snprintf(msg, sizeof msg, "%s", o.filter == FILTER_NEW      ? "Nothing new. Apps show up here when they play sound"
                                                      : o.filter == FILTER_INCLUDED ? "Nothing recorded yet. Pick Game, App or Chat on a new app"
-                                                                                   : "Nothing excluded. Mute an app to leave it out");
+                                                                                   : "Nothing excluded. An app's arrow moves it here");
                 opt_empty_row(msg);
             }
             opt_row_end();
