@@ -1206,8 +1206,10 @@ static void help_window()
             {"[Home]", "Follow the recording"},
         };
         static const HelpRow sharing[] = {
-            {"Share", "A file when the clip fits the max size, squeezed if it must; else a link"},
-            {"Squeeze", "How far over the max size a clip can be and still go as a smaller file"},
+            {"Share", "A file when the clip fits the max size, at lower quality if it must; else a link"},
+            {"Recommended size", "What a clip needs to look right: the Quality table's bitrate for its height and frame rate"},
+            {"Quality", "Starts at YouTube's published upload bitrates. Reset puts them back"},
+            {"Lower quality to fit", "How far under the recommended bitrate a file may go to fit the max size. At 100% bigger clips go as a link"},
             {"Where a link goes", "Catbox if it takes the clip, then your bucket, then Litterbox, then your servers"},
             {"Link to", "Share's arrow: pick the host yourself"},
             {"Catbox", "Up to 200 MB. Public, kept for good: a link can't be deleted"},

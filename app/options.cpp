@@ -2930,6 +2930,148 @@ static void opt_read_cap_row()
     opt_row_end();
 }
 
+// A small underlined link in the dim small font at `at`; true when clicked.
+static bool opt_link_at(const char *id, ImVec2 at, const char *text)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 w = text_w(g_font_small, text), sh = g_font_small->FontSize;
+    ImGui::SetCursorScreenPos(at);
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, sh));
+    bool hot = ImGui::IsItemHovered();
+    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    opt_text_at(dl, g_font_small, at, hot ? COL_TEXT : COL_DIM, text, at.x + w + 1);
+    dl->AddLine(ImVec2(at.x, at.y + sh), ImVec2(at.x + w, at.y + sh), col32(hot ? COL_TEXT : COL_DIM, 0.5f));
+    return clicked;
+}
+
+// A bitrate in kbit/s as Mbps for a box: "8", "1.5", "0.25"
+static void opt_mbps_text(i32 kbps, char *out, i32 cap)
+{
+    if (kbps % 1000 == 0) snprintf(out, cap, "%d", kbps / 1000);
+    else if (kbps % 100 == 0) snprintf(out, cap, "%.1f", kbps / 1000.0);
+    else snprintf(out, cap, "%.2f", kbps / 1000.0);
+}
+
+// Quality: the recommended bitrate (share_kbps) for each picture height at 30 and 60 fps, a box per cell in Mbps.
+// Under it the source of the defaults as a link, and Reset in its own slot while a value differs from them.
+static void opt_quality_table()
+{
+    Config &c = g_app.config;
+    static char typed[6][2][16];
+    static i32 editing = -1; // the cell being typed in, row * 2 + column
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), sh = g_font_small->FontSize;
+    f32 head_h = dp(22), cell_h = fh + dp(6), foot_h = dp(30), pad = dp(12);
+    opt_row_begin(0, 0, cw, pad + head_h + 6 * cell_h + foot_h + dp(4));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    opt_text_at(dl, g_font, ImVec2(g_row.x0, g_row.y + pad + head_h + floorf((cell_h - g_font->FontSize) / 2)), COL_TEXT,
+                "Quality", g_row.x1 - cw - dp(20));
+    f32 x = g_row.x1 - cw, label_w = dp(64), gap = dp(8), box_w = floorf((cw - label_w - gap) / 2);
+    f32 y = g_row.y + pad;
+    static const char *const heads[2] = {"30 fps", "60 fps"};
+    for (i32 k = 0; k < 2; k++)
+        opt_text_at(dl, g_font_small, ImVec2(x + label_w + k * (box_w + gap), y + floorf((head_h - sh) / 2)), COL_DIM,
+                    heads[k], x + label_w + k * (box_w + gap) + box_w);
+    y += head_h;
+    f32 in_pad = dp(8), unit_w = text_w(g_font, "Mbps");
+    for (i32 r = 0; r < 6; r++, y += cell_h) {
+        char label[16];
+        snprintf(label, sizeof label, "%dp", SHARE_KBPS_HEIGHTS[r]);
+        opt_text_at(dl, g_font, ImVec2(x, y + floorf((fh - g_font->FontSize) / 2)), COL_DIM, label, x + label_w);
+        for (i32 k = 0; k < 2; k++) {
+            i32 cell = r * 2 + k;
+            if (editing != cell) opt_mbps_text(c.share_kbps[r][k], typed[r][k], sizeof typed[r][k]);
+            ImVec2 box(x + label_w + k * (box_w + gap), y);
+            char id[24];
+            snprintf(id, sizeof id, "##kbps%d", cell);
+            ImGui::SetCursorScreenPos(box);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(in_pad, ImGui::GetStyle().FramePadding.y));
+            ImGui::SetNextItemWidth(box_w);
+            ImGui::InputText(id, typed[r][k], sizeof typed[r][k], ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+            if (ImGui::IsItemActive()) editing = cell;
+            else if (editing == cell) editing = -1;
+            bool done = ImGui::IsItemDeactivated();
+            ImGui::PopStyleVar();
+            opt_text_at(dl, g_font, ImVec2(box.x + box_w - in_pad - unit_w, floorf(box.y + (fh - g_font->FontSize) / 2)),
+                        COL_DIM, "Mbps", box.x + box_w);
+            if (done) {
+                f64 v = atof(typed[r][k]);
+                i32 kbps = (i32)(v * 1000 + 0.5);
+                if (v > 0 && kbps != c.share_kbps[r][k]) {
+                    share_kbps_set(r, k == 1, kbps);
+                    log_line("options: share bitrate %dp %s %d kbit/s", SHARE_KBPS_HEIGHTS[r], k ? "60" : "30",
+                             c.share_kbps[r][k]);
+                    options_apply(0);
+                }
+            }
+        }
+    }
+    f32 ly = y + floorf((foot_h - sh) / 2);
+    if (opt_link_at("##kbpssource", ImVec2(x, ly), "Source: YouTube recommended upload settings")) {
+        dev_click("options", "bitrate source");
+        open_url("https://support.google.com/youtube/answer/1722171");
+    }
+    if (!share_kbps_is_default()) {
+        const char *reset = "Reset";
+        if (opt_link_at("##kbpsreset", ImVec2(g_row.x1 - text_w(g_font_small, reset), ly), reset)) {
+            dev_click("options", "bitrate reset");
+            share_kbps_reset();
+            editing = -1;
+            log_line("options: share bitrates reset");
+            options_apply(0);
+        }
+    }
+    opt_row_end();
+}
+
+// The Lower quality to fit setting last saved, so a drag saves once, when it ends
+static i32 g_min_quality_saved = -1;
+
+// Lower quality to fit (share_min_quality): how far under the recommended bitrate a file may go to fit the max
+// size, from 100% (never) to 50% in steps of 1%, with a tick at 67% and a box for the number. The line is an
+// example from the Quality table.
+static void opt_min_quality_row()
+{
+    Config &c = g_app.config;
+    i32 q = c.share_min_quality < 50 ? 50 : c.share_min_quality > 100 ? 100 : c.share_min_quality;
+    char line[64];
+    if (q >= 100) str_set(line, "Bigger clips go as a link");
+    else snprintf(line, sizeof line, "1080p 60 can drop to %.1f Mbps", share_lowest_kbps(1920, 1080, 60, q) / 1000);
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), box_w = dp(72);
+    f32 slider_w = cw - box_w - gap;
+    opt_row_begin("Lower quality to fit", line, cw, dp(52));
+    f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+    i32 was = q;
+    f32 v = (f32)q;
+    ImGui::SetCursorScreenPos(ImVec2(x, floorf(y + (fh - dp(24)) / 2)));
+    if (lib_slider("##minquality", &v, 50, 100, slider_w, dp(24), 67)) q = (i32)(v + 0.5f);
+    bool slid = ImGui::IsItemDeactivated();
+    static char typed[8];
+    static bool editing;
+    if (!editing) snprintf(typed, sizeof typed, "%d", q);
+    f32 pad = dp(8), unit_w = text_w(g_font, "%");
+    ImVec2 box(x + slider_w + gap, y);
+    ImGui::SetCursorScreenPos(box);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, ImGui::GetStyle().FramePadding.y));
+    ImGui::SetNextItemWidth(box_w);
+    ImGui::InputText("##minqualitytype", typed, sizeof typed, ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+    editing = ImGui::IsItemActive();
+    bool typed_done = ImGui::IsItemDeactivated();
+    ImGui::PopStyleVar();
+    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(box.x + box_w - pad - unit_w, floorf(box.y + (fh - g_font->FontSize) / 2)),
+                COL_DIM, "%", box.x + box_w);
+    if (typed_done && typed[0]) {
+        i32 t = atoi(typed);
+        q = t < 50 ? 50 : t > 100 ? 100 : t;
+    }
+    if (q != was) c.share_min_quality = q;
+    if ((slid || typed_done) && c.share_min_quality != g_min_quality_saved) {
+        g_min_quality_saved = c.share_min_quality;
+        log_line("options: share min quality %d%%", c.share_min_quality);
+        options_apply(0);
+    }
+    opt_row_end();
+}
+
 static void options_sharing()
 {
     Config &c = g_app.config;
@@ -2991,23 +3133,8 @@ static void options_sharing()
         opt_row_end();
     }
 
-    // Lower quality to fit: how far a copy's bitrate may go under the recommended one to fit a size
-    {
-        static const i32 steps[] = {100, 80, 67, 50};
-        static const char *const labels[] = {"Off##sq0", "80%##sq1", "67%##sq2", "50%##sq3"};
-        f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - 3 * gap) / 4);
-        opt_row_begin("Lower quality to fit", 0, cw);
-        f32 x = g_row.x1 - cw, y = opt_row_frame_y();
-        for (i32 i = 0; i < 4; i++) {
-            ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
-            if (kit_chip(labels[i], c.share_min_quality == steps[i], 0, chip_w)) {
-                c.share_min_quality = steps[i];
-                log_line("options: share min quality %d%%", c.share_min_quality);
-                options_apply(0);
-            }
-        }
-        opt_row_end();
-    }
+    opt_quality_table();
+    opt_min_quality_row();
 
     // The free hosts, each on or off
     {
