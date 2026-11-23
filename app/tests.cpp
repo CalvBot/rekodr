@@ -265,6 +265,68 @@ static bool test_known(const char *name, char *out, i32 cap)
 
 // Backup: new and newer files are copied, fresh ones and ones the backup already has are left, clips only when asked,
 // and nothing at the backup is deleted.
+// A buffer with more stream folders and segments than any fixed size: the index holds all of them, the newest too,
+// and a read since the last one keeps them.
+static void test_buffer_many()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path root = {};
+    swprintf(root.s, MAX_PATH, L"%sclipback-test-buffer-%u", temp, GetCurrentProcessId());
+    Path audio = path_join(root, L"audio");
+    SHCreateDirectoryExW(0, audio.s, 0);
+    const i32 streams = 1100, segs = 70; // 77000 segments
+    auto put = [](const Path &p, const char *text) {
+        FILE *f = _wfopen(p.s, L"wb");
+        if (f) { fputs(text, f); fclose(f); }
+    };
+    for (i32 i = 0; i < streams; i++) {
+        wchar_t name[64];
+        swprintf(name, 64, L"2026%04d_mic_0", i);
+        Path dir = path_join(audio, name);
+        CreateDirectoryW(dir.s, 0);
+        char meta[128];
+        snprintf(meta, sizeof meta, "{\"kind\":\"mic\",\"exe\":\"mic\",\"start_us\":%lld}", 1000000000ll * (i + 1));
+        put(path_join(dir, L"meta.json"), meta);
+        static char list[8192];
+        list[0] = 0;
+        for (i32 k = 0; k < segs; k++) {
+            wchar_t seg[32];
+            swprintf(seg, 32, L"a_%05d.mka", k);
+            put(path_join(dir, seg), "x");
+            char line[64];
+            snprintf(line, sizeof line, "a_%05d.mka,%d,%d\n", k, k * 10, k * 10 + 10);
+            strcat(list, line);
+        }
+        put(path_join(dir, L"list.csv"), list);
+    }
+    BufferIdx *b = (BufferIdx *)calloc(1, sizeof(BufferIdx)), *again = (BufferIdx *)calloc(1, sizeof(BufferIdx));
+    bool full = false;
+    T(buffer_read(root, b, 0, &full) && full);
+    T(b->stream_count == streams && b->audio_seg_count == streams * segs);
+    T(!strcmp(b->streams[streams - 1].dir, "20261099_mic_0") && b->streams[streams - 1].seg_count == segs);
+    T(b->audio_segs[b->streams[streams - 1].first_seg + segs - 1].end_us == 1000000000ll * streams + 700000000ll);
+    T(buffer_read(root, again, b, &full) && !full); // nothing changed: taken from the last read
+    T(again->stream_count == streams && again->audio_seg_count == streams * segs);
+    BufferIdx *copy = (BufferIdx *)calloc(1, sizeof(BufferIdx));
+    buffer_idx_copy(copy, b);
+    T(copy->audio_seg_count == streams * segs && copy->audio_segs != b->audio_segs &&
+      !strcmp(copy->streams[streams - 1].dir, "20261099_mic_0"));
+    BufferIdx *all[] = {b, again, copy};
+    for (BufferIdx *x : all) {
+        buffer_idx_free(x);
+        free(x);
+    }
+    SHFILEOPSTRUCTW op = {};
+    static wchar_t from[MAX_PATH + 2];
+    memset(from, 0, sizeof from);
+    wcscpy(from, root.s);
+    op.wFunc = FO_DELETE;
+    op.pFrom = from;
+    op.fFlags = FOF_NO_UI;
+    T(SHFileOperationW(&op) == 0);
+}
+
 static void test_backup()
 {
     wchar_t temp[MAX_PATH];
@@ -2362,6 +2424,7 @@ int main()
     test_first_run();
     test_telemetry();
     test_backup();
+    test_buffer_many();
     test_save_names();
     test_buffer_names();
     test_shown_names();

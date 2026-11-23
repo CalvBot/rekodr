@@ -223,7 +223,7 @@ static void tl_ask_index()
         BufferIdx *a = tl_alloc_idx(), *b = tl_alloc_idx();
         if (!a || !b) {
             log_line("timeline: out of memory for the buffer index");
-            if (a) VirtualFree(a, 0, MEM_RELEASE);
+            if (a) VirtualFree(a, 0, MEM_RELEASE); // nothing read into them yet
             if (b) VirtualFree(b, 0, MEM_RELEASE);
             return;
         }
@@ -366,10 +366,12 @@ static void tl_release()
     }
     ReleaseSRWLockExclusive(&g_tl.lock);
     if (!idle) return; // next tick
-    VirtualFree(tl.idx, 0, MEM_RELEASE);
-    if (spare) VirtualFree(spare, 0, MEM_RELEASE);
-    if (ready) VirtualFree(ready, 0, MEM_RELEASE);
-    if (last) VirtualFree(last, 0, MEM_RELEASE);
+    BufferIdx *all[] = {tl.idx, spare, ready, last};
+    for (BufferIdx *b : all)
+        if (b) {
+            buffer_idx_free(b);
+            VirtualFree(b, 0, MEM_RELEASE);
+        }
     tl.idx = 0;
     tl.loaded = false;
     tl.row_count = 0;

@@ -35,15 +35,36 @@ struct ScratchFile { u32 num; u64 size; i64 written_us; char name[20]; };
 struct ScratchLine { u32 num; f64 start, end; char name[20]; };
 struct ScratchDir  { char name[128]; };
 
-// buffer_read's working memory: too big for a stack, and buffer_read may run on two threads at once.
+// buffer_read's working memory, on the heap and grown as needed; buffer_read may run on two threads at once.
 struct BufferScratch {
-    ScratchFile files[65536];
-    i32         file_count;
-    ScratchLine lines[65536];
-    i32         line_count;
-    ScratchDir  dirs[1024];
-    i32         dir_count;
+    ScratchFile *files;
+    i32          file_count, file_cap;
+    ScratchLine *lines;
+    i32          line_count, line_cap;
+    ScratchDir  *dirs;
+    i32          dir_count, dir_cap;
+    bool        *seen; // read_video_since: prev's runs still there
+    i32          seen_cap;
 };
+
+// Makes room for `need` entries in a heap array, doubling it. False (logged once) when memory runs out; the
+// entries that don't fit are left out.
+template <typename T> static bool buf_grow(T *&p, i32 &cap, i32 need)
+{
+    if (need <= cap) return true;
+    i32 n = cap ? cap : 256;
+    while (n < need) n *= 2;
+    T *q = (T *)realloc(p, (size_t)n * sizeof(T));
+    if (!q) {
+        static bool logged;
+        if (!logged) log_line("buffer: out of memory for %d entries of %d bytes; the rest left out", n, (int)sizeof(T));
+        logged = true;
+        return false;
+    }
+    p = q;
+    cap = n;
+    return true;
+}
 
 static int cmp_file(const void *a, const void *b)
 {
@@ -70,7 +91,7 @@ static void list_dirs(const Path &dir, BufferScratch *s)
     if (h == INVALID_HANDLE_VALUE) return;
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
-        if (s->dir_count == COUNT(s->dirs)) { log_line("buffer: more than %d folders in one place", COUNT(s->dirs)); break; }
+        if (!buf_grow(s->dirs, s->dir_cap, s->dir_count + 1)) break;
         wide_to_utf8(fd.cFileName, s->dirs[s->dir_count].name, COUNT(s->dirs[0].name));
         s->dir_count++;
     } while (FindNextFileW(h, &fd));
@@ -88,7 +109,7 @@ static void list_media(const Path &dir, const wchar_t *ext, BufferScratch *s)
     if (h == INVALID_HANDLE_VALUE) return;
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (s->file_count == COUNT(s->files)) { log_line("buffer: more than %d segments in one folder", COUNT(s->files)); break; }
+        if (!buf_grow(s->files, s->file_cap, s->file_count + 1)) break;
         ScratchFile *f = &s->files[s->file_count];
         wide_to_utf8(fd.cFileName, f->name, COUNT(f->name));
         if (!seg_number(f->name, &f->num)) continue;
@@ -120,7 +141,7 @@ static void read_list(const Path &dir, BufferScratch *s)
         char *end_s = trim(c2 + 1), *start_s = trim(c1 + 1), *name = trim(line);
         if (!*end_s || !*start_s) continue;
         if (*name == '"') { name++; char *q = strchr(name, '"'); if (q) *q = 0; }
-        if (s->line_count == COUNT(s->lines)) { log_line("buffer: list.csv longer than %d lines", COUNT(s->lines)); break; }
+        if (!buf_grow(s->lines, s->line_cap, s->line_count + 1)) break;
         ScratchLine *l = &s->lines[s->line_count];
         if (!seg_number(name, &l->num)) continue;
         char *e1 = 0, *e2 = 0;
@@ -235,7 +256,7 @@ static void read_run(const Path &video_dir, BufferIdx *b, i32 i, BufferScratch *
         const ScratchLine *line = &s->lines[l];
         const ScratchFile *file = find_file(s, line->num);
         if (!file) continue; // pruned, its line stays in list.csv
-        if (b->seg_count == COUNT(b->segs)) { log_line("buffer: more than %d video segments; the rest left out", COUNT(b->segs)); break; }
+        if (!buf_grow(b->segs, b->seg_cap, b->seg_count + 1)) break;
         VideoSeg *v = &b->segs[b->seg_count++];
         v->start_us = r->anchor_us + secs_to_us(line->start);
         v->end_us = r->anchor_us + secs_to_us(line->end);
@@ -258,7 +279,7 @@ static void video_span(BufferIdx *b)
 static void read_video(const Path &video_dir, BufferIdx *b, BufferScratch *s)
 {
     list_dirs(video_dir, s);
-    for (i32 d = 0; d < s->dir_count && b->run_count < COUNT(b->runs); d++) {
+    for (i32 d = 0; d < s->dir_count && buf_grow(b->runs, b->run_cap, b->run_count + 1); d++) {
         wchar_t wname[128];
         utf8_to_wide(s->dirs[d].name, wname, COUNT(wname));
         Path run_dir = path_join(video_dir, wname);
@@ -286,8 +307,11 @@ static bool read_video_since(const Path &video_dir, const BufferIdx &prev, Buffe
     if (prev.seg_count && !file_exists(sub_dir(video_dir, prev.runs[prev.segs[0].run].name), prev.segs[0].name))
         return false;
     list_dirs(video_dir, s);
-    bool seen[COUNT(prev.runs)] = {};
-    for (i32 d = 0; d < s->dir_count && b->run_count < COUNT(b->runs); d++) {
+    if (!buf_grow(s->seen, s->seen_cap, prev.run_count)) return false;
+    bool *seen = s->seen;
+    memset(seen, 0, prev.run_count * sizeof *seen);
+    for (i32 d = 0; d < s->dir_count; d++) {
+        if (!buf_grow(b->runs, b->run_cap, b->run_count + 1)) return false;
         i32 p = 0;
         while (p < prev.run_count && strcmp(prev.runs[p].name, s->dirs[d].name)) p++;
         VideoRun *r = &b->runs[b->run_count];
@@ -317,7 +341,7 @@ static bool read_video_since(const Path &video_dir, const BufferIdx &prev, Buffe
             read_run(video_dir, b, i, s);
             continue;
         }
-        if (b->seg_count + r->seg_count > COUNT(b->segs)) return false; // the full read says what's left out
+        if (!buf_grow(b->segs, b->seg_cap, b->seg_count + r->seg_count)) return false;
         memcpy(&b->segs[b->seg_count], &prev.segs[r->first_seg], r->seg_count * sizeof(VideoSeg));
         for (i32 k = 0; k < r->seg_count; k++) b->segs[b->seg_count + k].run = i;
         r->first_seg = b->seg_count;
@@ -338,7 +362,7 @@ static void read_stream(const Path &dir, BufferIdx *b, BufferScratch *s)
     st->first_seg = b->audio_seg_count;
     i64 next_start = 0; // offset from the stream start
     for (i32 f = 0; f < s->file_count; f++) {
-        if (b->audio_seg_count == COUNT(b->audio_segs)) { log_line("buffer: more than %d audio segments; the rest left out", COUNT(b->audio_segs)); break; }
+        if (!buf_grow(b->audio_segs, b->audio_seg_cap, b->audio_seg_count + 1)) break;
         const ScratchFile *file = &s->files[f];
         const ScratchLine *line = find_line(s, file->num);
         // Unlisted and not written for a minute: left by an ffmpeg that was killed (a live one flushes every
@@ -373,7 +397,7 @@ static void read_stream(const Path &dir, BufferIdx *b, BufferScratch *s)
 // readable is left out. False when the index has no room for another stream.
 static bool read_stream_new(const Path &audio_dir, const char *name, BufferIdx *b, BufferScratch *s)
 {
-    if (b->stream_count == COUNT(b->streams)) { log_line("buffer: more than %d audio streams; the rest left out", COUNT(b->streams)); return false; }
+    if (!buf_grow(b->streams, b->stream_cap, b->stream_count + 1)) return false;
     Path dir = sub_dir(audio_dir, name);
     char json[2048], kind[32], exe[64], num[32];
     if (!read_small(path_join(dir, L"meta.json"), json, sizeof json)) return true;
@@ -415,7 +439,7 @@ static bool read_audio_since(const Path &audio_dir, const BufferIdx &prev, Buffe
             continue;
         }
         const AudioStreamInfo &ps = prev.streams[j++];
-        if (b->stream_count == COUNT(b->streams)) return false;
+        if (!buf_grow(b->streams, b->stream_cap, b->stream_count + 1)) return false;
         Path dir = sub_dir(audio_dir, name);
         AudioStreamInfo *st = &b->streams[b->stream_count];
         *st = ps;
@@ -426,7 +450,7 @@ static bool read_audio_since(const Path &audio_dir, const BufferIdx &prev, Buffe
             read_stream(dir, b, s);
         } else {
             if (ps.seg_count && !file_exists(dir, prev.audio_segs[ps.first_seg].name)) return false;
-            if (b->audio_seg_count + ps.seg_count > COUNT(b->audio_segs)) return false;
+            if (!buf_grow(b->audio_segs, b->audio_seg_cap, b->audio_seg_count + ps.seg_count)) return false;
             memcpy(&b->audio_segs[b->audio_seg_count], &prev.audio_segs[ps.first_seg], ps.seg_count * sizeof(AudioSeg));
             st->first_seg = b->audio_seg_count;
             b->audio_seg_count += ps.seg_count;
@@ -474,11 +498,7 @@ static void idx_clear(BufferIdx *b)
 static bool buffer_read(const Path &buffer_dir, BufferIdx *b, const BufferIdx *prev = 0, bool *full = 0)
 {
     idx_clear(b);
-    BufferScratch *s = (BufferScratch *)VirtualAlloc(0, sizeof(BufferScratch), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!s) {
-        log_line("buffer: out of memory reading the index");
-        return false;
-    }
+    BufferScratch scratch = {}, *s = &scratch;
     Path video = path_join(buffer_dir, L"video"), audio = path_join(buffer_dir, L"audio");
     bool whole = !prev || !read_video_since(video, *prev, b, s) || !read_audio_since(audio, *prev, b, s);
     if (whole) {
@@ -487,14 +507,38 @@ static bool buffer_read(const Path &buffer_dir, BufferIdx *b, const BufferIdx *p
         read_audio(audio, b, s);
     }
     read_activity(buffer_dir, b);
-    VirtualFree(s, 0, MEM_RELEASE);
+    free(s->files);
+    free(s->lines);
+    free(s->dirs);
+    free(s->seen);
     if (full) *full = whole;
     return true;
 }
 
-// Copies the entries `src` uses (not its whole arrays) into `dst`.
+// Lets go of an index's arrays, leaving it empty.
+static void buffer_idx_free(BufferIdx *b)
+{
+    free(b->runs);
+    free(b->segs);
+    free(b->streams);
+    free(b->audio_segs);
+    b->runs = 0;
+    b->segs = 0;
+    b->streams = 0;
+    b->audio_segs = 0;
+    b->run_cap = b->seg_cap = b->stream_cap = b->audio_seg_cap = 0;
+    idx_clear(b);
+}
+
+// Copies the entries `src` uses into `dst`, growing its arrays as needed (left empty if memory runs out).
 static void buffer_idx_copy(BufferIdx *dst, const BufferIdx *src)
 {
+    if (!buf_grow(dst->runs, dst->run_cap, src->run_count) || !buf_grow(dst->segs, dst->seg_cap, src->seg_count) ||
+        !buf_grow(dst->streams, dst->stream_cap, src->stream_count) ||
+        !buf_grow(dst->audio_segs, dst->audio_seg_cap, src->audio_seg_count)) {
+        idx_clear(dst);
+        return;
+    }
     memcpy(dst->runs, src->runs, src->run_count * sizeof src->runs[0]);
     memcpy(dst->segs, src->segs, src->seg_count * sizeof src->segs[0]);
     memcpy(dst->streams, src->streams, src->stream_count * sizeof src->streams[0]);
