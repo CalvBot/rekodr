@@ -81,11 +81,11 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
     c->share_max_mb = 20;
+    c->social_copy_mb = 80;
     c->share_min_quality = 67;
     c->render_edits = true;
     memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);
     c->share_link_page = true;
-    c->social_copy_mb = 80;
     c->link_catbox = c->link_litterbox = true;
     c->litterbox_hours = 72;
     str_set(c->r2_bucket, "clipback");
@@ -425,11 +425,11 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "litterbox_hours")) c->litterbox_hours = atoi(value);
     else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
     else if (!strcmp(key, "share_max_mb")) real(&c->share_max_mb);
+    else if (!strcmp(key, "social_copy_mb")) real(&c->social_copy_mb);
     else if (!strcmp(key, "share_min_quality")) c->share_min_quality = atoi(value);
     else if (!strcmp(key, "render_edits")) boolean(&c->render_edits);
     else if (!strcmp(key, "share_kbps_custom")) boolean(&c->share_kbps_custom);
     else if (!strncmp(key, "share_kbps_", 11)) { // share_kbps_1080_60 = 12000
-    else if (!strcmp(key, "social_copy_mb")) real(&c->social_copy_mb);
         i32 height = 0, fps = 0;
         if (sscanf(key + 11, "%d_%d", &height, &fps) == 2)
             for (i32 i = 0; i < 6; i++)
@@ -613,12 +613,12 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "link_uploaders = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_uploaders,
             c.litterbox_hours, c.free_links_seen ? "true" : "false");
     fprintf(f, "share_max_mb = %g\nshare_min_quality = %d\n", c.share_max_mb, c.share_min_quality);
+    fprintf(f, "social_copy_mb = %g\n", c.social_copy_mb);
     for (i32 i = 0; i < 6; i++)
         fprintf(f, "share_kbps_%d_30 = %d\nshare_kbps_%d_60 = %d\n", SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][0],
                 SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][1]);
     boolean("share_kbps_custom", c.share_kbps_custom);
     boolean("share_link_page", c.share_link_page);
-    fprintf(f, "social_copy_mb = %g\n", c.social_copy_mb);
     fprintf(f, "clipper_name = %s\nembed_style = %s\n", c.clipper_name, embed_style_id(c.embed_style));
     boolean("render_edits", c.render_edits);
     boolean("clock_24h", c.clock_24h);
