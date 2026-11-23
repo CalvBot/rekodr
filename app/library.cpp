@@ -2787,9 +2787,10 @@ static void share_host_label(const R2Share &s, char *out, i32 cap)
 enum LinksAsk : u8 { ASK_NONE, ASK_ITEM, ASK_EDITOR };
 static LinksAsk g_links_ask;
 static LibItem g_links_ask_item;
+static char g_links_ask_host[64]; // the host picked for it, "" for Share's rule
 static bool g_links_ask_open; // the dialog opens on the next frame
 
-static void ed_share(ShareKind kind); // editor.cpp
+static void ed_share(ShareKind kind, const char *host = 0); // editor.cpp
 static void edit_read(const Path &file, EditRecord *e); // editor.cpp
 static void editor_refresh_shares(); // editor.cpp
 
@@ -2853,9 +2854,9 @@ static void lib_delete_note(const u64 *keys, i32 n, char *out, i32 cap)
 static u32 g_lib_share_job;
 static u64 g_lib_share_job_key;
 
-// Starts Share for a card as `kind`, with its edit. The job joins the list the note follows. Returns it, 0 when it
-// couldn't start.
-static u32 lib_share_now(const LibItem &it, ShareKind kind)
+// Starts Share for a card as `kind`, with its edit; `host` (a ShareHostChoice's name) picks a link's host, 0 lets
+// Share's rule pick. The job joins the list the note follows. Returns it, 0 when it couldn't start.
+static u32 lib_share_now(const LibItem &it, ShareKind kind, const char *host = 0)
 {
     const char *name = it.display_name[0] ? it.display_name : it.name;
     if (g_lib_upload_count >= LIB_UPLOADS_MAX) {
@@ -2865,7 +2866,7 @@ static u32 lib_share_now(const LibItem &it, ShareKind kind)
     static EditRecord rec;
     bool edited = lib_item_edit(it, &rec);
     Path path = lib_item_path(it);
-    u32 id = share_start(kind, path.s, it.info, edited ? &rec : 0, name, it.info.game, it.key);
+    u32 id = share_start(kind, path.s, it.info, edited ? &rec : 0, name, it.info.game, it.key, host);
     if (!id) {
         lib_note(true, "Share is busy: try again in a moment");
         return 0;
@@ -2877,20 +2878,22 @@ static u32 lib_share_now(const LibItem &it, ShareKind kind)
 }
 
 // True when a link would go to a free host and the player hasn't yet been told what that means: the dialog opens,
-// and `ask` runs once they agree.
-static bool links_ask_first(LinksAsk ask, const LibItem *it)
+// and `ask` runs once they agree. `host` is the one picked (0: Share's rule, a free host only with no bucket).
+static bool links_ask_first(LinksAsk ask, const LibItem *it, const char *host = 0)
 {
-    if (r2_ready() || g_app.config.free_links_seen || !links_any_host()) return false;
+    bool bucket = host ? !strcmp(host, "bucket") || !strcmp(host, "r2") : r2_ready();
+    if (bucket || g_app.config.free_links_seen || !links_any_host()) return false;
     g_links_ask = ask;
+    str_set(g_links_ask_host, host ? host : "");
     if (it) g_links_ask_item = *it;
     g_links_ask_open = true;
     ui_wake(6);
     return true;
 }
 
-// Share on a card or in the player as `kind`. A link with no host opens Options on Sharing; the first to a free
-// host asks first (links_ask_first).
-static void lib_share_item(const LibItem &it, ShareKind kind)
+// Share on a card or in the player as `kind`, a link on `host` when one is picked. A link with no host opens Options
+// on Sharing; the first to a free host asks first (links_ask_first).
+static void lib_share_item(const LibItem &it, ShareKind kind, const char *host = 0)
 {
     if (kind == SHARE_LINK) {
         if (!links_any_host()) {
@@ -2898,9 +2901,9 @@ static void lib_share_item(const LibItem &it, ShareKind kind)
             lib_note(true, "Turn on a free host or set up Cloudflare first");
             return;
         }
-        if (links_ask_first(ASK_ITEM, &it)) return;
+        if (links_ask_first(ASK_ITEM, &it, host)) return;
     }
-    lib_share_now(it, kind);
+    lib_share_now(it, kind, host);
 }
 
 // One-click Share: what share_decide picks
@@ -3216,6 +3219,53 @@ static void lib_link_row(const LibItem &it, f32 w)
     ImGui::Dummy(ImVec2(w, 0));
 }
 
+// "Link to": a row for every host that's on or set up (share_host_choices), with how `m` played as `edit` goes
+// there; one that can't take it is greyed. With none, a row that opens Options on Sharing. True when a host is
+// clicked, its name in `pick`.
+static bool link_to_rows(const MediaInfo &m, const EditRecord *edit, f32 w, char (&pick)[64])
+{
+    static ShareHostChoice c[24];
+    i32 n = share_host_choices(m, edit, c, COUNT(c));
+    if (!n) {
+        if (lib_menu_item(ICON_SETTINGS, "Set up a host...", false, w)) lib_open_sharing();
+        return false;
+    }
+    f32 h = kit_px(28), pad = kit_px(10);
+    bool picked = false;
+    for (i32 i = 0; i < n; i++) {
+        const ShareHostChoice &x = c[i];
+        bool ok = x.fit != SHARE_FIT_NO;
+        ImGui::PushID(i);
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        if (ImGui::Selectable("##host", false, ok ? 0 : ImGuiSelectableFlags_Disabled, ImVec2(w, h))) {
+            str_set(pick, x.name);
+            dev_click("menu", x.name);
+            picked = true;
+        }
+        if (!ok) kit_tip(x.why);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImGui::PushFont(g_font_icon);
+        ImVec2 is = ImGui::CalcTextSize(ICON_LINK);
+        dl->AddText(ImVec2(a.x + pad, floorf(a.y + (h - is.y) / 2)), col32(ok ? COL_DIM : COL_FAINT), ICON_LINK);
+        ImGui::PopFont();
+        char size_s[24], side[48];
+        share_size_text(x.bytes, size_s, sizeof size_s);
+        if (!ok) str_set(side, "too big");
+        else snprintf(side, sizeof side, "%s, %s", x.fit == SHARE_FIT_SQUEEZED ? "squeezed" : "as is", size_s);
+        ImGui::PushFont(g_font_small);
+        ImVec2 ss = ImGui::CalcTextSize(side);
+        f32 sx = a.x + w - pad - ss.x;
+        dl->AddText(ImVec2(sx, floorf(a.y + (h - ss.y) / 2)), col32(ok ? COL_DIM : COL_FAINT), side);
+        ImGui::PopFont();
+        f32 tx = a.x + kit_px(36);
+        text_clipped(dl, ImVec2(tx, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), sx - kit_px(12) - tx,
+                     col32(ok ? COL_TEXT : COL_FAINT), x.label);
+        ImGui::PopID();
+    }
+    return picked;
+}
+
 // The Share menu, for one card: three tiles in a fixed order, File (the copy Share makes, with the edit and one mixed
 // sound track: at its size, squeezed, or too big), Original (the file as saved, shown in its folder) and Link (where
 // it goes), the one-click choice picked out. A Share started here shows its step and percent in its tile, then
@@ -3224,6 +3274,8 @@ static void lib_share_menu(const char *id, const LibItem &it)
 {
     static u64 key;
     static ShareDecision d;
+    static EditRecord rec;
+    static bool edited;
     static u64 done_ms;
     lib_popup_style_push(8);
     if (!ImGui::BeginPopup(id)) {
@@ -3233,6 +3285,7 @@ static void lib_share_menu(const char *id, const LibItem &it)
     if (ImGui::IsWindowAppearing() || key != it.key) { // the edit is read once, as the menu opens
         key = it.key;
         d = lib_share_decide(it);
+        edited = lib_item_edit(it, &rec);
     }
     f32 w = kit_px(176), h = kit_px(86), gap = kit_px(8), row_w = 3 * w + 2 * gap;
     ShareJobView j = {};
@@ -3285,9 +3338,62 @@ static void lib_share_menu(const char *id, const LibItem &it)
     if (fresh && job_tile == 2 && j.error[0]) kit_tip(j.error);
     else kit_tip(!any_host ? "Turn on a free host or set up Cloudflare in Options" : d.link_ok ? "Upload it and copy the link" : d.link_why);
     ImGui::Dummy(ImVec2(row_w, kit_px(2)));
+    ImGui::PushFont(g_font_small);
+    kit_dim("  Link to");
+    ImGui::PopFont();
+    char pick[64];
+    if (link_to_rows(it.info, edited ? &rec : 0, row_w, pick) && !(running && job_tile == 2)) lib_share_item(it, SHARE_LINK, pick);
+    ImGui::Dummy(ImVec2(row_w, kit_px(2)));
     lib_link_row(it, row_w);
     ImGui::EndPopup();
     lib_popup_style_pop();
+}
+
+// "Link to" in the card menu: a row that opens the hosts (link_to_rows) beside the menu while it's pointed at.
+// Pointing at another row of the menu closes them. True when a host was picked, so the card menu closes too.
+static bool lib_link_to_menu(const LibItem &it)
+{
+    f32 w = kit_px(216), h = kit_px(28);
+    bool open = ImGui::IsPopupOpen("card_link_to");
+    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
+    ImGui::Selectable("##linkto", open, ImGuiSelectableFlags_NoAutoClosePopups, ImVec2(w, h));
+    if (ImGui::IsItemHovered() && !open) ImGui::OpenPopup("card_link_to");
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImGui::PushFont(g_font_icon);
+    ImVec2 is = ImGui::CalcTextSize(ICON_LINK);
+    dl->AddText(ImVec2(a.x + kit_px(10), floorf(a.y + (h - is.y) / 2)), col32(COL_DIM), ICON_LINK);
+    ImVec2 rs = ImGui::CalcTextSize(ICON_RIGHT);
+    dl->AddText(ImVec2(b.x - kit_px(10) - rs.x, floorf(a.y + (h - rs.y) / 2)), col32(COL_DIM), ICON_RIGHT);
+    ImGui::PopFont();
+    ImVec2 ts = ImGui::CalcTextSize("Link to");
+    dl->AddText(ImVec2(a.x + kit_px(36), floorf(a.y + (h - ts.y) / 2)), col32(COL_TEXT), "Link to");
+
+    ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x - kit_px(4), a.y - kit_px(6)));
+    bool picked = false;
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("card_link_to")) {
+        static u64 key;
+        static EditRecord rec;
+        static bool edited;
+        if (ImGui::IsWindowAppearing() || key != it.key) { // the edit is read once, as it opens
+            key = it.key;
+            edited = lib_item_edit(it, &rec);
+        }
+        char pick[64];
+        if (link_to_rows(it.info, edited ? &rec : 0, kit_px(300), pick)) {
+            lib_share_item(it, SHARE_LINK, pick);
+            picked = true;
+        }
+        ImVec2 mp = ImGui::GetMousePos();
+        bool in_menu = mp.x >= wp.x && mp.x < wp.x + ws.x && mp.y >= wp.y && mp.y < wp.y + ws.y;
+        bool on_row = mp.x >= a.x && mp.x < b.x && mp.y >= a.y && mp.y < b.y;
+        if (picked || (in_menu && !on_row && !ImGui::IsWindowHovered())) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+    return picked;
 }
 
 static bool g_card_pick_game; // "Pick a game" on a card was clicked: the picker opens for lib.target
@@ -3305,6 +3411,7 @@ static void card_menu()
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
         if (lib_menu_item(ICON_SHARE, "Share")) lib_share_decided(it);
         if (lib_menu_item(ICON_DOWN, "Share...")) share = true;
+        if (lib_link_to_menu(it)) ImGui::CloseCurrentPopup();
         if (lib_menu_item(ICON_LINK, "Copy link")) lib_share_item(it, SHARE_LINK);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
@@ -3553,8 +3660,9 @@ static void links_notice_draw()
             g_app.config.free_links_seen = true;
             config_save(g_app.config, g_app.paths);
             log_line("library: free links agreed to");
-            if (ask == ASK_ITEM) lib_share_now(g_links_ask_item, SHARE_LINK);
-            else if (ask == ASK_EDITOR) ed_share(SHARE_LINK);
+            const char *host = g_links_ask_host[0] ? g_links_ask_host : 0;
+            if (ask == ASK_ITEM) lib_share_now(g_links_ask_item, SHARE_LINK, host);
+            else if (ask == ASK_EDITOR) ed_share(SHARE_LINK, host);
         }
     }
     lib_dialog_end();
@@ -4442,14 +4550,15 @@ static void lib_player_view()
     lib_comment_dialog();
     lib_tags_dialog();
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - acts_w, h0.y + (head_h - fh) / 2));
-    // Share does what share_decide picks; the arrow beside it opens the Share menu (lib_share_menu), under the icons
-    // and right-aligned.
+    // Share does what share_decide picks; the arrow beside it, or a right-click on Share, opens the Share menu
+    // (lib_share_menu), under the icons and right-aligned.
     ImVec2 share_at = ImGui::GetCursorScreenPos();
     kit_next_tip("Share");
     if (kit_icon_button(ICON_SHARE, "##share", KIT_GHOST)) lib_share_decided(lib.playing);
+    bool share_right = ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     ImGui::SameLine(0, gap);
     kit_next_tip("Share as...");
-    if (kit_icon_button(ICON_DOWN, "##sharemenu", KIT_GHOST) || g_lib_share_ask) ImGui::OpenPopup("share_menu");
+    if (kit_icon_button(ICON_DOWN, "##sharemenu", KIT_GHOST) || share_right || g_lib_share_ask) ImGui::OpenPopup("share_menu");
     g_lib_share_ask = false;
     ImGui::SameLine(0, gap);
     kit_next_tip("Edit");

@@ -783,13 +783,14 @@ static void ed_start(bool small_keep = false)
     }
 }
 
-// Share for the edit as `kind` (share.cpp): the file or link goes on the clipboard when it's made (ed_share_poll).
-static void ed_share(ShareKind kind)
+// Share for the edit as `kind` (share.cpp), a link on `host` when one is picked (0: Share's rule): the file or link
+// goes on the clipboard when it's made (ed_share_poll).
+static void ed_share(ShareKind kind, const char *host)
 {
     Editor &ed = g_app.editor;
     ed_save_record();
     const char *title = ed.out_name[0] ? ed.out_name : ed.item.name;
-    ed.share_job = share_start(kind, ed.path.s, ed_share_info(), &ed.edit, title, ed.item.info.game, ed.item.key);
+    ed.share_job = share_start(kind, ed.path.s, ed_share_info(), &ed.edit, title, ed.item.info.game, ed.item.key, host);
     ed.result_path[0] = ed.result_url[0] = 0;
     if (!ed.share_job) {
         str_set(ed.result, "Share is busy: try again in a moment.");
@@ -799,14 +800,15 @@ static void ed_share(ShareKind kind)
     }
 }
 
-// Share as `kind`, with a first link to a free host asked about first (links_ask_first)
-static void ed_share_ask(ShareKind kind)
+// Share as `kind` (a link on `host` when one is picked), with a first link to a free host asked about first
+// (links_ask_first)
+static void ed_share_ask(ShareKind kind, const char *host = 0)
 {
     if (kind == SHARE_LINK && !links_any_host()) {
         lib_open_sharing();
         return;
     }
-    if (kind != SHARE_LINK || !links_ask_first(ASK_EDITOR, 0)) ed_share(kind);
+    if (kind != SHARE_LINK || !links_ask_first(ASK_EDITOR, 0, host)) ed_share(kind, host);
 }
 
 static bool ed_share_busy()
@@ -2720,8 +2722,18 @@ static void ed_share_tab(f32 w)
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
         ed_card_head(ICON_SHARE, "Share", can ? d.why : d.link_why, iw - bw - gap, can ? 0 : col32(0xff8a92));
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
-        if (kit_button(sharing ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(bw, 0), !sharing && can))
-            ed_share_ask(d.kind);
+        // Its arrow, or a right-click, picks the link's host
+        i32 sb = kit_split_button(sharing ? "Sharing..." : ICON_SHARE "  Share", "##edshare", KIT_PRIMARY, ImVec2(bw, 0),
+                                  !sharing && can, !sharing);
+        if (sb == 1) ed_share_ask(d.kind);
+        else if (sb == 2) ImGui::OpenPopup("ed_link_to");
+        lib_popup_style_push(6);
+        if (ImGui::BeginPopup("ed_link_to")) {
+            char pick[64];
+            if (link_to_rows(ed_share_info(), &ed.edit, kit_px(300), pick)) ed_share_ask(SHARE_LINK, pick);
+            ImGui::EndPopup();
+        }
+        lib_popup_style_pop();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
 
         // The tiles, one under another at the panel's width. The running Share's tile shows its step and percent.

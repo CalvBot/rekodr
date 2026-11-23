@@ -606,6 +606,64 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     return clicked && enabled;
 }
 
+// A button with an arrow on its right edge, in one piece `size` wide: the main part does the usual thing, the arrow
+// (as wide as the button is tall) opens a choice. Returns 1 for the main part, 2 for the arrow or a right-click on
+// either, 0 for neither. Each part is on or off by itself.
+static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImVec2 size, bool enabled = true,
+                            bool arrow_enabled = true)
+{
+    f32 h = size.y > 0 ? size.y : ImGui::GetFrameHeight(), aw = h, r = ImGui::GetStyle().FrameRounding;
+    ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + size.x, a.y + h);
+    f32 split = z.x - aw;
+    ImGui::PushID(id);
+    i32 hit = 0;
+    bool hot[2], held[2], on[2] = {enabled, arrow_enabled};
+    for (i32 i = 0; i < 2; i++) {
+        ImGui::SetCursorScreenPos(ImVec2(i ? split : a.x, a.y));
+        if (!on[i]) ImGui::BeginDisabled();
+        bool clicked = ImGui::InvisibleButton(i ? "##arrow" : "##main", ImVec2(i ? aw : split - a.x, h)) &&
+                       !kit_closed_here(ImGui::GetItemID());
+        bool right = on[1] && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+        if (!on[i]) ImGui::EndDisabled();
+        hot[i] = on[i] && ImGui::IsItemHovered();
+        held[i] = hot[i] && ImGui::IsItemActive();
+        if (clicked && on[i]) hit = i + 1;
+        if (right) hit = 2;
+    }
+    ImGui::PopID();
+    if (hit) dev_click("button", label, hit == 2 ? "(arrow)" : "");
+    u32 bg = COL_PANEL2, hover = COL_HOVER, ink = COL_TEXT;
+    switch (kind) {
+    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; ink = 0xffffff; break;
+    case KIT_DANGER: bg = COL_RED_SOFT; hover = 0x4a2025; ink = 0xff8a92; break;
+    default: break;
+    }
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    for (i32 i = 0; i < 2; i++) {
+        u32 fill = !on[i] ? COL_PANEL2 : hot[i] ? hover : bg;
+        ImVec2 p0(i ? split : a.x, a.y), p1(i ? z.x : split, z.y);
+        dl->AddRectFilled(p0, p1, col32(fill, held[i] ? 0.8f : 1.f), r,
+                          i ? ImDrawFlags_RoundCornersRight : ImDrawFlags_RoundCornersLeft);
+    }
+    dl->AddLine(ImVec2(split, a.y + kit_px(6)), ImVec2(split, z.y - kit_px(6)), col32(0x000000, 0.3f), kit_px(1));
+    if (kind == KIT_PRIMARY) ImGui::PushFont(g_font_bold);
+    const char *end = ImGui::FindRenderedTextEnd(label);
+    ImVec2 ts = ImGui::CalcTextSize(label, end);
+    dl->AddText(ImVec2(floorf(a.x + (split - a.x - ts.x) / 2), floorf(a.y + (h - ts.y) / 2)),
+                col32(enabled ? ink : COL_FAINT), label, end);
+    if (kind == KIT_PRIMARY) ImGui::PopFont();
+    ImGui::PushFont(g_font_icon);
+    ImVec2 is = ImGui::CalcTextSize(ICON_DOWN);
+    f32 s = 0.7f; // the arrow a little smaller than an icon
+    dl->AddText(g_font_icon, g_font_icon->FontSize * s,
+                ImVec2(floorf(split + (aw - is.x * s) / 2), floorf(a.y + (h - is.y * s) / 2)),
+                col32(arrow_enabled ? ink : COL_FAINT), ICON_DOWN);
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(a);
+    ImGui::Dummy(ImVec2(size.x, h));
+    return hit;
+}
+
 // Is the key named [s, e) held right now? Names as the Help window writes them: Ctrl, Shift, Space, Page Up, Left,
 // F1, A, 5, + and so on.
 static bool kit_key_held(const char *s, const char *e)
@@ -1080,6 +1138,7 @@ static void help_window()
             {"[Shift]+[Left] / [Right]", "Back 10 s / forward 30 s"},
             {"[Shift]+[.] / [,]", "Faster / slower"},
             {"[M]", "Mute / unmute"},
+            {"Right-click Share", "Pick where the link goes"},
             {"[Esc]", "Close the player"},
         };
         static const HelpRow editor[] = {
@@ -1115,6 +1174,7 @@ static void help_window()
             {"[,] / [.]", "Step one frame"},
             {"[Shift]+[Left] / [Right]", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},
+            {"Right-click Share", "Pick where the link goes"},
             {"[Esc]", "Clear the selection, then back to the library"},
         };
         static const HelpRow timeline[] = {
