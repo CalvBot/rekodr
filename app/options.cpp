@@ -4252,10 +4252,22 @@ static void options_general()
         ImGui::SameLine(0, dp(16));
         bool any = false;
         for (const char *p = text; *p && !any; p++) any = !isspace((u8)*p);
-        bool can = c.game_lookup && !busy && any;
-        if (kit_button(busy ? "Sending##fbsend" : "Send##fbsend", KIT_PRIMARY, ImVec2(send_w, 0), can)) {
+        f32 wait = busy ? 0 : feedback_wait_left(g_tel.fb_sent_ms, GetTickCount64());
+        bool can = c.game_lookup && !busy && wait <= 0 && any;
+        if (kit_button(busy ? "Sending##fbsend" : wait > 0 ? "##fbsend" : "Send##fbsend", KIT_PRIMARY,
+                       ImVec2(send_w, 0), can)) {
             dev_click("feedback", FEEDBACK_KINDS[kind]);
             feedback_send(kind, text);
+        }
+        if (wait > 0) { // the wait after a send: a ring that empties, in the greyed button
+            ImVec2 a = ImGui::GetItemRectMin(), z = ImGui::GetItemRectMax();
+            ImVec2 mid((a.x + z.x) / 2, (a.y + z.y) / 2);
+            f32 r = (z.y - a.y) * 0.28f, top = -IM_PI / 2;
+            ImDrawList *rl = ImGui::GetWindowDrawList();
+            rl->AddCircle(mid, r, col32(COL_FAINT, 0.5f), 32, dp(2));
+            rl->PathArcTo(mid, r, top, top + 2 * IM_PI * wait, 32);
+            rl->PathStroke(col32(COL_DIM), 0, dp(2));
+            ui_wake(2); // it moves on its own
         }
         opt_row_end();
         f32 x0 = g_card.a.x + dp(OPT_PAD), box_w = g_card.w - 2 * dp(OPT_PAD);

@@ -23,6 +23,7 @@ struct Telemetry {
     char fb_body[4400];
     char fb_result[160]; // "Sent", or why not; read once fb_busy is 0
     bool fb_ok;
+    u64  fb_sent_ms; // GetTickCount64 when the last one went, for the wait after it (memory only); 0 = none yet
 };
 static Telemetry g_tel;
 
@@ -204,6 +205,14 @@ static void tel_feedback_json(i32 kind, const char *text, char *out, i32 cap)
     snprintf(out, cap, "{\"version\":\"%s\",\"kind\":\"%s\",\"text\":\"%s\"}", CLIPBACK_VERSION, FEEDBACK_KINDS[kind], esc);
 }
 
+// After a send, Send waits FEEDBACK_WAIT_MS. How much of the wait is left: 1 just sent, 0 = it may send again.
+static const u64 FEEDBACK_WAIT_MS = 60000;
+static f32 feedback_wait_left(u64 sent_ms, u64 now_ms)
+{
+    if (!sent_ms || now_ms < sent_ms || now_ms - sent_ms >= FEEDBACK_WAIT_MS) return 0;
+    return 1 - (f32)(now_ms - sent_ms) / FEEDBACK_WAIT_MS;
+}
+
 static DWORD WINAPI tel_feedback_thread(void *)
 {
     u32 status = tel_post("/v1/feedback", g_tel.fb_body);
@@ -220,13 +229,14 @@ static DWORD WINAPI tel_feedback_thread(void *)
 
 static bool feedback_send(i32 kind, const char *text)
 {
-    if (g_tel.fb_busy) return false;
+    if (g_tel.fb_busy || feedback_wait_left(g_tel.fb_sent_ms, GetTickCount64()) > 0) return false;
     if (g_tel.fb_thread) {
         WaitForSingleObject(g_tel.fb_thread, INFINITE);
         CloseHandle(g_tel.fb_thread);
     }
     tel_feedback_json(kind, text, g_tel.fb_body, sizeof g_tel.fb_body);
     g_tel.fb_result[0] = 0;
+    g_tel.fb_sent_ms = GetTickCount64();
     InterlockedExchange(&g_tel.fb_busy, 1);
     g_tel.fb_thread = thread_start(tel_feedback_thread, 0);
     return true;

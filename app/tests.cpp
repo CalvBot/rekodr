@@ -406,6 +406,12 @@ static void test_telemetry()
     tel_feedback_json(2, longer, out, sizeof out);
     const char *t = strstr(out, "\"text\":\"") + 8;
     T((i32)(strrchr(out, '"') - t) == FB_TEXT_MAX - 1);
+    // Send waits a minute after a send
+    T(feedback_wait_left(0, 5000) == 0);                           // nothing sent yet
+    T(feedback_wait_left(1000, 1000) == 1);                        // just sent
+    T(fabsf(feedback_wait_left(1000, 31000) - 0.5f) < 0.001f);     // half way
+    T(feedback_wait_left(1000, 60999) > 0 && feedback_wait_left(1000, 61000) == 0);
+    T(feedback_wait_left(5000, 1000) == 0);                        // a clock before the send
 }
 
 static void test_first_run()
