@@ -1696,6 +1696,16 @@ static bool uploader_add(const wchar_t *file, char *stem, i32 stem_cap, char *wh
     return true;
 }
 
+// Deletes <config_dir>\uploaders\<stem>.sxcu. False when it isn't there or can't be deleted.
+static bool uploader_remove(const char *stem)
+{
+    wchar_t w[128], name[160];
+    utf8_to_wide(stem, w, COUNT(w));
+    if (!w[0] || wcspbrk(w, L"\\/:")) return false;
+    swprintf(name, COUNT(name), L"%s.sxcu", w);
+    return DeleteFileW(path_join(uploader_dir(), name).s) != 0;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Uploads to free hosts and custom uploaders
 

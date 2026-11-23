@@ -2734,6 +2734,31 @@ static bool link_host_on(const char *name)
     return hosts_find(c.link_uploaders, name) >= 0;
 }
 
+// Switches the uploader `stem` on or off for links (link_uploaders). The caller saves the settings.
+static void link_uploader_set(const char *stem, bool on)
+{
+    Config &c = g_app.config;
+    if ((hosts_find(c.link_uploaders, stem) >= 0) != on) hosts_toggle(c.link_uploaders, sizeof c.link_uploaders, stem);
+}
+
+// Options' Add uploader...: copies the .sxcu file in (uploader_add) and switches it on. `stem` gets its name, or
+// `why` says why it can't be used. The caller saves the settings.
+static bool link_uploader_add(const wchar_t *file, char *stem, i32 stem_cap, char *why, i32 why_cap)
+{
+    if (!uploader_add(file, stem, stem_cap, why, why_cap)) return false;
+    link_uploader_set(stem, true);
+    g_link_name_count = -1;
+    return true;
+}
+
+// Options' remove: deletes the uploader's file and switches it off. The caller saves the settings.
+static bool link_uploader_remove(const char *stem)
+{
+    link_uploader_set(stem, false);
+    g_link_name_count = -1;
+    return uploader_remove(stem);
+}
+
 // A link can be made: R2 is set up, or a host that's on is there to take it.
 static bool links_any_host()
 {

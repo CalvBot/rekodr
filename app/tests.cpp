@@ -1123,6 +1123,21 @@ static void test_r2()
     // Free hosts by name; Litterbox's hours
     T(free_host_named("catbox")->host == HOST_CATBOX && free_host_named("Litterbox")->host == HOST_LITTERBOX);
     T(!free_host_named("nope") && !free_host_named(""));
+    {
+        // Uploaders switched on and off by name, once each
+        char kept[256];
+        str_set(kept, g_app.config.link_uploaders);
+        g_app.config.link_uploaders[0] = 0;
+        link_uploader_set("mine", true);
+        link_uploader_set("other", true);
+        link_uploader_set("mine", true);
+        T(!strcmp(g_app.config.link_uploaders, "mine,other") && link_host_on("other") && !link_host_on("x"));
+        link_uploader_set("mine", false);
+        link_uploader_set("mine", false);
+        T(!strcmp(g_app.config.link_uploaders, "other") && !link_host_on("mine"));
+        T(!uploader_remove("") && !uploader_remove("../x"));
+        str_set(g_app.config.link_uploaders, kept);
+    }
     T(free_hours(0) == 1 && free_hours(5) == 12 && free_hours(72) == 72 && free_hours(500) == 72);
     R2Share live = {};
     live.expires_us = 1000;
