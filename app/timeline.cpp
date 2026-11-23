@@ -665,7 +665,10 @@ static void tl_share_poll()
         if (!j.id) tl_share_end(false, "Couldn't share it");
         else if (j.state == SHARE_FAILED) tl_share_end(false, j.error);
         else if (j.state == SHARE_DONE) {
-            tl_share_end(true, j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
+            char done[64];
+            if (j.kind == SHARE_LINK && j.expires_h) snprintf(done, sizeof done, "Link copied, expires in %d h", j.expires_h);
+            else str_set(done, j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
+            tl_share_end(true, done);
             if (j.kind != SHARE_LINK) editor_refresh_shares();
         } else {
             snprintf(tl.share_line, sizeof tl.share_line, "%s %d%%", j.verb[0] ? j.verb : "Sharing", (i32)(j.progress * 100));
@@ -674,6 +677,16 @@ static void tl_share_poll()
 }
 
 static bool tl_save(SaveKind kind, bool edit);
+
+// Stops a running Share at whichever step it's on. A read already under way finishes on its own and is ignored.
+static void tl_share_cancel()
+{
+    Timeline &tl = g_app.timeline;
+    if (!tl_sharing()) return;
+    if (tl.share_step == TL_SHARE_SAVING) save_cancel(tl.job);
+    else if (tl.share_step == TL_SHARE_RUNNING) share_cancel(tl.share);
+    tl_share_end(false, "Cancelled");
+}
 
 // Share the selection (host: a link there; 0 Share's rule)
 static void tl_share(const char *host)
@@ -2687,14 +2700,15 @@ static void screen_timeline()
         bool sharing = tl_sharing();
         ShareMenuState js = tl_share_menu_state();
         char share_label[48];
-        if (js.running && js.progress >= 0) snprintf(share_label, sizeof share_label, "Sharing %d%%", (i32)(js.progress * 100 + 0.5f));
-        else if (js.running) str_set(share_label, "Sharing...");
+        if (js.running) snprintf(share_label, sizeof share_label, ICON_CLOSE "  Cancel %d%%", (i32)(js.progress > 0 ? js.progress * 100 + 0.5f : 0));
         else if (js.done) str_set(share_label, js.line);
         else str_set(share_label, ICON_SHARE "  Share");
-        i32 sb = kit_split_button(share_label, "##tlshare", KIT_SECONDARY, ImVec2(w4, 0), can && !sharing, can,
+        i32 sb = kit_split_button(share_label, "##tlshare", KIT_SECONDARY, ImVec2(w4, 0), sharing || can, can,
                                   js.running ? (js.progress > 0 ? js.progress : 0) : -1,
-                                  "Share the selection. Right-click for more options", "More share options");
-        if (sb == 1) tl_share(0);
+                                  js.running ? "Cancel the share" : "Share the selection. Right-click for more options",
+                                  "More share options");
+        if (sb == 1 && sharing) tl_share_cancel();
+        else if (sb == 1) tl_share(0);
         else if (sb == 2) ImGui::OpenPopup("tl_share_menu");
         lib_popup_style_push(8);
         if (ImGui::BeginPopup("tl_share_menu")) {
@@ -2703,7 +2717,7 @@ static void screen_timeline()
             i32 r = share_menu_body(share_decide(m, 0), m, 0, js, 0, 0, pick);
             if (r == SHARE_MENU_SHARE) tl_share(0);
             else if (r == SHARE_MENU_HOST) tl_share(pick);
-            else if (r == SHARE_MENU_CANCEL) share_cancel(tl.share);
+            else if (r == SHARE_MENU_CANCEL) tl_share_cancel();
             ImGui::EndPopup();
         }
         lib_popup_style_pop();
