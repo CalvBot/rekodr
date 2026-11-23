@@ -24,25 +24,31 @@ static void share_size_text(i64 bytes, char *out, i32 cap)
     else snprintf(out, cap, "%.1f MB", mb);
 }
 
-// The decision for a clip of recommended size `reco`. A file: as is under the max, squeezed to it up to `squeeze`
-// times over. A link: Catbox when it's on and takes the clip (as is up to its 200 MB, squeezed up to `squeeze` times
-// that), else the bucket as is; with no bucket, Litterbox the same way up to its 1 GB, then the first uploader as
-// is.
-static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 squeeze, const ShareHosts &h)
+// The lowest quality a copy may be lowered to, as a fraction of the recommended bitrate: `min_quality` percent,
+// kept to 50 to 100.
+static f64 share_floor(i32 min_quality)
+{
+    return (min_quality < 50 ? 50 : min_quality > 100 ? 100 : min_quality) / 100.0;
+}
+
+// The decision for a clip of recommended size `reco`, with quality lowered to fit down to `floor` of it. A file: as
+// is under the max, squeezed to it when `floor` of the clip fits. A link: Catbox when it's on and takes the clip (as
+// is up to its 200 MB, squeezed when `floor` of it fits), else the bucket as is; with no bucket, Litterbox the same
+// way up to its 1 GB, then the first uploader as is.
+static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 floor, const ShareHosts &h)
 {
     ShareDecision d = {};
-    if (squeeze < 1) squeeze = 1;
     d.reco_bytes = reco;
     d.max_bytes = (i64)(max_mb * SHARE_MIB);
     d.file_squeezed = reco > d.max_bytes;
-    d.file_ok = reco <= d.max_bytes * squeeze;
+    d.file_ok = reco * floor <= d.max_bytes;
     d.file_bytes = d.file_squeezed ? (i64)(d.max_bytes * (1 - SHARE_MARGIN)) : reco;
 
     i64 most = 0;
     auto takes = [&](LinkHost host, bool on) {
         if (!on) return false;
         most = free_host(host)->max_bytes;
-        if (reco > most * squeeze) return false;
+        if (reco * floor > most) return false;
         d.host = host;
         d.link_squeezed = reco > most;
         return true;
@@ -83,17 +89,17 @@ static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 squeeze, const S
     return d;
 }
 
-// How a clip of `reco` goes on a host that takes at most `most` (0 = no cap): as is, squeezed up to `squeeze`
-// times over, or not.
-static ShareFit share_fit(i64 reco, f64 squeeze, i64 most)
+// How a clip of `reco` goes on a host that takes at most `most` (0 = no cap): as is, squeezed when `floor` of it
+// fits, or not.
+static ShareFit share_fit(i64 reco, f64 floor, i64 most)
 {
     if (most <= 0 || reco <= most) return SHARE_FIT_AS_IS;
-    return reco <= most * (squeeze < 1 ? 1 : squeeze) ? SHARE_FIT_SQUEEZED : SHARE_FIT_NO;
+    return reco * floor <= most ? SHARE_FIT_SQUEEZED : SHARE_FIT_NO;
 }
 
 // The hosts on in `h` and how a clip of `reco` goes on each (share_host_choices). The bucket takes a clip as is up to
 // its limit, an uploader as is.
-static i32 share_hosts_for(i64 reco, f64 squeeze, const ShareHosts &h, ShareHostChoice *out, i32 max)
+static i32 share_hosts_for(i64 reco, f64 floor, const ShareHosts &h, ShareHostChoice *out, i32 max)
 {
     i32 n = 0;
     auto add = [&](const char *name, const char *label, LinkHost host, i64 most, bool squeezes) {
@@ -103,7 +109,7 @@ static i32 share_hosts_for(i64 reco, f64 squeeze, const ShareHosts &h, ShareHost
         str_set(c.name, name);
         str_set(c.label, label);
         c.host = host;
-        c.fit = share_fit(reco, squeezes ? squeeze : 1, most);
+        c.fit = share_fit(reco, squeezes ? floor : 1, most);
         c.bytes = c.fit == SHARE_FIT_AS_IS ? reco : c.fit == SHARE_FIT_SQUEEZED ? (i64)(most * (1 - SHARE_MARGIN)) : 0;
         if (c.fit != SHARE_FIT_NO) return;
         char m[24];
@@ -129,16 +135,16 @@ static i32 share_hosts_for(i64 reco, f64 squeeze, const ShareHosts &h, ShareHost
 
 // The decision when the player picks the link's host (a ShareHostChoice's name; "r2" is the bucket too): a link
 // there as share_hosts_for says, or no link with why.
-static ShareDecision share_decide_on(i64 reco, f64 max_mb, f64 squeeze, const ShareHosts &h, const char *host)
+static ShareDecision share_decide_on(i64 reco, f64 max_mb, f64 floor, const ShareHosts &h, const char *host)
 {
-    ShareDecision d = share_decide_for(reco, max_mb, squeeze, h);
+    ShareDecision d = share_decide_for(reco, max_mb, floor, h);
     d.kind = SHARE_LINK;
     d.link_ok = d.link_squeezed = false;
     d.host = HOST_R2;
     d.link_bytes = 0;
     d.host_label[0] = d.link_why[0] = 0;
     static ShareHostChoice list[24];
-    i32 n = share_hosts_for(reco, squeeze, h, list, COUNT(list));
+    i32 n = share_hosts_for(reco, floor, h, list, COUNT(list));
     const char *want = !_stricmp(host, "r2") ? "bucket" : host;
     const ShareHostChoice *c = 0;
     for (i32 i = 0; i < n && !c; i++)
@@ -186,7 +192,8 @@ static ShareDecision share_decide(const MediaInfo &m, const EditRecord *edit)
 {
     const Config &c = g_app.config;
     i64 reco = share_reco_bytes(share_seconds(m, edit), m.width, m.height, m.fps, m.track_count > 0);
-    return share_decide_for(reco, c.share_max_mb > 0 ? c.share_max_mb : 20, c.share_squeeze, share_hosts());
+    f64 max_mb = c.share_max_mb > 0 ? c.share_max_mb : 20;
+    return share_decide_for(reco, max_mb, share_floor(c.share_min_quality), share_hosts());
 }
 
 // Share's decision with the link's host picked (share_decide_on).
@@ -194,13 +201,14 @@ static ShareDecision share_decide_host(const MediaInfo &m, const EditRecord *edi
 {
     const Config &c = g_app.config;
     i64 reco = share_reco_bytes(share_seconds(m, edit), m.width, m.height, m.fps, m.track_count > 0);
-    return share_decide_on(reco, c.share_max_mb > 0 ? c.share_max_mb : 20, c.share_squeeze, share_hosts(), host);
+    f64 max_mb = c.share_max_mb > 0 ? c.share_max_mb : 20;
+    return share_decide_on(reco, max_mb, share_floor(c.share_min_quality), share_hosts(), host);
 }
 
 static i32 share_host_choices(const MediaInfo &m, const EditRecord *edit, ShareHostChoice *out, i32 max)
 {
     i64 reco = share_reco_bytes(share_seconds(m, edit), m.width, m.height, m.fps, m.track_count > 0);
-    return share_hosts_for(reco, g_app.config.share_squeeze, share_hosts(), out, max);
+    return share_hosts_for(reco, share_floor(g_app.config.share_min_quality), share_hosts(), out, max);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

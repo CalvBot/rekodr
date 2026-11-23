@@ -2069,25 +2069,53 @@ static i32 adv_graph(SaveWork *w, const EditJob &j, f64 from, const char *post, 
 enum { SHARE_MIN_VIDEO_KBPS = 80, SHARE_ATTEMPTS = 4, SHARE_AUDIO_KBPS = 128 };
 static const f64 SHARE_MIB = 1024.0 * 1024.0, SHARE_MARGIN = 0.03;
 
-// The video bitrate a clip needs to look right, in kbit/s: 5, 9, 15 and 30 Mbit/s for 720p, 1080p, 1440p and 2160p
-// at 60 fps, along the pixel count between them and in proportion to it below and above; 0.65 of that at 30 fps,
-// in between along the frame rate, and in proportion to it below 30 and above 60. An unknown picture counts as
-// 1080p60.
-static f64 share_reco_kbps(i32 w, i32 h, f64 fps)
+// The video bitrate a clip needs to look right, in kbit/s, from a bitrate table (share_kbps; SHARE_KBPS_DEFAULT
+// is YouTube's recommended upload bitrates): along the pixel count between its rows (16:9 pictures of their
+// heights) and in proportion to it below 360p and above 2160p. Up to 30 fps the 30 fps column, from 60 the 60 fps
+// one and in proportion to the frame rate above 60, in between along the frame rate. An unknown picture counts as
+// 1080p, an unknown frame rate as 60.
+static f64 share_reco_kbps_in(const i32 (*table)[2], i32 w, i32 h, f64 fps)
 {
-    static const f64 px[] = {1280.0 * 720, 1920.0 * 1080, 2560.0 * 1440, 3840.0 * 2160};
-    static const f64 kbps[] = {5000, 9000, 15000, 30000};
-    f64 p = w > 0 && h > 0 ? (f64)w * h : px[1], r;
-    if (p <= px[0]) r = kbps[0] * p / px[0];
-    else if (p >= px[3]) r = kbps[3] * p / px[3];
-    else {
+    f64 px[6];
+    for (i32 i = 0; i < 6; i++) px[i] = SHARE_KBPS_HEIGHTS[i] * SHARE_KBPS_HEIGHTS[i] * 16.0 / 9;
+    f64 p = w > 0 && h > 0 ? (f64)w * h : px[3];
+    auto column = [&](i32 c) {
+        if (p <= px[0]) return table[0][c] * p / px[0];
+        if (p >= px[5]) return table[5][c] * p / px[5];
         i32 i = 0;
         while (p > px[i + 1]) i++;
-        r = kbps[i] + (kbps[i + 1] - kbps[i]) * (p - px[i]) / (px[i + 1] - px[i]);
-    }
+        return table[i][c] + (table[i + 1][c] - table[i][c]) * (p - px[i]) / (px[i + 1] - px[i]);
+    };
     if (fps <= 0) fps = 60;
-    f64 k = fps >= 60 ? fps / 60 : fps >= 30 ? 0.65 + 0.35 * (fps - 30) / 30 : 0.65 * fps / 30;
-    return r * k;
+    if (fps <= 30) return column(0);
+    if (fps >= 60) return column(1) * fps / 60;
+    return column(0) + (column(1) - column(0)) * (fps - 30) / 30;
+}
+
+static f64 share_reco_kbps(i32 w, i32 h, f64 fps) { return share_reco_kbps_in(g_app.config.share_kbps, w, h, fps); }
+
+// Options' line under Lower quality to fit: the lowest video bitrate, in kbit/s, a w x h clip at `fps` may be made
+// at with `min_quality` (a percent, as share_min_quality).
+static f64 share_lowest_kbps(i32 w, i32 h, f64 fps, i32 min_quality)
+{
+    return share_reco_kbps(w, h, fps) * min_quality / 100;
+}
+
+// Options' table: sets one cell (row of SHARE_KBPS_HEIGHTS, the 60 fps column when `high`), kept to 100 kbit/s to
+// 500 Mbit/s. The caller saves the settings.
+static void share_kbps_set(i32 row, bool high, i32 kbps)
+{
+    if (row < 0 || row >= 6) return;
+    g_app.config.share_kbps[row][high] = kbps < 100 ? 100 : kbps > 500000 ? 500000 : kbps;
+}
+
+// Options' Reset: the table back to SHARE_KBPS_DEFAULT. The caller saves the settings.
+static void share_kbps_reset() { memcpy(g_app.config.share_kbps, SHARE_KBPS_DEFAULT, sizeof g_app.config.share_kbps); }
+
+// Whether the table is as it started (Reset has nothing to do).
+static bool share_kbps_is_default()
+{
+    return !memcmp(g_app.config.share_kbps, SHARE_KBPS_DEFAULT, sizeof SHARE_KBPS_DEFAULT);
 }
 
 // A clip's recommended size: what it needs to look right, `seconds` long, with 128 kbit/s of sound when it has any.

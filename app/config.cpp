@@ -76,7 +76,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
     c->share_max_mb = 20;
-    c->share_squeeze = 1.5f;
+    c->share_min_quality = 67;
+    memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);
     c->share_link_page = true;
     c->link_catbox = c->link_litterbox = true;
     c->litterbox_hours = 72;
@@ -379,7 +380,14 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "litterbox_hours")) c->litterbox_hours = atoi(value);
     else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
     else if (!strcmp(key, "share_max_mb")) real(&c->share_max_mb);
-    else if (!strcmp(key, "share_squeeze")) real(&c->share_squeeze);
+    else if (!strcmp(key, "share_min_quality")) c->share_min_quality = atoi(value);
+    else if (!strncmp(key, "share_kbps_", 11)) { // share_kbps_1080_60 = 12000
+        i32 height = 0, fps = 0;
+        if (sscanf(key + 11, "%d_%d", &height, &fps) == 2)
+            for (i32 i = 0; i < 6; i++)
+                if (SHARE_KBPS_HEIGHTS[i] == height && (fps == 30 || fps == 60))
+                    c->share_kbps[i][fps == 60] = atoi(value);
+    }
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
@@ -552,7 +560,10 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("link_litterbox", c.link_litterbox);
     fprintf(f, "link_uploaders = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_uploaders,
             c.litterbox_hours, c.free_links_seen ? "true" : "false");
-    fprintf(f, "share_max_mb = %g\nshare_squeeze = %g\n", c.share_max_mb, c.share_squeeze);
+    fprintf(f, "share_max_mb = %g\nshare_min_quality = %d\n", c.share_max_mb, c.share_min_quality);
+    for (i32 i = 0; i < 6; i++)
+        fprintf(f, "share_kbps_%d_30 = %d\nshare_kbps_%d_60 = %d\n", SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][0],
+                SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][1]);
     boolean("share_link_page", c.share_link_page);
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\npopup_monitor_game = %d\n", c.popup_monitor, c.popup_monitor_game);

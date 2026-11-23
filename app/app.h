@@ -148,7 +148,10 @@ struct Config {
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)
-    f32 share_squeeze;   // a clip needing up to this many times share_max_mb is squeezed to it; 1 = never (1.5)
+    i32 share_min_quality; // Lower quality to fit: a copy may go down to this percent of the recommended bitrate
+                           // to fit a size, 50 to 100; 100 = never (67)
+    i32 share_kbps[6][2];  // the recommended video bitrate in kbit/s for each SHARE_KBPS_HEIGHTS row, at 30 and
+                           // 60 fps (SHARE_KBPS_DEFAULT)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
@@ -443,9 +446,16 @@ struct EditJob {
                                        // Link with no aim is made at about the source's quality
 };
 
+// The rows of Share's bitrate table (share_kbps) and what they start at: YouTube's recommended SDR upload
+// bitrates (support.google.com/youtube/answer/1722171) in kbit/s, for 24-30 fps and 48-60 fps, at the low end
+// of its ranges for 2160p.
+static const i32 SHARE_KBPS_HEIGHTS[6] = {360, 480, 720, 1080, 1440, 2160};
+static const i32 SHARE_KBPS_DEFAULT[6][2] = {{1000, 1500}, {2500, 4000},   {5000, 7500},
+                                             {8000, 12000}, {16000, 24000}, {35000, 53000}};
+
 // share.cpp: Share. What a clip (its edit, when it has one) needs to look right is its recommended size. Under
-// share_max_mb Share makes a file at that size; up to share_squeeze times over it, a file squeezed to the max;
-// further over, a link. The link's copy follows the same rule against its host. Length, picture size and frame
+// share_max_mb Share makes a file at that size; when share_min_quality of it fits the max, a file squeezed to the
+// max; further over, a link. The link's copy follows the same rule against its host. Length, picture size and frame
 // rate never change, only the bitrate; files and links are H.264.
 enum LinkHost : u8 { HOST_R2, HOST_CATBOX, HOST_LITTERBOX, HOST_CUSTOM, HOST_COUNT };
 enum ShareKind : u8 { SHARE_AS_IS, SHARE_SQUEEZED, SHARE_LINK };
@@ -483,7 +493,8 @@ struct ShareHostChoice {
 };
 
 // Every host that's switched on or set up, in the order Catbox, Litterbox, the bucket, the uploaders, with how
-// `m` played as `edit` goes there by Share's squeeze rule. Cheap: a menu can ask each frame. Returns how many.
+// `m` played as `edit` goes there as Lower quality to fit allows. Cheap: a menu can ask each frame. Returns how
+// many.
 static i32 share_host_choices(const MediaInfo &m, const EditRecord *edit, ShareHostChoice *out, i32 max);
 
 // A Share under way or done. File: made (or found already made) and put on the clipboard as a file. Link: made,

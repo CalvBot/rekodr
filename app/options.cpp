@@ -2991,18 +2991,18 @@ static void options_sharing()
         opt_row_end();
     }
 
-    // Squeeze: how far over the max a clip may be and still go as a file, made smaller to fit
+    // Lower quality to fit: how far a copy's bitrate may go under the recommended one to fit a size
     {
-        static const f32 steps[] = {1, 1.25f, 1.5f, 2};
-        static const char *const labels[] = {"Off##sq0", "1.25x##sq1", "1.5x##sq2", "2x##sq3"};
+        static const i32 steps[] = {100, 80, 67, 50};
+        static const char *const labels[] = {"Off##sq0", "80%##sq1", "67%##sq2", "50%##sq3"};
         f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - 3 * gap) / 4);
-        opt_row_begin("Squeeze", 0, cw);
+        opt_row_begin("Lower quality to fit", 0, cw);
         f32 x = g_row.x1 - cw, y = opt_row_frame_y();
         for (i32 i = 0; i < 4; i++) {
             ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
-            if (kit_chip(labels[i], fabsf(c.share_squeeze - steps[i]) < 0.01f, 0, chip_w)) {
-                c.share_squeeze = steps[i];
-                log_line("options: share squeeze %.2fx", c.share_squeeze);
+            if (kit_chip(labels[i], c.share_min_quality == steps[i], 0, chip_w)) {
+                c.share_min_quality = steps[i];
+                log_line("options: share min quality %d%%", c.share_min_quality);
                 options_apply(0);
             }
         }

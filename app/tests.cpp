@@ -581,17 +581,33 @@ static void test_settings_round_trip()
 // Share: the recommended rate, the bitrates for a size, and what one click does with a clip.
 static void test_share()
 {
-    // Recommended video rates at 60 fps, between them along the pixel count, 0.65 at 30 fps
-    T(share_reco_kbps(1280, 720, 60) == 5000 && share_reco_kbps(1920, 1080, 60) == 9000);
-    T(share_reco_kbps(2560, 1440, 60) == 15000 && share_reco_kbps(3840, 2160, 60) == 30000);
-    T(fabs(share_reco_kbps(1920, 1080, 30) - 5850) < 1 && fabs(share_reco_kbps(3840, 2160, 30) - 19500) < 1);
-    T(fabs(share_reco_kbps(640, 360, 60) - 1250) < 1 && share_reco_kbps(0, 0, 0) == 9000);
+    // Recommended video rates: the table's rows at 30 and 60 fps, along the pixel count between them
+    Config &cf = g_app.config;
+    Config saved_cf = cf;
+    share_kbps_reset();
+    T(share_kbps_is_default());
+    T(share_reco_kbps(1920, 1080, 60) == 12000 && share_reco_kbps(1920, 1080, 30) == 8000);
+    T(share_reco_kbps(1280, 720, 60) == 7500 && share_reco_kbps(3840, 2160, 60) == 53000);
+    T(share_reco_kbps(640, 360, 60) == 1500 && share_reco_kbps(0, 0, 0) == 12000);
     f64 mid = share_reco_kbps(2240, 1260, 60); // between 1080p and 1440p
-    T(mid > 9000 && mid < 15000);
-    T(share_reco_kbps(1920, 1080, 45) > 5850 && share_reco_kbps(1920, 1080, 45) < 9000);
-    // 20 s of 1080p60 with sound: (9000 + 128) kbit/s
-    T(share_reco_bytes(20, 1920, 1080, 60, true) == 22820000);
-    T(share_reco_bytes(20, 1920, 1080, 60, false) == 22500000);
+    T(mid > 12000 && mid < 24000);
+    // Linear between 30 and 60 fps, the 30 fps column below, in proportion above 60, and below 360p and above 2160p
+    T(share_reco_kbps(1920, 1080, 45) == 10000 && share_reco_kbps(1920, 1080, 24) == 8000);
+    T(share_reco_kbps(1920, 1080, 120) == 24000 && share_reco_kbps(7680, 4320, 60) == 4 * 53000.0);
+    T(share_reco_kbps(320, 180, 60) == 375);
+    // The lowest a copy goes at 67%, and the table set and reset
+    T(fabs(share_lowest_kbps(1920, 1080, 60, 67) - 8040) < 0.01);
+    share_kbps_set(3, true, 20000);
+    T(share_reco_kbps(1920, 1080, 60) == 20000 && !share_kbps_is_default());
+    share_kbps_set(3, true, 5);
+    T(cf.share_kbps[3][1] == 100);
+    share_kbps_set(9, true, 5000); // no such row
+    share_kbps_reset();
+    T(share_kbps_is_default() && share_floor(67) == 0.67 && share_floor(10) == 0.5 && share_floor(200) == 1);
+    // 20 s of 1080p60 with sound: (12000 + 128) kbit/s
+    T(share_reco_bytes(20, 1920, 1080, 60, true) == 30320000);
+    T(share_reco_bytes(20, 1920, 1080, 60, false) == 30000000);
+    cf = saved_cf;
 
     // Bitrates for 20 s squeezed to 20 MB: the top sound tier, the video the rest, under the ceiling
     const i64 mb = (i64)SHARE_MIB;
@@ -605,75 +621,75 @@ static void test_share()
     // Little room: a smaller sound tier
     T(share_rate(60, true, 3 * mb, 3 * mb, 0, &r) && r.audio_kbps == 96);
 
-    // One click: a file as is under the max, squeezed to it up to 1.5 times over, a link further over
+    // One click: a file as is under the max, squeezed to it when 67% of it fits, a link further over
     ShareHosts free = {false, true, true, 72, ""}, bucket = {true, true, false, 72, ""}, none = {};
-    ShareDecision d = share_decide_for(15 * mb, 20, 1.5, free);
+    ShareDecision d = share_decide_for(15 * mb, 20, 0.67, free);
     T(d.kind == SHARE_AS_IS && d.file_ok && !d.file_squeezed && d.file_bytes == 15 * mb && !strcmp(d.why, "15 MB, as is"));
-    d = share_decide_for(25 * mb, 20, 1.5, free);
+    d = share_decide_for(25 * mb, 20, 0.67, free);
     T(d.kind == SHARE_SQUEEZED && d.file_ok && d.file_squeezed && d.file_bytes < 20 * mb);
     T(!strcmp(d.why, "25 MB squeezed to 20 MB"));
-    d = share_decide_for(31 * mb, 20, 1.5, free);
+    d = share_decide_for(31 * mb, 20, 0.67, free);
     T(d.kind == SHARE_LINK && !d.file_ok && d.link_ok && d.host == HOST_CATBOX && !d.link_squeezed);
     T(d.link_bytes == 31 * mb && !strcmp(d.host_label, "Catbox"));
-    d = share_decide_for(21 * mb, 20, 1.0, free); // squeeze off
+    d = share_decide_for(21 * mb, 20, 1.0, free); // never lower
     T(d.kind == SHARE_LINK);
-    // No bucket: Catbox as is to 200 MB, squeezed to 300 MB; Litterbox as is to 1 GB, squeezed to 1.5 GB
-    d = share_decide_for(250000000, 20, 1.5, free);
+    // No bucket: Catbox as is to 200 MB, squeezed to about 300 MB; Litterbox as is to 1 GB, squeezed to about 1.5 GB
+    d = share_decide_for(250000000, 20, 0.67, free);
     T(d.host == HOST_CATBOX && d.link_squeezed && d.link_bytes < 200000000);
-    d = share_decide_for(400000000, 20, 1.5, free);
+    d = share_decide_for(400000000, 20, 0.67, free);
     T(d.host == HOST_LITTERBOX && !d.link_squeezed && d.link_bytes == 400000000);
     T(!strcmp(d.host_label, "Litterbox, 72 h"));
-    d = share_decide_for(1200000000, 20, 1.5, free);
+    d = share_decide_for(1200000000, 20, 0.67, free);
     T(d.host == HOST_LITTERBOX && d.link_squeezed && d.link_bytes < 1000000000);
-    d = share_decide_for(2000000000, 20, 1.5, free);
+    d = share_decide_for(2000000000, 20, 0.67, free);
     T(!d.link_ok && starts_with(d.link_why, "Needs your own Cloudflare"));
-    d = share_decide_for(2000000000, 20, 1.5, none);
+    d = share_decide_for(2000000000, 20, 0.67, none);
     T(!d.link_ok && starts_with(d.link_why, "Turn on a free host"));
     ShareHosts up = {false, false, false, 0, "MyUploader"};
-    d = share_decide_for(2000000000, 20, 1.5, up);
+    d = share_decide_for(2000000000, 20, 0.67, up);
     T(d.link_ok && d.host == HOST_CUSTOM && !d.link_squeezed && !strcmp(d.host_label, "MyUploader"));
     // A bucket: Catbox (when on) for what it takes, else the bucket as is, however big
-    d = share_decide_for(250000000, 20, 1.5, bucket);
+    d = share_decide_for(250000000, 20, 0.67, bucket);
     T(d.host == HOST_CATBOX && d.link_squeezed);
-    d = share_decide_for(400000000, 20, 1.5, bucket);
+    d = share_decide_for(400000000, 20, 0.67, bucket);
     T(d.host == HOST_R2 && !d.link_squeezed && d.link_bytes == 400000000 && !strcmp(d.host_label, "your bucket"));
     bucket.catbox = false;
-    d = share_decide_for(50 * mb, 20, 1.5, bucket);
+    d = share_decide_for(50 * mb, 20, 0.67, bucket);
     T(d.host == HOST_R2 && !d.link_squeezed);
-    d = share_decide_for(5000000000, 20, 1.5, bucket);
+    d = share_decide_for(5000000000, 20, 0.67, bucket);
     T(d.link_ok && d.host == HOST_R2);
     // A bucket: Litterbox and the uploaders are left out by the rule even when on
     ShareHosts all = {true, false, true, 72, "Up1,Up2", 3000000000};
-    d = share_decide_for(1200000000, 20, 1.5, all);
+    d = share_decide_for(1200000000, 20, 0.67, all);
     T(d.host == HOST_R2);
     // The hosts to pick from: each that's on, with how a clip goes there
     ShareHostChoice ch[8];
     all.catbox = true;
-    T(share_hosts_for(250000000, 1.5, all, ch, 8) == 5);
+    T(share_hosts_for(250000000, 0.67, all, ch, 8) == 5);
     T(!strcmp(ch[0].name, "catbox") && ch[0].fit == SHARE_FIT_SQUEEZED && ch[0].bytes < 200000000);
     T(!strcmp(ch[1].name, "litterbox") && ch[1].fit == SHARE_FIT_AS_IS && !strcmp(ch[1].label, "Litterbox, 72 h"));
     T(!strcmp(ch[2].name, "bucket") && ch[2].host == HOST_R2 && ch[2].fit == SHARE_FIT_AS_IS);
     T(!strcmp(ch[3].name, "Up1") && !strcmp(ch[4].name, "Up2") && ch[4].host == HOST_CUSTOM);
-    T(share_hosts_for(4000000000, 1.5, all, ch, 8) == 5);
+    T(share_hosts_for(4000000000, 0.67, all, ch, 8) == 5);
     T(ch[0].fit == SHARE_FIT_NO && !strcmp(ch[0].why, "Too big for Catbox even squeezed") && !ch[0].bytes);
     T(ch[1].fit == SHARE_FIT_NO && ch[2].fit == SHARE_FIT_NO && starts_with(ch[2].why, "Bigger than your bucket's"));
     T(ch[3].fit == SHARE_FIT_AS_IS && ch[3].bytes == 4000000000);
-    T(share_hosts_for(mb, 1.0, none, ch, 8) == 0 && share_hosts_for(mb, 1.5, all, ch, 2) == 2);
-    T(share_hosts_for(250000000, 1.0, free, ch, 8) == 2 && ch[0].fit == SHARE_FIT_NO); // squeeze off
-    // A picked host: there by the squeeze rule, or no link with why
-    d = share_decide_on(250000000, 20, 1.5, all, "litterbox");
+    T(share_hosts_for(mb, 1.0, none, ch, 8) == 0 && share_hosts_for(mb, 0.67, all, ch, 2) == 2);
+    T(share_hosts_for(250000000, 1.0, free, ch, 8) == 2 && ch[0].fit == SHARE_FIT_NO); // never lower
+    // A picked host: there as quality may be lowered, or no link with why
+    d = share_decide_on(250000000, 20, 0.67, all, "litterbox");
     T(d.kind == SHARE_LINK && d.link_ok && d.host == HOST_LITTERBOX && !d.link_squeezed && d.link_bytes == 250000000);
-    d = share_decide_on(250000000, 20, 1.5, all, "catbox");
+    d = share_decide_on(250000000, 20, 0.67, all, "catbox");
     T(d.link_ok && d.host == HOST_CATBOX && d.link_squeezed);
-    d = share_decide_on(250000000, 20, 1.5, all, "r2");
+    d = share_decide_on(250000000, 20, 0.67, all, "r2");
     T(d.link_ok && d.host == HOST_R2 && !strcmp(d.host_label, "your bucket"));
-    d = share_decide_on(250000000, 20, 1.5, all, "up2");
+    d = share_decide_on(250000000, 20, 0.67, all, "up2");
     T(d.link_ok && d.host == HOST_CUSTOM && !strcmp(d.host_label, "Up2"));
-    d = share_decide_on(400000000, 20, 1.5, all, "catbox");
+    d = share_decide_on(400000000, 20, 0.67, all, "catbox");
     T(!d.link_ok && !strcmp(d.link_why, "Too big for Catbox even squeezed"));
-    d = share_decide_on(mb, 20, 1.5, free, "bucket");
+    d = share_decide_on(mb, 20, 0.67, free, "bucket");
     T(!d.link_ok && starts_with(d.link_why, "Set up your own Cloudflare"));
-    d = share_decide_on(mb, 20, 1.5, up, "catbox");
+    d = share_decide_on(mb, 20, 0.67, up, "catbox");
     T(!d.link_ok && !strcmp(d.link_why, "catbox isn't switched on in Options"));
     // Sizes in the menu: whole MB from 10, one decimal under, GB from 1000
     char t[24];
