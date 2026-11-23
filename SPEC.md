@@ -81,16 +81,24 @@ Keep a whole session from start to finish.
   - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
     where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix
     track is rebuilt from the volumes. Sessions are cut into clips this way.
-  - **Share:** encodes a small copy (Discord 20 MB, 50 MB, or a custom size) with one stereo mix. It goes to
-    `%TEMP%\clipback\share\` and onto the clipboard, ready to paste. Share copies never go in the Clips folder. A
-    *Recent shares* list keeps them for re-copying until they're cleared (setting, default 7 days). If a share copy
-    is gone, it is encoded again from the original.
-  - **Link:** Share's fourth choice. The edit is made into a copy Discord plays (H.264, the Mix only, stream-copied
-    when the file already is that and only trimmed), uploaded, and its link goes on the clipboard. Without a bucket
-    it goes to the free public hosts, which take up to 1 GB, and the card says so; a clip too big for them fails
-    with the reason. With the player's own R2 bucket set up in Options, a copy Catbox takes (200 MB) goes to Catbox
-    while it's on, to save the bucket's space, and anything bigger goes to the bucket; Litterbox and uploaders
-    aren't used. When the bucket can't take a link (its keys unreadable, or the month's reads near `r2_read_cap`)
+  - **Share:** the same in the library (a clip as its saved edit has it) and the editor. Share never changes the
+    length, picture size or frame rate, only the bitrate. A clip's *recommended size* is what it needs to look right:
+    video at 30, 15, 9 and 5 Mbit/s for 2160p, 1440p, 1080p and 720p at 60 fps (along the pixel count between them,
+    in proportion below), 0.65 of that at 30 fps, plus 128 kbit/s of sound. Under the *Max size* (`share_max_mb`,
+    in MiB as Discord counts; 20, 50, 100, 500, 2000 or a custom size, default 20) Share makes a file at the
+    recommended size; up to *Squeeze* (`share_squeeze`, default 1.5, 1 = never) times over it, a file squeezed to
+    the max; further over, a link. Every file is a new H.264 copy with the edit applied and one stereo mix, in
+    `%TEMP%\clipback\share\` and on the clipboard, ready to paste; share copies never go in the Clips folder. The
+    original is the untouched clip, shown in its folder. A file or link made for the same clip, edit and settings
+    is given again at once (`made-shares.tsv` in the local folder); a new edit or new settings make a new one.
+    Share files are kept 7 days from their last use (`share_keep_days`). Deleting a clip deletes its share files and
+    its bucket links; Catbox links can't be deleted and stay up, which the delete asks about.
+  - **Link:** the edit is made into a copy Discord plays (H.264, one stereo mix), uploaded, and its link goes on the
+    clipboard. The copy follows Share's rule against its host. Without a bucket: Catbox (when it's on) as is up to
+    its 200 MB and squeezed to it up to Squeeze times that, else Litterbox the same way against its 1 GB, else an
+    uploader as is; bigger fails with "needs your own Cloudflare". With the player's own R2 bucket set up in
+    Options: Catbox (when it's on) for what it takes, to save the bucket's space, else the bucket as is; Litterbox
+    and uploaders aren't used. When the bucket can't take a link (its keys unreadable, or the month's reads near `r2_read_cap`)
     the link fails with the reason rather than going to a free host. The bucket is `clipback` (`r2_bucket` in the
     config file). Its public address is its r2.dev address or a custom domain connected to it in Cloudflare,
     picked under Options' Advanced; r2.dev is rate-limited by Cloudflare. Each host's upload speed is averaged over
@@ -246,6 +254,7 @@ was moved), and a range that can't be saved still gets a failed `saved` line.
 One window with a header (status, pause, Help, Options):
 
 - **Library:** Clips and Sessions, with date, game and order dropdowns, search, a scrolling grid and a player.
+  Each card marks a share file and a link it has ready; its Share menu shares, and copies, pauses or deletes its link.
 - **Sessions *Not saved* list:** sessions still in the buffer, with Save and how long until each is gone.
 - **Timeline:** the buffer, a range selection, Save and Edit.
 - **Editor:** trim, zoom keyframes, track volumes, Keep and Share; *Recent shares*.

@@ -687,35 +687,19 @@ static void editor_on_save_event(const Event &e)
     const SaveJobView *job = save_view(id);
     if (e.a == SAVE_EV_DONE && !(job && (job->kind == SAVE_PREVIEW || job->kind == SAVE_LINK)))
         library_rescan(); // a new clip, session or Keep
-    if (!id || (id != ed.keep_job && id != ed.share_job)) return;
-    bool share = id == ed.share_job;
+    if (!id || id != ed.keep_job) return;
     const char *name = strrchr(e.text, '\\');
     name = name ? name + 1 : e.text;
     ed.result_path[0] = ed.result_url[0] = 0;
     if (e.a == SAVE_EV_DONE) {
         str_set(ed.result_path, e.text);
-        if (share) {
-            wchar_t w[MAX_PATH];
-            utf8_to_wide(e.text, w, MAX_PATH);
-            WIN32_FILE_ATTRIBUTE_DATA fa = {};
-            GetFileAttributesExW(w, GetFileExInfoStandard, &fa);
-            char size[24];
-            fmt_size(((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow, size, sizeof size);
-            bool copied = clipboard_copy_file(w);
-            snprintf(ed.result, sizeof ed.result, copied ? "Shared (%s): on the clipboard, ready to paste." :
-                                                           "Shared (%s), but the clipboard was busy: use Copy.", size);
-            ed.result_error = !copied;
-            editor_refresh_shares();
-            ed.share_page = 0;
-        } else {
-            snprintf(ed.result, sizeof ed.result, "Kept as %s", name);
-            ed.result_error = false;
-        }
+        snprintf(ed.result, sizeof ed.result, "Kept as %s", name);
+        ed.result_error = false;
     } else if (e.a == SAVE_EV_FAILED) {
-        snprintf(ed.result, sizeof ed.result, "%s failed: %s", share ? "Share" : "Keep", e.text);
+        snprintf(ed.result, sizeof ed.result, "Keep failed: %s", e.text);
         ed.result_error = true;
     } else if (e.a == SAVE_EV_CANCELLED) {
-        snprintf(ed.result, sizeof ed.result, "%s cancelled", share ? "Share" : "Keep");
+        str_set(ed.result, "Keep cancelled");
         ed.result_error = false;
     }
 }
@@ -726,41 +710,41 @@ static bool ed_job_busy(u32 id)
     return v && v->state < SAVE_DONE;
 }
 
-// The size Share aims for, in MiB (what Discord means by MB).
-static f32 ed_share_mb() { return share_target_mb(g_app.editor.share_size, g_app.editor.custom_mb); }
+// The file as the editor plays it, for share_decide: its length the player's when known
+static MediaInfo ed_share_info()
+{
+    MediaInfo m = g_app.editor.item.info;
+    if (g_app.editor.player.duration > 0) m.duration = g_app.editor.player.duration;
+    return m;
+}
 
-// Keep, Share, or with small a Keep at the share size: a smaller clip kept in Clips for good, not a share copy.
-static void ed_start(SaveKind kind, bool small_keep = false)
+// Keep, or with small a Keep at the size Share would make its file (share_decide): a smaller clip kept in Clips for
+// good, not a share copy.
+static void ed_start(bool small_keep = false)
 {
     Editor &ed = g_app.editor;
     ed_save_record();
     static EditJob j;
     j = {};
     j.src = ed.path;
-    j.info = ed.item.info;
-    if (ed.player.duration > 0) j.info.duration = ed.player.duration;
+    j.info = ed_share_info();
     j.edit = ed.edit;
-    if (kind == SAVE_KEEP || small_keep) {
-        swprintf(j.out_dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, ed.item.year);
-        // Kept beside clips that may hold the original: its own name, or the original's with " edit" (" small")
-        if (ed.out_name[0] && strcmp(ed.out_name, ed.item.name)) snprintf(j.stem, sizeof j.stem, "%s", ed.out_name);
-        else snprintf(j.stem, sizeof j.stem, "%s %s", ed.item.name, small_keep ? "small" : "edit");
-        if (small_keep) {
-            kind = SAVE_SHARE; // made as a share copy is, into Clips
-            j.share_mb = ed_share_mb();
-        }
-    } else {
-        j.out_dir = g_app.paths.share_dir;
-        snprintf(j.stem, sizeof j.stem, "%s", ed.out_name[0] ? ed.out_name : ed.item.name);
-        j.share_mb = ed_share_mb();
+    swprintf(j.out_dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, ed.item.year);
+    // Kept beside clips that may hold the original: its own name, or the original's with " edit" (" small")
+    if (ed.out_name[0] && strcmp(ed.out_name, ed.item.name)) snprintf(j.stem, sizeof j.stem, "%s", ed.out_name);
+    else snprintf(j.stem, sizeof j.stem, "%s %s", ed.item.name, small_keep ? "small" : "edit");
+    SaveKind kind = SAVE_KEEP;
+    if (small_keep) { // made as Share's file is, into Clips
+        ShareDecision d = share_decide(j.info, &ed.edit);
+        kind = SAVE_SHARE;
+        j.aim_bytes = d.file_squeezed ? d.max_bytes : d.reco_bytes;
+        j.limit_bytes = d.max_bytes;
     }
     clean_name(j.stem); // the name is typed: drop what a file name can't hold
     if (!j.stem[0]) snprintf(j.stem, sizeof j.stem, "%s", ed.item.name);
-    u32 id = save_edit(kind, j);
-    if (kind == SAVE_KEEP || small_keep) ed.keep_job = id;
-    else ed.share_job = id;
+    ed.keep_job = save_edit(kind, j);
     ed.result_url[0] = 0;
-    if (!id) {
+    if (!ed.keep_job) {
         str_set(ed.result, "Too many saves are waiting; try again in a moment.");
         ed.result_error = true;
     } else {
@@ -768,52 +752,66 @@ static void ed_start(SaveKind kind, bool small_keep = false)
     }
 }
 
-// Shares the edit as a link: r2 makes a copy Discord plays (save_link), uploads it to the player's bucket, and the
-// link goes on the clipboard when it's there (ed_link_poll).
-static void ed_start_link()
+// Share for the edit as `kind` (share.cpp): the file or link goes on the clipboard when it's made (ed_share_poll).
+static void ed_share(ShareKind kind)
 {
     Editor &ed = g_app.editor;
     ed_save_record();
-    MediaInfo info = ed.item.info;
-    if (ed.player.duration > 0) info.duration = ed.player.duration;
     const char *title = ed.out_name[0] ? ed.out_name : ed.item.name;
-    ed.link_job = r2_share_file(ed.path.s, title, ed.item.info.game, 0, &info, &ed.edit);
+    ed.share_job = share_start(kind, ed.path.s, ed_share_info(), &ed.edit, title, ed.item.info.game, ed.item.key);
     ed.result_path[0] = ed.result_url[0] = 0;
-    if (!ed.link_job) {
-        str_set(ed.result, "Too many links are waiting; try again in a moment.");
+    if (!ed.share_job) {
+        str_set(ed.result, "Share is busy: try again in a moment.");
         ed.result_error = true;
     } else {
         ed.result[0] = 0;
     }
 }
 
-static bool ed_link_busy()
+// Share as `kind`, with a first link to a free host asked about first (links_ask_first)
+static void ed_share_ask(ShareKind kind)
 {
-    Editor &ed = g_app.editor;
-    if (!ed.link_job) return false;
-    R2Job j = r2_job(ed.link_job);
-    return j.id && j.state < R2_DONE;
+    if (kind == SHARE_LINK && !links_any_host()) {
+        lib_open_sharing();
+        return;
+    }
+    if (kind != SHARE_LINK || !links_ask_first(ASK_EDITOR, 0)) ed_share(kind);
 }
 
-// Follows the link being made, on whichever tab: once it's up, it goes on the clipboard; a failure says why.
-static void ed_link_poll()
+static bool ed_share_busy()
 {
     Editor &ed = g_app.editor;
-    if (!ed.link_job) return;
-    R2Job j = r2_job(ed.link_job);
-    if (j.id && j.state < R2_DONE) {
+    if (!ed.share_job) return false;
+    ShareJobView j = share_job(ed.share_job);
+    return j.id && j.state < SHARE_DONE;
+}
+
+// Follows the Share under way, on whichever tab: once it's done, the result line says what went on the clipboard; a
+// failure says why. The job id stays, so its tile can say "Copied".
+static void ed_share_poll()
+{
+    Editor &ed = g_app.editor;
+    static u32 seen; // the job whose end was taken
+    if (!ed.share_job || seen == ed.share_job) return;
+    ShareJobView j = share_job(ed.share_job);
+    if (j.id && j.state < SHARE_DONE) {
         ui_wake();
         return;
     }
-    ed.link_job = 0;
+    seen = ed.share_job;
     ed.result_path[0] = ed.result_url[0] = 0;
-    if (j.state == R2_DONE) {
-        ImGui::SetClipboardText(j.url);
+    if (j.state == SHARE_DONE && j.kind == SHARE_LINK) {
         str_set(ed.result_url, j.url);
-        str_set(ed.result, "Link copied, ready to paste.");
-        ed.result_error = false;
+        str_set(ed.result, j.error[0] ? j.error : "Link copied, ready to paste.");
+        ed.result_error = j.error[0] != 0;
+    } else if (j.state == SHARE_DONE) {
+        str_set(ed.result_path, j.path);
+        str_set(ed.result, j.error[0] ? j.error : "Copied, ready to paste.");
+        ed.result_error = j.error[0] != 0;
+        editor_refresh_shares();
+        ed.share_page = 0;
     } else {
-        snprintf(ed.result, sizeof ed.result, "Link failed: %s", j.id ? j.error : "it was lost");
+        snprintf(ed.result, sizeof ed.result, "Share failed: %s", j.id ? j.error : "it was lost");
         ed.result_error = true;
     }
 }
@@ -2529,16 +2527,17 @@ static void ed_card_head(const char *icon, const char *title, const char *line, 
     ImGui::Dummy(ImVec2(1, ed_card_head_h()));
 }
 
-// Keep and Share. Keep makes a full-quality copy of the trim in Clips; Share makes a small one in the temp share
-// folder and puts it on the clipboard, or (Link) uploads a copy to the player's bucket and puts its link there.
-// None touches the original, so a share can be made again at another size.
+// Keep and Share. Keep makes a full-quality copy of the trim in Clips. Share does what share_decide picks for the
+// edit; under it the same three tiles as the library's Share menu, File (a copy with the edit and one mixed sound
+// track), Original (the source file, in its folder) and Link, each starting its own kind, the running one showing its
+// step and percent. None touches the original.
 static void ed_share_tab(f32 w)
 {
     Editor &ed = g_app.editor;
     const ImGuiStyle &st = ImGui::GetStyle();
     f32 fh = ImGui::GetFrameHeight();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    bool keeping = ed_job_busy(ed.keep_job), sharing = ed_job_busy(ed.share_job), linking = ed_link_busy();
+    bool keeping = ed_job_busy(ed.keep_job), sharing = ed_share_busy();
     f32 iw = w;
 
     // The name both use
@@ -2547,112 +2546,94 @@ static void ed_share_tab(f32 w)
     ImGui::InputTextWithHint("##outname", "Name", ed.out_name, sizeof ed.out_name);
     ImGui::Dummy(ImVec2(1, kit_px(2)));
 
-    // How long the trim is, for both cards
-    const MediaInfo &m = ed.item.info;
+    // How long the trim is, and what Share would do with it
     f64 len = pieces_len(ed.edit, ed_duration());
     char len_s[32];
     fmt_time(len, len_s, sizeof len_s);
+    ShareDecision d = share_decide(ed_share_info(), &ed.edit);
+    char max_s[24];
+    share_size_text(d.max_bytes, max_s, sizeof max_s);
 
-    // Keep: the title row with its buttons beside it. Keep small makes the share size's copy into Clips, kept for good.
+    // Keep: the title row with its buttons beside it. Keep small makes Share's file into Clips, kept for good.
     f32 head_h = ed_card_head_h(), bw = kit_px(120), gap = kit_px(12);
     f32 keep_row = head_h > fh ? head_h : fh;
     {
         char line[96];
         snprintf(line, sizeof line, "Full quality, %s", len_s);
-        f32 kw = kit_px(92), small_mb = ed_share_mb();
-        f64 kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
-        bool small_fits = share_plan(len, small_mb, m.track_count > 0, m.width, m.height, m.fps, kbps).fits;
+        f32 kw = kit_px(92);
         ImVec2 top = ImGui::GetCursorScreenPos();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
         ed_card_head(ICON_SAVE, "Keep", line, iw - 2 * kw - gap - kit_px(8));
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - 2 * kw - kit_px(8), top.y + (keep_row - fh) / 2));
         char small_tip[96];
-        snprintf(small_tip, sizeof small_tip, small_fits ? "A copy under %.0f MB, kept in Clips for good" :
-                                                           "Too long for %.0f MB: trim it shorter", small_mb);
+        snprintf(small_tip, sizeof small_tip, d.file_ok ? "A copy under %s, kept in Clips for good" :
+                                                          "Too big for %s even squeezed: trim it shorter", max_s);
         kit_next_tip(small_tip);
-        if (kit_button("Keep small", KIT_SECONDARY, ImVec2(kw, 0), !keeping && small_fits)) ed_start(SAVE_KEEP, true);
+        if (kit_button("Keep small", KIT_SECONDARY, ImVec2(kw, 0), !keeping && d.file_ok)) ed_start(true);
         ImGui::SameLine(0, kit_px(8));
         kit_next_tip("Full quality, saved in Clips");
-        if (kit_button(keeping ? "Keeping..." : "Keep", KIT_SECONDARY, ImVec2(kw, 0), !keeping)) ed_start(SAVE_KEEP);
+        if (kit_button(keeping ? "Keeping..." : "Keep", KIT_SECONDARY, ImVec2(kw, 0), !keeping)) ed_start();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
     }
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 
-    // Share: the title row says what it comes out as, with the button beside it; the size chips under it
+    // Share: the title row says what one click does, with the button beside it; the tiles under it
     {
-        // A link goes to the player's bucket, or without one to the free public hosts (link_hosts)
-        bool link = ed.share_size == SHARE_LINK, own = r2_ready();
-        i64 free_max = link && !own ? free_max_bytes(g_app.config.link_hosts) : 0;
-        bool ready = !link || links_any_host();
-        f64 src_kbps = m.duration > 0 ? ed.item.size * 8 / 1000.0 / m.duration : 0;
-        SharePlan plan = share_plan(len, ed_share_mb(), m.track_count > 0, m.width, m.height, m.fps, src_kbps);
-        if (link) plan.fits = true; // a link has no size to fit
-        char est[96];
-        if (link) {
-            if (own) snprintf(est, sizeof est, "A link that plays in Discord, %s", len_s);
-            else if (free_max >= 1000000000) snprintf(est, sizeof est, "Free link: public, up to %g GB", free_max / 1e9);
-            else if (free_max > 0) snprintf(est, sizeof est, "Free link: public, up to %d MB", (i32)(free_max / 1000000));
-            else if (ready) str_set(est, "A public link, through your uploader");
-            else str_set(est, "Set up sharing in Options");
-        } else if (plan.fits) {
-            char size[24];
-            fmt_size((u64)plan.estimate_bytes, size, sizeof size);
-            snprintf(est, sizeof est, "About %s, %dp%.0f, %.1f Mbps", size, plan.side, plan.fps, plan.video_kbps / 1000.0);
-        } else {
-            char most[32];
-            fmt_time(plan.max_duration, most, sizeof most);
-            snprintf(est, sizeof est, "Too long: trim to under %s", most);
-        }
+        bool any_host = links_any_host(), can = d.kind == SHARE_LINK ? d.link_ok : d.file_ok;
         ImVec2 top = ImGui::GetCursorScreenPos();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
-        ed_card_head(ICON_SHARE, "Share", est, iw - bw - gap, plan.fits && ready ? 0 : col32(0xff8a92));
+        ed_card_head(ICON_SHARE, "Share", can ? d.why : d.link_why, iw - bw - gap, can ? 0 : col32(0xff8a92));
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
-        bool busy = link ? linking : sharing;
-        if (kit_button(busy ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(bw, 0), !busy && plan.fits && ready)) {
-            if (link) {
-                if (!links_ask_first(ASK_EDITOR, 0)) ed_start_link();
-            } else ed_start(SAVE_SHARE);
-        }
+        if (kit_button(sharing ? "Sharing..." : ICON_SHARE "  Share", KIT_PRIMARY, ImVec2(bw, 0), !sharing && can))
+            ed_share_ask(d.kind);
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
 
-        // The three sizes from Options and Link as chips, then Custom: a button in the size field's place until
-        // picked, then the field itself (the same width, so nothing moves).
-        char size_s[3][24];
-        const char *sizes[4];
-        for (i32 i = 0; i < 3; i++) {
-            share_size_label(g_app.config.share_sizes_mb[i], size_s[i], sizeof size_s[i]);
-            sizes[i] = size_s[i];
+        // The tiles, one under another at the panel's width. The running Share's tile shows its step and percent.
+        ShareJobView j = ed.share_job ? share_job(ed.share_job) : ShareJobView{};
+        bool running = j.id && j.state < SHARE_DONE;
+        i32 job_tile = !running ? -1 : j.kind == SHARE_LINK ? 2 : 0;
+        char lines[3][128], size_s[24];
+        u32 inks[3] = {COL_DIM, COL_DIM, COL_DIM};
+        f32 bars[3] = {-1, -1, -1};
+        share_size_text(d.file_bytes, size_s, sizeof size_s);
+        if (!d.file_ok) snprintf(lines[0], sizeof lines[0], "too big for %s", max_s);
+        else if (d.file_squeezed) snprintf(lines[0], sizeof lines[0], "squeezed to %s", max_s);
+        else snprintf(lines[0], sizeof lines[0], "as is, %s", size_s);
+        share_size_text((i64)ed.item.size, size_s, sizeof size_s);
+        snprintf(lines[1], sizeof lines[1], "in folder, %s, no edit", size_s);
+        if (d.link_ok) snprintf(lines[2], sizeof lines[2], "%s", d.host_label);
+        else snprintf(lines[2], sizeof lines[2], "%s", any_host ? d.link_why : "set up a host");
+        if (running) {
+            snprintf(lines[job_tile], sizeof lines[job_tile], "%s %d%%", j.verb[0] ? j.verb : "Sharing", (i32)(j.progress * 100 + 0.5f));
+            inks[job_tile] = COL_TEXT;
+            bars[job_tile] = j.progress;
         }
-        sizes[3] = "Link";
-        f32 mb_w = kit_px(84);
-        kit_segmented("##size", sizes, 4, &ed.share_size, (iw - mb_w - st.ItemSpacing.x - kit_px(6)) / 4);
-        ImGui::SameLine();
-        if (ed.custom_mb <= 0) ed.custom_mb = 25;
-        if (ed.share_size == SHARE_CUSTOM) {
-            ImGui::SetNextItemWidth(mb_w);
-            ImGui::InputFloat("##mb", &ed.custom_mb, 0, 0, "%.0f MB");
-        } else {
-            kit_next_tip("Your own size");
-            if (kit_button("Custom##mb", KIT_SECONDARY, ImVec2(mb_w, 0))) ed.share_size = SHARE_CUSTOM;
-        }
-        if (ed.custom_mb < 1) ed.custom_mb = 1;
-        if (ed.custom_mb > 4000) ed.custom_mb = 4000;
+        f32 th = kit_px(62), tg = kit_px(6);
+        bool link_pick = d.kind == SHARE_LINK;
+        if (lib_share_tile("##edfile", ICON_VIDEO, "File", lines[0], inks[0], !link_pick, !d.file_ok, bars[0], iw, th) && !running)
+            ed_share(d.file_squeezed ? SHARE_SQUEEZED : SHARE_AS_IS);
+        kit_tip(d.file_ok ? "A copy with the edit and one sound track, ready to paste" : "Over the max size even squeezed: share a link");
+        ImGui::Dummy(ImVec2(1, tg - st.ItemSpacing.y));
+        if (lib_share_tile("##edoriginal", ICON_FOLDER, "Original", lines[1], inks[1], false, false, bars[1], iw, th))
+            show_in_folder(ed.path.s);
+        kit_tip("The file as it was saved, without the edit, in its folder");
+        ImGui::Dummy(ImVec2(1, tg - st.ItemSpacing.y));
+        if (lib_share_tile("##edlink", ICON_LINK, "Link", lines[2], inks[2], link_pick, any_host && !d.link_ok, bars[2], iw, th) &&
+            !running)
+            ed_share_ask(SHARE_LINK);
+        kit_tip(!any_host ? "Turn on a free host or set up Cloudflare in Options" : d.link_ok ? "Upload it and copy the link" : d.link_why);
     }
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 
-    // Progress, or the last result with its file's actions: always one row, in its place.
-    SaveJobView *v = save_view(sharing ? ed.share_job : keeping ? ed.keep_job : 0);
-    R2Job lj = linking && !v ? r2_job(ed.link_job) : R2Job{};
+    // Keep's progress, or the last result with its file's actions: always one row, in its place.
+    SaveJobView *v = save_view(keeping ? ed.keep_job : 0);
     ImVec2 a = ImGui::GetCursorScreenPos();
     f32 line_h = ImGui::GetTextLineHeight(), bar_h = kit_px(4);
     f32 ty = floorf(a.y + (fh - line_h) / 2);
-    if (v || lj.id) {
+    if (v) {
         char label[64], pc[16];
-        f32 frac = v ? v->progress : lj.progress;
-        if (v)
-            snprintf(label, sizeof label, "%s%s", sharing ? "Sharing" : "Keeping", v->state == SAVE_QUEUED ? ", waiting" : "");
-        else
-            str_set(label, lj.state == R2_UPLOADING ? "Uploading" : lj.state == R2_QUEUED ? "Link, waiting" : "Making the link's copy");
+        f32 frac = v->progress;
+        snprintf(label, sizeof label, "Keeping%s", v->state == SAVE_QUEUED ? ", waiting" : "");
         snprintf(pc, sizeof pc, "%.0f%%", frac * 100);
         dl->AddText(ImVec2(a.x, a.y), col32(COL_DIM), label);
         dl->AddText(ImVec2(a.x + w - ImGui::CalcTextSize(pc).x, a.y), col32(COL_DIM), pc);
@@ -2751,7 +2732,7 @@ static void screen_editor()
     Player &p = ed.player;
     ImGuiIO &io = ImGui::GetIO();
     ed_check_pending();
-    ed_link_poll();
+    ed_share_poll();
     if (!ed.open && ed.pending[0]) {
         kit_dim("Opening the saved file...");
         ui_wake(10); // look again soon: the scan posts its results, but probing can lag them

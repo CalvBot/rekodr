@@ -7,7 +7,9 @@
 // Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
 // Both go after 5 s, counted down by a ring round their Dismiss X. While the mouse is on one the count holds at
 // full, and starts again from full when the mouse leaves.
-// Clip saved: Edit and Share open the file in the editor on that tab.
+// Clip saved: Edit opens the file in the editor. Share does what share_decide picks and stays up while it runs, its
+// line showing the step and percent over a thin bar, then what went on the clipboard; then it counts down again. A
+// first link to a free host isn't agreed to here: the library opens on the clip with its Share menu instead.
 // Session ended: the game's icon, its name and length. Save saves it; Review opens it on the timeline, or the
 // Library's unsaved sessions when several are waiting. Closed or ignored, the sessions it asked about are unsaved.
 // The marker window takes the keyboard, and gives it back to the window that had it. Enter or Save keeps what was
@@ -38,6 +40,9 @@ struct Toast {
     i32       hot;                // the part under the mouse
     bool      open, tracking, held; // held: the mouse is on it, so the countdown waits
     bool      brief;              // Clip saved over a game: no button row (Config.toast_small_in_game)
+    u8        sharing;            // Clip saved's Share: TSH_* below
+    u32       share;              // its share_start job
+    i32       share_pct;          // the percent last drawn
     u64       start_ms;           // the countdown's start (GetTickCount64)
     HBITMAP   base;               // the toast drawn without its dial, base_w x base_h; redrawn when dirty
     i32       base_w, base_h;
@@ -47,6 +52,7 @@ struct Toast {
     HBRUSH    field;
 };
 static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
+enum { TSH_NONE, TSH_PROBING, TSH_RUNNING, TSH_DONE };
 static const UINT_PTR TOAST_TICK = 1;
 static const UINT     TOAST_LIFE_MS = 5000, TOAST_SMALL_LIFE_MS = 3000, TOAST_TICK_MS = 33; // the dial moves at 30 fps
 static const f32      TOAST_DIAL = 24, TOAST_DIAL_RING = 2;
@@ -224,7 +230,7 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
         }
     }
     // The buttons, as the window's own: the main one in the accent, the other secondary
-    if (!t.brief) brush(t.hot == TP_MAIN ? COL_ACCENT_HOVER : COL_ACCENT);
+    if (!t.brief) brush(t.hot == TP_MAIN && !t.sharing ? COL_ACCENT_HOVER : COL_ACCENT);
     if (!t.brief) rounded(TP_MAIN, TOAST_BUTTON_ROUND);
     if (quiet && !t.brief) {
         brush(t.hot == TP_SECOND ? COL_HOVER : COL_PANEL2);
@@ -259,6 +265,15 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     SetTextColor(dc, toast_rgb(COL_DIM));
     RECT t2 = {tx, mid + toast_px(t, 3), right, tile.bottom + toast_px(t, 4)};
     DrawTextW(dc, t.line, -1, &t2, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (t.sharing == TSH_PROBING || t.sharing == TSH_RUNNING) { // Share's progress, a thin bar under the line
+        i32 y = tile.bottom + toast_px(t, 6), bh = toast_px(t, 3) > 2 ? toast_px(t, 3) : 2;
+        RECT track = {tx, y, right, y + bh}, done = {tx, y, tx + (right - tx) * t.share_pct / 100, y + bh};
+        HBRUSH b1 = CreateSolidBrush(toast_rgb(COL_HOVER)), b2 = CreateSolidBrush(toast_rgb(COL_ACCENT));
+        FillRect(dc, &track, b1);
+        FillRect(dc, &done, b2);
+        DeleteObject(b1);
+        DeleteObject(b2);
+    }
 
     RECT dismiss = toast_rect(t, TP_DISMISS);
     if (!quiet) toast_draw_x(t, dc, dismiss); // a quiet toast's X goes in with its dial
@@ -273,7 +288,8 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     RECT main = toast_rect(t, TP_MAIN);
     SelectObject(dc, t.strong);
     SetTextColor(dc, RGB(255, 255, 255));
-    DrawTextW(dc, saved ? L"Share" : L"Save", -1, &main, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    const wchar_t *main_label = !saved ? L"Save" : t.sharing == TSH_DONE ? L"Copied" : t.sharing ? L"Sharing" : L"Share";
+    DrawTextW(dc, main_label, -1, &main, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if (quiet) {
         RECT second = toast_rect(t, TP_SECOND);
         SelectObject(dc, t.font);
@@ -384,6 +400,132 @@ static LRESULT CALLBACK toast_edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     return CallWindowProcW(t.edit_proc, hwnd, msg, wp, lp);
 }
 
+// Clip saved's Share. The library's card is used when it has the file already; else ffprobe reads it on a thread
+// (g_toast_probe) while the toast says so.
+static struct {
+    Path          ffprobe, file;
+    MediaInfo     m;
+    char          game[64];
+    volatile LONG state; // 0 idle, 1 running, 2 read, 3 failed
+} g_toast_probe;
+
+static DWORD WINAPI toast_probe_thread(void *)
+{
+    bool ok = lib_probe(g_toast_probe.ffprobe, g_toast_probe.file, &g_toast_probe.m, g_toast_probe.game,
+                        sizeof g_toast_probe.game);
+    InterlockedExchange(&g_toast_probe.state, ok ? 2 : 3);
+    return 0;
+}
+
+static void toast_line(Toast &t, const char *text)
+{
+    utf8_to_wide(text, t.line, COUNT(t.line));
+    toast_redraw(t);
+}
+
+// The end of a Share: its line says what happened, and the countdown starts again
+static void toast_share_end(Toast &t, bool ok, const char *text)
+{
+    t.sharing = (u8)(ok ? TSH_DONE : TSH_NONE);
+    toast_line(t, text);
+    toast_countdown(t);
+}
+
+// Starts the Share once the clip is known: what share_decide picks for the whole file
+static void toast_share_start(Toast &t, const MediaInfo &m, const char *game, u64 lib_key)
+{
+    ShareDecision d = share_decide(m, 0);
+    if (d.kind == SHARE_LINK && !d.link_ok) {
+        toast_share_end(t, false, d.link_why);
+        return;
+    }
+    if (d.kind == SHARE_LINK && !r2_ready() && !g_app.config.free_links_seen) { // asked in the library first
+        log_line("toast: share %s needs the free links notice", t.path);
+        toast_hide(t);
+        t.sharing = TSH_NONE;
+        library_share_file(t.path);
+        return;
+    }
+    wchar_t w[MAX_PATH];
+    utf8_to_wide(t.path, w, MAX_PATH);
+    char name[200];
+    const char *slash = strrchr(t.path, '\\');
+    str_set(name, slash ? slash + 1 : t.path);
+    if (char *dot = strrchr(name, '.')) *dot = 0;
+    t.share = share_start(d.kind, w, m, 0, name, game, lib_key);
+    if (!t.share) {
+        toast_share_end(t, false, "Share is busy: try again in a moment");
+        return;
+    }
+    t.sharing = TSH_RUNNING;
+    t.share_pct = 0;
+    log_line("toast: share %s, job %u", t.path, t.share);
+}
+
+static void toast_share(Toast &t)
+{
+    t.held = true; // the dial stays full while it runs
+    t.share_pct = 0;
+    t.sharing = TSH_PROBING;
+    Library &lib = g_app.library;
+    wchar_t want[MAX_PATH];
+    utf8_to_wide(t.path, want, MAX_PATH);
+    for (i32 i = 0; i < lib.item_count; i++) {
+        const LibItem &it = lib.items[i];
+        if (!it.probed || _wcsicmp(lib_item_path(it).s, want)) continue;
+        toast_line(t, "Getting it ready");
+        toast_share_start(t, it.info, it.info.game, it.key);
+        return;
+    }
+    Path ffmpeg;
+    if (g_toast_probe.state == 1 || !ffmpeg_find(g_app.config.ffmpeg, &ffmpeg)) {
+        toast_share_end(t, false, g_toast_probe.state == 1 ? "Busy: try again in a moment" : "Share needs ffmpeg");
+        return;
+    }
+    g_toast_probe.ffprobe = ffprobe_for(ffmpeg);
+    wcsncpy(g_toast_probe.file.s, want, MAX_PATH - 1);
+    g_toast_probe.state = 1;
+    HANDLE th = CreateThread(0, 0, toast_probe_thread, 0, 0, 0);
+    if (!th) {
+        g_toast_probe.state = 0;
+        toast_share_end(t, false, "Couldn't read the clip");
+        return;
+    }
+    CloseHandle(th);
+    toast_line(t, "Getting it ready");
+}
+
+// Each tick while Share runs: the probe's answer, then the job's step and percent, then its end
+static void toast_share_poll(Toast &t)
+{
+    if (t.sharing == TSH_PROBING) {
+        LONG st = g_toast_probe.state;
+        if (st == 3) {
+            g_toast_probe.state = 0;
+            toast_share_end(t, false, "Couldn't read the clip");
+        } else if (st == 2) {
+            g_toast_probe.state = 0;
+            toast_share_start(t, g_toast_probe.m, g_toast_probe.game, 0);
+        }
+        return;
+    }
+    ShareJobView j = share_job(t.share);
+    if (!j.id) toast_share_end(t, false, "Couldn't share it");
+    else if (j.state == SHARE_FAILED) toast_share_end(t, false, j.error);
+    else if (j.state == SHARE_DONE) {
+        toast_share_end(t, true, j.error[0] ? j.error : j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
+        if (j.kind != SHARE_LINK) editor_refresh_shares();
+        ui_wake();
+    } else {
+        i32 pct = (i32)(j.progress * 100 + 0.5f);
+        if (pct == t.share_pct && t.line[0] != L'G') return;
+        t.share_pct = pct;
+        char line[64];
+        snprintf(line, sizeof line, "%s %d%%", j.verb[0] ? j.verb : "Sharing", pct);
+        toast_line(t, line);
+    }
+}
+
 static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     Toast *tp = (Toast *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -424,11 +566,14 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONUP: {
         i32 k = toast_hit(t, lp);
         if (saved) {
-            toast_hide(t);
-            if (k == TP_MAIN) { // Share: the clip in the library, with the Share menu
+            if (k == TP_MAIN && t.sharing == TSH_NONE) { // Share, in place
                 log_line("toast: share %s", t.path);
-                library_share_file(t.path);
-            } else if (k == TP_SECOND) {
+                toast_share(t);
+                return 0;
+            }
+            if (k == TP_MAIN && t.sharing != TSH_DONE) return 0; // under way
+            toast_hide(t);
+            if (k == TP_SECOND) {
                 log_line("toast: edit %s", t.path);
                 ui_show(SCREEN_EDITOR);
                 editor_open_file(t.path);
@@ -449,6 +594,10 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_TIMER: { // the countdown's tick: held at full while the mouse is on it, from full again once it leaves
+        if (t.sharing == TSH_PROBING || t.sharing == TSH_RUNNING) { // held until Share ends
+            toast_share_poll(t);
+            return 0;
+        }
         POINT p;
         RECT r, d = toast_rect(t, TR_DIAL);
         GetCursorPos(&p);
@@ -582,6 +731,7 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     if (!toast_monitor(TOAST_SAVED, &work) || !toast_window(t)) return;
     str_set(t.path, path);
     t.brief = brief;
+    t.sharing = TSH_NONE; // one still running carries on, unseen
     utf8_to_wide(kind == SAVE_SESSION ? "Session saved" : "Clip saved", t.title, COUNT(t.title));
     const char *name = strrchr(path, '\\');
     utf8_to_wide(name ? name + 1 : path, t.line, COUNT(t.line));

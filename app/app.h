@@ -145,7 +145,8 @@ struct Config {
     bool free_links_seen;    // the player was told free links are public
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
-    f32 share_sizes_mb[3]; // Share's three sizes, in MiB as Discord counts (20, 50, 1024)
+    f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)
+    f32 share_squeeze;   // a clip needing up to this many times share_max_mb is squeezed to it; 1 = never (1.5)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
 
@@ -435,8 +436,78 @@ struct EditJob {
     char       stem[256]; // the output's name without ".mp4" (made unique if taken)
     MediaInfo  info;
     EditRecord edit;
-    f32        share_mb;  // Share: the size to aim for
+    i64        aim_bytes, limit_bytes; // Share and Link: the size made for and the most it may be (0 = no most); a
+                                       // Link with no aim is made at about the source's quality
 };
+
+// share.cpp: Share. What a clip (its edit, when it has one) needs to look right is its recommended size. Under
+// share_max_mb Share makes a file at that size; up to share_squeeze times over it, a file squeezed to the max;
+// further over, a link. The link's copy follows the same rule against its host. Length, picture size and frame
+// rate never change, only the bitrate; files and links are H.264.
+enum LinkHost : u8 { HOST_R2, HOST_CATBOX, HOST_LITTERBOX, HOST_CUSTOM, HOST_COUNT };
+enum ShareKind : u8 { SHARE_AS_IS, SHARE_SQUEEZED, SHARE_LINK };
+
+struct ShareDecision {
+    ShareKind kind;            // what Share does with one click
+    i64       reco_bytes;      // the recommended size
+    i64       max_bytes;       // share_max_mb in bytes
+    // File: the file Share makes
+    bool      file_ok;         // false: too far over the max even squeezed
+    bool      file_squeezed;   // squeezed to the max, else at the recommended size
+    i64       file_bytes;      // about what it comes out at
+    // Link: where the link goes and the copy made for it
+    bool      link_ok;         // false: no host takes it (link_why)
+    LinkHost  host;
+    bool      link_squeezed;   // the copy is squeezed to the host's most
+    i64       link_bytes;      // about what the copy comes out at
+    char      host_label[48];  // "your bucket", "Catbox", "Litterbox, 72 h", an uploader's name
+    char      why[96];         // the menu's line for the one-click choice: "18 MB, as is", "28 MB squeezed to 20 MB"
+    char      link_why[96];    // why there's no link: "Needs your own Cloudflare: too big for the free hosts"
+};
+
+// What Share would do with `m` played as `edit` (0: the whole file). Cheap: a menu can ask each frame.
+static ShareDecision share_decide(const MediaInfo &m, const EditRecord *edit);
+
+// A Share under way or done. File: made (or found already made) and put on the clipboard as a file. Link: made,
+// uploaded and its address put on the clipboard. The library, the editor and the toast all follow the same id.
+enum ShareState : u8 { SHARE_MAKING, SHARE_UPLOADING, SHARE_DONE, SHARE_FAILED };
+struct ShareJobView {
+    u32        id;             // 0: no such job
+    ShareKind  kind;
+    ShareState state;
+    f32        progress;       // 0..1 in the current state
+    char       verb[24];       // "Making", "Squeezing", "Uploading"; "" once done
+    bool       reused;         // an earlier one was given again, nothing made
+    char       path[MAX_PATH * 3]; // the file (UTF-8), for a link the copy uploaded
+    char       url[512];       // a link's address
+    char       error[256];
+};
+
+// Starts Share for the file at `path`. `edit` 0 shares the whole file; the editor passes its own record. `name` is
+// what the file or link is called, `lib_key` the library card (0 = none). Returns the job, 0 when it couldn't
+// start (share_job(0).error doesn't exist: the caller says "busy, try again").
+static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
+                       const char *name, const char *game, u64 lib_key);
+static ShareJobView share_job(u32 id);
+static void share_cancel(u32 id);
+
+// Per library clip. Every share file and link copy is made for the clip as edited, with one sound track; a new
+// edit or new settings make the next Share a new one. A made file is given again for share_keep_days.
+struct ClipShareState {
+    bool     file;        // a share file for the clip's edit and the settings as they are, still on disk
+    bool     link;        // a link not removed or expired (any host)
+    u8       link_paused; // 0 plays, else as R2Share.paused
+    LinkHost host;        // the link's host
+};
+// Cheap enough for every card each frame.
+static ClipShareState share_clip_state(u64 lib_key, const wchar_t *path, const MediaInfo &m, const EditRecord *edit);
+struct R2Share;
+// The clip's newest link not removed or expired, for its menu row (r2_pause, r2_resume, r2_delete take its key).
+static bool share_clip_link(u64 lib_key, R2Share *out);
+// Deleting a clip: how many of its share files and links go with it, and in `cant` the links that stay up ("1
+// Catbox link can't be removed and stays up"; "" for none). share_clip_delete deletes them; the clip is the caller's.
+static i32 share_clip_delete_preview(u64 lib_key, char *cant, i32 cap);
+static void share_clip_delete(u64 lib_key);
 
 struct SaveJobView {
     u32       id; // 0 = free slot
@@ -647,10 +718,8 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     bool       heard_set;       // heard holds something (cleared when engines change)
     char       pending[MAX_PATH * 3]; // a file to open once the library's scan has it (Timeline's "Save and edit")
     u64        pending_since;   // GetTickCount64 when it was asked for
-    i32        share_size;      // 0..2 = Config.share_sizes_mb, SHARE_LINK = a link, SHARE_CUSTOM = custom_mb
-    f32        custom_mb;
-    u32        keep_job, share_job;
-    u32        link_job;        // the last link's r2 job
+    u32        keep_job;        // the last Keep's save job
+    u32        share_job;       // the last Share's job (share_start)
     char       result[300];     // what the last Keep, Share or link did
     char       result_path[MAX_PATH * 2]; // the file it made, for Copy, Play and Show; empty when it made none
     char       result_url[512]; // the link it made, for Copy and Open; empty when it made none

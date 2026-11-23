@@ -341,6 +341,31 @@ static bool opt_row_i32(const char *name, const char *sub, const char *id, i32 *
     return changed;
 }
 
+// The control column of a slider row: more than half the row, so a slider is never short.
+static f32 opt_wide_w() { return floorf(fmaxf(dp(320), (g_card.w - 2 * dp(OPT_PAD)) * 0.56f)); }
+
+// A slider row: the name and line on the left; on the right the value in words over a slider as wide as the
+// control column. Returns true while it changes; opt_row_slider_end draws the value (after the change, so it's this
+// frame's) and closes the row. *done is set when the knob is let go, the moment to save.
+static bool opt_row_slider(const char *name, const char *sub, const char *id, f32 *v, f32 lo, f32 hi, bool *done)
+{
+    f32 cw = opt_wide_w();
+    opt_row_begin(name, sub, cw, dp(68));
+    f32 x = g_row.x1 - cw, y = g_row.y + dp(12) + g_font->FontSize + dp(6);
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    bool changed = lib_slider(id, v, lo, hi, cw, dp(24));
+    *done = ImGui::IsItemDeactivated();
+    return changed;
+}
+
+static void opt_row_slider_end(const char *value)
+{
+    f32 cw = opt_wide_w();
+    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(g_row.x1 - cw + kit_px(7), g_row.y + dp(12)), COL_TEXT, value,
+                g_row.x1);
+    opt_row_end();
+}
+
 static bool opt_row_toggle(const char *name, const char *sub, const char *id, bool *v)
 {
     opt_row_begin(name, sub, dp(36));
@@ -2430,7 +2455,7 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
 // own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
 // The budget picks the most a month may cost; the bucket holds 80% of what that buys (r2_limit_for_budget), and past
 // that the oldest unpinned links are removed.
-static const i32 R2_STEPS_GB[] = {10, 25, 50, 100, 250, 500, 1000};
+static const i32 R2_STEPS_GB[] = {10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000, 7500, 10000};
 
 // The hosts as chips from the row's left, the free ones then the uploaders, each one on numbered by when it's
 // tried; a click turns one off, or on as the last tried. Chips that don't fit the row aren't drawn.
@@ -2477,21 +2502,63 @@ static void options_sharing()
     f32 fw = dp(360), bw = dp(150);
     opt_section("SHARING");
     opt_card_begin();
-    // Share's three sizes, the editor's chips
+    // The largest file Share sends: five sizes and Custom as chips across the control column. Picking Custom turns
+    // that chip into its number box, the same size, so nothing moves.
     {
-        f32 fw3 = dp(OPT_FIELD_W), g3 = dp(8);
-        opt_row_begin("Share sizes", "The three sizes Share offers, in MB (1024 MB is 1 GB)",
-                      3 * fw3 + 2 * g3 + dp(8 + OPT_UNIT_W));
-        static const char *const ids[] = {"##size0", "##size1", "##size2"};
-        for (i32 i = 0; i < 3; i++) {
-            if (i) ImGui::SameLine(0, g3);
-            if (opt_f32(ids[i], &c.share_sizes_mb[i], 1, 4000, fw3)) {
-                log_line("options: share sizes %g, %g, %g MB", c.share_sizes_mb[0], c.share_sizes_mb[1], c.share_sizes_mb[2]);
+        static const f32 sizes[] = {20, 50, 100, 500, 2048};
+        static bool custom;
+        i32 n = (i32)COUNT(sizes), at = -1;
+        for (i32 i = 0; i < n; i++)
+            if (fabsf(c.share_max_mb - sizes[i]) < 0.5f) at = i;
+        if (at < 0) custom = true;
+        f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - n * gap) / (n + 1));
+        opt_row_begin("Max file size", "The largest file Share sends. Bigger clips are squeezed to fit or go as a link", cw);
+        f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+        for (i32 i = 0; i <= n; i++) {
+            ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
+            if (i == n && custom) {
+                ImGui::SetNextItemWidth(chip_w);
+                if (ImGui::InputFloat("##sharemax", &c.share_max_mb, 0, 0, "%.0f MB")) {
+                    c.share_max_mb = c.share_max_mb < 1 ? 1 : c.share_max_mb > 100000 ? 100000 : c.share_max_mb;
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    log_line("options: share max %g MB", c.share_max_mb);
+                    options_apply(0);
+                }
+                continue;
+            }
+            char label[32];
+            if (i < n) {
+                share_size_label(sizes[i], label, sizeof label);
+                snprintf(label + strlen(label), sizeof label - strlen(label), "##max%d", i);
+            } else snprintf(label, sizeof label, "Custom##maxc");
+            if (kit_chip(label, i < n && !custom && at == i, 0, chip_w)) {
+                custom = i == n;
+                if (i < n) c.share_max_mb = sizes[i];
+                log_line("options: share max %s", custom ? "custom" : label);
                 options_apply(0);
             }
         }
-        opt_unit("MB");
         opt_row_end();
+    }
+
+    // Squeeze: how far over the max a clip may be and still go as a file, made smaller to fit
+    {
+        f32 v = c.share_squeeze;
+        bool done;
+        if (opt_row_slider("Squeeze", "Clips a little over the max are made smaller to fit. Further over, Share makes a link",
+                           "##squeeze", &v, 1, 3, &done))
+            c.share_squeeze = floorf(v * 20 + 0.5f) / 20; // steps of 0.05
+        if (done) {
+            log_line("options: share squeeze %.2fx", c.share_squeeze);
+            options_apply(0);
+        }
+        char max_s[24], top_s[24], t[128];
+        share_size_label(c.share_max_mb, max_s, sizeof max_s);
+        share_size_label(floorf(c.share_max_mb * c.share_squeeze), top_s, sizeof top_s);
+        if (c.share_squeeze < 1.025f) snprintf(t, sizeof t, "Off: a clip over %s goes as a link", max_s);
+        else snprintf(t, sizeof t, "%gx: a %s clip still goes as a %s file", c.share_squeeze, top_s, max_s);
+        opt_row_slider_end(t);
     }
     static char added[200]; // what Add uploader did, in place of the row's line
     {
@@ -2601,8 +2668,6 @@ static void options_sharing()
     // The budget: steps of what the bucket may hold, the first being Cloudflare's free 10 GB; the label says what
     // clipback keeps for it (r2_budget_label)
     {
-        f32 sw = dp(170), lw = dp(260);
-        opt_row_begin("Monthly budget", "Past it the oldest links that aren't pinned are removed", sw + dp(12) + lw);
         i32 n = (i32)COUNT(R2_STEPS_GB), cur = 0;
         f64 best = 1e30;
         for (i32 i = 0; i < n; i++) {
@@ -2613,21 +2678,20 @@ static void options_sharing()
             }
         }
         f32 v = (f32)cur;
-        ImVec2 at = ImGui::GetCursorScreenPos();
-        if (lib_slider("##r2budget", &v, 0, (f32)(n - 1), sw, ImGui::GetFrameHeight())) {
+        bool done;
+        if (opt_row_slider("Monthly budget", "Past it the oldest links that aren't pinned are removed", "##r2budget", &v, 0,
+                           (f32)(n - 1), &done)) {
             i32 i = (i32)(v + 0.5f);
             c.r2_budget = i == 0 ? 0 : (f32)r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB);
             cur = i;
         }
-        if (ImGui::IsItemDeactivated()) {
+        if (done) {
             log_line("options: R2 budget $%.2f a month", c.r2_budget);
             options_apply(0);
         }
         char t[64];
         r2_budget_label(R2_STEPS_GB[cur], t, sizeof t);
-        opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(at.x + sw + dp(12), opt_row_text_y(g_font)), COL_TEXT, t,
-                    g_row.x1);
-        opt_row_end();
+        opt_row_slider_end(t);
     }
 
     // The account's reads this month against r2_read_cap (r2.cpp pauses the links near it)

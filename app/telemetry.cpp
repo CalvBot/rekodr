@@ -89,7 +89,7 @@ static void telemetry_on_save(const Event &e)
     else if (v->kind == SAVE_SHARE) tel_count(&StatCounts::shares);
 }
 
-static void telemetry_shared() { tel_count(&StatCounts::shares); } // a file shared as it is, with no copy made
+static void telemetry_shared() { tel_count(&StatCounts::shares); } // a Share done: a file or a link
 
 // A signed POST of json to the service. Returns the status (0 = no answer).
 static u32 tel_post(const char *path, const char *json)

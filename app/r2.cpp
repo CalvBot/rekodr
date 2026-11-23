@@ -49,8 +49,6 @@ struct R2Status {
 
 enum { R2_MAX_SHARES = 1024, R2_KEY_MAX = 48 };
 
-enum LinkHost : u8 { HOST_R2, HOST_CATBOX, HOST_LITTERBOX, HOST_CUSTOM, HOST_COUNT };
-
 // The free public hosts, used when R2 isn't set up.
 struct FreeHost {
     LinkHost       host;
@@ -167,6 +165,8 @@ struct R2Work {
     char       title[256], game[64];
     u64        lib_key;
     char       reuse[R2_KEY_MAX]; // the removed share it brings back
+    char       hosts[64]; // where the link goes by Share's rule: "r2", "catbox", "litterbox" or an uploader's name
+    i64        aim, limit; // the copy's size, as save_link takes them
 };
 
 static struct {
@@ -219,30 +219,27 @@ static f64 r2_cost_for(i64 bytes)
 }
 
 // Options' label for a budget step of `gb` bought: what clipback keeps for it and the most it costs, "Free: 8 GB",
-// "20 GB for at most $0.23 a month".
+// "20 GB for at most $0.23 a month", "8 TB for at most $149.85 a month".
 static void r2_budget_label(i32 gb, char *out, i32 cap)
 {
     f64 cost = r2_cost_for((i64)gb * R2_GB);
     f64 keep = (f64)r2_limit_for_budget(cost) / (f64)R2_GB;
+    const char *unit = "GB";
+    if (keep >= 1000) keep /= 1000, unit = "TB";
     char size[24];
-    if (fabs(keep - floor(keep + 0.5)) < 0.05) snprintf(size, sizeof size, "%.0f GB", keep);
-    else snprintf(size, sizeof size, "%.1f GB", keep);
+    if (fabs(keep - floor(keep + 0.5)) < 0.05) snprintf(size, sizeof size, "%.0f %s", keep, unit);
+    else snprintf(size, sizeof size, "%.1f %s", keep, unit);
     if (cost <= 0) snprintf(out, cap, "Free: %s", size);
     else snprintf(out, cap, "%s for at most $%.2f a month", size, ceil(cost * 100 - 1e-6) / 100);
 }
 
-// Where a link of `bytes` goes (-1: not known yet). Without a bucket, to the free hosts in link_hosts. With one,
-// to Catbox when it's on and takes the size, which saves the bucket's space, else to the bucket; Litterbox and the
-// uploaders aren't used. A bucket that can't take the link now (its keys unreadable, the month's reads near
-// r2_read_cap) never passes it to a free host: the link fails with the reason.
-enum R2Pick : u8 { R2_PICK_R2, R2_PICK_FREE, R2_PICK_CATBOX, R2_PICK_CAPPED, R2_PICK_NO_KEYS, R2_PICK_UNKNOWN };
-static R2Pick r2_pick_host(bool set_up, bool keys, bool capped, bool catbox_on, i64 catbox_max, i64 bytes)
+// Why the bucket can't take a link now: its keys can't be read, or its account is near the month's reads
+// (r2_read_cap). 0 when it can. Such a link fails with the reason; it never goes to a free host instead.
+static const char *r2_refuses(bool keys, bool capped)
 {
-    if (!set_up) return R2_PICK_FREE;
-    if (catbox_on && bytes < 0) return R2_PICK_UNKNOWN;
-    if (catbox_on && bytes <= catbox_max) return R2_PICK_CATBOX;
-    if (!keys) return R2_PICK_NO_KEYS;
-    return capped ? R2_PICK_CAPPED : R2_PICK_R2;
+    if (!keys) return "Your Cloudflare keys can't be read: set up again in Options";
+    if (capped) return "Links wait until the 1st: your Cloudflare account has nearly used the month's free reads";
+    return 0;
 }
 
 // Adds one upload's speed (bytes a second) to a host's average of about its last 10.
@@ -2702,8 +2699,8 @@ static void r2_stop()
 // ---------------------------------------------------------------------------------------------------------------
 // Main thread
 
-// Where a link of `bytes` goes now (-1: not known yet), with the settings as they are (r2_pick_host).
-static R2Pick r2_pick(i64 bytes)
+// r2_refuses with the keys and reads as they are now.
+static const char *r2_bucket_refuses()
 {
     R2Conf c;
     bool keys = r2_conf(&c);
@@ -2711,20 +2708,12 @@ static R2Pick r2_pick(i64 bytes)
     AcquireSRWLockShared(&g_r2.lock);
     bool capped = g_r2.usage_us && r2_capped(g_r2.fetched.account_reads, g_app.config.r2_read_cap);
     ReleaseSRWLockShared(&g_r2.lock);
-    const FreeHost *order[HOST_COUNT];
-    i32 n = free_order(g_app.config.link_hosts, order, HOST_COUNT);
-    bool catbox = false;
-    for (i32 i = 0; i < n; i++) catbox |= order[i]->host == HOST_CATBOX;
-    return r2_pick_host(r2_set_up(), keys, capped, catbox, free_host(HOST_CATBOX)->max_bytes, bytes);
+    return r2_refuses(keys, capped);
 }
 
-// Why a link can't go anywhere: the bucket's keys can't be read, or its account is near the month's reads.
-static const char *r2_pick_why(R2Pick p)
-{
-    if (p == R2_PICK_CAPPED) return "Links wait until the 1st: your Cloudflare account has nearly used the month's free reads";
-    if (p == R2_PICK_NO_KEYS) return "Your Cloudflare keys can't be read: set up again in Options";
-    return 0;
-}
+// Share's host rule for a link with no host given (share.cpp): where it goes and the copy's sizes, else why not.
+static bool share_link_plan(const wchar_t *path, const MediaInfo &m, const EditRecord *edit, char *hosts, i32 cap,
+                            i64 *aim, i64 *limit, char *why, i32 why_cap);
 
 // A slot for a new job: a free one, else the oldest finished. -1 if all are busy.
 static i32 r2_new_job()
@@ -2765,20 +2754,35 @@ static void r2_start_copy(i32 slot)
         char *dot = strrchr(stem, '.');
         if (dot) *dot = 0;
     }
+    char why[160];
+    static const EditRecord none = {};
+    const EditRecord *edit = memcmp(&w.edit, &none, sizeof none) ? &w.edit : 0;
+    if (!w.hosts[0] && !share_link_plan(w.src.s, w.info, edit, w.hosts, sizeof w.hosts, &w.aim, &w.limit, why,
+                                        sizeof why)) {
+        r2_fail_now(slot, why);
+        return;
+    }
+    if (!strcmp(w.hosts, "r2"))
+        if (const char *no = r2_bucket_refuses()) {
+            r2_fail_now(slot, no);
+            return;
+        }
     AcquireSRWLockExclusive(&g_r2.lock);
     g_r2.jobs[slot].state = R2_PREPARING;
     ReleaseSRWLockExclusive(&g_r2.lock);
-    w.save = save_link(w.src, w.info, w.edit, stem);
+    w.save = save_link(w.src, w.info, w.edit, stem, w.aim, w.limit);
     if (!w.save) r2_fail_now(slot, "Too many saves are waiting");
 }
 
 // Shares a file as a link, to R2 when it's set up, else to a free host: `info` and `edit` when the caller has them
 // (an editor render passes its edit; with no info the file is probed first). A library item already shared gives
 // back its link at once while that still plays; one removed to make room is shared again under its old name, one a
-// free host dropped gets a new link. Follow the job with r2_job(id); EV_R2 says when it moves on. Returns the job
-// id, 0 if every job slot is busy.
+// free host dropped gets a new link. `hosts` is where Share decided it goes, with the copy made for `aim` bytes and
+// at most `limit` (save_link); with no hosts Share's rule decides once the file is probed. Follow the job with r2_job(id); EV_R2 says
+// when it moves on. Returns the job id, 0 if every job slot is busy.
 static u32 r2_share_file(const wchar_t *path, const char *title, const char *game, u64 lib_key,
-                         const MediaInfo *info = 0, const EditRecord *edit = 0)
+                         const MediaInfo *info = 0, const EditRecord *edit = 0, const char *hosts = 0, i64 aim = 0,
+                         i64 limit = 0)
 {
     i32 slot = r2_new_job();
     if (slot < 0) return 0;
@@ -2803,7 +2807,11 @@ static u32 r2_share_file(const wchar_t *path, const char *title, const char *gam
             return id;
         }
     }
-    if (const char *why = r2_pick_why(r2_pick(-1))) return r2_fail_now(slot, why);
+    if (hosts && !strcmp(hosts, "r2"))
+        if (const char *why = r2_bucket_refuses()) return r2_fail_now(slot, why);
+    if (hosts) str_set(w.hosts, hosts);
+    w.aim = aim;
+    w.limit = limit;
     wcsncpy(w.src.s, path, MAX_PATH - 1);
     str_set(w.title, title);
     str_set(w.game, game);
@@ -2874,6 +2882,25 @@ static R2Job r2_job(u32 id)
     return out;
 }
 
+// Stops a link while its copy is being made; an upload under way finishes.
+static void r2_cancel(u32 id)
+{
+    for (i32 i = 0; i < COUNT(g_r2.jobs); i++)
+        if (id && g_r2.jobs[i].id == id && g_r2.work[i].save) save_cancel(g_r2.work[i].save);
+}
+
+// Whether a link made here still plays (not removed, paused or expired).
+static bool r2_url_live(const char *url)
+{
+    bool live = false;
+    AcquireSRWLockExclusive(&g_r2.lock);
+    r2_load_locked();
+    for (i32 i = 0; i < g_r2.count; i++)
+        if (!strcmp(g_r2.shares[i].url, url)) live = r2_share_live(g_r2.shares[i], now_us());
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    return live;
+}
+
 static bool r2_holds_save(u32 id)
 {
     for (i32 i = 0; i < COUNT(g_r2.work); i++)
@@ -2881,8 +2908,11 @@ static bool r2_holds_save(u32 id)
     return false;
 }
 
+static void share_poll(); // share.cpp
+
 static void r2_on_save_event(const Event &e)
 {
+    share_poll(); // Share's files are saves too
     u32 id = (u32)(e.b & 0xffffffff);
     i32 slot = -1;
     for (i32 i = 0; i < COUNT(g_r2.work); i++)
@@ -2904,23 +2934,20 @@ static void r2_on_save_event(const Event &e)
     R2Task t = {};
     t.slot = slot;
     utf8_to_wide(v->path, t.file.s, MAX_PATH);
-    WIN32_FILE_ATTRIBUTE_DATA fa = {};
-    i64 bytes = GetFileAttributesExW(t.file.s, GetFileExInfoStandard, &fa)
-                    ? ((i64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow : -1;
-    R2Pick pick = r2_pick(bytes);
-    if (const char *why = r2_pick_why(pick)) {
+    bool to_r2 = !strcmp(w.hosts, "r2");
+    if (const char *why = to_r2 ? r2_bucket_refuses() : 0) {
         DeleteFileW(t.file.s);
         r2_fail_now(slot, why);
         return;
     }
     r2_conf(&t.conf);
-    t.kind = pick == R2_PICK_R2 ? R2_T_UPLOAD : R2_T_FREE;
+    t.kind = to_r2 ? R2_T_UPLOAD : R2_T_FREE;
     str_set(t.replace, w.reuse);
     AcquireSRWLockShared(&g_r2.lock);
     i32 old = w.reuse[0] ? r2_find_locked(w.reuse) : -1;
     if (t.kind == R2_T_UPLOAD && old >= 0 && g_r2.shares[old].host == HOST_R2) str_set(t.key, w.reuse);
     ReleaseSRWLockShared(&g_r2.lock);
-    str_set(t.hosts, pick == R2_PICK_CATBOX ? "catbox" : g_app.config.link_hosts);
+    str_set(t.hosts, w.hosts);
     t.hours = g_app.config.litterbox_hours;
     if (!r2_queue(t)) {
         DeleteFileW(t.file.s);
@@ -2930,6 +2957,7 @@ static void r2_on_save_event(const Event &e)
 
 static void r2_on_event(const Event &e)
 {
+    share_poll();
     if (e.a == R2_EV_SETUP) {
         // What the setup found goes to the settings
         AcquireSRWLockExclusive(&g_r2.lock);

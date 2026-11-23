@@ -2061,62 +2061,60 @@ static i32 adv_graph(SaveWork *w, const EditJob &j, f64 from, const char *post, 
     return ns;
 }
 
-// How Share fits a size (ported from Compress for Discord's Planner). The size is in MiB, which is what Discord
-// means by MB, less a 3% margin and ~2% for the mp4 container. Audio gets a tier by the bitrate there is; the video
-// gets the rest, never more than the source has (that only makes a bigger file). The picture steps down with the
-// bitrate (1080p, 720p, 480p, and 30 fps under 3 Mbps), and further when there are too few bits for its pixels:
-// below 0.009 bits per pixel the encoder is at its coarsest and ignores a lower bitrate, so the file comes out over.
-enum { SHARE_MIN_VIDEO_KBPS = 80, SHARE_MIN_SIDE = 144, SHARE_ATTEMPTS = 4 };
-static const f64 SHARE_MIB = 1024.0 * 1024.0, SHARE_MIN_BPP = 0.009, SHARE_MARGIN = 0.03;
+// Share's sizes. A file is aimed 3% under the size it must fit, as the encoder lands a little either side of the
+// bitrate asked for, with ~2% more for the mp4 container. Sizes the player sets are in MiB, which is what Discord
+// means by MB.
+enum { SHARE_MIN_VIDEO_KBPS = 80, SHARE_ATTEMPTS = 4, SHARE_AUDIO_KBPS = 128 };
+static const f64 SHARE_MIB = 1024.0 * 1024.0, SHARE_MARGIN = 0.03;
 
-struct SharePlan {
-    i64  limit_bytes, target_bytes; // what was asked, and what's aimed for
-    i32  video_kbps, audio_kbps;
-    i32  side;           // the picture's short side
-    f64  fps;            // its frame rate
-    bool shrunk;         // smaller than the bitrate tier, for want of bits
-    bool capped;         // held to the source's own bitrate
-    bool fits;           // false: too long for the size even at the lowest quality
-    f64  max_duration;   // the longest that fits at that lowest quality
-    f64  estimate_bytes; // what it should come out at
-};
-
-// `src_kbps` is the source file's whole bitrate (0 = unknown); `w`, `h` and `fps` are its picture.
-static SharePlan share_plan(f64 duration, f64 mb, bool audio, i32 w, i32 h, f64 fps, f64 src_kbps)
+// The video bitrate a clip needs to look right, in kbit/s: 5, 9, 15 and 30 Mbit/s for 720p, 1080p, 1440p and 2160p
+// at 60 fps, along the pixel count between them and in proportion to it below and above; 0.65 of that at 30 fps,
+// in between along the frame rate, and in proportion to it below 30 and above 60. An unknown picture counts as
+// 1080p60.
+static f64 share_reco_kbps(i32 w, i32 h, f64 fps)
 {
-    SharePlan p = {};
-    p.limit_bytes = (i64)(mb * SHARE_MIB);
-    p.target_bytes = (i64)(p.limit_bytes * (1 - SHARE_MARGIN));
-    f64 budget = p.target_bytes * 8 * 0.98 / 1000; // kbits
-    f64 total = budget / (duration > 0.1 ? duration : 0.1);
-    p.audio_kbps = !audio ? 0 : total >= 1500 ? 160 : total >= 600 ? 128 : total >= 250 ? 96 : 64;
-    f64 video = total - p.audio_kbps;
-    if (video > 200000) video = 200000;
-    p.video_kbps = (i32)video;
-    f64 src_video = src_kbps - p.audio_kbps;
-    p.capped = src_video > 0 && p.video_kbps > src_video;
-    if (p.capped) p.video_kbps = (i32)ceil(src_video);
-
-    i32 short_side = w < h ? w : h, long_side = w < h ? h : w;
-    if (short_side <= 0) short_side = 1080, long_side = 1920;
-    f64 aspect = (f64)long_side / short_side;
-    p.fps = fps > 0 ? fps : 30;
-    p.side = short_side;
-    if (!p.capped) {
-        i32 tier = p.video_kbps < 1200 ? 480 : p.video_kbps < 3500 ? 720 : 1080;
-        if (tier < p.side) p.side = tier;
-        if (p.video_kbps < 3000 && p.fps > 31) p.fps = 30;
-        if (p.video_kbps * 1000.0 / ((f64)p.side * p.side * aspect * p.fps) < SHARE_MIN_BPP) {
-            i32 fit = (i32)sqrt(p.video_kbps * 1000.0 / (SHARE_MIN_BPP * aspect * p.fps)) & ~1;
-            if (fit < SHARE_MIN_SIDE) fit = SHARE_MIN_SIDE;
-            if (fit < p.side) { p.side = fit; p.shrunk = true; }
-        }
+    static const f64 px[] = {1280.0 * 720, 1920.0 * 1080, 2560.0 * 1440, 3840.0 * 2160};
+    static const f64 kbps[] = {5000, 9000, 15000, 30000};
+    f64 p = w > 0 && h > 0 ? (f64)w * h : px[1], r;
+    if (p <= px[0]) r = kbps[0] * p / px[0];
+    else if (p >= px[3]) r = kbps[3] * p / px[3];
+    else {
+        i32 i = 0;
+        while (p > px[i + 1]) i++;
+        r = kbps[i] + (kbps[i + 1] - kbps[i]) * (p - px[i]) / (px[i + 1] - px[i]);
     }
-    p.fits = p.capped || p.video_kbps >= SHARE_MIN_VIDEO_KBPS;
-    p.max_duration = budget / (SHARE_MIN_VIDEO_KBPS + (audio ? 64 : 0));
-    p.estimate_bytes = (p.video_kbps + p.audio_kbps) * 125.0 * duration;
-    if (p.estimate_bytes > p.target_bytes) p.estimate_bytes = (f64)p.target_bytes;
-    return p;
+    if (fps <= 0) fps = 60;
+    f64 k = fps >= 60 ? fps / 60 : fps >= 30 ? 0.65 + 0.35 * (fps - 30) / 30 : 0.65 * fps / 30;
+    return r * k;
+}
+
+// A clip's recommended size: what it needs to look right, `seconds` long, with 128 kbit/s of sound when it has any.
+static i64 share_reco_bytes(f64 seconds, i32 w, i32 h, f64 fps, bool audio)
+{
+    return (i64)((share_reco_kbps(w, h, fps) + (audio ? SHARE_AUDIO_KBPS : 0)) * 125 * (seconds > 0 ? seconds : 0));
+}
+
+// The bitrates for a copy `seconds` long aimed at `aim` bytes and never over `limit` (0 = no limit). The sound gets
+// a tier by the bitrate there is, the video the rest, never more than the source's own (`src_video_kbps`, 0 =
+// unknown), which would only make a bigger file. False when even the lowest video bitrate doesn't fit.
+struct ShareRate {
+    i32 video_kbps, audio_kbps;
+    i64 ceiling; // what a made file must come in under, 0 = anything
+    bool capped; // held to the source's own bitrate
+};
+static bool share_rate(f64 seconds, bool audio, i64 aim, i64 limit, f64 src_video_kbps, ShareRate *out)
+{
+    *out = {};
+    out->ceiling = limit > 0 ? (i64)(limit * (1 - SHARE_MARGIN)) : 0;
+    if (out->ceiling && aim > out->ceiling) aim = out->ceiling;
+    f64 total = aim * 8 * 0.98 / 1000 / (seconds > 0.1 ? seconds : 0.1);
+    out->audio_kbps = !audio ? 0 : total >= 600 ? SHARE_AUDIO_KBPS : total >= 250 ? 96 : 64;
+    f64 video = total - out->audio_kbps;
+    if (video > 200000) video = 200000;
+    out->capped = src_video_kbps > 0 && video > src_video_kbps;
+    if (out->capped) video = ceil(src_video_kbps);
+    out->video_kbps = (i32)video;
+    return out->capped || out->video_kbps >= SHARE_MIN_VIDEO_KBPS;
 }
 
 // Encoder settings for H.264 on `vendor`: a target bitrate for Share, else a constant quality for Keep.
@@ -2253,59 +2251,47 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 
     bool zoom = edit_zoomed(j.edit), colored = edit_colored(j.edit);
     bool touched = edit_audio_touched(j.edit, m);
-    bool reencode = share || zoom || colored || seq || (link && !link_video_ok);
-    SharePlan plan = {};
-    i32 video_kbps = 0, side = 0;
-    bool reduce_fps = false;
-    if (share) {
-        WIN32_FILE_ATTRIBUTE_DATA fa = {};
-        f64 src_kbps = 0;
-        if (GetFileAttributesExW(j.src.s, GetFileExInfoStandard, &fa) && m.duration > 0)
-            src_kbps = (f64)(((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow) * 8 / 1000 / m.duration;
-        plan = share_plan(dur, j.share_mb > 1 ? j.share_mb : 1, m.track_count > 0, m.width, m.height, m.fps, src_kbps);
-        if (!plan.fits) {
-            i32 most = (i32)plan.max_duration;
-            snprintf(out, out_cap, "too long for %g MB: trim it to under %d:%02d", j.share_mb, most / 60, most % 60);
+    // Share and a sized Link are made at a bitrate for aim_bytes, under limit_bytes; the picture and frame rate stay.
+    // A Link copy is stream-copied when the edit leaves the picture alone, it's H.264 already and the copy wouldn't
+    // be much over the aim.
+    i64 aim = j.aim_bytes, limit = j.limit_bytes;
+    WIN32_FILE_ATTRIBUTE_DATA sfa = {};
+    i64 src_bytes = GetFileAttributesExW(j.src.s, GetFileExInfoStandard, &sfa)
+                        ? (i64)(((u64)sfa.nFileSizeHigh << 32) | sfa.nFileSizeLow) : 0;
+    f64 src_kbps = m.duration > 0 ? src_bytes * 8 / 1000.0 / m.duration : 0;
+    bool link_big = link && aim > 0 && m.duration > 0 && src_bytes * (span / m.duration) > aim * 1.1;
+    bool reencode = share || zoom || colored || seq || (link && (!link_video_ok || link_big));
+    bool sized = reencode && (share || link) && aim > 0;
+    ShareRate rate = {};
+    i32 video_kbps = 0;
+    if (sized) {
+        bool audio = m.track_count > 0;
+        if (!share_rate(dur, audio, aim, limit, src_kbps - (audio ? SHARE_AUDIO_KBPS : 0), &rate)) {
+            snprintf(out, out_cap, "too long for %.0f MB: trim it shorter", (limit ? limit : aim) / SHARE_MIB);
             return SAVE_EV_FAILED;
         }
-        video_kbps = plan.video_kbps;
-        side = plan.side;
-        reduce_fps = plan.fps < m.fps - 0.5;
+        video_kbps = rate.video_kbps;
     }
-    bool portrait = m.height > m.width;
     Path work = work_file(w->cfg.work_dir, L"edit-%d", (i32)req.id);
     SHCreateDirectoryExW(0, work.s, 0);
     Path graph = path_join(work, L"graph.txt");
     i32 code = 0;
-    i64 last_kbps = 0, last_size = 0;
-    f64 audio_bytes = plan.audio_kbps * 125.0 * dur;
+    f64 audio_bytes = rate.audio_kbps * 125.0 * dur;
     for (i32 attempt = 0;; attempt++) {
-        // The graph: video (when re-encoded) as [v], audio (when re-mixed, or for a share) as [a]. Built again for each
-        // attempt at a share, since a retry can make the picture smaller.
+        // The graph: video (when re-encoded) as [v], audio (when re-mixed, or for a share) as [a]
         w->graph_len = 0;
         w->graph_full = false;
         w->graph[0] = 0;
         // The audio streams written when the pieces are joined, in order: -1 for the rebuilt mix, else a track
         i32 streams[MEDIA_MAX_TRACKS + 1], ns = 0;
         if (adv) {
-            char post[128] = "";
-            if (share) {
-                if (portrait) snprintf(post, sizeof post, "scale='min(%d,iw)':-2:flags=lanczos,", side);
-                else snprintf(post, sizeof post, "scale=-2:'min(%d,ih)':flags=lanczos,", side);
-                if (reduce_fps) snprintf(post + strlen(post), sizeof post - strlen(post), "fps=%g,", plan.fps);
-            }
-            ns = adv_graph(w, j, from, post, w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p", !share && !link, streams);
+            ns = adv_graph(w, j, from, "", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p", !share && !link, streams);
         } else if (reencode) {
             graph_add(w, "[0:v]");
             if (zoom) zoom_filter(w, j.edit.keys, j.edit.key_count, m.fps, from);
             if (colored) {
                 const VolKey *ck[EDIT_COLORS] = {j.edit.color[0], j.edit.color[1], j.edit.color[2]};
                 color_filter(w, ck, j.edit.color_count, m.fps, from);
-            }
-            if (share) {
-                if (portrait) graph_add(w, "scale='min(%d,iw)':-2:flags=lanczos,", side);
-                else graph_add(w, "scale=-2:'min(%d,ih)':flags=lanczos,", side);
-                if (reduce_fps) graph_add(w, "fps=%g,", plan.fps);
             }
             graph_add(w, "format=%s", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p");
             if (seq) {
@@ -2383,7 +2369,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         }
         if (reencode) {
             arg_pair(a, cap, "-map", "[v]");
-            edit_encoder_args(a, cap, w->cfg.vendor, share ? video_kbps : 0);
+            edit_encoder_args(a, cap, w->cfg.vendor, sized ? video_kbps : 0);
         } else {
             arg_pair(a, cap, "-map", "0:v:0");
             arg_pair(a, cap, "-c:v", "copy");
@@ -2396,7 +2382,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 snprintf(key, sizeof key, "-c:a:%d", s);
                 arg_pair(a, cap, key, "aac");
                 snprintf(key, sizeof key, "-b:a:%d", s);
-                arg_pair(a, cap, key, "%dk", share ? plan.audio_kbps : 192);
+                arg_pair(a, cap, key, "%dk", sized && rate.audio_kbps ? rate.audio_kbps : 192);
                 snprintf(key, sizeof key, "-ar:a:%d", s);
                 arg_pair(a, cap, key, "48000");
                 const char *title = streams[s] < 0 ? "Mix" : m.tracks[streams[s]];
@@ -2410,7 +2396,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             if (mix) {
                 arg_pair(a, cap, "-map", "[a]");
                 arg_pair(a, cap, "-c:a", "aac");
-                arg_pair(a, cap, "-b:a", "%dk", share ? plan.audio_kbps : 192);
+                arg_pair(a, cap, "-b:a", "%dk", sized && rate.audio_kbps ? rate.audio_kbps : 192);
                 arg_pair(a, cap, "-ar", "48000");
             }
         } else if (link) {
@@ -2458,48 +2444,36 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                  zoom ? j.edit.key_count : 0, colored ? "changed" : "as recorded", mix ? "re-mixed" : "as recorded", reencode ? "re-encoded" : "copied", final8);
         if (adv) log_line("%s %u: advanced, %d items", share ? "share" : link ? "link" : "keep", req.id, j.edit.item_count);
         if (link) log_line("link %u: source %s / %s", req.id, vcodec[0] ? vcodec : "-", acodec[0] ? acodec : "-");
-        if (share)
-            log_line("share %u: %g MB asked, attempt %d: video %d kbps at %dp%g%s%s, audio %d kbps", req.id,
-                     j.share_mb, attempt + 1, video_kbps, side, plan.fps, plan.shrunk ? " (shrunk)" : "",
-                     plan.capped ? " (source's rate)" : "", plan.audio_kbps);
+        if (sized)
+            log_line("%s %u: aiming at %.2f MB under %.2f, attempt %d: video %d kbps%s, audio %d kbps",
+                     share ? "share" : "link", req.id, aim / SHARE_MIB, limit / SHARE_MIB, attempt + 1, video_kbps,
+                     rate.capped ? " (source's rate)" : "", rate.audio_kbps);
         code = run_ffmpeg(w, (i64)(dur * 1e6), out, out_cap);
-        if (code != 0 || !share) break;
+        if (code != 0 || !sized || !rate.ceiling) break;
 
-        // Over the size: again at a lower bitrate, by as much as it was over and a little more (ported from Compress for
-        // Discord). When a cut stops helping, or it's far over, the encoder is at its coarsest for this many pixels and
-        // only a smaller picture gets it down; at that floor the size goes with the pixel count.
+        // Over the size: again at a lower bitrate, by as much as it was over and a little more
         WIN32_FILE_ATTRIBUTE_DATA fa = {};
         GetFileAttributesExW(part_path.s, GetFileExInfoStandard, &fa);
         i64 size = (i64)(((u64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow);
-        log_line("share %u: attempt %d made %.2f MB, aiming for %.2f", req.id, attempt + 1, size / SHARE_MIB,
-                 plan.target_bytes / SHARE_MIB);
-        if (size <= plan.target_bytes) break;
+        log_line("%s %u: attempt %d made %.2f MB, under %.2f wanted", share ? "share" : "link", req.id, attempt + 1,
+                 size / SHARE_MIB, rate.ceiling / SHARE_MIB);
+        if (size <= rate.ceiling) break;
         if (attempt == SHARE_ATTEMPTS - 1) {
-            if (size <= plan.limit_bytes) break;
-            snprintf(out, out_cap, "couldn't get it under %g MB: trim it shorter", j.share_mb);
+            if (size <= limit) break;
+            snprintf(out, out_cap, "couldn't get it under %.0f MB: trim it shorter", limit / SHARE_MIB);
             code = -3;
             break;
         }
         f64 video_made = size - audio_bytes > 1 ? size - audio_bytes : 1;
-        f64 room = plan.target_bytes - audio_bytes > 1 ? plan.target_bytes - audio_bytes : 1;
-        bool stuck = last_kbps > 0 &&
-                     last_size - size < (last_size - audio_bytes) * (1 - (f64)video_kbps / last_kbps) * 0.5;
+        f64 room = rate.ceiling - audio_bytes > 1 ? rate.ceiling - audio_bytes : 1;
         i32 next = (i32)floor(video_kbps * (room / video_made) * (w->cfg.vendor == VENDOR_NVENC ? 0.97 : 0.92));
-        if (next < 50) next = 50;
-        if ((size > plan.target_bytes * 1.4 || stuck || next >= video_kbps) && side > SHARE_MIN_SIDE) {
-            i32 smaller = (i32)(side * sqrt(room / video_made) * 0.9) / 2 * 2;
-            side = smaller > SHARE_MIN_SIDE ? smaller : SHARE_MIN_SIDE;
-            last_kbps = 0;
-        } else {
-            if (next >= video_kbps) {
-                snprintf(out, out_cap, "couldn't get it under %g MB: trim it shorter", j.share_mb);
-                code = -3;
-                break;
-            }
-            last_kbps = video_kbps;
-            last_size = size;
-            video_kbps = next;
+        if (next >= video_kbps) next = video_kbps * 9 / 10;
+        if (next < SHARE_MIN_VIDEO_KBPS) {
+            snprintf(out, out_cap, "couldn't get it under %.0f MB: trim it shorter", limit / SHARE_MIB);
+            code = -3;
+            break;
         }
+        video_kbps = next;
     }
     i64 result;
     if (code == 0 && MoveFileExW(part_path.s, final_path.s, 0)) {
@@ -2565,9 +2539,10 @@ static SaveJobView *save_view(u32 id)
 // A finished job whose result something on screen or a session still follows (by id). Its slot isn't reused, or
 // that reader would find the job gone and take it as failed.
 static bool r2_holds_save(u32 id);
+static bool share_holds_save(u32 id); // share.cpp
 static bool save_job_held(u32 id)
 {
-    if (r2_holds_save(id)) return true;
+    if (r2_holds_save(id) || share_holds_save(id)) return true;
     if (id == g_app.editor.keep_job || id == g_app.editor.share_job) return true;
     const Timeline &tl = g_app.timeline;
     if (id == tl.job || id == tl.play.job || id == tl.next.job || id == tl.rest.job) return true;
@@ -2665,13 +2640,17 @@ static u32 save_edit(SaveKind kind, const EditJob &job)
 
 // Queues a copy of `src` for a link, with `edit` applied (an empty record for the file as it is): H.264 with the
 // first (Mix) track only, +faststart, in the link folder as <stem>.mp4. The file is stream-copied when it's already
-// H.264 and AAC and the edit only trims; anything else is encoded at about the source's quality, with no size to
-// fit. Follow it with save_view(id) like any save; the caller deletes the file once it's done with it. Returns the
-// job id, or 0 if it couldn't be queued.
-static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &edit, const char *stem)
+// H.264 and AAC, the edit only trims and the copy isn't much over `aim` bytes; anything else is encoded at the
+// bitrate for `aim`, under `limit` (0 = no limit). With no aim it's encoded at about the source's quality. Follow it
+// with save_view(id) like any save; the caller deletes the file once it's done with it. Returns the job id, or 0 if
+// it couldn't be queued.
+static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &edit, const char *stem, i64 aim = 0,
+                     i64 limit = 0)
 {
     static EditJob j;
     j = {};
+    j.aim_bytes = aim;
+    j.limit_bytes = limit;
     j.src = src;
     j.out_dir = g_app.paths.link_dir;
     j.info = info;

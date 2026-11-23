@@ -567,29 +567,76 @@ static void test_settings_round_trip()
 
 // The editor's volume keys and eases: the curve, the volume at a time, and the edit file round trip.
 // The editor's lanes: keys go in by time, and a selection stays on the same keys through inserts, erases and sorts.
-// Share's plan (ported from Compress for Discord's Planner): bitrate, audio tier, picture size and what fits.
-static void test_share_plan()
+// Share: the recommended rate, the bitrates for a size, and what one click does with a clip.
+static void test_share()
 {
-    // 30 s of 1440p60 into 20 MB: ~5.4 Mbps in all, so the top audio tier, 1080p kept at 60 fps.
-    SharePlan p = share_plan(30, 20, true, 2560, 1440, 60, 0);
-    T(p.fits && p.audio_kbps == 160 && p.side == 1080 && p.fps == 60);
-    T(p.video_kbps > 5000 && p.video_kbps < 5400);
-    T(p.target_bytes < p.limit_bytes && p.estimate_bytes <= p.target_bytes);
-    // Two minutes: under 3 Mbps, so 720p at 30 fps.
-    p = share_plan(120, 20, true, 2560, 1440, 60, 0);
-    T(p.fits && p.side == 720 && p.fps == 30 && p.audio_kbps == 128);
-    // Never more than the source has: a 2 Mbps file stays at its own rate and size.
-    p = share_plan(30, 50, true, 1920, 1080, 30, 2000);
-    T(p.capped && p.video_kbps == 1840 && p.side == 1080);
-    // Too few bits for 480p30: a smaller picture, held to the bits-per-pixel floor.
-    p = share_plan(1000, 20, true, 1920, 1080, 30, 0);
-    T(p.fits && p.shrunk && p.side < 480 && p.side >= 144);
-    // Far too long: doesn't fit, and says how long would.
-    p = share_plan(3600, 20, true, 1920, 1080, 60, 0);
-    T(!p.fits && p.max_duration > 1000 && p.max_duration < 3600);
-    // No audio: all of it to the video. A portrait picture's short side is its width.
-    p = share_plan(30, 20, false, 1080, 1920, 30, 0);
-    T(p.audio_kbps == 0 && p.side == 1080);
+    // Recommended video rates at 60 fps, between them along the pixel count, 0.65 at 30 fps
+    T(share_reco_kbps(1280, 720, 60) == 5000 && share_reco_kbps(1920, 1080, 60) == 9000);
+    T(share_reco_kbps(2560, 1440, 60) == 15000 && share_reco_kbps(3840, 2160, 60) == 30000);
+    T(fabs(share_reco_kbps(1920, 1080, 30) - 5850) < 1 && fabs(share_reco_kbps(3840, 2160, 30) - 19500) < 1);
+    T(fabs(share_reco_kbps(640, 360, 60) - 1250) < 1 && share_reco_kbps(0, 0, 0) == 9000);
+    f64 mid = share_reco_kbps(2240, 1260, 60); // between 1080p and 1440p
+    T(mid > 9000 && mid < 15000);
+    T(share_reco_kbps(1920, 1080, 45) > 5850 && share_reco_kbps(1920, 1080, 45) < 9000);
+    // 20 s of 1080p60 with sound: (9000 + 128) kbit/s
+    T(share_reco_bytes(20, 1920, 1080, 60, true) == 22820000);
+    T(share_reco_bytes(20, 1920, 1080, 60, false) == 22500000);
+
+    // Bitrates for 20 s squeezed to 20 MB: the top sound tier, the video the rest, under the ceiling
+    const i64 mb = (i64)SHARE_MIB;
+    ShareRate r;
+    T(share_rate(20, true, 20 * mb, 20 * mb, 0, &r));
+    T(r.audio_kbps == 128 && r.video_kbps > 7800 && r.video_kbps < 7900 && r.ceiling < 20 * mb && !r.capped);
+    // Never more than the source has
+    T(share_rate(20, true, 50 * mb, 0, 3000, &r) && r.capped && r.video_kbps == 3000 && !r.ceiling);
+    // An hour into 1 MB: too few bits
+    T(!share_rate(3600, true, mb, mb, 0, &r));
+    // Little room: a smaller sound tier
+    T(share_rate(60, true, 3 * mb, 3 * mb, 0, &r) && r.audio_kbps == 96);
+
+    // One click: a file as is under the max, squeezed to it up to 1.5 times over, a link further over
+    ShareHosts free = {false, true, true, 72, ""}, bucket = {true, true, false, 72, ""}, none = {};
+    ShareDecision d = share_decide_for(15 * mb, 20, 1.5, free);
+    T(d.kind == SHARE_AS_IS && d.file_ok && !d.file_squeezed && d.file_bytes == 15 * mb && !strcmp(d.why, "15 MB, as is"));
+    d = share_decide_for(25 * mb, 20, 1.5, free);
+    T(d.kind == SHARE_SQUEEZED && d.file_ok && d.file_squeezed && d.file_bytes < 20 * mb);
+    T(!strcmp(d.why, "25 MB squeezed to 20 MB"));
+    d = share_decide_for(31 * mb, 20, 1.5, free);
+    T(d.kind == SHARE_LINK && !d.file_ok && d.link_ok && d.host == HOST_CATBOX && !d.link_squeezed);
+    T(d.link_bytes == 31 * mb && !strcmp(d.host_label, "Catbox"));
+    d = share_decide_for(21 * mb, 20, 1.0, free); // squeeze off
+    T(d.kind == SHARE_LINK);
+    // No bucket: Catbox as is to 200 MB, squeezed to 300 MB; Litterbox as is to 1 GB, squeezed to 1.5 GB
+    d = share_decide_for(250000000, 20, 1.5, free);
+    T(d.host == HOST_CATBOX && d.link_squeezed && d.link_bytes < 200000000);
+    d = share_decide_for(400000000, 20, 1.5, free);
+    T(d.host == HOST_LITTERBOX && !d.link_squeezed && d.link_bytes == 400000000);
+    T(!strcmp(d.host_label, "Litterbox, 72 h"));
+    d = share_decide_for(1200000000, 20, 1.5, free);
+    T(d.host == HOST_LITTERBOX && d.link_squeezed && d.link_bytes < 1000000000);
+    d = share_decide_for(2000000000, 20, 1.5, free);
+    T(!d.link_ok && starts_with(d.link_why, "Needs your own Cloudflare"));
+    d = share_decide_for(2000000000, 20, 1.5, none);
+    T(!d.link_ok && starts_with(d.link_why, "Turn on a free host"));
+    ShareHosts up = {false, false, false, 0, "MyUploader"};
+    d = share_decide_for(2000000000, 20, 1.5, up);
+    T(d.link_ok && d.host == HOST_CUSTOM && !d.link_squeezed && !strcmp(d.host_label, "MyUploader"));
+    // A bucket: Catbox (when on) for what it takes, else the bucket as is, however big
+    d = share_decide_for(250000000, 20, 1.5, bucket);
+    T(d.host == HOST_CATBOX && d.link_squeezed);
+    d = share_decide_for(400000000, 20, 1.5, bucket);
+    T(d.host == HOST_R2 && !d.link_squeezed && d.link_bytes == 400000000 && !strcmp(d.host_label, "your bucket"));
+    bucket.catbox = false;
+    d = share_decide_for(50 * mb, 20, 1.5, bucket);
+    T(d.host == HOST_R2 && !d.link_squeezed);
+    d = share_decide_for(5000000000, 20, 1.5, bucket);
+    T(d.link_ok && d.host == HOST_R2);
+    // Sizes in the menu: whole MB from 10, one decimal under, GB from 1000
+    char t[24];
+    share_size_text(5 * mb + mb / 2, t, sizeof t);
+    T(!strcmp(t, "5.5 MB"));
+    share_size_text(2000 * mb, t, sizeof t);
+    T(!strcmp(t, "2 GB"));
 }
 
 // The editor's lanes: a track's kind from its title, and waveforms read only where a chunk is measured.
@@ -1053,18 +1100,10 @@ static void test_r2()
         T(!strcmp(t, "40 GB for at most $0.60 a month"));
     }
 
-    // Where a link goes: free hosts without a bucket; with one, Catbox for what it takes, else the bucket, which
-    // never hands a link it can't take to a free host
-    const i64 cb = 200000000;
-    T(r2_pick_host(false, false, true, true, cb, 1) == R2_PICK_FREE);
-    T(r2_pick_host(true, true, false, true, cb, cb) == R2_PICK_CATBOX);
-    T(r2_pick_host(true, true, false, true, cb, cb + 1) == R2_PICK_R2);
-    T(r2_pick_host(true, true, false, false, cb, 1) == R2_PICK_R2);
-    T(r2_pick_host(true, true, false, true, cb, -1) == R2_PICK_UNKNOWN);
-    T(r2_pick_host(true, true, true, true, cb, cb + 1) == R2_PICK_CAPPED);
-    T(r2_pick_host(true, true, true, true, cb, 5) == R2_PICK_CATBOX);
-    T(r2_pick_host(true, false, false, true, cb, cb + 1) == R2_PICK_NO_KEYS);
-    T(r2_pick_host(true, false, false, false, cb, -1) == R2_PICK_NO_KEYS);
+    // A bucket that can't take a link says why; the link isn't passed to a free host
+    T(!r2_refuses(true, false));
+    T(r2_refuses(false, false) && strstr(r2_refuses(false, false), "keys"));
+    T(r2_refuses(true, true) && strstr(r2_refuses(true, true), "until the 1st"));
 
     // Upload speed: the mean of the first 10, then each new one counts a tenth
     {
@@ -1957,7 +1996,7 @@ int main()
     test_edit_xml();
     test_edit_advanced();
     test_lanes();
-    test_share_plan();
+    test_share();
     test_chapters();
     test_wave_chunks();
     test_gamedb();

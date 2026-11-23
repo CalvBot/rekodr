@@ -81,11 +81,10 @@ static void run_command(const char *text)
         Library &lib = g_app.library;
         g_app.ui.help_close = true;
         if (g_app.ui.setup_open && strcmp(arg, "setup")) setup_finish("left for another page"); // it covers every page
-        if (!strcmp(arg, "clips") || !strcmp(arg, "sessions") || !strcmp(arg, "shared")) {
+        if (!strcmp(arg, "clips") || !strcmp(arg, "sessions")) {
             library_close_player();
             ui_show(SCREEN_LIBRARY);
-            g_lib_shared = !strcmp(arg, "shared");
-            if (!g_lib_shared) lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
+            lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
         } else if (!strcmp(arg, "player") || !strcmp(arg, "share-menu")) { // the newest clip playing, [its Share menu]
             ui_show(SCREEN_LIBRARY);
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]]);
