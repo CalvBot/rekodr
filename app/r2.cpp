@@ -743,6 +743,7 @@ struct R2PageParts {
     const char *title, *page, *video, *embed, *image;
     i32 w, h, ew, eh, tw, th;
     const char *card; // the card's JSON (r2_card_json), put in as it is; "" or 0 = none
+    const char *note; // a line under the clip (r2_preview_text when cards play a preview); "" or 0 = none
 };
 
 // A run of the page: text with %T (the title), %P (the page's address), %V (the clip's), %E (what cards play), %I
@@ -769,8 +770,9 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
 
 // The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that
 // plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and Discord's own card
-// (`card`) before them; the plain APP_DISPLAY word under it. Paused, the page names the clip and doesn't play it.
-// Kept from search engines. All ASCII. Returns the length, 0 if it didn't fit.
+// (`card`) before them; the `note` and the plain APP_DISPLAY word under it. A #t= in the address (seconds, or m:ss
+// or h:mm:ss) starts the clip there, which is where a preview's "Continue watching" lands. Paused, the page names the
+// clip and doesn't play it. Kept from search engines. All ASCII. Returns the length, 0 if it didn't fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
 {
     if (cap < 2) return 0;
@@ -815,10 +817,21 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                 "background:#000}p{margin:0;padding:12px 16px;text-align:center;letter-spacing:.05em}</style>\n"
                 "</head><body>\n",
                 p, out, cap, &len);
-    if (!paused)
+    if (!paused) {
         r2_page_put("<video src=\"%V\" poster=\"%I\" width=\"%W\" height=\"%H\" controls playsinline "
                     "preload=\"metadata\"></video>\n",
                     p, out, cap, &len);
+        if (p.note && p.note[0] && len + 16 < cap) {
+            len += snprintf(out + len, cap - len, "<p>");
+            r2_html_text(p.note, out, cap, &len);
+            if (len + 6 < cap) len += snprintf(out + len, cap - len, "</p>\n");
+        }
+        r2_page_put("<script>(function(){var m=/[#&]t=([0-9:.]+)/.exec(location.hash),"
+                    "v=document.querySelector('video'),t=0;if(!m||!v)return;"
+                    "m[1].split(':').forEach(function(x){t=t*60+(+x||0)});function go(){v.currentTime=t}"
+                    "if(v.readyState>0)go();else v.addEventListener('loadedmetadata',go,{once:true})})()</script>\n",
+                    p, out, cap, &len);
+    }
     else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
     r2_page_put("<p>" APP_DISPLAY "</p>\n</body></html>\n", p, out, cap, &len);
     return len < cap - 1 ? len : 0;
@@ -1558,7 +1571,10 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     static thread_local char json[R2_CARD_MAX + 1];
     if (!r2_card_json(card, embed, image, "", json, sizeof json)) json[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
-                     copy ? s.social_h : s.page_h, tw, th, json};
+                     copy ? s.social_h : s.page_h, tw, th, json, ""};
+    char note[96] = "";
+    if (copy && s.preview > 0 && s.seconds > s.preview) r2_preview_text(s.preview, s.seconds, note, sizeof note);
+    p.note = note;
     static thread_local char html[16384];
     i32 n = r2_page_html(p, paused, html, sizeof html);
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");

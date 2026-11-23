@@ -1731,6 +1731,15 @@ static void test_r2()
     T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
     T(strstr(html, "width=\"2560\" height=\"1440\"") != 0);
     T(strstr(html, " controls playsinline ") != 0 && strstr(html, "<p>Clipback</p>") != 0);
+    // #t= starts the clip there; no note, no line; a preview's note under the clip
+    T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "v.currentTime=t"));
+    T(strstr(strstr(html, "</video>"), "<p>") == strstr(html, "<p>Clipback</p>"));
+    char note[96];
+    r2_preview_text(210, 1500, note, sizeof note);
+    pp.note = note;
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, "</video>\n<p>Preview, first 3:30 of 25:00</p>\n<script>") != 0);
+    pp.note = 0;
     // nothing small enough for cards: a picture card, the page still plays the clip
     pp.embed = "";
     hn = r2_page_html(pp, false, html, sizeof html);
