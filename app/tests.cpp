@@ -579,6 +579,115 @@ static void test_settings_round_trip()
 // The editor's volume keys and eases: the curve, the volume at a time, and the edit file round trip.
 // The editor's lanes: keys go in by time, and a selection stays on the same keys through inserts, erases and sorts.
 // Share: the recommended rate, the bitrates for a size, and what one click does with a clip.
+// Playable copies (render.cpp): where a rendered clip's files are, what the copies come to, when one is made or put
+// back, and the swap into Clips and back on real files.
+static void test_render()
+{
+    LibItem items[3] = {};
+    items[0].rendered = true;
+    items[0].render_size = 1000;
+    items[1].render_size = 0;
+    items[2].rendered = true; // its render not in Clips: nothing to free
+    i64 bytes = -1;
+    T(render_copies_in(items, 3, &bytes) == 1 && bytes == 1000);
+    T(render_copies_in(items, 0, &bytes) == 0 && bytes == 0);
+
+    T(render_need(true, false, true, false) == RENDER_MAKE);
+    T(render_need(true, true, true, false) == RENDER_MAKE);   // the edit changed
+    T(render_need(true, true, true, true) == RENDER_NOTHING);
+    T(render_need(true, true, false, false) == RENDER_RESTORE); // reset to nothing
+    T(render_need(false, true, true, true) == RENDER_RESTORE);  // rendering off
+    T(render_need(false, false, true, false) == RENDER_NOTHING);
+    T(render_need(true, false, false, false) == RENDER_NOTHING);
+
+    T(render_settled(false, false, 0, 1));
+    T(!render_settled(true, false, 0, RENDER_SETTLE_US * 10)); // the editor holds the original in Clips
+    T(!render_settled(true, true, 0, RENDER_SETTLE_US - 1));
+    T(render_settled(true, true, 0, RENDER_SETTLE_US));
+
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path keep = g_app.config.save_dir;
+    swprintf(g_app.config.save_dir.s, MAX_PATH, L"%sclipback-test-render-%u", temp, GetCurrentProcessId());
+    Path root = g_app.config.save_dir;
+    Path clips = path_join(path_join(root, L"2026"), L"Clips"), data = path_join(path_join(root, L"2026"), L"Data");
+    Path source = path_join(clips, L"Source");
+    LibItem it = {};
+    str_set(it.name, "Clip 1");
+    str_set(it.ext, ".mp4");
+    it.year = 2026;
+    it.kind = LIB_CLIPS;
+    T(!wcscmp(lib_item_path(it).s, path_join(clips, L"Clip 1.mp4").s));
+    T(!wcscmp(lib_playable_path(it).s, lib_item_path(it).s));
+    T(!wcscmp(lib_render_note_path(it).s, path_join(data, L"Clip 1.render.txt").s));
+    LibItem done = it;
+    done.rendered = true;
+    T(!wcscmp(lib_item_path(done).s, path_join(source, L"Clip 1.mp4").s));
+    T(!wcscmp(lib_playable_path(done).s, path_join(clips, L"Clip 1.mp4").s));
+
+    auto put = [](const Path &p, const char *text) {
+        Path dir = p;
+        *wcsrchr(dir.s, L'\\') = 0;
+        SHCreateDirectoryExW(0, dir.s, 0);
+        FILE *f = _wfopen(p.s, L"wb");
+        if (f) { fputs(text, f); fclose(f); }
+    };
+    auto text = [](const Path &p, char *out, i32 cap) {
+        out[0] = 0;
+        FILE *f = _wfopen(p.s, L"rb");
+        if (!f) return false;
+        size_t n = fread(out, 1, cap - 1, f);
+        out[n] = 0;
+        fclose(f);
+        return true;
+    };
+    char got[64];
+    Path clip = path_join(clips, L"Clip 1.mp4"), orig = path_join(source, L"Clip 1.mp4");
+    Path made = path_join(render_dir(2026), L"Clip 1.mp4");
+    put(clip, "original");
+    put(made, "render 1");
+    T(render_swap(it, made));
+    T(text(clip, got, sizeof got) && !strcmp(got, "render 1"));
+    T(text(orig, got, sizeof got) && !strcmp(got, "original"));
+    T(!file_exists(made.s));
+    put(made, "render 2"); // the edit changed: the render is replaced, the original stays
+    T(render_swap(done, made));
+    T(text(clip, got, sizeof got) && !strcmp(got, "render 2"));
+    T(text(orig, got, sizeof got) && !strcmp(got, "original"));
+    put(made, "render 3");
+    T(!render_swap(it, made)); // as if not rendered while an original is in Source: left alone
+    T(text(orig, got, sizeof got) && !strcmp(got, "original"));
+    DeleteFileW(made.s);
+
+    RenderNote note = {123456789, 0xabcdef0123456789ull}, back;
+    render_note_write(done, note);
+    T(render_note_read(done, &back) && back.edit_mtime_us == note.edit_mtime_us && back.edit_hash == note.edit_hash);
+    put(lib_edit_path(done), "edit");
+    Path files[LIB_ITEM_FILES];
+    T(lib_item_files(done, files) == 4 && !wcscmp(files[0].s, orig.s) && !wcscmp(files[1].s, clip.s));
+    i64 mtime = 0;
+    u64 h1 = 0, h2 = 0;
+    T(render_edit_stamp(done, &mtime, &h1) && mtime > 0);
+    put(lib_edit_path(done), "edit 2");
+    T(render_edit_stamp(done, &mtime, &h2) && h1 != h2);
+
+    T(render_restore(done));
+    T(text(clip, got, sizeof got) && !strcmp(got, "original"));
+    T(!file_exists(orig.s) && !file_exists(lib_render_note_path(done).s));
+    T(render_restore(done)); // nothing left to put back
+    T(lib_item_files(it, files) == 2); // the clip and its edit
+
+    DeleteFileW(clip.s);
+    DeleteFileW(lib_edit_path(it).s);
+    RemoveDirectoryW(source.s);
+    RemoveDirectoryW(clips.s);
+    RemoveDirectoryW(render_dir(2026).s);
+    RemoveDirectoryW(data.s);
+    RemoveDirectoryW(path_join(root, L"2026").s);
+    T(RemoveDirectoryW(root.s));
+    g_app.config.save_dir = keep;
+}
+
 static void test_share()
 {
     // Recommended video rates: the table's rows at 30 and 60 fps, along the pixel count between them
@@ -2263,6 +2372,7 @@ int main()
     test_edit_advanced();
     test_lanes();
     test_share();
+    test_render();
     test_chapters();
     test_wave_chunks();
     test_gamedb();

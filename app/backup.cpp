@@ -1,7 +1,7 @@
 // Backup: copies the save folder's sessions (and clips, if asked) to another drive or a NAS folder, on a thread.
-// It mirrors <save_dir>\<year>\{Sessions,Clips,Data} into the same folders under backup_dir. A file is copied when
-// the backup has none or an older one; nothing at the backup is ever deleted. Files written in the last two minutes
-// wait for the next run, so a save in progress isn't copied half done. It runs a minute after start, every 30
+// It mirrors <save_dir>\<year>\{Sessions,Clips,Clips\Source,Data} into the same folders under backup_dir. A file is
+// copied when the backup has none or an older one; nothing at the backup is ever deleted. Files written in the last
+// two minutes wait for the next run, so a save in progress isn't copied half done. It runs a minute after start, every 30
 // minutes, and on Back up now.
 
 enum BackupState : LONG { BACKUP_IDLE, BACKUP_RUNNING, BACKUP_DONE, BACKUP_FAILED };
@@ -94,7 +94,7 @@ template <typename F> static i32 backup_walk_dir(const Path &src_dir, const Path
 // Every <year>\<sub> folder to back up, in order.
 template <typename F> static i32 backup_walk(F fn)
 {
-    static const wchar_t *const subs[] = {L"Sessions", L"Data", L"Clips"};
+    static const wchar_t *const subs[] = {L"Sessions", L"Data", L"Clips", L"Clips\\Source"};
     WIN32_FIND_DATAW fd;
     Path pattern = path_join(g_backup.from, L"*");
     HANDLE h = FindFirstFileW(pattern.s, &fd);
@@ -103,7 +103,7 @@ template <typename F> static i32 backup_walk(F fn)
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !backup_is_year(fd.cFileName)) continue;
         for (i32 i = 0; i < COUNT(subs) && !g_backup.stop; i++) {
-            if (i == 2 && !g_backup.clips) continue;
+            if (i >= 2 && !g_backup.clips) continue;
             Path year_src = path_join(g_backup.from, fd.cFileName), year_dst = path_join(g_backup.to, fd.cFileName);
             n += backup_walk_dir(path_join(year_src, subs[i]), path_join(year_dst, subs[i]), fn);
         }

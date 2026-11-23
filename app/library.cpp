@@ -440,15 +440,24 @@ static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
     return false;
 }
 
-// Where an item is: <save_dir>\<year>\{Clips,Sessions}\<name><ext>.
+// A card's original file: <year>\Clips or Sessions\<name>, or Clips\Source\<name> when it's rendered.
 static Path lib_file_path(const Path &save_dir, const LibItem &it)
 {
     Path p = {};
     wchar_t name[256], ext[8];
     utf8_to_wide(it.name, name, COUNT(name));
     utf8_to_wide(it.ext, ext, COUNT(ext));
-    swprintf(p.s, MAX_PATH, L"%s\\%d\\%s\\%s%s", save_dir.s, it.year, it.kind ? L"Sessions" : L"Clips", name, ext);
+    swprintf(p.s, MAX_PATH, L"%s\\%d\\%s\\%s%s", save_dir.s, it.year,
+             it.kind ? L"Sessions" : it.rendered ? L"Clips\\Source" : L"Clips", name, ext);
     return p;
+}
+
+// The file that plays anywhere: <year>\Clips or Sessions\<name>, the rendered edit for a rendered clip.
+static Path lib_playable_file(const Path &save_dir, const LibItem &it)
+{
+    LibItem plain = it;
+    plain.rendered = false;
+    return lib_file_path(save_dir, plain);
 }
 
 // The probing part of a scan, shared by its probers. Each takes the next unprobed item, probes a copy of it without
@@ -524,8 +533,11 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                 continue;
             i16 year = (i16)_wtoi(fd.cFileName);
             Path ydir = path_join(save_dir, fd.cFileName);
-            for (i32 kind = 0; kind < 2; kind++) { // 0: Clips, 1: Sessions
-                Path dir = path_join(ydir, kind ? L"Sessions" : L"Clips");
+            // 0: Clips, 1: Sessions, 2: Clips\Source, for originals whose render isn't in Clips (render.cpp puts
+            // them back or renders them again)
+            for (i32 kind = 0; kind < 3; kind++) {
+                Path dir = path_join(ydir, kind == 1 ? L"Sessions" : kind == 2 ? L"Clips\\Source" : L"Clips");
+                Path source = path_join(ydir, L"Clips\\Source");
                 WIN32_FIND_DATAW f;
                 HANDLE h = FindFirstFileW(path_join(dir, L"*").s, &f);
                 if (h == INVALID_HANDLE_VALUE) continue;
@@ -533,6 +545,12 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
                     wchar_t *dot = wcsrchr(f.cFileName, L'.');
                     if (!dot || (_wcsicmp(dot, L".mp4") && _wcsicmp(dot, L".mkv") && _wcsicmp(dot, L".mov"))) continue;
+                    // A clip with its original in Source is that original, rendered; one in Source with its clip
+                    // there was listed already
+                    WIN32_FILE_ATTRIBUTE_DATA orig = {};
+                    bool rendered = kind == 0 && GetFileAttributesExW(path_join(source, f.cFileName).s,
+                                                                      GetFileExInfoStandard, &orig);
+                    if (kind == 2 && file_exists(path_join(path_join(ydir, L"Clips"), f.cFileName).s)) continue;
                     if (n == LIB_MAX_ITEMS) break;
                     LibItem *it = &items[n++];
                     *it = {};
@@ -543,6 +561,12 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     it->kind = kind == 1 ? LIB_SESSIONS : LIB_CLIPS;
                     it->size = ((u64)f.nFileSizeHigh << 32) | f.nFileSizeLow;
                     it->mtime_us = filetime_us(f.ftLastWriteTime);
+                    it->rendered = rendered || kind == 2;
+                    if (rendered) {
+                        it->render_size = it->size;
+                        it->size = ((u64)orig.nFileSizeHigh << 32) | orig.nFileSizeLow;
+                        it->mtime_us = filetime_us(orig.ftLastWriteTime);
+                    }
                     it->when_us = lib_name_us(tmpl, it->name, it->mtime_us);
                     u64 k = fnv64(&it->size, sizeof it->size);
                     it->key = lib_key_unique(seen, fnv64(&it->mtime_us, sizeof it->mtime_us, k), it->name);
@@ -852,7 +876,11 @@ static void library_rescan()
     g_app.library.scanning = true;
 }
 
+// A card's original (the one its edit, pictures and records are of) and the file that plays anywhere: the same
+// file unless the clip is rendered (render.cpp). Show in folder points at the playable one, the editor and Share's
+// Original at the original.
 static Path lib_item_path(const LibItem &it) { return lib_file_path(g_app.config.save_dir, it); }
+static Path lib_playable_path(const LibItem &it) { return lib_playable_file(g_app.config.save_dir, it); }
 
 // Where an item's edit is kept: <save_dir>\<year>\Data\<name>.edit.txt
 static Path lib_edit_path(const LibItem &it)
@@ -862,6 +890,27 @@ static Path lib_edit_path(const LibItem &it)
     utf8_to_wide(it.name, name, COUNT(name));
     swprintf(p.s, MAX_PATH, L"%s\\%d\\Data\\%s.edit.txt", g_app.config.save_dir.s, it.year, name);
     return p;
+}
+
+// Where a rendered clip notes what its render was made from: <save_dir>\<year>\Data\<name>.render.txt
+static Path lib_render_note_path(const LibItem &it)
+{
+    Path p = lib_edit_path(it);
+    wcscpy(wcsrchr(p.s, L'.') - 5, L".render.txt"); // over ".edit.txt"
+    return p;
+}
+
+enum { LIB_ITEM_FILES = 4 };
+
+// A card's files that are there: its original, its rendered copy, its edit and its render note. Returns how many.
+static i32 lib_item_files(const LibItem &it, Path *out)
+{
+    i32 n = 0;
+    out[n++] = lib_item_path(it);
+    Path more[] = {it.rendered ? lib_playable_path(it) : Path{}, lib_edit_path(it), lib_render_note_path(it)};
+    for (const Path &p : more)
+        if (p.s[0] && file_exists(p.s)) out[n++] = p;
+    return n;
 }
 
 static bool lib_matches(const char *hay, const char *needle)
@@ -3745,13 +3794,18 @@ static bool lib_rename_apply()
         LibItem renamed = lib.target;
         str_set(renamed.name, t);
         Path from = lib_item_path(lib.target), to = lib_item_path(renamed);
-        if (file_exists(to.s)) str_set(lib.rename_error, "There's already a file with that name");
+        if (file_exists(to.s) || file_exists(lib_playable_path(renamed).s))
+            str_set(lib.rename_error, "There's already a file with that name");
         else {
             if (lib.player.open && !wcscmp(lib.player.path.s, from.s)) library_close_player();
             if (MoveFileW(from.s, to.s)) {
-                // The edit goes with it.
-                Path ef = lib_edit_path(lib.target), et = lib_edit_path(renamed);
-                if (file_exists(ef.s)) MoveFileW(ef.s, et.s);
+                // The rendered copy, the edit and the render note go with it.
+                Path copy = lib.target.rendered ? lib_playable_path(lib.target) : Path{};
+                Path pairs[][2] = {{copy, lib_playable_path(renamed)},
+                                   {lib_edit_path(lib.target), lib_edit_path(renamed)},
+                                   {lib_render_note_path(lib.target), lib_render_note_path(renamed)}};
+                for (auto &p : pairs)
+                    if (p[0].s[0] && file_exists(p[0].s)) MoveFileW(p[0].s, p[1].s);
                 lib_message(false, "Renamed to %s", t);
                 library_rescan();
                 return true;
@@ -3776,19 +3830,33 @@ static void lib_rename_start(const LibItem &it, bool display_name)
     lib.rename_focus = true;
 }
 
-// Sends a clip or session to the Recycle Bin, with its edit if there is one; true when it went. The player lets go
-// of it first.
+// A list of paths ending in two nulls, as SHFileOperation wants, from `n` paths (empty ones left out).
+struct LibPathList { wchar_t s[LIB_ITEM_FILES * MAX_PATH + 4]; };
+static const wchar_t *lib_path_list(const Path *paths, i32 n, LibPathList *out)
+{
+    wchar_t *list = out->s;
+    memset(list, 0, sizeof out->s);
+    wchar_t *at = list;
+    for (i32 i = 0; i < n; i++) {
+        size_t len = wcslen(paths[i].s);
+        if (!len) continue;
+        memcpy(at, paths[i].s, len * sizeof(wchar_t));
+        at += len + 1;
+    }
+    return list;
+}
+
+// Sends a clip or session to the Recycle Bin, with its rendered copy and edit if there are any; true when it
+// went. The player lets go of it first.
 static bool lib_recycle(const LibItem &it)
 {
     Library &lib = g_app.library;
-    Path path = lib_item_path(it), edit = lib_edit_path(it);
-    if (lib.player.open && !wcscmp(lib.player.path.s, path.s)) library_close_player();
-    // A list of paths ending in two nulls: the video, and its edit if there is one.
-    static wchar_t from[2 * MAX_PATH + 4];
-    memset(from, 0, sizeof from);
-    size_t n = wcslen(path.s);
-    memcpy(from, path.s, n * sizeof(wchar_t));
-    if (file_exists(edit.s)) memcpy(from + n + 1, edit.s, wcslen(edit.s) * sizeof(wchar_t));
+    Path files[LIB_ITEM_FILES];
+    i32 count = lib_item_files(it, files);
+    for (i32 i = 0; i < count; i++)
+        if (lib.player.open && !wcscmp(lib.player.path.s, files[i].s)) library_close_player();
+    static LibPathList list;
+    const wchar_t *from = lib_path_list(files, count, &list);
     SHFILEOPSTRUCTW op = {};
     op.hwnd = g_app.ui.hwnd;
     op.wFunc = FO_DELETE;
@@ -4012,7 +4080,7 @@ static void lib_sel_set_game(const GamePickRow &r)
 // Deleting the selection: each file (and its edit) goes to the Recycle Bin on a thread of its own, then the grid
 // is scanned again once.
 struct LibDeleteJob {
-    Path *files; // the videos and their edits, an empty path where a video has none
+    Path *files; // LIB_ITEM_FILES a video: lib_item_files, empty paths after
     i32   count; // videos
 };
 
@@ -4022,12 +4090,8 @@ static DWORD WINAPI lib_delete_thread(void *arg)
     CoInitializeEx(0, COINIT_APARTMENTTHREADED);
     i32 gone = 0;
     for (i32 i = 0; i < job->count; i++) {
-        static wchar_t from[2 * MAX_PATH + 4];
-        memset(from, 0, sizeof from);
-        const Path &video = job->files[2 * i], &edit = job->files[2 * i + 1];
-        size_t n = wcslen(video.s);
-        memcpy(from, video.s, n * sizeof(wchar_t));
-        if (edit.s[0]) memcpy(from + n + 1, edit.s, wcslen(edit.s) * sizeof(wchar_t));
+        static LibPathList list; // this thread's own: one delete runs at a time
+        const wchar_t *from = lib_path_list(job->files + LIB_ITEM_FILES * i, LIB_ITEM_FILES, &list);
         SHFILEOPSTRUCTW op = {};
         op.wFunc = FO_DELETE;
         op.pFrom = from;
@@ -4054,15 +4118,14 @@ static void lib_sel_delete()
     i32 n = lib_sel_indices(idx);
     if (n == 0 || lib.deleting) return;
     LibDeleteJob *job = (LibDeleteJob *)calloc(1, sizeof *job);
-    job->files = (Path *)calloc(2 * n, sizeof(Path));
+    job->files = (Path *)calloc(LIB_ITEM_FILES * n, sizeof(Path));
     job->count = n;
     player_close(&lib.hover);
     for (i32 i = 0; i < n; i++) {
         const LibItem &it = lib.items[idx[i]];
-        Path path = lib_item_path(it), edit = lib_edit_path(it);
-        if (lib.player.open && !wcscmp(lib.player.path.s, path.s)) library_close_player();
-        job->files[2 * i] = path;
-        if (file_exists(edit.s)) job->files[2 * i + 1] = edit;
+        Path *files = job->files + LIB_ITEM_FILES * i;
+        for (i32 k = 0, count = lib_item_files(it, files); k < count; k++)
+            if (lib.player.open && !wcscmp(lib.player.path.s, files[k].s)) library_close_player();
         share_clip_delete(it.key); // its share copies and links
     }
     log_line("library: deleting %d %s", n, lib_noun(n));

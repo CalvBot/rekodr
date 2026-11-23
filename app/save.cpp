@@ -529,8 +529,10 @@ static i32 run_ffmpeg(SaveWork *w, i64 total_us, char *error, i32 error_cap)
         snprintf(error, error_cap, "couldn't start ffmpeg");
         return -1;
     }
-    // A preview may be built while the playhead rests, so it gives way to everything else on the PC
-    if (w->req.kind == SAVE_PREVIEW) SetPriorityClass(p.process, BELOW_NORMAL_PRIORITY_CLASS);
+    // A preview may be built while the playhead rests and a render whenever an edit settles, so they give way to
+    // everything else on the PC
+    if (w->req.kind == SAVE_PREVIEW || w->req.kind == SAVE_RENDER)
+        SetPriorityClass(p.process, BELOW_NORMAL_PRIORITY_CLASS);
     u64 started = GetTickCount64();
     w->ff_first_ms = w->ff_ms = 0;
     str_set(w->ff_speed, "?");
@@ -649,7 +651,8 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         snprintf(out, out_cap, "ffmpeg isn't ready yet (" APP_NAME " is getting it, or set its path in Options)");
         return SAVE_EV_FAILED;
     }
-    if (req.kind == SAVE_KEEP || req.kind == SAVE_SHARE || req.kind == SAVE_LINK) return edit_run(w, out, out_cap);
+    if (req.kind == SAVE_KEEP || req.kind == SAVE_SHARE || req.kind == SAVE_LINK || req.kind == SAVE_RENDER)
+        return edit_run(w, out, out_cap);
 
     // The segment covering `to` is still being written: wait for it to finish (a couple of seconds at most), so the
     // clip ends at the moment the save was asked for. "Being written" is the recorder saying it's capturing, or a
@@ -2582,12 +2585,19 @@ static bool save_job_held(u32 id)
     return false;
 }
 
+static void save_cancel(u32 id);
+
 // Queues a save of the wall-clock range [from_us, to_us]: a clip into <year>\Clips, or a session into
 // <year>\Sessions. An empty `name` names it after the game played most. Returns the job id, or 0 if it couldn't be
 // queued (no free slot).
 static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, const EditJob *edit)
 {
     Saving &sv = g_app.saving;
+    // Anything else goes before a render: one under way stops and is made again later (render.cpp)
+    if (kind != SAVE_RENDER)
+        for (i32 i = 0; i < COUNT(sv.jobs); i++)
+            if (sv.jobs[i].id && sv.jobs[i].kind == SAVE_RENDER && sv.jobs[i].state < SAVE_DONE)
+                save_cancel(sv.jobs[i].id);
     // A free slot, else the oldest finished job's.
     SaveJobView *v = 0;
     for (i32 i = 0; i < COUNT(sv.jobs); i++) {
@@ -2874,6 +2884,7 @@ static void saved_check()
 }
 
 static void toast_saved(SaveKind kind, const char *path); // toast.cpp
+static void render_on_save(u32 id, i64 what, const char *text); // render.cpp
 
 static void save_on_event(const Event &e)
 {
@@ -2881,6 +2892,14 @@ static void save_on_event(const Event &e)
     i64 value = e.b >> 32;
     SaveJobView *v = save_view(id);
     if (!v) return;
+    if (v->kind == SAVE_RENDER && e.a >= SAVE_EV_DONE) {
+        // Not a saved file: render.cpp swaps it in, nothing is announced
+        v->state = e.a == SAVE_EV_DONE ? SAVE_DONE : e.a == SAVE_EV_FAILED ? SAVE_FAILED : SAVE_CANCELLED;
+        g_app.saving.jobs_running--;
+        if (e.a == SAVE_EV_FAILED) log_line("save %u: render failed: %s", id, e.text);
+        render_on_save(id, e.a, e.text);
+        return;
+    }
     switch (e.a) {
     case SAVE_EV_STARTED: v->state = SAVE_RUNNING; break;
     case SAVE_EV_PATH: str_set(v->path, e.text); break;

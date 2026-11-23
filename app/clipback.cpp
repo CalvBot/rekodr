@@ -91,4 +91,5 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "ffget.cpp"
 #include "install.cpp"
 #include "update.cpp"
+#include "render.cpp"
 #include "main.cpp"

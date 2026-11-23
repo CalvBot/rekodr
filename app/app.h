@@ -147,6 +147,7 @@ struct Config {
     bool free_links_seen;    // the player was told free links are public
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
+    bool render_edits;   // an edited clip's file in Clips is its edit rendered, the original in Clips\Source (on)
     f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)
     i32 share_min_quality; // Lower quality to fit: a copy may go down to this percent of the recommended bitrate
                            // to fit a size, 50 to 100; 100 = never (67)
@@ -325,6 +326,7 @@ enum SaveKind : u8 {
     SAVE_SHARE,   // the editor's Share: a small copy with one stereo mix, into the share folder
     SAVE_PREVIEW, // a stretch of the buffer into the local folder, for the timeline's Play; not a saved file
     SAVE_LINK,    // a copy for a link: H.264 with the Mix only, played from the start while it loads, into the link folder
+    SAVE_RENDER,  // an edited clip's playable copy, made as Keep makes it, into <year>\Data\Rendering (render.cpp)
 };
 
 enum SaveState : u8 { SAVE_QUEUED, SAVE_RUNNING, SAVE_DONE, SAVE_FAILED, SAVE_CANCELLED };
@@ -633,6 +635,9 @@ struct LibItem {
     i64       mtime_us;
     i64       when_us;   // when it's from: the time in its name (by the template in Options), else mtime_us
     u64       key;       // thumbnail cache key; changes when the file does, not when it's renamed
+    bool      rendered;    // a clip whose original is in Clips\Source, its edit rendered in Clips (render.cpp);
+                           // name, size, times, key and info are the original's
+    u64       render_size; // the rendered copy's size, 0 = there's none in Clips yet
     MediaInfo info;
     char      display_name[128]; // typed by hand (names.txt); shown in place of its file name
 };

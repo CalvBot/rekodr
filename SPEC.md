@@ -99,11 +99,14 @@ Keep a whole session from start to finish.
     track is rebuilt from the volumes. Sessions are cut into clips this way.
   - **Share:** the same in the library (a clip as its saved edit has it) and the editor. Share never changes the
     length, picture size or frame rate, only the bitrate. A clip's *recommended size* is what it needs to look right:
-    video at 30, 15, 9 and 5 Mbit/s for 2160p, 1440p, 1080p and 720p at 60 fps (along the pixel count between them,
-    in proportion below), 0.65 of that at 30 fps, plus 128 kbit/s of sound. Under the *Max size* (`share_max_mb`,
-    in MiB as Discord counts; 20, 50, 100, 500, 2000 or a custom size, default 20) Share makes a file at the
-    recommended size; up to *Squeeze* (`share_squeeze`, default 1.5, 1 = never) times over it, a file squeezed to
-    the max; further over, a link. Every file is a new H.264 copy with the edit applied and one stereo mix, in
+    video at the bitrate in Options' Quality table (`share_kbps_<height>_30` and `_60`), which starts at YouTube's
+    recommended upload bitrates: 1 / 1.5, 2.5 / 4, 5 / 7.5, 8 / 12, 16 / 24 and 35 / 53 Mbit/s for 360p, 480p, 720p,
+    1080p, 1440p and 2160p at 30 / 60 fps. Between rows it goes along the pixel count, below 360p and above 2160p
+    in proportion to it; between 30 and 60 fps along the frame rate, above 60 in proportion to it. Sound adds
+    128 kbit/s. Under the *Max size* (`share_max_mb`, in MiB as Discord counts; 20, 50, 100, 500, 2000 or a custom
+    size, default 20) Share makes a file at the recommended size; when *Lower quality to fit* (`share_min_quality`,
+    a percent from 50 to 100, default 67, 100 = off) of it fits the max, a file squeezed to the max; further over,
+    a link. Every file is a new H.264 copy with the edit applied and one stereo mix, in
     `%TEMP%\clipback\share\` and on the clipboard, ready to paste; share copies never go in the Clips folder. The
     original is the untouched clip, shown in its folder. A file or link made for the same clip, edit and settings
     is given again at once (`made-shares.tsv` in the local folder); a new edit or new settings make a new one.
@@ -111,7 +114,7 @@ Keep a whole session from start to finish.
     its bucket links; Catbox links can't be deleted and stay up, which the delete asks about.
   - **Link:** the edit is made into a copy Discord plays (H.264, one stereo mix), uploaded, and its link goes on the
     clipboard. The copy follows Share's rule against its host. Without a bucket: Catbox (when it's on) as is up to
-    its 200 MB and squeezed to it up to Squeeze times that, else Litterbox the same way against its 1 GB, else an
+    its 200 MB and squeezed to it when Lower quality to fit allows, else Litterbox the same way against its 1 GB, else an
     uploader as is; bigger fails with "needs your own Cloudflare". With the player's own R2 bucket set up in
     Options: Catbox (when it's on) for what it takes, to save the bucket's space, else the bucket as is; Litterbox
     and uploaders aren't used. When the bucket can't take a link (its keys unreadable, or the month's reads near `r2_read_cap`)
@@ -144,6 +147,17 @@ Keep a whole session from start to finish.
   Esc clears it. While any is selected, a click on a card ticks it, and a bar in place of the filters changes their
   game, moves them to a folder or out of the open one, or deletes them. Dragging a selected card takes them all to a
   folder. The selection belongs to Clips or Sessions and clears when the view or a filter changes.
+- **Playable copies:** with *Render edits* on (`render_edits`, default on), `<year>\Clips` always holds what plays
+  anywhere as it was meant. An unedited clip stays as it is. An edited clip's `Clips\<name>.mp4` is its edit
+  rendered as Keep makes it, and the untouched original is `Clips\Source\<name>.mp4`; the library lists the clip
+  once, and its edit, pictures and records keep to the original. A render runs once the edit has settled (the
+  editor off the clip; for a clip already rendered, also 30 s after the edit's last change), one at a time at low
+  priority, never while a game is played or another save waits: those stop it and it's made again later. It's made
+  in `Data\Rendering`, then swapped in with the original moved into `Source` in the same step, so `Clips` never
+  lacks the file and a failed render changes nothing. `Data\<name>.render.txt` notes the edit it was made from; a
+  changed edit is rendered again. An edit reset to nothing, or Render edits off, puts the original back over the
+  render. Show in folder shows the playable copy; Share's Original is the original. Deleting or renaming a clip
+  takes both files with it.
 - Originals are only deleted when you delete them, and they go to the Recycle Bin.
 
 ## Folders
@@ -152,6 +166,7 @@ Everything clipback saves goes under one folder (setting, default `<Videos>\Clip
 
 ```
 <Videos>\Clips\2026\Clips\<Game> 2026-11-15 21-04-10.mp4    clips (quick saves, timeline saves, Keep)
+<Videos>\Clips\2026\Clips\Source\                          edited clips' originals (Playable copies)
 <Videos>\Clips\2026\Sessions\<Name> 2026-11-15 19-02.mp4    sessions
 <Videos>\Clips\2026\Data\                                   everything that isn't video, for that year
 <buffer>\                                                   the rolling buffer (format below)
@@ -162,6 +177,7 @@ Everything clipback saves goes under one folder (setting, default `<Videos>\Clip
 
 `Data` holds one small text file per clip or session, named after the video:
 - **Edit records:** pieces, zoom keyframes, track volumes.
+- **Render notes:** which edit a clip's playable copy was made from. `Data\Rendering` holds a render being made.
 - **Session records:** name, whether it's a game or custom, the real start and end, and which part has footage.
   This includes sessions not saved yet, so a session can be defined before, or without, saving its video.
 

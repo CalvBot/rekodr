@@ -77,6 +77,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_keep_days = 7;
     c->share_max_mb = 20;
     c->share_min_quality = 67;
+    c->render_edits = true;
     memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);
     c->share_link_page = true;
     c->link_catbox = c->link_litterbox = true;
@@ -381,6 +382,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
     else if (!strcmp(key, "share_max_mb")) real(&c->share_max_mb);
     else if (!strcmp(key, "share_min_quality")) c->share_min_quality = atoi(value);
+    else if (!strcmp(key, "render_edits")) boolean(&c->render_edits);
     else if (!strncmp(key, "share_kbps_", 11)) { // share_kbps_1080_60 = 12000
         i32 height = 0, fps = 0;
         if (sscanf(key + 11, "%d_%d", &height, &fps) == 2)
@@ -565,6 +567,7 @@ static bool config_save(const Config &c, const Paths &paths)
         fprintf(f, "share_kbps_%d_30 = %d\nshare_kbps_%d_60 = %d\n", SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][0],
                 SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][1]);
     boolean("share_link_page", c.share_link_page);
+    boolean("render_edits", c.render_edits);
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\npopup_monitor_game = %d\n", c.popup_monitor, c.popup_monitor_game);
     boolean("toast_small_in_game", c.toast_small_in_game);
