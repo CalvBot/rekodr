@@ -2458,7 +2458,7 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
 // .sxcu files) in link_hosts; with the player's
 // own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
 // The budget picks the most a month may cost; the bucket holds all that buys (r2_limit_for_budget), and the oldest
-// unpinned links are removed before an upload that wouldn't fit.
+// unpinned links are removed before an upload that wouldn't fit, or when a lower budget is saved.
 // The budget is US dollars a month, what Cloudflare bills in. The slider runs from $0 (the free 10 GB) to
 // R2_BUDGET_TOP (about 10 TB) on a cubic curve, so the low end isn't cramped, in steps of $0.05; typed amounts go to
 // the cent, up to R2_BUDGET_MOST.
@@ -2489,33 +2489,6 @@ static void opt_budget_label(f64 dollars, char *out, i32 cap)
     else snprintf(out, cap, "%s%.2f a month: %s", opt_usd(), dollars, size);
 }
 
-// The hosts as chips from the row's left, the free ones then the uploaders, each one on numbered by when it's
-// tried; a click turns one off, or on as the last tried. Chips that don't fit the row aren't drawn.
-static void opt_link_hosts()
-{
-    Config &c = g_app.config;
-    i32 n = link_host_names();
-    // The numbers count only hosts that are there: a name in link_hosts with no uploader behind it is skipped
-    i32 at[16];
-    for (i32 i = 0; i < n; i++) at[i] = hosts_find(c.link_hosts, g_link_names[i].name);
-    f32 x = g_row.x0, y = opt_row_frame_y(), gap = dp(8);
-    for (i32 i = 0; i < n; i++) {
-        i32 rank = 0;
-        for (i32 k = 0; k < n; k++) rank += at[k] >= 0 && at[k] < at[i];
-        char num[8], id[96];
-        snprintf(num, sizeof num, "%d", rank + 1);
-        snprintf(id, sizeof id, "%s##host_%s", g_link_names[i].label, g_link_names[i].name);
-        f32 w = ImGui::CalcTextSize(id, ImGui::FindRenderedTextEnd(id)).x + dp(8 + 14 * 2) + ImGui::CalcTextSize("9").x;
-        if (x + w > g_row.x1) break;
-        ImGui::SetCursorScreenPos(ImVec2(x, y));
-        x += w + gap;
-        if (!kit_chip(id, at[i] >= 0, at[i] >= 0 ? num : 0, w)) continue;
-        hosts_toggle(c.link_hosts, sizeof c.link_hosts, g_link_names[i].name);
-        log_line("options: link hosts \"%s\"", c.link_hosts);
-        options_apply(0);
-    }
-}
-
 // A count with thousands commas: 1,204
 static void fmt_count(i64 n, char *out, i32 cap)
 {
@@ -2526,6 +2499,233 @@ static void fmt_count(i64 n, char *out, i32 cap)
         out[o++] = d[i];
     }
     out[o] = 0;
+}
+
+// A row's name and line drawn by hand, for rows whose name is bold or whose line has its own colour and a dot.
+static void opt_row_lines(const char *name, ImFont *nf, const char *sub, u32 sub_col, bool dot, f32 max_x)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 nh = nf->FontSize, sh = g_font_small->FontSize, gap = dp(3);
+    f32 ty = floorf(g_row.y + (g_row.h - nh - gap - sh) / 2), x = g_row.x0;
+    opt_text_at(dl, nf, ImVec2(x, ty), COL_TEXT, name, max_x);
+    if (dot) {
+        f32 r = dp(3);
+        dl->AddCircleFilled(ImVec2(x + r, ty + nh + gap + sh / 2), r, col32(sub_col));
+        x += 2 * r + dp(6);
+    }
+    opt_text_at(dl, g_font_small, ImVec2(x, ty + nh + gap), dot && sub_col != COL_DIM ? COL_TEXT : sub_col, sub, max_x);
+}
+
+// The bars in the Space and Reads rows: across the control column, with a small value in a slot on their right.
+static const f32 OPT_BAR_H = 14, OPT_BAR_TEXT_W = 120;
+
+static void opt_bar_frame(ImVec2 *a, ImVec2 *z)
+{
+    f32 cw = opt_wide_w(), w = cw - dp(OPT_BAR_TEXT_W) - dp(10), h = dp(OPT_BAR_H);
+    *a = ImVec2(g_row.x1 - cw, floorf(g_row.y + (g_row.h - h) / 2));
+    *z = ImVec2(a->x + w, a->y + h);
+    ImGui::GetWindowDrawList()->AddRectFilled(*a, *z, col32(COL_PANEL2), dp(3));
+}
+
+static void opt_bar_value(ImVec2 z, const char *text, u32 col)
+{
+    f32 h = dp(OPT_BAR_H);
+    opt_text_at(ImGui::GetWindowDrawList(), g_font_small,
+                ImVec2(z.x + dp(10), floorf(z.y - h + (h - g_font_small->FontSize) / 2)), col, text, g_row.x1);
+}
+
+// What's in the bucket, oldest first, for the Space row: each link, whether it goes at the limit being looked at
+// (`now`: a draft budget below what the links take) and whether it goes next, to make room for a clip of the max
+// file size (`next`). Read again when the history or the limit changes, and every 2 s.
+struct OptSpace {
+    R2Share s[R2_MAX_SHARES];
+    u8 now[R2_MAX_SHARES], next[R2_MAX_SHARES];
+    i32 n, going;
+    i64 other, total, limit;
+    u32 gen;
+    f64 at;
+};
+static OptSpace g_space;
+
+static void opt_space_read(i64 limit)
+{
+    OptSpace &v = g_space;
+    f64 t = ImGui::GetTime();
+    u32 gen = r2_history_gen();
+    if (v.at > 0 && v.gen == gen && v.limit == limit && t - v.at < 2) return;
+    v.gen = gen;
+    v.limit = limit;
+    v.at = t;
+    static u8 with[R2_MAX_SHARES];
+    v.n = r2_evict_preview(limit, 0, v.now, v.s, R2_MAX_SHARES);
+    r2_evict_preview(limit, (i64)(g_app.config.share_max_mb * 1e6), with, v.s, R2_MAX_SHARES);
+    v.other = r2_untracked_bytes();
+    v.total = v.other;
+    v.going = 0;
+    for (i32 i = 0; i < v.n; i++) {
+        v.next[i] = with[i] && !v.now[i];
+        v.going += v.now[i];
+        v.total += v.s[i].bytes;
+    }
+}
+
+// The bucket as a bar of `limit`: a block per link, sized by its bytes, the oldest on the left. Pinned ones have a
+// light top edge, the ones that go next are amber, and the ones a draft budget would remove are red and struck
+// through. Other files in the bucket are grey, at the end. The line under the name says what's under the mouse.
+static void opt_space_row(i64 limit, bool draft)
+{
+    OptSpace &v = g_space;
+    bool ready = r2_ready();
+    if (ready) opt_space_read(limit);
+    opt_row_begin(0, 0, opt_wide_w(), dp(52));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a, z;
+    opt_bar_frame(&a, &z);
+    f32 w = z.x - a.x;
+    i64 scale = ready && v.total > limit ? v.total : limit > 0 ? limit : 1;
+    ImGui::SetCursorScreenPos(a);
+    ImGui::InvisibleButton("##space", ImVec2(w, z.y - a.y));
+    bool over = ImGui::IsItemHovered();
+    f32 mx = ImGui::GetIO().MousePos.x, mid = floorf((a.y + z.y) / 2);
+    i32 hot = -1; // a link's index, or -2 for the other files
+    if (ready) {
+        dl->PushClipRect(a, z, true);
+        f64 x = a.x;
+        for (i32 i = 0; i <= v.n; i++) {
+            i64 bytes = i < v.n ? v.s[i].bytes : v.other;
+            if (bytes <= 0) continue;
+            f32 x0 = (f32)x, x1 = (f32)(x + (f64)w * bytes / scale);
+            x += (f64)w * bytes / scale;
+            if (over && mx >= x0 && mx < x1) hot = i < v.n ? i : -2;
+            bool pinned = i < v.n && v.s[i].pinned, now = i < v.n && v.now[i], next = i < v.n && v.next[i];
+            u32 col = i == v.n ? COL_FAINT : now ? COL_RED : next ? COL_WARN : pinned ? 0x9fc4ff : COL_BLUE;
+            f32 x1g = x1 - (x1 - x0 > dp(3) ? kit_px(1) : 0);
+            bool lit = hot == (i < v.n ? i : -2);
+            dl->AddRectFilled(ImVec2(x0, a.y), ImVec2(x1g, z.y), col32(col, lit ? 1.f : 0.8f));
+            if (pinned) dl->AddRectFilled(ImVec2(x0, a.y), ImVec2(x1g, a.y + dp(3)), col32(0xffffff, 0.85f));
+            if (now) dl->AddLine(ImVec2(x0, mid), ImVec2(x1g, mid), col32(COL_BG), dp(2));
+        }
+        // Where the limit cuts the bar, when the links are over it
+        if (scale > limit) {
+            f32 lx = floorf(a.x + w * (f32)((f64)limit / scale));
+            dl->AddLine(ImVec2(lx, a.y - dp(3)), ImVec2(lx, z.y + dp(3)), col32(COL_TEXT), dp(2));
+        }
+        dl->PopClipRect();
+    }
+    char used[32], lim[32], t[80], sub[320];
+    u32 sub_col = COL_DIM;
+    lib_r2_size(ready ? v.total : 0, used, sizeof used);
+    lib_r2_size(limit, lim, sizeof lim);
+    snprintf(t, sizeof t, "%s of %s", used, lim);
+    opt_bar_value(z, ready ? t : "Not set up", COL_DIM);
+    R2Usage u = r2_usage();
+    if (hot >= 0) {
+        const R2Share &h = v.s[hot];
+        char size[32];
+        lib_r2_size(h.bytes, size, sizeof size);
+        snprintf(sub, sizeof sub, "%s - %s%s", h.title[0] ? h.title : h.game[0] ? h.game : "Clip", size,
+                 v.now[hot] ? ", removed on Save" : v.next[hot] ? ", goes next" : h.pinned ? ", pinned" : "");
+        sub_col = COL_TEXT;
+    } else if (hot == -2) {
+        char size[32];
+        lib_r2_size(v.other, size, sizeof size);
+        snprintf(sub, sizeof sub, "Other files - %s", size);
+        sub_col = COL_TEXT;
+    } else if (ready && draft && v.going) {
+        snprintf(sub, sizeof sub, "Save removes %d link%s", v.going, v.going == 1 ? "" : "s");
+        sub_col = COL_RED;
+    } else if (ready && u.class_a >= 0) snprintf(sub, sizeof sub, "About %s%.2f this month", opt_usd(), u.month_cost);
+    else str_set(sub, "What the links take up");
+    opt_row_lines("Space", g_font, sub, sub_col, false, a.x - dp(20));
+    opt_row_end();
+}
+
+// The account's reads this month as a bar of r2_read_cap (r2.cpp pauses the links near it)
+static void opt_reads_row()
+{
+    Config &c = g_app.config;
+    R2Usage u = r2_usage();
+    bool known = r2_ready() && u.account_reads >= 0;
+    opt_row_begin("Reads this month", u.capped ? "Links are paused until the 1st" : "Links pause near the limit",
+                  opt_wide_w());
+    ImVec2 a, z;
+    opt_bar_frame(&a, &z);
+    char got[24], cap[24], t[64];
+    if (known && c.r2_read_cap > 0) {
+        f32 f = fminf(1.f, (f32)((f64)u.account_reads / c.r2_read_cap));
+        u32 col = u.capped ? COL_RED : f > 0.8f ? COL_WARN : COL_BLUE;
+        if (f > 0) ImGui::GetWindowDrawList()->AddRectFilled(a, ImVec2(a.x + fmaxf(dp(3), (z.x - a.x) * f), z.y), col32(col), dp(3));
+    }
+    if (!r2_ready()) str_set(t, "Not set up");
+    else if (u.account_reads < 0) str_set(t, "Not read yet");
+    else {
+        r2_fmt_reads(u.account_reads, got, sizeof got);
+        r2_fmt_reads(c.r2_read_cap, cap, sizeof cap);
+        if (c.r2_read_cap > 0) snprintf(t, sizeof t, "%s of %s", got, cap);
+        else snprintf(t, sizeof t, "%s, no limit", got);
+    }
+    opt_bar_value(z, t, COL_DIM);
+    opt_row_end();
+}
+
+// The budget being picked, -1 for none: a draft the Space bar previews until Save writes it to r2_budget and the
+// bucket is cleaned up to it, or the undo button drops it.
+static f32 g_budget_draft = -1;
+
+// The budget: a slider (R2_BUDGET_TOP above), a box for an exact amount, then Save and undo, all in fixed slots.
+static void opt_budget_row()
+{
+    Config &c = g_app.config;
+    f32 &draft = g_budget_draft;
+    if (draft >= 0 && fabsf(draft - c.r2_budget) < 0.004f && !ImGui::IsAnyItemActive()) draft = -1;
+    f64 shown = draft >= 0 ? draft : c.r2_budget;
+    bool dirty = draft >= 0 && fabsf(draft - c.r2_budget) >= 0.004f;
+    char label[96];
+    opt_budget_label(shown, label, sizeof label);
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), box_w = dp(92), save_w = dp(72);
+    f32 slider_w = cw - box_w - save_w - fh - 3 * gap;
+    opt_row_begin("Monthly budget", label, cw);
+    f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+    f32 v = (f32)cbrt(fmin(fmax(shown, 0), R2_BUDGET_TOP) / R2_BUDGET_TOP);
+    ImGui::SetCursorScreenPos(ImVec2(x, floorf(y + (fh - dp(24)) / 2)));
+    if (lib_slider("##r2budget", &v, 0, 1, slider_w, dp(24))) {
+        f64 d = R2_BUDGET_TOP * v * v * v;
+        draft = (f32)(floor(d / 0.05 + 0.5) * 0.05);
+    }
+    // The exact amount, with the currency sign inside the box: what's typed is the draft as it's typed
+    static char typed[24];
+    static bool editing;
+    if (!editing) snprintf(typed, sizeof typed, "%.2f", shown);
+    const char *usd = opt_usd();
+    f32 pad = dp(8), sign_w = text_w(g_font, usd);
+    ImVec2 box(x + slider_w + gap, y);
+    ImGui::SetCursorScreenPos(box);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad + sign_w + dp(3), ImGui::GetStyle().FramePadding.y));
+    ImGui::SetNextItemWidth(box_w);
+    bool typed_now = ImGui::InputText("##r2budgettype", typed, sizeof typed,
+                                      ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+    editing = ImGui::IsItemActive();
+    bool left = ImGui::IsItemDeactivated();
+    ImGui::PopStyleVar();
+    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(box.x + pad, floorf(box.y + (fh - g_font->FontSize) / 2)),
+                COL_DIM, usd, box.x + box_w);
+    if (typed_now || left) {
+        char *end = 0;
+        f64 d = strtod(typed, &end);
+        if (end != typed && d >= 0) draft = (f32)(floor(fmin(d, R2_BUDGET_MOST) * 100 + 0.5) / 100);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(box.x + box_w + gap, y));
+    if (kit_button("Save##r2budgetsave", KIT_PRIMARY, ImVec2(save_w, 0), dirty)) {
+        c.r2_budget = draft;
+        draft = -1;
+        log_line("options: R2 budget $%.2f a month", c.r2_budget);
+        options_apply(0);
+        r2_cleanup_now();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
+    kit_next_tip("Put it back");
+    if (kit_icon_button(ICON_UNDO, "##r2budgetundo", KIT_GHOST, dirty)) draft = -1;
+    opt_row_end();
 }
 
 static void options_sharing()
@@ -2544,7 +2744,7 @@ static void options_sharing()
             if (fabsf(c.share_max_mb - sizes[i]) < 0.5f) at = i;
         if (at < 0) custom = true;
         f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - n * gap) / (n + 1));
-        opt_row_begin("Max file size", "The largest file Share sends. Bigger clips are squeezed to fit or go as a link", cw);
+        opt_row_begin("Max file size", "Bigger clips are squeezed or go as a link", cw);
         f32 x = g_row.x1 - cw, y = opt_row_frame_y();
         for (i32 i = 0; i <= n; i++) {
             ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
@@ -2576,56 +2776,37 @@ static void options_sharing()
 
     // Squeeze: how far over the max a clip may be and still go as a file, made smaller to fit
     {
-        f32 v = c.share_squeeze;
-        bool done;
-        if (opt_row_slider("Squeeze", "Clips a little over the max are made smaller to fit. Further over, Share makes a link",
-                           "##squeeze", &v, 1, 3, &done))
-            c.share_squeeze = floorf(v * 20 + 0.5f) / 20; // steps of 0.05
-        if (done) {
-            log_line("options: share squeeze %.2fx", c.share_squeeze);
-            options_apply(0);
-        }
-        char max_s[24], top_s[24], t[128];
+        static const f32 steps[] = {1, 1.25f, 1.5f, 2};
+        static const char *const labels[] = {"Off##sq0", "1.25x##sq1", "1.5x##sq2", "2x##sq3"};
+        char sub[96], top_s[24], max_s[24];
         share_size_label(c.share_max_mb, max_s, sizeof max_s);
         share_size_label(floorf(c.share_max_mb * c.share_squeeze), top_s, sizeof top_s);
-        if (c.share_squeeze < 1.025f) snprintf(t, sizeof t, "Off: a clip over %s goes as a link", max_s);
-        else snprintf(t, sizeof t, "%gx: a %s clip still goes as a %s file", c.share_squeeze, top_s, max_s);
-        opt_row_slider_end(t);
-    }
-    static char added[200]; // what Add uploader did, in place of the row's line
-    {
-        // With a bucket set up only Catbox is used, for the links it takes; the rows stay for when there's no bucket
-        opt_row_begin("Free links",
-                      added[0]       ? added
-                      : r2_set_up() ? "With your bucket: Catbox if it's on and the clip fits, else the bucket"
-                                    : "No setup. Public: anyone with the link can watch. Tried in the order numbered",
-                      bw);
-        if (kit_button(ICON_ADD "  Add uploader...##addup", KIT_SECONDARY, ImVec2(bw, 0))) {
-            Path file = {};
-            if (pick_file(file, &file, L"ShareX uploaders", L"*.sxcu")) {
-                char stem[64], why[160];
-                if (uploader_add(file.s, stem, sizeof stem, why, sizeof why)) {
-                    if (hosts_find(c.link_hosts, stem) < 0) hosts_toggle(c.link_hosts, sizeof c.link_hosts, stem);
-                    g_link_name_count = -1;
-                    snprintf(added, sizeof added, "Added %s, tried after the others", stem);
-                    options_apply(0);
-                } else snprintf(added, sizeof added, "Couldn't add it: %s", why);
-                log_line("options: uploader: %s", added);
+        if (c.share_squeeze < 1.01f) str_set(sub, "Bigger clips go as a link");
+        else snprintf(sub, sizeof sub, "A %s clip still goes as %s", top_s, max_s);
+        f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - 3 * gap) / 4);
+        opt_row_begin("Squeeze", sub, cw);
+        f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+        for (i32 i = 0; i < 4; i++) {
+            ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
+            if (kit_chip(labels[i], fabsf(c.share_squeeze - steps[i]) < 0.01f, 0, chip_w)) {
+                c.share_squeeze = steps[i];
+                log_line("options: share squeeze %.2fx", c.share_squeeze);
+                options_apply(0);
             }
         }
         opt_row_end();
-        opt_row_begin(0, 0, 0, 0, false);
-        opt_link_hosts();
-        opt_row_end();
     }
+
+    // The free hosts, each on or off. Catbox is tried first when the clip fits it, so its links are kept.
     {
-        char most[24], sub[96];
+        char most[24], sub[64];
         lib_r2_size(free_host(HOST_CATBOX)->max_bytes, most, sizeof most);
-        snprintf(sub, sizeof sub, "Clips up to %s. Kept for good: a link can't be deleted", most);
-        // The whole row shows how fast Catbox has been next to the bucket (Config.upload_rate)
-        opt_row_begin("Catbox", sub, 0);
-        ImGui::SetCursorScreenPos(ImVec2(g_row.x0, g_row.y));
-        ImGui::InvisibleButton("##catboxrow", ImVec2(g_row.x1 - g_row.x0, g_row.h));
+        snprintf(sub, sizeof sub, "Up to %s, kept forever", most);
+        opt_row_begin("Catbox", sub, dp(36));
+        if (kit_toggle("##catbox", &c.link_catbox)) {
+            log_line("options: Catbox %s", c.link_catbox ? "on" : "off");
+            options_apply(0);
+        }
         char tip[160];
         r2_rates_tip(c.upload_rate, c.upload_rate_n, r2_set_up(), tip, sizeof tip);
         kit_tip(tip);
@@ -2634,178 +2815,80 @@ static void options_sharing()
     {
         static const char *const hours[] = {"1 h", "12 h", "24 h", "72 h"};
         static const i32 hour_v[] = {1, 12, 24, 72};
-        char most[24], sub[96];
+        char most[24], sub[64];
         lib_r2_size(free_host(HOST_LITTERBOX)->max_bytes, most, sizeof most);
-        if (r2_set_up()) str_set(sub, "Not used with your bucket");
-        else snprintf(sub, sizeof sub, "Clips up to %s. Gone after this long", most);
-        f32 w = dp(240);
-        opt_row_begin("Litterbox", sub, w);
-        i32 on = 3, cur = free_hours(c.litterbox_hours);
+        if (r2_set_up()) str_set(sub, "Not used with Cloudflare");
+        else snprintf(sub, sizeof sub, "Up to %s, gone after", most);
+        f32 seg_w = dp(200), sw = dp(36), gap = dp(16);
+        opt_row_begin("Litterbox", sub, seg_w + gap + sw);
+        i32 at = 3, cur = free_hours(c.litterbox_hours);
         for (i32 i = 0; i < 4; i++)
-            if (hour_v[i] == cur) on = i;
-        i32 hit = lib_segments("##litterbox", hours, 4, w, ImGui::GetFrameHeight(), on, COL_PANEL2, COL_HOVER, COL_HOVER);
+            if (hour_v[i] == cur) at = i;
+        i32 hit = lib_segments("##litterbox", hours, 4, seg_w, ImGui::GetFrameHeight(), at, COL_PANEL2, COL_HOVER, COL_HOVER);
         if (hit >= 0 && hour_v[hit] != c.litterbox_hours) {
             c.litterbox_hours = hour_v[hit];
             log_line("options: Litterbox keeps links %d hours", c.litterbox_hours);
             options_apply(0);
         }
-        opt_row_end();
-    }
-    opt_card_end();
-
-    opt_section("YOUR OWN CLOUDFLARE");
-    opt_card_begin();
-    R2Status st = r2_status();
-    bool signed_in = r2_signed_in(), has = r2_has_token(), waiting = st.state == R2_SETUP_WAITING;
-    // Sign in: the browser does the rest. While it waits the button says so, and a click gives up.
-    {
-        f32 sw = text_w(g_font, "Waiting for Cloudflare...") + dp(32);
-        opt_row_begin("More space, private, deletable", "Your own R2 bucket; " APP_NAME " makes it and its keys", sw);
-        if (waiting) kit_next_tip("Stop waiting");
-        if (kit_button(waiting ? "Waiting for Cloudflare...##r2signin" : "Sign in with Cloudflare##r2signin",
-                       waiting ? KIT_SECONDARY : KIT_PRIMARY, ImVec2(sw, 0), waiting || (!signed_in && !has))) {
-            dev_click("options", waiting ? "r2 sign-in cancel" : "r2 sign in");
-            if (waiting) r2_sign_in_cancel();
-            else r2_sign_in();
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - sw, opt_row_frame_y()));
+        if (kit_toggle("##litterboxon", &c.link_litterbox)) {
+            log_line("options: Litterbox %s", c.link_litterbox ? "on" : "off");
+            options_apply(0);
         }
         opt_row_end();
     }
 
-    // Status: who and which bucket, what the setup is doing, or what went wrong
+    // Cloudflare: the player's own R2 bucket. One row for the account: who and what the setup is doing under the
+    // name, then Set up again and one button that signs in, waits (a click gives up), or signs out.
+    R2Status st = r2_status();
+    bool signed_in = r2_signed_in(), has = r2_has_token(), waiting = st.state == R2_SETUP_WAITING;
     {
-        opt_row_begin("Status", 0, bw);
+        f32 fh = ImGui::GetFrameHeight(), mw = text_w(g_font, "Sign in again") + dp(32), gap = dp(8);
+        opt_row_begin(0, 0, mw + gap + fh, dp(60));
         char text[400];
-        if (!signed_in && !has && st.state == R2_SETUP_IDLE) str_set(text, "Not set up");
+        if (!signed_in && !has && st.state == R2_SETUP_IDLE) str_set(text, "Your own bucket: more space, links you can delete");
         else if (st.state == R2_SETUP_IDLE) str_set(text, r2_ready() ? "Set up" : "Not set up");
         else if (st.who[0] && st.state == R2_SETUP_OK) snprintf(text, sizeof text, "%s  -  %s", st.who, st.text);
         else str_set(text, st.text);
         u32 col = st.state == R2_SETUP_OK ? COL_OK
                   : st.state == R2_SETUP_FAILED || st.state == R2_SETUP_NO_TOKEN_SCOPE ? COL_WARN : COL_DIM;
-        opt_status(text, col, g_row.x1 - bw - dp(16), g_row.x0 + dp(80));
-        // A sign-in without API Tokens Write can't make the bucket's key: the button signs in again instead
-        if (st.state == R2_SETUP_NO_TOKEN_SCOPE) {
-            if (kit_button("Sign in again##r2again", KIT_PRIMARY, ImVec2(bw, 0))) {
-                dev_click("options", "r2 sign in again for API Tokens Write");
-                r2_sign_in();
-            }
-        } else if (kit_button("Set up again##r2again", KIT_SECONDARY, ImVec2(bw, 0),
-                              (signed_in || has) && st.state != R2_SETUP_BUSY && !waiting)) {
+        opt_row_lines("Cloudflare", g_font_bold, text, col, col != COL_DIM, g_row.x1 - mw - gap - fh - dp(20));
+        f32 x = g_row.x1 - mw - gap - fh, y = opt_row_frame_y();
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        kit_next_tip("Set up again");
+        if (kit_icon_button(ICON_REFRESH, "##r2again", KIT_GHOST,
+                            (signed_in || has) && st.state != R2_SETUP_BUSY && st.state != R2_SETUP_NO_TOKEN_SCOPE &&
+                                !waiting)) {
             log_line("options: R2 set up again");
             r2_setup_again();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - mw, y));
+        if (waiting) {
+            kit_next_tip("Stop waiting");
+            if (kit_button("Waiting...##r2main", KIT_SECONDARY, ImVec2(mw, 0))) {
+                dev_click("options", "r2 sign-in cancel");
+                r2_sign_in_cancel();
+            }
+        } else if (st.state == R2_SETUP_NO_TOKEN_SCOPE || (!signed_in && !has)) {
+            if (kit_button(signed_in || has || st.state == R2_SETUP_NO_TOKEN_SCOPE ? "Sign in again##r2main" : "Sign in##r2main",
+                           KIT_PRIMARY, ImVec2(mw, 0))) {
+                dev_click("options", "r2 sign in");
+                r2_sign_in();
+            }
+        } else {
+            kit_next_tip("Forgets the keys. The bucket and its links stay");
+            if (kit_button("Sign out##r2main", KIT_SECONDARY, ImVec2(mw, 0))) {
+                log_line("options: R2 sign out");
+                r2_sign_out();
+            }
         }
         if (st.state == R2_SETUP_BUSY || waiting) ui_wake();
         opt_row_end();
     }
 
-    opt_row_begin("Sign out", "Removes " APP_NAME "'s access and forgets the keys. The bucket and its links stay", bw);
-    if (kit_button("Sign out##r2signout", KIT_SECONDARY, ImVec2(bw, 0), (signed_in || has) && !waiting)) {
-        log_line("options: R2 sign out");
-        r2_sign_out();
-    }
-    opt_row_end();
-
-    // The budget: the slider (R2_BUDGET_TOP above), and its label, which a click turns into a box to type an
-    // amount in, in the label's place and height
-    {
-        static bool typing, focus;
-        static char typed[24];
-        f32 v = (f32)cbrt(fmin(fmax(c.r2_budget, 0), R2_BUDGET_TOP) / R2_BUDGET_TOP);
-        bool done;
-        if (opt_row_slider("Monthly budget", "Past it the oldest links that aren't pinned are removed", "##r2budget", &v, 0,
-                           1, &done)) {
-            f64 d = R2_BUDGET_TOP * v * v * v;
-            c.r2_budget = (f32)(floor(d / 0.05 + 0.5) * 0.05);
-            typing = false;
-        }
-        if (done) {
-            log_line("options: R2 budget $%.2f a month", c.r2_budget);
-            options_apply(0);
-        }
-        f32 cw = opt_wide_w();
-        ImVec2 at(g_row.x1 - cw + kit_px(7), g_row.y + dp(12));
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        if (typing) {
-            ImGui::SetCursorScreenPos(ImVec2(at.x - kit_px(4), at.y));
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(4), 0));
-            ImGui::SetNextItemWidth(dp(110));
-            if (focus) {
-                ImGui::SetKeyboardFocusHere();
-                focus = false;
-            }
-            bool enter = ImGui::InputText("##r2budgettype", typed, sizeof typed,
-                                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsDecimal |
-                                              ImGuiInputTextFlags_AutoSelectAll);
-            bool left = ImGui::IsItemDeactivated() && !ImGui::IsKeyPressed(ImGuiKey_Escape);
-            bool gone = ImGui::IsItemDeactivated();
-            ImGui::PopStyleVar();
-            char *end = 0;
-            f64 d = strtod(typed, &end);
-            if ((enter || left) && end != typed && d >= 0) {
-                c.r2_budget = (f32)(floor(fmin(d, R2_BUDGET_MOST) * 100 + 0.5) / 100);
-                log_line("options: R2 budget $%.2f a month, typed", c.r2_budget);
-                options_apply(0);
-            }
-            if (enter || gone) typing = false;
-            char hint[48];
-            snprintf(hint, sizeof hint, "%s a month", opt_usd());
-            opt_text_at(dl, g_font, ImVec2(at.x + dp(114), at.y), COL_DIM, hint, g_row.x1);
-        } else {
-            char t[96];
-            opt_budget_label(c.r2_budget, t, sizeof t);
-            f32 tw = text_w(g_font, t);
-            ImGui::SetCursorScreenPos(at);
-            kit_next_tip("Type an amount");
-            if (ImGui::InvisibleButton("##r2budgetclick", ImVec2(tw, g_font->FontSize))) {
-                typing = focus = true;
-                snprintf(typed, sizeof typed, "%.2f", c.r2_budget);
-            }
-            bool hot = ImGui::IsItemHovered();
-            if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
-            opt_text_at(dl, g_font, at, COL_TEXT, t, g_row.x1);
-            if (hot)
-                dl->AddLine(ImVec2(at.x, at.y + g_font->FontSize), ImVec2(at.x + tw, at.y + g_font->FontSize),
-                            col32(COL_TEXT, 0.5f));
-        }
-        opt_row_end();
-    }
-
-    // The account's reads this month against r2_read_cap (r2.cpp pauses the links near it)
-    {
-        R2Usage u = r2_usage();
-        char got[24], cap[24], t[64];
-        u32 col = COL_TEXT;
-        const char *sub = "Links pause before the account passes R2's free reads";
-        if (!r2_ready()) {
-            str_set(t, "Not set up");
-            col = COL_DIM;
-        } else if (u.account_reads < 0) {
-            str_set(t, "Not read yet");
-            col = COL_DIM;
-        } else {
-            r2_fmt_reads(u.account_reads, got, sizeof got);
-            r2_fmt_reads(c.r2_read_cap, cap, sizeof cap);
-            if (c.r2_read_cap > 0) snprintf(t, sizeof t, "%s of %s", got, cap);
-            else str_set(t, got);
-            if (c.r2_read_cap <= 0) sub = "No limit is set";
-            else if (u.capped) sub = "Links are paused until the 1st";
-        }
-        opt_row_value("Reads this month", sub, t, col);
-    }
-    {
-        R2Usage u = r2_usage();
-        char used[32], lim[32], t[96], sub[160];
-        lib_r2_size(u.bucket_bytes >= 0 ? u.bucket_bytes : u.used_bytes, used, sizeof used);
-        lib_r2_size(u.limit_bytes, lim, sizeof lim);
-        snprintf(t, sizeof t, "Using %s of %s", used, lim);
-        if (u.class_a >= 0 && u.class_b >= 0) {
-            char a[32], b[32];
-            fmt_count(u.class_a, a, sizeof a);
-            fmt_count(u.class_b, b, sizeof b);
-            snprintf(sub, sizeof sub, "%s uploads, %s plays this month, about $%.2f", a, b, u.month_cost);
-        } else str_set(sub, "What the links take up in the bucket");
-        if (r2_ready()) opt_row_value("Space", sub, t, COL_TEXT);
-        else opt_row_value("Space", "What the links take up in the bucket", "Not set up", COL_DIM);
-    }
+    opt_budget_row();
+    opt_space_row(r2_limit_for_budget(g_budget_draft >= 0 ? g_budget_draft : c.r2_budget), g_budget_draft >= 0);
+    opt_reads_row();
 
     // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made
     // by hand. Each link has a slot as wide as its longer wording, so neither moves when the other is clicked.
