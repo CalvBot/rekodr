@@ -3397,11 +3397,12 @@ static bool lib_link_to_menu(const LibItem &it)
 }
 
 static bool g_card_pick_game; // "Pick a game" on a card was clicked: the picker opens for lib.target
+static bool g_card_share_open; // a card's Share arrow was clicked: its Share menu opens for lib.target
 
 static void card_menu()
 {
     Library &lib = g_app.library;
-    bool rename = false, display_name = false, del = false, folders = false, game = false, comment = false, tags = false, share = false;
+    bool rename = false, display_name = false, del = false, folders = false, game = false, comment = false, tags = false;
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
@@ -3410,7 +3411,6 @@ static void card_menu()
         if (lib_menu_item(ICON_EDIT, "Edit")) editor_open(it);
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
         if (lib_menu_item(ICON_SHARE, "Share")) lib_share_decided(it);
-        if (lib_menu_item(ICON_DOWN, "Share...")) share = true;
         if (lib_link_to_menu(it)) ImGui::CloseCurrentPopup();
         if (lib_menu_item(ICON_LINK, "Copy link")) lib_share_item(it, SHARE_LINK);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
@@ -3431,7 +3431,8 @@ static void card_menu()
     lib_comment_dialog();
     if (tags) lib_tags_open(lib.target);
     lib_tags_dialog();
-    if (share) ImGui::OpenPopup("card_share");
+    if (g_card_share_open) ImGui::OpenPopup("card_share");
+    g_card_share_open = false;
     lib_share_menu("card_share", lib.target);
     if (del) ImGui::OpenPopup("Delete");
     if (game || g_card_pick_game) ImGui::OpenPopup("card_game");
@@ -4151,6 +4152,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     bool renaming = lib.rename_key == it.key;
     char shown[300];
     bool timed = lib_shown_name(it.name, shown, sizeof shown);
+    ImGui::SetNextItemAllowOverlap(); // the Share button sits on it
     bool pressed = ImGui::InvisibleButton("card", ImVec2(w, renaming ? thumb_h : thumb_h + meta_h));
     if (ImGui::IsItemHovered() && ImGui::IsKeyPressed(ImGuiKey_F2, false) && !renaming) lib_rename_start(it);
     // A click plays it; a drag carries it to a folder in the list on the left.
@@ -4293,9 +4295,11 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         lib.target = it;
         lib.open_menu = true;
     }
-    // The caption: the game's icon, then the name and one dim line. Renaming edits the name right there.
+    // The caption: the game's icon, then the name and one dim line, and the Share button on the right, in the same
+    // place on every card. Renaming edits the name right there.
     f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
-    f32 tx = a.x + isz + kit_px(10), tw = a.x + w - tx;
+    f32 sh = kit_px(28), sw = 2 * sh, cap_y = y;
+    f32 tx = a.x + isz + kit_px(10), tw = a.x + w - sw - kit_px(10) - tx;
     // No game (GAME_DESKTOP, GAME_NOT_OURS) and a custom game get a plain glyph, never an icon looked up by name.
     bool desktop = !strcmp(it.info.game, GAME_DESKTOP), no_game = game_is_none(it.info.game);
     bool custom = !no_game && it.info.game[0] && game_is_custom(it.info.game);
@@ -4348,7 +4352,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (lib_comment(it.key)[0] && !err) { // a note at the line's right end, the same spot on every card
         f32 gsz = g_font_small->FontSize;
         ImVec2 gs = g_font_icon->CalcTextSizeA(gsz, FLT_MAX, 0, ICON_COMMENT);
-        dl->AddText(g_font_icon, gsz, ImVec2(floorf(a.x + w - gs.x), floorf(y + (gsz - gs.y) / 2 + kit_px(1))), col32(COL_DIM),
+        dl->AddText(g_font_icon, gsz, ImVec2(floorf(tx + tw - gs.x), floorf(y + (gsz - gs.y) / 2 + kit_px(1))), col32(COL_DIM),
                     ICON_COMMENT);
         line_w = tw - gs.x - kit_px(8);
     }
@@ -4367,6 +4371,16 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         if (rx < tx + line_w) text_clipped(dl, ImVec2(rx, y), tx + line_w - rx, col32(COL_DIM), rest);
     } else text_clipped(dl, ImVec2(tx, y), line_w, col32(err ? COL_RED : COL_DIM), line);
     ImGui::PopFont();
+    // Share: a click shares as the one-click rule picks, the arrow (or a right-click) opens the card's Share menu
+    ImGui::PushID((const void *)(uintptr_t)it.key);
+    ImGui::SetCursorScreenPos(ImVec2(a.x + w - sw, floorf(cap_y + (isz - sh) / 2)));
+    i32 sb = kit_split_button(ICON_SHARE, "##cardshare", KIT_SECONDARY, ImVec2(sw, sh));
+    ImGui::PopID();
+    if (sb == 1) lib_share_decided(it);
+    else if (sb == 2) {
+        lib.target = it;
+        g_card_share_open = true;
+    }
     if (clicked) {
         ImVec2 c = io.MouseClickedPos[0];
         bool on_box = c.x >= b0.x - kit_px(4) && c.x < b1.x + kit_px(4) && c.y >= b0.y - kit_px(4) && c.y < b1.y + kit_px(4);
