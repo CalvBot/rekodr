@@ -2334,6 +2334,8 @@ static void r2_run_free(const R2Task &t)
     s.uploaded_us = now_us();
     s.expires_us = used && used->expires ? s.uploaded_us + (i64)free_hours(t.hours) * 3600 * 1000000 : 0;
     s.lib_key = w.lib_key;
+    s.seconds = t.seconds;
+    s.preview = t.preview;
     str_set(s.url, url);
     str_set(s.title, w.title);
     str_set(s.game, w.game);
@@ -3611,7 +3613,17 @@ static void r2_start_copy(i32 slot)
     ReleaseSRWLockExclusive(&g_r2.lock);
     bool page = !strcmp(w.hosts, "r2") && g_app.config.share_link_page;
     w.phase = page && (w.aim > R2_SOCIAL_BYTES || w.info.width > 1920 || w.info.height > 1080) ? 1 : 0;
-    w.save = save_link(w.src, w.info, w.edit, stem, w.aim, w.limit);
+    w.preview = 0;
+    if (strcmp(w.hosts, "r2") && w.aim > R2_SOCIAL_BYTES) {
+        // A free host or uploader gets what a card plays, never more than R2_SOCIAL_BYTES: the clip at a smaller
+        // height, or a preview of its start
+        f64 full_s = 0;
+        f64 secs = w.edit.mode == EDIT_ADVANCED ? adv_len(w.edit) : pieces_len(w.edit, w.info.duration);
+        i32 h = r2_social_height(secs, w.info.width, w.info.height, w.info.fps,
+                                 w.info.track_count > 0, w.aim, R2_SOCIAL_BYTES);
+        w.save = save_social_copy(w.src, w.info, w.edit, stem, R2_SOCIAL_BYTES, h, &w.preview, &full_s);
+        if (w.preview > 0) log_line("r2: %s gets a preview, the first %.0f of %.0f s", w.hosts, w.preview, full_s);
+    } else w.save = save_link(w.src, w.info, w.edit, stem, w.aim, w.limit);
     if (!w.save) r2_fail_now(slot, "Too many saves are waiting");
 }
 
@@ -3835,7 +3847,10 @@ static void r2_on_save_event(const Event &e)
             log_line("r2: the small copy couldn't be made (%s): cards show the picture", v->error);
             t.social_h = -1;
         }
-    } else utf8_to_wide(v->path, t.file.s, MAX_PATH);
+    } else {
+        utf8_to_wide(v->path, t.file.s, MAX_PATH);
+        t.preview = (f32)w.preview; // a free host's copy may be a preview
+    }
     if (t.social.s[0] && r2_cancelled(g_r2.jobs[slot].id)) DeleteFileW(t.social.s);
     if (r2_cancelled_before(g_r2.jobs[slot].id, t.file)) return;
     bool to_r2 = !strcmp(w.hosts, "r2");
