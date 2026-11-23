@@ -3193,6 +3193,83 @@ static void opt_min_quality_row()
     opt_row_end();
 }
 
+// The clip a link card's preview shows: the newest clip with a game, else the newest clip, else none.
+static const LibItem *opt_card_sample()
+{
+    Library &lib = g_app.library;
+    const LibItem *best = 0;
+    for (i32 i = 0; i < lib.item_count; i++) {
+        const LibItem &it = lib.items[i];
+        if (it.kind != LIB_CLIPS || !it.probed) continue;
+        bool better = !best || (it.info.game[0] && !best->info.game[0]) ||
+                      (!it.info.game[0] == !best->info.game[0] && it.when_us > best->when_us);
+        if (better) best = &it;
+    }
+    return best;
+}
+
+// A link's card as Discord shows it, built by embed_card as the page's is: the title in bold, the line (with the
+// game's icon), the video with a play button, and the small grey "via" line. Its size is fixed, so typing a name
+// moves nothing.
+static void opt_link_card_preview()
+{
+    Config &c = g_app.config;
+    const LibItem *it = opt_card_sample();
+    char title[200];
+    str_set(title, !it ? "Clip" : it->display_name[0] ? it->display_name : it->name);
+    const char *game = it ? it->info.game : "";
+    EmbedInput in = {title, game, c.clipper_name, it ? it->info.duration : 42, 0, now_us(), true, 0};
+    EmbedCard card;
+    embed_card(in, &card);
+
+    f32 cw = opt_wide_w(), pad = dp(12), bar = dp(4);
+    f32 title_h = g_font_bold->FontSize, line_h = g_font->FontSize, via_h = g_font_small->FontSize;
+    f32 vid_w = cw - bar - 2 * pad, vid_h = floorf(vid_w * 9 / 16);
+    f32 card_h = pad + title_h + dp(6) + line_h + dp(10) + vid_h + dp(8) + via_h + pad;
+    opt_row_begin("Preview", "How Discord shows a link from your bucket", cw, card_h + dp(24));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a(g_row.x1 - cw, g_row.y + dp(12)), b(g_row.x1, g_row.y + dp(12) + card_h);
+    // Discord's dark theme, whatever ours is
+    const u32 BG = 0x2b2d31, EDGE = 0x1e1f22, TITLE = 0xf2f3f5, LINE = 0xb5bac1, FAINT = 0x949ba4;
+    dl->AddRectFilled(a, b, col32(BG), dp(8));
+    dl->AddRect(a, b, col32(EDGE), dp(8));
+    if (card.accent) dl->AddRectFilled(a, ImVec2(a.x + bar, b.y), col32(card.accent), dp(8), ImDrawFlags_RoundCornersLeft);
+    f32 x = a.x + bar + pad, x1 = b.x - pad, y = a.y + pad;
+    opt_text_at(dl, g_font_bold, ImVec2(x, y), TITLE, card.title, x1);
+    y += title_h + dp(6);
+    {
+        f32 lx = x;
+        ID3D11ShaderResourceView *icon = card.icon && game[0] ? game_icon(game) : 0;
+        if (icon) {
+            f32 is = floorf(line_h);
+            dl->AddImageRounded((ImTextureID)(intptr_t)icon, ImVec2(lx, y), ImVec2(lx + is, y + is), ImVec2(0, 0), ImVec2(1, 1),
+                                IM_COL32_WHITE, dp(3));
+            lx += is + dp(6);
+        }
+        f32 tag_w = card.tag[0] ? text_w(g_font, card.tag) + dp(8) : 0;
+        if (card.line[0]) opt_text_at(dl, g_font, ImVec2(lx, y), LINE, card.line, x1 - tag_w);
+        if (card.tag[0]) opt_text_at(dl, g_font, ImVec2(x1 - tag_w + dp(8), y), FAINT, card.tag, x1 + 1);
+    }
+    y += line_h + dp(10);
+    ImVec2 v0(x, y), v1(x + vid_w, y + vid_h);
+    LibThumb *th = it ? lib_thumb(*it) : 0;
+    if (th && th->srv)
+        dl->AddImageRounded((ImTextureID)(intptr_t)th->srv, v0, v1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, dp(6));
+    else dl->AddRectFilled(v0, v1, col32(0x111214), dp(6));
+    if (card.player) { // the play button over the picture
+        ImVec2 m((v0.x + v1.x) / 2, (v0.y + v1.y) / 2);
+        f32 r = dp(22);
+        dl->AddCircleFilled(m, r, IM_COL32(0, 0, 0, 150), 32);
+        f32 t = r * 0.42f;
+        dl->AddTriangleFilled(ImVec2(m.x - t * 0.7f, m.y - t), ImVec2(m.x - t * 0.7f, m.y + t), ImVec2(m.x + t, m.y),
+                              IM_COL32_WHITE);
+    }
+    y += vid_h + dp(8);
+    if (card.via) opt_text_at(dl, g_font_small, ImVec2(x, y), FAINT, "via " APP_NAME, x1);
+    if (th && th->pending) ui_wake();
+    opt_row_end();
+}
+
 static void options_sharing()
 {
     Config &c = g_app.config;
@@ -3461,6 +3538,41 @@ static void options_sharing()
             opt_row_end();
         }
     }
+    opt_card_end();
+
+    // A link's card in Discord: the clipper's name on it, and how it looks
+    opt_section("LINK CARD");
+    opt_card_begin();
+    {
+        opt_row_begin("Your name", "Shown beside the game. Empty: no name", fw);
+        char name[64];
+        if (opt_text("##clippername", c.clipper_name, fw, 0, "None", name, sizeof name)) {
+            str_set(c.clipper_name, trim(name));
+            log_line("options: clipper name %s", c.clipper_name[0] ? "set" : "cleared");
+            options_apply(0);
+        }
+        opt_row_end();
+    }
+    // The small copy a link's card plays: its size as chips across the control column
+    {
+        static const f32 sizes[] = {50, 80, 100, 150, 200};
+        i32 n = (i32)COUNT(sizes);
+        f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - (n - 1) * gap) / n);
+        opt_row_begin("Card video size", "The small copy the card plays. Too big and it won't play", cw);
+        f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+        for (i32 i = 0; i < n; i++) {
+            ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
+            char label[32];
+            snprintf(label, sizeof label, "%.0f MB##social%d", sizes[i], i);
+            if (kit_chip(label, fabsf(c.social_copy_mb - sizes[i]) < 0.5f, 0, chip_w)) {
+                c.social_copy_mb = sizes[i];
+                log_line("options: card video %g MB", c.social_copy_mb);
+                options_apply(0);
+            }
+        }
+        opt_row_end();
+    }
+    opt_link_card_preview();
     opt_card_end();
 }
 
