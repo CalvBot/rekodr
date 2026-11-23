@@ -2883,8 +2883,11 @@ static ClipShareState lib_clip_state(const LibItem &it)
 static void lib_delete_note(const u64 *keys, i32 n, char *out, i32 cap)
 {
     i32 gone = 0, stay = 0;
+    bool link = false;
     char cant[160] = "", one[160];
     for (i32 i = 0; i < n; i++) {
+        R2Share ls;
+        link = link || share_clip_link(keys[i], &ls);
         gone += share_clip_delete_preview(keys[i], one, sizeof one);
         if (one[0]) {
             stay++;
@@ -2896,6 +2899,10 @@ static void lib_delete_note(const u64 *keys, i32 n, char *out, i32 cap)
     if (stay) {
         size_t l = strlen(out);
         snprintf(out + l, cap - l, "%s%s.", l ? " " : "", stay == 1 ? cant : "Some links on free hosts can't be removed and stay up");
+    }
+    if (link) { // a posted link's preview is the chat app's own copy
+        size_t l = strlen(out);
+        snprintf(out + l, cap - l, "%sDiscord may keep showing a posted link for a while.", l ? " " : "");
     }
 }
 
@@ -3442,11 +3449,10 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         kit_tip(host[0] ? "Remove from the list" : "Delete the link");
         lib_popup_style_push(6);
         if (ImGui::BeginPopup("link_delete")) {
-            if (host[0]) {
-                ImGui::PushFont(g_font_small);
-                kit_dim(s.expires_us ? "  The file stays on %s until it ends" : "  The file stays on %s", host);
-                ImGui::PopFont();
-            }
+            ImGui::PushFont(g_font_small);
+            if (host[0]) kit_dim(s.expires_us ? "  The file stays on %s until it ends" : "  The file stays on %s", host);
+            else kit_dim("  Discord may keep showing it for a while");
+            ImGui::PopFont();
             if (lib_menu_item(ICON_DELETE, host[0] ? "Remove from the list" : "Delete it from the bucket", true, kit_px(240))) {
                 log_line("library: link %s %s", s.key, host[0] ? "taken off the list" : "deleted");
                 r2_delete(s.key);
