@@ -34,6 +34,8 @@ struct RenderState {
     struct { u64 key, hash; } failed[32]; // renders that failed, not tried again until the edit changes
     i32     failed_at;
     u64     restore_logged; // the key whose original couldn't go back, logged once
+    u64     waiting[LIB_MAX_ITEMS]; // clips the last look found needing a render, not yet started (keys)
+    i32     waiting_count;
 };
 static RenderState g_render;
 
@@ -65,6 +67,16 @@ static f32 render_progress(u64 key)
     if (!g_render.job || g_render.item.key != key) return -1;
     SaveJobView *v = save_view(g_render.job);
     return v && v->state == SAVE_RUNNING ? v->progress : 0;
+}
+
+// Whether a clip's edit waits to be rendered: found needing it on the last look over the clips (every
+// RENDER_EVERY_MS), and not the one rendering now (render_progress).
+static bool render_waiting(u64 key)
+{
+    if (g_render.job && g_render.item.key == key) return false;
+    for (i32 i = 0; i < g_render.waiting_count; i++)
+        if (g_render.waiting[i] == key) return true;
+    return false;
 }
 
 // What a clip needs: put the original back (no edit, or rendering off), render it (an edit not rendered as it is
@@ -299,7 +311,9 @@ static void render_tick()
     bool on = g_app.config.render_edits, busy = game || g_app.saving.jobs_running > 0;
     i64 now = now_us();
     const Library &lib = g_app.library;
-    for (i32 i = 0; i < lib.item_count; i++) { // newest first
+    bool started = false;
+    r.waiting_count = 0;
+    for (i32 i = 0; i < lib.item_count; i++) { // newest first, the first that may be rendered is
         const LibItem &it = lib.items[i];
         if (it.kind != LIB_CLIPS || _stricmp(it.ext, ".mp4") || !it.probed) continue;
         i64 mtime = 0;
@@ -318,9 +332,13 @@ static void render_tick()
             }
             RenderNeed need = render_need(on, it.rendered, has_edit, noted && note.edit_hash == hash);
             if (need == RENDER_RESTORE && render_restore(it)) library_rescan();
-            if (need != RENDER_MAKE || busy || render_failed_before(it.key, hash)) continue;
-            if (!render_settled(render_editor_on(it), it.rendered, mtime, now)) continue;
-            if (render_start(it, rec, mtime, hash)) return;
+            if (need != RENDER_MAKE || render_failed_before(it.key, hash)) continue;
+            if (!started && !busy && render_settled(render_editor_on(it), it.rendered, mtime, now) &&
+                render_start(it, rec, mtime, hash)) {
+                started = true;
+                continue;
+            }
+            r.waiting[r.waiting_count++] = it.key;
             continue;
         }
         if (render_need(on, it.rendered, has_edit, true) == RENDER_RESTORE && render_restore(it)) library_rescan();
