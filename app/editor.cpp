@@ -2722,16 +2722,22 @@ static void ed_share_tab(f32 w)
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
         ed_card_head(ICON_SHARE, "Share", can ? d.why : d.link_why, iw - bw - gap, can ? 0 : col32(0xff8a92));
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
-        // Its arrow, or a right-click, opens the Share menu, which shows a running Share's step
-        i32 sb = kit_split_button(sharing ? "Sharing..." : ICON_SHARE "  Share", "##edshare", KIT_PRIMARY, ImVec2(bw, 0),
-                                  !sharing && can);
+        // Its arrow, or a right-click, opens the Share menu. A running Share shows its percent and a bar on the
+        // button, then how it went.
+        ShareJobView j = ed.share_job ? share_job(ed.share_job) : ShareJobView{};
+        ShareMenuState js = share_menu_state(j);
+        char label[48];
+        if (js.running) snprintf(label, sizeof label, "Sharing %d%%", (i32)(js.progress * 100 + 0.5f));
+        else if (js.done) str_set(label, js.line);
+        else str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
+        i32 sb = kit_split_button(label, "##edshare", KIT_PRIMARY, ImVec2(bw, 0), !sharing && can, true,
+                                  js.running ? js.progress : -1);
         if (sb == 1) ed_share_ask(d.kind);
         else if (sb == 2) ImGui::OpenPopup("ed_share_menu");
         lib_popup_style_push(8);
         if (ImGui::BeginPopup("ed_share_menu")) {
-            ShareJobView j = ed.share_job ? share_job(ed.share_job) : ShareJobView{};
             char pick[64];
-            i32 r = share_menu_body(d, ed_share_info(), &ed.edit, share_menu_state(j), ed.item.key, ed.path.s, pick);
+            i32 r = share_menu_body(d, ed_share_info(), &ed.edit, js, ed.item.key, ed.path.s, pick);
             if (r == SHARE_MENU_SHARE) ed_share_ask(d.kind);
             else if (r == SHARE_MENU_HOST) ed_share_ask(SHARE_LINK, pick);
             ImGui::EndPopup();

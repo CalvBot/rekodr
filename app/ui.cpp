@@ -621,7 +621,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
 // (as wide as the button is tall) opens a choice. Returns 1 for the main part, 2 for the arrow or a right-click on
 // either, 0 for neither. Each part is on or off by itself.
 static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImVec2 size, bool enabled = true,
-                            bool arrow_enabled = true)
+                            bool arrow_enabled = true, f32 progress = -1)
 {
     f32 h = size.y > 0 ? size.y : ImGui::GetFrameHeight(), aw = h, r = ImGui::GetStyle().FrameRounding;
     ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + size.x, a.y + h);
@@ -657,6 +657,12 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
                           i ? ImDrawFlags_RoundCornersRight : ImDrawFlags_RoundCornersLeft);
     }
     dl->AddLine(ImVec2(split, a.y + kit_px(6)), ImVec2(split, z.y - kit_px(6)), col32(0x000000, 0.3f), kit_px(1));
+    if (progress >= 0) { // a thin bar along the bottom edge
+        f32 by = z.y - kit_px(4), x0 = a.x + r, x1 = z.x - r, bh = kit_px(2);
+        u32 bar = kind == KIT_PRIMARY ? 0xffffff : COL_ACCENT;
+        dl->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), col32(bar, 0.25f), bh);
+        dl->AddRectFilled(ImVec2(x0, by), ImVec2(x0 + (x1 - x0) * (progress > 1 ? 1 : progress), by + bh), col32(bar), bh);
+    }
     if (kind == KIT_PRIMARY) ImGui::PushFont(g_font_bold);
     const char *end = ImGui::FindRenderedTextEnd(label);
     ImVec2 ts = ImGui::CalcTextSize(label, end);
@@ -1149,7 +1155,7 @@ static void help_window()
             {"[Shift]+[Left] / [Right]", "Back 10 s / forward 30 s"},
             {"[Shift]+[.] / [,]", "Faster / slower"},
             {"[M]", "Mute / unmute"},
-            {"Right-click Share", "Pick where the link goes"},
+            {"Right-click Share", "The Share menu: the link, where it goes, the original"},
             {"[Esc]", "Close the player"},
         };
         static const HelpRow editor[] = {
@@ -1185,7 +1191,7 @@ static void help_window()
             {"[,] / [.]", "Step one frame"},
             {"[Shift]+[Left] / [Right]", "Step 1 s"},
             {"Drag the picture", "Aim the zoom (when zoomed in)"},
-            {"Right-click Share", "Pick where the link goes"},
+            {"Right-click Share", "The Share menu: the link, where it goes, the original"},
             {"[Esc]", "Clear the selection, then back to the library"},
         };
         static const HelpRow timeline[] = {
@@ -1218,7 +1224,7 @@ static void help_window()
             {"Quality", "Starts at YouTube's published upload bitrates. Reset puts them back"},
             {"Lower quality to fit", "How far under the recommended bitrate a file may go to fit the max size. At 100% bigger clips go as a link"},
             {"Where a link goes", "Catbox if it takes the clip, then your bucket, then Litterbox, then your servers"},
-            {"Link to", "Share's arrow: pick the host yourself"},
+            {"Link to", "In the Share menu: pick the host yourself"},
             {"Catbox", "Up to 200 MB. Public, kept for good: a link can't be deleted"},
             {"Litterbox", "Up to 1 GB. Public, gone after the hours picked"},
             {"Your bucket", "Your own Cloudflare storage: links you can pause and delete"},

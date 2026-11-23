@@ -3108,53 +3108,6 @@ static void lib_share_pending_check()
     }
 }
 
-// "Link to": a row for every host that's on or set up (share_host_choices), with how `m` played as `edit` goes
-// there; one that can't take it is greyed. With none, a row that opens Options on Sharing. True when a host is
-// clicked, its name in `pick`.
-static bool link_to_rows(const MediaInfo &m, const EditRecord *edit, f32 w, char (&pick)[64])
-{
-    static ShareHostChoice c[24];
-    i32 n = share_host_choices(m, edit, c, COUNT(c));
-    if (!n) {
-        if (lib_menu_item(ICON_SETTINGS, "Set up a host...", false, w)) lib_open_sharing();
-        return false;
-    }
-    f32 h = kit_px(28), pad = kit_px(10);
-    bool picked = false;
-    for (i32 i = 0; i < n; i++) {
-        const ShareHostChoice &x = c[i];
-        bool ok = x.fit != SHARE_FIT_NO;
-        ImGui::PushID(i);
-        ImVec2 a = ImGui::GetCursorScreenPos();
-        if (ImGui::Selectable("##host", false, ok ? 0 : ImGuiSelectableFlags_Disabled, ImVec2(w, h))) {
-            str_set(pick, x.name);
-            dev_click("menu", x.name);
-            picked = true;
-        }
-        if (!ok) kit_tip(x.why);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        ImGui::PushFont(g_font_icon);
-        ImVec2 is = ImGui::CalcTextSize(ICON_LINK);
-        dl->AddText(ImVec2(a.x + pad, floorf(a.y + (h - is.y) / 2)), col32(ok ? COL_DIM : COL_FAINT), ICON_LINK);
-        ImGui::PopFont();
-        char size_s[24], side[48];
-        share_size_text(x.bytes, size_s, sizeof size_s);
-        if (!ok) str_set(side, "too big");
-        else snprintf(side, sizeof side, "%s, %s", x.fit == SHARE_FIT_SQUEEZED ? "squeezed" : "as is", size_s);
-        ImGui::PushFont(g_font_small);
-        ImVec2 ss = ImGui::CalcTextSize(side);
-        f32 sx = a.x + w - pad - ss.x;
-        dl->AddText(ImVec2(sx, floorf(a.y + (h - ss.y) / 2)), col32(ok ? COL_DIM : COL_FAINT), side);
-        ImGui::PopFont();
-        f32 tx = a.x + kit_px(36);
-        text_clipped(dl, ImVec2(tx, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), sx - kit_px(12) - tx,
-                     col32(ok ? COL_TEXT : COL_FAINT), x.label);
-        ImGui::PopID();
-    }
-    return picked;
-}
-
 // The Share menu's state of a Share: running with its step and percent, or just finished (for 4 s) with how it went.
 struct ShareMenuState {
     bool running;
@@ -3209,11 +3162,12 @@ static i64 share_host_cap(LinkHost host)
 }
 
 // A square icon button in the menu, `ink` its icon's colour; true when clicked.
-static bool share_menu_icon(const char *icon, const char *id, u32 ink, f32 sz)
+static bool share_menu_icon(const char *icon, const char *id, u32 ink, f32 sz, bool enabled = true)
 {
     ImVec2 a = ImGui::GetCursorScreenPos();
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(sz, sz));
-    bool hot = ImGui::IsItemHovered();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(sz, sz)) && enabled;
+    bool hot = enabled && ImGui::IsItemHovered();
+    if (!enabled) ink = COL_FAINT;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     if (hot) dl->AddRectFilled(a, ImVec2(a.x + sz, a.y + sz), col32(COL_HOVER), kit_px(6));
     f32 fs = g_font_icon->FontSize;
@@ -3223,6 +3177,7 @@ static bool share_menu_icon(const char *icon, const char *id, u32 ink, f32 sz)
 }
 
 static void open_url(const char *url); // setup.cpp
+static bool g_card_share_open; // a card's Share was right-clicked, or Share... in its menu: its Share menu opens
 
 enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST };
 
@@ -3230,7 +3185,7 @@ enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST };
 // drawn inside the caller's popup:
 // - Share: what one click does, with a bar of the file against the max size (green as is, amber lowered); while a
 //   Share runs the bar is its progress and the label its step, then "Copied".
-// - The clip's link (link_key's, when it has one): the address, then Copy, Open and Delete.
+// - The clip's link (link_key's, when it has one): the address, then Copy, Open, Pause (the bucket's) and Delete.
 // - Link to: a row per host with how much of its cap the clip takes; greyed when it can't.
 // - Original (shows `original` in its folder; greyed with none) and Quality (Options at the Quality table).
 // Its size follows only the clip: whether it has a link and how many hosts. Returns SHARE_MENU_SHARE for the
@@ -3321,13 +3276,14 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         ImVec2 a(o.x, y), b(o.x + W, y + h);
         dl->AddRectFilled(a, b, col32(COL_PANEL2), kit_px(7));
         dl->AddRect(a, b, col32(COL_LINE), kit_px(7), 0, kit_px(1));
-        bool paused = s.host == HOST_R2 && s.paused;
+        bool r2 = s.host == HOST_R2, paused = r2 && s.paused;
+        i32 icons = r2 ? 4 : 3;
         f32 dr = kit_px(4);
         dl->AddCircleFilled(ImVec2(a.x + pad + dr, a.y + h / 2), dr, col32(paused ? COL_WARN : COL_OK));
         const char *url = s.url;
         if (!strncmp(url, "https://", 8)) url += 8;
         else if (!strncmp(url, "http://", 7)) url += 7;
-        f32 bx = b.x - kit_px(5) - 3 * isz - 2 * igap, tx = a.x + pad + 2 * dr + kit_px(8);
+        f32 bx = b.x - kit_px(5) - icons * isz - (icons - 1) * igap, tx = a.x + pad + 2 * dr + kit_px(8);
         text_clipped(dl, ImVec2(tx, floorf(a.y + (h - line_h) / 2)), bx - kit_px(8) - tx, col32(COL_TEXT), url);
         f32 by = floorf(a.y + (h - isz) / 2);
         ImGui::SetCursorScreenPos(ImVec2(bx, by));
@@ -3339,9 +3295,21 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         ImGui::SetCursorScreenPos(ImVec2(bx + isz + igap, by));
         if (share_menu_icon(ICON_OPEN, "##smopen", COL_TEXT, isz)) open_url(s.url);
         kit_tip("Open in browser");
+        if (r2) {
+            ImGui::SetCursorScreenPos(ImVec2(bx + 2 * (isz + igap), by));
+            if (share_menu_icon(paused ? ICON_PLAY : ICON_PAUSE, "##smpause", COL_TEXT, isz, !s.moving)) {
+                if (s.paused) r2_resume(s.key);
+                else r2_pause(s.key);
+                log_line("library: link %s %s", s.key, s.paused ? "resumed" : "paused");
+                lib_note(false, s.paused ? "Link playing again: %s" : "Link paused: %s", s.title);
+            }
+            kit_tip(s.moving ? (s.paused ? "Resuming..." : "Pausing...")
+                    : s.paused == 2 ? "Paused until tomorrow: click to let it play again"
+                    : s.paused ? "Paused: click to let it play again" : "Pause: nobody can play it until resumed");
+        }
         char host[64];
         share_host_label(s, host, sizeof host);
-        ImGui::SetCursorScreenPos(ImVec2(bx + 2 * (isz + igap), by));
+        ImGui::SetCursorScreenPos(ImVec2(bx + (icons - 1) * (isz + igap), by));
         if (share_menu_icon(ICON_DELETE, "##smdelete", 0xff8a92, isz)) ImGui::OpenPopup("link_delete");
         kit_tip(host[0] ? "Remove from the list" : "Delete the link");
         lib_popup_style_push(6);
@@ -3485,55 +3453,7 @@ static void lib_share_menu(const char *id, const LibItem &it)
     lib_popup_style_pop();
 }
 
-// "Link to" in the card menu: a row that opens the hosts (link_to_rows) beside the menu while it's pointed at.
-// Pointing at another row of the menu closes them. True when a host was picked, so the card menu closes too.
-static bool lib_link_to_menu(const LibItem &it)
-{
-    f32 w = kit_px(216), h = kit_px(28);
-    bool open = ImGui::IsPopupOpen("card_link_to");
-    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
-    ImGui::Selectable("##linkto", open, ImGuiSelectableFlags_NoAutoClosePopups, ImVec2(w, h));
-    if (ImGui::IsItemHovered() && !open) ImGui::OpenPopup("card_link_to");
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2)); // rows 2 apart
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImGui::PushFont(g_font_icon);
-    ImVec2 is = ImGui::CalcTextSize(ICON_LINK);
-    dl->AddText(ImVec2(a.x + kit_px(10), floorf(a.y + (h - is.y) / 2)), col32(COL_DIM), ICON_LINK);
-    ImVec2 rs = ImGui::CalcTextSize(ICON_RIGHT);
-    dl->AddText(ImVec2(b.x - kit_px(10) - rs.x, floorf(a.y + (h - rs.y) / 2)), col32(COL_DIM), ICON_RIGHT);
-    ImGui::PopFont();
-    ImVec2 ts = ImGui::CalcTextSize("Link to");
-    dl->AddText(ImVec2(a.x + kit_px(36), floorf(a.y + (h - ts.y) / 2)), col32(COL_TEXT), "Link to");
-
-    ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
-    ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x - kit_px(4), a.y - kit_px(6)));
-    bool picked = false;
-    lib_popup_style_push(6);
-    if (ImGui::BeginPopup("card_link_to")) {
-        static u64 key;
-        static EditRecord rec;
-        static bool edited;
-        if (ImGui::IsWindowAppearing() || key != it.key) { // the edit is read once, as it opens
-            key = it.key;
-            edited = lib_item_edit(it, &rec);
-        }
-        char pick[64];
-        if (link_to_rows(it.info, edited ? &rec : 0, kit_px(300), pick)) {
-            lib_share_item(it, SHARE_LINK, pick);
-            picked = true;
-        }
-        ImVec2 mp = ImGui::GetMousePos();
-        bool in_menu = mp.x >= wp.x && mp.x < wp.x + ws.x && mp.y >= wp.y && mp.y < wp.y + ws.y;
-        bool on_row = mp.x >= a.x && mp.x < b.x && mp.y >= a.y && mp.y < b.y;
-        if (picked || (in_menu && !on_row && !ImGui::IsWindowHovered())) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
-    lib_popup_style_pop();
-    return picked;
-}
-
 static bool g_card_pick_game; // "Pick a game" on a card was clicked: the picker opens for lib.target
-static bool g_card_share_open; // a card's Share arrow was clicked: its Share menu opens for lib.target
 
 static void card_menu()
 {
@@ -3546,8 +3466,7 @@ static void card_menu()
         if (lib_menu_item(ICON_PLAY, "Play")) library_play(it);
         if (lib_menu_item(ICON_EDIT, "Edit")) editor_open(it);
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
-        if (lib_menu_item(ICON_SHARE, "Share")) lib_share_decided(it);
-        if (lib_link_to_menu(it)) ImGui::CloseCurrentPopup();
+        if (lib_menu_item(ICON_SHARE, "Share...")) g_card_share_open = true;
         if (lib_menu_item(ICON_LINK, "Copy link")) lib_share_item(it, SHARE_LINK);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();

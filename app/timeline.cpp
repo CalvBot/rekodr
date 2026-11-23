@@ -685,12 +685,17 @@ static void tl_share(const char *host)
 }
 
 // The Share menu's state of the selection's Share: the save, the read and the share as one running step, then how
-// it went.
+// it went, for 4 s.
 static ShareMenuState tl_share_menu_state()
 {
     Timeline &tl = g_app.timeline;
+    static u8 step;
+    static u64 step_ms;
+    u64 now = GetTickCount64();
+    if (tl.share_step != step) step = tl.share_step, step_ms = now;
     ShareMenuState st = {};
     st.progress = -1;
+    if (!tl_sharing() && now - step_ms >= 4000) return st;
     if (tl_sharing()) {
         st.running = true;
         str_set(st.line, tl.share_line);
@@ -700,11 +705,13 @@ static ShareMenuState tl_share_menu_state()
         ui_wake();
     } else if (tl.share_step == TL_SHARE_DONE) {
         st.done = 1;
-        str_set(st.line, tl.share_line);
+        str_set(st.line, strstr(tl.share_line, "Link") ? "Link copied" : "Copied");
+        ui_wake();
     } else if (tl.share_step == TL_SHARE_FAILED) {
         st.done = -1;
         str_set(st.line, "Not shared");
         str_set(st.error, tl.share_line);
+        ui_wake();
     }
     return st;
 }
@@ -2676,15 +2683,21 @@ static void screen_timeline()
         }
         ImGui::SameLine(0, bgap);
         bool sharing = tl_sharing();
-        i32 sb = kit_split_button(sharing ? "Sharing..." : ICON_SHARE "  Share", "##tlshare", KIT_SECONDARY, ImVec2(w4, 0),
-                                  can && !sharing, can);
+        ShareMenuState js = tl_share_menu_state();
+        char share_label[48];
+        if (js.running && js.progress >= 0) snprintf(share_label, sizeof share_label, "Sharing %d%%", (i32)(js.progress * 100 + 0.5f));
+        else if (js.running) str_set(share_label, "Sharing...");
+        else if (js.done) str_set(share_label, js.line);
+        else str_set(share_label, ICON_SHARE "  Share");
+        i32 sb = kit_split_button(share_label, "##tlshare", KIT_SECONDARY, ImVec2(w4, 0), can && !sharing, can,
+                                  js.running ? (js.progress > 0 ? js.progress : 0) : -1);
         if (sb == 1) tl_share(0);
         else if (sb == 2) ImGui::OpenPopup("tl_share_menu");
         lib_popup_style_push(8);
         if (ImGui::BeginPopup("tl_share_menu")) {
             MediaInfo m = tl_share_guess();
             char pick[64];
-            i32 r = share_menu_body(share_decide(m, 0), m, 0, tl_share_menu_state(), 0, 0, pick);
+            i32 r = share_menu_body(share_decide(m, 0), m, 0, js, 0, 0, pick);
             if (r == SHARE_MENU_SHARE) tl_share(0);
             else if (r == SHARE_MENU_HOST) tl_share(pick);
             ImGui::EndPopup();
