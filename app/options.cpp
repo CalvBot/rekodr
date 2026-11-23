@@ -3582,6 +3582,83 @@ static void opt_popup_monitor(const char *label, const char *sub, const char *id
     opt_row_end();
 }
 
+// Playable copies of edits turned off, not saved yet: the copies show as going until Save turns render_edits off
+// or the undo button drops it.
+static bool g_render_edits_off;
+
+// Playable copies of edits (render_edits): a bar of the clips' space with the rendered copies at its end and their
+// size beside it, then Save, undo and the switch, in fixed slots. Turning it off is a draft that shows the copies
+// going; turning it on applies at once.
+static void opt_copies_row()
+{
+    Config &c = g_app.config;
+    const Library &lib = g_app.library;
+    bool &off = g_render_edits_off;
+    if (!c.render_edits) off = false;
+    i64 copies_bytes = 0, clips_bytes = 0;
+    i32 copies = render_copies(&copies_bytes);
+    for (i32 i = 0; i < lib.item_count; i++) clips_bytes += (i64)lib.items[i].size;
+    char size[32], sub[96];
+    bytes_text(copies_bytes, size, sizeof size);
+    u32 sub_col = COL_DIM;
+    if (off && copies) {
+        snprintf(sub, sizeof sub, "Save frees %d cop%s, %s", copies, copies == 1 ? "y" : "ies", size);
+        sub_col = COL_RED;
+    } else if (off || !c.render_edits) str_set(sub, "Edits play only in the library");
+    else str_set(sub, "Edited clips in Clips play as edited anywhere");
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), save_w = dp(72), toggle_w = kit_px(36);
+    f32 text_w_ = dp(72), bar_w = cw - text_w_ - save_w - fh - toggle_w - 4 * gap, bh = dp(OPT_BAR_H);
+    opt_row_begin(0, 0, cw, dp(52));
+    opt_row_lines("Playable copies of edits", g_font, sub, sub_col, false, g_row.x1 - cw - dp(20));
+    f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a(x, floorf(g_row.y + (g_row.h - bh) / 2)), z(x + bar_w, a.y + bh);
+    dl->AddRectFilled(a, z, col32(COL_PANEL2), dp(3));
+    i64 total = clips_bytes + copies_bytes;
+    if (total > 0) {
+        f32 cx = floorf(a.x + bar_w * (f32)((f64)clips_bytes / total));
+        dl->PushClipRect(a, ImVec2(cx, z.y), true);
+        dl->AddRectFilled(a, z, col32(COL_BLUE, 0.8f), dp(3));
+        dl->PopClipRect();
+        if (copies_bytes > 0) {
+            dl->PushClipRect(ImVec2(fminf(cx, z.x - dp(3)), a.y), z, true);
+            dl->AddRectFilled(a, z, col32(off ? COL_RED : COL_OK), dp(3));
+            dl->PopClipRect();
+        }
+    }
+    ImGui::SetCursorScreenPos(a);
+    ImGui::InvisibleButton("##copiesbar", ImVec2(bar_w, bh));
+    char clips_text[32], tip[96];
+    bytes_text(clips_bytes, clips_text, sizeof clips_text);
+    snprintf(tip, sizeof tip, "Clips %s, playable copies %s", clips_text, size);
+    kit_tip(tip);
+    opt_text_at(dl, g_font_small, ImVec2(z.x + dp(10), floorf(a.y + (bh - g_font_small->FontSize) / 2)),
+                off && copies ? COL_RED : COL_DIM, copies ? size : "None", z.x + dp(10) + text_w_);
+    f32 bx = z.x + gap + text_w_ + gap;
+    ImGui::SetCursorScreenPos(ImVec2(bx, y));
+    if (kit_button("Save##copiessave", KIT_PRIMARY, ImVec2(save_w, 0), off)) {
+        c.render_edits = false;
+        off = false;
+        log_line("options: playable copies of edits off, %d copies go", copies);
+        options_apply(0);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(bx + save_w + gap, y));
+    kit_next_tip("Put it back");
+    if (kit_icon_button(ICON_UNDO, "##copiesundo", KIT_GHOST, off)) off = false;
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - toggle_w, y));
+    bool v = c.render_edits && !off;
+    if (kit_toggle("##renderedits", &v)) {
+        if (!v) off = true;
+        else if (off) off = false;
+        else {
+            c.render_edits = true;
+            log_line("options: playable copies of edits on");
+            options_apply(0);
+        }
+    }
+    opt_row_end();
+}
+
 static void options_general()
 {
     Config &c = g_app.config;
@@ -3665,6 +3742,7 @@ static void options_general()
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);
     }
+    opt_copies_row();
     opt_card_end();
 
     // The editor's waveforms, cached so a file opens with them at once. Counted when the section comes into view

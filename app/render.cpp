@@ -59,6 +59,14 @@ static i32 render_copies(i64 *bytes)
     return render_copies_in(lib.items, lib.item_count, bytes);
 }
 
+// How far the render of the clip `key` has got, 0..1, or -1 when none is running for it: the library card's mark.
+static f32 render_progress(u64 key)
+{
+    if (!g_render.job || g_render.item.key != key) return -1;
+    SaveJobView *v = save_view(g_render.job);
+    return v && v->state == SAVE_RUNNING ? v->progress : 0;
+}
+
 // What a clip needs: put the original back (no edit, or rendering off), render it (an edit not rendered as it is
 // now), or nothing. `has_edit` is a non-empty edit, `same` the render note matches it.
 enum RenderNeed : u8 { RENDER_NOTHING, RENDER_RESTORE, RENDER_MAKE };

@@ -3226,6 +3226,8 @@ static bool share_menu_icon(const char *icon, const char *id, u32 ink, f32 sz, b
 }
 
 static void open_url(const char *url); // setup.cpp
+static i32 render_copies(i64 *bytes);  // render.cpp
+static f32 render_progress(u64 key);   // render.cpp
 static bool g_card_share_open; // a card's Share was right-clicked, or Share... in its menu: its Share menu opens
 
 enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST };
@@ -3511,7 +3513,7 @@ static void card_menu()
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("card_menu")) {
         const LibItem &it = lib.target;
-        Path path = lib_item_path(it);
+        Path path = lib_playable_path(it);
         if (lib_menu_item(ICON_PLAY, "Play")) library_play(it);
         if (lib_menu_item(ICON_EDIT, "Edit")) editor_open(it);
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
@@ -4379,6 +4381,18 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     }
     // Bottom left, where nothing else goes: edited in Advanced mode
     if (lib_is_advanced(it)) badge(dl, ImVec2(t0.x + kit_px(8), t1.y - kit_px(10)), false, true, "Advanced");
+    // Along the top edge while its playable copy is being made (render.cpp): a thin bar of how far it's got
+    f32 rf = render_progress(it.key);
+    if (rf >= 0) {
+        f32 eh = kit_px(3);
+        dl->PushClipRect(t0, ImVec2(t1.x, t0.y + eh), true);
+        dl->AddRectFilled(t0, t1, col32(0xffffff, 0.25f), round);
+        dl->PopClipRect();
+        dl->PushClipRect(t0, ImVec2(t0.x + w * (rf > 1 ? 1 : rf), t0.y + eh), true);
+        dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
+        dl->PopClipRect();
+        ui_wake();
+    }
     // Top right, where nothing else goes: what's ready to share, each mark in its own place whether the other shows.
     // The link's on the right, amber when paused; the file's left of it.
     {
@@ -4712,7 +4726,7 @@ static void lib_player_view()
     bool edit = kit_icon_button(ICON_EDIT, "##edit", KIT_GHOST);
     ImGui::SameLine(0, gap);
     kit_next_tip("Show in folder");
-    if (kit_icon_button(ICON_FOLDER, "##folder", KIT_GHOST)) show_in_folder(p.path.s);
+    if (kit_icon_button(ICON_FOLDER, "##folder", KIT_GHOST)) show_in_folder(lib_playable_path(lib.playing).s);
     ImGui::SetNextWindowPos(ImVec2(h0.x + full_w, share_at.y + fh + kit_px(4)), 0, ImVec2(1, 0));
     lib_share_menu("share_menu", lib.playing);
     if (edit) {
