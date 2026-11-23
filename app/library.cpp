@@ -3228,6 +3228,7 @@ static bool share_menu_icon(const char *icon, const char *id, u32 ink, f32 sz, b
 static void open_url(const char *url); // setup.cpp
 static i32 render_copies(i64 *bytes);  // render.cpp
 static f32 render_progress(u64 key);   // render.cpp
+static bool render_waiting(u64 key);   // render.cpp
 static bool g_card_share_open; // a card's Share was right-clicked, or Share... in its menu: its Share menu opens
 
 enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST };
@@ -4381,8 +4382,10 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     }
     // Bottom left, where nothing else goes: edited in Advanced mode
     if (lib_is_advanced(it)) badge(dl, ImVec2(t0.x + kit_px(8), t1.y - kit_px(10)), false, true, "Advanced");
-    // Along the top edge while its playable copy is being made (render.cpp): a thin bar of how far it's got
+    // Along the top edge while its playable copy is being made (render.cpp): a thin bar of how far it's got. Waiting
+    // its turn, the empty track alone.
     f32 rf = render_progress(it.key);
+    if (rf < 0 && render_waiting(it.key)) rf = 0;
     if (rf >= 0) {
         f32 eh = kit_px(3);
         dl->PushClipRect(t0, ImVec2(t1.x, t0.y + eh), true);
@@ -4391,7 +4394,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         dl->PushClipRect(t0, ImVec2(t0.x + w * (rf > 1 ? 1 : rf), t0.y + eh), true);
         dl->AddRectFilled(t0, t1, col32(COL_ACCENT), round);
         dl->PopClipRect();
-        ui_wake();
+        if (render_progress(it.key) >= 0) ui_wake(); // waiting, it changes only with the look every 10 s
     }
     // Top right, where nothing else goes: what's ready to share, each mark in its own place whether the other shows.
     // The link's on the right, amber when paused; the file's left of it.
