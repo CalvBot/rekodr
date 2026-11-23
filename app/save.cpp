@@ -1421,9 +1421,11 @@ static void item_remove(EditRecord *e, i32 i)
     u16 id = e->items[i].id;
     memmove(e->items + i, e->items + i + 1, (e->item_count - i - 1) * sizeof *e->items);
     e->item_count--;
+    e->items[e->item_count] = {}; // the slots past the end stay clear, so the same edit hashes the same (share_hash)
     i32 n = 0;
     for (i32 k = 0; k < e->ikey_count; k++)
         if (e->ikeys[k].item != id) e->ikeys[n++] = e->ikeys[k];
+    memset(e->ikeys + n, 0, (e->ikey_count - n) * sizeof *e->ikeys);
     e->ikey_count = n;
 }
 

@@ -1232,6 +1232,8 @@ static void test_r2()
     w[0].paused = 2;
     str_set(w[0].hidden, "clipback/qrstuvwxyzabcdef/clip.mp4");
     w[0].pause_day = 20261121;
+    w[0].page_w = 1920;
+    w[0].page_h = 1080;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
     T(!strcmp(r[0].key, w[0].key) && !strcmp(r[0].url, w[0].url) && !strcmp(r[0].title, "ace round"));
@@ -1241,8 +1243,54 @@ static void test_r2()
     T(r[0].host == HOST_R2 && !r[0].expires_us && r[1].host == HOST_LITTERBOX && r[1].expires_us == w[1].expires_us);
     T(r[0].paused == 2 && !strcmp(r[0].hidden, w[0].hidden) && r[0].pause_day == 20261121 && !r[1].paused);
     T(r[0].plays_today == -1 && r[0].plays_month == -1 && r[0].plays_24h == -1);
+    T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
     DeleteFileW(file.s);
+
+    // Preview pages: the page beside the clip's folder, the picture in it, at most 1280 wide and even
+    char pk[R2_KEY_MAX];
+    r2_page_key("clipback/abcdefghijklmnop/clip.mp4", pk);
+    T(!strcmp(pk, "clipback/abcdefghijklmnop"));
+    r2_thumb_key("clipback/qrstuvwxyzabcdef/clip.mp4", pk);
+    T(!strcmp(pk, "clipback/qrstuvwxyzabcdef/thumb.jpg"));
+    i32 tw, th;
+    r2_thumb_size(1920, 1080, &tw, &th);
+    T(tw == 1280 && th == 720);
+    r2_thumb_size(2560, 1440, &tw, &th);
+    T(tw == 1280 && th == 720);
+    r2_thumb_size(853, 480, &tw, &th);
+    T(tw == 852 && th == 480);
+    r2_thumb_size(0, 1080, &tw, &th);
+    T(!tw && !th);
+
+    // The page: the tags for a card that plays, the clip full width, the word under it; the title made safe and
+    // ASCII; paused, no clip and nothing that plays it
+    static char html[8192];
+    i32 hn = r2_page_html("ace <b>\"round\"</b> & caf\xc3\xa9 \xf0\x9f\x8e\xae\x01", "https://x.dev/clipback/abc?v=2",
+                          "https://x.dev/clipback/abc/clip.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg?v=2", 1920,
+                          1080, 1280, 720, false, html, sizeof html);
+    T(hn > 0 && hn == (i32)strlen(html));
+    bool ascii = true;
+    for (i32 i = 0; i < hn; i++) ascii = ascii && (u8)html[i] < 0x80;
+    T(ascii);
+    T(strstr(html, "<title>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</title>") != 0);
+    T(strstr(html, "<meta property=\"og:type\" content=\"video.other\">") != 0);
+    T(strstr(html, "<meta property=\"og:site_name\" content=\"clipback\">") != 0);
+    T(strstr(html, "<meta property=\"og:image\" content=\"https://x.dev/clipback/abc/thumb.jpg?v=2\">") != 0);
+    T(strstr(html, "og:image:width\" content=\"1280\"") != 0 && strstr(html, "og:image:height\" content=\"720\"") != 0);
+    T(strstr(html, "<meta property=\"og:video:secure_url\" content=\"https://x.dev/clipback/abc/clip.mp4?v=2\">") != 0);
+    T(strstr(html, "og:video:type\" content=\"video/mp4\"") != 0 && strstr(html, "og:video:width\" content=\"1920\"") != 0);
+    T(strstr(html, "<meta name=\"twitter:card\" content=\"player\">") != 0);
+    T(strstr(html, "<meta name=\"twitter:player\" content=\"https://x.dev/clipback/abc?v=2\">") != 0);
+    T(strstr(html, "twitter:player:height\" content=\"1080\"") != 0 && strstr(html, "twitter:image\"") != 0);
+    T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
+    T(strstr(html, " controls playsinline ") != 0 && strstr(html, "<p>clipback</p>") != 0);
+    hn = r2_page_html("ace", "https://x.dev/clipback/abc", "https://x.dev/clipback/abc/clip.mp4",
+                      "https://x.dev/clipback/abc/thumb.jpg", 1920, 1080, 1280, 720, true, html, sizeof html);
+    T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "<p>clipback</p>"));
+    T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
+    T(!strstr(html, "thumb.jpg"));
+    T(r2_page_html("ace", "a", "b", "c", 1, 1, 1, 1, false, html, 64) == 0);
 
     // The bucket's S3 secret from an API token
     char secret[65];
@@ -1844,6 +1892,40 @@ static void test_edit_advanced()
     adv_graph(w, j, 0.5, "", "yuv420p", false, streams);
     T(strstr(w->graph, "color=c=black:s=1920x1080:r=30.0000:d=1.0000") != 0 && strstr(w->graph, "xfade") == 0);
     T(strstr(w->graph, "[o1]") == 0);
+
+    // Share's graph: the picture zoomed and coloured per item, black in the gap, and one sound stream, the Mic and
+    // the Game (unmuted now) at their item volumes, faded and mixed
+    j.edit = a;
+    j.edit.muted[2] = false;
+    track_items(j.edit, 0, idx);
+    ItemKey ck = {};
+    ck.item = j.edit.items[idx[1]].id, ck.what = IKEY_COLOR + COLOR_SATURATION, ck.t = 7, ck.v = 1.5;
+    ikey_add(&j.edit, ck);
+    for (i32 i = 0; i < j.edit.item_count; i++) // the second picture item and its sound, a second later
+        if (j.edit.items[i].link == j.edit.items[idx[1]].link) j.edit.items[i].start = 4;
+    w->graph_len = 0, w->graph[0] = 0;
+    ns = adv_graph(w, j, 0.5, "", "yuv420p", false, streams);
+    T(ns == 1 && streams[0] == -1);
+    T(strstr(w->graph, "perspective=") != 0 && strstr(w->graph, "eq=") != 0 && strstr(w->graph, "color=c=black") != 0);
+    T(strstr(w->graph, "amix=inputs=2") != 0 && strstr(w->graph, "volume='") != 0 && strstr(w->graph, "[o0]") != 0);
+    T(strstr(w->graph, "afade=t=in:st=0:d=0.5000") != 0);
+
+    // A Share made for an Advanced edit isn't reused once the edit changes, nor for the same cuts in Simple
+    u64 h_adv = share_hash(L"C:\\clip.mp4", &a, false, 1000, 2000, HOST_R2, "");
+    b = a;
+    T(share_hash(L"C:\\clip.mp4", &b, false, 1000, 2000, HOST_R2, "") == h_adv);
+    track_items(b, 2, idx);
+    b.items[idx[1]].start += 0.5;
+    T(share_hash(L"C:\\clip.mp4", &b, false, 1000, 2000, HOST_R2, "") != h_adv);
+    b = a;
+    b.ikeys[0].v += 0.1;
+    T(share_hash(L"C:\\clip.mp4", &b, false, 1000, 2000, HOST_R2, "") != h_adv);
+    T(share_hash(L"C:\\clip.mp4", &s, false, 1000, 2000, HOST_R2, "") != h_adv);
+    // A deleted item leaves its slot and its keys' slots clear, so the record hashes as if it had never been there
+    b = a;
+    item_remove(&b, b.item_count - 1);
+    static const EditItem clear_item = {};
+    T(!memcmp(&b.items[b.item_count], &clear_item, sizeof clear_item) && !b.ikeys[b.ikey_count].item);
 
     // Split at 1.5 with nothing selected: the picture and both sound items there, the second halves linked to each
     // other and not to the first halves, each with the keys of the item it came from
