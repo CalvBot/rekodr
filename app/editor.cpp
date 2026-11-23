@@ -2731,7 +2731,7 @@ static void ed_share_tab(f32 w)
         else if (js.done) str_set(label, js.line);
         else str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
         i32 sb = kit_split_button(label, "##edshare", KIT_PRIMARY, ImVec2(bw, 0), !sharing && can, true,
-                                  js.running ? js.progress : -1);
+                                  js.running ? js.progress : -1, "Share. Right-click for more options", "More share options");
         if (sb == 1) ed_share_ask(d.kind);
         else if (sb == 2) ImGui::OpenPopup("ed_share_menu");
         lib_popup_style_push(8);

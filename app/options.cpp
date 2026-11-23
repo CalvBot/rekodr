@@ -1414,7 +1414,7 @@ static void folders_rows(i32 rows, f32 rh, i32 *open_popup)
         if (cat_pills_draw(f.category, CAT_NONE, pills_x, cy, &picked)) folder_set(f.path, picked);
 
         ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
-        kit_next_tip("More");
+        kit_next_tip("More options. Right-click the row too");
         bool more = kit_icon_button(ICON_MORE, "##more");
         if (more || (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
             o.menu_folder = idx;
@@ -1546,7 +1546,7 @@ static void options_apps()
         cat_pills(&a, pills_x, cy);
 
         ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
-        kit_next_tip("More");
+        kit_next_tip("More options. Right-click the row too");
         bool more = kit_icon_button(ICON_MORE, "##more");
         if (more || (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
             o.menu_app = idx;
@@ -2807,8 +2807,10 @@ static void opt_uploader_rows()
         f32 x = g_row.x1 - bw - dp(12) - arrows, y = opt_row_frame_y();
         if (pages > 1) {
             ImGui::SetCursorScreenPos(ImVec2(x, y));
+            kit_next_tip("Previous page");
             if (kit_icon_button(ICON_LEFT, "##uppageback", KIT_GHOST, page > 0)) page--;
             ImGui::SetCursorScreenPos(ImVec2(x + fh + dp(4), y));
+            kit_next_tip("Next page");
             if (kit_icon_button(ICON_RIGHT, "##uppagenext", KIT_GHOST, page < pages - 1)) page++;
         }
         ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - bw, y));
@@ -3092,7 +3094,7 @@ static void options_sharing()
             g_app.ui.help_open = true;
         }
         bool hot = ImGui::IsItemHovered();
-        kit_tip("How sharing works");
+        kit_tip("How sharing works, in Help");
         ImGui::GetWindowDrawList()->AddText(g_font_icon, sz, at, col32(hot ? COL_TEXT : COL_DIM), ICON_INFO);
         ImGui::SetCursorScreenPos(back);
     }

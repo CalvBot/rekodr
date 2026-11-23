@@ -621,7 +621,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
 // (as wide as the button is tall) opens a choice. Returns 1 for the main part, 2 for the arrow or a right-click on
 // either, 0 for neither. Each part is on or off by itself.
 static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImVec2 size, bool enabled = true,
-                            bool arrow_enabled = true, f32 progress = -1)
+                            bool arrow_enabled = true, f32 progress = -1, const char *tip = 0, const char *arrow_tip = 0)
 {
     f32 h = size.y > 0 ? size.y : ImGui::GetFrameHeight(), aw = h, r = ImGui::GetStyle().FrameRounding;
     ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + size.x, a.y + h);
@@ -636,6 +636,7 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
                        !kit_closed_here(ImGui::GetItemID());
         bool right = on[1] && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
         if (!on[i]) ImGui::EndDisabled();
+        if (const char *t = i ? arrow_tip : tip) kit_tip(t);
         hot[i] = on[i] && ImGui::IsItemHovered();
         held[i] = hot[i] && ImGui::IsItemActive();
         if (clicked && on[i]) hit = i + 1;
@@ -731,10 +732,33 @@ static f32 kit_keycap(ImDrawList *dl, f32 x, f32 y, const char *s, const char *e
 
 // A tooltip for the item just drawn: what it does and, if it has one, its key ("Space", "Ctrl+F") as caps. Shown only
 // with Options > General > Tooltips on; that switch is the one place tooltips are turned off.
+static void kit_tip_show(const char *what, const char *keys);
+
 static void kit_tip(const char *what, const char *keys)
 {
     if (!g_app.config.tooltips || !ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
         return;
+    kit_tip_show(what, keys);
+}
+
+// kit_tip for a spot drawn inside a bigger item (a card's tick box): shown once the mouse has rested over a..b for
+// as long as kit_tip waits, while the window is under it.
+static void kit_tip_rect(ImVec2 a, ImVec2 b, const char *what)
+{
+    static ImVec2 at;
+    static f64 since;
+    if (!g_app.config.tooltips || !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) ||
+        !ImGui::IsMouseHoveringRect(a, b))
+        return;
+    f64 now = ImGui::GetTime();
+    ImVec2 md = ImGui::GetIO().MouseDelta;
+    if (at.x != a.x || at.y != a.y || md.x || md.y) at = a, since = now;
+    if (now - since >= ImGui::GetStyle().HoverDelayShort) kit_tip_show(what, 0);
+    else ui_wake();
+}
+
+static void kit_tip_show(const char *what, const char *keys)
+{
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(10), kit_px(7)));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kit_px(7));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);

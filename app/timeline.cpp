@@ -2690,7 +2690,8 @@ static void screen_timeline()
         else if (js.done) str_set(share_label, js.line);
         else str_set(share_label, ICON_SHARE "  Share");
         i32 sb = kit_split_button(share_label, "##tlshare", KIT_SECONDARY, ImVec2(w4, 0), can && !sharing, can,
-                                  js.running ? (js.progress > 0 ? js.progress : 0) : -1);
+                                  js.running ? (js.progress > 0 ? js.progress : 0) : -1,
+                                  "Share the selection. Right-click for more options", "More share options");
         if (sb == 1) tl_share(0);
         else if (sb == 2) ImGui::OpenPopup("tl_share_menu");
         lib_popup_style_push(8);

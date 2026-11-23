@@ -3261,7 +3261,8 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         bool clicked = ImGui::InvisibleButton("##smshare", ImVec2(W, h));
         bool hot = can && !st.running && ImGui::IsItemHovered();
         if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        if (st.done < 0 && st.error[0]) kit_tip(st.error);
+        kit_tip(st.done < 0 && st.error[0] ? st.error : st.running ? "Sharing" : link ? "Upload it and copy the link"
+                                                                                  : "Copy the file to paste anywhere");
         if (clicked && can && !st.running) result = SHARE_MENU_SHARE;
         f32 r = kit_px(8);
         dl->AddRectFilled(a, b, col32(COL_ACCENT, hot ? 0.28f : 0.16f), r);
@@ -3460,13 +3461,17 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         f32 cw = floorf((W - gap) / 2);
         ImGui::SetCursorScreenPos(ImVec2(o.x, y));
         kit_next_tip("The file as it was saved, every sound track, in its folder");
-        if (kit_button(ICON_FOLDER "  Original", KIT_SECONDARY, ImVec2(cw, 0), original != 0)) {
+        bool orig_clicked = kit_button(ICON_FOLDER "  Original", KIT_SECONDARY, ImVec2(cw, 0), original != 0);
+        kit_tip(original ? "Show the unedited file in its folder" : "Save it first to have an original");
+        if (orig_clicked) {
             show_in_folder(original);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SetCursorScreenPos(ImVec2(o.x + W - cw, y));
         kit_next_tip("The bitrates Share aims for");
-        if (kit_button(ICON_SLIDERS "  Quality", KIT_SECONDARY, ImVec2(cw, 0))) {
+        bool quality_clicked = kit_button(ICON_SLIDERS "  Quality", KIT_SECONDARY, ImVec2(cw, 0));
+        kit_tip("The bitrates shares aim for, in Options");
+        if (quality_clicked) {
             lib_open_quality();
             ImGui::CloseCurrentPopup();
         }
@@ -4419,6 +4424,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     if (sel || over || picking) {
         ImVec2 cm = io.MousePos;
         bool box_hot = over && cm.x >= b0.x - kit_px(4) && cm.x < b1.x + kit_px(4) && cm.y >= b0.y - kit_px(4) && cm.y < b1.y + kit_px(4);
+        if (over) kit_tip_rect(ImVec2(b0.x - kit_px(4), b0.y - kit_px(4)), ImVec2(b1.x + kit_px(4), b1.y + kit_px(4)),
+                               sel ? "Unselect" : "Select");
         if (sel) {
             dl->AddRectFilled(b0, b1, col32(box_hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(4));
             ImVec2 cs = g_font_icon->CalcTextSizeA(box * 0.6f, FLT_MAX, 0, ICON_CHECK);
@@ -4516,6 +4523,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     bool share = ImGui::InvisibleButton("##cardshare", ImVec2(sw, sh));
     bool share_hot = ImGui::IsItemHovered(), share_held = share_hot && ImGui::IsItemActive();
     bool share_menu = share_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    kit_tip("Share. Right-click for more options");
     ImGui::PopID();
     {
         dl->AddRectFilled(s0, s1, col32(share_hot ? COL_HOVER : COL_PANEL2, share_held ? 0.8f : 1.f),
@@ -4719,11 +4727,11 @@ static void lib_player_view()
     // Share does what share_decide picks; the arrow beside it, or a right-click on Share, opens the Share menu
     // (lib_share_menu), under the icons and right-aligned.
     ImVec2 share_at = ImGui::GetCursorScreenPos();
-    kit_next_tip("Share");
+    kit_next_tip("Share. Right-click for more options");
     if (kit_icon_button(ICON_SHARE, "##share", KIT_GHOST)) lib_share_decided(lib.playing);
     bool share_right = ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     ImGui::SameLine(0, gap);
-    kit_next_tip("Share as...");
+    kit_next_tip("More share options");
     if (kit_icon_button(ICON_DOWN, "##sharemenu", KIT_GHOST) || share_right || g_lib_share_ask) ImGui::OpenPopup("share_menu");
     g_lib_share_ask = false;
     ImGui::SameLine(0, gap);
@@ -5487,6 +5495,7 @@ static bool lib_side_toggle(f32 w, bool collapsed)
     } else {
         static const char *const sides[] = {ICON_GAME "  Games", ICON_FOLDER "  Folders"};
         flip = lib_switch("##sidemode", sides, w, h, folders, COL_BG, 0x15161a, COL_HOVER);
+        kit_tip(folders ? "Show games" : "Show folders");
     }
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + kit_px(6)));
     return flip;
@@ -5697,8 +5706,10 @@ static void screen_library()
     static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
     f32 hgap = kit_px(8), view_w = kit_px(104), drop_w = kit_px(112);
     ImGui::SetCursorScreenPos(h0);
-    if (lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER, 0x3a3d44))
-        lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
+    bool flip_view = lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER,
+                                0x3a3d44);
+    kit_tip(lib.view == LIB_SESSIONS ? "Show clips" : "Show sessions");
+    if (flip_view) lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
 
     // While cards are selected, the selection bar takes the rest of the row (lib_sel_bar).
     lib_sel_track();
