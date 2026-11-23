@@ -513,6 +513,26 @@ static void test_fields()
     T(session_mode_parse(session_mode_name(SESSION_ALWAYS)) == SESSION_ALWAYS);
     T(session_mode_parse(session_mode_name(SESSION_NEVER)) == SESSION_NEVER);
     T(session_mode_parse("nonsense") == SESSION_ASK);
+    for (i32 i = TOAST_CLIP_DEFAULT; i <= TOAST_CLIP_OFF; i++) T(toast_clip_parse(toast_clip_name((ToastClip)i)) == i);
+    T(toast_clip_parse("nonsense") == TOAST_CLIP_DEFAULT);
+}
+
+// Clip saved over a game: the game's own choice, else the one for all games.
+static void test_toast_clip()
+{
+    static Config c;
+    c = {};
+    T(toast_clip_for(c, "") == TOAST_CLIP_FULL); // nothing set: the whole popup
+    c.toast_clip = TOAST_CLIP_SMALL;
+    T(toast_clip_for(c, "") == TOAST_CLIP_SMALL && toast_clip_for(c, 0) == TOAST_CLIP_SMALL);
+    AppInfo *same = config_app(&c, "same.exe"), *off = config_app(&c, "off.exe"), *full = config_app(&c, "full.exe");
+    off->toast_clip = TOAST_CLIP_OFF;
+    full->toast_clip = TOAST_CLIP_FULL;
+    T(same->toast_clip == TOAST_CLIP_DEFAULT && toast_clip_for(c, "same.exe") == TOAST_CLIP_SMALL);
+    T(toast_clip_for(c, "off.exe") == TOAST_CLIP_OFF && toast_clip_for(c, "full.exe") == TOAST_CLIP_FULL);
+    T(toast_clip_for(c, "unknown.exe") == TOAST_CLIP_SMALL);
+    c.toast_clip = TOAST_CLIP_OFF;
+    T(toast_clip_for(c, "same.exe") == TOAST_CLIP_OFF && toast_clip_for(c, "full.exe") == TOAST_CLIP_FULL);
 }
 
 static void test_hotkeys()
@@ -565,6 +585,9 @@ static void test_settings_round_trip()
     app->session_mode = SESSION_ALWAYS;
     app->rec.fps = 60;
     app->rec.window = -1;
+    app->toast_clip = TOAST_CLIP_OFF;
+    config_app(&a, "other.exe")->category = CAT_GAME; // same as all games
+    a.toast_clip = TOAST_CLIP_SMALL;
     a.window_capture = true;
     str_set(app->path, "C:\\Games\\The Game\\game.exe");
     a.folder_count = 1;
@@ -589,8 +612,9 @@ static void test_settings_round_trip()
     }
     T(b.bitrate_mbps == 42.5f && b.fps == 120 && b.buffer_by_size && b.dev_log && !strcmp(b.codec.s, "hevc"));
     T(b.hotkey_count == 1 && !strcmp(b.hotkeys[0].keys.s, "Alt+F10") && !strcmp(b.hotkeys[0].action.s, "save 30s"));
-    T(b.app_count == 1);
-    if (b.app_count == 1) {
+    T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
+    T(b.apps[0].toast_clip == TOAST_CLIP_OFF && b.apps[1].toast_clip == TOAST_CLIP_DEFAULT);
+    if (b.app_count == 2) {
         const AppInfo &g = b.apps[0];
         T(!strcmp(g.exe.s, "game.exe") && !strcmp(g.name.s, "The Game") && g.category == CAT_GAME);
         T(g.session_mode == SESSION_ALWAYS && g.rec.fps == 60 && !strcmp(g.path, "C:\\Games\\The Game\\game.exe"));
@@ -2431,6 +2455,7 @@ int main()
     test_folder_rules();
     test_fields();
     test_hotkeys();
+    test_toast_clip();
     test_settings_round_trip();
     test_pieces();
     test_edit_volumes();

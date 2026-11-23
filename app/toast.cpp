@@ -41,7 +41,7 @@ struct Toast {
     u8        colour;
     i32       hot;                // the part under the mouse
     bool      open, tracking, held; // held: the mouse is on it, so the countdown waits
-    bool      brief;              // Clip saved over a game: no button row (Config.toast_small_in_game)
+    bool      brief;              // Clip saved over a game: no button row (toast_clip_now)
     bool      failed;             // Save failed: a red tile with an X
     u8        sharing;            // Clip saved's Share: TSH_* below
     u32       share;              // its share_start job
@@ -751,12 +751,22 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     toast_countdown(t, kind == SAVE_SESSION ? TOAST_LIFE_SESSION : brief ? TOAST_LIFE_BRIEF : TOAST_LIFE_CLIP);
 }
 
-// A save finished: Clip saved, unless clipback's own window is in front (it shows the save itself).
+// How Clip saved shows now: over a game, the game being played's choice (toast_clip_for); else the whole popup.
+static ToastClip toast_clip_now()
+{
+    if (!sessions_game_in_front()) return TOAST_CLIP_FULL;
+    return toast_clip_for(g_app.config, g_app.audio.game.s);
+}
+
+// A save finished: Clip saved as toast_clip_now says (Session saved always whole), unless clipback's own window is
+// in front (it shows the save itself).
 static void toast_saved(SaveKind kind, const char *path)
 {
     if (kind == SAVE_PREVIEW || kind == SAVE_LINK) return;
     if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
-    toast_saved_show(kind, path, g_app.config.toast_small_in_game && sessions_game_in_front());
+    ToastClip style = kind == SAVE_SESSION ? TOAST_CLIP_FULL : toast_clip_now();
+    if (style == TOAST_CLIP_OFF) return;
+    toast_saved_show(kind, path, style == TOAST_CLIP_SMALL);
 }
 
 // A save failed: Save failed with the first line of the reason, no buttons, unless clipback's own window is in front

@@ -19,6 +19,15 @@ enum SessionMode : u8 {
     SESSION_NEVER,  // not detected
 };
 
+// How "Clip saved" shows over a game: the whole popup, the small one (no buttons, gone sooner) or none (the clip is
+// saved all the same). DEFAULT is a game's "same as all games" (Config.toast_clip); toast_clip_for picks.
+enum ToastClip : u8 {
+    TOAST_CLIP_DEFAULT,
+    TOAST_CLIP_FULL,
+    TOAST_CLIP_SMALL,
+    TOAST_CLIP_OFF,
+};
+
 // A game's own recording settings, used while it's the game being played. Every field has a "same as the
 // default" value (0 or empty), so a game only differs where it was set. The codec and the encoder stay the same for
 // every game: saves stream-copy across ffmpeg runs, which needs one codec.
@@ -39,6 +48,7 @@ struct AppInfo {
     Str64       name;         // shown name, "Overwatch"
     AppCategory category;
     SessionMode session_mode; // games only
+    ToastClip   toast_clip;   // games only: Clip saved over it, DEFAULT = Config.toast_clip
     RecOverride rec;          // games only
     i64         last_heard_us;
     char        path[MAX_PATH]; // where its exe was last heard from (UTF-8), for folder rules; "" = not known
@@ -93,7 +103,7 @@ struct Config {
     i32   output_idx; // DXGI output index on the capture GPU
     i32   popup_monitor; // where the toasts go: an output index, -2 = the one recorded, -1 = no Clip saved
     i32   popup_monitor_game; // and while a game is in front: an output index, -2 = the one recorded, -3 = as above
-    bool  toast_small_in_game; // Clip saved over a game without its buttons, gone sooner
+    ToastClip toast_clip; // Clip saved over a game, unless the game has its own (FULL, SMALL or OFF)
     i32   fps;        // never above the monitor's refresh rate
     i32   height;     // output height (1080...); 0 = the monitor's own. Never above the monitor's
     Str64 codec;      // "h264" | "hevc" | "av1"

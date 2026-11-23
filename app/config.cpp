@@ -57,6 +57,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->buffer_hours = 24;
     c->popup_monitor = -2;
     c->popup_monitor_game = -3;
+    c->toast_clip = TOAST_CLIP_FULL;
     c->buffer_gb = 100;
     c->min_free_gb = 50;
     c->fps = 60;
@@ -132,6 +133,20 @@ static SessionMode session_mode_parse(const char *s)
     return !strcmp(s, "always") ? SESSION_ALWAYS : !strcmp(s, "never") ? SESSION_NEVER : SESSION_ASK;
 }
 
+// "" is a game's "same as all games".
+static const char *toast_clip_name(ToastClip t)
+{
+    return t == TOAST_CLIP_FULL ? "full" : t == TOAST_CLIP_SMALL ? "small" : t == TOAST_CLIP_OFF ? "off" : "";
+}
+
+static ToastClip toast_clip_parse(const char *s)
+{
+    return !strcmp(s, "full")    ? TOAST_CLIP_FULL
+           : !strcmp(s, "small") ? TOAST_CLIP_SMALL
+           : !strcmp(s, "off")   ? TOAST_CLIP_OFF
+                                 : TOAST_CLIP_DEFAULT;
+}
+
 // Finds an app by exe (lower case), adding it if it's new and there's room. Returns 0 only when the table is full.
 static AppInfo *config_app(Config *c, const char *exe)
 {
@@ -142,6 +157,15 @@ static AppInfo *config_app(Config *c, const char *exe)
     *a = {};
     str_set(a->exe.s, exe);
     return a;
+}
+
+// How Clip saved shows over a game (`game_exe`, lower case): its own choice, else the one for all games.
+static ToastClip toast_clip_for(const Config &c, const char *game_exe)
+{
+    for (i32 i = 0; game_exe && game_exe[0] && i < c.app_count; i++)
+        if (!strcmp(c.apps[i].exe.s, game_exe) && c.apps[i].toast_clip != TOAST_CLIP_DEFAULT)
+            return c.apps[i].toast_clip;
+    return c.toast_clip == TOAST_CLIP_DEFAULT ? TOAST_CLIP_FULL : c.toast_clip;
 }
 
 // The buffer for a drive with free_gb free: a quarter of it, in steps of 10 GB, between 10 and 200 GB. The space
@@ -330,7 +354,10 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
     else if (!strcmp(key, "popup_monitor")) c->popup_monitor = atoi(value);
     else if (!strcmp(key, "popup_monitor_game")) c->popup_monitor_game = atoi(value);
-    else if (!strcmp(key, "toast_small_in_game")) boolean(&c->toast_small_in_game);
+    else if (!strcmp(key, "toast_clip")) {
+        c->toast_clip = toast_clip_parse(value);
+        if (c->toast_clip == TOAST_CLIP_DEFAULT) c->toast_clip = TOAST_CLIP_FULL;
+    }
     else if (!strcmp(key, "fps")) c->fps = atoi(value);
     else if (!strcmp(key, "height")) c->height = atoi(value);
     else if (!strcmp(key, "codec")) str_set(c->codec.s, value);
@@ -404,9 +431,10 @@ static void config_set(Config *c, const char *key, char *value)
             str_set(h->action.s, f[1]);
         }
     } else if (!strcmp(key, "app")) {
-        // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset | height | path | window
-        char *f[12] = {};
-        i32 n = split_fields(value, f, 12);
+        // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset | height |
+        //       path | window | clip saved
+        char *f[13] = {};
+        i32 n = split_fields(value, f, 13);
         if (n >= 3) {
             AppInfo *a = config_app(c, f[0]);
             if (!a) return;
@@ -421,6 +449,7 @@ static void config_set(Config *c, const char *key, char *value)
             if (n >= 10) a->rec.height = atoi(f[9]);
             if (n >= 11) str_set(a->path, f[10]);
             if (n >= 12) a->rec.window = atoi(f[11]);
+            if (n >= 13) a->toast_clip = toast_clip_parse(f[12]);
         }
     } else if (!strcmp(key, "input")) {
         // input = mono | Line (RODE AI-1) | {0.0.1.00000000}.{...}
@@ -572,7 +601,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("render_edits", c.render_edits);
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\npopup_monitor_game = %d\n", c.popup_monitor, c.popup_monitor_game);
-    boolean("toast_small_in_game", c.toast_small_in_game);
+    fprintf(f, "toast_clip = %s\n", toast_clip_name(c.toast_clip));
     boolean("voice_mono", c.voice_mono);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %d\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);
@@ -585,13 +614,15 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\n# hotkey = keys | action\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
-               " | height | where it was last heard | capture window\n"
-               "# (a game's own recording settings; 0 or empty = the default. capture window: 1 = yes, -1 = no)\n");
+               " | height | where it was last heard | capture window | clip saved\n"
+               "# (a game's own settings; 0 or empty = the default. capture window: 1 = yes, -1 = no. clip saved:"
+               " full, small or off)\n");
     for (i32 i = 0; i < c.app_count; i++) {
         const AppInfo &a = c.apps[i];
-        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s | %d | %s | %d\n", a.exe.s, a.name.s,
+        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s | %d | %s | %d | %s\n", a.exe.s, a.name.s,
                 category_name(a.category), session_mode_name(a.session_mode), a.rec.bitrate_mbps, a.rec.fps,
-                a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path, a.rec.window);
+                a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path, a.rec.window,
+                toast_clip_name(a.toast_clip));
     }
     fprintf(f, "\n# input = mono | stereo, name | endpoint id (a recording device on a track of its own)\n");
     for (i32 i = 0; i < c.input_count; i++)

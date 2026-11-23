@@ -3745,9 +3745,11 @@ static void options_general()
                       "##popups", &c.popup_monitor, false);
     opt_popup_monitor("Popups in games", "Where they go while a game is in front", "##popups_game",
                       &c.popup_monitor_game, true);
+    bool small_in_game = c.toast_clip == TOAST_CLIP_SMALL;
     if (opt_row_toggle("Small in games", "Clip saved without its buttons over a game, gone after 3 s", "##toast_small",
-                       &c.toast_small_in_game)) {
-        log_line("options: small toasts in games %s", c.toast_small_in_game ? "on" : "off");
+                       &small_in_game)) {
+        c.toast_clip = small_in_game ? TOAST_CLIP_SMALL : TOAST_CLIP_FULL;
+        log_line("options: clip saved in games %s", toast_clip_name(c.toast_clip));
         options_apply(0);
     }
     opt_card_end();
