@@ -86,6 +86,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_RIGHT    "\xEE\x9D\xAC" // E76C chevron
 #define ICON_DOWN     "\xEE\x9C\x8D" // E70D chevron
 #define ICON_CHEVRON_UP "\xEE\x9C\x8E" // E70E
+#define ICON_CLOCK    "\xEE\xA0\xA3" // E823 recent
 #define ICON_BACK     "\xEE\x9C\xAB" // E72B arrow
 #define ICON_FORWARD  "\xEE\x9C\xAA" // E72A arrow
 #define ICON_ZOOM_IN  "\xEE\xA2\xA3" // E8A3

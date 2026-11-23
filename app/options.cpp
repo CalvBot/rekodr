@@ -3064,10 +3064,6 @@ static void opt_quality_table()
     static char typed[6][2][16];
     static i32 editing = -1; // the cell being typed in, row * 2 + column
     f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), sh = g_font_small->FontSize, nh = g_font->FontSize;
-    if (g_opt_quality_jump > 0) { // the Share menu's Quality
-        g_opt_quality_jump--;
-        ImGui::SetScrollHereY(0);
-    }
     f32 reset_w = dp(72), toggle_w = kit_px(36), gap = dp(8);
     opt_row_begin(0, 0, reset_w + gap + toggle_w, dp(52));
     ImDrawList *dl = ImGui::GetWindowDrawList();

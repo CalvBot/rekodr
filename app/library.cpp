@@ -2701,14 +2701,6 @@ static void lib_open_sharing()
     ui_show(SCREEN_OPTIONS);
 }
 
-// Options on Sharing, scrolled to the Quality table (it scrolls there for the next few frames, as the page settles)
-static i32 g_opt_quality_jump;
-static void lib_open_quality()
-{
-    lib_open_sharing();
-    g_opt_quality_jump = 3;
-}
-
 // The hosts a link can go to without R2: the free ones, then the player's uploaders (.sxcu), each by its name
 // (link_uploaders for an uploader) and the one shown. Read again every few seconds, and at once after an uploader is added.
 struct LinkHostName {
@@ -3258,22 +3250,47 @@ static f32 render_progress(u64 key);   // render.cpp
 static bool render_waiting(u64 key);   // render.cpp
 static bool g_card_share_open; // a card's Share was right-clicked, or Share... in its menu: its Share menu opens
 
-enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST };
+enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST, SHARE_MENU_EDIT };
+
+// A host's label split for the menu: its name with a capital ("your bucket" -> "Your bucket"), and how long its
+// links last after ", " ("Litterbox, 72 h" -> "72 h"; "" for none).
+static void share_label_split(const char *label, char *name, i32 name_cap, char *expiry, i32 expiry_cap)
+{
+    const char *comma = strstr(label, ", ");
+    i32 n = comma ? (i32)(comma - label) : (i32)strlen(label);
+    if (n >= name_cap) n = name_cap - 1;
+    memcpy(name, label, n);
+    name[n] = 0;
+    if (name[0] >= 'a' && name[0] <= 'z') name[0] -= 32;
+    snprintf(expiry, expiry_cap, "%s", comma ? comma + 2 : "");
+}
+
+// A clock and `expiry` ("72 h") from `a`, dim, `fs` its text size; returns where it ends.
+static f32 share_expiry_draw(ImDrawList *dl, ImVec2 a, f32 line_h, ImFont *font, const char *expiry, u32 ink)
+{
+    f32 fs = font->FontSize, ifs = floorf(fs * 0.95f);
+    ImVec2 gs = g_font_icon->CalcTextSizeA(ifs, FLT_MAX, 0, ICON_CLOCK);
+    dl->AddText(g_font_icon, ifs, ImVec2(a.x, floorf(a.y + (line_h - gs.y) / 2)), col32(ink), ICON_CLOCK);
+    f32 x = a.x + gs.x + kit_px(4);
+    dl->AddText(font, fs, ImVec2(x, floorf(a.y + (line_h - fs) / 2)), col32(ink), expiry);
+    return x + font->CalcTextSizeA(fs, FLT_MAX, 0, expiry).x;
+}
 
 // The Share menu, the same wherever it opens (a card's Share, the player's, the editor's and the Timeline's arrow),
 // drawn inside the caller's popup:
-// - Share: what one click does, with a bar of the file against the max size (green as is, amber lowered); while a
-//   Share runs the bar is its progress and the label its step, then "Copied".
+// - Share: what one click does, "Recommended: Catbox" (or File) over its size; while a Share runs the line is its
+//   step over a progress bar, then "Copied".
 // - The clip's link (link_key's, when it has one): the address, then Copy, Open, Pause (the bucket's) and Delete.
-// - Link to: a row per host with how much of its cap the clip takes; greyed when it can't.
-// - Original (shows `original` in its folder; greyed with none) and Quality (Options at the Quality table).
+// - Link to: a row per host with the clip's size against the host's cap ("35 MB of 200 MB" over a bar), and how
+//   long its links last; greyed when it can't.
+// - Original (shows `original` in its folder; greyed with none) and Edit (greyed unless `can_edit`).
 // Its size follows only the clip: whether it has a link and how many hosts. Returns SHARE_MENU_SHARE for the
-// one-click Share, SHARE_MENU_HOST for a host, its name in `pick`.
+// one-click Share, SHARE_MENU_HOST for a host (its name in `pick`), SHARE_MENU_EDIT for Edit.
 static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const EditRecord *edit, const ShareMenuState &st,
-                           u64 link_key, const wchar_t *original, char (&pick)[64])
+                           u64 link_key, const wchar_t *original, char (&pick)[64], bool can_edit = false)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 W = kit_px(360), gap = kit_px(6), sfs = g_font_small->FontSize, line_h = ImGui::GetTextLineHeight();
+    f32 W = kit_px(300), gap = kit_px(4), sfs = g_font_small->FontSize, line_h = ImGui::GetTextLineHeight();
     ImVec2 o = ImGui::GetCursorScreenPos();
     f32 y = o.y;
     i32 result = SHARE_MENU_NONE;
@@ -3281,7 +3298,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
 
     // Share
     {
-        f32 h = kit_px(60), pad = kit_px(12), pill_w = kit_px(88), pill_h = kit_px(32);
+        f32 h = kit_px(48), pad = kit_px(10), pill_w = kit_px(80), pill_h = kit_px(28);
         bool link = d.kind == SHARE_LINK, can = (link ? d.link_ok : d.file_ok) || !any_host;
         ImVec2 a(o.x, y), b(o.x + W, y + h);
         ImGui::SetCursorScreenPos(a);
@@ -3291,7 +3308,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         kit_tip(st.done < 0 && st.error[0] ? st.error : st.running ? "Sharing" : link ? "Upload it and copy the link"
                                                                                   : "Copy the file to paste anywhere");
         if (clicked && can && !st.running) result = SHARE_MENU_SHARE;
-        f32 r = kit_px(8);
+        f32 r = kit_px(7);
         dl->AddRectFilled(a, b, col32(COL_ACCENT, hot ? 0.28f : 0.16f), r);
         dl->AddRect(a, b, col32(COL_ACCENT, can ? 1.f : 0.4f), r, 0, kit_px(1));
         // The pill: plainly the button
@@ -3308,51 +3325,53 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             dl->AddText(ImVec2(tx + gs.x + kit_px(6), floorf(p0.y + (pill_h - ts.y) / 2)), col32(ink), "Share");
             ImGui::PopFont();
         }
-        // The label and its bar
-        char label[128], size_s[24];
-        f32 frac = 0;
-        u32 ink = COL_OK;
+        // The line and what's under it: the size, or the Share's progress
+        char label[128], sub[128] = "", size_s[24], expiry[24] = "";
+        f32 progress = -1;
+        u32 ink = COL_TEXT;
         if (st.running || st.done) {
             str_set(label, st.line);
-            frac = st.running ? st.progress : 1;
-            ink = st.running ? COL_ACCENT : st.done > 0 ? COL_OK : COL_WARN;
+            if (st.running) progress = st.progress;
+            if (st.done < 0) ink = COL_WARN, str_set(sub, st.error);
         } else if (!any_host && link) {
             str_set(label, "Set up a host");
         } else if (link && !d.link_ok) {
-            str_set(label, d.link_why);
+            str_set(label, "No host takes it");
+            str_set(sub, d.link_why);
+            ink = COL_DIM;
         } else if (link) {
-            snprintf(label, sizeof label, "Link, %s", d.host_label);
-            if (label[6] >= 'a' && label[6] <= 'z') label[6] -= 32; // "your bucket" starts the name
-            i64 cap = share_host_cap(d.host);
-            frac = d.link_squeezed ? 1 : cap > 0 ? (f32)((f64)d.link_bytes / cap) : 0;
-            ink = d.link_squeezed ? COL_WARN : COL_OK;
-        } else if (d.file_squeezed) {
-            share_size_text(d.max_bytes, size_s, sizeof size_s);
-            snprintf(label, sizeof label, "File, lowered to %s", size_s);
-            frac = 1;
-            ink = COL_WARN;
+            char name[48];
+            share_label_split(d.host_label, name, sizeof name, expiry, sizeof expiry);
+            snprintf(label, sizeof label, "Recommended: %s", name);
+            str_set(sub, d.why);
         } else {
-            share_size_text(d.file_bytes, size_s, sizeof size_s);
-            snprintf(label, sizeof label, "File, %s", size_s);
-            frac = d.max_bytes > 0 ? (f32)((f64)d.file_bytes / d.max_bytes) : 0;
+            str_set(label, "Recommended: File");
+            share_size_text(d.file_squeezed ? d.max_bytes : d.file_bytes, size_s, sizeof size_s);
+            if (d.file_squeezed) snprintf(sub, sizeof sub, "Lowered to %s", size_s);
+            else str_set(sub, size_s);
+            if (!d.file_ok) ink = COL_DIM;
         }
-        const char *icon = link ? ICON_LINK : ICON_FILE;
-        f32 fs = g_font_icon->FontSize, tw = p0.x - kit_px(14) - (a.x + pad);
+        f32 tx = a.x + pad, tw = p0.x - kit_px(10) - tx, bh = g_font_bold->FontSize;
+        f32 ty = floorf(a.y + (h - bh - kit_px(3) - sfs) / 2);
         ImGui::PushFont(g_font_bold);
-        f32 bh = ImGui::GetTextLineHeight(), ty = floorf(a.y + (h - bh - kit_px(8) - kit_px(5)) / 2);
-        ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
-        dl->AddText(g_font_icon, fs, ImVec2(a.x + pad, floorf(ty + (bh - gs.y) / 2)), col32(can ? COL_TEXT : COL_DIM), icon);
-        f32 lx = a.x + pad + gs.x + kit_px(8);
-        text_clipped(dl, ImVec2(lx, ty), a.x + pad + tw - lx, col32(st.done < 0 ? COL_WARN : can ? COL_TEXT : COL_DIM), label);
+        f32 lw = fminf(ImGui::CalcTextSize(label).x, tw);
+        text_clipped(dl, ImVec2(tx, ty), tw, col32(ink), label);
         ImGui::PopFont();
-        share_bar(dl, ImVec2(a.x + pad, ty + bh + kit_px(8)), tw, frac, ink);
+        if (expiry[0] && tx + lw + kit_px(8) < tx + tw) share_expiry_draw(dl, ImVec2(tx + lw + kit_px(8), ty), bh, g_font_small, expiry, COL_DIM);
+        f32 sy = ty + bh + kit_px(3);
+        if (progress >= 0) share_bar(dl, ImVec2(tx, floorf(sy + (sfs - kit_px(5)) / 2)), tw, progress, COL_ACCENT);
+        else if (sub[0]) {
+            ImGui::PushFont(g_font_small);
+            text_clipped(dl, ImVec2(tx, sy), tw, col32(COL_DIM), sub);
+            ImGui::PopFont();
+        }
         y = b.y + gap;
     }
 
     // The clip's link
     R2Share s;
     if (link_key && share_clip_link(link_key, &s)) {
-        f32 h = kit_px(40), pad = kit_px(10), isz = kit_px(30), igap = kit_px(2);
+        f32 h = kit_px(34), pad = kit_px(10), isz = kit_px(26), igap = kit_px(2);
         ImVec2 a(o.x, y), b(o.x + W, y + h);
         dl->AddRectFilled(a, b, col32(COL_PANEL2), kit_px(7));
         dl->AddRect(a, b, col32(COL_LINE), kit_px(7), 0, kit_px(1));
@@ -3363,7 +3382,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         const char *url = s.url;
         if (!strncmp(url, "https://", 8)) url += 8;
         else if (!strncmp(url, "http://", 7)) url += 7;
-        f32 bx = b.x - kit_px(5) - icons * isz - (icons - 1) * igap, tx = a.x + pad + 2 * dr + kit_px(8);
+        f32 bx = b.x - kit_px(4) - icons * isz - (icons - 1) * igap, tx = a.x + pad + 2 * dr + kit_px(8);
         text_clipped(dl, ImVec2(tx, floorf(a.y + (h - line_h) / 2)), bx - kit_px(8) - tx, col32(COL_TEXT), url);
         f32 by = floorf(a.y + (h - isz) / 2);
         ImGui::SetCursorScreenPos(ImVec2(bx, by));
@@ -3412,14 +3431,13 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
 
     // Link to
     {
-        f32 lh = sfs + kit_px(10);
         ImGui::PushFont(g_font_small);
         dl->AddText(ImVec2(o.x + kit_px(4), y + kit_px(4)), col32(COL_DIM), "LINK TO");
         ImGui::PopFont();
-        y += lh;
+        y += sfs + kit_px(8);
         static ShareHostChoice c[24];
         i32 n = share_host_choices(m, edit, c, COUNT(c));
-        f32 h = kit_px(40), pad = kit_px(8), tile = kit_px(28), bar_w = kit_px(64);
+        f32 h = kit_px(32), pad = kit_px(8), tile = kit_px(16), bar_w = kit_px(96), bar_h = kit_px(3);
         if (!n) {
             ImGui::SetCursorScreenPos(ImVec2(o.x, y));
             if (lib_menu_item(ICON_SETTINGS, "Set up a host...", false, W)) lib_open_sharing();
@@ -3434,60 +3452,66 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             bool clicked = ImGui::InvisibleButton("##host", ImVec2(W, h));
             bool hot = ok && ImGui::IsItemHovered();
             if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            char size_s[24], tip[128];
-            share_size_text(x.bytes, size_s, sizeof size_s);
+            char name[48], expiry[24], tip[128] = "";
+            share_label_split(x.label, name, sizeof name, expiry, sizeof expiry);
             if (!ok) str_set(tip, x.why);
-            else snprintf(tip, sizeof tip, "%s, %s", size_s, x.fit == SHARE_FIT_SQUEEZED ? "lowered to fit" : "as is");
-            kit_tip(tip);
+            else if (expiry[0]) snprintf(tip, sizeof tip, "Deleted after %s", expiry);
+            else if (x.host == HOST_R2) str_set(tip, "Your bucket");
+            if (tip[0]) kit_tip(tip);
             if (clicked && ok && !st.running) {
                 str_set(pick, x.name);
                 dev_click("menu", x.name);
                 result = SHARE_MENU_HOST;
             }
-            if (hot) dl->AddRectFilled(a, b, col32(COL_HOVER), kit_px(7));
+            if (hot) dl->AddRectFilled(a, b, col32(COL_HOVER), kit_px(6));
             f32 alpha = ok ? 1.f : 0.4f;
-            // The host's own icon; the player's servers a server on a tile
+            // The host's own icon; the player's servers a server glyph
             ImVec2 t0(a.x + pad, floorf(a.y + (h - tile) / 2)), t1(t0.x + tile, t0.y + tile);
             if (!host_logo_draw(dl, x.host, t0, tile, alpha)) {
-                dl->AddRectFilled(t0, t1, col32(0x6b7080, alpha), kit_px(7));
-                f32 fs = g_font_icon->FontSize;
+                dl->AddRectFilled(t0, t1, col32(0x6b7080, alpha), kit_px(4));
+                f32 fs = floorf(tile * 0.7f);
                 ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_SERVER);
                 dl->AddText(g_font_icon, fs, ImVec2(floorf(t0.x + (tile - gs.x) / 2), floorf(t0.y + (tile - gs.y) / 2)),
                             col32(0xffffff, alpha), ICON_SERVER);
             }
-            // The bar of the host's cap, and "Upload" before it while pointed at
+            // The clip's size against the host's cap, over a bar of it
             f32 bx = b.x - pad - bar_w;
-            i64 cap = share_host_cap(x.host);
-            f32 frac = !ok || x.fit == SHARE_FIT_SQUEEZED ? 1 : cap > 0 ? (f32)((f64)d.reco_bytes / cap) : 0;
-            share_bar(dl, ImVec2(bx, floorf(a.y + (h - kit_px(5)) / 2)), bar_w, frac,
-                      !ok ? COL_FAINT : x.fit == SHARE_FIT_SQUEEZED ? COL_WARN : COL_OK);
-            f32 name_end = bx - kit_px(10);
-            if (hot) {
-                ImGui::PushFont(g_font_small);
-                f32 uw = ImGui::CalcTextSize("Upload").x, ifs = sfs, ux = bx - kit_px(10) - uw;
-                ImVec2 us = g_font_icon->CalcTextSizeA(ifs, FLT_MAX, 0, ICON_UPLOAD);
-                dl->AddText(ImVec2(ux, floorf(a.y + (h - sfs) / 2)), col32(COL_TEXT), "Upload");
-                dl->AddText(g_font_icon, ifs, ImVec2(ux - kit_px(4) - us.x, floorf(a.y + (h - us.y) / 2)), col32(COL_TEXT),
-                            ICON_UPLOAD);
-                ImGui::PopFont();
-                name_end = ux - kit_px(4) - us.x - kit_px(10);
+            i64 cap = share_host_cap(x.host), bytes = ok && x.bytes > 0 ? x.bytes : d.reco_bytes;
+            char size_s[24], cap_s[24], fit[64];
+            share_size_text(bytes, size_s, sizeof size_s);
+            if (!ok) str_set(fit, "Too big");
+            else if (cap > 0) {
+                share_size_text(cap, cap_s, sizeof cap_s);
+                snprintf(fit, sizeof fit, "%s of %s", size_s, cap_s);
+            } else str_set(fit, size_s);
+            f32 frac = !ok || x.fit == SHARE_FIT_SQUEEZED ? 1 : cap > 0 ? (f32)((f64)bytes / cap) : 0;
+            f32 fy = floorf(a.y + (h - sfs - kit_px(3) - bar_h) / 2);
+            ImGui::PushFont(g_font_small);
+            f32 fw = ImGui::CalcTextSize(fit).x;
+            dl->AddText(ImVec2(b.x - pad - fw, fy), col32(ok ? COL_DIM : COL_FAINT), fit);
+            ImGui::PopFont();
+            ImVec2 q0(bx, fy + sfs + kit_px(3));
+            dl->AddRectFilled(q0, ImVec2(bx + bar_w, q0.y + bar_h), col32(COL_FAINT, 0.45f), bar_h / 2);
+            u32 bar_ink = !ok ? COL_FAINT : x.fit == SHARE_FIT_SQUEEZED ? COL_WARN : COL_OK;
+            if (frac > 0) dl->AddRectFilled(q0, ImVec2(bx + fmaxf(bar_h, bar_w * fminf(frac, 1)), q0.y + bar_h), col32(bar_ink), bar_h / 2);
+            // The name, then how long its links last
+            f32 nx = t1.x + kit_px(10), name_end = fminf(bx, b.x - pad - fw) - kit_px(10);
+            f32 ny = floorf(a.y + (h - line_h) / 2);
+            text_clipped(dl, ImVec2(nx, ny), name_end - nx, col32(ok ? COL_TEXT : COL_FAINT), name);
+            if (expiry[0]) {
+                f32 ex = nx + ImGui::CalcTextSize(name).x + kit_px(8);
+                if (ex + kit_px(40) < name_end) share_expiry_draw(dl, ImVec2(ex, ny), line_h, g_font_small, expiry, ok ? COL_DIM : COL_FAINT);
             }
-            char name[48];
-            str_set(name, x.label);
-            if (name[0] >= 'a' && name[0] <= 'z') name[0] -= 32;
-            f32 nx = t1.x + kit_px(10);
-            text_clipped(dl, ImVec2(nx, floorf(a.y + (h - line_h) / 2)), name_end - nx, col32(ok ? COL_TEXT : COL_FAINT), name);
             ImGui::PopID();
-            y = b.y + kit_px(2);
+            y = b.y;
         }
         y += gap;
     }
 
-    // Original and Quality
+    // Original and Edit
     {
         f32 cw = floorf((W - gap) / 2);
         ImGui::SetCursorScreenPos(ImVec2(o.x, y));
-        kit_next_tip("The file as it was saved, every sound track, in its folder");
         bool orig_clicked = kit_button(ICON_FOLDER "  Original", KIT_SECONDARY, ImVec2(cw, 0), original != 0);
         kit_tip(original ? "Show the unedited file in its folder" : "Save it first to have an original");
         if (orig_clicked) {
@@ -3495,11 +3519,10 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             ImGui::CloseCurrentPopup();
         }
         ImGui::SetCursorScreenPos(ImVec2(o.x + W - cw, y));
-        kit_next_tip("The bitrates Share aims for");
-        bool quality_clicked = kit_button(ICON_SLIDERS "  Quality", KIT_SECONDARY, ImVec2(cw, 0));
-        kit_tip("The bitrates shares aim for, in Options");
-        if (quality_clicked) {
-            lib_open_quality();
+        bool edit_clicked = kit_button(ICON_EDIT "  Edit", KIT_SECONDARY, ImVec2(cw, 0), can_edit);
+        if (!can_edit) kit_tip("Edit it from the Library");
+        if (edit_clicked) {
+            result = SHARE_MENU_EDIT;
             ImGui::CloseCurrentPopup();
         }
         y += ImGui::GetFrameHeight();
@@ -3530,9 +3553,10 @@ static void lib_share_menu(const char *id, const LibItem &it)
     ShareJobView j = {};
     if (g_lib_share_job && g_lib_share_job_key == it.key) j = share_job(g_lib_share_job);
     char pick[64];
-    i32 r = share_menu_body(d, it.info, edited ? &rec : 0, share_menu_state(j), it.key, lib_item_path(it).s, pick);
+    i32 r = share_menu_body(d, it.info, edited ? &rec : 0, share_menu_state(j), it.key, lib_item_path(it).s, pick, true);
     if (r == SHARE_MENU_SHARE) lib_share_decided(it);
     else if (r == SHARE_MENU_HOST) lib_share_item(it, SHARE_LINK, pick);
+    else if (r == SHARE_MENU_EDIT) editor_open(it);
     ImGui::EndPopup();
     lib_popup_style_pop();
 }
