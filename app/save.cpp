@@ -2248,9 +2248,9 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     const MediaInfo &m = j.info;
     bool share = req.kind == SAVE_SHARE;
     // A link is played by Discord's player: H.264 and one track of sound. The picture is copied as it is when it's
-    // H.264 already and the edit leaves it alone, else made at about the source's quality. The sound is always the
-    // mix made evenly loud (loudnorm), as for Share.
-    bool link = req.kind == SAVE_LINK;
+    // H.264 already and the edit leaves it alone, else made at about the source's quality. The sound is the mix made
+    // evenly loud (loudnorm), as for Share (`mixed`); a link with `tracks` keeps every track as Keep does.
+    bool link = req.kind == SAVE_LINK, mixed = share || (link && !j.tracks);
     char vcodec[16] = {}, acodec[16] = {};
     if (link) file_codecs(w->cfg.ffmpeg, j.src, vcodec, acodec);
     bool link_video_ok = !strcmp(vcodec, "h264");
@@ -2348,7 +2348,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         // The audio streams written when the pieces are joined, in order: -1 for the rebuilt mix, else a track
         i32 streams[MEDIA_MAX_TRACKS + 1], ns = 0;
         if (adv) {
-            ns = adv_graph(w, j, from, "", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p", !share && !link, streams);
+            ns = adv_graph(w, j, from, "", w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p", !mixed, streams);
         } else if (reencode) {
             graph_add(w, "[0:v]");
             if (zoom) zoom_filter(w, j.edit.keys, j.edit.key_count, m.fps, from);
@@ -2372,11 +2372,11 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 seq_join(w, tr, sa, sb, np, -1);
             } else graph_add(w, "[v];\n");
         }
-        bool mix = !adv && (share || link || touched) && edit_audio_graph(w, j, from);
+        bool mix = !adv && (mixed || touched) && edit_audio_graph(w, j, from);
         // With cuts or transitions each stream (the rebuilt mix [a], or a track as recorded) is cut into the pieces,
         // faded, and joined into [o<n>].
         if (seq && !adv) {
-            if (share || link) {
+            if (mixed) {
                 if (mix) streams[ns++] = -1;
             } else {
                 i32 first = 0;
@@ -2407,7 +2407,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                       fit_w, fit_h);
         }
         // Share and Link: the mix (the one sound stream, [o0] when joined, else [a]) made evenly loud, as [loud]
-        const char *loud_from = !(share || link) ? 0 : seq ? (ns && streams[0] == -1 ? "o0" : 0) : mix ? "a" : 0;
+        const char *loud_from = !mixed ? 0 : seq ? (ns && streams[0] == -1 ? "o0" : 0) : mix ? "a" : 0;
         if (loud_from) {
             i32 end = w->graph_len;
             while (end > 0 && (w->graph[end - 1] == '\n' || w->graph[end - 1] == ' ')) end--;
@@ -2479,7 +2479,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 snprintf(key, sizeof key, "-disposition:a:%d", s);
                 arg_pair(a, cap, key, s ? "0" : "default");
             }
-        } else if (share || link) {
+        } else if (mixed) {
             if (mix) {
                 arg_pair(a, cap, "-map", loud_from ? "[loud]" : "[a]");
                 arg_pair(a, cap, "-c:a", "aac");
@@ -2729,17 +2729,18 @@ static u32 save_edit(SaveKind kind, const EditJob &job)
 }
 
 // Queues a copy of `src` for a link, with `edit` applied (an empty record for the file as it is): H.264 with the
-// first (Mix) track only, made evenly loud, +faststart, in the link folder as <stem>.mp4. The picture is copied when
+// first (Mix) track only, made evenly loud (with `tracks`, every track as Keep keeps them), +faststart, in the link folder as <stem>.mp4. The picture is copied when
 // it's already H.264, the edit only trims and the copy isn't much over `aim` bytes; anything else is encoded at the
 // bitrate for `aim`, under `limit` (0 = no limit). With no aim it's encoded at about the source's quality. Follow it
 // with save_view(id) like any save; the caller deletes the file once it's done with it. Returns the job id, or 0 if
 // it couldn't be queued. With `max_h` the picture is made at most that tall and 1920 wide (link_fit_size), and
 // with `end_card` it ends on that many seconds of END_CARD_TEXT.
 static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &edit, const char *stem, i64 aim = 0,
-                     i64 limit = 0, i32 max_h = 0, f32 end_card = 0)
+                     i64 limit = 0, i32 max_h = 0, f32 end_card = 0, bool tracks = false)
 {
     static EditJob j;
     j = {};
+    j.tracks = tracks;
     j.aim_bytes = aim;
     j.limit_bytes = limit;
     j.max_h = max_h;
@@ -2752,6 +2753,14 @@ static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &e
     clean_name(j.stem);
     if (!j.stem[0]) str_set(j.stem, "clip");
     return save_queue(SAVE_LINK, 0, 0, j.stem, &j);
+}
+
+// Whether `path` is a session: a file in a Sessions folder (<year>\Sessions).
+static bool path_is_session(const wchar_t *path)
+{
+    const wchar_t *name = wcsrchr(path, L'\\');
+    if (!name || name - path < 9) return false;
+    return !_wcsnicmp(name - 9, L"\\Sessions", 9);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -2713,6 +2713,12 @@ static void test_social_preview()
     edit_first(&a, 600, 60);
     T(a.item_count == 2 && a.items[1].to == 80 && a.items[1].fade_out == 0 && adv_len(a) == 60);
     T(a.ikey_count == 1 && a.ikeys[0].item == 2);
+
+    // a session keeps its tracks in the bucket: a file in a Sessions folder
+    T(path_is_session(L"D:\\Videos\\Clips\\2026\\Sessions\\Overwatch 2026-11-24.mp4"));
+    T(path_is_session(L"D:\\Videos\\Clips\\2026\\sessions\\a.mp4"));
+    T(!path_is_session(L"D:\\Videos\\Clips\\2026\\Clips\\Sessions.mp4"));
+    T(!path_is_session(L"D:\\Videos\\Clips\\2026\\Clips\\a.mp4") && !path_is_session(L"a.mp4"));
 }
 
 static void test_edit_xml()

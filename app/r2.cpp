@@ -3683,8 +3683,9 @@ static void r2_start_copy(i32 slot)
     AcquireSRWLockExclusive(&g_r2.lock);
     g_r2.jobs[slot].state = R2_PREPARING;
     ReleaseSRWLockExclusive(&g_r2.lock);
-    bool page = !strcmp(w.hosts, "r2") && g_app.config.share_link_page;
-    w.phase = page && (w.aim > r2_social_bytes() || w.info.width > 1920 || w.info.height > 1080) ? 1 : 0;
+    // A session in the bucket keeps its tracks (for editors), so cards always get their own one-track copy
+    bool page = !strcmp(w.hosts, "r2") && g_app.config.share_link_page, session = path_is_session(w.src.s);
+    w.phase = page && (session || w.aim > r2_social_bytes() || w.info.width > 1920 || w.info.height > 1080) ? 1 : 0;
     w.preview = 0;
     if (strcmp(w.hosts, "r2") && w.aim > r2_social_bytes()) {
         // A free host or uploader gets what a card plays, never more than r2_social_bytes(): the clip at a smaller
@@ -3695,7 +3696,7 @@ static void r2_start_copy(i32 slot)
                                  w.info.track_count > 0, w.aim, r2_social_bytes());
         w.save = save_social_copy(w.src, w.info, w.edit, stem, r2_social_bytes(), h, &w.preview, &full_s);
         if (w.preview > 0) log_line("r2: %s gets a preview, the first %.0f of %.0f s", w.hosts, w.preview, full_s);
-    } else w.save = save_link(w.src, w.info, w.edit, stem, w.aim, w.limit);
+    } else w.save = save_link(w.src, w.info, w.edit, stem, w.aim, w.limit, 0, 0, page && session);
     if (!w.save) r2_fail_now(slot, "Too many saves are waiting");
 }
 

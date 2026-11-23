@@ -478,6 +478,7 @@ struct EditJob {
                                        // Link with no aim is made at about the source's quality
     i32        max_h;     // Link: the picture made at most this tall and 1920 wide (link_fit_size), 0 = as it is
     f32        end_card;  // seconds of "Continues on the page" after the picture (save_social_copy's preview), 0 = none
+    bool       tracks;    // Link: every sound track kept as Keep keeps them, nothing made louder (a shared session)
 };
 
 // The rows of Share's bitrate table (share_kbps) and what they start at: YouTube's recommended SDR upload
