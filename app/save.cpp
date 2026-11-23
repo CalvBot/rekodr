@@ -2218,6 +2218,19 @@ static void file_codecs(const Path &ffmpeg, const Path &file, char (&video)[16],
     }
 }
 
+// The picture size a w x h video is scaled down to so it's at most `max_h` tall and 1920 wide, both even; 0 x 0 when
+// it fits already. Chat apps halve a video wider than 1920.
+static void link_fit_size(i32 w, i32 h, i32 max_h, i32 *fw, i32 *fh)
+{
+    *fw = *fh = 0;
+    if (w <= 0 || h <= 0 || max_h <= 0) return;
+    f64 s = (f64)max_h / h;
+    if (1920.0 / w < s) s = 1920.0 / w;
+    if (s >= 1) return;
+    *fw = (i32)(w * s + 0.5) & ~1;
+    *fh = (i32)(h * s + 0.5) & ~1;
+}
+
 static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 {
     const SaveRequest &req = w->req;
@@ -2297,7 +2310,9 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                         ? (i64)(((u64)sfa.nFileSizeHigh << 32) | sfa.nFileSizeLow) : 0;
     f64 src_kbps = m.duration > 0 ? src_bytes * 8 / 1000.0 / m.duration : 0;
     bool link_big = link && aim > 0 && m.duration > 0 && src_bytes * (span / m.duration) > aim * 1.1;
-    bool reencode = share || zoom || colored || seq || (link && (!link_video_ok || link_big));
+    i32 fit_w = 0, fit_h = 0; // a Link made smaller (max_h)
+    if (link) link_fit_size(m.width, m.height, j.max_h, &fit_w, &fit_h);
+    bool reencode = share || zoom || colored || seq || (link && (!link_video_ok || link_big || fit_w));
     bool sized = reencode && (share || link) && aim > 0;
     ShareRate rate = {};
     i32 video_kbps = 0;
@@ -2374,6 +2389,12 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 seq_join(w, tr, sa, sb, np, s);
             }
         }
+        if (fit_w) { // the finished picture [v] made smaller, as [vfit]
+            i32 end = w->graph_len;
+            while (end > 0 && (w->graph[end - 1] == '\n' || w->graph[end - 1] == ' ')) end--;
+            graph_add(w, "%s[v]scale=%d:%d:flags=lanczos[vfit];\n", end > 0 && w->graph[end - 1] != ';' ? ";\n" : "",
+                      fit_w, fit_h);
+        }
         if (w->graph_full) {
             snprintf(out, out_cap, "the zoom or colour has too many keyframes");
             RemoveDirectoryW(work.s);
@@ -2405,7 +2426,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             cmd_arg(a, cap, graph.s);
         }
         if (reencode) {
-            arg_pair(a, cap, "-map", "[v]");
+            arg_pair(a, cap, "-map", fit_w ? "[vfit]" : "[v]");
             edit_encoder_args(a, cap, w->cfg.vendor, sized ? video_kbps : 0);
         } else {
             arg_pair(a, cap, "-map", "0:v:0");
@@ -2480,7 +2501,8 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                  transitions_any(tr, np) ? "yes" : "no",
                  zoom ? j.edit.key_count : 0, colored ? "changed" : "as recorded", mix ? "re-mixed" : "as recorded", reencode ? "re-encoded" : "copied", final8);
         if (adv) log_line("%s %u: advanced, %d items", share ? "share" : link ? "link" : "keep", req.id, j.edit.item_count);
-        if (link) log_line("link %u: source %s / %s", req.id, vcodec[0] ? vcodec : "-", acodec[0] ? acodec : "-");
+        if (link) log_line("link %u: source %s / %s%s", req.id, vcodec[0] ? vcodec : "-", acodec[0] ? acodec : "-",
+                           fit_w ? ", made smaller" : "");
         if (sized)
             log_line("%s %u: aiming at %.2f MB under %.2f, attempt %d: video %d kbps%s, audio %d kbps",
                      share ? "share" : "link", req.id, aim / SHARE_MIB, limit / SHARE_MIB, attempt + 1, video_kbps,
@@ -2687,14 +2709,15 @@ static u32 save_edit(SaveKind kind, const EditJob &job)
 // H.264 and AAC, the edit only trims and the copy isn't much over `aim` bytes; anything else is encoded at the
 // bitrate for `aim`, under `limit` (0 = no limit). With no aim it's encoded at about the source's quality. Follow it
 // with save_view(id) like any save; the caller deletes the file once it's done with it. Returns the job id, or 0 if
-// it couldn't be queued.
+// it couldn't be queued. With `max_h` the picture is made at most that tall and 1920 wide (link_fit_size).
 static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &edit, const char *stem, i64 aim = 0,
-                     i64 limit = 0)
+                     i64 limit = 0, i32 max_h = 0)
 {
     static EditJob j;
     j = {};
     j.aim_bytes = aim;
     j.limit_bytes = limit;
+    j.max_h = max_h;
     j.src = src;
     j.out_dir = g_app.paths.link_dir;
     j.info = info;

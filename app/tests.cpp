@@ -1653,6 +1653,11 @@ static void test_r2()
     w[0].pause_day = 20261121;
     w[0].page_w = 1920;
     w[0].page_h = 1080;
+    w[0].social = 1;
+    w[0].social_w = 1280;
+    w[0].social_h = 720;
+    w[0].seconds = 125.5f;
+    w[1].social = -1;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
     T(!strcmp(r[0].key, w[0].key) && !strcmp(r[0].url, w[0].url) && !strcmp(r[0].title, "ace round"));
@@ -1664,6 +1669,8 @@ static void test_r2()
     T(r[0].plays_today == -1 && r[0].plays_month == -1 && r[0].plays_24h == -1);
     T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
+    T(r[0].social == 1 && r[0].social_w == 1280 && r[0].social_h == 720 && r[0].seconds == 125.5f);
+    T(r[1].social == -1 && !r[1].social_w);
     DeleteFileW(file.s);
 
     // Preview pages: the page beside the clip's folder, the picture in it, at most 1280 wide and even
@@ -1688,9 +1695,10 @@ static void test_r2()
     static const u8 past_ascii[] = {'c', 'a', 'f', 0xc3, 0xa9, ' ', 0xf0, 0x9f, 0x8e, 0xae, 0x01, 0}; // e-acute, a pad, a control
     char title[96];
     snprintf(title, sizeof title, "ace <b>\"round\"</b> & %s", (const char *)past_ascii);
-    i32 hn = r2_page_html(title, "https://x.dev/clipback/abc?v=2",
-                          "https://x.dev/clipback/abc/clip.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg?v=2", 1920,
-                          1080, 1280, 720, false, html, sizeof html);
+    R2PageParts pp = {title, "https://x.dev/clipback/abc?v=2", "https://x.dev/clipback/abc/clip.mp4?v=2",
+                      "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg?v=2", 2560,
+                      1440, 1280, 720, 1280, 720};
+    i32 hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && hn == (i32)strlen(html));
     T(strstr(html, "min-height:100%;") && strstr(html, "width:100%;") && !strstr(html, "100720"));
     bool ascii = true;
@@ -1701,19 +1709,66 @@ static void test_r2()
     T(strstr(html, "<meta property=\"og:site_name\" content=\"clipback\">") != 0);
     T(strstr(html, "<meta property=\"og:image\" content=\"https://x.dev/clipback/abc/thumb.jpg?v=2\">") != 0);
     T(strstr(html, "og:image:width\" content=\"1280\"") != 0 && strstr(html, "og:image:height\" content=\"720\"") != 0);
-    T(strstr(html, "<meta property=\"og:video:secure_url\" content=\"https://x.dev/clipback/abc/clip.mp4?v=2\">") != 0);
-    T(strstr(html, "og:video:type\" content=\"video/mp4\"") != 0 && strstr(html, "og:video:width\" content=\"1920\"") != 0);
+    // cards play the small copy at its size; the page plays the clip
+    const char *copy = "https://x.dev/clipback/abc/social.mp4?v=2";
+    char tag[160];
+    static const char *const og_video[] = {"og:video", "og:video:url", "og:video:secure_url"};
+    for (const char *name : og_video) {
+        snprintf(tag, sizeof tag, "<meta property=\"%s\" content=\"%s\">", name, copy);
+        T(strstr(html, tag) != 0);
+    }
+    T(strstr(html, "og:video:type\" content=\"video/mp4\"") != 0);
+    T(strstr(html, "og:video:width\" content=\"1280\"") != 0);
     T(strstr(html, "<meta name=\"twitter:card\" content=\"player\">") != 0);
-    T(strstr(html, "<meta name=\"twitter:player\" content=\"https://x.dev/clipback/abc?v=2\">") != 0);
-    T(strstr(html, "twitter:player:height\" content=\"1080\"") != 0 && strstr(html, "twitter:image\"") != 0);
+    snprintf(tag, sizeof tag, "<meta name=\"twitter:player\" content=\"%s\">", copy);
+    T(strstr(html, tag) != 0);
+    snprintf(tag, sizeof tag, "<meta name=\"twitter:player:stream\" content=\"%s\">", copy);
+    T(strstr(html, tag) != 0 && strstr(html, "twitter:player:stream:content_type\" content=\"video/mp4\"") != 0);
+    T(strstr(html, "twitter:player:height\" content=\"720\"") != 0 && strstr(html, "twitter:image\"") != 0);
+    T(strstr(html, "noindex") != 0 && !strstr(html, "og:video:width\" content=\"2560\""));
     T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
+    T(strstr(html, "width=\"2560\" height=\"1440\"") != 0);
     T(strstr(html, " controls playsinline ") != 0 && strstr(html, "<p>clipback</p>") != 0);
-    hn = r2_page_html("ace", "https://x.dev/clipback/abc", "https://x.dev/clipback/abc/clip.mp4",
-                      "https://x.dev/clipback/abc/thumb.jpg", 1920, 1080, 1280, 720, true, html, sizeof html);
+    // nothing small enough for cards: a picture card, the page still plays the clip
+    pp.embed = "";
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && !strstr(html, "og:video") && !strstr(html, "twitter:player") && !strstr(html, "social.mp4"));
+    T(strstr(html, "twitter:card\" content=\"summary_large_image\"") && strstr(html, "og:image\""));
+    T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\"") != 0);
+    pp = {"ace", "https://x.dev/clipback/abc", "https://x.dev/clipback/abc/clip.mp4",
+          "https://x.dev/clipback/abc/clip.mp4", "https://x.dev/clipback/abc/thumb.jpg", 1920, 1080, 1920, 1080, 1280,
+          720};
+    hn = r2_page_html(pp, true, html, sizeof html);
     T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "<p>clipback</p>"));
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
     T(!strstr(html, "thumb.jpg"));
-    T(r2_page_html("ace", "a", "b", "c", 1, 1, 1, 1, false, html, 64) == 0);
+    T(r2_page_html(pp, false, html, 64) == 0);
+
+    // The page's title: the game and how long it plays; a name of its own goes first
+    char pt[128];
+    r2_page_title("Overwatch 2026-11-24 21-04-33", "Overwatch", 125, pt, sizeof pt);
+    T(!strcmp(pt, "Overwatch, 2 minutes"));
+    r2_page_title("", "Overwatch", 1, pt, sizeof pt);
+    T(!strcmp(pt, "Overwatch, 1 second"));
+    r2_page_title("ace round", "Valorant", 42.4, pt, sizeof pt);
+    T(!strcmp(pt, "ace round - Valorant, 42 seconds"));
+    r2_page_title("ace round", "", 3900, pt, sizeof pt);
+    T(!strcmp(pt, "ace round, 1 hour 5 minutes"));
+    r2_page_title("", "", 0, pt, sizeof pt);
+    T(!strcmp(pt, "Clip"));
+    r2_page_title("", "", 7200, pt, sizeof pt);
+    T(!strcmp(pt, "Clip, 2 hours"));
+
+    // The small copy: none when the clip fits cards; else 1080 when its bitrate fits, 720, or none at all
+    const i64 mb = 1000 * 1000;
+    T(r2_social_height(30, 1920, 1080, 60, true, 50 * mb, 80 * mb) == 0);
+    T(r2_social_height(30, 2560, 1440, 60, true, 50 * mb, 80 * mb) == 1080);  // too big a picture
+    T(r2_social_height(20, 1920, 1080, 60, true, 200 * mb, 80 * mb) == 1080); // ~30 Mbps fits
+    T(r2_social_height(300, 1920, 1080, 60, true, 900 * mb, 80 * mb) == 720); // ~2 Mbps
+    T(r2_social_height(1500, 1920, 1080, 60, true, 3000 * mb, 80 * mb) == -1); // under 1000 kbps
+    char sk[R2_KEY_MAX];
+    r2_social_key("clipback/abcdefghijklmnop/clip.mp4", sk);
+    T(!strcmp(sk, "clipback/abcdefghijklmnop/social.mp4"));
 
     // The bucket's S3 secret from an API token
     char secret[65];
@@ -1937,13 +1992,22 @@ static void test_share_cancel()
     T(!file_exists(file.s) && g_r2.count == 0);
     T(net_count("PUT clipback/") == 1 && net_count("DELETE clipback/") == 1);
 
-    // Cancelled while waiting its turn: nothing is sent and the copy goes
+    // Cancelled while waiting its turn: nothing is sent and the copy goes, with its small copy
     id = job(&slot);
     t.slot = slot;
     make(1000);
+    t.social = path_join(g_app.paths.config_dir, L"social.mp4");
+    CloseHandle(CreateFileW(t.social.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0));
     g_r2.cancel[slot] = 1;
     r2_run_upload(t);
-    T(g_net.n == 0 && !file_exists(file.s) && r2_job(id).state == R2_FAILED);
+    T(g_net.n == 0 && !file_exists(file.s) && !file_exists(t.social.s) && r2_job(id).state == R2_FAILED);
+    t.social = {};
+
+    // A share's set: the clip, its small copy, the picture and the page
+    g_net = {};
+    T(r2_delete_share(conf, "clipback/k/clip.mp4", "clipback/k/clip.mp4", true, true));
+    T(net_count("DELETE clipback/k/clip.mp4") == 1 && net_count("DELETE clipback/k/social.mp4") == 1);
+    T(net_count("DELETE clipback/k/thumb.jpg") == 1 && net_count("DELETE clipback/k") == 4);
 
     // Catbox, cancelled as it answered: it can't be deleted there, so it's only not kept or given out
     t.kind = R2_T_FREE;
