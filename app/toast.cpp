@@ -1076,6 +1076,7 @@ static void toast_session_close(i32 part)
     if (part != TP_SECOND) return;
     log_line("toast: review %s", t.more ? "the unsaved sessions" : s ? s->name : "a session that's gone");
     if (!t.more && s) {
+        session_seen(s->id);
         ui_show(SCREEN_TIMELINE);
         timeline_review(s->start_us, s->end_us, s->name);
     } else {

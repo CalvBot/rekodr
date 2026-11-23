@@ -5271,6 +5271,18 @@ static void timeline_review(i64 from_us, i64 to_us, const char *name);  // timel
 // looks at it on the timeline), then its icon, the file name it gets when saved, and its length and times. Save sits
 // on the right of the caption and asks for a title first. `ask` lets this one read a frame it hasn't got: the tile
 // under the mouse, as it scrubs. Otherwise it shows its poster.
+// New sessions: those not seen yet (Session.seen), and those first seen on this visit to the page, which keep
+// their dot until the page is left.
+static u32 g_unsaved_new[COUNT(((Sessions *)0)->rows)];
+static i32 g_unsaved_new_n, g_unsaved_new_frame = -100;
+static bool lib_unsaved_new(const Session &s)
+{
+    if (!s.seen) return true;
+    for (i32 i = 0; i < g_unsaved_new_n; i++)
+        if (g_unsaved_new[i] == s.id) return true;
+    return false;
+}
+
 static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
 {
     Sessions &ss = g_app.sessions;
@@ -5352,6 +5364,12 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
         dl->PopClipRect();
     } else session_time_left(*s, text, sizeof text);
     badge(dl, ImVec2(t0.x + in, t0.y + in), false, false, text);
+    if (lib_unsaved_new(*s)) { // new: an accent dot in the top right
+        f32 r = kit_px(5);
+        ImVec2 c(t1.x - in - r, t0.y + in + r);
+        dl->AddCircleFilled(c, r + kit_px(2), IM_COL32(0, 0, 0, 110));
+        dl->AddCircleFilled(c, r, col32(COL_ACCENT));
+    }
 
     // The caption: icon, then the file name it gets and a dim line; Save on the right
     f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
@@ -5458,6 +5476,14 @@ static bool lib_unsaved_row(f32 full_w)
     for (i32 r = 0; r < ss.row_count; r++)
         if (lib_unsaved_shown(ss.rows[r])) rows[row_count++] = ss.rows[r];
     if (row_count == 0) return false;
+    i32 frame = ImGui::GetFrameCount();
+    if (g_unsaved_new_frame != frame - 1) g_unsaved_new_n = 0; // a new visit
+    g_unsaved_new_frame = frame;
+    bool any_new = false;
+    for (i32 r = 0; r < row_count && !any_new; r++) {
+        const Session *s = session_find(rows[r]);
+        any_new = s && lib_unsaved_new(*s);
+    }
     f32 gap = kit_px(14), fh = ImGui::GetFrameHeight();
     i32 per = (i32)((full_w + gap) / (kit_px(280) + gap));
     if (per < 1) per = 1;
@@ -5482,6 +5508,14 @@ static bool lib_unsaved_row(f32 full_w)
         ImDrawList *hdl = ImGui::GetWindowDrawList();
         hdl->AddText(g_font_icon, isz, ImVec2(floorf(a.x + (iw - is.x) / 2), floorf(a.y + (fh - is.y) / 2)), ink, ic);
         hdl->AddText(tf, tf->FontSize, ImVec2(a.x + iw + kit_px(4), ty), ink, head);
+        if (any_new) { // "new" in an accent pill after the count, past the fold's click area
+            ImFont *nf = tf;
+            ImVec2 ns = nf->CalcTextSizeA(nf->FontSize, FLT_MAX, 0, "new");
+            f32 px = kit_px(7), ph = floorf(nf->FontSize + kit_px(4)), nx = a.x + iw + kit_px(4) + tw + kit_px(8);
+            f32 py = floorf(a.y + (fh - ph) / 2);
+            hdl->AddRectFilled(ImVec2(nx, py), ImVec2(nx + ns.x + 2 * px, py + ph), col32(COL_ACCENT), ph / 2);
+            hdl->AddText(nf, nf->FontSize, ImVec2(nx + px, floorf(py + (ph - nf->FontSize) / 2)), col32(0xffffff), "new");
+        }
         if (hit) {
             folded = !folded;
             config_save(g_app.config, g_app.paths);
@@ -5518,8 +5552,17 @@ static bool lib_unsaved_row(f32 full_w)
         if (m.x >= ImMax(x, a.x) && m.x < ImMin(x + tile_w, a.x + full_w) && m.y >= y && m.y < y + thumb_h) hovered = r;
     }
     ImGui::PushClipRect(ImVec2(a.x, y), ImVec2(a.x + full_w, y + row_h), true);
-    for (i32 r = first; r < row_count && r <= first + per; r++)
-        lib_unsaved_tile(rows[r], ImVec2(floorf(a.x + r * step - st.pos), y), tile_w, thumb_h, hovered == r);
+    // A tile wholly in view on a window that's showing is seen: its dot stays until the page is left
+    bool showing = g_app.ui.shown && !IsIconic(g_app.ui.hwnd);
+    for (i32 r = first; r < row_count && r <= first + per; r++) {
+        f32 x = floorf(a.x + r * step - st.pos);
+        lib_unsaved_tile(rows[r], ImVec2(x, y), tile_w, thumb_h, hovered == r);
+        Session *s = session_find(rows[r]);
+        if (showing && s && !s->seen && x >= a.x - 1 && x + tile_w <= a.x + full_w + 1) {
+            if (g_unsaved_new_n < COUNT(g_unsaved_new)) g_unsaved_new[g_unsaved_new_n++] = s->id;
+            session_seen(s->id);
+        }
+    }
     ImGui::PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(a.x, y + row_h + kit_strip_bar_h() + kit_px(8)));
     return true;
