@@ -538,6 +538,7 @@ struct ShareJobView {
     char       path[MAX_PATH * 3]; // the file (UTF-8), for a link the copy uploaded
     char       url[512];       // a link's address
     char       error[256];
+    i32        expires_h;      // a link's hours until its host drops it (Litterbox), 0 = kept or a file
 };
 
 // Starts Share for the file at `path`. `edit` 0 shares the whole file; the editor passes its own record. `name` is

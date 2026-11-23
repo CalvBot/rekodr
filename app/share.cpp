@@ -408,6 +408,7 @@ struct ShareJob {
     u32  r2;        // the r2 job making a link
     u64  hash, lib_key;
     bool squeezed;  // the file or link copy is squeezed
+    bool cancelled; // share_cancel ended it; `save` is followed until it stops, and its file deleted
     char name[200];
 };
 static struct {
@@ -418,7 +419,7 @@ static struct {
 static bool share_holds_save(u32 id)
 {
     for (const ShareJob &j : g_share.jobs)
-        if (id && j.save == id && j.v.state < SHARE_DONE) return true;
+        if (id && j.save == id && (j.v.state < SHARE_DONE || j.cancelled)) return true;
     return false;
 }
 
@@ -446,6 +447,7 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
     }
     if (j.v.kind == SHARE_LINK) {
         str_set(j.v.url, what);
+        j.v.expires_h = r2_url_hours_left(what);
         ImGui::SetClipboardText(what);
     } else {
         str_set(j.v.path, what);
@@ -462,6 +464,16 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
 static void share_poll()
 {
     for (ShareJob &j : g_share.jobs) {
+        if (j.cancelled && j.save) { // a cancelled copy that finished anyway goes
+            const SaveJobView *s = save_view(j.save);
+            if (s && s->state == SAVE_DONE) {
+                wchar_t w[MAX_PATH];
+                utf8_to_wide(s->path, w, MAX_PATH);
+                DeleteFileW(w);
+                log_line("share %u: the copy finished as it was cancelled: deleted", j.v.id);
+            }
+            if (!s || s->state >= SAVE_DONE) j.save = 0;
+        }
         if (!j.v.id || j.v.state >= SHARE_DONE) continue;
         if (j.save) {
             const SaveJobView *s = save_view(j.save);
@@ -568,14 +580,18 @@ static ShareJobView share_job(u32 id)
     return {};
 }
 
+// Stops a Share at once and deletes what it made: a file being made (or made just now, not yet given out), and a
+// link's copy and upload (r2_cancel). Nothing goes on the clipboard.
 static void share_cancel(u32 id)
 {
     for (ShareJob &j : g_share.jobs) {
         if (!id || j.v.id != id || j.v.state >= SHARE_DONE) continue;
         if (j.save) save_cancel(j.save);
         if (j.r2) r2_cancel(j.r2);
+        j.cancelled = true;
         share_end(j, false, "", "Cancelled");
     }
+    share_poll();
 }
 
 // ---------------------------------------------------------------------------------------------------------------

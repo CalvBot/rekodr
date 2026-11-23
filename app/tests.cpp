@@ -1845,6 +1845,154 @@ static void test_r2()
     T(!strcmp(o.error, "invalid_grant"));
 }
 
+// The network as a cancelled share sees it: each request is noted, and the one named cancels the job as it goes.
+static struct {
+    char        log[32][200];
+    i32         n;
+    const char *cancel_on; // the method whose request cancels the job, 0 = none
+    u32         job;
+} g_net;
+
+static u32 net_fake(const char *method, const char *where, const char *query, R2Progress *, char *resp, i32 cap,
+                    char *etag, i32 etag_cap)
+{
+    if (g_net.n < COUNT(g_net.log))
+        snprintf(g_net.log[g_net.n++], sizeof g_net.log[0], "%s %s?%s", method, where, query);
+    if (g_net.cancel_on && !strcmp(method, g_net.cancel_on)) {
+        AcquireSRWLockExclusive(&g_r2.lock);
+        for (i32 i = 0; i < COUNT(g_r2.jobs); i++)
+            if (g_r2.jobs[i].id == g_net.job) g_r2.cancel[i] = 1;
+        ReleaseSRWLockExclusive(&g_r2.lock);
+    }
+    const char *body = "";
+    if (!strcmp(method, "POST") && !strcmp(query, "uploads=")) body = "<UploadId>u1</UploadId>";
+    else if (!strcmp(method, "POST") && strstr(where, "catbox.moe")) body = "https://files.catbox.moe/abc123.mp4";
+    else if (!strcmp(method, "POST") && strstr(where, "up.example"))
+        body = "{\"url\":\"https://up.example/f/1.mp4\",\"del\":\"https://up.example/del/1\"}";
+    else if (!strcmp(method, "GET") && strstr(query, "list-type")) body = "<ListBucketResult></ListBucketResult>";
+    if (cap) snprintf(resp, cap, "%s", body);
+    if (etag_cap) snprintf(etag, etag_cap, "\"e\"");
+    return 200;
+}
+
+static i32 net_count(const char *prefix)
+{
+    i32 n = 0;
+    for (i32 i = 0; i < g_net.n; i++) n += starts_with(g_net.log[i], prefix);
+    return n;
+}
+
+// Cancelling a link: the upload stops and nothing it made is left, on this PC or on the host.
+static void test_share_cancel()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Paths keep = g_app.paths;
+    swprintf(g_app.paths.config_dir.s, MAX_PATH, L"%sclipback-tests-cancel-%lu", temp, GetCurrentProcessId());
+    CreateDirectoryW(g_app.paths.config_dir.s, 0);
+    g_r2.count = 0;
+    g_r2.loaded = false;
+    r2_net_fake = net_fake;
+    R2Conf conf = {"acct", "key", "secret", "bucket", "https://clips.example", 1ll << 40};
+    Path file = path_join(g_app.paths.config_dir, L"copy.mp4");
+    auto make = [&](i64 bytes) { // sized without writing it all
+        HANDLE h = CreateFileW(file.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+        LARGE_INTEGER at;
+        at.QuadPart = bytes;
+        SetFilePointerEx(h, at, 0, FILE_BEGIN);
+        SetEndOfFile(h);
+        CloseHandle(h);
+    };
+    auto job = [&](i32 *slot) {
+        *slot = r2_new_job();
+        g_net = {};
+        g_net.job = g_r2.jobs[*slot].id;
+        return g_net.job;
+    };
+    i32 slot;
+    char err[256];
+
+    // In parts: cancelled during the first, the rest never go and the upload is aborted, its parts dropped
+    u32 id = job(&slot);
+    make(R2_SINGLE_MAX + R2_PART);
+    g_net.cancel_on = "PUT";
+    T(!r2_put_file(conf, "clipback/k/clip.mp4", file, id, err, sizeof err) && !strcmp(err, "Cancelled"));
+    T(net_count("PUT ") == 1 && net_count("DELETE clipback/k/clip.mp4?uploadId=u1") == 1);
+    T(net_count("POST clipback/k/clip.mp4?uploadId=") == 0); // never completed
+
+    // To the bucket, cancelled as the file went up: it's deleted there, the copy here, and no link is kept
+    R2Task t = {};
+    t.kind = R2_T_UPLOAD;
+    t.conf = conf;
+    t.file = file;
+    t.slot = slot;
+    id = job(&slot);
+    t.slot = slot;
+    make(1000);
+    g_net.cancel_on = "PUT";
+    r2_run_upload(t);
+    R2Job r = r2_job(id);
+    T(r.state == R2_FAILED && !strcmp(r.error, "Cancelled") && !r.url[0]);
+    T(!file_exists(file.s) && g_r2.count == 0);
+    T(net_count("PUT clipback/") == 1 && net_count("DELETE clipback/") == 1);
+
+    // Cancelled while waiting its turn: nothing is sent and the copy goes
+    id = job(&slot);
+    t.slot = slot;
+    make(1000);
+    g_r2.cancel[slot] = 1;
+    r2_run_upload(t);
+    T(g_net.n == 0 && !file_exists(file.s) && r2_job(id).state == R2_FAILED);
+
+    // Catbox, cancelled as it answered: it can't be deleted there, so it's only not kept or given out
+    t.kind = R2_T_FREE;
+    str_set(t.hosts, "catbox");
+    id = job(&slot);
+    t.slot = slot;
+    make(1000);
+    g_net.cancel_on = "POST";
+    r2_run_free(t);
+    r = r2_job(id);
+    T(r.state == R2_FAILED && !strcmp(r.error, "Cancelled") && !file_exists(file.s) && g_r2.count == 0);
+    T(g_net.n == 1);
+
+    // A custom uploader with a DeletionURL: what went up is deleted there
+    Path dir = path_join(g_app.paths.config_dir, L"uploaders"), sxcu = path_join(dir, L"mine.sxcu");
+    CreateDirectoryW(dir.s, 0);
+    FILE *f = _wfopen(sxcu.s, L"wb");
+    fputs("{\"Name\":\"mine\",\"RequestMethod\":\"POST\",\"RequestURL\":\"https://up.example/upload\","
+          "\"Body\":\"MultipartFormData\",\"FileFormName\":\"file\",\"URL\":\"{json:url}\","
+          "\"DeletionURL\":\"{json:del}\"}", f);
+    fclose(f);
+    str_set(t.hosts, "mine");
+    id = job(&slot);
+    t.slot = slot;
+    make(1000);
+    g_net.cancel_on = "POST";
+    r2_run_free(t);
+    T(r2_job(id).state == R2_FAILED && !file_exists(file.s) && g_r2.count == 0);
+    T(net_count("GET https://up.example/del/1") == 1);
+
+    // Done just before the cancel: the job hands over what to delete and ends as cancelled
+    id = job(&slot);
+    T(r2_job_end(id, true, "https://x/1", "", "clipback/abc", ""));
+    T(r2_job(id).state == R2_DONE && !strcmp(r2_job(id).key, "clipback/abc"));
+    id = job(&slot);
+    g_r2.cancel[slot] = 1;
+    T(!r2_job_end(id, true, "https://x/2", "", "clipback/def", "") && r2_job(id).state == R2_FAILED &&
+      !r2_job(id).key[0]);
+
+    r2_net_fake = 0;
+    DeleteFileW(sxcu.s);
+    RemoveDirectoryW(dir.s);
+    DeleteFileW(path_join(g_app.paths.config_dir, L"shares.tsv").s);
+    RemoveDirectoryW(g_app.paths.config_dir.s);
+    T(GetFileAttributesW(g_app.paths.config_dir.s) == INVALID_FILE_ATTRIBUTES); // nothing else was left in it
+    g_r2.count = 0;
+    g_r2.loaded = false;
+    g_app.paths = keep;
+}
+
 static void test_mcpack()
 {
     char v[256];
@@ -2592,6 +2740,7 @@ int main()
     test_gamedb();
     test_mcpack();
     test_r2();
+    test_share_cancel();
     test_storeids();
     test_markers();
     printf("%d checks, %d failed\n", g_checked, g_failed);

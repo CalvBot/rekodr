@@ -40,12 +40,16 @@ enum R2SetupState : u8 {
     R2_SETUP_NO_TOKEN_SCOPE
 };
 
+enum { R2_MAX_SHARES = 1024, R2_KEY_MAX = 48 };
+
 struct R2Job {
     u32     id; // 0 = no such job
     R2State state;
     f32     progress; // 0..1 within the current step
     char    url[512]; // once done
     char    error[256];
+    char    key[R2_KEY_MAX]; // the share it made (its history entry), "" when it gave an old link back
+    char    undo[512];       // a custom uploader's DeletionURL for what it made, "" = none
 };
 
 // The setup's state: waiting for the browser's sign-in, busy with a step, or how it ended
@@ -54,8 +58,6 @@ struct R2Status {
     char         text[256]; // ready to show
     char         who[128];  // the Cloudflare account's name, once known
 };
-
-enum { R2_MAX_SHARES = 1024, R2_KEY_MAX = 48 };
 
 // The free public hosts, used when R2 isn't set up.
 struct FreeHost {
@@ -165,6 +167,7 @@ struct R2Task {
     char       verifier[64]; // sign-in: PKCE's verifier
     u8         pause;   // pause: 1 by hand, 2 past the day's plays; resume: 1 by hand
     bool       page;    // upload: with a preview page (share_link_page)
+    char       undo[512]; // delete: a custom uploader's DeletionURL, fetched first
     Path       ffmpeg;  // upload with a page: for its picture
 };
 
@@ -190,6 +193,7 @@ static struct {
     u32     gen;
     R2Job   jobs[16];
     R2Work  work[16];
+    LONG    cancel[16]; // per job slot (under the lock): r2_cancel asked it to stop
     u32     next_id;
     R2Status status;
     R2Conf   found;      // what the setup found (account, token id as access key, bucket, public address)
@@ -774,6 +778,22 @@ struct R2Progress {
     i64 done, total;
 };
 
+// Tests stand in for the network here: while set, every request to the bucket and to the hosts goes to it instead.
+// `where` is the key (the bucket) or the address (a host).
+static u32 (*r2_net_fake)(const char *method, const char *where, const char *query, R2Progress *prog, char *resp,
+                          i32 cap, char *etag, i32 etag_cap);
+
+// Whether job `job` was cancelled (r2_cancel). Any thread.
+static bool r2_cancelled(u32 job)
+{
+    bool c = false;
+    AcquireSRWLockShared(&g_r2.lock);
+    for (i32 i = 0; i < COUNT(g_r2.jobs); i++)
+        if (job && g_r2.jobs[i].id == job) c = g_r2.cancel[i] != 0;
+    ReleaseSRWLockShared(&g_r2.lock);
+    return c;
+}
+
 static void r2_set_progress(u32 job, f32 p)
 {
     AcquireSRWLockExclusive(&g_r2.lock);
@@ -790,6 +810,7 @@ static u32 r2_send(const R2Conf &c, const char *method, const char *key, const c
 {
     if (resp_cap) resp[0] = 0;
     if (etag_cap) etag[0] = 0;
+    if (r2_net_fake) return r2_net_fake(method, key, query, prog, resp, resp_cap, etag, etag_cap);
     char host[128], uri[256], date[20], auth[512], hdrs[1024];
     snprintf(host, sizeof host, "%s.r2.cloudflarestorage.com", c.account);
     snprintf(uri, sizeof uri, "/%s/%s", c.bucket, key);
@@ -844,7 +865,7 @@ static u32 r2_send(const R2Conf &c, const char *method, const char *key, const c
                     prog->done += got;
                     r2_set_progress(prog->job, (f32)((f64)prog->done / (f64)prog->total));
                 }
-                if (g_r2.stop) sent = false;
+                if (g_r2.stop || (prog && r2_cancelled(prog->job))) sent = false; // dropped: R2 keeps none of it
             }
         }
         DWORD code = 0, len = sizeof code;
@@ -974,12 +995,16 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
         i32 len = snprintf(done, (size_t)done_cap, "<CompleteMultipartUpload>");
         ok = true;
         for (i32 p = 1; p <= parts && ok; p++) {
+            if (r2_cancelled(job)) {
+                ok = false;
+                break;
+            }
             i64 at = (i64)(p - 1) * R2_PART, n = size.QuadPart - at < R2_PART ? size.QuadPart - at : R2_PART;
             char query[1200], tag[128];
             snprintf(query, sizeof query, "partNumber=%d&uploadId=%s", p, id_enc);
             i64 before = prog.done;
             status = 0;
-            for (i32 attempt = 0; attempt < 3 && !r2_ok(status) && !g_r2.stop; attempt++) {
+            for (i32 attempt = 0; attempt < 3 && !r2_ok(status) && !g_r2.stop && !r2_cancelled(job); attempt++) {
                 prog.done = before;
                 status = r2_send(c, "PUT", key, query, R2Body{0, f, at, n}, 0, resp, sizeof resp, tag, sizeof tag,
                                  &prog);
@@ -992,6 +1017,7 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
         snprintf(done + len, (size_t)(done_cap - len), "</CompleteMultipartUpload>");
         char query[1100];
         snprintf(query, sizeof query, "uploadId=%s", id_enc);
+        if (ok && r2_cancelled(job)) ok = false;
         if (ok) {
             status = r2_send(c, "POST", key, query, R2Body{done, 0, 0, (i64)strlen(done)}, "application/xml", resp,
                              sizeof resp);
@@ -1004,6 +1030,7 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
     }
     CloseHandle(f);
     if (!ok && g_r2.stop) snprintf(err, cap, "Stopped");
+    else if (!ok && r2_cancelled(job)) snprintf(err, cap, "Cancelled");
     return ok;
 }
 
@@ -1161,21 +1188,53 @@ static void r2_post(R2EventKind kind, i64 b)
     event_post(e);
 }
 
-static void r2_job_end(u32 id, bool ok, const char *url, const char *error)
+// Ends a job with its link (`key` the share it made, `undo` a DeletionURL for it) or why not. A job cancelled
+// first ends as cancelled instead, and false says so: what it made is the caller's to delete.
+static bool r2_job_end(u32 id, bool ok, const char *url, const char *error, const char *key = "",
+                       const char *undo = "")
 {
+    bool kept = true;
     AcquireSRWLockExclusive(&g_r2.lock);
     for (i32 i = 0; i < COUNT(g_r2.jobs); i++) {
         R2Job &j = g_r2.jobs[i];
-        if (j.id != id) continue;
+        if (!id || j.id != id) continue;
+        if (ok && g_r2.cancel[i]) ok = kept = false, url = "", error = "Cancelled";
         j.state = ok ? R2_DONE : R2_FAILED;
         j.progress = 1;
         str_set(j.url, url);
         str_set(j.error, error);
+        str_set(j.key, ok ? key : "");
+        str_set(j.undo, ok ? undo : "");
     }
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (!ok) log_line("r2: job %u failed: %s", id, error);
     else DEV_LOG("r2: job %u: %s", id, url);
     r2_post(R2_EV_JOB, id);
+    return kept;
+}
+
+// A job's file to send, when the job was cancelled before it went: deleted, and the job ends. True if so.
+static bool r2_cancelled_before(u32 job, const Path &file)
+{
+    if (!r2_cancelled(job)) return false;
+    DeleteFileW(file.s);
+    r2_job_end(job, false, "", "Cancelled");
+    return true;
+}
+
+static void r2_run_delete(const R2Task &t);
+
+// Deletes a share a cancelled job made after all: from the bucket, at its DeletionURL, and from the history.
+static void r2_undo(const R2Conf &c, const char *key, const char *undo)
+{
+    static R2Task d;
+    d = {};
+    d.kind = R2_T_DELETE;
+    d.conf = c;
+    str_set(d.key, key);
+    str_set(d.undo, undo);
+    r2_run_delete(d);
+    log_line("r2: %s deleted: its share was cancelled", key);
 }
 
 static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char *tagged, i32 tagged_cap);
@@ -1308,6 +1367,7 @@ static void r2_run_upload(const R2Task &t)
     w.lib_key = g_r2.work[t.slot].lib_key;
     ReleaseSRWLockExclusive(&g_r2.lock);
 
+    if (r2_cancelled_before(job, t.file)) return;
     WIN32_FILE_ATTRIBUTE_DATA fa = {};
     i64 bytes = GetFileAttributesExW(t.file.s, GetFileExInfoStandard, &fa)
                     ? ((i64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow : 0;
@@ -1352,6 +1412,10 @@ static void r2_run_upload(const R2Task &t)
         else extra = pic_len + 4096;
         free(pic);
         if (!page_w) log_line("r2: no preview page for %s: its picture couldn't be made", key);
+    }
+    if (!err[0] && r2_cancelled(job)) { // in the bucket, but cancelled: it goes again, with its picture
+        r2_delete_share(t.conf, key, key, page_w > 0);
+        str_set(err, "Cancelled");
     }
     DeleteFileW(t.file.s);
     if (err[0]) {
@@ -1420,7 +1484,10 @@ static void r2_run_upload(const R2Task &t)
                                              plan, COUNT(plan));
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);
-    r2_job_end(job, true, url, "");
+    if (!r2_job_end(job, true, url, "", key)) {
+        r2_undo(t.conf, key, "");
+        return;
+    }
     if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
@@ -1457,6 +1524,7 @@ struct Uploader {
     char url[1024];      // RequestURL with Parameters added
     char form_name[64];  // "" = Binary: the file is the whole body
     char result[512];    // URL
+    char deletion[512];  // DeletionURL, made from the answer as URL is; "" = none
     char pairs[2][UP_PAIRS][2][256]; // [0] Headers, [1] Arguments: name, value
     i32  count[2];
 };
@@ -1589,6 +1657,7 @@ static bool uploader_parse(const char *text, i64 len, Uploader *u, char *why, i3
     j_get(text, len, "Body", body, sizeof body);
     j_get(text, len, "FileFormName", u->form_name, sizeof u->form_name);
     j_get(text, len, "URL", u->result, sizeof u->result);
+    j_get(text, len, "DeletionURL", u->deletion, sizeof u->deletion);
     j_get(text, len, "DestinationType", reqtype, sizeof reqtype);
     for (char *c = u->method; *c; c++) *c = (char)toupper((u8)*c);
     u->count[0] = uploader_pairs(text, len, "Headers", u->pairs[0], UP_PAIRS);
@@ -1724,6 +1793,7 @@ struct UpRequest {
 static u32 up_send(const UpRequest &q, HANDLE f, i64 size, R2Progress *prog, char *resp, i32 cap)
 {
     resp[0] = 0;
+    if (r2_net_fake) return r2_net_fake(q.method, q.url, "", prog, resp, cap, 0, 0);
     wchar_t wurl[1024], host[256], path[1024];
     utf8_to_wide(q.url, wurl, COUNT(wurl));
     URL_COMPONENTS uc = {sizeof uc};
@@ -1779,7 +1849,7 @@ static u32 up_send(const UpRequest &q, HANDLE f, i64 size, R2Progress *prog, cha
             left -= got;
             prog->done += got;
             r2_set_progress(prog->job, (f32)((f64)prog->done / (f64)prog->total));
-            if (g_r2.stop) sent = false;
+            if (g_r2.stop || r2_cancelled(prog->job)) sent = false; // dropped mid-way: the host keeps nothing
         }
         sent = sent && (!post_len || (WinHttpWriteData(req, post, post_len, &wrote) && wrote == (DWORD)post_len));
         DWORD code = 0, clen = sizeof code;
@@ -1807,6 +1877,39 @@ static bool up_plain_link(const char *resp, char *out, i32 cap)
     return uploader_result("", resp, out, cap) && starts_with(out, "https://") && !strpbrk(out, " \r\n<\"");
 }
 
+// Fetches `url` (a custom uploader's DeletionURL), the answer dropped. Whether it answered 2xx.
+static bool up_get(const char *url)
+{
+    char resp[1024];
+    if (r2_net_fake) return r2_ok(r2_net_fake("GET", url, "", 0, resp, sizeof resp, 0, 0));
+    wchar_t wurl[1024], host[256], path[1024], extra[1024] = L"";
+    utf8_to_wide(url, wurl, COUNT(wurl));
+    URL_COMPONENTS uc = {sizeof uc};
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = COUNT(host);
+    uc.lpszUrlPath = path;
+    uc.dwUrlPathLength = COUNT(path);
+    uc.lpszExtraInfo = extra;
+    uc.dwExtraInfoLength = COUNT(extra);
+    if (!WinHttpCrackUrl(wurl, 0, 0, &uc) || uc.nScheme != INTERNET_SCHEME_HTTPS) return false;
+    wcsncat(path, extra, COUNT(path) - wcslen(path) - 1);
+    DWORD code = 0, len = sizeof code;
+    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET conn = session ? WinHttpConnect(session, host, uc.nPort, 0) : 0;
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
+    if (req) {
+        WinHttpSetTimeouts(req, 15000, 15000, 30000, 30000);
+        if (!WinHttpSendRequest(req, 0, 0, 0, 0, 0, 0) || !WinHttpReceiveResponse(req, 0) ||
+            !WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &code, &len, 0))
+            code = 0;
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (conn) WinHttpCloseHandle(conn);
+    if (session) WinHttpCloseHandle(session);
+    if (!r2_ok(code)) log_line("r2: the uploader's delete link answered %u", (unsigned)code);
+    return r2_ok(code);
+}
+
 // The upload step of a job with no R2: the host Share chose (a free host, or a custom uploader by name).
 static void r2_run_free(const R2Task &t)
 {
@@ -1822,7 +1925,8 @@ static void r2_run_free(const R2Task &t)
     w.lib_key = g_r2.work[t.slot].lib_key;
     ReleaseSRWLockExclusive(&g_r2.lock);
 
-    char err[256] = "", url[512] = "", used_name[64] = "";
+    if (r2_cancelled_before(job, t.file)) return;
+    char err[256] = "", url[512] = "", used_name[64] = "", undo[512] = "";
     const FreeHost *used = 0;
     HANDLE f = CreateFileW(t.file.s, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
     LARGE_INTEGER size = {};
@@ -1834,7 +1938,7 @@ static void r2_run_free(const R2Task &t)
     snprintf(hours, sizeof hours, "%dh", free_hours(t.hours));
     static thread_local char resp[16384];
     static thread_local Uploader u;
-    for (const char *p = t.hosts; *p && !err[0] && !url[0] && !g_r2.stop;) {
+    for (const char *p = t.hosts; *p && !err[0] && !url[0] && !g_r2.stop && !r2_cancelled(job);) {
         const char *end = strchr(p, ',');
         char name[64];
         snprintf(name, sizeof name, "%.*s", end ? (int)(end - p) : (int)strlen(p), p);
@@ -1883,6 +1987,9 @@ static void r2_run_free(const R2Task &t)
                 starts_with(link, "http") && !strpbrk(link, " \r\n<\"")) {
                 str_set(url, link);
                 snprintf(used_name, sizeof used_name, "%s", nm);
+                if (!u.deletion[0] || !uploader_result(u.deletion, resp, undo, sizeof undo) ||
+                    !starts_with(undo, "http") || strpbrk(undo, " \r\n<\""))
+                    undo[0] = 0;
             } else if (!status) snprintf(why, sizeof why, "Couldn't reach %s", u.name);
             else if (status >= 200 && status < 300) snprintf(why, sizeof why, "%s answered without a link", u.name);
             else snprintf(why, sizeof why, "%s answered %u: %.80s", u.name, status, trim(resp));
@@ -1895,6 +2002,11 @@ static void r2_run_free(const R2Task &t)
     }
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
     DeleteFileW(t.file.s);
+    if (r2_cancelled(job)) { // what went up goes again where the host allows it; Catbox and Litterbox keep theirs
+        if (url[0] && undo[0]) up_get(undo);
+        url[0] = 0;
+        str_set(err, "Cancelled");
+    }
     if (!url[0] && !err[0]) {
         if (!named) str_set(err, "Turn on a free host or set up Cloudflare in Options");
         else if (!tried)
@@ -1932,14 +2044,17 @@ static void r2_run_free(const R2Task &t)
     str_set(s.title, w.title);
     str_set(s.game, w.game);
     wide_to_utf8(w.src.s, s.path, sizeof s.path);
+    char key[R2_KEY_MAX];
+    str_set(key, s.key);
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);
-    r2_job_end(job, true, url, "");
+    if (!r2_job_end(job, true, url, "", key, undo)) r2_undo(t.conf, key, undo);
     r2_post(R2_EV_HISTORY, 0);
 }
 
 static void r2_run_delete(const R2Task &t)
 {
+    if (t.undo[0]) up_get(t.undo);
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
     i32 i = r2_find_locked(t.key);
@@ -3145,6 +3260,7 @@ static i32 r2_new_job()
         g_r2.jobs[slot] = {};
         g_r2.jobs[slot].id = ++g_r2.next_id;
         g_r2.jobs[slot].state = R2_QUEUED;
+        g_r2.cancel[slot] = 0;
         g_r2.work[slot] = {};
     }
     ReleaseSRWLockExclusive(&g_r2.lock);
@@ -3162,6 +3278,10 @@ static u32 r2_fail_now(i32 slot, const char *error)
 static void r2_start_copy(i32 slot)
 {
     R2Work &w = g_r2.work[slot];
+    if (r2_cancelled(g_r2.jobs[slot].id)) {
+        r2_fail_now(slot, "Cancelled");
+        return;
+    }
     char stem[256];
     if (w.title[0]) str_set(stem, w.title);
     else {
@@ -3313,11 +3433,46 @@ static R2Job r2_job(u32 id)
     return out;
 }
 
-// Stops a link while its copy is being made; an upload under way finishes.
+// Stops a link at once and deletes what it made: the copy being made or sent, the parts of an upload in pieces,
+// what is already in the bucket with its page and picture, a custom uploader's file at its DeletionURL. A free
+// host's upload stopped mid-way leaves nothing; one that finished stays there (Catbox and Litterbox can't delete
+// it), only no longer given out.
 static void r2_cancel(u32 id)
 {
-    for (i32 i = 0; i < COUNT(g_r2.jobs); i++)
-        if (id && g_r2.jobs[i].id == id && g_r2.work[i].save) save_cancel(g_r2.work[i].save);
+    for (i32 i = 0; i < COUNT(g_r2.jobs); i++) {
+        if (!id || g_r2.jobs[i].id != id) continue;
+        if (g_r2.work[i].save) save_cancel(g_r2.work[i].save);
+        static R2Task t;
+        t = {};
+        AcquireSRWLockExclusive(&g_r2.lock);
+        g_r2.cancel[i] = 1;
+        R2Job &j = g_r2.jobs[i];
+        if (j.state == R2_DONE && j.key[0]) { // done just before: it goes
+            str_set(t.key, j.key);
+            str_set(t.undo, j.undo);
+            j.state = R2_FAILED;
+            j.url[0] = j.key[0] = j.undo[0] = 0;
+            str_set(j.error, "Cancelled");
+        }
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        if (!t.key[0]) continue;
+        t.kind = R2_T_DELETE;
+        r2_conf(&t.conf);
+        if (!r2_queue(t)) log_line("r2: too many tasks waiting; %s not deleted", t.key);
+    }
+}
+
+// When a link made here stops playing: how many hours it has left, rounded up; 0 for one kept, or not known.
+static i32 r2_url_hours_left(const char *url)
+{
+    i64 left = 0;
+    AcquireSRWLockShared(&g_r2.lock);
+    for (i32 i = 0; i < g_r2.count; i++)
+        if (!strcmp(g_r2.shares[i].url, url) && g_r2.shares[i].expires_us)
+            left = g_r2.shares[i].expires_us - now_us();
+    ReleaseSRWLockShared(&g_r2.lock);
+    const i64 hour = 3600ll * 1000000;
+    return left > 0 ? (i32)((left + hour - 1) / hour) : 0;
 }
 
 // Whether a link made here still plays (not removed, paused or expired).
@@ -3365,6 +3520,7 @@ static void r2_on_save_event(const Event &e)
     R2Task t = {};
     t.slot = slot;
     utf8_to_wide(v->path, t.file.s, MAX_PATH);
+    if (r2_cancelled_before(g_r2.jobs[slot].id, t.file)) return;
     bool to_r2 = !strcmp(w.hosts, "r2");
     if (const char *why = to_r2 ? r2_bucket_refuses() : 0) {
         DeleteFileW(t.file.s);
