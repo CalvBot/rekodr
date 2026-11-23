@@ -18,8 +18,10 @@
 // typed, as does clicking away; Escape leaves the marker plain. Tab steps through the colours.
 // Every toast has a Dismiss button (an X) at the bottom left: it closes the toast as ignoring it would, and on the
 // marker window it is Escape.
-// With Options > General > Small in games on, Clip saved over a game is only its tile, title and line: no buttons, gone
-// after 3 s, and a click closes it. Popups in games picks another monitor for every toast while a game is in front.
+// With the Clip saved popup set to Small, Clip saved is a pill sized to its title: a round tick tile and "Clip saved",
+// no file name and no buttons, gone after 3 s, and a click closes it. Its rounded ends are see-through, so it is a
+// layered window drawn with its own alpha. Save failed is the full toast without its buttons. Popups in games picks
+// another monitor for every toast while a game is in front.
 
 enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
 // The parts a click lands on: the buttons counted from the right, Dismiss at the left, then the marker's colours
@@ -43,6 +45,7 @@ struct Toast {
     bool      open, tracking, held; // held: the mouse is on it, so the countdown waits
     bool      brief;              // Clip saved over a game: no button row (toast_clip_now)
     bool      failed;             // Save failed: a red tile with an X
+    bool      pill;               // small Clip saved: a pill, drawn by toast_pill_paint (the window is layered)
     u8        sharing;            // Clip saved's Share: TSH_* below
     u32       share;              // its share_start job
     i32       share_pct;          // the percent last drawn
@@ -52,7 +55,7 @@ struct Toast {
     i32       base_w, base_h;
     bool      dirty;
     f32       scale;              // the fonts were made for this
-    HFONT     font, strong, title_font, icons, small_icons;
+    HFONT     font, strong, title_font, icons, small_icons, pill_font, pill_icons;
     HBRUSH    field;
 };
 static Toast g_toast_saved = {TOAST_SAVED}, g_toast_marker = {TOAST_MARKER}, g_toast_session = {TOAST_SESSION};
@@ -63,15 +66,24 @@ static const UINT     TOAST_TICK_MS = 33; // the dial moves at 30 fps
 // a game least
 static const u32      TOAST_LIFE_SESSION = 15000, TOAST_LIFE_FAILED = 10000, TOAST_LIFE_CLIP = 5000, TOAST_LIFE_BRIEF = 3000;
 static const f32      TOAST_DIAL = 24, TOAST_DIAL_RING = 2;
+// The pill, at 100%: the tile's padding left and round it, the tile, the gap to the title and the padding right
+static const f32      TOAST_PILL_PAD = 8, TOAST_PILL_TILE = 24, TOAST_PILL_GAP = 8, TOAST_PILL_RIGHT = 14;
 
 // Clip saved and Session ended leave the keyboard where it is; the marker window takes it.
 static bool toast_quiet(const Toast &t) { return t.kind != TOAST_MARKER; }
 
 static void toast_session_close(i32 part);
 
-// The whole toast is drawn again on its next paint (a part changed); the countdown's ticks only redraw the dial.
+static void toast_pill_paint(Toast &t);
+
+// The whole toast is drawn again on its next paint (a part changed); the countdown's ticks only redraw the dial. The
+// pill is drawn at once.
 static void toast_redraw(Toast &t)
 {
+    if (t.pill) {
+        toast_pill_paint(t);
+        return;
+    }
     t.dirty = true;
     InvalidateRect(t.hwnd, 0, FALSE);
 }
@@ -91,6 +103,7 @@ static i32 toast_px(const Toast &t, f32 v) { return (i32)(v * t.scale + 0.5f); }
 // At 100%
 static f32 toast_height(const Toast &t)
 {
+    if (t.pill) return TOAST_PILL_PAD + TOAST_PILL_TILE + TOAST_PILL_PAD;
     if (t.brief) return TOAST_PAD + TOAST_TILE + TOAST_PAD;
     return TOAST_PAD + TOAST_TILE + TOAST_GAP + (t.kind == TOAST_MARKER ? TOAST_FIELD_H + TOAST_GAP : 0) + TOAST_BUTTON_H + TOAST_PAD;
 }
@@ -177,6 +190,108 @@ static void toast_draw_x(Toast &t, HDC dc, RECT r)
     const wchar_t cancel[] = {(wchar_t)0xE711, 0}; // Segoe MDL2: Cancel
     DrawTextW(dc, cancel, 1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     SelectObject(dc, old);
+}
+
+// The pill, w x h: the shapes drawn four times the size and scaled down, then the tick and the title at their real
+// size, then each pixel's alpha from the pill's own shape, given to the layered window.
+static void toast_pill_paint(Toast &t)
+{
+    RECT wr;
+    if (!t.hwnd || !GetWindowRect(t.hwnd, &wr)) return;
+    const i32 SS = TOAST_SS;
+    i32 w = wr.right - wr.left, h = wr.bottom - wr.top;
+    if (w <= 0 || h <= 0) return;
+    HDC screen = GetDC(0);
+    HDC dc = CreateCompatibleDC(screen), big = CreateCompatibleDC(screen);
+    BITMAPINFO bi = {};
+    bi.bmiHeader = {sizeof bi.bmiHeader, w, -h, 1, 32, BI_RGB};
+    u32 *px = 0;
+    HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, (void **)&px, 0, 0);
+    HBITMAP big_bmp = CreateCompatibleBitmap(screen, w * SS, h * SS);
+    if (!bmp || !big_bmp || !px) {
+        if (bmp) DeleteObject(bmp);
+        if (big_bmp) DeleteObject(big_bmp);
+        DeleteDC(dc), DeleteDC(big), ReleaseDC(0, screen);
+        return;
+    }
+    HGDIOBJ old_dc = SelectObject(dc, bmp), old_big = SelectObject(big, big_bmp);
+    HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
+    HGDIOBJ old_brush = SelectObject(big, GetStockObject(BLACK_BRUSH));
+    auto brush = [&](u32 rgb) {
+        HGDIOBJ b = SelectObject(big, CreateSolidBrush(toast_rgb(rgb)));
+        if (b != GetStockObject(BLACK_BRUSH) && b != GetStockObject(WHITE_BRUSH)) DeleteObject(b);
+    };
+    RECT all = {0, 0, w * SS, h * SS};
+    i32 edge = toast_px(t, 1) * SS, pad = toast_px(t, TOAST_PILL_PAD), tile = toast_px(t, TOAST_PILL_TILE);
+    // The shape alone, white on black, gives the alpha
+    FillRect(big, &all, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    brush(0xffffff);
+    RoundRect(big, 0, 0, w * SS + 1, h * SS + 1, h * SS, h * SS);
+    SetStretchBltMode(dc, HALFTONE);
+    SetBrushOrgEx(dc, 0, 0, 0);
+    StretchBlt(dc, 0, 0, w, h, big, 0, 0, w * SS, h * SS, SRCCOPY);
+    GdiFlush();
+    u8 *alpha = (u8 *)HeapAlloc(GetProcessHeap(), 0, (size_t)w * h);
+    if (alpha)
+        for (i32 i = 0; i < w * h; i++) alpha[i] = (u8)(px[i] & 0xff);
+    // Then the pill: the edge colour round the panel, and the round accent tile
+    FillRect(big, &all, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    brush(COL_LINE);
+    RoundRect(big, 0, 0, w * SS + 1, h * SS + 1, h * SS, h * SS);
+    brush(COL_PANEL);
+    RoundRect(big, edge, edge, w * SS - edge + 1, h * SS - edge + 1, h * SS - 2 * edge, h * SS - 2 * edge);
+    brush(COL_ACCENT);
+    i32 ty = (h - tile) / 2;
+    Ellipse(big, pad * SS, ty * SS, (pad + tile) * SS + 1, (ty + tile) * SS + 1);
+    StretchBlt(dc, 0, 0, w, h, big, 0, 0, w * SS, h * SS, SRCCOPY);
+    // The tick and the title
+    SetBkMode(dc, TRANSPARENT);
+    HGDIOBJ old_font = SelectObject(dc, t.pill_icons);
+    SetTextColor(dc, RGB(255, 255, 255));
+    RECT tr = {pad, ty, pad + tile, ty + tile};
+    const wchar_t tick[] = {(wchar_t)0xE73E, 0}; // Segoe MDL2: CheckMark
+    DrawTextW(dc, tick, 1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, t.pill_font);
+    SetTextColor(dc, toast_rgb(COL_TEXT));
+    RECT nr = {pad + tile + toast_px(t, TOAST_PILL_GAP), 0, w, h};
+    DrawTextW(dc, t.title, -1, &nr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, old_font);
+    GdiFlush();
+    // Premultiplied: black outside the shape scales the edge down with its alpha
+    for (i32 i = 0; i < w * h; i++) {
+        u32 a = alpha ? alpha[i] : 255, c = px[i];
+        u32 r = ((c >> 16) & 0xff) * a / 255, g = ((c >> 8) & 0xff) * a / 255, b = (c & 0xff) * a / 255;
+        px[i] = a << 24 | r << 16 | g << 8 | b;
+    }
+    if (alpha) HeapFree(GetProcessHeap(), 0, alpha);
+    POINT at = {wr.left, wr.top}, zero = {0, 0};
+    SIZE size = {w, h};
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    UpdateLayeredWindow(t.hwnd, screen, &at, &size, dc, &zero, 0, &blend, ULW_ALPHA);
+    DeleteObject(SelectObject(big, old_brush));
+    SelectObject(big, old_pen);
+    SelectObject(big, old_big);
+    SelectObject(dc, old_dc);
+    DeleteObject(big_bmp);
+    DeleteObject(bmp);
+    DeleteDC(big);
+    DeleteDC(dc);
+    ReleaseDC(0, screen);
+}
+
+// The window as a pill (layered, its corners left to its alpha) or as the other toasts (Windows 11's rounded
+// corners and edge)
+static void toast_set_pill(Toast &t, bool pill)
+{
+    t.pill = pill;
+    LONG_PTR ex = GetWindowLongPtrW(t.hwnd, GWL_EXSTYLE);
+    LONG_PTR want = pill ? ex | WS_EX_LAYERED : ex & ~(LONG_PTR)WS_EX_LAYERED;
+    if (want != ex) SetWindowLongPtrW(t.hwnd, GWL_EXSTYLE, want);
+    i32 round = pill ? 1 /* DWMWCP_DONOTROUND */ : 2 /* DWMWCP_ROUND */;
+    COLORREF edge = pill ? 0xfffffffe /* DWMWA_COLOR_NONE */ : toast_rgb(COL_LINE);
+    DwmSetWindowAttribute(t.hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &round, sizeof round);
+    DwmSetWindowAttribute(t.hwnd, 34 /* DWMWA_BORDER_COLOR */, &edge, sizeof edge);
+    if (!pill && want != ex) RedrawWindow(t.hwnd, 0, 0, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
 }
 
 // The toast without its dial, into dc (r, the client size): the shapes first, then the text and the icons at their
@@ -673,7 +788,7 @@ static void toast_fonts(Toast &t, f32 s)
 {
     if (t.font && t.scale == s) return;
     if (t.font) DeleteObject(t.font), DeleteObject(t.strong), DeleteObject(t.title_font), DeleteObject(t.icons),
-                  DeleteObject(t.small_icons);
+                  DeleteObject(t.small_icons), DeleteObject(t.pill_font), DeleteObject(t.pill_icons);
     t.scale = s;
     auto make = [&](f32 px, i32 weight, const wchar_t *face) {
         return CreateFontW(-(i32)(px * s + 0.5f), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -685,6 +800,8 @@ static void toast_fonts(Toast &t, f32 s)
     t.title_font = make(18, FW_SEMIBOLD, L"Segoe UI");
     t.icons = make(18, FW_NORMAL, L"Segoe MDL2 Assets");
     t.small_icons = make(12, FW_NORMAL, L"Segoe MDL2 Assets");
+    t.pill_font = make(13, FW_SEMIBOLD, L"Segoe UI");
+    t.pill_icons = make(12, FW_NORMAL, L"Segoe MDL2 Assets");
     if (t.edit) SendMessageW(t.edit, WM_SETFONT, (WPARAM)t.font, TRUE);
 }
 
@@ -714,6 +831,15 @@ static void toast_place(Toast &t, const RECT &work)
     SetWindowPos(t.hwnd, HWND_TOPMOST, work.right - 2, work.bottom - 2, 1, 1, SWP_NOACTIVATE);
     toast_fonts(t, GetDpiForWindow(t.hwnd) / 96.f);
     i32 w = toast_px(t, TOAST_W), h = toast_px(t, toast_height(t)), m = toast_px(t, TOAST_MARGIN);
+    if (t.pill) { // sized to its title
+        HDC dc = GetDC(t.hwnd);
+        HGDIOBJ old = SelectObject(dc, t.pill_font);
+        SIZE ts = {};
+        GetTextExtentPoint32W(dc, t.title, (i32)wcslen(t.title), &ts);
+        SelectObject(dc, old);
+        ReleaseDC(t.hwnd, dc);
+        w = toast_px(t, TOAST_PILL_PAD + TOAST_PILL_TILE + TOAST_PILL_GAP + TOAST_PILL_RIGHT) + ts.cx;
+    }
     i32 bottom = work.bottom - m;
     const Toast *others[] = {&g_toast_saved, &g_toast_marker, &g_toast_session};
     for (const Toast *other : others) {
@@ -741,6 +867,7 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     str_set(t.path, path);
     t.brief = brief;
     t.failed = false;
+    toast_set_pill(t, brief);
     t.sharing = TSH_NONE; // one still running carries on, unseen
     utf8_to_wide(kind == SAVE_SESSION ? "Session saved" : "Clip saved", t.title, COUNT(t.title));
     const char *name = strrchr(path, '\\');
@@ -781,6 +908,7 @@ static void toast_save_failed(SaveKind kind, const char *why)
     t.path[0] = 0;
     t.brief = true;
     t.failed = true;
+    toast_set_pill(t, false);
     t.sharing = TSH_NONE;
     utf8_to_wide("Save failed", t.title, COUNT(t.title));
     char line[120];

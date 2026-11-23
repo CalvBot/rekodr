@@ -803,6 +803,30 @@ static const char *SESSION_LABELS[] = {"Ask when it ends", "Always save", "Never
 
 static i32 rc_index(const char *rc) { return !strcmp(rc, "cbr") ? 1 : !strcmp(rc, "cq") ? 2 : 0; }
 
+// Chips for a Clip saved popup choice, from `first` (TOAST_CLIP_DEFAULT for a game's "Same as all", else
+// TOAST_CLIP_FULL) to TOAST_CLIP_OFF, each as wide as its label, from the cursor. True when one was picked.
+static const char *const TOAST_CLIP_CHIPS[] = {"Same as all", "Full", "Small", "Off"};
+static f32 toast_clip_chips_w(i32 first)
+{
+    f32 w = 0;
+    for (i32 i = first; i <= TOAST_CLIP_OFF; i++) w += text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14) + (i > first ? dp(6) : 0);
+    return w;
+}
+static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
+{
+    bool changed = false;
+    for (i32 i = first; i <= TOAST_CLIP_OFF; i++) {
+        if (i > first) ImGui::SameLine(0, dp(6));
+        char label[48];
+        snprintf(label, sizeof label, "%s##%s%d", TOAST_CLIP_CHIPS[i], id, i);
+        if (kit_chip(label, *v == i, 0, text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14)) && *v != i) {
+            *v = (ToastClip)i;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 // A line of the game popup: the name on the left, the cursor at x for the control.
 static void game_line(const char *name, f32 x)
 {
@@ -997,6 +1021,14 @@ static void game_settings_popup()
         log_line("options: %s sessions: %s", a.exe.s, session_mode_name(a.session_mode));
         options_apply(0);
     }
+
+    // Clip saved over this game: its chips under the label, as they don't fit the column
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Clip saved popup");
+    if (toast_clip_chips("gameclip", TOAST_CLIP_DEFAULT, &a.toast_clip)) {
+        log_line("options: %s clip saved popup: %s", a.exe.s, a.toast_clip ? toast_clip_name(a.toast_clip) : "same as all");
+        options_apply(0);
+    }
     ImGui::PopStyleColor();
 
     if (rec_changed) {
@@ -1039,6 +1071,9 @@ static void game_summary(const AppInfo &a, char *out, i32 cap)
     if (r.window) add(r.window > 0 ? "its window" : "whole screen");
     if (a.session_mode == SESSION_ALWAYS) add("sessions saved");
     else if (a.session_mode == SESSION_NEVER) add("no sessions");
+    if (a.toast_clip == TOAST_CLIP_FULL) add("full popup");
+    else if (a.toast_clip == TOAST_CLIP_SMALL) add("small popup");
+    else if (a.toast_clip == TOAST_CLIP_OFF) add("no popup");
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -3740,18 +3775,17 @@ static void options_general()
     }
     // Where the toasts go: Clip saved, Session ended and the marker window, on the monitor recorded or another one.
     // Off turns Clip saved off; the others then go on the monitor recorded. In games picks another one while a game
-    // is in front, and Small in games keeps Clip saved to one line there.
+    // is in front. Clip saved popup picks how Clip saved shows over a game: whole, the small pill or not at all.
     opt_popup_monitor("Popups", "Clip saved, Session ended and the marker window, in a corner of this monitor",
                       "##popups", &c.popup_monitor, false);
     opt_popup_monitor("Popups in games", "Where they go while a game is in front", "##popups_game",
                       &c.popup_monitor_game, true);
-    bool small_in_game = c.toast_clip == TOAST_CLIP_SMALL;
-    if (opt_row_toggle("Small in games", "Clip saved without its buttons over a game, gone after 3 s", "##toast_small",
-                       &small_in_game)) {
-        c.toast_clip = small_in_game ? TOAST_CLIP_SMALL : TOAST_CLIP_FULL;
-        log_line("options: clip saved in games %s", toast_clip_name(c.toast_clip));
+    opt_row_begin("Clip saved popup", "Over a game. A game can have its own, in Apps", toast_clip_chips_w(TOAST_CLIP_FULL));
+    if (toast_clip_chips("clip", TOAST_CLIP_FULL, &c.toast_clip)) {
+        log_line("options: clip saved popup: %s", toast_clip_name(c.toast_clip));
         options_apply(0);
     }
+    opt_row_end();
     opt_card_end();
 
     opt_section("SESSIONS");
