@@ -2326,6 +2326,9 @@ static void update_start(); // update.cpp
 static void update_stop();  // update.cpp
 static const char OPT_API_REPO_URL[] = "https://github.com/CalvBot/clipback-api"; // the art service's code
 static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/clipback";
+// Where Support goes (a donation page). The button is hidden while it's empty.
+// TODO: the Ko-fi (or similar) page once there is one.
+static const char OPT_SUPPORT_URL[] = "";
 static const char OPT_SGDB_KEY_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
 
 static const wchar_t SD_PLUGIN[] = L"dev.calvbot.clipback.sdPlugin";
@@ -4291,8 +4294,13 @@ static void options_general()
 
     opt_section("ABOUT");
     opt_card_begin();
-    f32 gh_w = text_w(g_font, "GitHub") + dp(32);
-    opt_row_begin(APP_NAME " " CLIPBACK_VERSION, "Built " __DATE__, gh_w);
+    f32 gh_w = text_w(g_font, "GitHub") + dp(32), sup_w = OPT_SUPPORT_URL[0] ? text_w(g_font, "Support") + dp(32) : 0;
+    f32 bgap = ImGui::GetStyle().ItemSpacing.x;
+    opt_row_begin(APP_NAME " " CLIPBACK_VERSION, "Built " __DATE__, gh_w + (sup_w > 0 ? bgap + sup_w : 0));
+    if (sup_w > 0) { // a quiet Support beside GitHub
+        if (kit_button("Support##support", KIT_GHOST, ImVec2(sup_w, 0))) open_url(OPT_SUPPORT_URL);
+        ImGui::SameLine(0, bgap);
+    }
     if (kit_button("GitHub##apprepo", KIT_SECONDARY, ImVec2(gh_w, 0))) open_url(OPT_APP_REPO_URL);
     opt_row_end();
     if (opt_row_toggle("Update by itself", "Fetches new versions and checks they're signed. You choose when to restart",
