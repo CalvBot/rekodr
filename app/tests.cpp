@@ -1663,8 +1663,6 @@ static void test_r2()
     w[0].social_h = 720;
     w[0].seconds = 125.5f;
     w[0].preview = 60;
-    w[0].icon = true;
-    w[1].icon = true; // no page: no icon
     w[1].social = -1;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
@@ -1678,7 +1676,7 @@ static void test_r2()
     T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
     T(r[0].social == 1 && r[0].social_w == 1280 && r[0].social_h == 720 && r[0].seconds == 125.5f);
-    T(r[0].preview == 60 && r[0].icon && !r[1].icon);
+    T(r[0].preview == 60);
     T(r[1].social == -1 && !r[1].social_w);
     DeleteFileW(file.s);
 
@@ -1688,8 +1686,6 @@ static void test_r2()
     T(!strcmp(pkey, "clipback/abcdefghijklmnop"));
     r2_thumb_key("clipback/qrstuvwxyzabcdef/clip.mp4", pkey);
     T(!strcmp(pkey, "clipback/qrstuvwxyzabcdef/thumb.jpg"));
-    r2_icon_key("clipback/qrstuvwxyzabcdef/clip.mp4", pkey);
-    T(!strcmp(pkey, "clipback/qrstuvwxyzabcdef/icon.png"));
     i32 tw, th;
     r2_thumb_size(1920, 1080, &tw, &th);
     T(tw == 1280 && th == 720);
@@ -1778,10 +1774,14 @@ static void test_r2()
       && card.accent == R2_CARD_ACCENT && card.icon);
     ein.clipper = "Sam";
     embed_card(ein, &card);
-    T(!strcmp(card.line, "Sam - Valorant"));
+    T(!strcmp(card.line, "Valorant - Sam"));
     ein.title = "Valorant 2026-11-24 21-04-33";
     embed_card(ein, &card);
-    T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Sam"));
+    T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Valorant - Sam"));
+    ein.title = "ace";
+    ein.game = "";
+    embed_card(ein, &card);
+    T(!strcmp(card.title, "ace") && !strcmp(card.line, "Sam"));
     char named[64];
     snprintf(named, sizeof named, "ace <\"round\"> *1* %s", (const char *)past_ascii); // e-acute, a pad, a control
     ein = {named, "Valorant", "", 42, 0, 0, true, 0x112233};
@@ -1797,26 +1797,35 @@ static void test_r2()
     T(strstr(cj, "\"-# [via Clipback](\\u003chttps://github.com/CalvBot/clipback\\u003e)\"}]}}") != 0);
     T(!strstr(cj, "thumb.jpg") && !strstr(cj, "\"type\":9"));
     card.player = false; // nothing small enough: the picture
-    card.icon = true;    // no icon file: a plain line
     cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
-    T(cn > 0 && strstr(cj, "https://x.dev/t.jpg") && !strstr(cj, "v.mp4") && !strstr(cj, "\"type\":9"));
+    T(cn > 0 && strstr(cj, "https://x.dev/t.jpg") && !strstr(cj, "v.mp4"));
     T(r2_card_json(card, "a", "b", "", "", "", cj, 100) == 0);
-    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "https://x.dev/icon.png", "", "",
+    // a game's emoji, when there is one, starts the line; one that isn't an emoji is left out, the line kept
+    T(card.icon);
+    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "<:g_s5367951:1574532569876406393>", "", "",
                       cj, sizeof cj);
-    T(cn > 0 && strstr(cj, "\"components\":[{\"type\":9,\"components\":[{\"type\":10,\"content\":\"**")
-      && strstr(cj, "],\"accessory\":{\"type\":11,\"media\":{\"url\":\"https://x.dev/icon.png\"}}}"));
+    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"\\u003c:g_s5367951:1574532569876406393\\u003e Valorant\"}"));
+    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "<:g:1>", "", "", cj, sizeof cj);
+    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}"));
+    card.icon = false;
+    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "<:g_s5:1>", "", "", cj, sizeof cj);
+    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}"));
+    T(r2_emoji_ok("<:clipback:1574532567124803645>") && r2_emoji_ok("<:a_1:9>"));
+    T(!r2_emoji_ok("") && !r2_emoji_ok(0) && !r2_emoji_ok("<:a:1>") && !r2_emoji_ok("<a:ab:1>"));
+    T(!r2_emoji_ok("<:ab:>") && !r2_emoji_ok("<:ab:1> ") && !r2_emoji_ok("<:a b:1>") && !r2_emoji_ok("<:ab:x1>"));
+    T(!r2_emoji_ok("<:abcdefghijabcdefghijabcdefghijabc:1>") && !r2_emoji_ok("<:ab:123456789012345678901>"));
     // the style: found by its id, the first when the id is unknown; a preview tags the line
     T(embed_style_count() == 1 && !strcmp(embed_style_id(0), "clipback") && embed_style_find("clipback") == 0);
     T(embed_style_find("nope") == -1 && !strcmp(embed_style_name(5), "Clipback"));
     ein = {"ace", "Valorant", "Sam", 1500, 210, 0, true, 0};
     embed_card(ein, &card, 0);
-    T(!strcmp(card.line, "Sam - Valorant") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
+    T(!strcmp(card.line, "Valorant - Sam") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
     cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
-    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Sam \\\\- Valorant - Preview, first 3:30 of 25:00\"}"));
+    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant \\\\- Sam - Preview, first 3:30 of 25:00\"}"));
     // with the page, the tag links to it where the preview stops
     T(card.tag_at == 210);
     cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "https://x.dev/p", "", cj, sizeof cj);
-    T(cn > 0 && strstr(cj, "\"Sam \\\\- Valorant - [Preview, first 3:30 of 25:00](\\u003chttps://x.dev/p#t=210"
+    T(cn > 0 && strstr(cj, "\"Valorant \\\\- Sam - [Preview, first 3:30 of 25:00](\\u003chttps://x.dev/p#t=210"
                            "\\u003e)\"}"));
     // a session: Watch and Download after the video, before the via line; its page links the download; the file
     // downloads by its name
@@ -2110,12 +2119,11 @@ static void test_share_cancel()
     T(g_net.n == 0 && !file_exists(file.s) && !file_exists(t.social.s) && r2_job(id).state == R2_FAILED);
     t.social = {};
 
-    // A share's set: the clip, its small copy, the picture, the icon and the page
+    // A share's set: the clip, its small copy, the picture and the page
     g_net = {};
     T(r2_delete_share(conf, "clipback/k/clip.mp4", "clipback/k/clip.mp4", true, true));
     T(net_count("DELETE clipback/k/clip.mp4") == 1 && net_count("DELETE clipback/k/social.mp4") == 1);
-    T(net_count("DELETE clipback/k/thumb.jpg") == 1 && net_count("DELETE clipback/k/icon.png") == 1
-      && net_count("DELETE clipback/k") == 5);
+    T(net_count("DELETE clipback/k/thumb.jpg") == 1 && net_count("DELETE clipback/k") == 4);
 
     // Catbox, cancelled as it answered: it can't be deleted there, so it's only not kept or given out
     t.kind = R2_T_FREE;
