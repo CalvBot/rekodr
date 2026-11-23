@@ -2974,6 +2974,8 @@ static void lib_uploads_poll()
             if (!j.id) lib_note(true, "Couldn't share %s", u.name);
             else if (j.state == SHARE_FAILED) lib_note(true, "Couldn't share %s: %s", u.name, j.error);
             else if (j.state == SHARE_DONE && j.error[0]) lib_note(true, "%s: %s", u.name, j.error);
+            else if (j.state == SHARE_DONE && j.kind == SHARE_LINK && j.expires_h)
+                lib_note(false, "Link copied, expires in %d h: %s", j.expires_h, u.name);
             else if (j.state == SHARE_DONE && j.kind == SHARE_LINK) lib_note(false, "Link copied: %s", u.name);
             else if (j.state == SHARE_DONE) {
                 lib_note(false, "Copied %s, ready to paste", u.name);
@@ -3178,7 +3180,8 @@ static ShareMenuState share_menu_state(const ShareJobView &j)
     if (now - done_ms >= 4000) return st;
     bool ok = j.state == SHARE_DONE && !j.error[0];
     st.done = ok ? 1 : -1;
-    str_set(st.line, ok ? (j.kind == SHARE_LINK ? "Link copied" : "Copied") : "Not shared");
+    if (ok && j.kind == SHARE_LINK && j.expires_h) snprintf(st.line, sizeof st.line, "Link copied, expires in %d h", j.expires_h);
+    else str_set(st.line, ok ? (j.kind == SHARE_LINK ? "Link copied" : "Copied") : "Not shared");
     str_set(st.error, j.error);
     ui_wake();
     return st;
