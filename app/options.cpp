@@ -2453,8 +2453,8 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
 // Sharing: links to clips (r2.cpp). With no setup they go to the free public hosts and the player's uploaders (ShareX
 // .sxcu files) in link_hosts; with the player's
 // own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
-// The budget picks the most a month may cost; the bucket holds 80% of what that buys (r2_limit_for_budget), and past
-// that the oldest unpinned links are removed.
+// The budget picks the most a month may cost; the bucket holds all that buys (r2_limit_for_budget), and the oldest
+// unpinned links are removed before an upload that wouldn't fit.
 static const i32 R2_STEPS_GB[] = {10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000, 7500, 10000};
 
 // The hosts as chips from the row's left, the free ones then the uploaders, each one on numbered by when it's
