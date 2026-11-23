@@ -80,6 +80,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_sizes_mb[2] = 1024;
     str_set(c->link_hosts, "catbox,litterbox");
     c->litterbox_hours = 72;
+    c->r2_read_cap = 10000000;  // R2's free Class B requests a month
+    c->r2_read_rate = 1000000;
     c->wave_keep_days = 30;
     c->game_lookup = true;
     c->auto_update = true;
@@ -360,7 +362,8 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "r2_bucket")) str_set(c->r2_bucket, value);
     else if (!strcmp(key, "r2_public_url")) str_set(c->r2_public_url, value);
     else if (!strcmp(key, "r2_budget")) real(&c->r2_budget);
-    else if (!strcmp(key, "r2_pause_views_per_day")) c->r2_pause_views_per_day = atoi(value);
+    else if (!strcmp(key, "r2_read_cap")) c->r2_read_cap = atoi(value);
+    else if (!strcmp(key, "r2_read_rate")) c->r2_read_rate = atoi(value);
     else if (!strcmp(key, "link_hosts")) str_set(c->link_hosts, value);
     else if (!strcmp(key, "litterbox_hours")) c->litterbox_hours = atoi(value);
     else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
@@ -529,7 +532,7 @@ static bool config_save(const Config &c, const Paths &paths)
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed
     fprintf(f, "r2_account = %s\nr2_access_key = %s\nr2_bucket = %s\nr2_public_url = %s\nr2_budget = %g\n",
             c.r2_account, c.r2_access_key, c.r2_bucket, c.r2_public_url, c.r2_budget);
-    fprintf(f, "r2_pause_views_per_day = %d\n", c.r2_pause_views_per_day);
+    fprintf(f, "r2_read_cap = %d\nr2_read_rate = %d\n", c.r2_read_cap, c.r2_read_rate);
     fprintf(f, "link_hosts = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_hosts, c.litterbox_hours,
             c.free_links_seen ? "true" : "false");
     fprintf(f, "share_sizes_mb = %g,%g,%g\n", c.share_sizes_mb[0], c.share_sizes_mb[1], c.share_sizes_mb[2]);

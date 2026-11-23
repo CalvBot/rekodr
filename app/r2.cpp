@@ -26,6 +26,8 @@
 static void open_url(const char *url); // setup.cpp
 static void r2_resume(const char *key);
 static void r2_auto_pause();
+struct R2Usage;
+static R2Usage r2_usage();
 
 enum R2State : u8 { R2_QUEUED, R2_PREPARING, R2_UPLOADING, R2_DONE, R2_FAILED };
 enum R2SetupState : u8 { R2_SETUP_IDLE, R2_SETUP_WAITING, R2_SETUP_BUSY, R2_SETUP_OK, R2_SETUP_FAILED };
@@ -80,12 +82,14 @@ struct R2Share {
     u64  lib_key;     // the library item it was made from, 0 for an editor render
     LinkHost host;
     i64  expires_us;  // when a free host drops it, 0 = kept
-    u8   paused;      // R2: 0 plays, 1 paused by hand, 2 paused past the day's plays (r2_pause_views_per_day)
+    u8   paused;      // R2: 0 plays, 1 paused by hand, 2 too many reads in a day (r2_read_rate), 3 the account
+                      // near its month's reads (r2_read_cap)
     char hidden[R2_KEY_MAX]; // while paused: where the file is in the bucket instead, a new random name
-    i32  pause_day;   // yyyymmdd (local): the day it was paused automatically, or resumed by hand
+    i32  pause_day;   // yyyymmdd (local): the day it was paused for its reads, or resumed by hand
     // Not kept in the history:
     bool moving;      // a pause or resume is running
-    i64  plays_today, plays_month; // GET requests for the file (local day, this month), -1 until fetched
+    i64  plays_today, plays_month, plays_24h; // GET requests for the file (local day, this month, the last 24
+                                              // hours), -1 until fetched
 };
 
 struct R2Usage {
@@ -95,11 +99,13 @@ struct R2Usage {
     i64 class_a, class_b;        // requests to the bucket this month (UTC), -1 until fetched
     i64 usage_us;                // when those were fetched, 0 = never
     f64 month_cost;              // dollars this month at this rate, past the free allowances
+    i64 account_reads;           // Class B requests to every bucket of the account this month, -1 until fetched
+    bool capped;                 // those are near r2_read_cap: R2 links are paused until the month ends
 };
 
-// What Cloudflare's analytics say about the bucket
+// What Cloudflare's analytics say about the bucket, and the account's reads
 struct R2Fetched {
-    i64 bytes, class_a, class_b;
+    i64 bytes, class_a, class_b, account_reads;
 };
 
 // Cloudflare's R2 prices: storage per GB-month, and per million Class A (writes, lists) and Class B (reads)
@@ -220,14 +226,35 @@ static i32 r2_today()
     return t.wYear * 10000 + t.wMonth * 100 + t.wDay;
 }
 
-// What the automatic pause does to a share with `limit` plays a day (0 = off): 1 pause, -1 resume, 0 nothing. One
-// paused automatically comes back the next day; one resumed by hand keeps playing for the rest of that day.
-static i32 r2_auto_action(const R2Share &s, i32 limit, i32 today)
+// Whether the account's reads this month are near `cap` (0 = no cap). R2's free reads are counted per account and
+// per UTC month. Links pause at 90% of the cap: Cloudflare's analytics trail by some minutes and are read once an
+// hour, and a busy link keeps being read in between.
+static bool r2_capped(i64 reads, i64 cap)
 {
-    if (s.host != HOST_R2 || s.removed || s.moving) return 0;
-    if (s.paused == 2) return s.pause_day != today ? -1 : 0;
-    if (s.paused || limit <= 0 || s.pause_day == today) return 0;
-    return s.plays_today >= limit ? 1 : 0;
+    return cap > 0 && reads >= 0 && reads >= cap - cap / 10;
+}
+
+// What the automatic pause does to a share: 0 nothing, -1 resume, 2 pause for its reads in the last 24 hours past
+// `rate` (0 = no limit), 3 pause while the account is `capped`. A link paused for its rate comes back the next day,
+// one paused for the cap when the month's reads are under it again (the 1st). One resumed by hand keeps playing for
+// the rest of that day; a link paused by hand stays paused.
+static i32 r2_auto_action(const R2Share &s, i32 rate, bool capped, i32 today)
+{
+    if (s.host != HOST_R2 || s.removed || s.moving || s.paused == 1) return 0;
+    if (s.paused == 3) return capped ? 0 : -1;
+    if (s.paused == 2) return s.pause_day != today && !capped ? -1 : 0;
+    if (s.pause_day == today) return 0;
+    if (capped) return 3;
+    return rate > 0 && s.plays_24h >= rate ? 2 : 0;
+}
+
+// A count of reads for a short status: "950", "12 K", "1.2 M", "10 M".
+static void r2_fmt_reads(i64 n, char *out, i32 cap)
+{
+    if (n < 1000) snprintf(out, cap, "%lld", n);
+    else if (n < 1000000) snprintf(out, cap, "%lld K", n / 1000);
+    else if (n % 1000000 < 50000 || n >= 100000000) snprintf(out, cap, "%lld M", (n + 500000) / 1000000);
+    else snprintf(out, cap, "%.1f M", (f64)n / 1e6);
 }
 
 // Litterbox keeps files for 1, 12, 24 or 72 hours: the nearest of those at or above `hours`.
@@ -841,7 +868,7 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             str_set(s.title, f[13]);
             str_set(s.game, f[14]);
             str_set(s.path, f[15]);
-            s.plays_today = s.plays_month = -1;
+            s.plays_today = s.plays_month = s.plays_24h = -1;
         }
         line = next;
     }
@@ -1694,18 +1721,25 @@ static bool r2_parse_usage(const char *resp, R2Fetched *out)
         else if (cls == 'B') out->class_b += n;
         has_ops = true;
     }
+    for (i32 i = 0; i < 1000; i++) {
+        snprintf(path, sizeof path, "%saccount[%d].dimensions.actionType", acc, i);
+        if (!json_path(resp, len, path, action, sizeof action)) break;
+        snprintf(path, sizeof path, "%saccount[%d].sum.requests", acc, i);
+        if (r2_op_class(action) == 'B' && json_path(resp, len, path, v, sizeof v)) out->account_reads += _atoi64(v);
+    }
     // An empty month has empty lists; an error has no data at all
     return any || has_ops || strstr(resp, "\"storage\":[]") != 0;
 }
 
-// The GraphQL request for a bucket from `start` to `end` (ISO 8601, UTC): its storage, its requests by type, and
-// the GET requests for each file (plays) over that time and since `day` (local midnight, in UTC).
+// The GraphQL request for a bucket from `start` to `end` (ISO 8601, UTC): its storage, its requests by type, the
+// GET requests for each file (plays) over that time, since `day` (local midnight, in UTC) and since `since` (24
+// hours ago), and the requests by type to every bucket of the account.
 static void r2_usage_query(const char *account, const char *bucket, const char *start, const char *end,
-                           const char *day, char *out, i32 cap)
+                           const char *day, const char *since, char *out, i32 cap)
 {
     snprintf(out, cap,
              "{\"query\":\"query($accountTag:string!,$bucketName:string,$startDate:Time,$endDate:Time,$dayStart:Time,"
-             "$get:string){viewer{accounts(filter:{accountTag:$accountTag}){"
+             "$since:Time,$get:string){viewer{accounts(filter:{accountTag:$accountTag}){"
              "storage:r2StorageAdaptiveGroups(limit:1,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
              "bucketName:$bucketName},orderBy:[datetime_DESC]){max{payloadSize metadataSize}} "
              "ops:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
@@ -1713,13 +1747,17 @@ static void r2_usage_query(const char *account, const char *bucket, const char *
              "month:r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
              "bucketName:$bucketName,actionType:$get}){sum{requests} dimensions{objectName}} "
              "today:r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$dayStart,datetime_leq:$endDate,"
-             "bucketName:$bucketName,actionType:$get}){sum{requests} dimensions{objectName}}}}}\","
+             "bucketName:$bucketName,actionType:$get}){sum{requests} dimensions{objectName}} "
+             "day:r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$since,datetime_leq:$endDate,"
+             "bucketName:$bucketName,actionType:$get}){sum{requests} dimensions{objectName}} "
+             "account:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate})"
+             "{sum{requests} dimensions{actionType}}}}}\","
              "\"variables\":{\"accountTag\":\"%s\",\"bucketName\":\"%s\",\"startDate\":\"%s\",\"endDate\":\"%s\","
-             "\"dayStart\":\"%s\",\"get\":\"GetObject\"}}",
-             account, bucket, start, end, day);
+             "\"dayStart\":\"%s\",\"since\":\"%s\",\"get\":\"GetObject\"}}",
+             account, bucket, start, end, day, since);
 }
 
-// One list of per-file plays in the usage answer ("month" or "today"): each file's name and count. Returns how
+// One list of per-file plays in the usage answer ("month", "today" or "day"): each file's name and count. Returns how
 // many.
 static i32 r2_parse_plays(const char *resp, const char *list, char (*keys)[R2_KEY_MAX], i64 *counts, i32 max)
 {
@@ -2250,7 +2288,7 @@ static void r2_run_usage(const R2Task &t)
     if (!t.oauth) str_set(bearer, t.token);
     SYSTEMTIME st;
     GetSystemTime(&st);
-    char start[32], end[32], day[32], body[2400];
+    char start[32], end[32], day[32], since[32], body[3200];
     snprintf(start, sizeof start, "%04d-%02d-01T00:00:00Z", st.wYear, st.wMonth);
     snprintf(end, sizeof end, "%04d-%02d-%02dT%02d:%02d:%02dZ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
              st.wSecond);
@@ -2260,7 +2298,16 @@ static void r2_run_usage(const R2Task &t)
     if (!TzSpecificLocalTimeToSystemTime(0, &local, &midnight)) midnight = st;
     snprintf(day, sizeof day, "%04d-%02d-%02dT%02d:%02d:%02dZ", midnight.wYear, midnight.wMonth, midnight.wDay,
              midnight.wHour, midnight.wMinute, midnight.wSecond);
-    r2_usage_query(t.conf.account, t.conf.bucket, start, end, day, body, sizeof body);
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER back = {{ft.dwLowDateTime, ft.dwHighDateTime}};
+    back.QuadPart -= 24ull * 3600 * 10000000;
+    ft = {back.LowPart, back.HighPart};
+    SYSTEMTIME ago;
+    FileTimeToSystemTime(&ft, &ago);
+    snprintf(since, sizeof since, "%04d-%02d-%02dT%02d:%02d:%02dZ", ago.wYear, ago.wMonth, ago.wDay, ago.wHour,
+             ago.wMinute, ago.wSecond);
+    r2_usage_query(t.conf.account, t.conf.bucket, start, end, day, since, body, sizeof body);
     static char resp[1 << 20];
     u32 s = r2_cf("POST", "/graphql", bearer, body, resp, sizeof resp);
     R2Fetched f;
@@ -2273,13 +2320,16 @@ static void r2_run_usage(const R2Task &t)
         r2_load_locked();
         for (i32 i = 0; i < g_r2.count; i++) {
             R2Share &sh = g_r2.shares[i];
-            sh.plays_today = sh.plays_month = sh.host == HOST_R2 ? 0 : -1;
+            sh.plays_today = sh.plays_month = sh.plays_24h = sh.host == HOST_R2 ? 0 : -1;
         }
-        for (i32 pass = 0; pass < 2; pass++) {
-            i32 n = r2_parse_plays(resp, pass ? "today" : "month", keys, counts, R2_MAX_SHARES);
+        static const char *lists[] = {"month", "today", "day"};
+        for (i32 pass = 0; pass < 3; pass++) {
+            i32 n = r2_parse_plays(resp, lists[pass], keys, counts, R2_MAX_SHARES);
             for (i32 i = 0; i < n; i++) {
                 i32 k = r2_find_locked(keys[i]);
-                if (k >= 0) (pass ? g_r2.shares[k].plays_today : g_r2.shares[k].plays_month) = counts[i];
+                if (k < 0) continue;
+                R2Share &sh = g_r2.shares[k];
+                (pass == 0 ? sh.plays_month : pass == 1 ? sh.plays_today : sh.plays_24h) = counts[i];
             }
         }
         g_r2.gen++;
@@ -2344,7 +2394,9 @@ static void r2_run_move(const R2Task &t)
         r2_save_locked();
     }
     ReleaseSRWLockExclusive(&g_r2.lock);
-    if (ok) log_line("r2: %s %s%s", pause ? "paused" : "resumed", t.key, t.pause == 2 ? " (past the day's plays)" : "");
+    if (ok)
+        log_line("r2: %s %s%s", pause ? "paused" : "resumed", t.key,
+                 !pause ? "" : t.pause == 2 ? " (too many reads in a day)" : t.pause == 3 ? " (the month's reads)" : "");
     else {
         log_line("r2: couldn't %s %s: %s", pause ? "pause" : "resume", t.key, why);
         char text[300];
@@ -2732,7 +2784,8 @@ static void r2_on_event(const Event &e)
     else r2_start_copy(slot);
 }
 
-// Queues a pause (how: 1 by hand, 2 past the day's plays) or a resume (how: 1 by hand, 0 automatic).
+// Queues a pause (how: 1 by hand, 2 too many reads in a day, 3 the month's reads) or a resume (how: 1 by hand, 0
+// automatic).
 static void r2_move(const char *key, bool pause, u8 how)
 {
     static R2Task t;
@@ -2766,21 +2819,41 @@ static void r2_pause(const char *key) { r2_move(key, true, 1); }
 
 static void r2_resume(const char *key) { r2_move(key, false, 1); }
 
-// After new plays came: pauses links past the day's plays, and brings back the ones paused on an earlier day.
+// After new reads came: pauses links read too often and, near the month's cap, every link, busiest first; brings
+// back the ones whose reason has passed. What doesn't fit the task queue is done at the next read.
 static void r2_auto_pause()
 {
-    static char keys[R2_MAX_SHARES][R2_KEY_MAX];
-    static i32 act[R2_MAX_SHARES];
-    i32 n = 0, today = r2_today(), limit = g_app.config.r2_pause_views_per_day;
+    struct Act { char key[R2_KEY_MAX]; i32 a; i64 month; };
+    static Act acts[R2_MAX_SHARES];
+    const Config &c = g_app.config;
+    i32 n = 0, today = r2_today();
     AcquireSRWLockShared(&g_r2.lock);
+    bool capped = g_r2.usage_us && r2_capped(g_r2.fetched.account_reads, c.r2_read_cap);
     for (i32 i = 0; i < g_r2.count; i++) {
-        i32 a = r2_auto_action(g_r2.shares[i], limit, today);
+        const R2Share &s = g_r2.shares[i];
+        i32 a = r2_auto_action(s, c.r2_read_rate, capped, today);
         if (!a) continue;
-        str_set(keys[n], g_r2.shares[i].key);
-        act[n++] = a;
+        str_set(acts[n].key, s.key);
+        acts[n].a = a;
+        acts[n++].month = s.plays_month;
     }
     ReleaseSRWLockShared(&g_r2.lock);
-    for (i32 i = 0; i < n; i++) r2_move(keys[i], act[i] > 0, act[i] > 0 ? 2 : 0);
+    qsort(acts, n, sizeof acts[0], [](const void *x, const void *y) {
+        i64 a = ((const Act *)x)->month, b = ((const Act *)y)->month;
+        return a > b ? -1 : a < b ? 1 : 0;
+    });
+    for (i32 i = 0; i < n; i++) r2_move(acts[i].key, acts[i].a > 0, (u8)(acts[i].a > 0 ? acts[i].a : 0));
+}
+
+// Every second from the main loop: keeps the hourly read of the analytics going while no page asks for it, so the
+// read limits work with the window closed.
+static void r2_tick()
+{
+    static i64 next;
+    i64 now = now_us();
+    if (now < next) return;
+    next = now + 60ll * 1000000;
+    if (r2_ready()) r2_usage();
 }
 
 static void r2_status_set_now(R2SetupState state, const char *text)
@@ -2980,6 +3053,8 @@ static R2Usage r2_usage()
     u.bucket_bytes = u.usage_us ? g_r2.fetched.bytes : -1;
     u.class_a = u.usage_us ? g_r2.fetched.class_a : -1;
     u.class_b = u.usage_us ? g_r2.fetched.class_b : -1;
+    u.account_reads = u.usage_us ? g_r2.fetched.account_reads : -1;
+    u.capped = r2_capped(u.account_reads, g_app.config.r2_read_cap);
     if (r2_ready() && (!g_r2.usage_asked_us || now - g_r2.usage_asked_us > R2_USAGE_EVERY_US)) {
         g_r2.usage_asked_us = now;
         ask = true;

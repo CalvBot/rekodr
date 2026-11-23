@@ -1038,21 +1038,42 @@ static void test_r2()
     live.paused = 1;
     T(!r2_share_live(live, 1));
 
-    // Automatic pause: past the day's plays, not when off or resumed by hand today; back the next day
+    // The month's cap: reached at 90%, off at 0, never before the reads are known
+    T(!r2_capped(8999999, 10000000) && r2_capped(9000000, 10000000) && r2_capped(20000000, 10000000));
+    T(!r2_capped(20000000, 0) && !r2_capped(-1, 10000000));
+
+    // Automatic pause: a link read too often in 24 hours, every link near the cap; not one resumed by hand today
     R2Share ap = {};
     ap.host = HOST_R2;
-    ap.plays_today = 50;
-    T(r2_auto_action(ap, 50, 20261121) == 1 && r2_auto_action(ap, 51, 20261121) == 0);
-    T(r2_auto_action(ap, 0, 20261121) == 0);
-    ap.pause_day = 20261121;
-    T(r2_auto_action(ap, 50, 20261121) == 0 && r2_auto_action(ap, 50, 20261122) == 1);
-    ap.paused = 2;
-    T(r2_auto_action(ap, 50, 20261121) == 0 && r2_auto_action(ap, 50, 20261122) == -1);
+    ap.plays_24h = 50;
+    T(r2_auto_action(ap, 50, false, 20261121) == 2 && r2_auto_action(ap, 51, false, 20261121) == 0);
+    T(r2_auto_action(ap, 0, false, 20261121) == 0);
+    T(r2_auto_action(ap, 0, true, 20261121) == 3 && r2_auto_action(ap, 50, true, 20261121) == 3);
+    ap.pause_day = 20261121; // resumed by hand today
+    T(r2_auto_action(ap, 50, true, 20261121) == 0 && r2_auto_action(ap, 50, false, 20261122) == 2);
+    ap.paused = 2; // paused for its rate today: back tomorrow, unless the cap holds it
+    T(r2_auto_action(ap, 50, false, 20261121) == 0 && r2_auto_action(ap, 50, false, 20261122) == -1);
+    T(r2_auto_action(ap, 50, true, 20261122) == 0);
+    ap.paused = 3; // paused for the cap: back when the month's reads are under it
+    T(r2_auto_action(ap, 50, true, 20261122) == 0 && r2_auto_action(ap, 50, false, 20261121) == -1);
     ap.paused = 1;
-    T(r2_auto_action(ap, 50, 20261122) == 0); // by hand: stays paused
+    T(r2_auto_action(ap, 50, false, 20261122) == 0 && r2_auto_action(ap, 50, true, 20261122) == 0); // by hand: stays
     ap.paused = 0;
+    ap.moving = true;
+    T(r2_auto_action(ap, 1, true, 1) == 0);
+    ap.moving = false;
     ap.host = HOST_CATBOX;
-    T(r2_auto_action(ap, 1, 1) == 0);
+    T(r2_auto_action(ap, 1, true, 1) == 0);
+
+    char rd[24];
+    r2_fmt_reads(950, rd, sizeof rd);
+    T(!strcmp(rd, "950"));
+    r2_fmt_reads(12345, rd, sizeof rd);
+    T(!strcmp(rd, "12 K"));
+    r2_fmt_reads(1234567, rd, sizeof rd);
+    T(!strcmp(rd, "1.2 M"));
+    r2_fmt_reads(10000000, rd, sizeof rd);
+    T(!strcmp(rd, "10 M"));
 
     // Custom uploaders (.sxcu): what's read, what's refused, and links made from answers
     const char *sx = "{\"Version\":\"16.0.1\",\"Name\":\"My host\",\"DestinationType\":\"ImageUploader, FileUploader\","
@@ -1120,7 +1141,7 @@ static void test_r2()
     T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
     T(r[0].host == HOST_R2 && !r[0].expires_us && r[1].host == HOST_LITTERBOX && r[1].expires_us == w[1].expires_us);
     T(r[0].paused == 2 && !strcmp(r[0].hidden, w[0].hidden) && r[0].pause_day == 20261121 && !r[1].paused);
-    T(r[0].plays_today == -1 && r[0].plays_month == -1);
+    T(r[0].plays_today == -1 && r[0].plays_month == -1 && r[0].plays_24h == -1);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
     DeleteFileW(file.s);
 
@@ -1177,11 +1198,20 @@ static void test_r2()
     T(r2_parse_usage("{\"data\":{\"viewer\":{\"accounts\":[{\"storage\":[],\"ops\":[]}]}},\"errors\":null}", &f));
     T(f.bytes == 0 && f.class_a == 0 && f.class_b == 0);
     T(!r2_parse_usage("{\"data\":null,\"errors\":[{\"message\":\"not authorized\"}]}", &f));
+    // The account's reads: Class B requests to every bucket
+    T(r2_parse_usage("{\"data\":{\"viewer\":{\"accounts\":[{\"storage\":[],\"ops\":[],\"account\":["
+                     "{\"sum\":{\"requests\":900},\"dimensions\":{\"actionType\":\"GetObject\"}},"
+                     "{\"sum\":{\"requests\":100},\"dimensions\":{\"actionType\":\"HeadObject\"}},"
+                     "{\"sum\":{\"requests\":7},\"dimensions\":{\"actionType\":\"PutObject\"}}]}]}}}",
+                     &f));
+    T(f.account_reads == 1000 && f.class_b == 0);
     T(r2_op_class("UploadPart") == 'A' && r2_op_class("HeadObject") == 'B' && r2_op_class("DeleteObject") == 0);
-    char q[2400];
-    r2_usage_query("acc1", "clipback", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", "2026-11-20T23:00:00Z", q,
-                   sizeof q);
+    char q[3200];
+    r2_usage_query("acc1", "clipback", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", "2026-11-20T23:00:00Z",
+                   "2026-11-20T10:00:00Z", q, sizeof q);
     T(strstr(q, "objectName") && strstr(q, "\"get\":\"GetObject\"") && strstr(q, "\"dayStart\":\"2026-11-20T23:00:00Z\""));
+    T(strstr(q, "\"since\":\"2026-11-20T10:00:00Z\"") && strstr(q, "day:r2Op") &&
+      strstr(q, "account:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate})"));
     T(strstr(q, "\"accountTag\":\"acc1\"") && strstr(q, "\"bucketName\":\"clipback\"") &&
       strstr(q, "r2OperationsAdaptiveGroups") && strstr(q, "\"startDate\":\"2026-11-01T00:00:00Z\""));
 

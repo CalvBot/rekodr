@@ -3291,7 +3291,9 @@ static void lib_shared_view(ImVec2 h0, f32 full_w)
             snprintf(plays, sizeof plays, "  -  %s %s today", n, s.plays_today == 1 ? "play" : "plays");
         }
         if (s.removed) snprintf(line, sizeof line, "Removed, over size limit  -  %s", size);
-        else if (paused && s.paused == 2) snprintf(line, sizeof line, "Paused until tomorrow, over the day's plays%s", plays);
+        else if (paused && s.paused == 2) snprintf(line, sizeof line, "Paused until tomorrow, read too often%s", plays);
+        else if (paused && s.paused == 3)
+            snprintf(line, sizeof line, "Paused until the 1st, the month's free reads are nearly used%s", plays);
         else if (paused) snprintf(line, sizeof line, "Paused, nobody can play it%s  -  %s", plays, size);
         else if (!live) snprintf(line, sizeof line, "Expired  -  %s", size);
         else if (s.game[0]) snprintf(line, sizeof line, "%s%s  -  %s  -  %s%s", ends, s.game, when, size, plays);

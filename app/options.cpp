@@ -2644,32 +2644,27 @@ static void options_sharing()
         opt_row_end();
     }
 
-    // Busy links: past this many plays in a day a link pauses until the next day (r2.cpp); the first step is off
+    // The account's reads this month against r2_read_cap (r2.cpp pauses the links near it)
     {
-        static const i32 steps[] = {0, 100, 250, 500, 1000, 2500, 5000, 10000};
-        f32 sw = dp(170), lw = dp(220);
-        opt_row_begin("Pause busy links", "A link past this many plays in a day pauses until the next day",
-                      sw + dp(12) + lw);
-        i32 n = (i32)COUNT(steps), cur = 0;
-        for (i32 i = 0; i < n; i++)
-            if (abs(steps[i] - c.r2_pause_views_per_day) < abs(steps[cur] - c.r2_pause_views_per_day)) cur = i;
-        f32 v = (f32)cur;
-        ImVec2 at = ImGui::GetCursorScreenPos();
-        if (lib_slider("##r2pauseplays", &v, 0, (f32)(n - 1), sw, ImGui::GetFrameHeight())) {
-            cur = (i32)(v + 0.5f);
-            c.r2_pause_views_per_day = steps[cur];
+        R2Usage u = r2_usage();
+        char got[24], cap[24], t[64];
+        u32 col = COL_TEXT;
+        const char *sub = "Links pause before the account passes R2's free reads";
+        if (!r2_ready()) {
+            str_set(t, "Not set up");
+            col = COL_DIM;
+        } else if (u.account_reads < 0) {
+            str_set(t, "Not read yet");
+            col = COL_DIM;
+        } else {
+            r2_fmt_reads(u.account_reads, got, sizeof got);
+            r2_fmt_reads(c.r2_read_cap, cap, sizeof cap);
+            if (c.r2_read_cap > 0) snprintf(t, sizeof t, "%s of %s", got, cap);
+            else str_set(t, got);
+            if (c.r2_read_cap <= 0) sub = "No limit is set";
+            else if (u.capped) sub = "Links are paused until the 1st";
         }
-        if (ImGui::IsItemDeactivated()) {
-            log_line("options: R2 links pause past %d plays a day", c.r2_pause_views_per_day);
-            options_apply(0);
-        }
-        char t[64], num[32];
-        fmt_count(steps[cur], num, sizeof num);
-        if (cur == 0) snprintf(t, sizeof t, "Never");
-        else snprintf(t, sizeof t, "Past %s plays a day", num);
-        opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(at.x + sw + dp(12), opt_row_text_y(g_font)), COL_TEXT, t,
-                    g_row.x1);
-        opt_row_end();
+        opt_row_value("Reads this month", sub, t, col);
     }
     {
         R2Usage u = r2_usage();

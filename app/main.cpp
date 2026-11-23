@@ -183,6 +183,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             timeline_tick();
             ffget_tick();
             backup_tick();
+            r2_tick();
             telemetry_tick();
             pipe_publish();
         }

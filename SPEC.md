@@ -89,9 +89,10 @@ Keep a whole session from start to finish.
     when the file already is that and only trimmed), uploaded, and its link goes on the clipboard. It goes to the
     player's own R2 bucket when sharing is set up in Options, at any size; without it, to the free public hosts,
     which take up to 1 GB, and the card says so. A clip too big for them fails with the reason.
-    An R2 link can be paused (its file moved to a hidden name) and can pause itself for the day past
-    `r2_pause_views_per_day` plays; a paused link can still play for a while from copies Discord or a custom
-    domain's cache already holds.
+    An R2 link can be paused (its file moved to a hidden name). Links pause by themselves so R2 costs nothing
+    unexpected: all of them until the 1st when the account's reads this month near `r2_read_cap` (10 M, R2's
+    free amount), and one until the next day past `r2_read_rate` reads in 24 hours (1 M); 0 turns either off.
+    A paused link can still play for a while from copies Discord or a custom domain's cache already holds.
 - **Favourites:** games and folders can be favourites, marked with a star and kept at the top of the list on the
   left in the order they were added (`favourites.txt` in the config folder).
 - **Display names:** a card can carry a name typed by hand, shown in place of its file name; the file keeps its
