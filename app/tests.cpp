@@ -1782,7 +1782,7 @@ static void test_r2()
     embed_card(ein, &card);
     static char cj[R2_CARD_MAX + 1];
     i32 cn = r2_card_json(card, "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg",
-                          "", cj, sizeof cj);
+                          "", "", "", cj, sizeof cj);
     T(cn > 0 && cn == (i32)strlen(cj) && !strchr(cj, '<') && !strchr(cj, '>') && !strchr(cj, '&'));
     T(starts_with(cj, "{\"component\":{\"type\":17,\"accent_color\":1122867,\"components\":[{\"type\":10,"));
     T(strstr(cj, "\"content\":\"**ace \\u003c\\\"round\\\"\\\\\\u003e \\\\*1\\\\* caf\\u00e9 \\ud83c\\udfae**\"}") != 0);
@@ -1792,10 +1792,11 @@ static void test_r2()
     T(!strstr(cj, "thumb.jpg") && !strstr(cj, "\"type\":9"));
     card.player = false; // nothing small enough: the picture
     card.icon = true;    // no icon file: a plain line
-    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "", cj, sizeof cj);
+    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
     T(cn > 0 && strstr(cj, "https://x.dev/t.jpg") && !strstr(cj, "v.mp4") && !strstr(cj, "\"type\":9"));
-    T(r2_card_json(card, "a", "b", "", cj, 100) == 0);
-    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "https://x.dev/icon.png", cj, sizeof cj);
+    T(r2_card_json(card, "a", "b", "", "", "", cj, 100) == 0);
+    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "https://x.dev/icon.png", "", "",
+                      cj, sizeof cj);
     T(cn > 0 && strstr(cj, "\"components\":[{\"type\":9,\"components\":[{\"type\":10,\"content\":\"**")
       && strstr(cj, "],\"accessory\":{\"type\":11,\"media\":{\"url\":\"https://x.dev/icon.png\"}}}"));
     // the style: found by its id, the first when the id is unknown; a preview tags the line
@@ -1804,8 +1805,27 @@ static void test_r2()
     ein = {"ace", "Valorant", "Sam", 1500, 210, 0, true, 0};
     embed_card(ein, &card, 0);
     T(!strcmp(card.line, "Sam - Valorant") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
-    cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", cj, sizeof cj);
+    cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
     T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Sam \\\\- Valorant - Preview, first 3:30 of 25:00\"}"));
+    // a session: Watch and Download after the video, before the via line; its page links the download; the file
+    // downloads by its name
+    ein.session = true;
+    embed_card(ein, &card, 0);
+    T(card.buttons);
+    cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "https://x.dev/p", "https://x.dev/c.mp4",
+                      cj, sizeof cj);
+    T(cn > 0 && strstr(cj, "\"}}]},{\"type\":1,\"components\":[{\"type\":2,\"style\":5,\"label\":\"Watch\","
+                           "\"url\":\"https://x.dev/p\"},{\"type\":2,\"style\":5,\"label\":\"Download\","
+                           "\"url\":\"https://x.dev/c.mp4\"}]},{\"type\":10,\"content\":\"-# [via"));
+    pp.download = true;
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, "<p><a href=\"https://x.dev/clipback/abc/clip.mp4\" download>Download</a></p>"));
+    pp.download = false;
+    char dtype[256];
+    r2_download_type("", dtype, sizeof dtype);
+    T(!strcmp(dtype, "video/mp4"));
+    r2_download_type("Overwatch \"late\" 2026-11-24 ", dtype, sizeof dtype);
+    T(!strcmp(dtype, "video/mp4\r\nContent-Disposition: attachment; filename=\"Overwatch late 2026-11-24.mp4\""));
     pp.card = "{\"component\":{}}";
     hn = r2_page_html(pp, false, html, sizeof html);
     T(strstr(html, "<script id=\"discord:component-embed\" type=\"application/json\">{\"component\":{}}</script>"));

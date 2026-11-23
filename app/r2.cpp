@@ -615,6 +615,7 @@ struct EmbedInput {
     i64  date_us;                       // when it was shared
     bool video;                         // something small enough to play in the card; false = the picture
     u32  accent;                        // a colour as 0xRRGGBB, 0 = none
+    bool session;                       // a session (path_is_session): Watch and Download buttons
 };
 
 // What a card shows, as the UI draws its preview and r2_card_json writes it.
@@ -626,6 +627,7 @@ struct EmbedCard {
     char tag[64];   // "Preview, first 3:30 of 25:00" after `line`, "" = none
     bool via;       // the "via" line at the bottom
     bool player;    // false = a card with the picture
+    bool buttons;   // "Watch" (the page) and "Download" (the whole file) under the video, for a session
 };
 
 // A card style: which parts it shows (config.embed_style). The first is the one settings start with.
@@ -693,6 +695,7 @@ static void embed_card(const EmbedInput &in, EmbedCard *out, i32 style = -1)
     out->accent = in.accent ? in.accent : R2_CARD_ACCENT;
     out->via = true;
     out->player = in.video;
+    out->buttons = in.session;
 }
 
 // Adds `s` as JSON string text, ASCII only: quotes, backslashes and controls escaped, other characters as \u (two
@@ -718,10 +721,11 @@ static void r2_json_text(const char *s, bool md, char *out, i32 cap, i32 *len)
 }
 
 // The card's JSON for Discord (its <script> in the page): `video` plays in it when the card is a player, else
-// `image` shows; `icon` is the game's icon ("" = none). Returns the length, 0 when it doesn't fit Discord's limit or
-// `cap` (then the page has only its Open Graph tags).
-static i32 r2_card_json(const EmbedCard &card, const char *video, const char *image, const char *icon, char *out,
-                        i32 cap)
+// `image` shows; `icon` is the game's icon ("" = none); with `card.buttons`, link buttons to `page` and `download`
+// (Discord takes only link buttons here, with only id, type, url, style, label and emoji). Returns the length, 0
+// when it doesn't fit Discord's limit or `cap` (then the page has only its Open Graph tags).
+static i32 r2_card_json(const EmbedCard &card, const char *video, const char *image, const char *icon,
+                        const char *page, const char *download, char *out, i32 cap)
 {
     i32 len = 0;
     auto put = [&](const char *s) { len += snprintf(out + len, len < cap ? cap - len : 0, "%s", s); };
@@ -752,6 +756,13 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
         text(media, false);
         put("\"}}]}");
     }
+    if (card.buttons && page && page[0] && download && download[0]) {
+        put(",{\"type\":1,\"components\":[{\"type\":2,\"style\":5,\"label\":\"Watch\",\"url\":\"");
+        text(page, false);
+        put("\"},{\"type\":2,\"style\":5,\"label\":\"Download\",\"url\":\"");
+        text(download, false);
+        put("\"}]}");
+    }
     if (card.via) {
         put(",{\"type\":10,\"content\":\"-# [via " APP_DISPLAY "](");
         text("<", false);
@@ -770,6 +781,7 @@ struct R2PageParts {
     i32 w, h, ew, eh, tw, th;
     const char *card; // the card's JSON (r2_card_json), put in as it is; "" or 0 = none
     const char *note; // a line under the clip (r2_preview_text when cards play a preview); "" or 0 = none
+    bool download;    // a quiet "Download" link to the clip under it (a session's)
 };
 
 // A run of the page: text with %T (the title), %P (the page's address), %V (the clip's), %E (what cards play), %I
@@ -794,11 +806,12 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
     out[*len < cap ? *len : cap - 1] = 0;
 }
 
-// The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that
-// plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and Discord's own card
-// (`card`) before them; the `note` and the plain APP_DISPLAY word under it. A #t= in the address (seconds, or m:ss
-// or h:mm:ss) starts the clip there, which is where a preview's "Continue watching" lands. Paused, the page names the
-// clip and doesn't play it. Kept from search engines. All ASCII. Returns the length, 0 if it didn't fit.
+// The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that plays
+// `embed` (the clip, or a small copy of it), or with none a card with the picture, and Discord's own card (`card`)
+// before them; the `note`, a session's Download link and the plain APP_DISPLAY word under it. A #t= in the address
+// (seconds, or m:ss or h:mm:ss) starts the clip there, which is where a preview's "Continue watching" lands. Paused,
+// the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the length, 0 if it didn't
+// fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
 {
     if (cap < 2) return 0;
@@ -840,7 +853,8 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                     p, out, cap, &len);
     r2_page_put("<style>html,body{margin:0;min-height:100%;background:#0c0c0e;color:#7c7c86;"
                 "font:13px/1.5 system-ui,sans-serif}video{display:block;width:100%;max-height:calc(100vh - 44px);"
-                "background:#000}p{margin:0;padding:12px 16px;text-align:center;letter-spacing:.05em}</style>\n"
+                "background:#000}p{margin:0;padding:12px 16px;text-align:center;letter-spacing:.05em}"
+                "a{color:inherit}</style>\n"
                 "</head><body>\n",
                 p, out, cap, &len);
     if (!paused) {
@@ -852,6 +866,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             r2_html_text(p.note, out, cap, &len);
             if (len + 6 < cap) len += snprintf(out + len, cap - len, "</p>\n");
         }
+        if (p.download) r2_page_put("<p><a href=\"%V\" download>Download</a></p>\n", p, out, cap, &len);
         r2_page_put("<script>(function(){var m=/[#&]t=([0-9:.]+)/.exec(location.hash),"
                     "v=document.querySelector('video'),t=0;if(!m||!v)return;"
                     "m[1].split(':').forEach(function(x){t=t*60+(+x||0)});function go(){v.currentTime=t}"
@@ -1295,10 +1310,28 @@ static bool r2_retry_wait(u32 job, i32 attempt, const char *what, u32 status)
     return !g_r2.stop && !(job && r2_cancelled(job));
 }
 
+// The Content-Type an upload sends, with `name` ("" = none) a Content-Disposition too, so a browser opening the
+// file saves it as "<name>.mp4" (ASCII letters, digits, spaces, - and _ kept) rather than playing it; a <video>
+// still plays it.
+static void r2_download_type(const char *name, char *out, i32 cap)
+{
+    char safe[128];
+    i32 n = 0;
+    for (const char *p = name ? name : ""; *p && n < (i32)sizeof safe - 1; p++)
+        if (isalnum((u8)*p) || *p == ' ' || *p == '-' || *p == '_') safe[n++] = *p;
+    while (n && safe[n - 1] == ' ') n--;
+    safe[n] = 0;
+    if (!name || !name[0]) snprintf(out, cap, "video/mp4");
+    else snprintf(out, cap, "video/mp4\r\nContent-Disposition: attachment; filename=\"%s.mp4\"", n ? safe : "clip");
+}
+
+// Uploads `file` as `key`; `download` ("" = none) makes it a download (r2_download_type).
 static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 job, char *err, i32 cap,
-                        i64 sent = 0, i64 still = 0)
+                        i64 sent = 0, i64 still = 0, const char *download = "")
 {
     err[0] = 0;
+    char type[256];
+    r2_download_type(download, type, sizeof type);
     HANDLE f = CreateFileW(file.s, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
     if (f == INVALID_HANDLE_VALUE) {
         snprintf(err, cap, "Couldn't open the copy to upload");
@@ -1313,8 +1346,7 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
         u32 status = 0;
         for (i32 attempt = 0;; attempt++) {
             prog.done = sent;
-            status = r2_send(c, "PUT", key, "", R2Body{0, f, 0, size.QuadPart}, "video/mp4", resp, sizeof resp, 0, 0,
-                             &prog);
+            status = r2_send(c, "PUT", key, "", R2Body{0, f, 0, size.QuadPart}, type, resp, sizeof resp, 0, 0, &prog);
             if (r2_ok(status) || !r2_retry_wait(job, attempt, key, status)) break;
         }
         ok = r2_ok(status);
@@ -1322,7 +1354,7 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
     } else {
         u32 status = 0;
         for (i32 attempt = 0;; attempt++) {
-            status = r2_send(c, "POST", key, "uploads=", R2Body{}, "video/mp4", resp, sizeof resp);
+            status = r2_send(c, "POST", key, "uploads=", R2Body{}, type, resp, sizeof resp);
             if (r2_ok(status) || !r2_retry_wait(job, attempt, key, status)) break;
         }
         char id[512], id_enc[1024];
@@ -1632,16 +1664,21 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     r2_thumb_size(s.page_w, s.page_h, &tw, &th);
     r2_page_title(s.title, s.game, s.seconds, title, sizeof title);
     bool copy = s.social == 1;
-    EmbedInput in = {s.title, s.game, g_app.config.clipper_name, s.seconds, s.preview, s.uploaded_us, embed[0] != 0, 0};
+    wchar_t src[1040];
+    utf8_to_wide(s.path, src, COUNT(src));
+    bool session = path_is_session(src);
+    EmbedInput in = {s.title,       s.game,          g_app.config.clipper_name, s.seconds, s.preview,
+                     s.uploaded_us, embed[0] != 0, 0,                         session};
     EmbedCard card;
     embed_card(in, &card);
     static thread_local char json[R2_CARD_MAX + 1];
-    if (!r2_card_json(card, embed, image, icon, json, sizeof json)) json[0] = 0;
+    if (!r2_card_json(card, embed, image, icon, page, video, json, sizeof json)) json[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
                      copy ? s.social_h : s.page_h, tw, th, json, ""};
     char note[96] = "";
     if (copy && s.preview > 0 && s.seconds > s.preview) r2_preview_text(s.preview, s.seconds, note, sizeof note);
     p.note = note;
+    p.download = session;
     static thread_local char html[16384];
     i32 n = r2_page_html(p, paused, html, sizeof html);
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
@@ -1804,7 +1841,9 @@ static void r2_run_upload(const R2Task &t)
     else r2_new_key(key);
 
     i64 began = now_us();
-    if (!err[0]) r2_put_file(t.conf, key, t.file, job, err, sizeof err, 0, social_bytes);
+    // A session goes to editors: its file downloads when opened, named as the share is.
+    bool session = path_is_session(w.src.s);
+    if (!err[0]) r2_put_file(t.conf, key, t.file, job, err, sizeof err, 0, social_bytes, session ? w.title : "");
     if (!err[0]) r2_rate_note(HOST_R2, bytes, now_us() - began);
     // The preview page's picture; without one the link is the file itself.
     i32 page_w = 0, page_h = 0;
