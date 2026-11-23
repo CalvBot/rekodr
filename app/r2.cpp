@@ -245,7 +245,8 @@ static i64 r2_limit_for_budget(f64 dollars)
     return (i64)((R2_FREE_GB + dollars / R2_PRICE_GB) * (f64)R2_GB);
 }
 
-// Room kept for a preview page and its picture while a link's room is made; the entry counts what they really take.
+// Room kept for a preview page, its picture and the game's icon while a link's room is made; the entry counts what
+// they really take.
 static const i64 R2_PAGE_ROOM = 1 << 20;
 
 static f64 r2_cost_for(i64 bytes)
