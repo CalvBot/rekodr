@@ -1780,33 +1780,14 @@ static void test_r2()
     cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "https://x.dev/icon.png", cj, sizeof cj);
     T(cn > 0 && strstr(cj, "\"components\":[{\"type\":9,\"components\":[{\"type\":10,\"content\":\"**")
       && strstr(cj, "],\"accessory\":{\"type\":11,\"media\":{\"url\":\"https://x.dev/icon.png\"}}}"));
-    // the styles: each id found again, the line, tag and via where each puts them
-    T(embed_style_count() >= 9 && embed_style_find("nope") == -1);
-    for (i32 i = 0; i < embed_style_count(); i++)
-        T(embed_style_find(embed_style_id(i)) == i && embed_style_name(i)[0]);
-    T(!strcmp(embed_style_id(0), "clipback"));
-    ein = {"ace", "Valorant", "Sam", 42, 0, 0, true, 0, 7500};
-    embed_card(ein, &card, embed_style_find("minimal"));
-    T(!card.line[0] && !card.tag[0] && card.via && card.player);
-    embed_card(ein, &card, embed_style_find("length"));
-    T(!strcmp(card.line, "Sam - Valorant") && !strcmp(card.tag, "0:42"));
-    embed_card(ein, &card, embed_style_find("session"));
-    T(!strcmp(card.tag, "from a 2 h 5 min Valorant session"));
-    embed_card(ein, &card, embed_style_find("picture"));
-    T(!card.player);
-    ein.preview = 210;
-    ein.seconds = 1500;
-    embed_card(ein, &card, embed_style_find("classic"));
-    T(!strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
-    embed_card(ein, &card, embed_style_find("via"));
+    // the style: found by its id, the first when the id is unknown; a preview tags the line
+    T(embed_style_count() == 1 && !strcmp(embed_style_id(0), "clipback") && embed_style_find("clipback") == 0);
+    T(embed_style_find("nope") == -1 && !strcmp(embed_style_name(5), "Clipback"));
+    ein = {"ace", "Valorant", "Sam", 1500, 210, 0, true, 0};
+    embed_card(ein, &card, 0);
+    T(!strcmp(card.line, "Sam - Valorant") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
     cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", cj, sizeof cj);
-    T(cn > 0
-      && strstr(cj, "{\"type\":10,\"content\":\"Sam \\\\- Valorant - Preview, first 3:30 of 25:00 - via [Clipback]("));
-    T(!strstr(cj, "-# via"));
-    embed_card(ein, &card, embed_style_find("compact"));
-    cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", cj, sizeof cj);
-    T(cn > 0 && strstr(cj, "\"content\":\"**ace** - Sam \\\\- Valorant - Preview, first 3:30 of 25:00\"}"));
-    T(strstr(cj, "\"-# [via Clipback]("));
+    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Sam \\\\- Valorant - Preview, first 3:30 of 25:00\"}"));
     pp.card = "{\"component\":{}}";
     hn = r2_page_html(pp, false, html, sizeof html);
     T(strstr(html, "<script id=\"discord:component-embed\" type=\"application/json\">{\"component\":{}}</script>"));

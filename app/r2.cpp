@@ -589,43 +589,27 @@ struct EmbedInput {
     i64  date_us;                       // when it was shared
     bool video;                         // something small enough to play in the card; false = the picture
     u32  accent;                        // a colour as 0xRRGGBB, 0 = none
-    f64  session;                       // how long the session it came from ran, 0 = not known
 };
 
 // What a card shows, as the UI draws its preview and r2_card_json writes it.
 struct EmbedCard {
     char title[200];
-    char line[200];  // "name - game" and the like, "" = none
-    bool icon;       // the game's icon beside `line`
-    u32  accent;     // 0 = none
-    char tag[64];    // "0:42" and the like after `line`, "" = none
-    bool via;        // the "via" line at the bottom
-    bool via_inline; // "via" at the end of `line` instead
-    bool compact;    // the title and `line` on one line
-    bool player;     // false = a card with the picture
+    char line[200]; // "name - game" and the like, "" = none
+    bool icon;      // the game's icon beside the title and `line`
+    u32  accent;    // 0 = none
+    char tag[64];   // "Preview, first 3:30 of 25:00" after `line`, "" = none
+    bool via;       // the "via" line at the bottom
+    bool player;    // false = a card with the picture
 };
 
-// A card style: which parts it shows. The player picks one in Options (config.embed_style).
-enum { EMBED_TAG_NONE, EMBED_TAG_LENGTH, EMBED_TAG_SESSION };
+// A card style: which parts it shows (config.embed_style). The first is the one settings start with.
 struct EmbedStyle {
-    const char *id, *name; // saved in settings; the chip's label
+    const char *id, *name; // saved in settings; its label
     bool line;             // the clipper's name and the game under the title
     bool icon;             // the game's icon beside the title and that line
-    bool via_inline;       // "via" ends that line, not a line of its own
-    bool compact;          // the title and that line on one line
-    u8   tag;              // EMBED_TAG_*
-    bool picture;          // never the video: the picture, and the page plays it
 };
 static const EmbedStyle EMBED_STYLES[] = {
-    {"clipback", "Clipback", true, true, false, false, EMBED_TAG_NONE, false}, // first: the one settings start with
-    {"classic", "Classic", true, false, false, false, EMBED_TAG_NONE, false},
-    {"minimal", "Minimal", false, false, false, false, EMBED_TAG_NONE, false},
-    {"via", "Via line", true, false, true, false, EMBED_TAG_NONE, false},
-    {"icon_via", "Icon and via", true, true, true, false, EMBED_TAG_NONE, false},
-    {"compact", "Compact", true, false, false, true, EMBED_TAG_NONE, false},
-    {"length", "Length", true, false, false, false, EMBED_TAG_LENGTH, false},
-    {"session", "Session", true, false, false, false, EMBED_TAG_SESSION, false},
-    {"picture", "Picture", true, false, false, false, EMBED_TAG_NONE, true},
+    {"clipback", "Clipback", true, true},
 };
 
 static i32 embed_style_count() { return COUNT(EMBED_STYLES); }
@@ -664,7 +648,7 @@ static void r2_preview_text(f64 preview, f64 seconds, char *out, i32 cap)
 
 // The card for `in` in `style` (-1: the player's, config.embed_style): its own name in bold (or the game's, or
 // "Clip", for a name it was saved with), then what the style adds. A preview says how much of the clip it plays;
-// with nothing small enough to play, the card shows the picture whatever the style.
+// with nothing small enough to play, the card shows the picture.
 static void embed_card(const EmbedInput &in, EmbedCard *out, i32 style = -1)
 {
     const EmbedStyle &st = embed_style(style < 0 ? g_app.config.embed_style : style);
@@ -677,22 +661,12 @@ static void embed_card(const EmbedInput &in, EmbedCard *out, i32 style = -1)
         else if (named && game[0]) str_set(out->line, game);
         else str_set(out->line, clipper);
     }
-    char a[32];
     if (in.video && in.preview > 0 && in.seconds > in.preview)
         r2_preview_text(in.preview, in.seconds, out->tag, sizeof out->tag);
-    else if (st.tag == EMBED_TAG_LENGTH && in.seconds > 0) r2_clock(in.seconds, out->tag, sizeof out->tag);
-    else if (st.tag == EMBED_TAG_SESSION && in.session >= 60) {
-        i64 m = (i64)(in.session / 60 + 0.5);
-        if (m >= 60) snprintf(a, sizeof a, m % 60 ? "%lld h %lld min" : "%lld h", m / 60, m % 60);
-        else snprintf(a, sizeof a, "%lld min", m);
-        snprintf(out->tag, sizeof out->tag, "from a %s%s%s session", a, game[0] ? " " : "", game);
-    }
     out->icon = st.icon;
     out->accent = in.accent ? in.accent : R2_CARD_ACCENT;
-    out->via = !st.via_inline;
-    out->via_inline = st.via_inline;
-    out->compact = st.compact;
-    out->player = in.video && !st.picture;
+    out->via = true;
+    out->player = in.video;
 }
 
 // Adds `s` as JSON string text, ASCII only: quotes, backslashes and controls escaped, other characters as \u (two
@@ -729,28 +703,16 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
     if (cap < 64) return 0;
     put("{\"component\":{\"type\":17,");
     if (card.accent) len += snprintf(out + len, cap - len, "\"accent_color\":%u,", card.accent & 0xffffff);
-    auto via = [&](bool footer) { // the footer links "via Clipback", the line's end just the name
-        put(footer ? "[via " APP_DISPLAY "](" : "via [" APP_DISPLAY "](");
-        text("<", false);
-        put(R2_HOME_URL);
-        text(">", false);
-        put(")");
-    };
-    bool line = card.line[0] || card.tag[0] || card.via_inline;
-    bool section = !card.compact && card.icon && icon && icon[0]; // the title and line beside the icon
+    bool section = card.icon && icon && icon[0]; // the title and line beside the icon
     put(section ? "\"components\":[{\"type\":9,\"components\":[{\"type\":10,\"content\":\"**"
                 : "\"components\":[{\"type\":10,\"content\":\"**");
     text(card.title, true);
-    put(card.compact && line ? "** - " : "**\"}");
-    if (line) {
-        if (!card.compact) put(",{\"type\":10,\"content\":\"");
+    put("**\"}");
+    if (card.line[0] || card.tag[0]) {
+        put(",{\"type\":10,\"content\":\"");
         text(card.line, true);
         if (card.line[0] && card.tag[0]) put(" - ");
         text(card.tag, true);
-        if (card.via_inline) {
-            if (card.line[0] || card.tag[0]) put(" - ");
-            via(false);
-        }
         put("\"}");
     }
     if (section) {
@@ -765,9 +727,11 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
         put("\"}}]}");
     }
     if (card.via) {
-        put(",{\"type\":10,\"content\":\"-# ");
-        via(true);
-        put("\"}");
+        put(",{\"type\":10,\"content\":\"-# [via " APP_DISPLAY "](");
+        text("<", false);
+        put(R2_HOME_URL);
+        text(">", false);
+        put(")\"}");
     }
     put("]}}");
     return len < cap && len <= R2_CARD_MAX ? len : 0;
