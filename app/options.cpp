@@ -816,6 +816,33 @@ static f32 toast_clip_chips_w(i32 first)
     for (i32 i = first; i <= TOAST_CLIP_OFF; i++) w += text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14) + (i > first ? dp(6) : 0);
     return w;
 }
+static ImTextureID toast_preview(bool pill, f32 scale, const char *name, i32 *w, i32 *h); // toast.cpp
+
+// While Full or Small (`style`) is under the mouse, its popup floats by the chip (item min a, max b): under it, or
+// over it where there's no room, at three quarters of the window's size. A picture, so the Tooltips switch leaves it.
+static void toast_clip_preview(ToastClip style, ImVec2 a, ImVec2 b)
+{
+    char name[256], file[300];
+    save_file_name(g_app.audio.game.s, "", now_us(), name, sizeof name); // as a save of the game in front would be
+    snprintf(file, sizeof file, "%s.mp4", name);
+    f32 s = dp(0.75f);
+    i32 w, h;
+    ImTextureID tex = toast_preview(style == TOAST_CLIP_SMALL, s, file, &w, &h);
+    if (!tex) return;
+    ImVec2 vp = ImGui::GetMainViewport()->Pos, vs = ImGui::GetMainViewport()->Size;
+    f32 gap = dp(8), x = fminf(a.x, vp.x + vs.x - w - gap), y = b.y + gap;
+    if (y + h > vp.y + vs.y - gap) y = a.y - gap - h;
+    x = floorf(fmaxf(x, vp.x + gap)), y = floorf(y);
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImVec2 p0(x, y), p1(x + w, y + h);
+    if (style == TOAST_CLIP_SMALL) dl->AddImage(tex, p0, p1);
+    else {
+        f32 r = floorf(TOAST_ROUND * s);
+        dl->AddImageRounded(tex, p0, p1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
+        dl->AddRect(p0, p1, col32(COL_LINE), r, 0, 1);
+    }
+}
+
 static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
 {
     bool changed = false;
@@ -823,7 +850,10 @@ static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
         if (i > first) ImGui::SameLine(0, dp(6));
         char label[48];
         snprintf(label, sizeof label, "%s##%s%d", TOAST_CLIP_CHIPS[i], id, i);
-        if (kit_chip(label, *v == i, 0, text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14)) && *v != i) {
+        bool clicked = kit_chip(label, *v == i, 0, text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14));
+        if ((i == TOAST_CLIP_FULL || i == TOAST_CLIP_SMALL) && ImGui::IsItemHovered())
+            toast_clip_preview((ToastClip)i, ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+        if (clicked && *v != i) {
             *v = (ToastClip)i;
             changed = true;
         }

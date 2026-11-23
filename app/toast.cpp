@@ -192,16 +192,24 @@ static void toast_draw_x(Toast &t, HDC dc, RECT r)
     SelectObject(dc, old);
 }
 
-// The pill, w x h: the shapes drawn four times the size and scaled down, then the tick and the title at their real
-// size, then each pixel's alpha from the pill's own shape, given to the layered window.
-static void toast_pill_paint(Toast &t)
+// The pill's width for its title, in pixels
+static i32 toast_pill_w(Toast &t)
 {
-    RECT wr;
-    if (!t.hwnd || !GetWindowRect(t.hwnd, &wr)) return;
+    HDC dc = GetDC(0);
+    HGDIOBJ old = SelectObject(dc, t.pill_font);
+    SIZE ts = {};
+    GetTextExtentPoint32W(dc, t.title, (i32)wcslen(t.title), &ts);
+    SelectObject(dc, old);
+    ReleaseDC(0, dc);
+    return toast_px(t, TOAST_PILL_PAD + TOAST_PILL_TILE + TOAST_PILL_GAP + TOAST_PILL_RIGHT) + ts.cx;
+}
+
+// The pill, w x h, into a DIB of its own (premultiplied BGRA at *out; 0 when it can't be made): the shapes drawn
+// four times the size and scaled down, then the tick and the title at their real size, then each pixel's alpha from
+// the pill's own shape.
+static HBITMAP toast_pill_bitmap(Toast &t, HDC screen, i32 w, i32 h, u32 **out)
+{
     const i32 SS = TOAST_SS;
-    i32 w = wr.right - wr.left, h = wr.bottom - wr.top;
-    if (w <= 0 || h <= 0) return;
-    HDC screen = GetDC(0);
     HDC dc = CreateCompatibleDC(screen), big = CreateCompatibleDC(screen);
     BITMAPINFO bi = {};
     bi.bmiHeader = {sizeof bi.bmiHeader, w, -h, 1, 32, BI_RGB};
@@ -211,8 +219,8 @@ static void toast_pill_paint(Toast &t)
     if (!bmp || !big_bmp || !px) {
         if (bmp) DeleteObject(bmp);
         if (big_bmp) DeleteObject(big_bmp);
-        DeleteDC(dc), DeleteDC(big), ReleaseDC(0, screen);
-        return;
+        DeleteDC(dc), DeleteDC(big);
+        return 0;
     }
     HGDIOBJ old_dc = SelectObject(dc, bmp), old_big = SelectObject(big, big_bmp);
     HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
@@ -264,18 +272,38 @@ static void toast_pill_paint(Toast &t)
         px[i] = a << 24 | r << 16 | g << 8 | b;
     }
     if (alpha) HeapFree(GetProcessHeap(), 0, alpha);
-    POINT at = {wr.left, wr.top}, zero = {0, 0};
-    SIZE size = {w, h};
-    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    UpdateLayeredWindow(t.hwnd, screen, &at, &size, dc, &zero, 0, &blend, ULW_ALPHA);
     DeleteObject(SelectObject(big, old_brush));
     SelectObject(big, old_pen);
     SelectObject(big, old_big);
     SelectObject(dc, old_dc);
     DeleteObject(big_bmp);
-    DeleteObject(bmp);
     DeleteDC(big);
     DeleteDC(dc);
+    *out = px;
+    return bmp;
+}
+
+// The pill onto its layered window
+static void toast_pill_paint(Toast &t)
+{
+    RECT wr;
+    if (!t.hwnd || !GetWindowRect(t.hwnd, &wr)) return;
+    i32 w = wr.right - wr.left, h = wr.bottom - wr.top;
+    if (w <= 0 || h <= 0) return;
+    HDC screen = GetDC(0);
+    u32 *px;
+    HBITMAP bmp = toast_pill_bitmap(t, screen, w, h, &px);
+    if (bmp) {
+        HDC dc = CreateCompatibleDC(screen);
+        HGDIOBJ old = SelectObject(dc, bmp);
+        POINT at = {wr.left, wr.top}, zero = {0, 0};
+        SIZE size = {w, h};
+        BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(t.hwnd, screen, &at, &size, dc, &zero, 0, &blend, ULW_ALPHA);
+        SelectObject(dc, old);
+        DeleteDC(dc);
+        DeleteObject(bmp);
+    }
     ReleaseDC(0, screen);
 }
 
@@ -878,15 +906,7 @@ static void toast_place(Toast &t, const RECT &work, PopupCorner corner)
     SetWindowPos(t.hwnd, HWND_TOPMOST, work.right - 2, work.bottom - 2, 1, 1, SWP_NOACTIVATE);
     toast_fonts(t, GetDpiForWindow(t.hwnd) / 96.f);
     i32 w = toast_px(t, TOAST_W), h = toast_px(t, toast_height(t)), m = toast_px(t, TOAST_MARGIN);
-    if (t.pill) { // sized to its title
-        HDC dc = GetDC(t.hwnd);
-        HGDIOBJ old = SelectObject(dc, t.pill_font);
-        SIZE ts = {};
-        GetTextExtentPoint32W(dc, t.title, (i32)wcslen(t.title), &ts);
-        SelectObject(dc, old);
-        ReleaseDC(t.hwnd, dc);
-        w = toast_px(t, TOAST_PILL_PAD + TOAST_PILL_TILE + TOAST_PILL_GAP + TOAST_PILL_RIGHT) + ts.cx;
-    }
+    if (t.pill) w = toast_pill_w(t); // sized to its title
     const Toast *all[] = {&g_toast_saved, &g_toast_marker, &g_toast_session};
     RECT others[COUNT(all)];
     i32 n = 0;
@@ -922,6 +942,70 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
     toast_countdown(t, kind == SAVE_SESSION ? TOAST_LIFE_SESSION : brief ? TOAST_LIFE_BRIEF : TOAST_LIFE_CLIP);
+}
+
+// The Clip saved popup as a picture for Options (pill: the small one), drawn by the code above at `scale` with
+// `name` as its file, the dial full: a texture of *w x *h, the full one's corners left square (Windows rounds the
+// window's). Kept while the look, the scale and the name stay; 0 when it can't be made.
+static ImTextureID toast_preview(bool pill, f32 scale, const char *name, i32 *w, i32 *h)
+{
+    static Toast t = {TOAST_SAVED};
+    static ID3D11ShaderResourceView *tex[2];
+    static i32 tw[2], th[2];
+    static u32 accent[2];
+    static f32 made_scale[2];
+    static char made_name[2][MAX_PATH];
+    i32 k = pill ? 1 : 0;
+    if (tex[k] && accent[k] == COL_ACCENT && made_scale[k] == scale && !strcmp(made_name[k], name)) {
+        *w = tw[k], *h = th[k];
+        return (ImTextureID)(intptr_t)tex[k];
+    }
+    if (tex[k]) tex[k]->Release(), tex[k] = 0;
+    toast_fonts(t, scale);
+    t.pill = pill;
+    t.brief = pill;
+    t.held = true;
+    t.hot = TP_NONE;
+    utf8_to_wide("Clip saved", t.title, COUNT(t.title));
+    utf8_to_wide(name, t.line, COUNT(t.line));
+    i32 pw = pill ? toast_pill_w(t) : toast_px(t, TOAST_W), ph = toast_px(t, toast_height(t));
+    HDC screen = GetDC(0);
+    u32 *px = 0;
+    HBITMAP bmp = 0;
+    if (pill) {
+        bmp = toast_pill_bitmap(t, screen, pw, ph, &px);
+        if (bmp) // straight alpha, as ImGui blends
+            for (i32 i = 0; i < pw * ph; i++) {
+                u32 a = px[i] >> 24, c = px[i];
+                if (a && a < 255)
+                    px[i] = a << 24 | (((c >> 16) & 0xff) * 255 / a) << 16 | (((c >> 8) & 0xff) * 255 / a) << 8 | (c & 0xff) * 255 / a;
+            }
+    } else {
+        BITMAPINFO bi = {};
+        bi.bmiHeader = {sizeof bi.bmiHeader, pw, -ph, 1, 32, BI_RGB};
+        bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, (void **)&px, 0, 0);
+        if (bmp && px) {
+            HDC dc = CreateCompatibleDC(screen);
+            HGDIOBJ old = SelectObject(dc, bmp);
+            RECT r = {0, 0, pw, ph};
+            toast_draw(t, screen, dc, r);
+            toast_draw_dial(t, dc);
+            GdiFlush();
+            SelectObject(dc, old);
+            DeleteDC(dc);
+            for (i32 i = 0; i < pw * ph; i++) px[i] |= 0xff000000; // GDI leaves the alpha at 0
+        }
+    }
+    ReleaseDC(0, screen);
+    if (bmp && px) tex[k] = gpu_texture(px, pw, ph);
+    if (bmp) DeleteObject(bmp);
+    if (!tex[k]) return 0;
+    tw[k] = pw, th[k] = ph;
+    accent[k] = COL_ACCENT;
+    made_scale[k] = scale;
+    str_set(made_name[k], name);
+    *w = pw, *h = ph;
+    return (ImTextureID)(intptr_t)tex[k];
 }
 
 // Small is for a popup over the game: on another monitor (`popup_mon`, the game's `game_mon`) it is the whole one.
