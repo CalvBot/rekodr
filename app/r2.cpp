@@ -1276,6 +1276,25 @@ static bool r2_delete_object(const R2Conf &c, const char *key)
 
 // Sends a file to `key`: in one request, or in parts when large. On failure, says why in err. The job's progress
 // counts `sent` bytes sent already and `still` bytes to come after.
+// Quiet retries: an upload that gets no answer, a timeout (408), too many requests (429) or a server error (5xx)
+// goes again after R2_RETRY_MS[i], up to R2_RETRIES more times, with only a log line; the job fails, and says so,
+// only when the last one does.
+enum { R2_RETRIES = 3 };
+static const i32 R2_RETRY_MS[R2_RETRIES] = {2000, 8000, 30000};
+
+static bool r2_retryable(u32 status) { return !status || status == 408 || status == 429 || status >= 500; }
+
+// Waits before retry `attempt` (from 0) of `what`; false when there's none left or the job (0: none) was stopped or
+// cancelled meanwhile. With the network faked (tests) it doesn't wait.
+static bool r2_retry_wait(u32 job, i32 attempt, const char *what, u32 status)
+{
+    if (attempt >= R2_RETRIES || !r2_retryable(status)) return false;
+    i32 ms = r2_net_fake ? 0 : R2_RETRY_MS[attempt];
+    log_line("r2: %s didn't go up (%u), again in %d s", what, status, ms / 1000);
+    for (i32 waited = 0; waited < ms && !g_r2.stop && !(job && r2_cancelled(job)); waited += 250) Sleep(250);
+    return !g_r2.stop && !(job && r2_cancelled(job));
+}
+
 static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 job, char *err, i32 cap,
                         i64 sent = 0, i64 still = 0)
 {
@@ -1291,12 +1310,21 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
     static thread_local char resp[8192];
     bool ok = false;
     if (size.QuadPart <= R2_SINGLE_MAX) {
-        u32 status = r2_send(c, "PUT", key, "", R2Body{0, f, 0, size.QuadPart}, "video/mp4", resp, sizeof resp, 0, 0,
+        u32 status = 0;
+        for (i32 attempt = 0;; attempt++) {
+            prog.done = sent;
+            status = r2_send(c, "PUT", key, "", R2Body{0, f, 0, size.QuadPart}, "video/mp4", resp, sizeof resp, 0, 0,
                              &prog);
+            if (r2_ok(status) || !r2_retry_wait(job, attempt, key, status)) break;
+        }
         ok = r2_ok(status);
         if (!ok) r2_why(status, resp, c, err, cap);
     } else {
-        u32 status = r2_send(c, "POST", key, "uploads=", R2Body{}, "video/mp4", resp, sizeof resp);
+        u32 status = 0;
+        for (i32 attempt = 0;; attempt++) {
+            status = r2_send(c, "POST", key, "uploads=", R2Body{}, "video/mp4", resp, sizeof resp);
+            if (r2_ok(status) || !r2_retry_wait(job, attempt, key, status)) break;
+        }
         char id[512], id_enc[1024];
         if (!r2_ok(status) || !r2_xml(resp, "UploadId", id, sizeof id)) {
             r2_why(status, resp, c, err, cap);
@@ -1319,10 +1347,11 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
             snprintf(query, sizeof query, "partNumber=%d&uploadId=%s", p, id_enc);
             i64 before = prog.done;
             status = 0;
-            for (i32 attempt = 0; attempt < 3 && !r2_ok(status) && !g_r2.stop && !r2_cancelled(job); attempt++) {
+            for (i32 attempt = 0;; attempt++) {
                 prog.done = before;
                 status = r2_send(c, "PUT", key, query, R2Body{0, f, at, n}, 0, resp, sizeof resp, tag, sizeof tag,
                                  &prog);
+                if (r2_ok(status) || !r2_retry_wait(job, attempt, key, status)) break;
             }
             ok = r2_ok(status) && tag[0];
             if (!ok) r2_why(status, resp, c, err, cap);
@@ -1334,10 +1363,13 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
         snprintf(query, sizeof query, "uploadId=%s", id_enc);
         if (ok && r2_cancelled(job)) ok = false;
         if (ok) {
-            status = r2_send(c, "POST", key, query, R2Body{done, 0, 0, (i64)strlen(done)}, "application/xml", resp,
-                             sizeof resp);
-            // A 200 can still carry an error for a complete.
-            ok = r2_ok(status) && !strstr(resp, "<Error>");
+            // A 200 can still carry an error for a complete; that's tried again too.
+            for (i32 attempt = 0;; attempt++) {
+                status = r2_send(c, "POST", key, query, R2Body{done, 0, 0, (i64)strlen(done)}, "application/xml",
+                                 resp, sizeof resp);
+                ok = r2_ok(status) && !strstr(resp, "<Error>");
+                if (ok || !r2_retry_wait(job, attempt, key, r2_ok(status) ? 500 : status)) break;
+            }
             if (!ok) r2_why(status, resp, c, err, cap);
         }
         if (!ok) r2_send(c, "DELETE", key, query, R2Body{}, 0, resp, sizeof resp); // abort: drop the parts
@@ -1572,7 +1604,11 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
 static bool r2_put_bytes(const R2Conf &c, const char *key, const char *data, i64 len, const char *type)
 {
     char resp[2048];
-    u32 status = r2_send(c, "PUT", key, "", R2Body{data, 0, 0, len}, type, resp, sizeof resp);
+    u32 status = 0;
+    for (i32 attempt = 0;; attempt++) {
+        status = r2_send(c, "PUT", key, "", R2Body{data, 0, 0, len}, type, resp, sizeof resp);
+        if (r2_ok(status) || !r2_retry_wait(0, attempt, key, status)) break;
+    }
     if (!r2_ok(status)) log_line("r2: couldn't write %s (%u)", key, status);
     return r2_ok(status);
 }
@@ -2371,9 +2407,15 @@ static void r2_run_free(const R2Task &t)
             swprintf(wurl, COUNT(wurl), L"https://%s%s", h->server, h->path);
             wide_to_utf8(wurl, curl, sizeof curl);
             UpRequest q = {"POST", curl, "", fields, h->expires ? 2 : 1, "fileToUpload"};
-            r2_set_progress(job, 0);
-            i64 began = now_us();
-            u32 status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
+            i64 began = 0;
+            u32 status = 0;
+            for (i32 attempt = 0;; attempt++) {
+                prog.done = 0;
+                r2_set_progress(job, 0);
+                began = now_us();
+                status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
+                if (r2_ok(status) || !r2_retry_wait(job, attempt, h->label, status)) break;
+            }
             if (status == 200 && up_plain_link(resp, url, sizeof url)) {
                 used = h;
                 r2_rate_note(h->host, size.QuadPart, now_us() - began);
@@ -2392,8 +2434,13 @@ static void r2_run_free(const R2Task &t)
                 fields[i][1] = u.pairs[1][i][1];
             }
             UpRequest q = {u.method, u.url, headers, fields, u.count[1], u.form_name};
-            r2_set_progress(job, 0);
-            u32 status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
+            u32 status = 0;
+            for (i32 attempt = 0;; attempt++) {
+                prog.done = 0;
+                r2_set_progress(job, 0);
+                status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
+                if (r2_ok(status) || !r2_retry_wait(job, attempt, u.name, status)) break;
+            }
             char link[512];
             if (status >= 200 && status < 300 && uploader_result(u.result, resp, link, sizeof link) &&
                 starts_with(link, "http") && !strpbrk(link, " \r\n<\"")) {

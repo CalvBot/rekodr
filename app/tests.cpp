@@ -1976,6 +1976,8 @@ static struct {
     i32         n;
     const char *cancel_on; // the method whose request cancels the job, 0 = none
     u32         job;
+    i32         fail;      // this many requests from now answer fail_status
+    u32         fail_status;
 } g_net;
 
 static u32 net_fake(const char *method, const char *where, const char *query, R2Progress *, char *resp, i32 cap,
@@ -1988,6 +1990,11 @@ static u32 net_fake(const char *method, const char *where, const char *query, R2
         for (i32 i = 0; i < COUNT(g_r2.jobs); i++)
             if (g_r2.jobs[i].id == g_net.job) g_r2.cancel[i] = 1;
         ReleaseSRWLockExclusive(&g_r2.lock);
+    }
+    if (g_net.fail > 0) {
+        g_net.fail--;
+        if (cap) resp[0] = 0;
+        return g_net.fail_status;
     }
     const char *body = "";
     if (!strcmp(method, "POST") && !strcmp(query, "uploads=")) body = "<UploadId>u1</UploadId>";
@@ -2107,6 +2114,30 @@ static void test_share_cancel()
     r2_run_free(t);
     T(r2_job(id).state == R2_FAILED && !file_exists(file.s) && g_r2.count == 0);
     T(net_count("GET https://up.example/del/1") == 1);
+
+    // Quiet retries: a server error or no answer goes again, up to three more times; a refusal doesn't
+    g_net.cancel_on = 0;
+    g_net.n = 0;
+    g_net.fail = 2;
+    g_net.fail_status = 503;
+    T(r2_put_bytes(conf, "clipback/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT clipback/r/thumb.jpg") == 3);
+    g_net.n = 0;
+    g_net.fail = 4;
+    g_net.fail_status = 0;
+    T(!r2_put_bytes(conf, "clipback/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT clipback/r/thumb.jpg") == 4);
+    g_net.n = 0;
+    g_net.fail = 1;
+    g_net.fail_status = 403;
+    T(!r2_put_bytes(conf, "clipback/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT clipback/r/thumb.jpg") == 1);
+    id = job(&slot);
+    g_net.fail = 2;
+    g_net.fail_status = 502;
+    t.slot = slot;
+    make(1000);
+    r2_run_free(t);
+    T(r2_job(id).state == R2_DONE && net_count("POST https://up.example/upload") == 3);
+    g_net.fail = 0;
+    g_r2.count = 0;
 
     // Done just before the cancel: the job hands over what to delete and ends as cancelled
     id = job(&slot);
