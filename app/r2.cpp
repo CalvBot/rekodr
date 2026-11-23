@@ -1927,13 +1927,13 @@ static void r2_run_delete(const R2Task &t)
 
 // Sign in with Cloudflare: an OAuth public client with PKCE (S256), answered on a fixed loopback port. The
 // redirect address and scopes are the ones the client is registered with (Account Settings Read, Workers R2 Storage
-// Write, Account Analytics Read, API Tokens Write); offline_access asks for a refresh token. The bucket's own token
-// is a user API token, made with user-api-tokens.write.
+// Write, Account Analytics Read, API Tokens Write). The bucket's own token is a user API token, made with
+// user-api-tokens.write.
 static const char CF_OAUTH_CLIENT_ID[] = "0e0024986eb482790af86a04235cebbd";
 enum { CF_OAUTH_PORT = 8977 };
 static const char CF_OAUTH_REDIRECT[] = "http://127.0.0.1:8977/oauth/callback";
 static const char CF_OAUTH_SCOPES[] =
-    "account-settings.read workers-r2.write account-analytics.read user-api-tokens.write offline_access";
+    "account-settings.read workers-r2.write account-analytics.read user-api-tokens.write";
 static const wchar_t CF_DASH_HOST[] = L"dash.cloudflare.com";
 static const i64 CF_SIGNIN_WAIT_US = 10ll * 60 * 1000000; // how long the browser has to come back
 
@@ -2233,7 +2233,7 @@ static bool r2_query_param(const char *query, const char *name, char *out, i32 c
     return false;
 }
 
-enum R2Callback : u8 { R2_CB_OTHER, R2_CB_CODE, R2_CB_REFUSED };
+enum R2Callback : u8 { R2_CB_OTHER, R2_CB_CODE, R2_CB_REFUSED, R2_CB_CANCELLED };
 
 // What the browser sent to the loopback port: the sign-in's answer, or something else (a favicon). `request` is
 // the request's first line, "GET /oauth/callback?code=...&state=... HTTP/1.1". A refusal leaves Cloudflare's
@@ -2248,9 +2248,33 @@ static R2Callback r2_callback_parse(const char *request, char *code, i32 code_ca
     char err[64];
     if (r2_query_param(q, "error", err, sizeof err)) {
         if (!r2_query_param(q, "error_description", code, code_cap)) snprintf(code, code_cap, "%s", err);
-        return R2_CB_REFUSED;
+        return !strcmp(err, "access_denied") ? R2_CB_CANCELLED : R2_CB_REFUSED;
     }
     return r2_query_param(q, "code", code, code_cap) && code[0] ? R2_CB_CODE : R2_CB_OTHER;
+}
+
+// The browser's answer when the sign-in comes back: signed in, cancelled, or failed with Cloudflare's reason (made
+// safe and ASCII). A request that isn't the sign-in's gets an empty 404.
+static void r2_done_page(R2Callback cb, const char *reason, char *out, i32 cap)
+{
+    if (cb == R2_CB_OTHER) {
+        snprintf(out, cap, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return;
+    }
+    i32 len = snprintf(out, cap,
+                       "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"
+                       "Connection: close\r\n\r\n<!doctype html><title>" APP_NAME "</title>"
+                       "<p style=\"font:16px sans-serif;margin:40px\">");
+    if (cb == R2_CB_CODE)
+        len += snprintf(out + len, cap - len, "Signed in. You can close this tab and go back to " APP_NAME ".");
+    else if (cb == R2_CB_CANCELLED)
+        len += snprintf(out + len, cap - len, "The sign-in was cancelled. You can close this tab.");
+    else {
+        len += snprintf(out + len, cap - len, "The sign-in failed. Cloudflare said: ");
+        r2_html_text(reason, out, cap - 120, &len);
+        len += snprintf(out + len, cap - len, "<br>You can close this tab and try again in " APP_NAME ".");
+    }
+    snprintf(out + len, cap - len, "</p>");
 }
 
 // One HTTPS request with the body in memory; `headers` are "Name: value" lines joined by \r\n. Returns the status,
@@ -2888,23 +2912,15 @@ static DWORD WINAPI r2_signin_thread(void *)
         char code[1024], state[64];
         R2Callback cb = r2_callback_parse(req, code, sizeof code, state, sizeof state);
         bool ours = cb != R2_CB_OTHER && !strcmp(state, g_r2.signin.state);
-        const char *said = !ours                ? 0
-                           : cb == R2_CB_CODE   ? "Signed in. You can close this tab and go back to " APP_NAME "."
-                                                : "The sign-in was cancelled. You can close this tab.";
-        char out[512];
-        if (said)
-            snprintf(out, sizeof out,
-                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"
-                     "Connection: close\r\n\r\n<!doctype html><title>" APP_NAME "</title>"
-                     "<p style=\"font:16px sans-serif;margin:40px\">%s</p>",
-                     said);
-        else snprintf(out, sizeof out, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        char out[2048];
+        r2_done_page(ours ? cb : R2_CB_OTHER, code, out, sizeof out);
         send(s, out, (int)strlen(out), 0);
         shutdown(s, SD_SEND);
         closesocket(s);
         SecureZeroMemory(req, sizeof req);
         if (!ours) continue;
         if (cb == R2_CB_REFUSED) r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't sign in: %s", code);
+        else if (cb == R2_CB_CANCELLED) r2_set_status(R2_SETUP_FAILED, "The sign-in was cancelled");
         else {
             static R2Task t;
             t = g_r2.signin.task;

@@ -1414,9 +1414,23 @@ static void test_r2()
                         sizeof cb_code, state, sizeof state) == R2_CB_CODE);
     T(!strcmp(cb_code, "ab/c d") && !strcmp(state, "s123"));
     T(r2_callback_parse("GET /oauth/callback?error=access_denied&error_description=The+user+said+no&state=s1 HTTP/1.1",
-                        cb_code, sizeof cb_code, state, sizeof state) == R2_CB_REFUSED);
+                        cb_code, sizeof cb_code, state, sizeof state) == R2_CB_CANCELLED);
     T(!strcmp(cb_code, "The user said no") && !strcmp(state, "s1"));
     T(r2_callback_parse("GET /favicon.ico HTTP/1.1", cb_code, sizeof cb_code, state, sizeof state) == R2_CB_OTHER);
+    // Another error fails with Cloudflare's reason, on the page as text
+    T(r2_callback_parse("GET /oauth/callback?error=invalid_scope&error_description=The+scope+%3Cx%3E+is+invalid&state=s1 "
+                        "HTTP/1.1", cb_code, sizeof cb_code, state, sizeof state) == R2_CB_REFUSED);
+    T(!strcmp(cb_code, "The scope <x> is invalid"));
+    static char done[2048];
+    r2_done_page(R2_CB_REFUSED, cb_code, done, sizeof done);
+    T(strstr(done, "200 OK") && strstr(done, "The sign-in failed. Cloudflare said: The scope &lt;x&gt; is invalid<br>"));
+    T(!strstr(done, "cancelled"));
+    r2_done_page(R2_CB_CANCELLED, "The user said no", done, sizeof done);
+    T(strstr(done, "The sign-in was cancelled.") && !strstr(done, "said no"));
+    r2_done_page(R2_CB_CODE, "", done, sizeof done);
+    T(strstr(done, "Signed in.") != 0);
+    r2_done_page(R2_CB_OTHER, "", done, sizeof done);
+    T(strstr(done, "404 Not Found") && strstr(done, "Content-Length: 0"));
     T(r2_callback_parse("GET /oauth/callback?state=s1 HTTP/1.1", cb_code, sizeof cb_code, state, sizeof state) == R2_CB_OTHER);
     static R2OAuth o;
     T(r2_parse_oauth("{\"access_token\":\"at1\",\"expires_in\":3599,\"refresh_token\":\"rt1\",\"scope\":\"account.read\","
