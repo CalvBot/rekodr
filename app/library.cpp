@@ -4280,7 +4280,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ImGuiIO &io = ImGui::GetIO();
     bool clicked = pressed && io.MouseDragMaxDistanceSqr[0] < io.MouseDragThreshold * io.MouseDragThreshold;
     // The Share button's place in the caption: a right-click there is the button's, never the card's menu
-    f32 sh = kit_px(28), sw = 2 * sh, isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
+    f32 sh = kit_px(28), sw = sh, isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
     ImVec2 s0(a.x + w - sw, floorf(t1.y + kit_px(8) + (isz - sh) / 2)), s1(s0.x + sw, s0.y + sh);
     bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right) && !ImGui::IsMouseHoveringRect(s0, s1);
     bool over = ImGui::IsWindowHovered() && !ImGui::GetDragDropPayload() &&
@@ -4411,7 +4411,8 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         if (cs.link) mark(link_x, cs.link_paused ? ICON_PAUSE : ICON_LINK, col32(cs.link_paused ? COL_WARN : COL_TEXT));
         if (cs.file) mark(file_x, ICON_SHARE, col32(COL_TEXT));
     }
-    // Selected: an accent ring round the picture. The tick box: filled with a tick when selected, else a ring.
+    // Selected: an accent ring round the picture. The tick box: filled with a tick when selected, else a ring, which
+    // out of select mode shows only faintly while the card is under the mouse, and in full under the mouse itself.
     f32 box = kit_px(17);
     ImVec2 b0(t0.x + kit_px(10), t0.y + kit_px(10)), b1(b0.x + box, b0.y + box);
     if (sel) dl->AddRect(t0, t1, col32(COL_ACCENT), round, 0, kit_px(3));
@@ -4424,8 +4425,9 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             dl->AddText(g_font_icon, box * 0.6f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
                         IM_COL32_WHITE, ICON_CHECK);
         } else {
-            dl->AddRectFilled(b0, b1, IM_COL32(14, 14, 18, box_hot ? 235 : 220), kit_px(4)); // reads over bright pictures
-            dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : 220), kit_px(4), 0, kit_px(1.5f));
+            bool faint = !picking && !box_hot;
+            dl->AddRectFilled(b0, b1, IM_COL32(14, 14, 18, box_hot ? 235 : faint ? 90 : 220), kit_px(4)); // reads over bright pictures
+            dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : faint ? 80 : 220), kit_px(4), 0, kit_px(1.5f));
         }
     }
     ImGui::PopID();
