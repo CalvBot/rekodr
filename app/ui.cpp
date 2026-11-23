@@ -122,9 +122,6 @@ static f32 g_dpi_scale = 1;
 #define ICON_REFRESH   "\xEE\x9C\xAC" // E72C
 #define ICON_INFO      "\xEE\xA5\x86" // E946
 #define ICON_GLOBE     "\xEE\x9D\xB4" // E774
-#define ICON_PACKAGE   "\xEE\x9E\xB8" // E7B8 box
-#define ICON_CLOCK     "\xEE\xA0\xA3" // E823
-#define ICON_CLOUD     "\xEE\x9D\x93" // E753
 #define ICON_SERVER    "\xEE\xA5\xA8" // E968 network server
 #define ICON_UPLOAD    "\xEE\xA2\x98" // E898
 #define ICON_OPEN      "\xEE\xA2\xA7" // E8A7 open in new window

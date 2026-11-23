@@ -2946,6 +2946,37 @@ static bool opt_link_at(const char *id, ImVec2 at, const char *text)
     return clicked;
 }
 
+// A host row's name: the host's own icon, the name (bold when `bold`) and an info icon after it that opens the
+// host's page; under them `sub` when given. Takes the row's left part up to max_x.
+static void opt_host_name(LinkHost host, const char *name, bool bold, const char *url, const char *sub, u32 sub_col,
+                          bool dot, f32 max_x)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 lg = dp(22), x = g_row.x0;
+    host_logo_draw(dl, host, ImVec2(x, floorf(g_row.y + (g_row.h - lg) / 2)), lg);
+    f32 x0 = g_row.x0;
+    g_row.x0 = x + lg + dp(10);
+    ImFont *nf = bold ? g_font_bold : g_font;
+    if (sub) opt_row_lines(name, nf, sub, sub_col, dot, max_x);
+    else opt_text_at(dl, nf, ImVec2(g_row.x0, opt_row_text_y(nf)), COL_TEXT, name, max_x);
+    f32 nh = nf->FontSize, sh = g_font_small->FontSize;
+    f32 ty = sub ? floorf(g_row.y + (g_row.h - nh - dp(3) - sh) / 2) : opt_row_text_y(nf);
+    f32 iz = g_font_small->FontSize + dp(4);
+    ImVec2 at(g_row.x0 + text_w(nf, name) + dp(6), floorf(ty + (nh - iz) / 2));
+    g_row.x0 = x0;
+    ImGui::SetCursorScreenPos(at);
+    char id[48];
+    snprintf(id, sizeof id, "##hostinfo%s", name);
+    if (ImGui::InvisibleButton(id, ImVec2(iz, iz))) {
+        dev_click("options", name, "info");
+        open_url(url);
+    }
+    bool hot = ImGui::IsItemHovered();
+    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    kit_tip("Their page, in the browser");
+    dl->AddText(g_font_icon, iz, at, col32(hot ? COL_TEXT : COL_DIM), ICON_INFO);
+}
+
 // A bitrate in kbit/s as Mbps for a box: "8", "1.5", "0.25"
 static void opt_mbps_text(i32 kbps, char *out, i32 cap)
 {
@@ -3160,7 +3191,9 @@ static void options_sharing()
 
     // The free hosts, each on or off
     {
-        opt_row_begin("Catbox", 0, dp(36));
+        opt_row_begin(0, 0, dp(36));
+        opt_host_name(HOST_CATBOX, "Catbox", false, "https://catbox.moe/faq.php", 0, 0, false, g_row.x1 - dp(56));
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - dp(36), opt_row_frame_y()));
         if (kit_toggle("##catbox", &c.link_catbox)) {
             log_line("options: Catbox %s", c.link_catbox ? "on" : "off");
             options_apply(0);
@@ -3174,7 +3207,10 @@ static void options_sharing()
         static const char *const hours[] = {"1 h", "12 h", "24 h", "72 h"};
         static const i32 hour_v[] = {1, 12, 24, 72};
         f32 seg_w = dp(200), sw = dp(36), gap = dp(16);
-        opt_row_begin("Litterbox", 0, seg_w + gap + sw);
+        opt_row_begin(0, 0, seg_w + gap + sw);
+        opt_host_name(HOST_LITTERBOX, "Litterbox", false, "https://litterbox.catbox.moe/", 0, 0, false,
+                      g_row.x1 - seg_w - gap - sw - dp(20));
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - seg_w - gap - sw, opt_row_frame_y()));
         i32 at = 3, cur = free_hours(c.litterbox_hours);
         for (i32 i = 0; i < 4; i++)
             if (hour_v[i] == cur) at = i;
@@ -3207,7 +3243,8 @@ static void options_sharing()
         else str_set(text, st.text);
         u32 col = st.state == R2_SETUP_OK ? COL_OK
                   : st.state == R2_SETUP_FAILED || st.state == R2_SETUP_NO_TOKEN_SCOPE ? COL_WARN : COL_DIM;
-        opt_row_lines("Cloudflare", g_font_bold, text, col, col != COL_DIM, g_row.x1 - mw - gap - fh - dp(20));
+        opt_host_name(HOST_R2, "Cloudflare", true, "https://developers.cloudflare.com/r2/pricing/", text, col, col != COL_DIM,
+                      g_row.x1 - mw - gap - fh - dp(20));
         f32 x = g_row.x1 - mw - gap - fh, y = opt_row_frame_y();
         ImGui::SetCursorScreenPos(ImVec2(x, y));
         kit_next_tip("Set up again");

@@ -3203,6 +3203,33 @@ static void share_bar(ImDrawList *dl, ImVec2 a, f32 w, f32 frac, u32 ink)
 }
 
 // The most a host takes, 0 for no cap.
+static ID3D11ShaderResourceView *resource_texture(i32 id, i32 *w, i32 *h); // setup.cpp
+
+// A host's own icon, as its site shows it (built into the exe): Catbox, Litterbox and Cloudflare R2; 0 for the
+// player's servers. Loaded once.
+static ImTextureID host_logo(LinkHost host)
+{
+    static ID3D11ShaderResourceView *tex[3];
+    static bool tried[3];
+    i32 i = host == HOST_CATBOX ? 0 : host == HOST_LITTERBOX ? 1 : host == HOST_R2 ? 2 : -1;
+    if (i < 0) return 0;
+    if (!tried[i]) {
+        tried[i] = true;
+        i32 w = 0, h = 0;
+        tex[i] = resource_texture(20 + i, &w, &h);
+    }
+    return (ImTextureID)(intptr_t)tex[i];
+}
+
+// The host's icon in the sz square at `a`, as it is (only faded by `alpha`); false when it has none.
+static bool host_logo_draw(ImDrawList *dl, LinkHost host, ImVec2 a, f32 sz, f32 alpha = 1)
+{
+    ImTextureID t = host_logo(host);
+    if (!t) return false;
+    dl->AddImage(t, a, ImVec2(a.x + sz, a.y + sz), ImVec2(0, 0), ImVec2(1, 1), col32(0xffffff, alpha));
+    return true;
+}
+
 static i64 share_host_cap(LinkHost host)
 {
     if (const FreeHost *f = free_host(host)) return f->max_bytes;
@@ -3419,15 +3446,15 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             }
             if (hot) dl->AddRectFilled(a, b, col32(COL_HOVER), kit_px(7));
             f32 alpha = ok ? 1.f : 0.4f;
-            const char *icon = x.host == HOST_CATBOX ? ICON_PACKAGE : x.host == HOST_LITTERBOX ? ICON_CLOCK
-                             : x.host == HOST_R2 ? ICON_CLOUD : ICON_SERVER;
-            u32 tint = x.host == HOST_CATBOX ? 0x6a5acd : x.host == HOST_LITTERBOX ? 0x3a9a8a : x.host == HOST_R2 ? 0xf39a4b : 0x6b7080;
+            // The host's own icon; the player's servers a server on a tile
             ImVec2 t0(a.x + pad, floorf(a.y + (h - tile) / 2)), t1(t0.x + tile, t0.y + tile);
-            dl->AddRectFilled(t0, t1, col32(tint, alpha), kit_px(7));
-            f32 fs = g_font_icon->FontSize;
-            ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
-            dl->AddText(g_font_icon, fs, ImVec2(floorf(t0.x + (tile - gs.x) / 2), floorf(t0.y + (tile - gs.y) / 2)),
-                        col32(0xffffff, alpha), icon);
+            if (!host_logo_draw(dl, x.host, t0, tile, alpha)) {
+                dl->AddRectFilled(t0, t1, col32(0x6b7080, alpha), kit_px(7));
+                f32 fs = g_font_icon->FontSize;
+                ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_SERVER);
+                dl->AddText(g_font_icon, fs, ImVec2(floorf(t0.x + (tile - gs.x) / 2), floorf(t0.y + (tile - gs.y) / 2)),
+                            col32(0xffffff, alpha), ICON_SERVER);
+            }
             // The bar of the host's cap, and "Upload" before it while pointed at
             f32 bx = b.x - pad - bar_w;
             i64 cap = share_host_cap(x.host);
