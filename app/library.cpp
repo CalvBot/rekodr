@@ -5393,9 +5393,8 @@ static void screen_library()
     static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
     f32 hgap = kit_px(8), view_w = kit_px(104), drop_w = kit_px(112);
     ImGui::SetCursorScreenPos(h0);
-    i32 seg = lib_segments("##view", views, 2, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2,
-                           COL_HOVER, 0x3a3d44);
-    if (seg >= 0) lib_set_view(seg ? LIB_SESSIONS : LIB_CLIPS);
+    if (lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER, 0x3a3d44))
+        lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
 
     // While cards are selected, the selection bar takes the rest of the row (lib_sel_bar).
     lib_sel_track();
