@@ -2455,7 +2455,35 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
 // own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
 // The budget picks the most a month may cost; the bucket holds all that buys (r2_limit_for_budget), and the oldest
 // unpinned links are removed before an upload that wouldn't fit.
-static const i32 R2_STEPS_GB[] = {10, 25, 50, 100, 250, 500, 1000, 2000, 3000, 5000, 7500, 10000};
+// The budget is US dollars a month, what Cloudflare bills in. The slider runs from $0 (the free 10 GB) to
+// R2_BUDGET_TOP (about 10 TB) on a cubic curve, so the low end isn't cramped, in steps of $0.05; typed amounts go to
+// the cent, up to R2_BUDGET_MOST.
+static const f64 R2_BUDGET_TOP = 150, R2_BUDGET_MOST = 10000;
+
+// "$" where Windows' currency is US dollars, else "US$", so it's never read as another dollar
+static const char *opt_usd()
+{
+    static char sign[8];
+    if (!sign[0]) {
+        wchar_t iso[9] = L"";
+        GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_SINTLSYMBOL, iso, COUNT(iso));
+        str_set(sign, !wcscmp(iso, L"USD") ? "$" : "US$");
+    }
+    return sign;
+}
+
+// The budget's label: the amount, then the space it buys. "Free: 10 GB", "$4.50 a month: 310 GB".
+static void opt_budget_label(f64 dollars, char *out, i32 cap)
+{
+    f64 keep = (f64)r2_limit_for_budget(dollars) / (f64)R2_GB;
+    const char *unit = "GB";
+    if (keep >= 1000) keep /= 1000, unit = "TB";
+    char size[24];
+    if (fabs(keep - floor(keep + 0.5)) < 0.05) snprintf(size, sizeof size, "%.0f %s", keep, unit);
+    else snprintf(size, sizeof size, "%.1f %s", keep, unit);
+    if (dollars <= 0) snprintf(out, cap, "Free: %s", size);
+    else snprintf(out, cap, "%s%.2f a month: %s", opt_usd(), dollars, size);
+}
 
 // The hosts as chips from the row's left, the free ones then the uploaders, each one on numbered by when it's
 // tried; a click turns one off, or on as the last tried. Chips that don't fit the row aren't drawn.
@@ -2713,33 +2741,69 @@ static void options_sharing()
     f32 slot_y = ImGui::GetCursorScreenPos().y;
     if (st.state == R2_SETUP_NO_TOKEN_SCOPE && slot_h > 0) opt_scope_hint(slot_h);
     else {
-        // The budget: steps of what the bucket may hold, the first being Cloudflare's free 10 GB; the label says what
-        // clipback keeps for it (r2_budget_label)
+        // The budget: the slider (R2_BUDGET_TOP above), and its label, which a click turns into a box to type an
+        // amount in, in the label's place and height
         {
-            i32 n = (i32)COUNT(R2_STEPS_GB), cur = 0;
-            f64 best = 1e30;
-            for (i32 i = 0; i < n; i++) {
-                f64 d = fabs(r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB) - c.r2_budget);
-                if (d < best) {
-                    best = d;
-                    cur = i;
-                }
-            }
-            f32 v = (f32)cur;
+            static bool typing, focus;
+            static char typed[24];
+            f32 v = (f32)cbrt(fmin(fmax(c.r2_budget, 0), R2_BUDGET_TOP) / R2_BUDGET_TOP);
             bool done;
             if (opt_row_slider("Monthly budget", "Past it the oldest links that aren't pinned are removed", "##r2budget", &v, 0,
-                               (f32)(n - 1), &done)) {
-                i32 i = (i32)(v + 0.5f);
-                c.r2_budget = i == 0 ? 0 : (f32)r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB);
-                cur = i;
+                               1, &done)) {
+                f64 d = R2_BUDGET_TOP * v * v * v;
+                c.r2_budget = (f32)(floor(d / 0.05 + 0.5) * 0.05);
+                typing = false;
             }
             if (done) {
                 log_line("options: R2 budget $%.2f a month", c.r2_budget);
                 options_apply(0);
             }
-            char t[64];
-            r2_budget_label(R2_STEPS_GB[cur], t, sizeof t);
-            opt_row_slider_end(t);
+            f32 cw = opt_wide_w();
+            ImVec2 at(g_row.x1 - cw + kit_px(7), g_row.y + dp(12));
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            if (typing) {
+                ImGui::SetCursorScreenPos(ImVec2(at.x - kit_px(4), at.y));
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(4), 0));
+                ImGui::SetNextItemWidth(dp(110));
+                if (focus) {
+                    ImGui::SetKeyboardFocusHere();
+                    focus = false;
+                }
+                bool enter = ImGui::InputText("##r2budgettype", typed, sizeof typed,
+                                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsDecimal |
+                                                  ImGuiInputTextFlags_AutoSelectAll);
+                bool left = ImGui::IsItemDeactivated() && !ImGui::IsKeyPressed(ImGuiKey_Escape);
+                bool gone = ImGui::IsItemDeactivated();
+                ImGui::PopStyleVar();
+                char *end = 0;
+                f64 d = strtod(typed, &end);
+                if ((enter || left) && end != typed && d >= 0) {
+                    c.r2_budget = (f32)(floor(fmin(d, R2_BUDGET_MOST) * 100 + 0.5) / 100);
+                    log_line("options: R2 budget $%.2f a month, typed", c.r2_budget);
+                    options_apply(0);
+                }
+                if (enter || gone) typing = false;
+                char hint[48];
+                snprintf(hint, sizeof hint, "%s a month", opt_usd());
+                opt_text_at(dl, g_font, ImVec2(at.x + dp(114), at.y), COL_DIM, hint, g_row.x1);
+            } else {
+                char t[96];
+                opt_budget_label(c.r2_budget, t, sizeof t);
+                f32 tw = text_w(g_font, t);
+                ImGui::SetCursorScreenPos(at);
+                kit_next_tip("Type an amount");
+                if (ImGui::InvisibleButton("##r2budgetclick", ImVec2(tw, g_font->FontSize))) {
+                    typing = focus = true;
+                    snprintf(typed, sizeof typed, "%.2f", c.r2_budget);
+                }
+                bool hot = ImGui::IsItemHovered();
+                if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+                opt_text_at(dl, g_font, at, COL_TEXT, t, g_row.x1);
+                if (hot)
+                    dl->AddLine(ImVec2(at.x, at.y + g_font->FontSize), ImVec2(at.x + tw, at.y + g_font->FontSize),
+                                col32(COL_TEXT, 0.5f));
+            }
+            opt_row_end();
         }
 
         // The account's reads this month against r2_read_cap (r2.cpp pauses the links near it)
