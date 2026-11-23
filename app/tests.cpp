@@ -928,6 +928,11 @@ static void test_share()
     T(!share_rate(3600, true, mb, mb, 0, &r));
     // Little room: a smaller sound tier
     T(share_rate(60, true, 3 * mb, 3 * mb, 0, &r) && r.audio_kbps == 96);
+    // A session's four tracks: each stream's sound comes out of the video's share, and all of it fits the ceiling
+    ShareRate r1;
+    T(share_rate(20, 1, 20 * mb, 20 * mb, 0, &r1) && share_rate(20, 4, 20 * mb, 20 * mb, 0, &r));
+    T(r.audio_kbps == r1.audio_kbps && r.video_kbps == r1.video_kbps - 3 * r1.audio_kbps);
+    T((r.video_kbps + 4.0 * r.audio_kbps) * 125 * 20 <= r.ceiling);
 
     // One click: a file as is under the max, squeezed to it when 67% of it fits, a link further over
     ShareHosts free = {false, true, true, 72, ""}, bucket = {true, true, false, 72, ""}, none = {};
@@ -1658,6 +1663,8 @@ static void test_r2()
     w[0].social_h = 720;
     w[0].seconds = 125.5f;
     w[0].preview = 60;
+    w[0].icon = true;
+    w[1].icon = true; // no page: no icon
     w[1].social = -1;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
@@ -1671,7 +1678,7 @@ static void test_r2()
     T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
     T(r[0].social == 1 && r[0].social_w == 1280 && r[0].social_h == 720 && r[0].seconds == 125.5f);
-    T(r[0].preview == 60);
+    T(r[0].preview == 60 && r[0].icon && !r[1].icon);
     T(r[1].social == -1 && !r[1].social_w);
     DeleteFileW(file.s);
 
@@ -1681,6 +1688,8 @@ static void test_r2()
     T(!strcmp(pkey, "clipback/abcdefghijklmnop"));
     r2_thumb_key("clipback/qrstuvwxyzabcdef/clip.mp4", pkey);
     T(!strcmp(pkey, "clipback/qrstuvwxyzabcdef/thumb.jpg"));
+    r2_icon_key("clipback/qrstuvwxyzabcdef/clip.mp4", pkey);
+    T(!strcmp(pkey, "clipback/qrstuvwxyzabcdef/icon.png"));
     i32 tw, th;
     r2_thumb_size(1920, 1080, &tw, &th);
     T(tw == 1280 && th == 720);

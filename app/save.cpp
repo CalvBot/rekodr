@@ -2131,22 +2131,23 @@ static i64 share_reco_bytes(f64 seconds, i32 w, i32 h, f64 fps, bool audio)
     return (i64)((share_reco_kbps(w, h, fps) + (audio ? SHARE_AUDIO_KBPS : 0)) * 125 * (seconds > 0 ? seconds : 0));
 }
 
-// The bitrates for a copy `seconds` long aimed at `aim` bytes and never over `limit` (0 = no limit). The sound gets
-// a tier by the bitrate there is, the video the rest, never more than the source's own (`src_video_kbps`, 0 =
-// unknown), which would only make a bigger file. False when even the lowest video bitrate doesn't fit.
+// The bitrates for a copy `seconds` long with `audio` sound streams, aimed at `aim` bytes and never over `limit` (0 =
+// no limit). Each sound stream gets a tier by the bitrate there is, the video the rest, never more than the source's
+// own (`src_video_kbps`, 0 = unknown), which would only make a bigger file. False when even the lowest video bitrate
+// doesn't fit.
 struct ShareRate {
-    i32 video_kbps, audio_kbps;
+    i32 video_kbps, audio_kbps; // audio_kbps for each sound stream
     i64 ceiling; // what a made file must come in under, 0 = anything
     bool capped; // held to the source's own bitrate
 };
-static bool share_rate(f64 seconds, bool audio, i64 aim, i64 limit, f64 src_video_kbps, ShareRate *out)
+static bool share_rate(f64 seconds, i32 audio, i64 aim, i64 limit, f64 src_video_kbps, ShareRate *out)
 {
     *out = {};
     out->ceiling = limit > 0 ? (i64)(limit * (1 - SHARE_MARGIN)) : 0;
     if (out->ceiling && aim > out->ceiling) aim = out->ceiling;
     f64 total = aim * 8 * 0.98 / 1000 / (seconds > 0.1 ? seconds : 0.1);
     out->audio_kbps = !audio ? 0 : total >= 600 ? SHARE_AUDIO_KBPS : total >= 250 ? 96 : 64;
-    f64 video = total - out->audio_kbps;
+    f64 video = total - out->audio_kbps * (audio > 0 ? audio : 0);
     if (video > 200000) video = 200000;
     out->capped = src_video_kbps > 0 && video > src_video_kbps;
     if (out->capped) video = ceil(src_video_kbps);
@@ -2320,16 +2321,21 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     i64 src_bytes = GetFileAttributesExW(j.src.s, GetFileExInfoStandard, &sfa)
                         ? (i64)(((u64)sfa.nFileSizeHigh << 32) | sfa.nFileSizeLow) : 0;
     f64 src_kbps = m.duration > 0 ? src_bytes * 8 / 1000.0 / m.duration : 0;
-    bool link_big = link && aim > 0 && m.duration > 0 && src_bytes * (span / m.duration) > aim * 1.1;
+    f64 copy_bytes = m.duration > 0 ? src_bytes * (span / m.duration) : 0;
+    bool link_big = link && ((aim > 0 && copy_bytes > aim * 1.1) || (limit > 0 && copy_bytes > limit * (1 - SHARE_MARGIN)));
     i32 fit_w = 0, fit_h = 0; // a Link made smaller (max_h)
     if (link) link_fit_size(m.width, m.height, j.max_h, &fit_w, &fit_h);
     bool reencode = share || zoom || colored || seq || j.end_card > 0 || (link && (!link_video_ok || link_big || fit_w));
     bool sized = reencode && (share || link) && aim > 0;
+    // The sound streams written: the mix alone, or (a link with `tracks`) the tracks, after a rebuilt mix when there
+    // is one; a sized copy encodes every one at rate.audio_kbps
+    i32 first_track = edit_has_mix(m) ? 1 : 0, tc = m.track_count < MEDIA_MAX_TRACKS ? m.track_count : MEDIA_MAX_TRACKS;
+    i32 n_audio = tc <= 0 ? 0 : mixed ? 1 : adv || touched ? 1 + tc - first_track : tc;
     ShareRate rate = {};
     i32 video_kbps = 0;
     if (sized) {
-        bool audio = m.track_count > 0;
-        if (!share_rate(dur + j.end_card, audio, aim, limit, src_kbps - (audio ? SHARE_AUDIO_KBPS : 0), &rate)) {
+        bool audio = n_audio > 0;
+        if (!share_rate(dur + j.end_card, n_audio, aim, limit, src_kbps - (audio ? SHARE_AUDIO_KBPS : 0), &rate)) {
             snprintf(out, out_cap, "too long for %.0f MB: trim it shorter", (limit ? limit : aim) / SHARE_MIB);
             return SAVE_EV_FAILED;
         }
@@ -2339,7 +2345,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     SHCreateDirectoryExW(0, work.s, 0);
     Path graph = path_join(work, L"graph.txt");
     i32 code = 0;
-    f64 audio_bytes = rate.audio_kbps * 125.0 * dur;
+    f64 audio_bytes = rate.audio_kbps * 125.0 * dur * n_audio;
     for (i32 attempt = 0;; attempt++) {
         // The graph: video (when re-encoded) as [v], audio (when re-mixed, or for a share) as [a]
         w->graph_len = 0;
@@ -2487,22 +2493,34 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 arg_pair(a, cap, "-ar", "48000");
             }
         } else if (!touched) {
-            if (m.track_count > 0) {
+            if (m.track_count > 0) { // as recorded; a sized link's at its rate
                 arg_pair(a, cap, "-map", "0:a");
-                arg_pair(a, cap, "-c:a", "copy");
+                if (sized && rate.audio_kbps) {
+                    arg_pair(a, cap, "-c:a", "aac");
+                    arg_pair(a, cap, "-b:a", "%dk", rate.audio_kbps);
+                    arg_pair(a, cap, "-ar", "48000");
+                } else arg_pair(a, cap, "-c:a", "copy");
             }
         } else {
-            // The rebuilt Mix first, then the original tracks as recorded (a clipback file's old Mix is dropped).
+            // The rebuilt Mix first, then the original tracks as recorded (a clipback file's old Mix is dropped); a
+            // sized link's all at its rate.
+            i32 akbps = sized && rate.audio_kbps ? rate.audio_kbps : 0;
             arg_pair(a, cap, "-map", "[a]");
             arg_pair(a, cap, "-c:a:0", "aac");
-            arg_pair(a, cap, "-b:a:0", "192k");
+            arg_pair(a, cap, "-b:a:0", "%dk", akbps ? akbps : 192);
             arg_pair(a, cap, "-ar:a:0", "48000");
             outs = 1;
             for (i32 t = edit_has_mix(m) ? 1 : 0; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
                 arg_pair(a, cap, "-map", "0:a:%d", t);
                 char key[32];
                 snprintf(key, sizeof key, "-c:a:%d", outs);
-                arg_pair(a, cap, key, "copy");
+                arg_pair(a, cap, key, akbps ? "aac" : "copy");
+                if (akbps) {
+                    snprintf(key, sizeof key, "-b:a:%d", outs);
+                    arg_pair(a, cap, key, "%dk", akbps);
+                    snprintf(key, sizeof key, "-ar:a:%d", outs);
+                    arg_pair(a, cap, key, "48000");
+                }
                 snprintf(key, sizeof key, "-metadata:s:a:%d", outs);
                 arg_pair(a, cap, key, "title=%s", m.tracks[t]);
                 arg_pair(a, cap, key, "handler_name=%s", m.tracks[t]);
