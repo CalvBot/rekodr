@@ -1266,7 +1266,10 @@ static void test_r2()
     // The page: the tags for a card that plays, the clip full width, the word under it; the title made safe and
     // ASCII; paused, no clip and nothing that plays it
     static char html[8192];
-    i32 hn = r2_page_html("ace <b>\"round\"</b> & caf\xc3\xa9 \xf0\x9f\x8e\xae\x01", "https://x.dev/clipback/abc?v=2",
+    static const u8 past_ascii[] = {'c', 'a', 'f', 0xc3, 0xa9, ' ', 0xf0, 0x9f, 0x8e, 0xae, 0x01, 0}; // e-acute, a pad, a control
+    char title[96];
+    snprintf(title, sizeof title, "ace <b>\"round\"</b> & %s", (const char *)past_ascii);
+    i32 hn = r2_page_html(title, "https://x.dev/clipback/abc?v=2",
                           "https://x.dev/clipback/abc/clip.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg?v=2", 1920,
                           1080, 1280, 720, false, html, sizeof html);
     T(hn > 0 && hn == (i32)strlen(html));
