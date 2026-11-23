@@ -1926,13 +1926,14 @@ static void r2_run_delete(const R2Task &t)
 // Cloudflare's API (api.cloudflare.com) and sign-in (dash.cloudflare.com)
 
 // Sign in with Cloudflare: an OAuth public client with PKCE (S256), answered on a fixed loopback port. The
-// redirect address and scopes are the ones the client is registered with. The bucket's own token is a user API
-// token, made with user-api-tokens.write.
-static const char CF_OAUTH_CLIENT_ID[] = ""; // TODO: the registered client's id
+// redirect address and scopes are the ones the client is registered with (Account Settings Read, Workers R2 Storage
+// Write, Account Analytics Read, API Tokens Write); offline_access asks for a refresh token. The bucket's own token
+// is a user API token, made with user-api-tokens.write.
+static const char CF_OAUTH_CLIENT_ID[] = "0e0024986eb482790af86a04235cebbd";
 enum { CF_OAUTH_PORT = 8977 };
 static const char CF_OAUTH_REDIRECT[] = "http://127.0.0.1:8977/oauth/callback";
 static const char CF_OAUTH_SCOPES[] =
-    "account.read workers-r2.write account-analytics.read user-api-tokens.write offline_access";
+    "account-settings.read workers-r2.write account-analytics.read user-api-tokens.write offline_access";
 static const wchar_t CF_DASH_HOST[] = L"dash.cloudflare.com";
 static const i64 CF_SIGNIN_WAIT_US = 10ll * 60 * 1000000; // how long the browser has to come back
 
@@ -3446,10 +3447,6 @@ static void r2_sign_in_cancel()
 static void r2_sign_in()
 {
     r2_sign_in_cancel();
-    if (!CF_OAUTH_CLIENT_ID[0]) {
-        r2_status_set_now(R2_SETUP_FAILED, "Sign-in with Cloudflare isn't ready in this version: use a token instead");
-        return;
-    }
     u8 raw[32];
     BCryptGenRandom(0, raw, sizeof raw, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     r2_setup_task(&g_r2.signin.task, R2_T_SIGNIN);
