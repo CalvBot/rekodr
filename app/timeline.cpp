@@ -2700,13 +2700,18 @@ static void screen_timeline()
         bool sharing = tl_sharing();
         ShareMenuState js = tl_share_menu_state();
         char share_label[48];
-        if (js.running) snprintf(share_label, sizeof share_label, ICON_CLOSE "  Cancel %d%%", (i32)(js.progress > 0 ? js.progress * 100 + 0.5f : 0));
+        if (js.running) str_set(share_label, " "); // Cancel: the X in its ring, drawn below
         else if (js.done) str_set(share_label, js.line);
         else str_set(share_label, ICON_SHARE "  Share");
-        i32 sb = kit_split_button(share_label, "##tlshare", KIT_SECONDARY, ImVec2(w4, 0), sharing || can, can,
-                                  js.running ? (js.progress > 0 ? js.progress : 0) : -1,
+        ImVec2 share_at = ImGui::GetCursorScreenPos();
+        i32 sb = kit_split_button(share_label, "##tlshare", KIT_SECONDARY, ImVec2(w4, 0), sharing || can, can, -1,
                                   js.running ? "Cancel the share" : "Share the selection. Right-click for more options",
                                   "More share options");
+        if (js.running) {
+            f32 fh2 = ImGui::GetFrameHeight();
+            share_cancel_ring(ImGui::GetWindowDrawList(), ImVec2(floorf(share_at.x + (w4 - fh2) / 2), floorf(share_at.y + fh2 / 2)),
+                              kit_px(8), js.progress, COL_TEXT);
+        }
         if (sb == 1 && sharing) tl_share_cancel();
         else if (sb == 1) tl_share(0);
         else if (sb == 2) ImGui::OpenPopup("tl_share_menu");
