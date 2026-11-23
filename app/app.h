@@ -30,7 +30,7 @@ enum PopupCorner : u8 {
 };
 
 // Config.popup_monitor and popup_monitor_game, besides an output index
-static const i32 POPUP_RECORDED = -2, POPUP_AS_NORMAL = -3, POPUP_NOT_GAME = -4;
+static const i32 POPUP_RECORDED = -2, POPUP_AS_NORMAL = -3;
 
 enum ToastClip : u8 {
     TOAST_CLIP_DEFAULT,
@@ -114,8 +114,7 @@ struct Config {
     i32   output_idx; // DXGI output index on the capture GPU
     i32   popup_monitor; // where the toasts go: an output index or POPUP_RECORDED
     PopupCorner popup_corner;
-    i32   popup_monitor_game; // and while a game is in front: an output index, POPUP_RECORDED, POPUP_AS_NORMAL (the
-                              // two above) or POPUP_NOT_GAME (the monitor nearest the game's)
+    i32   popup_monitor_game; // and while a game is in front: an output index, POPUP_RECORDED or POPUP_AS_NORMAL
     PopupCorner popup_corner_game; // unless popup_monitor_game is POPUP_AS_NORMAL
     ToastClip toast_clip; // Clip saved over a game, unless the game has its own (FULL, SMALL or OFF)
     i32   fps;        // never above the monitor's refresh rate

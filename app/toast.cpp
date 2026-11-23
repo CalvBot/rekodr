@@ -805,45 +805,6 @@ static void toast_fonts(Toast &t, f32 s)
     if (t.edit) SendMessageW(t.edit, WM_SETFONT, (WPARAM)t.font, TRUE);
 }
 
-// Of `n` monitors (their rects), the one whose centre is nearest the centre of monitor `game`, other than it; the
-// first such on a tie. `game` itself when it's the only one.
-static i32 popup_not_game(const RECT *mons, i32 n, i32 game)
-{
-    i32 best = game;
-    i64 best_d = 0;
-    i64 gx = ((i64)mons[game].left + mons[game].right) / 2, gy = ((i64)mons[game].top + mons[game].bottom) / 2;
-    for (i32 i = 0; i < n; i++) {
-        if (i == game) continue;
-        i64 dx = ((i64)mons[i].left + mons[i].right) / 2 - gx, dy = ((i64)mons[i].top + mons[i].bottom) / 2 - gy;
-        i64 d = dx * dx + dy * dy;
-        if (best == game || d < best_d) {
-            best = i;
-            best_d = d;
-        }
-    }
-    return best;
-}
-
-// The monitors there are, as EnumDisplayMonitors gives them
-struct PopupMons {
-    HMONITOR m[16];
-    RECT     r[16]; // each one's whole rect
-    i32      n;
-};
-
-static void popup_mons(PopupMons *mons)
-{
-    *mons = {};
-    EnumDisplayMonitors(0, 0, [](HMONITOR m, HDC, LPRECT r, LPARAM p) -> BOOL {
-        PopupMons *ms = (PopupMons *)p;
-        if (ms->n < COUNT(ms->m)) {
-            ms->m[ms->n] = m;
-            ms->r[ms->n++] = *r;
-        }
-        return TRUE;
-    }, (LPARAM)mons);
-}
-
 // The monitor an output index is on (monitor_mode); 0 when there's no such output now.
 static HMONITOR popup_output_monitor(i32 out)
 {
@@ -854,22 +815,16 @@ static HMONITOR popup_output_monitor(i32 out)
 
 // The monitor and corner the toasts use: Config.popup_monitor (an output index or POPUP_RECORDED) in
 // Config.popup_corner. With a game in front (`in_game`), Config.popup_monitor_game and popup_corner_game instead,
-// unless it is POPUP_AS_NORMAL; POPUP_NOT_GAME is the monitor nearest the game's (popup_not_game), the game's own
-// when it's the only one. `front` is the monitor the window in front is on, the game's while one is; an output that
-// isn't there (output_monitor gives 0) falls back to it.
-static HMONITOR popup_monitor_for(const Config &c, bool in_game, HMONITOR front, const PopupMons &mons,
-                                  HMONITOR (*output_monitor)(i32), PopupCorner *corner)
+// unless it is POPUP_AS_NORMAL. `front` is the monitor the window in front is on, the game's while one is; an
+// output that isn't there (output_monitor gives 0) falls back to it.
+static HMONITOR popup_monitor_for(const Config &c, bool in_game, HMONITOR front, HMONITOR (*output_monitor)(i32),
+                                  PopupCorner *corner)
 {
     *corner = c.popup_corner;
     i32 out = c.popup_monitor;
     if (in_game && c.popup_monitor_game != POPUP_AS_NORMAL) {
         out = c.popup_monitor_game;
         *corner = c.popup_corner_game;
-        if (out == POPUP_NOT_GAME) {
-            for (i32 i = 0; i < mons.n; i++)
-                if (mons.m[i] == front) return mons.m[popup_not_game(mons.r, mons.n, i)];
-            return front;
-        }
     }
     HMONITOR m = output_monitor(out < 0 ? c.output_idx : out);
     return m ? m : front;
@@ -886,11 +841,9 @@ static bool toast_monitor(RECT *work, PopupCorner *corner, HMONITOR *mon)
         if (mon) *mon = m;
         return true;
     }
-    PopupMons mons;
-    popup_mons(&mons);
     m = popup_monitor_for(g_app.config, sessions_game_in_front(),
-                          MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY), mons,
-                          popup_output_monitor, corner);
+                          MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY), popup_output_monitor,
+                          corner);
     MONITORINFO mi = {sizeof mi};
     if (!GetMonitorInfoW(m, &mi)) return false;
     *work = mi.rcWork;
