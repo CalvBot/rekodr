@@ -791,6 +791,7 @@ static void session_time_left(const Session &s, char *out, i32 cap)
     i64 us = (start_gone ? s.end_us : s.start_us) + keep - now;
     char left[32];
     if (us < 60000000) str_set(left, "under a minute");
+    else if (us >= 48 * 3600e6) snprintf(left, sizeof left, "%d days", (i32)(us / (i64)(24 * 3600e6))); // "96 h" reads as minutes
     else fmt_length(us, left, sizeof left);
     if (start_gone) snprintf(out, cap, "Partly gone, %s left", left);
     else snprintf(out, cap, "%s left", left);
