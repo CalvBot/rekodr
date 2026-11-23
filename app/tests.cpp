@@ -1706,7 +1706,7 @@ static void test_r2()
     T(ascii);
     T(strstr(html, "<title>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</title>") != 0);
     T(strstr(html, "<meta property=\"og:type\" content=\"video.other\">") != 0);
-    T(strstr(html, "<meta property=\"og:site_name\" content=\"clipback\">") != 0);
+    T(strstr(html, "<meta property=\"og:site_name\" content=\"Clipback\">") != 0);
     T(strstr(html, "<meta property=\"og:image\" content=\"https://x.dev/clipback/abc/thumb.jpg?v=2\">") != 0);
     T(strstr(html, "og:image:width\" content=\"1280\"") != 0 && strstr(html, "og:image:height\" content=\"720\"") != 0);
     // cards play the small copy at its size; the page plays the clip
@@ -1728,7 +1728,7 @@ static void test_r2()
     T(strstr(html, "noindex") != 0 && !strstr(html, "og:video:width\" content=\"2560\""));
     T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
     T(strstr(html, "width=\"2560\" height=\"1440\"") != 0);
-    T(strstr(html, " controls playsinline ") != 0 && strstr(html, "<p>clipback</p>") != 0);
+    T(strstr(html, " controls playsinline ") != 0 && strstr(html, "<p>Clipback</p>") != 0);
     // nothing small enough for cards: a picture card, the page still plays the clip
     pp.embed = "";
     hn = r2_page_html(pp, false, html, sizeof html);
@@ -1739,7 +1739,7 @@ static void test_r2()
           "https://x.dev/clipback/abc/clip.mp4", "https://x.dev/clipback/abc/thumb.jpg", 1920, 1080, 1920, 1080, 1280,
           720};
     hn = r2_page_html(pp, true, html, sizeof html);
-    T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "<p>clipback</p>"));
+    T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "<p>Clipback</p>"));
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
     T(!strstr(html, "thumb.jpg"));
     T(r2_page_html(pp, false, html, 64) == 0);

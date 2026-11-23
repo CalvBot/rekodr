@@ -586,7 +586,7 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
 }
 
 // The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that
-// plays `embed` (the clip, or a small copy of it), or with none a card with the picture; the plain APP_NAME word
+// plays `embed` (the clip, or a small copy of it), or with none a card with the picture; the plain APP_DISPLAY word
 // under it. Paused, the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the
 // length, 0 if it didn't fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
@@ -601,7 +601,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
                 "<meta name=\"robots\" content=\"noindex\">\n<title>%T</title>\n"
                 "<meta property=\"og:type\" content=\"video.other\">\n<meta property=\"og:title\" content=\"%T\">\n"
-                "<meta property=\"og:site_name\" content=\"" APP_NAME "\">\n<meta property=\"og:url\" content=\"%P\">\n",
+                "<meta property=\"og:site_name\" content=\"" APP_DISPLAY "\">\n<meta property=\"og:url\" content=\"%P\">\n",
                 p, out, cap, &len);
     if (!paused)
         r2_page_put("<meta property=\"og:image\" content=\"%I\">\n<meta property=\"og:image:width\" content=\"%w\">\n"
@@ -635,7 +635,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                     "preload=\"metadata\"></video>\n",
                     p, out, cap, &len);
     else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
-    r2_page_put("<p>" APP_NAME "</p>\n</body></html>\n", p, out, cap, &len);
+    r2_page_put("<p>" APP_DISPLAY "</p>\n</body></html>\n", p, out, cap, &len);
     return len < cap - 1 ? len : 0;
 }
 
@@ -1129,7 +1129,6 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
 // History: <config_dir>\shares.tsv, one share a line, oldest first:
 //   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  expires_us  paused  hidden  pause_day  page_w
 //   page_h  url  title  game  path  social  social_w  social_h  seconds
-// A line without the last four is a share with no small copy.
 
 static void r2_tsv_field(FILE *f, const char *s, bool last)
 {
@@ -1174,7 +1173,7 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             *tab = 0;
             p = tab + 1;
         }
-        if ((count == 18 || count == 22) && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
+        if (count == 22 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
             atoi(f[7]) >= 0 && atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
@@ -1198,14 +1197,11 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             str_set(s.title, f[15]);
             str_set(s.game, f[16]);
             str_set(s.path, f[17]);
-            if (count == 22) {
-                s.social = (i8)atoi(f[18]);
-                s.social_w = atoi(f[19]);
-                s.social_h = atoi(f[20]);
-                s.seconds = (f32)atof(f[21]);
-                if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0)))
-                    s.social = 0;
-            }
+            s.social = (i8)atoi(f[18]);
+            s.social_w = atoi(f[19]);
+            s.social_h = atoi(f[20]);
+            s.seconds = (f32)atof(f[21]);
+            if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0))) s.social = 0;
             s.plays_today = s.plays_month = s.plays_24h = -1;
         }
         line = next;
