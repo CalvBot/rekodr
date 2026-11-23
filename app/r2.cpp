@@ -30,7 +30,15 @@ struct R2Usage;
 static R2Usage r2_usage();
 
 enum R2State : u8 { R2_QUEUED, R2_PREPARING, R2_UPLOADING, R2_DONE, R2_FAILED };
-enum R2SetupState : u8 { R2_SETUP_IDLE, R2_SETUP_WAITING, R2_SETUP_BUSY, R2_SETUP_OK, R2_SETUP_FAILED };
+// R2_SETUP_NO_TOKEN_SCOPE: signed in, but without API Tokens Write; the text says to turn it on and sign in again.
+enum R2SetupState : u8 {
+    R2_SETUP_IDLE,
+    R2_SETUP_WAITING,
+    R2_SETUP_BUSY,
+    R2_SETUP_OK,
+    R2_SETUP_FAILED,
+    R2_SETUP_NO_TOKEN_SCOPE
+};
 
 struct R2Job {
     u32     id; // 0 = no such job
@@ -2068,7 +2076,27 @@ struct R2OAuth {
     char access[2048], refresh[1024];
     i64  expires_in; // seconds
     char error[64];  // "invalid_grant" and the like
+    char scope[512]; // what the player allowed, space separated
 };
+
+// Whether a space-separated scope list holds `name`.
+static bool r2_scope_has(const char *scope, const char *name)
+{
+    size_t n = strlen(name);
+    for (const char *p = scope; *p;) {
+        while (*p == ' ') p++;
+        const char *e = p;
+        while (*e && *e != ' ') e++;
+        if ((size_t)(e - p) == n && !strncmp(p, name, n)) return true;
+        p = e;
+    }
+    return false;
+}
+
+// Cloudflare's sign-in page lists API Tokens Write as a sensitive scope, off until the player turns it on.
+#define R2_NEED_TOKENS_WRITE \
+    "On Cloudflare's sign-in page, turn on \"API Tokens Write\" and sign in again: " APP_NAME " needs it to make a " \
+    "key for the bucket"
 
 // The sign-in's token answer, to the code or a refresh.
 static bool r2_parse_oauth(const char *resp, R2OAuth *o)
@@ -2078,6 +2106,7 @@ static bool r2_parse_oauth(const char *resp, R2OAuth *o)
     *o = {};
     json_path(resp, len, "error", o->error, sizeof o->error);
     json_path(resp, len, "refresh_token", o->refresh, sizeof o->refresh);
+    json_path(resp, len, "scope", o->scope, sizeof o->scope);
     o->expires_in = json_path(resp, len, "expires_in", n, sizeof n) ? _atoi64(n) : 0;
     return json_path(resp, len, "access_token", o->access, sizeof o->access);
 }
@@ -2354,7 +2383,7 @@ static void r2_set_status(R2SetupState state, const char *fmt, ...)
     g_r2.status.state = state;
     str_set(g_r2.status.text, text);
     ReleaseSRWLockExclusive(&g_r2.lock);
-    if (state == R2_SETUP_FAILED) log_line("r2: setup: %s", text);
+    if (state == R2_SETUP_FAILED || state == R2_SETUP_NO_TOKEN_SCOPE) log_line("r2: setup: %s", text);
     else DEV_LOG("r2: setup: %s", text);
     r2_post(R2_EV_STATUS, state);
 }
@@ -2588,8 +2617,10 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
                 r2_cf_error(resp, msg, sizeof msg);
                 SecureZeroMemory(resp, sizeof resp);
                 *refused = true;
-                r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't let " APP_NAME " make a key for the bucket%s%s. Use a token "
-                              "instead.", msg[0] ? ": " : "", msg);
+                if (s == 401 || s == 403) r2_set_status(R2_SETUP_NO_TOKEN_SCOPE, R2_NEED_TOKENS_WRITE);
+                else
+                    r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't let " APP_NAME " make a key for the bucket%s%s. "
+                                  "Use a token instead.", msg[0] ? ": " : "", msg);
                 return false;
             }
             SecureZeroMemory(resp, sizeof resp);
@@ -2679,6 +2710,9 @@ static void r2_run_signin(const R2Task &t)
         if (!s) r2_set_status(R2_SETUP_FAILED, "Couldn't reach Cloudflare");
         else r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't finish the sign-in%s%s", o.error[0] ? ": " : "",
                            o.error);
+    } else if (o.scope[0] && !r2_scope_has(o.scope, "user-api-tokens.write")) {
+        log_line("r2: the sign-in came without user-api-tokens.write (%s)", o.scope);
+        r2_set_status(R2_SETUP_NO_TOKEN_SCOPE, R2_NEED_TOKENS_WRITE);
     } else {
         if (!o.refresh[0]) log_line("r2: the sign-in came without a refresh token");
         r2_oauth_keep(o);

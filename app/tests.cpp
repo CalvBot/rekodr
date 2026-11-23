@@ -1445,6 +1445,13 @@ static void test_r2()
                      "\"token_type\":\"bearer\"}",
                      &o));
     T(!strcmp(o.access, "at1") && !strcmp(o.refresh, "rt1") && o.expires_in == 3599 && !o.error[0]);
+    T(!strcmp(o.scope, "account.read"));
+    // The scopes the player allowed: whole words only
+    T(r2_scope_has("account-settings.read workers-r2.write user-api-tokens.write", "user-api-tokens.write"));
+    T(r2_scope_has("user-api-tokens.write", "user-api-tokens.write"));
+    T(!r2_scope_has("account-settings.read workers-r2.write", "user-api-tokens.write"));
+    T(!r2_scope_has("user-api-tokens.write2 xuser-api-tokens.write", "user-api-tokens.write"));
+    T(!r2_scope_has("", "user-api-tokens.write"));
     T(!r2_parse_oauth("{\"error\":\"invalid_grant\",\"error_description\":\"expired\"}", &o));
     T(!strcmp(o.error, "invalid_grant"));
 }
