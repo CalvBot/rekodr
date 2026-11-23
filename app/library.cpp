@@ -4158,7 +4158,10 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     // A click plays it; a drag carries it to a folder in the list on the left.
     ImGuiIO &io = ImGui::GetIO();
     bool clicked = pressed && io.MouseDragMaxDistanceSqr[0] < io.MouseDragThreshold * io.MouseDragThreshold;
-    bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+    // The Share button's place in the caption: a right-click there is the button's, never the card's menu
+    f32 sh = kit_px(28), sw = 2 * sh, isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
+    ImVec2 s0(a.x + w - sw, floorf(t1.y + kit_px(8) + (isz - sh) / 2)), s1(s0.x + sw, s0.y + sh);
+    bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right) && !ImGui::IsMouseHoveringRect(s0, s1);
     bool over = ImGui::IsWindowHovered() && !ImGui::GetDragDropPayload() &&
                 ImGui::IsMouseHoveringRect(t0, ImVec2(t1.x, t1.y + meta_h));
     f32 round = kit_px(10);
@@ -4262,12 +4265,12 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     // The link's on the right, amber when paused; the file's left of it.
     {
         ClipShareState cs = lib_clip_state(it);
-        f32 r = kit_px(11), isz = kit_px(12);
+        f32 r = kit_px(11), msz = kit_px(12);
         auto mark = [&](f32 cx, const char *icon, u32 ink) {
             ImVec2 c(cx, t0.y + kit_px(8) + r);
             dl->AddCircleFilled(c, r, IM_COL32(0, 0, 0, 170));
-            ImVec2 gs = g_font_icon->CalcTextSizeA(isz, FLT_MAX, 0, icon);
-            dl->AddText(g_font_icon, isz, ImVec2(floorf(c.x - gs.x / 2), floorf(c.y - gs.y / 2)), ink, icon);
+            ImVec2 gs = g_font_icon->CalcTextSizeA(msz, FLT_MAX, 0, icon);
+            dl->AddText(g_font_icon, msz, ImVec2(floorf(c.x - gs.x / 2), floorf(c.y - gs.y / 2)), ink, icon);
         };
         f32 link_x = t1.x - kit_px(8) - r, file_x = link_x - 2 * r - kit_px(4);
         if (cs.link) mark(link_x, cs.link_paused ? ICON_PAUSE : ICON_LINK, col32(cs.link_paused ? COL_WARN : COL_TEXT));
@@ -4297,8 +4300,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     }
     // The caption: the game's icon, then the name and one dim line, and the Share button on the right, in the same
     // place on every card. Renaming edits the name right there.
-    f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
-    f32 sh = kit_px(28), sw = 2 * sh, cap_y = y;
+    f32 y = t1.y + kit_px(8);
     f32 tx = a.x + isz + kit_px(10), tw = a.x + w - sw - kit_px(10) - tx;
     // No game (GAME_DESKTOP, GAME_NOT_OURS) and a custom game get a plain glyph, never an icon looked up by name.
     bool desktop = !strcmp(it.info.game, GAME_DESKTOP), no_game = game_is_none(it.info.game);
@@ -4371,13 +4373,26 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         if (rx < tx + line_w) text_clipped(dl, ImVec2(rx, y), tx + line_w - rx, col32(COL_DIM), rest);
     } else text_clipped(dl, ImVec2(tx, y), line_w, col32(err ? COL_RED : COL_DIM), line);
     ImGui::PopFont();
-    // Share: a click shares as the one-click rule picks, the arrow (or a right-click) opens the card's Share menu
+    // Share: a click shares as the one-click rule picks, a right-click opens the card's Share menu
     ImGui::PushID((const void *)(uintptr_t)it.key);
-    ImGui::SetCursorScreenPos(ImVec2(a.x + w - sw, floorf(cap_y + (isz - sh) / 2)));
-    i32 sb = kit_split_button(ICON_SHARE, "##cardshare", KIT_SECONDARY, ImVec2(sw, sh));
+    ImGui::SetCursorScreenPos(s0);
+    bool share = ImGui::InvisibleButton("##cardshare", ImVec2(sw, sh));
+    bool share_hot = ImGui::IsItemHovered(), share_held = share_hot && ImGui::IsItemActive();
+    bool share_menu = share_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     ImGui::PopID();
-    if (sb == 1) lib_share_decided(it);
-    else if (sb == 2) {
+    {
+        dl->AddRectFilled(s0, s1, col32(share_hot ? COL_HOVER : COL_PANEL2, share_held ? 0.8f : 1.f),
+                          ImGui::GetStyle().FrameRounding);
+        f32 is = g_font_icon->FontSize;
+        ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, ICON_SHARE);
+        dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)), col32(COL_TEXT),
+                    ICON_SHARE);
+    }
+    if (share) {
+        dev_click("library", "card share");
+        lib_share_decided(it);
+    } else if (share_menu) {
+        dev_click("library", "card share menu");
         lib.target = it;
         g_card_share_open = true;
     }
