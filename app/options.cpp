@@ -77,6 +77,9 @@ static void startup_set(bool on)
 // ---------------------------------------------------------------------------------------------------------------
 // Monitors, in ddagrab's output_idx order (the outputs of the first GPU), with the names Display settings shows.
 
+// Each listed monitor's place on the desktop, by output index, for the popups' monitor map
+static RECT g_monitor_rect[16];
+
 static void options_list_monitors()
 {
     OptionsUi &o = g_app.options;
@@ -97,6 +100,7 @@ static void options_list_monitors()
             DXGI_OUTPUT_DESC d = {};
             out->GetDesc(&d);
             out->Release();
+            g_monitor_rect[o.monitor_count] = d.DesktopCoordinates;
             MonitorInfo *m = &o.monitors[o.monitor_count++];
             *m = {};
             m->width = d.DesktopCoordinates.right - d.DesktopCoordinates.left;
@@ -812,14 +816,21 @@ static f32 toast_clip_chips_w(i32 first)
     for (i32 i = first; i <= TOAST_CLIP_OFF; i++) w += text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14) + (i > first ? dp(6) : 0);
     return w;
 }
+// Small is greyed while popups in games go on another monitor than the game's: there's no game under it.
 static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
 {
     bool changed = false;
+    bool off_game = g_app.config.popup_monitor_game == POPUP_NOT_GAME && g_app.options.monitor_count > 1;
     for (i32 i = first; i <= TOAST_CLIP_OFF; i++) {
         if (i > first) ImGui::SameLine(0, dp(6));
         char label[48];
         snprintf(label, sizeof label, "%s##%s%d", TOAST_CLIP_CHIPS[i], id, i);
-        if (kit_chip(label, *v == i, 0, text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14)) && *v != i) {
+        bool grey = i == TOAST_CLIP_SMALL && off_game;
+        if (grey) ImGui::BeginDisabled();
+        bool clicked = kit_chip(label, *v == i, 0, text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14));
+        if (grey) ImGui::EndDisabled();
+        if (grey) kit_tip("Only over the game");
+        if (clicked && *v != i) {
             *v = (ToastClip)i;
             changed = true;
         }
@@ -3637,37 +3648,216 @@ static bool accent_swatches(i32 *sel)
 
 static f32 swatches_w() { return (f32)ACCENT_COUNT * ImGui::GetFrameHeight() + (f32)(ACCENT_COUNT - 1) * dp(8); }
 
-// A monitor combo for where the toasts go (Config.popup_monitor, popup_monitor_game). game: the first entry is "As
-// Popups" (-3); otherwise it is "No Clip saved" (-1). Then the monitor recorded (-2) and each monitor.
-static void opt_popup_monitor(const char *label, const char *sub, const char *id, i32 *value, bool game)
+static i32 popup_not_game(const RECT *mons, i32 n, i32 game); // toast.cpp
+
+// The monitor map's height, fixed so nothing moves whatever the monitors are
+static const f32 OPT_MAP_H = 132;
+
+// The corner slot c of monitor rect a..b in the map: a quarter of its width by a sixth of its height, inset
+static void opt_map_corner(ImVec2 a, ImVec2 b, i32 c, ImVec2 *s0, ImVec2 *s1)
+{
+    f32 in = dp(5), w = floorf((b.x - a.x) * 0.26f), h = floorf((b.y - a.y) * 0.16f);
+    bool right = c == CORNER_BR || c == CORNER_TR, top = c == CORNER_TR || c == CORNER_TL;
+    f32 x = right ? b.x - in - w : a.x + in, y = top ? a.y + in : b.y - in - h;
+    *s0 = ImVec2(x, y);
+    *s1 = ImVec2(x + w, y + h);
+}
+
+// A dashed outline round a..b
+static void opt_dashed_rect(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col)
+{
+    f32 dash = dp(3), gap = dp(3), t = dp(1);
+    for (f32 x = a.x; x < b.x; x += dash + gap) {
+        f32 x1 = fminf(x + dash, b.x);
+        dl->AddRectFilled(ImVec2(x, a.y), ImVec2(x1, a.y + t), col);
+        dl->AddRectFilled(ImVec2(x, b.y - t), ImVec2(x1, b.y), col);
+    }
+    for (f32 y = a.y; y < b.y; y += dash + gap) {
+        f32 y1 = fminf(y + dash, b.y);
+        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(a.x + t, y1), col);
+        dl->AddRectFilled(ImVec2(b.x - t, y), ImVec2(b.x, y1), col);
+    }
+}
+
+static const char *const CORNER_NAMES[] = {"Bottom right", "Bottom left", "Top right", "Top left"};
+
+// The monitors as Windows lays them out, to scale, cw x OPT_MAP_H from the cursor. `shown` is the monitor picked
+// (an output index), outlined in the accent with its four corner slots, `corner` filled in as a small toast. The
+// monitor recorded has a red dot. A click on a monitor picks it, on a corner slot (of any monitor) it and the
+// corner: *mon_out / *corner_out, true. Greyed and still while `live` is false.
+static bool opt_monitor_map(const char *id, i32 shown, PopupCorner corner, bool live, i32 *mon_out, PopupCorner *corner_out)
 {
     OptionsUi &o = g_app.options;
-    f32 wide = dp(300);
-    const char *first = game ? "As Popups" : "No Clip saved";
-    i32 first_v = game ? -3 : -1;
-    char preview[160];
-    if (*value == first_v) str_set(preview, first);
-    else if (*value == -2) str_set(preview, "The monitor recorded");
-    else if (*value >= 0 && *value < o.monitor_count) monitor_label(*value, preview, sizeof preview);
-    else snprintf(preview, sizeof preview, "%d. not connected", *value + 1);
-    opt_row_begin(label, sub, wide);
-    if (opt_combo_begin(id, preview, wide, wide)) {
-        if (ImGui::IsWindowAppearing()) options_list_monitors();
-        i32 pick = *value;
-        if (opt_combo_item(first, "", *value == first_v)) pick = first_v;
-        if (opt_combo_item("The monitor recorded", "", *value == -2)) pick = -2;
-        for (i32 i = 0; i < o.monitor_count; i++) {
-            char name[96], note[64];
-            monitor_label(i, name, sizeof name);
-            monitor_note(i, note, sizeof note);
-            if (opt_combo_item(name, note, *value == i)) pick = i;
+    f32 cw = opt_wide_w(), h = dp(OPT_MAP_H);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::PushID(id);
+    if (!live) ImGui::BeginDisabled();
+    bool clicked = ImGui::InvisibleButton("##map", ImVec2(cw, h));
+    if (!live) ImGui::EndDisabled();
+    ImGui::PopID();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    i32 n = o.monitor_count;
+    if (n <= 0) {
+        opt_text_at(dl, g_font, ImVec2(a.x, floorf(a.y + (h - g_font->FontSize) / 2)), COL_DIM, "No monitor found", a.x + cw);
+        return false;
+    }
+    // The desktop's bounds, scaled into the box and centred
+    RECT all = g_monitor_rect[0];
+    for (i32 i = 1; i < n; i++) {
+        const RECT &r = g_monitor_rect[i];
+        all.left = r.left < all.left ? r.left : all.left;
+        all.top = r.top < all.top ? r.top : all.top;
+        all.right = r.right > all.right ? r.right : all.right;
+        all.bottom = r.bottom > all.bottom ? r.bottom : all.bottom;
+    }
+    f32 dw = (f32)(all.right - all.left), dh = (f32)(all.bottom - all.top);
+    f32 sc = fminf(cw / fmaxf(dw, 1), h / fmaxf(dh, 1));
+    ImVec2 o0(floorf(a.x + (cw - dw * sc) / 2), floorf(a.y + (h - dh * sc) / 2));
+    ImVec2 mouse = ImGui::GetIO().MousePos;
+    bool over = live && ImGui::IsItemHovered();
+    f32 alpha = live ? 1 : 0.4f;
+    i32 rec = g_app.config.output_idx;
+    bool picked = false;
+    for (i32 i = 0; i < n; i++) {
+        const RECT &r = g_monitor_rect[i];
+        f32 gap = dp(2);
+        ImVec2 m0(floorf(o0.x + (r.left - all.left) * sc) + gap, floorf(o0.y + (r.top - all.top) * sc) + gap);
+        ImVec2 m1(floorf(o0.x + (r.right - all.left) * sc) - gap, floorf(o0.y + (r.bottom - all.top) * sc) - gap);
+        bool on = i == shown, hot = over && mouse.x >= m0.x && mouse.x < m1.x && mouse.y >= m0.y && mouse.y < m1.y;
+        f32 rr = dp(6);
+        dl->AddRectFilled(m0, m1, col32(on || hot ? COL_HOVER : COL_PANEL2, alpha), rr);
+        dl->AddRect(m0, m1, col32(on ? COL_ACCENT : COL_LINE, alpha), rr, 0, on ? dp(2) : dp(1));
+        // Its number, centred, with the recorded one's dot after it
+        char num[8];
+        snprintf(num, sizeof num, "%d", i + 1);
+        ImVec2 ts = g_font_bold->CalcTextSizeA(g_font_bold->FontSize, FLT_MAX, 0, num);
+        ImVec2 tc(floorf((m0.x + m1.x - ts.x) / 2), floorf((m0.y + m1.y - ts.y) / 2));
+        dl->AddText(g_font_bold, g_font_bold->FontSize, tc, col32(on ? COL_TEXT : COL_DIM, alpha), num);
+        if (i == rec) dl->AddCircleFilled(ImVec2(tc.x + ts.x + dp(7), tc.y + ts.y / 2), dp(3), col32(COL_RED, alpha));
+        // Corner slots: the picked monitor's always, the one under the mouse's too
+        i32 hot_corner = -1;
+        if (on || hot)
+            for (i32 c = 0; c < 4; c++) {
+                ImVec2 s0, s1;
+                opt_map_corner(m0, m1, c, &s0, &s1);
+                bool chot = hot && mouse.x >= s0.x && mouse.x < s1.x && mouse.y >= s0.y && mouse.y < s1.y;
+                if (chot) hot_corner = c;
+                if (on && c == corner) {
+                    dl->AddRectFilled(s0, s1, col32(COL_PANEL, alpha), dp(3));
+                    dl->AddRect(s0, s1, col32(COL_ACCENT, alpha), dp(3), 0, dp(1));
+                } else {
+                    opt_dashed_rect(dl, s0, s1, col32(chot ? COL_TEXT : COL_DIM, alpha * (on ? 1 : 0.6f)));
+                }
+            }
+        if (live) {
+            char tip[160];
+            if (hot_corner >= 0) {
+                ImVec2 s0, s1;
+                opt_map_corner(m0, m1, hot_corner, &s0, &s1);
+                kit_tip_rect(s0, s1, CORNER_NAMES[hot_corner]);
+            } else {
+                char name[96], note[64];
+                monitor_label(i, name, sizeof name);
+                monitor_note(i, note, sizeof note);
+                snprintf(tip, sizeof tip, "%s, %s%s", name, note, i == rec ? ", recorded" : "");
+                kit_tip_rect(m0, m1, tip);
+            }
         }
-        if (pick != *value) {
-            *value = pick;
-            log_line("options: %s %d", game ? "popups in games" : "popups", pick);
-            options_apply(0);
+        if (clicked && hot && !picked) {
+            picked = true;
+            *mon_out = i;
+            *corner_out = hot_corner >= 0 ? (PopupCorner)hot_corner : corner;
         }
-        opt_combo_end();
+    }
+    return picked;
+}
+
+// The output index a popup monitor setting shows on the map: POPUP_RECORDED is the monitor recorded; one no longer
+// connected shows as the first.
+static i32 opt_map_index(i32 v)
+{
+    i32 n = g_app.options.monitor_count;
+    if (v == POPUP_RECORDED) v = g_app.config.output_idx;
+    return v >= 0 && v < n ? v : 0;
+}
+
+// A pick on the map as a setting: the monitor recorded stays POPUP_RECORDED, so it follows Recording's monitor
+static i32 opt_map_value(i32 i) { return i == g_app.config.output_idx ? POPUP_RECORDED : i; }
+
+// Popups (Config.popup_monitor, popup_corner): the map alone. Popups in games (popup_monitor_game, popup_corner_game):
+// chips for Same as normally, Not the game's monitor (needs two) and Pick, on the name's line; the map under them,
+// greyed for Same, the monitor nearest the recorded one (where the game plays) for Not the game's.
+static void opt_popup_maps()
+{
+    OptionsUi &o = g_app.options;
+    Config &c = g_app.config;
+    static i32 listed_frame = -100;
+    if (ImGui::GetFrameCount() > listed_frame + 1) options_list_monitors(); // entered again: the monitors may have changed
+    listed_frame = ImGui::GetFrameCount();
+    f32 cw = opt_wide_w(), mh = dp(OPT_MAP_H), pad = dp(12);
+
+    opt_row_begin("Popups", 0, cw, mh + 2 * pad);
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - cw, g_row.y + pad));
+    i32 mon;
+    PopupCorner corner;
+    if (opt_monitor_map("popups", opt_map_index(c.popup_monitor), c.popup_corner, true, &mon, &corner)) {
+        c.popup_monitor = opt_map_value(mon);
+        c.popup_corner = corner;
+        log_line("options: popups on %d, %s", c.popup_monitor, corner_name(corner));
+        options_apply(0);
+    }
+    opt_row_end();
+
+    f32 fh = ImGui::GetFrameHeight(), gap = dp(10);
+    opt_row_begin(0, 0, cw, pad + fh + gap + mh + pad);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    opt_text_at(dl, g_font, ImVec2(g_row.x0, floorf(g_row.y + pad + (fh - g_font->FontSize) / 2)), COL_TEXT,
+                "Popups in games", g_row.x1 - cw - dp(20));
+    i32 v = c.popup_monitor_game;
+    bool two = o.monitor_count > 1;
+    i32 mode = v == POPUP_AS_NORMAL ? 0 : v == POPUP_NOT_GAME ? 1 : 2;
+    static const char *const labels[] = {"Same as normally##pg", "Not the game's monitor##pg", "Pick##pg"};
+    static const char *const names[] = {"Same as normally", "Not the game's monitor", "Pick"};
+    f32 cx = g_row.x1, chip_w[3];
+    for (i32 i = 2; i >= 0; i--) {
+        chip_w[i] = text_w(g_font, names[i]) + 2 * kit_px(14);
+        cx -= chip_w[i] + (i < 2 ? dp(6) : 0);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(cx, g_row.y + pad));
+    i32 pick = mode;
+    for (i32 i = 0; i < 3; i++) {
+        if (i) ImGui::SameLine(0, dp(6));
+        bool grey = i == 1 && !two;
+        if (grey) ImGui::BeginDisabled();
+        if (kit_chip(labels[i], mode == i, 0, chip_w[i])) pick = i;
+        if (grey) ImGui::EndDisabled();
+        if (grey) kit_tip("Needs a second monitor");
+    }
+    if (pick != mode) {
+        if (pick == 0) c.popup_monitor_game = POPUP_AS_NORMAL;
+        else if (pick == 1) c.popup_monitor_game = POPUP_NOT_GAME;
+        else { // Pick starts where they go now
+            c.popup_monitor_game = mode == 0 ? c.popup_monitor : opt_map_value(popup_not_game(g_monitor_rect, o.monitor_count,
+                                                                                               opt_map_index(POPUP_RECORDED)));
+            if (mode == 0) c.popup_corner_game = c.popup_corner;
+        }
+        log_line("options: popups in games %d", c.popup_monitor_game);
+        options_apply(0);
+        v = c.popup_monitor_game;
+        mode = pick;
+    }
+    // The map: Same shows the Popups choice greyed; Not the game's the monitor it lands on now (with one monitor,
+    // the game's own), its corner still picked here; a click on another monitor makes it a Pick.
+    i32 shown = mode == 0 ? opt_map_index(c.popup_monitor)
+              : mode == 1 ? (two ? popup_not_game(g_monitor_rect, o.monitor_count, opt_map_index(POPUP_RECORDED))
+                                 : opt_map_index(POPUP_RECORDED))
+                          : opt_map_index(v);
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - cw, g_row.y + pad + fh + gap));
+    if (opt_monitor_map("popupsgame", shown, mode == 0 ? c.popup_corner : c.popup_corner_game, mode != 0, &mon, &corner)) {
+        if (mode != 1 || mon != shown) c.popup_monitor_game = opt_map_value(mon);
+        c.popup_corner_game = corner;
+        log_line("options: popups in games on %d, %s", c.popup_monitor_game, corner_name(corner));
+        options_apply(0);
     }
     opt_row_end();
 }
@@ -3773,13 +3963,10 @@ static void options_general()
         log_line("options: tooltips %s", c.tooltips ? "on" : "off");
         options_apply(0);
     }
-    // Where the toasts go: Clip saved, Session ended and the marker window, on the monitor recorded or another one.
-    // Off turns Clip saved off; the others then go on the monitor recorded. In games picks another one while a game
-    // is in front. Clip saved popup picks how Clip saved shows over a game: whole, the small pill or not at all.
-    opt_popup_monitor("Popups", "Clip saved, Session ended and the marker window, in a corner of this monitor",
-                      "##popups", &c.popup_monitor, false);
-    opt_popup_monitor("Popups in games", "Where they go while a game is in front", "##popups_game",
-                      &c.popup_monitor_game, true);
+    // Where the toasts go: Clip saved, Session ended and the marker window, a monitor and a corner on a map of them.
+    // In games picks another while a game is in front. Clip saved popup picks how Clip saved shows over a game:
+    // whole, the small pill or not at all.
+    opt_popup_maps();
     opt_row_begin("Clip saved popup", "Over a game. A game can have its own, in Apps", toast_clip_chips_w(TOAST_CLIP_FULL));
     if (toast_clip_chips("clip", TOAST_CLIP_FULL, &c.toast_clip)) {
         log_line("options: clip saved popup: %s", toast_clip_name(c.toast_clip));

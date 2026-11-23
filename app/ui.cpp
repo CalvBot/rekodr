@@ -1254,6 +1254,14 @@ static void help_window()
             {"Reads limit", "Near it, bucket links pause until the 1st"},
             {"Your servers", "Upload servers of your own, added from a .sxcu file"},
         };
+        static const HelpRow popups[] = {
+            {"Popups", "Click a monitor, then a corner: where they show"},
+            {"Same as normally", "Over a game they go where Popups says"},
+            {"Not the game's monitor", "The monitor nearest the game's. Needs two"},
+            {"Pick", "A monitor and corner of their own while a game is in front"},
+            {"Red dot", "The monitor being recorded"},
+            {"Clip saved popup", "Full: with Edit and Share. Small: a pill, gone after 3 s. Off: none"},
+        };
         // The hotkeys set in Options, their keys as caps: "Ctrl+Alt+S" becomes [Ctrl]+[Alt]+[S]
         static char hotkey_keys[COUNT(g_app.config.hotkeys)][96];
         static HelpRow hotkeys[COUNT(g_app.config.hotkeys)];
@@ -1299,6 +1307,7 @@ static void help_window()
             {"TIMELINE", timeline, COUNT(timeline)},
             {"EDITOR", editor, COUNT(editor)},
             {"SHARING", sharing, COUNT(sharing)},
+            {"POPUPS", popups, COUNT(popups)},
         };
         i32 n = COUNT(all), col_of[COUNT(all)], total = 0;
         for (i32 i = 0; i < n; i++) total += all[i].count ? all[i].count + 3 : 0; // a heading is about three rows
