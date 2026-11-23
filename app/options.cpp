@@ -3234,9 +3234,23 @@ static i32 opt_card_styles()
     return hot;
 }
 
+// Our own icon, for the card's "via" line: the exe's, as the window's.
+static ID3D11ShaderResourceView *opt_own_icon()
+{
+    static ID3D11ShaderResourceView *srv;
+    static bool tried;
+    if (!tried) {
+        tried = true;
+        Path exe = {};
+        GetModuleFileNameW(0, exe.s, MAX_PATH);
+        srv = app_icon_load(exe);
+    }
+    return srv;
+}
+
 // A link's card as Discord shows it in `style` (-1: the player's), built by embed_card as the page's is: the title
-// in bold over the line, the game's icon beside them, the video with a play button (or the picture), and the small
-// grey "via" line. The row's height is fixed at the tallest card, so nothing below moves.
+// in bold, the line ("Game - Name") with the game's small icon before it, the video with a play button (or the
+// picture), and the small grey "via" line with our icon. The row's height is fixed at the tallest card, so nothing below moves.
 static void opt_link_card_preview(i32 style)
 {
     Config &c = g_app.config;
@@ -3256,8 +3270,7 @@ static void opt_link_card_preview(i32 style)
     f32 title_h = g_font_bold->FontSize, line_h = g_font->FontSize, via_h = g_font_small->FontSize;
     f32 vid_w = cw - bar - 2 * pad, vid_h = floorf(vid_w * 9 / 16);
     f32 tall = pad + title_h + lgap + line_h + dp(10) + vid_h + dp(8) + via_h + pad;
-    bool two = line[0] != 0;
-    f32 head_h = two ? title_h + lgap + line_h : title_h;
+    f32 head_h = line[0] ? title_h + lgap + line_h : title_h;
     f32 card_h = pad + head_h + dp(10) + vid_h + (card.via ? dp(8) + via_h : 0) + pad;
     opt_row_begin("Preview", "How Discord shows a link from your bucket", cw, tall + dp(24));
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -3267,16 +3280,19 @@ static void opt_link_card_preview(i32 style)
     dl->AddRectFilled(a, b, col32(BG), dp(8));
     dl->AddRect(a, b, col32(EDGE), dp(8));
     if (card.accent) dl->AddRectFilled(a, ImVec2(a.x + bar, b.y), col32(card.accent), dp(8), ImDrawFlags_RoundCornersLeft);
-    f32 x = a.x + bar + pad, x1 = b.x - pad, y = a.y + pad, tx = x;
-    ID3D11ShaderResourceView *icon = card.icon && game[0] ? game_icon(game) : 0;
-    if (icon) { // beside the title and the line
-        f32 is = floorf(head_h);
-        dl->AddImageRounded((ImTextureID)(intptr_t)icon, ImVec2(x, y), ImVec2(x + is, y + is), ImVec2(0, 0), ImVec2(1, 1),
-                            IM_COL32_WHITE, dp(4));
-        tx += is + dp(8);
+    f32 x = a.x + bar + pad, x1 = b.x - pad, y = a.y + pad;
+    opt_text_at(dl, g_font_bold, ImVec2(x, y), TITLE, card.title, x1);
+    if (line[0]) {
+        f32 ly = y + title_h + lgap, lx = x;
+        ID3D11ShaderResourceView *icon = card.icon && game[0] ? game_icon(game) : 0;
+        if (icon) { // the game's icon before the line, the line's height
+            f32 is = floorf(line_h);
+            dl->AddImageRounded((ImTextureID)(intptr_t)icon, ImVec2(lx, ly), ImVec2(lx + is, ly + is), ImVec2(0, 0),
+                                ImVec2(1, 1), IM_COL32_WHITE, dp(3));
+            lx += is + dp(6);
+        }
+        opt_text_at(dl, g_font, ImVec2(lx, ly), LINE, line, x1);
     }
-    opt_text_at(dl, g_font_bold, ImVec2(tx, y), TITLE, card.title, x1);
-    if (line[0]) opt_text_at(dl, g_font, ImVec2(tx, y + title_h + lgap), LINE, line, x1);
     y += head_h + dp(10);
     ImVec2 v0(x, y), v1(x + vid_w, y + vid_h);
     LibThumb *th = it ? lib_thumb(*it) : 0;
@@ -3292,7 +3308,15 @@ static void opt_link_card_preview(i32 style)
                               IM_COL32_WHITE);
     }
     y += vid_h + dp(8);
-    if (card.via) opt_text_at(dl, g_font_small, ImVec2(x, y), FAINT, "via " APP_NAME, x1);
+    if (card.via) { // our icon, then "via"
+        f32 vx = x;
+        if (ID3D11ShaderResourceView *own = opt_own_icon()) {
+            f32 is = floorf(via_h);
+            dl->AddImage((ImTextureID)(intptr_t)own, ImVec2(vx, y), ImVec2(vx + is, y + is));
+            vx += is + dp(4);
+        }
+        opt_text_at(dl, g_font_small, ImVec2(vx, y), FAINT, "via " APP_NAME, x1);
+    }
     if (th && th->pending) ui_wake();
     opt_row_end();
 }
