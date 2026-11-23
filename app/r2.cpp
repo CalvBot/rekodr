@@ -101,6 +101,7 @@ struct R2Share {
                       // 0 the clip itself; -1 nothing, the clip is too long for a small copy and cards show the picture
     i32  social_w, social_h; // the small copy's size
     f32  seconds;     // how long the clip plays, for the page's title
+    f32  preview;     // the small copy is the clip's first this many seconds (save_social_copy), 0 = all of it
     // Not kept in the history:
     bool moving;      // a pause or resume is running
     i64  plays_today, plays_month, plays_24h; // GET requests for the file (local day, this month, the last 24
@@ -174,8 +175,9 @@ struct R2Task {
     char       undo[512]; // delete: a custom uploader's DeletionURL, fetched first
     Path       ffmpeg;  // upload with a page: for its picture
     Path       social;  // upload with a page: the small copy to send beside the file (deleted after), "" = none
-    i32        social_h; // upload: as r2_social_height decided, -1 when the small copy couldn't be made either
+    i32        social_h; // upload: the small copy's height bound, 0 none needed, -1 none made
     f32        seconds; // upload: how long the clip plays
+    f32        preview; // upload: the small copy is the clip's first this many seconds, 0 = all of it
 };
 
 // One link job's own data (main thread, except `info`, which the probe fills under the lock).
@@ -193,6 +195,7 @@ struct R2Work {
     u8         phase;      // 1 the copy's save, a small copy to come after; 2 the small copy's save; 0 the one save
     Path       full;       // while the small copy is made: the copy, made already
     i32        social_h;   // the small copy's height (r2_social_height)
+    f64        preview;    // the small copy's preview length (save_social_copy), 0 = the whole clip
 };
 
 static struct {
@@ -459,7 +462,6 @@ static void r2_thumb_key(const char *key, char out[R2_KEY_MAX])
 // about 10 s and gives up on a big file. A page names a small copy of the clip, beside it in the bucket, when the
 // clip is bigger than R2_SOCIAL_BYTES, 1080p or 1920 wide; the page itself plays the clip.
 static const i64 R2_SOCIAL_BYTES = 80ll * 1000 * 1000;
-static const f64 R2_SOCIAL_MIN_KBPS = 1000; // the least video bitrate a 720p small copy is made at
 
 // The small copy beside a file in the bucket: "clipback/<id>/clip.mp4" -> "clipback/<id>/social.mp4".
 static void r2_social_key(const char *key, char out[R2_KEY_MAX])
@@ -471,8 +473,8 @@ static void r2_social_key(const char *key, char out[R2_KEY_MAX])
 
 // What cards play for a link with a page, its copy `bytes` big, w x h at `fps`, `seconds` long: 0 the copy itself
 // (within `budget`, 1080p and 1920 wide); else the height of a small copy made for `budget`, 1080 when the clip's
-// recommended bitrate fits at that size, else 720 down to R2_SOCIAL_MIN_KBPS; -1 when not even that fits: no copy,
-// and cards show the picture. Longer clips get a lower bitrate, never a cut.
+// recommended bitrate fits at that size, else 720 down to SOCIAL_MIN_KBPS; -1 when not even that fits: the small
+// copy is a preview of the clip's start (save_social_copy), or there's none and cards show the picture.
 static i32 r2_social_height(f64 seconds, i32 w, i32 h, f64 fps, bool audio, i64 bytes, i64 budget)
 {
     if (bytes <= budget && w <= 1920 && h <= 1080) return 0;
@@ -482,7 +484,7 @@ static i32 r2_social_height(f64 seconds, i32 w, i32 h, f64 fps, bool audio, i64 
     link_fit_size(w, h, 1080, &fw, &fh);
     if (!fw) fw = w, fh = h;
     if (kbps >= share_reco_kbps(fw, fh, fps)) return 1080;
-    return kbps >= R2_SOCIAL_MIN_KBPS ? 720 : -1;
+    return kbps >= (f64)SOCIAL_MIN_KBPS ? 720 : -1;
 }
 
 // A clip's name that's only its game and when it was saved, as clips are named unless the player names them.
@@ -580,6 +582,7 @@ static const bool R2_CARD_ICON_SECTION = false; // the game's icon beside the li
 struct EmbedInput {
     const char *title, *game, *clipper; // the clip's name, its game, config.clipper_name ("" = none)
     f64  seconds;                       // how long it plays
+    f64  preview;                       // the card's video is the first this many seconds, 0 = all of it
     i64  date_us;                       // when it was shared
     bool video;                         // something small enough to play in the card; false = the picture
     u32  accent;                        // a colour as 0xRRGGBB, 0 = none
@@ -1254,7 +1257,7 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
 // ---------------------------------------------------------------------------------------------------------------
 // History: <config_dir>\shares.tsv, one share a line, oldest first:
 //   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  expires_us  paused  hidden  pause_day  page_w
-//   page_h  url  title  game  path  social  social_w  social_h  seconds
+//   page_h  url  title  game  path  social  social_w  social_h  seconds  preview
 
 static void r2_tsv_field(FILE *f, const char *s, bool last)
 {
@@ -1276,7 +1279,8 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
         r2_tsv_field(f, s[i].path, false);
-        fprintf(f, "%d\t%d\t%d\t%.3f\n", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds);
+        fprintf(f, "%d\t%d\t%d\t%.3f\t%.3f\n", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds,
+                s[i].preview);
     }
     bool ok = fclose(f) == 0;
     return ok && MoveFileExW(part.s, file.s, MOVEFILE_REPLACE_EXISTING);
@@ -1290,16 +1294,16 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
     for (char *line = text; line && *line && n < max;) {
         char *next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char *f[22] = {};
+        char *f[23] = {};
         i32 count = 0;
-        for (char *p = line; count < 22;) {
+        for (char *p = line; count < 23;) {
             f[count++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 22 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
+        if (count == 23 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
             atoi(f[7]) >= 0 && atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
@@ -1327,6 +1331,7 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.social_w = atoi(f[19]);
             s.social_h = atoi(f[20]);
             s.seconds = (f32)atof(f[21]);
+            s.preview = (f32)atof(f[22]);
             if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0))) s.social = 0;
             s.plays_today = s.plays_month = s.plays_24h = -1;
         }
@@ -1491,7 +1496,7 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     r2_thumb_size(s.page_w, s.page_h, &tw, &th);
     r2_page_title(s.title, s.game, s.seconds, title, sizeof title);
     bool copy = s.social == 1;
-    EmbedInput in = {s.title, s.game, g_app.config.clipper_name, s.seconds, s.uploaded_us, embed[0] != 0, 0};
+    EmbedInput in = {s.title, s.game, g_app.config.clipper_name, s.seconds, s.preview, s.uploaded_us, embed[0] != 0, 0};
     EmbedCard card;
     embed_card(in, &card);
     static thread_local char json[R2_CARD_MAX + 1];
@@ -1735,6 +1740,7 @@ static void r2_run_upload(const R2Task &t)
         if (!s.social_w) s.social_w = page_w, s.social_h = page_h;
     }
     s.seconds = t.seconds;
+    s.preview = s.social == 1 ? t.preview : 0;
     R2Share page = s;
     if (page_w) {
         char page_key[R2_KEY_MAX];
@@ -3822,7 +3828,8 @@ static void r2_on_save_event(const Event &e)
     t.seconds = (f32)share_seconds(w.info, memcmp(&w.edit, &none, sizeof none) ? &w.edit : 0);
     if (second) {
         t.file = w.full;
-        t.social_h = w.social_h;
+        t.social_h = w.preview > 0 ? SOCIAL_PREVIEW_H : w.social_h;
+        t.preview = (f32)w.preview;
         if (v->state == SAVE_DONE) utf8_to_wide(v->path, t.social.s, MAX_PATH);
         else {
             log_line("r2: the small copy couldn't be made (%s): cards show the picture", v->error);
@@ -3854,13 +3861,16 @@ static void r2_on_save_event(const Event &e)
                         ? ((i64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow : 0;
         t.social_h = r2_social_height(t.seconds, w.info.width, w.info.height, w.info.fps, w.info.track_count > 0, bytes,
                                       R2_SOCIAL_BYTES);
-        if (t.social_h > 0) {
+        if (t.social_h) { // the whole clip at that height, or (-1) a preview of its start
+            f64 full_s = 0;
             w.full = t.file;
             w.social_h = t.social_h;
+            w.preview = 0;
             w.phase = 2;
-            w.save = save_link(w.src, w.info, w.edit, "social", R2_SOCIAL_BYTES, R2_SOCIAL_BYTES, t.social_h);
+            w.save = save_social_copy(w.src, w.info, w.edit, "social", R2_SOCIAL_BYTES, t.social_h, &w.preview,
+                                      &full_s);
             if (w.save) return;
-            log_line("r2: no room to make a small copy: cards show the picture");
+            log_line("r2: no small copy could be made: cards show the picture");
             w.full = {};
             w.phase = 0;
             t.social_h = -1;

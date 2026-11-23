@@ -1657,6 +1657,7 @@ static void test_r2()
     w[0].social_w = 1280;
     w[0].social_h = 720;
     w[0].seconds = 125.5f;
+    w[0].preview = 60;
     w[1].social = -1;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
@@ -1670,6 +1671,7 @@ static void test_r2()
     T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
     T(r[0].social == 1 && r[0].social_w == 1280 && r[0].social_h == 720 && r[0].seconds == 125.5f);
+    T(r[0].preview == 60);
     T(r[1].social == -1 && !r[1].social_w);
     DeleteFileW(file.s);
 
@@ -1746,7 +1748,7 @@ static void test_r2()
 
     // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag
     EmbedCard card;
-    EmbedInput ein = {"ace <\"round\"> *1*", "Valorant", "", 42, 0, true, 0};
+    EmbedInput ein = {"ace <\"round\"> *1*", "Valorant", "", 42, 0, 0, true, 0};
     embed_card(ein, &card);
     T(!strcmp(card.title, ein.title) && !strcmp(card.line, "Valorant") && card.player && card.via && !card.accent);
     ein.clipper = "Sam";
@@ -1755,7 +1757,7 @@ static void test_r2()
     ein.title = "Valorant 2026-11-24 21-04-33";
     embed_card(ein, &card);
     T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Sam"));
-    ein = {"ace <\"round\"> *1* \xc3\xa9\xf0\x9f\x8e\xae", "Valorant", "", 42, 0, true, 0x112233};
+    ein = {"ace <\"round\"> *1* \xc3\xa9\xf0\x9f\x8e\xae", "Valorant", "", 42, 0, 0, true, 0x112233};
     embed_card(ein, &card);
     static char cj[R2_CARD_MAX + 1];
     i32 cn = r2_card_json(card, "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg",
