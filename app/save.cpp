@@ -2236,18 +2236,24 @@ static void link_fit_size(i32 w, i32 h, i32 max_h, i32 *fw, i32 *fh)
 #define END_CARD_FONT "C\\:/Windows/Fonts/segoeui.ttf"
 static const f32 END_CARD_S = 1.5f;
 
+// How loud Share and Link make the mix (loudnorm): integrated loudness in LUFS and the true peak in dBTP, the level
+// streaming sites and chat apps play at.
+enum { LOUD_LUFS = -14 };
+static const f64 LOUD_PEAK = -1.5;
+
 static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 {
     const SaveRequest &req = w->req;
     const EditJob &j = req.edit;
     const MediaInfo &m = j.info;
     bool share = req.kind == SAVE_SHARE;
-    // A link is played by Discord's player: H.264 and one track of sound. It's copied as it is when the file is that
-    // already and the edit leaves the picture and the sound alone, else made at about the source's quality.
+    // A link is played by Discord's player: H.264 and one track of sound. The picture is copied as it is when it's
+    // H.264 already and the edit leaves it alone, else made at about the source's quality. The sound is always the
+    // mix made evenly loud (loudnorm), as for Share.
     bool link = req.kind == SAVE_LINK;
     char vcodec[16] = {}, acodec[16] = {};
     if (link) file_codecs(w->cfg.ffmpeg, j.src, vcodec, acodec);
-    bool link_video_ok = !strcmp(vcodec, "h264"), link_audio_ok = !acodec[0] || !strcmp(acodec, "aac");
+    bool link_video_ok = !strcmp(vcodec, "h264");
     // Each piece is read from sa to sb: its own span, and half a crossfade past each cut that has one. The input is
     // read from the earliest of those to the latest (`from`, `span`); `dur` is the joined length. With cuts or
     // transitions (`seq`) every piece is cut out of the input and they're joined. An Advanced edit (`adv`) is always
@@ -2366,7 +2372,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 seq_join(w, tr, sa, sb, np, -1);
             } else graph_add(w, "[v];\n");
         }
-        bool mix = !adv && (share || touched || (link && (seq || !link_audio_ok))) && edit_audio_graph(w, j, from);
+        bool mix = !adv && (share || link || touched) && edit_audio_graph(w, j, from);
         // With cuts or transitions each stream (the rebuilt mix [a], or a track as recorded) is cut into the pieces,
         // faded, and joined into [o<n>].
         if (seq && !adv) {
@@ -2399,6 +2405,14 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             while (end > 0 && (w->graph[end - 1] == '\n' || w->graph[end - 1] == ' ')) end--;
             graph_add(w, "%s[v]scale=%d:%d:flags=lanczos[vfit];\n", end > 0 && w->graph[end - 1] != ';' ? ";\n" : "",
                       fit_w, fit_h);
+        }
+        // Share and Link: the mix (the one sound stream, [o0] when joined, else [a]) made evenly loud, as [loud]
+        const char *loud_from = !(share || link) ? 0 : seq ? (ns && streams[0] == -1 ? "o0" : 0) : mix ? "a" : 0;
+        if (loud_from) {
+            i32 end = w->graph_len;
+            while (end > 0 && (w->graph[end - 1] == '\n' || w->graph[end - 1] == ' ')) end--;
+            graph_add(w, "%s[%s]loudnorm=I=%d:TP=%.1f:LRA=11,aresample=48000[loud];\n",
+                      end > 0 && w->graph[end - 1] != ';' ? ";\n" : "", loud_from, LOUD_LUFS, LOUD_PEAK);
         }
         if (j.end_card > 0) { // the card after the finished picture, as [vend]; the sound just ends before it
             i32 end = w->graph_len, cw = fit_w ? fit_w : m.width, ch = fit_w ? fit_h : m.height;
@@ -2450,7 +2464,8 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         if (seq) {
             for (i32 s = 0; s < ns; s++) {
                 char key[32];
-                arg_pair(a, cap, "-map", "[o%d]", s);
+                if (s == 0 && loud_from) arg_pair(a, cap, "-map", "[loud]");
+                else arg_pair(a, cap, "-map", "[o%d]", s);
                 snprintf(key, sizeof key, "-c:a:%d", s);
                 arg_pair(a, cap, key, "aac");
                 snprintf(key, sizeof key, "-b:a:%d", s);
@@ -2464,17 +2479,12 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 snprintf(key, sizeof key, "-disposition:a:%d", s);
                 arg_pair(a, cap, key, s ? "0" : "default");
             }
-        } else if (share || (link && mix)) {
+        } else if (share || link) {
             if (mix) {
-                arg_pair(a, cap, "-map", "[a]");
+                arg_pair(a, cap, "-map", loud_from ? "[loud]" : "[a]");
                 arg_pair(a, cap, "-c:a", "aac");
                 arg_pair(a, cap, "-b:a", "%dk", sized && rate.audio_kbps ? rate.audio_kbps : 192);
                 arg_pair(a, cap, "-ar", "48000");
-            }
-        } else if (link) {
-            if (m.track_count > 0) { // the Mix as it is
-                arg_pair(a, cap, "-map", "0:a:0");
-                arg_pair(a, cap, "-c:a", "copy");
             }
         } else if (!touched) {
             if (m.track_count > 0) {
@@ -2719,8 +2729,8 @@ static u32 save_edit(SaveKind kind, const EditJob &job)
 }
 
 // Queues a copy of `src` for a link, with `edit` applied (an empty record for the file as it is): H.264 with the
-// first (Mix) track only, +faststart, in the link folder as <stem>.mp4. The file is stream-copied when it's already
-// H.264 and AAC, the edit only trims and the copy isn't much over `aim` bytes; anything else is encoded at the
+// first (Mix) track only, made evenly loud, +faststart, in the link folder as <stem>.mp4. The picture is copied when
+// it's already H.264, the edit only trims and the copy isn't much over `aim` bytes; anything else is encoded at the
 // bitrate for `aim`, under `limit` (0 = no limit). With no aim it's encoded at about the source's quality. Follow it
 // with save_view(id) like any save; the caller deletes the file once it's done with it. Returns the job id, or 0 if
 // it couldn't be queued. With `max_h` the picture is made at most that tall and 1920 wide (link_fit_size), and
