@@ -1757,14 +1757,16 @@ static void test_r2()
     ein.title = "Valorant 2026-11-24 21-04-33";
     embed_card(ein, &card);
     T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Sam"));
-    ein = {"ace <\"round\"> *1* \xc3\xa9\xf0\x9f\x8e\xae", "Valorant", "", 42, 0, 0, true, 0x112233};
+    char named[64];
+    snprintf(named, sizeof named, "ace <\"round\"> *1* %s", (const char *)past_ascii); // e-acute, a pad, a control
+    ein = {named, "Valorant", "", 42, 0, 0, true, 0x112233};
     embed_card(ein, &card);
     static char cj[R2_CARD_MAX + 1];
     i32 cn = r2_card_json(card, "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg",
                           "", cj, sizeof cj);
     T(cn > 0 && cn == (i32)strlen(cj) && !strchr(cj, '<') && !strchr(cj, '>') && !strchr(cj, '&'));
     T(starts_with(cj, "{\"component\":{\"type\":17,\"accent_color\":1122867,\"components\":[{\"type\":10,"));
-    T(strstr(cj, "\"content\":\"**ace \\u003c\\\"round\\\"\\\\\\u003e \\\\*1\\\\* \\u00e9\\ud83c\\udfae**\"}") != 0);
+    T(strstr(cj, "\"content\":\"**ace \\u003c\\\"round\\\"\\\\\\u003e \\\\*1\\\\* caf\\u00e9 \\ud83c\\udfae**\"}") != 0);
     T(strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}") != 0);
     T(strstr(cj, "{\"type\":12,\"items\":[{\"media\":{\"url\":\"https://x.dev/clipback/abc/social.mp4?v=2\"}}]}") != 0);
     T(strstr(cj, "\"-# [via Clipback](\\u003chttps://github.com/CalvBot/clipback\\u003e)\"}]}}") != 0);
