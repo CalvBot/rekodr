@@ -1042,6 +1042,66 @@ static void test_r2()
     T(!r2_capped(8999999, 10000000) && r2_capped(9000000, 10000000) && r2_capped(20000000, 10000000));
     T(!r2_capped(20000000, 0) && !r2_capped(-1, 10000000));
 
+    // Options' budget label: what clipback keeps for a step and the most it costs
+    {
+        char t[64];
+        r2_budget_label(10, t, sizeof t);
+        T(!strcmp(t, "Free: 8 GB"));
+        r2_budget_label(25, t, sizeof t);
+        T(!strcmp(t, "20 GB for at most $0.23 a month"));
+        r2_budget_label(50, t, sizeof t);
+        T(!strcmp(t, "40 GB for at most $0.60 a month"));
+    }
+
+    // Where a link goes: free hosts without a bucket; with one, Catbox for what it takes, else the bucket, which
+    // never hands a link it can't take to a free host
+    const i64 cb = 200000000;
+    T(r2_pick_host(false, false, true, true, cb, 1) == R2_PICK_FREE);
+    T(r2_pick_host(true, true, false, true, cb, cb) == R2_PICK_CATBOX);
+    T(r2_pick_host(true, true, false, true, cb, cb + 1) == R2_PICK_R2);
+    T(r2_pick_host(true, true, false, false, cb, 1) == R2_PICK_R2);
+    T(r2_pick_host(true, true, false, true, cb, -1) == R2_PICK_UNKNOWN);
+    T(r2_pick_host(true, true, true, true, cb, cb + 1) == R2_PICK_CAPPED);
+    T(r2_pick_host(true, true, true, true, cb, 5) == R2_PICK_CATBOX);
+    T(r2_pick_host(true, false, false, true, cb, cb + 1) == R2_PICK_NO_KEYS);
+    T(r2_pick_host(true, false, false, false, cb, -1) == R2_PICK_NO_KEYS);
+
+    // Upload speed: the mean of the first 10, then each new one counts a tenth
+    {
+        f64 avg = 0;
+        i32 cnt_n = 0;
+        r2_rate_add(&avg, &cnt_n, 2e6);
+        r2_rate_add(&avg, &cnt_n, 4e6);
+        T(cnt_n == 2 && fabs(avg - 3e6) < 1);
+        for (i32 i = 0; i < 20; i++) r2_rate_add(&avg, &cnt_n, 3e6);
+        T(cnt_n == 10 && fabs(avg - 3e6) < 1);
+        r2_rate_add(&avg, &cnt_n, 13e6);
+        T(cnt_n == 10 && fabs(avg - 4e6) < 1);
+        f64 rate[3] = {11.4e6, 2.1e6, 0};
+        i32 cnt[3] = {3, 2, 0};
+        char t[160];
+        r2_rates_tip(rate, cnt, true, t, sizeof t);
+        T(!strcmp(t, "Upload speed from your last uploads: Catbox 2.1 MB/s, your bucket 11.4 MB/s"));
+        cnt[HOST_R2] = 0;
+        r2_rates_tip(rate, cnt, true, t, sizeof t);
+        T(!strcmp(t, "Upload speed from your last uploads: Catbox 2.1 MB/s, your bucket not measured yet"));
+        cnt[HOST_CATBOX] = 0;
+        r2_rates_tip(rate, cnt, false, t, sizeof t);
+        T(!strcmp(t, "Upload speed from your last uploads: Catbox not measured yet"));
+    }
+
+    // The bucket's custom domains: only those enabled, owned and with a certificate
+    {
+        const char *resp = "{\"success\":true,\"result\":{\"domains\":["
+                           "{\"domain\":\"clips.example.com\",\"enabled\":true,\"status\":{\"ownership\":\"active\",\"ssl\":\"active\"}},"
+                           "{\"domain\":\"off.example.com\",\"enabled\":false,\"status\":{\"ownership\":\"active\",\"ssl\":\"active\"}},"
+                           "{\"domain\":\"new.example.com\",\"enabled\":true,\"status\":{\"ownership\":\"pending\",\"ssl\":\"pending\"}},"
+                           "{\"domain\":\"v.example.net\",\"enabled\":true,\"status\":{\"ownership\":\"active\",\"ssl\":\"active\"}}]}}";
+        char got[8][128];
+        T(r2_parse_custom_domains(resp, got, 8) == 2 && !strcmp(got[0], "clips.example.com") && !strcmp(got[1], "v.example.net"));
+        T(r2_parse_custom_domains("{\"success\":true,\"result\":{\"domains\":[]}}", got, 8) == 0);
+    }
+
     // Automatic pause: a link read too often in 24 hours, every link near the cap; not one resumed by hand today
     R2Share ap = {};
     ap.host = HOST_R2;

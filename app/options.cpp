@@ -2495,8 +2495,12 @@ static void options_sharing()
     }
     static char added[200]; // what Add uploader did, in place of the row's line
     {
+        // With a bucket set up only Catbox is used, for the links it takes; the rows stay for when there's no bucket
         opt_row_begin("Free links",
-                      added[0] ? added : "No setup. Public: anyone with the link can watch. Tried in the order numbered", bw);
+                      added[0]       ? added
+                      : r2_set_up() ? "With your bucket: Catbox if it's on and the clip fits, else the bucket"
+                                    : "No setup. Public: anyone with the link can watch. Tried in the order numbered",
+                      bw);
         if (kit_button(ICON_ADD "  Add uploader...##addup", KIT_SECONDARY, ImVec2(bw, 0))) {
             Path file = {};
             if (pick_file(file, &file, L"ShareX uploaders", L"*.sxcu")) {
@@ -2519,14 +2523,22 @@ static void options_sharing()
         char most[24], sub[96];
         lib_r2_size(free_host(HOST_CATBOX)->max_bytes, most, sizeof most);
         snprintf(sub, sizeof sub, "Clips up to %s. Kept for good: a link can't be deleted", most);
-        opt_row_value("Catbox", sub, "");
+        // The whole row shows how fast Catbox has been next to the bucket (Config.upload_rate)
+        opt_row_begin("Catbox", sub, 0);
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x0, g_row.y));
+        ImGui::InvisibleButton("##catboxrow", ImVec2(g_row.x1 - g_row.x0, g_row.h));
+        char tip[160];
+        r2_rates_tip(c.upload_rate, c.upload_rate_n, r2_set_up(), tip, sizeof tip);
+        kit_tip(tip);
+        opt_row_end();
     }
     {
         static const char *const hours[] = {"1 h", "12 h", "24 h", "72 h"};
         static const i32 hour_v[] = {1, 12, 24, 72};
         char most[24], sub[96];
         lib_r2_size(free_host(HOST_LITTERBOX)->max_bytes, most, sizeof most);
-        snprintf(sub, sizeof sub, "Clips up to %s. Gone after this long", most);
+        if (r2_set_up()) str_set(sub, "Not used with your bucket");
+        else snprintf(sub, sizeof sub, "Clips up to %s. Gone after this long", most);
         f32 w = dp(240);
         opt_row_begin("Litterbox", sub, w);
         i32 on = 3, cur = free_hours(c.litterbox_hours);
@@ -2586,35 +2598,10 @@ static void options_sharing()
     }
     opt_row_end();
 
-    struct Field {
-        const char *name, *sub, *id, *hint;
-        char *v;
-        i32 cap;
-        bool setup; // a change sets the bucket up again
-    } fields[] = {
-        {"Bucket", "Empty means clipback", "##r2bucket", "clipback", c.r2_bucket, (i32)sizeof c.r2_bucket, true},
-        {"Public address", "Your own domain; empty uses the bucket's r2.dev address", "##r2public", "https://",
-         c.r2_public_url, (i32)sizeof c.r2_public_url, false},
-    };
-    for (i32 i = 0; i < (i32)COUNT(fields); i++) {
-        Field &f = fields[i];
-        opt_row_begin(f.name, f.sub, fw);
-        char t[MAX_PATH * 3];
-        if (opt_text(f.id, f.v, fw, 0, f.hint, t, sizeof t)) {
-            char *v = trim(t);
-            if (strcmp(v, f.v)) {
-                snprintf(f.v, f.cap, "%s", v);
-                log_line("options: R2 %s %s", f.name, v[0] ? "set" : "cleared");
-                options_apply(0);
-                if (f.setup && (r2_signed_in() || r2_has_token())) r2_setup_again();
-            }
-        }
-        opt_row_end();
-    }
-
-    // The budget: steps of the most the bucket holds, the first being Cloudflare's free 10 GB
+    // The budget: steps of what the bucket may hold, the first being Cloudflare's free 10 GB; the label says what
+    // clipback keeps for it (r2_budget_label)
     {
-        f32 sw = dp(170), lw = dp(220);
+        f32 sw = dp(170), lw = dp(260);
         opt_row_begin("Monthly budget", "Past it the oldest links that aren't pinned are removed", sw + dp(12) + lw);
         i32 n = (i32)COUNT(R2_STEPS_GB), cur = 0;
         f64 best = 1e30;
@@ -2637,8 +2624,7 @@ static void options_sharing()
             options_apply(0);
         }
         char t[64];
-        if (cur == 0) snprintf(t, sizeof t, "Free");
-        else snprintf(t, sizeof t, "At most $%.2f a month", r2_cost_for((i64)R2_STEPS_GB[cur] * R2_GB));
+        r2_budget_label(R2_STEPS_GB[cur], t, sizeof t);
         opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(at.x + sw + dp(12), opt_row_text_y(g_font)), COL_TEXT, t,
                     g_row.x1);
         opt_row_end();
@@ -2682,23 +2668,89 @@ static void options_sharing()
         else opt_row_value("Space", "What the links take up in the bucket", "Not set up", COL_DIM);
     }
 
-    // Last in the card, so opening it moves nothing above: the token rows, for a token made by hand
-    static bool token_rows;
+    // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made
+    // by hand. Each link has a slot as wide as its longer wording, so neither moves when the other is clicked.
+    static bool advanced, token_rows;
     opt_row_begin(0, 0, 0, dp(36));
     {
-        const char *link = token_rows ? "Hide the token rows" : "Use a token instead";
-        f32 lw = text_w(g_font_small, link);
-        ImVec2 at(g_row.x0, floorf(g_row.y + (g_row.h - g_font_small->FontSize) / 2));
-        ImGui::SetCursorScreenPos(at);
-        if (ImGui::InvisibleButton("##r2tokenrows", ImVec2(lw, g_font_small->FontSize))) token_rows = !token_rows;
-        bool hot = ImGui::IsItemHovered();
-        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        opt_text_at(dl, g_font_small, at, hot ? COL_TEXT : COL_DIM, link, g_row.x1);
-        dl->AddLine(ImVec2(at.x, at.y + g_font_small->FontSize), ImVec2(at.x + lw, at.y + g_font_small->FontSize),
-                    col32(hot ? COL_TEXT : COL_DIM, 0.5f));
+        struct Fold {
+            const char *open, *shut, *id;
+            bool *on;
+        } folds[] = {{"Advanced", "Hide advanced", "##r2advanced", &advanced},
+                     {"Use a token instead", "Hide the token rows", "##r2tokenrows", &token_rows}};
+        f32 x = g_row.x0;
+        for (Fold &f : folds) {
+            const char *link = *f.on ? f.shut : f.open;
+            f32 lw = text_w(g_font_small, link);
+            ImVec2 at(x, floorf(g_row.y + (g_row.h - g_font_small->FontSize) / 2));
+            ImGui::SetCursorScreenPos(at);
+            if (ImGui::InvisibleButton(f.id, ImVec2(lw, g_font_small->FontSize))) *f.on = !*f.on;
+            bool hot = ImGui::IsItemHovered();
+            if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            opt_text_at(dl, g_font_small, at, hot ? COL_TEXT : COL_DIM, link, g_row.x1);
+            dl->AddLine(ImVec2(at.x, at.y + g_font_small->FontSize), ImVec2(at.x + lw, at.y + g_font_small->FontSize),
+                        col32(hot ? COL_TEXT : COL_DIM, 0.5f));
+            x += fmaxf(text_w(g_font_small, f.open), text_w(g_font_small, f.shut)) + dp(24);
+        }
     }
     opt_row_end();
+    // Public address: the bucket's r2.dev address or a custom domain connected to it in Cloudflare
+    if (advanced) {
+        static const char *const sub = "r2.dev is rate-limited by Cloudflare; your own domain suits busy links";
+        R2Domains d = r2_domains(r2_ready());
+        if (d.state == -1 || !r2_set_up()) {
+            // Cloudflare wouldn't list the domains (or there's no bucket yet): the address is typed
+            char why[200];
+            if (r2_set_up()) snprintf(why, sizeof why, "Couldn't list the bucket's domains: %s. %s", d.why, sub);
+            else str_set(why, sub);
+            opt_row_begin("Public address", why, fw);
+            char t[MAX_PATH * 3];
+            if (opt_text("##r2public", c.r2_public_url, fw, 0, "https://", t, sizeof t)) {
+                char *v = trim(t);
+                if (strcmp(v, c.r2_public_url)) {
+                    str_set(c.r2_public_url, v);
+                    log_line("options: R2 public address %s", v[0] ? "set" : "cleared");
+                    options_apply(0);
+                    if (!v[0] && (signed_in || has)) r2_setup_again();
+                }
+            }
+            opt_row_end();
+        } else {
+            // r2.dev first, then the custom domains, then the address in use when it's neither
+            char names[10][136];
+            const char *items[10], *notes[10] = {};
+            i32 n = 0, cur = -1;
+            snprintf(names[n], sizeof names[n], "%s", d.r2dev[0] ? d.r2dev : "The bucket's r2.dev address");
+            notes[n] = "r2.dev";
+            n++;
+            for (i32 i = 0; i < d.count; i++) snprintf(names[n++], sizeof names[0], "%s", d.list[i]);
+            for (i32 i = 0; i < n; i++) {
+                items[i] = names[i];
+                char url[160];
+                snprintf(url, sizeof url, "https://%s", names[i]);
+                if (!strcmp(url, c.r2_public_url)) cur = i;
+            }
+            if (cur < 0 && strstr(c.r2_public_url, ".r2.dev")) cur = 0;
+            if (cur < 0 && c.r2_public_url[0]) {
+                const char *u = c.r2_public_url;
+                if (starts_with(u, "https://")) u += 8;
+                snprintf(names[n], sizeof names[n], "%s", u);
+                items[n] = names[n];
+                cur = n++;
+            }
+            opt_row_begin("Public address", d.state == 1 && !d.count && !d.r2dev[0] ? "Asking Cloudflare..." : sub, fw);
+            if (opt_combo("##r2public", items, notes, n, &cur, fw)) {
+                if (cur == 0 && !(d.r2dev[0] && d.r2dev_on)) {
+                    c.r2_public_url[0] = 0; // setting up turns the r2.dev address on
+                    r2_setup_again();
+                } else snprintf(c.r2_public_url, sizeof c.r2_public_url, "https://%s", items[cur]);
+                log_line("options: R2 public address %s", c.r2_public_url[0] ? c.r2_public_url : "r2.dev");
+                options_apply(0);
+            }
+            opt_row_end();
+        }
+    }
     if (token_rows) {
         opt_row_begin("Create token", "Opens Cloudflare with the right permissions; create it and paste it below", bw);
         if (kit_button("Create token##r2token", KIT_SECONDARY, ImVec2(bw, 0))) {

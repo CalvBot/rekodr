@@ -137,7 +137,9 @@ struct Config {
     f32  r2_budget;          // dollars a month to spend on storage; 0 = the free 10 GB
     i32  r2_read_cap;        // R2 links pause near this many reads (Class B) in the account's month; 0 = no cap
     i32  r2_read_rate;       // an R2 link read this many times in 24 hours pauses until the next day; 0 = no limit
-    char link_hosts[256];    // hosts for links while R2 isn't set up, in order: "catbox,litterbox" and the names
+    f64  upload_rate[3];     // bytes a second, about the last 10 uploads to R2, Catbox and Litterbox (LinkHost)
+    i32  upload_rate_n[3];   // how many uploads that is, up to 10; 0 = not measured
+    char link_hosts[256];    // hosts for links without R2, in order (with R2 only catbox): "catbox,litterbox" and the names
                              // of uploaders in <config_dir>\uploaders (.sxcu files); "" = none
     i32  litterbox_hours;    // how long Litterbox keeps a clip: 1, 12, 24 or 72
     bool free_links_seen;    // the player was told free links are public

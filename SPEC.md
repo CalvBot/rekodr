@@ -86,9 +86,15 @@ Keep a whole session from start to finish.
     *Recent shares* list keeps them for re-copying until they're cleared (setting, default 7 days). If a share copy
     is gone, it is encoded again from the original.
   - **Link:** Share's fourth choice. The edit is made into a copy Discord plays (H.264, the Mix only, stream-copied
-    when the file already is that and only trimmed), uploaded, and its link goes on the clipboard. It goes to the
-    player's own R2 bucket when sharing is set up in Options, at any size; without it, to the free public hosts,
-    which take up to 1 GB, and the card says so. A clip too big for them fails with the reason.
+    when the file already is that and only trimmed), uploaded, and its link goes on the clipboard. Without a bucket
+    it goes to the free public hosts, which take up to 1 GB, and the card says so; a clip too big for them fails
+    with the reason. With the player's own R2 bucket set up in Options, a copy Catbox takes (200 MB) goes to Catbox
+    while it's on, to save the bucket's space, and anything bigger goes to the bucket; Litterbox and uploaders
+    aren't used. When the bucket can't take a link (its keys unreadable, or the month's reads near `r2_read_cap`)
+    the link fails with the reason rather than going to a free host. The bucket is `clipback` (`r2_bucket` in the
+    config file). Its public address is its r2.dev address or a custom domain connected to it in Cloudflare,
+    picked under Options' Advanced; r2.dev is rate-limited by Cloudflare. Each host's upload speed is averaged over
+    about its last 10 uploads (`upload_rate_*`), and Catbox's row shows it beside the bucket's when tooltips are on.
     An R2 link can be paused (its file moved to a hidden name). Links pause by themselves so R2 costs nothing
     unexpected: all of them until the 1st when the account's reads this month near `r2_read_cap` (10 M, R2's
     free amount), and one until the next day past `r2_read_rate` reads in 24 hours (1 M); 0 turns either off.

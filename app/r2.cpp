@@ -103,6 +103,17 @@ struct R2Usage {
     bool capped;                 // those are near r2_read_cap: R2 links are paused until the month ends
 };
 
+// The addresses the bucket answers at, for Options' Public address
+struct R2Domains {
+    i8   state;           // 0 not asked, 1 asking, 2 listed, -1 Cloudflare wouldn't list them (`why`)
+    char r2dev[128];      // the bucket's r2.dev domain, "" until known
+    bool r2dev_on;
+    char list[8][128];    // custom domains connected to the bucket, enabled and active
+    i32  count;
+    char why[160];
+    i64  asked_us;
+};
+
 // What Cloudflare's analytics say about the bucket, and the account's reads
 struct R2Fetched {
     i64 bytes, class_a, class_b, account_reads;
@@ -117,7 +128,7 @@ static const i64 R2_GB = 1000000000;
 static const i64 R2_PART = 64ll << 20;       // multipart part size
 static const i64 R2_SINGLE_MAX = 100ll << 20; // larger files go up in parts
 
-enum R2EventKind : u8 { R2_EV_PROBED, R2_EV_JOB, R2_EV_STATUS, R2_EV_SETUP, R2_EV_HISTORY, R2_EV_USAGE };
+enum R2EventKind : u8 { R2_EV_PROBED, R2_EV_JOB, R2_EV_STATUS, R2_EV_SETUP, R2_EV_HISTORY, R2_EV_USAGE, R2_EV_RATE };
 
 // What a network task needs of the settings, copied when the task is queued.
 struct R2Conf {
@@ -126,7 +137,7 @@ struct R2Conf {
 };
 
 enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_FREE, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
-                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME };
+                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS };
 
 struct R2Task {
     R2TaskKind kind;
@@ -172,6 +183,7 @@ static struct {
     R2Fetched fetched;
     i64      usage_us;   // when `fetched` came, 0 = never
     i64      usage_asked_us;
+    R2Domains domains;
     i8       has_token; // 0 unknown, 1 yes, -1 no
     i8       signed_in; // the same for the sign-in's refresh token
     char     access[2048]; // worker: the sign-in's access token, until access_until_us
@@ -204,6 +216,52 @@ static f64 r2_cost_for(i64 bytes)
 {
     f64 gb = (f64)bytes / (f64)R2_GB - R2_FREE_GB;
     return gb > 0 ? gb * R2_PRICE_GB : 0;
+}
+
+// Options' label for a budget step of `gb` bought: what clipback keeps for it and the most it costs, "Free: 8 GB",
+// "20 GB for at most $0.23 a month".
+static void r2_budget_label(i32 gb, char *out, i32 cap)
+{
+    f64 cost = r2_cost_for((i64)gb * R2_GB);
+    f64 keep = (f64)r2_limit_for_budget(cost) / (f64)R2_GB;
+    char size[24];
+    if (fabs(keep - floor(keep + 0.5)) < 0.05) snprintf(size, sizeof size, "%.0f GB", keep);
+    else snprintf(size, sizeof size, "%.1f GB", keep);
+    if (cost <= 0) snprintf(out, cap, "Free: %s", size);
+    else snprintf(out, cap, "%s for at most $%.2f a month", size, ceil(cost * 100 - 1e-6) / 100);
+}
+
+// Where a link of `bytes` goes (-1: not known yet). Without a bucket, to the free hosts in link_hosts. With one,
+// to Catbox when it's on and takes the size, which saves the bucket's space, else to the bucket; Litterbox and the
+// uploaders aren't used. A bucket that can't take the link now (its keys unreadable, the month's reads near
+// r2_read_cap) never passes it to a free host: the link fails with the reason.
+enum R2Pick : u8 { R2_PICK_R2, R2_PICK_FREE, R2_PICK_CATBOX, R2_PICK_CAPPED, R2_PICK_NO_KEYS, R2_PICK_UNKNOWN };
+static R2Pick r2_pick_host(bool set_up, bool keys, bool capped, bool catbox_on, i64 catbox_max, i64 bytes)
+{
+    if (!set_up) return R2_PICK_FREE;
+    if (catbox_on && bytes < 0) return R2_PICK_UNKNOWN;
+    if (catbox_on && bytes <= catbox_max) return R2_PICK_CATBOX;
+    if (!keys) return R2_PICK_NO_KEYS;
+    return capped ? R2_PICK_CAPPED : R2_PICK_R2;
+}
+
+// Adds one upload's speed (bytes a second) to a host's average of about its last 10.
+static void r2_rate_add(f64 *avg, i32 *n, f64 rate)
+{
+    if (*n < 10) ++*n;
+    *avg += (rate - *avg) / *n;
+}
+
+// The Catbox row's tooltip: Catbox's upload speed beside the bucket's ("" for no bucket), from the averages.
+static void r2_rates_tip(const f64 *rate, const i32 *n, bool bucket, char *out, i32 cap)
+{
+    char a[32], b[32];
+    if (n[HOST_CATBOX]) snprintf(a, sizeof a, "%.1f MB/s", rate[HOST_CATBOX] / 1e6);
+    else str_set(a, "not measured yet");
+    if (n[HOST_R2]) snprintf(b, sizeof b, "%.1f MB/s", rate[HOST_R2] / 1e6);
+    else str_set(b, "not measured yet");
+    if (bucket) snprintf(out, cap, "Upload speed from your last uploads: Catbox %s, your bucket %s", a, b);
+    else snprintf(out, cap, "Upload speed from your last uploads: Catbox %s", a);
 }
 
 // In the bucket now: an R2 share that cleanup hasn't removed.
@@ -437,6 +495,13 @@ static bool r2_ready()
 {
     const Config &c = g_app.config;
     return c.r2_account[0] && c.r2_access_key[0] && c.r2_bucket[0] && c.r2_public_url[0] && r2_has_token();
+}
+
+// The bucket has been set up: links go there, never to a free host.
+static bool r2_set_up()
+{
+    const Config &c = g_app.config;
+    return c.r2_account[0] && c.r2_access_key[0];
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -953,6 +1018,15 @@ static void r2_job_end(u32 id, bool ok, const char *url, const char *error)
 }
 
 // The upload step of a job, then the cleanup.
+// Tells the main thread how fast an upload went, for the host's average (Config.upload_rate). Clips under 1 MB
+// say more about the wait for an answer than about speed and aren't counted.
+static void r2_rate_note(LinkHost host, i64 bytes, i64 us)
+{
+    if (bytes < 1000000 || us <= 0 || host > HOST_LITTERBOX) return;
+    i64 rate = (i64)(bytes * 1e6 / us);
+    r2_post(R2_EV_RATE, rate << 2 | host);
+}
+
 static void r2_run_upload(const R2Task &t)
 {
     u32 job = 0;
@@ -986,7 +1060,9 @@ static void r2_run_upload(const R2Task &t)
     if (reuse >= 0) str_set(key, t.key);
     else r2_new_key(key);
 
+    i64 began = now_us();
     if (!err[0]) r2_put_file(t.conf, key, t.file, job, err, sizeof err);
+    if (!err[0]) r2_rate_note(HOST_R2, bytes, now_us() - began);
     if (!err[0]) folder = r2_folder_bytes(t.conf); // the real total, with this clip in it
     DeleteFileW(t.file.s);
     if (err[0]) {
@@ -1458,8 +1534,12 @@ static void r2_run_free(const R2Task &t)
             wide_to_utf8(wurl, curl, sizeof curl);
             UpRequest q = {"POST", curl, "", fields, h->expires ? 2 : 1, "fileToUpload"};
             r2_set_progress(job, 0);
+            i64 began = now_us();
             u32 status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
-            if (status == 200 && up_plain_link(resp, url, sizeof url)) used = h;
+            if (status == 200 && up_plain_link(resp, url, sizeof url)) {
+                used = h;
+                r2_rate_note(h->host, size.QuadPart, now_us() - began);
+            }
             else if (!status) snprintf(why, sizeof why, "Couldn't reach %s", h->label);
             else snprintf(why, sizeof why, "%s answered %u: %.80s", h->label, status, trim(resp));
         } else if (uploader_load(nm, &u, why, sizeof why)) {
@@ -1656,6 +1736,26 @@ static bool r2_parse_domain(const char *resp, char *domain, i32 cap, bool *enabl
     i64 len = (i64)strlen(resp);
     *enabled = json_path(resp, len, "result.enabled", on, sizeof on) && !strcmp(on, "true");
     return json_path(resp, len, "result.domain", domain, cap);
+}
+
+// The bucket's custom domains that answer: enabled, owned and with a certificate. Returns how many.
+static i32 r2_parse_custom_domains(const char *resp, char (*out)[128], i32 max)
+{
+    i64 len = (i64)strlen(resp);
+    char path[80], v[128];
+    i32 n = 0;
+    for (i32 i = 0; n < max && i < 100; i++) {
+        snprintf(path, sizeof path, "result.domains[%d].domain", i);
+        if (!json_path(resp, len, path, out[n], 128)) break;
+        bool ok = true;
+        static const char *const need[][2] = {{"enabled", "true"}, {"status.ownership", "active"}, {"status.ssl", "active"}};
+        for (auto &k : need) {
+            snprintf(path, sizeof path, "result.domains[%d].%s", i, k[0]);
+            ok = ok && json_path(resp, len, path, v, sizeof v) && !strcmp(v, k[1]);
+        }
+        if (ok) n++;
+    }
+    return n;
 }
 
 // The id of the permission group named `name` in a list of them.
@@ -2101,7 +2201,7 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
         }
     }
 
-    str_set(c->bucket, t.conf.bucket[0] ? t.conf.bucket : "clipback");
+    str_set(c->bucket, t.conf.bucket);
     if (!r2_bucket_name_ok(c->bucket)) {
         r2_set_status(R2_SETUP_FAILED, "%s can't be a bucket name: use 3 to 63 lower-case letters, digits and hyphens",
                       c->bucket);
@@ -2350,6 +2450,43 @@ static void r2_run_usage(const R2Task &t)
     SecureZeroMemory(bearer, sizeof bearer);
 }
 
+// Lists the addresses the bucket answers at: its r2.dev domain and the custom domains connected to it.
+static void r2_run_domains(const R2Task &t)
+{
+    char bearer[2048] = "";
+    bool have = t.oauth ? r2_oauth_access(bearer, sizeof bearer) : t.token[0] != 0;
+    if (!t.oauth && have) str_set(bearer, t.token);
+    static char resp[1 << 16];
+    static R2Domains d;
+    d = {};
+    d.state = -1;
+    if (!have) str_set(d.why, "clipback isn't signed in");
+    else {
+        char path[200];
+        snprintf(path, sizeof path, "/accounts/%s/r2/buckets/%s/domains/managed", t.conf.account, t.conf.bucket);
+        if (r2_ok(r2_cf("GET", path, bearer, 0, resp, sizeof resp)))
+            r2_parse_domain(resp, d.r2dev, sizeof d.r2dev, &d.r2dev_on);
+        snprintf(path, sizeof path, "/accounts/%s/r2/buckets/%s/domains/custom", t.conf.account, t.conf.bucket);
+        u32 s = r2_cf("GET", path, bearer, 0, resp, sizeof resp);
+        if (r2_ok(s)) {
+            d.count = r2_parse_custom_domains(resp, d.list, COUNT(d.list));
+            d.state = 2;
+        } else {
+            char msg[200] = "";
+            if (s) r2_cf_error(resp, msg, sizeof msg);
+            if (s == 401 || s == 403) str_set(d.why, "the sign-in or token isn't allowed to");
+            else str_set(d.why, msg[0] ? msg : "Cloudflare didn't answer");
+            log_line("r2: couldn't list the bucket's domains (%u): %s", s, msg);
+        }
+    }
+    SecureZeroMemory(bearer, sizeof bearer);
+    AcquireSRWLockExclusive(&g_r2.lock);
+    d.asked_us = g_r2.domains.asked_us;
+    g_r2.domains = d;
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    r2_post(R2_EV_STATUS, 0);
+}
+
 // Pauses or resumes a share by moving its file in the bucket: a server-side copy to the other name, then a delete
 // of the first. Paused, the file is under a new random name, so the link stops answering.
 static void r2_run_move(const R2Task &t)
@@ -2531,6 +2668,7 @@ static DWORD WINAPI r2_thread(void *)
         case R2_T_SIGNOUT: r2_revoke(t.token, t.conf.access); break;
         case R2_T_PAUSE:
         case R2_T_RESUME: r2_run_move(t); break;
+        case R2_T_DOMAINS: r2_run_domains(t); break;
         }
         SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
         SecureZeroMemory(t.token, sizeof t.token);
@@ -2563,6 +2701,30 @@ static void r2_stop()
 
 // ---------------------------------------------------------------------------------------------------------------
 // Main thread
+
+// Where a link of `bytes` goes now (-1: not known yet), with the settings as they are (r2_pick_host).
+static R2Pick r2_pick(i64 bytes)
+{
+    R2Conf c;
+    bool keys = r2_conf(&c);
+    SecureZeroMemory(&c, sizeof c);
+    AcquireSRWLockShared(&g_r2.lock);
+    bool capped = g_r2.usage_us && r2_capped(g_r2.fetched.account_reads, g_app.config.r2_read_cap);
+    ReleaseSRWLockShared(&g_r2.lock);
+    const FreeHost *order[HOST_COUNT];
+    i32 n = free_order(g_app.config.link_hosts, order, HOST_COUNT);
+    bool catbox = false;
+    for (i32 i = 0; i < n; i++) catbox |= order[i]->host == HOST_CATBOX;
+    return r2_pick_host(r2_set_up(), keys, capped, catbox, free_host(HOST_CATBOX)->max_bytes, bytes);
+}
+
+// Why a link can't go anywhere: the bucket's keys can't be read, or its account is near the month's reads.
+static const char *r2_pick_why(R2Pick p)
+{
+    if (p == R2_PICK_CAPPED) return "Links wait until the 1st: your Cloudflare account has nearly used the month's free reads";
+    if (p == R2_PICK_NO_KEYS) return "Your Cloudflare keys can't be read: set up again in Options";
+    return 0;
+}
 
 // A slot for a new job: a free one, else the oldest finished. -1 if all are busy.
 static i32 r2_new_job()
@@ -2641,6 +2803,7 @@ static u32 r2_share_file(const wchar_t *path, const char *title, const char *gam
             return id;
         }
     }
+    if (const char *why = r2_pick_why(r2_pick(-1))) return r2_fail_now(slot, why);
     wcsncpy(w.src.s, path, MAX_PATH - 1);
     str_set(w.title, title);
     str_set(w.game, game);
@@ -2739,15 +2902,25 @@ static void r2_on_save_event(const Event &e)
         return;
     }
     R2Task t = {};
-    t.kind = r2_conf(&t.conf) ? R2_T_UPLOAD : R2_T_FREE;
     t.slot = slot;
     utf8_to_wide(v->path, t.file.s, MAX_PATH);
+    WIN32_FILE_ATTRIBUTE_DATA fa = {};
+    i64 bytes = GetFileAttributesExW(t.file.s, GetFileExInfoStandard, &fa)
+                    ? ((i64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow : -1;
+    R2Pick pick = r2_pick(bytes);
+    if (const char *why = r2_pick_why(pick)) {
+        DeleteFileW(t.file.s);
+        r2_fail_now(slot, why);
+        return;
+    }
+    r2_conf(&t.conf);
+    t.kind = pick == R2_PICK_R2 ? R2_T_UPLOAD : R2_T_FREE;
     str_set(t.replace, w.reuse);
     AcquireSRWLockShared(&g_r2.lock);
     i32 old = w.reuse[0] ? r2_find_locked(w.reuse) : -1;
     if (t.kind == R2_T_UPLOAD && old >= 0 && g_r2.shares[old].host == HOST_R2) str_set(t.key, w.reuse);
     ReleaseSRWLockShared(&g_r2.lock);
-    str_set(t.hosts, g_app.config.link_hosts);
+    str_set(t.hosts, pick == R2_PICK_CATBOX ? "catbox" : g_app.config.link_hosts);
     t.hours = g_app.config.litterbox_hours;
     if (!r2_queue(t)) {
         DeleteFileW(t.file.s);
@@ -2763,6 +2936,7 @@ static void r2_on_event(const Event &e)
         R2Conf f = g_r2.found;
         g_r2.fetched = {};
         g_r2.usage_us = g_r2.usage_asked_us = 0;
+        g_r2.domains = {};
         ReleaseSRWLockExclusive(&g_r2.lock);
         Config &c = g_app.config;
         str_set(c.r2_account, f.account);
@@ -2775,6 +2949,13 @@ static void r2_on_event(const Event &e)
     }
     if (e.a == R2_EV_USAGE) {
         r2_auto_pause();
+        return;
+    }
+    if (e.a == R2_EV_RATE) {
+        Config &c = g_app.config;
+        i32 host = (i32)(e.b & 3);
+        r2_rate_add(&c.upload_rate[host], &c.upload_rate_n[host], (f64)(e.b >> 2));
+        config_save(c, g_app.paths);
         return;
     }
     if (e.a != R2_EV_PROBED) return; // the rest only wake the UI
@@ -2883,6 +3064,32 @@ static void r2_setup_task(R2Task *t, R2TaskKind kind)
     t->oauth = kind == R2_T_SIGNIN || r2_signed_in();
 }
 
+// The bucket's addresses as last listed. `ask` lists them again when that was over 5 minutes ago.
+static R2Domains r2_domains(bool ask)
+{
+    i64 now = now_us();
+    bool go = false;
+    AcquireSRWLockExclusive(&g_r2.lock);
+    if (ask && g_r2.domains.state != 1 && (!g_r2.domains.asked_us || now - g_r2.domains.asked_us > 300ll * 1000000)) {
+        g_r2.domains.asked_us = now;
+        g_r2.domains.state = 1; // the list so far stays shown
+        go = true;
+    }
+    R2Domains d = g_r2.domains;
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (go) {
+        static R2Task t;
+        r2_setup_task(&t, R2_T_DOMAINS);
+        if (!r2_queue(t)) {
+            AcquireSRWLockExclusive(&g_r2.lock);
+            g_r2.domains.state = 0;
+            ReleaseSRWLockExclusive(&g_r2.lock);
+        }
+        SecureZeroMemory(&t, sizeof t);
+    }
+    return d;
+}
+
 // Sets up again with what's kept (the sign-in or the pasted token): after the bucket or address changes.
 static void r2_setup_again()
 {
@@ -2961,6 +3168,7 @@ static void r2_forget(bool revoke)
     g_r2.fetched = {};
     g_r2.usage_us = g_r2.usage_asked_us = 0;
     g_r2.status = {};
+    g_r2.domains = {};
     ReleaseSRWLockExclusive(&g_r2.lock);
 }
 
