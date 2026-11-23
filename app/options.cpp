@@ -455,9 +455,10 @@ static f32 opt_combo_popup_w(const char *const *items, const char *const *notes,
 }
 
 // A whole drop-down. Items whose bit is set in `disabled` show greyed out and can't be picked.
-// Off for the rows of the Recording page: it scrolls, and a wheel meant for the page would change the monitor or
-// the encoder and restart the recording.
-static bool g_combo_wheel = true;
+// The wheel over a closed one steps its choice only on the list pages, which don't scroll (screen_options). On a
+// page that scrolls, the first drop-down to pass under the mouse would take the wheel: the page stops and the
+// choice changes.
+static bool g_combo_wheel;
 
 static bool opt_combo(const char *id, const char *const *items, const char *const *notes, i32 count, i32 *index,
                       f32 width, u32 disabled = 0, const char *preview = 0, u32 preview_col = COL_TEXT)
@@ -487,9 +488,7 @@ static bool opt_row_combo(const char *name, const char *sub, const char *id, con
                           const char *preview = 0)
 {
     opt_row_begin(name, sub, width);
-    g_combo_wheel = false;
     bool changed = opt_combo(id, items, notes, count, index, width, disabled, preview);
-    g_combo_wheel = true;
     opt_row_end();
     return changed;
 }
@@ -3770,6 +3769,7 @@ static void screen_options()
     // List pages fit their page and turn pages; the others scroll if the window is short. A scrollbar goes to the
     // right of the column, so the cards keep the column's width (whether it scrolls is known from the last frame).
     bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS;
+    g_combo_wheel = list;
     static bool scrolls;
     f32 bar = !list && scrolls ? ImGui::GetStyle().ScrollbarSize : 0;
     ImGui::SetCursorScreenPos(ImVec2(a.x, ImGui::GetCursorScreenPos().y));
