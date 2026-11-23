@@ -32,10 +32,21 @@ static void run_command(const char *text)
         editor_open_file(arg);
     }
     else if (!strcmp(cmd, "fetch-ffmpeg")) ffget_start(true); // fetches the pinned ffmpeg even when one is found
-    else if (!strcmp(cmd, "link") && *arg) { // link <path>: shares a file as a link; the log gets the address
+    else if (!strcmp(cmd, "link") && *arg) {
+        // link [host] <path>: shares a file as a link, on the host if one is named (catbox, litterbox, bucket or an
+        // uploader's name), else where Share's rule sends it; the log gets the address
+        char host[64] = "";
+        const char *path = arg;
+        if (const char *sp = strchr(arg, ' ')) { // a host is one plain word: no \ / : or .
+            size_t n = sp - arg;
+            if (!memchr(arg, '\\', n) && !memchr(arg, '/', n) && !memchr(arg, ':', n) && !memchr(arg, '.', n)) {
+                snprintf(host, sizeof host, "%.*s", (int)(sp - arg), arg);
+                path = sp + 1;
+            }
+        }
         wchar_t w[MAX_PATH];
-        utf8_to_wide(arg, w, MAX_PATH);
-        if (!r2_share_file(w, "", "", 0)) log_line("link: every link job is busy");
+        utf8_to_wide(path, w, MAX_PATH);
+        if (!r2_share_file(w, "", "", 0, 0, 0, host[0] ? host : 0)) log_line("link: every link job is busy");
     }
     else if (!strcmp(cmd, "open-in") && g_app.ui.screen == SCREEN_EDITOR) // open-in premiere|davinci: the editor's XML in it
         ed_open_in(!strcmp(arg, "premiere"));

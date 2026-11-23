@@ -642,6 +642,39 @@ static void test_share()
     T(d.host == HOST_R2 && !d.link_squeezed);
     d = share_decide_for(5000000000, 20, 1.5, bucket);
     T(d.link_ok && d.host == HOST_R2);
+    // A bucket: Litterbox and the uploaders are left out by the rule even when on
+    ShareHosts all = {true, false, true, 72, "Up1,Up2", 3000000000};
+    d = share_decide_for(1200000000, 20, 1.5, all);
+    T(d.host == HOST_R2);
+    // The hosts to pick from: each that's on, with how a clip goes there
+    ShareHostChoice ch[8];
+    all.catbox = true;
+    T(share_hosts_for(250000000, 1.5, all, ch, 8) == 5);
+    T(!strcmp(ch[0].name, "catbox") && ch[0].fit == SHARE_FIT_SQUEEZED && ch[0].bytes < 200000000);
+    T(!strcmp(ch[1].name, "litterbox") && ch[1].fit == SHARE_FIT_AS_IS && !strcmp(ch[1].label, "Litterbox, 72 h"));
+    T(!strcmp(ch[2].name, "bucket") && ch[2].host == HOST_R2 && ch[2].fit == SHARE_FIT_AS_IS);
+    T(!strcmp(ch[3].name, "Up1") && !strcmp(ch[4].name, "Up2") && ch[4].host == HOST_CUSTOM);
+    T(share_hosts_for(4000000000, 1.5, all, ch, 8) == 5);
+    T(ch[0].fit == SHARE_FIT_NO && !strcmp(ch[0].why, "Too big for Catbox even squeezed") && !ch[0].bytes);
+    T(ch[1].fit == SHARE_FIT_NO && ch[2].fit == SHARE_FIT_NO && starts_with(ch[2].why, "Bigger than your bucket's"));
+    T(ch[3].fit == SHARE_FIT_AS_IS && ch[3].bytes == 4000000000);
+    T(share_hosts_for(mb, 1.0, none, ch, 8) == 0 && share_hosts_for(mb, 1.5, all, ch, 2) == 2);
+    T(share_hosts_for(250000000, 1.0, free, ch, 8) == 2 && ch[0].fit == SHARE_FIT_NO); // squeeze off
+    // A picked host: there by the squeeze rule, or no link with why
+    d = share_decide_on(250000000, 20, 1.5, all, "litterbox");
+    T(d.kind == SHARE_LINK && d.link_ok && d.host == HOST_LITTERBOX && !d.link_squeezed && d.link_bytes == 250000000);
+    d = share_decide_on(250000000, 20, 1.5, all, "catbox");
+    T(d.link_ok && d.host == HOST_CATBOX && d.link_squeezed);
+    d = share_decide_on(250000000, 20, 1.5, all, "r2");
+    T(d.link_ok && d.host == HOST_R2 && !strcmp(d.host_label, "your bucket"));
+    d = share_decide_on(250000000, 20, 1.5, all, "up2");
+    T(d.link_ok && d.host == HOST_CUSTOM && !strcmp(d.host_label, "Up2"));
+    d = share_decide_on(400000000, 20, 1.5, all, "catbox");
+    T(!d.link_ok && !strcmp(d.link_why, "Too big for Catbox even squeezed"));
+    d = share_decide_on(mb, 20, 1.5, free, "bucket");
+    T(!d.link_ok && starts_with(d.link_why, "Set up your own Cloudflare"));
+    d = share_decide_on(mb, 20, 1.5, up, "catbox");
+    T(!d.link_ok && !strcmp(d.link_why, "catbox isn't switched on in Options"));
     // Sizes in the menu: whole MB from 10, one decimal under, GB from 1000
     char t[24];
     share_size_text(5 * mb + mb / 2, t, sizeof t);

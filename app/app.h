@@ -471,6 +471,21 @@ struct ShareDecision {
 // What Share would do with `m` played as `edit` (0: the whole file). Cheap: a menu can ask each frame.
 static ShareDecision share_decide(const MediaInfo &m, const EditRecord *edit);
 
+// A host the player can pick for a link, and how the clip goes there.
+enum ShareFit : u8 { SHARE_FIT_NO, SHARE_FIT_AS_IS, SHARE_FIT_SQUEEZED };
+struct ShareHostChoice {
+    char     name[64];  // for share_start: "catbox", "litterbox", "bucket" or an uploader's name (link_uploaders)
+    char     label[48]; // "Catbox", "Litterbox, 72 h", "your bucket", the uploader's name
+    LinkHost host;
+    ShareFit fit;
+    i64      bytes;     // about what the copy comes out at, 0 when it doesn't fit
+    char     why[96];   // when it doesn't fit: "Too big for Catbox even squeezed"
+};
+
+// Every host that's switched on or set up, in the order Catbox, Litterbox, the bucket, the uploaders, with how
+// `m` played as `edit` goes there by Share's squeeze rule. Cheap: a menu can ask each frame. Returns how many.
+static i32 share_host_choices(const MediaInfo &m, const EditRecord *edit, ShareHostChoice *out, i32 max);
+
 // A Share under way or done. File: made (or found already made) and put on the clipboard as a file. Link: made,
 // uploaded and its address put on the clipboard. The library, the editor and the toast all follow the same id.
 enum ShareState : u8 { SHARE_MAKING, SHARE_UPLOADING, SHARE_DONE, SHARE_FAILED };
@@ -487,10 +502,12 @@ struct ShareJobView {
 };
 
 // Starts Share for the file at `path`. `edit` 0 shares the whole file; the editor passes its own record. `name` is
-// what the file or link is called, `lib_key` the library card (0 = none). Returns the job, 0 when it couldn't
-// start (share_job(0).error doesn't exist: the caller says "busy, try again").
+// what the file or link is called, `lib_key` the library card (0 = none). `host` (a ShareHostChoice's name) makes
+// a link on that host, squeezed to it as the rule says, or fails with why it can't; 0 lets Share's rule pick.
+// A link made before on the same host for the same clip and edit is given again. Returns the job, 0 when it
+// couldn't start (share_job(0).error doesn't exist: the caller says "busy, try again").
 static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
-                       const char *name, const char *game, u64 lib_key);
+                       const char *name, const char *game, u64 lib_key, const char *host = 0);
 static ShareJobView share_job(u32 id);
 static void share_cancel(u32 id);
 

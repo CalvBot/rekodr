@@ -8,10 +8,11 @@ static void telemetry_shared();                        // telemetry.cpp
 
 // The hosts a link can go to now.
 struct ShareHosts {
-    bool bucket;          // the player's own R2 bucket is set up
-    bool catbox, litterbox;
+    bool bucket;           // the player's own R2 bucket is set up
+    bool catbox, litterbox; // switched on (the rule leaves Litterbox out when there is a bucket)
     i32  litterbox_hours;
-    char uploader[64];    // the first ShareX uploader that's on (link_uploaders), "" = none
+    char uploaders[256];   // the ShareX uploaders switched on (link_uploaders), "" = none
+    i64  bucket_limit;     // what the budget keeps, 0 = not checked
 };
 
 // A size as Share's menu says it: "18 MB", "2 GB" (in MiB, as Discord counts).
@@ -25,7 +26,8 @@ static void share_size_text(i64 bytes, char *out, i32 cap)
 
 // The decision for a clip of recommended size `reco`. A file: as is under the max, squeezed to it up to `squeeze`
 // times over. A link: Catbox when it's on and takes the clip (as is up to its 200 MB, squeezed up to `squeeze` times
-// that), else the bucket as is; with no bucket, Litterbox the same way up to its 1 GB, then an uploader as is.
+// that), else the bucket as is; with no bucket, Litterbox the same way up to its 1 GB, then the first uploader as
+// is.
 static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 squeeze, const ShareHosts &h)
 {
     ShareDecision d = {};
@@ -52,9 +54,11 @@ static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 squeeze, const S
         str_set(d.host_label, "your bucket");
     } else if (takes(HOST_LITTERBOX, h.litterbox))
         snprintf(d.host_label, sizeof d.host_label, "Litterbox, %d h", h.litterbox_hours);
-    else if (h.uploader[0]) {
+    else if (h.uploaders[0]) {
         d.host = HOST_CUSTOM;
-        str_set(d.host_label, h.uploader);
+        const char *end = strchr(h.uploaders, ',');
+        snprintf(d.host_label, sizeof d.host_label, "%.*s", end ? (int)(end - h.uploaders) : (int)strlen(h.uploaders),
+                 h.uploaders);
     } else {
         d.link_ok = false;
         str_set(d.link_why, h.catbox || h.litterbox ? "Needs your own Cloudflare: too big for the free hosts"
@@ -79,6 +83,84 @@ static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 squeeze, const S
     return d;
 }
 
+// How a clip of `reco` goes on a host that takes at most `most` (0 = no cap): as is, squeezed up to `squeeze`
+// times over, or not.
+static ShareFit share_fit(i64 reco, f64 squeeze, i64 most)
+{
+    if (most <= 0 || reco <= most) return SHARE_FIT_AS_IS;
+    return reco <= most * (squeeze < 1 ? 1 : squeeze) ? SHARE_FIT_SQUEEZED : SHARE_FIT_NO;
+}
+
+// The hosts on in `h` and how a clip of `reco` goes on each (share_host_choices). The bucket takes a clip as is up to
+// its limit, an uploader as is.
+static i32 share_hosts_for(i64 reco, f64 squeeze, const ShareHosts &h, ShareHostChoice *out, i32 max)
+{
+    i32 n = 0;
+    auto add = [&](const char *name, const char *label, LinkHost host, i64 most, bool squeezes) {
+        if (n >= max) return;
+        ShareHostChoice &c = out[n++];
+        c = {};
+        str_set(c.name, name);
+        str_set(c.label, label);
+        c.host = host;
+        c.fit = share_fit(reco, squeezes ? squeeze : 1, most);
+        c.bytes = c.fit == SHARE_FIT_AS_IS ? reco : c.fit == SHARE_FIT_SQUEEZED ? (i64)(most * (1 - SHARE_MARGIN)) : 0;
+        if (c.fit != SHARE_FIT_NO) return;
+        char m[24];
+        share_size_text(most, m, sizeof m);
+        if (host == HOST_R2) snprintf(c.why, sizeof c.why, "Bigger than your bucket's %s: raise it in Options", m);
+        else snprintf(c.why, sizeof c.why, "Too big for %s even squeezed", free_host(host)->label);
+    };
+    char label[48];
+    if (h.catbox) add("catbox", "Catbox", HOST_CATBOX, free_host(HOST_CATBOX)->max_bytes, true);
+    snprintf(label, sizeof label, "Litterbox, %d h", h.litterbox_hours);
+    if (h.litterbox) add("litterbox", label, HOST_LITTERBOX, free_host(HOST_LITTERBOX)->max_bytes, true);
+    if (h.bucket) add("bucket", "your bucket", HOST_R2, h.bucket_limit, false);
+    for (const char *p = h.uploaders; *p;) {
+        const char *end = strchr(p, ',');
+        char name[64];
+        snprintf(name, sizeof name, "%.*s", end ? (int)(end - p) : (int)strlen(p), p);
+        if (name[0]) add(name, name, HOST_CUSTOM, 0, false);
+        if (!end) break;
+        p = end + 1;
+    }
+    return n;
+}
+
+// The decision when the player picks the link's host (a ShareHostChoice's name; "r2" is the bucket too): a link
+// there as share_hosts_for says, or no link with why.
+static ShareDecision share_decide_on(i64 reco, f64 max_mb, f64 squeeze, const ShareHosts &h, const char *host)
+{
+    ShareDecision d = share_decide_for(reco, max_mb, squeeze, h);
+    d.kind = SHARE_LINK;
+    d.link_ok = d.link_squeezed = false;
+    d.host = HOST_R2;
+    d.link_bytes = 0;
+    d.host_label[0] = d.link_why[0] = 0;
+    static ShareHostChoice list[24];
+    i32 n = share_hosts_for(reco, squeeze, h, list, COUNT(list));
+    const char *want = !_stricmp(host, "r2") ? "bucket" : host;
+    const ShareHostChoice *c = 0;
+    for (i32 i = 0; i < n && !c; i++)
+        if (!_stricmp(list[i].name, want)) c = &list[i];
+    char r[24];
+    share_size_text(reco, r, sizeof r);
+    if (!c) {
+        if (!strcmp(want, "bucket")) str_set(d.link_why, "Set up your own Cloudflare in Options first");
+        else snprintf(d.link_why, sizeof d.link_why, "%s isn't switched on in Options", want);
+    } else if (c->fit == SHARE_FIT_NO) str_set(d.link_why, c->why);
+    else {
+        d.link_ok = true;
+        d.host = c->host;
+        d.link_squeezed = c->fit == SHARE_FIT_SQUEEZED;
+        d.link_bytes = c->bytes;
+        str_set(d.host_label, c->label);
+    }
+    if (d.link_ok) snprintf(d.why, sizeof d.why, "%s%s: a link, %s", r, d.link_squeezed ? " squeezed" : "", d.host_label);
+    else snprintf(d.why, sizeof d.why, "%s: %s", r, d.link_why);
+    return d;
+}
+
 // The hosts as the settings are now.
 static ShareHosts share_hosts()
 {
@@ -87,11 +169,9 @@ static ShareHosts share_hosts()
     h.bucket = r2_set_up();
     h.litterbox_hours = c.litterbox_hours;
     h.catbox = c.link_catbox;
-    h.litterbox = c.link_litterbox && !h.bucket;
-    if (!h.bucket) {
-        const char *p = c.link_uploaders, *end = strchr(p, ',');
-        snprintf(h.uploader, sizeof h.uploader, "%.*s", end ? (int)(end - p) : (int)strlen(p), p);
-    }
+    h.litterbox = c.link_litterbox;
+    str_set(h.uploaders, c.link_uploaders);
+    h.bucket_limit = h.bucket ? r2_limit_for_budget(r2_budget_now()) : 0;
     return h;
 }
 
@@ -107,6 +187,20 @@ static ShareDecision share_decide(const MediaInfo &m, const EditRecord *edit)
     const Config &c = g_app.config;
     i64 reco = share_reco_bytes(share_seconds(m, edit), m.width, m.height, m.fps, m.track_count > 0);
     return share_decide_for(reco, c.share_max_mb > 0 ? c.share_max_mb : 20, c.share_squeeze, share_hosts());
+}
+
+// Share's decision with the link's host picked (share_decide_on).
+static ShareDecision share_decide_host(const MediaInfo &m, const EditRecord *edit, const char *host)
+{
+    const Config &c = g_app.config;
+    i64 reco = share_reco_bytes(share_seconds(m, edit), m.width, m.height, m.fps, m.track_count > 0);
+    return share_decide_on(reco, c.share_max_mb > 0 ? c.share_max_mb : 20, c.share_squeeze, share_hosts(), host);
+}
+
+static i32 share_host_choices(const MediaInfo &m, const EditRecord *edit, ShareHostChoice *out, i32 max)
+{
+    i64 reco = share_reco_bytes(share_seconds(m, edit), m.width, m.height, m.fps, m.track_count > 0);
+    return share_hosts_for(reco, g_app.config.share_squeeze, share_hosts(), out, max);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -260,10 +354,11 @@ struct ShareAims {
     char hosts[64];
     u64  hash;
 };
-static ShareAims share_aims(bool link, const wchar_t *path, const MediaInfo &m, const EditRecord *edit)
+static ShareAims share_aims(bool link, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
+                            const char *host = 0)
 {
     ShareAims a = {};
-    a.d = share_decide(m, edit);
+    a.d = link && host ? share_decide_host(m, edit, host) : share_decide(m, edit);
     const ShareDecision &d = a.d;
     if (link) {
         a.aim = d.link_bytes;
@@ -280,11 +375,12 @@ static ShareAims share_aims(bool link, const wchar_t *path, const MediaInfo &m, 
     return a;
 }
 
-// For r2.cpp, a link started with no host (the pipe's "link", sharing a link again): where Share's rule sends it.
-static bool share_link_plan(const wchar_t *path, const MediaInfo &m, const EditRecord *edit, char *hosts, i32 cap,
-                            i64 *aim, i64 *limit, char *why, i32 why_cap)
+// For r2.cpp, a link started before the clip was probed (the pipe's "link", sharing a link again): where it goes,
+// on `host` when one is picked (0: Share's rule).
+static bool share_link_plan(const wchar_t *path, const MediaInfo &m, const EditRecord *edit, const char *host,
+                            char *hosts, i32 cap, i64 *aim, i64 *limit, char *why, i32 why_cap)
 {
-    ShareAims a = share_aims(true, path, m, edit);
+    ShareAims a = share_aims(true, path, m, edit, host);
     if (!a.d.link_ok) {
         snprintf(why, why_cap, "%s", a.d.link_why);
         return false;
@@ -382,8 +478,10 @@ static void share_poll()
 }
 
 static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
-                       const char *name, const char *game, u64 lib_key)
+                       const char *name, const char *game, u64 lib_key, const char *host)
 {
+    if (host && !host[0]) host = 0;
+    if (host) kind = SHARE_LINK;
     ShareJob *jp = share_new_job();
     if (!jp) return 0;
     ShareJob &j = *jp;
@@ -392,7 +490,7 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
     j.v.kind = kind == SHARE_LINK ? SHARE_LINK : SHARE_AS_IS;
     j.v.state = SHARE_MAKING;
     str_set(j.name, name && name[0] ? name : "clip");
-    ShareDecision d = share_decide(m, edit);
+    ShareDecision d = host ? share_decide_host(m, edit, host) : share_decide(m, edit);
     bool link = kind == SHARE_LINK;
     if (link && !d.link_ok) {
         share_end(j, false, "", d.link_why);
@@ -410,7 +508,7 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
         share_end(j, false, "", "The file isn't there any more");
         return j.v.id;
     }
-    ShareAims a = share_aims(link, path, m, edit);
+    ShareAims a = share_aims(link, path, m, edit, host);
     j.squeezed = a.squeezed;
     if (!link && j.squeezed) j.v.kind = SHARE_SQUEEZED;
     j.hash = a.hash;

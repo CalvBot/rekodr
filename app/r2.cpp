@@ -3128,8 +3128,8 @@ static const char *r2_bucket_refuses()
 }
 
 // Share's host rule for a link with no host given (share.cpp): where it goes and the copy's sizes, else why not.
-static bool share_link_plan(const wchar_t *path, const MediaInfo &m, const EditRecord *edit, char *hosts, i32 cap,
-                            i64 *aim, i64 *limit, char *why, i32 why_cap);
+static bool share_link_plan(const wchar_t *path, const MediaInfo &m, const EditRecord *edit, const char *host,
+                            char *hosts, i32 cap, i64 *aim, i64 *limit, char *why, i32 why_cap);
 
 // A slot for a new job: a free one, else the oldest finished. -1 if all are busy.
 static i32 r2_new_job()
@@ -3173,8 +3173,9 @@ static void r2_start_copy(i32 slot)
     char why[160];
     static const EditRecord none = {};
     const EditRecord *edit = memcmp(&w.edit, &none, sizeof none) ? &w.edit : 0;
-    if (!w.hosts[0] && !share_link_plan(w.src.s, w.info, edit, w.hosts, sizeof w.hosts, &w.aim, &w.limit, why,
-                                        sizeof why)) {
+    // No copy size yet: Share's rule decides, on the host picked if there is one
+    if (!w.aim && !share_link_plan(w.src.s, w.info, edit, w.hosts[0] ? w.hosts : 0, w.hosts, sizeof w.hosts, &w.aim,
+                                   &w.limit, why, sizeof why)) {
         r2_fail_now(slot, why);
         return;
     }
@@ -3190,12 +3191,25 @@ static void r2_start_copy(i32 slot)
     if (!w.save) r2_fail_now(slot, "Too many saves are waiting");
 }
 
+// Whether share `s` is on the host named `hosts` ("r2" or "bucket", "catbox", "litterbox", an uploader's name);
+// any host when none is named.
+static bool r2_share_on(const R2Share &s, const char *hosts)
+{
+    if (!hosts || !hosts[0]) return true;
+    if (!_stricmp(hosts, "r2") || !_stricmp(hosts, "bucket")) return s.host == HOST_R2;
+    if (const FreeHost *f = free_host_named(hosts)) return s.host == f->host;
+    size_t n = strlen(hosts);
+    return s.host == HOST_CUSTOM && !_strnicmp(s.key, hosts, n) && s.key[n] == '/';
+}
+
 // Shares a file as a link, to R2 when it's set up, else to a free host: `info` and `edit` when the caller has them
 // (an editor render passes its edit; with no info the file is probed first). A library item already shared gives
 // back its link at once while that still plays; one removed to make room is shared again under its old name, one a
 // free host dropped gets a new link. `hosts` is where Share decided it goes, with the copy made for `aim` bytes and
-// at most `limit` (save_link); with no hosts Share's rule decides once the file is probed. Follow the job with r2_job(id); EV_R2 says
-// when it moves on. Returns the job id, 0 if every job slot is busy.
+// at most `limit` (save_link); with hosts and no aim (the pipe's "link catbox ...") the copy is made for that host,
+// with no hosts Share's rule decides, once the file is probed. A link on the library card `lib_key` already made on
+// that host (any host when none is named) is given again. Follow the job with r2_job(id); EV_R2 says when it moves
+// on. Returns the job id, 0 if every job slot is busy.
 static u32 r2_share_file(const wchar_t *path, const char *title, const char *game, u64 lib_key,
                          const MediaInfo *info = 0, const EditRecord *edit = 0, const char *hosts = 0, i64 aim = 0,
                          i64 limit = 0)
@@ -3208,7 +3222,7 @@ static u32 r2_share_file(const wchar_t *path, const char *title, const char *gam
         r2_load_locked();
         i32 found = -1;
         for (i32 i = g_r2.count - 1; i >= 0 && found < 0; i--)
-            if (g_r2.shares[i].lib_key == lib_key) found = i;
+            if (g_r2.shares[i].lib_key == lib_key && r2_share_on(g_r2.shares[i], hosts)) found = i;
         char url[512] = "", resume[R2_KEY_MAX] = "";
         if (found >= 0 && r2_share_live(g_r2.shares[found], now_us())) str_set(url, g_r2.shares[found].url);
         else if (found >= 0 && g_r2.shares[found].paused && !g_r2.shares[found].removed) {
@@ -3223,6 +3237,7 @@ static u32 r2_share_file(const wchar_t *path, const char *title, const char *gam
             return id;
         }
     }
+    if (hosts && !_stricmp(hosts, "bucket")) hosts = "r2";
     if (hosts && !strcmp(hosts, "r2"))
         if (const char *why = r2_bucket_refuses()) return r2_fail_now(slot, why);
     if (hosts) str_set(w.hosts, hosts);
