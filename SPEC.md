@@ -41,6 +41,7 @@ Keep a whole session from start to finish.
   - It shows the last hour, and zooms out to the whole buffer.
   - **Rows:** thumbnails, a band per game played, and one row per audio stream showing when each app made sound.
   - Drag to select a range and play to check it. **Save** writes it to `<year>\Clips` with every audio track.
+    **Share** saves it the same way, then shares the clip like the editor's Share; its arrow picks the host for a link.
     **Edit** opens the range in the editor without saving first. **Session** makes it a session (pick a game or
     type a name).
 - Thumbnails come from each 2 s segment's first keyframe. They are made only when the timeline needs them, at the
@@ -280,7 +281,7 @@ One window with a header (status, pause, Help, Options):
 - **Library:** Clips and Sessions, with date, game and order dropdowns, search, a scrolling grid and a player.
   Each card marks a share file and a link it has ready; its Share menu shares, and copies, pauses or deletes its link.
 - **Sessions *Not saved* list:** sessions still in the buffer, with Save and how long until each is gone.
-- **Timeline:** the buffer, a range selection, Save and Edit.
+- **Timeline:** the buffer, a range selection, Save, Share and Edit.
 - **Editor:** trim, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
 - **Options:**
   - apps and their categories (new apps first; right-click opens the file location)

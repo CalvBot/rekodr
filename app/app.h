@@ -836,6 +836,11 @@ struct Timeline {
     char          session_name[128];
     u32           job;          // the last save started here
     bool          job_edit;     // open the editor when it's done
+    // Share (timeline.cpp): the range saved as a clip (job), read, then shared (share, a share_start job)
+    u8            share_step;       // TL_SHARE_*
+    char          share_host[64];   // the host picked from the arrow; empty = Share's rule
+    u32           share;
+    char          share_line[160];  // what it's doing, or how it ended
     // The session box's game suggestions
     i32           suggest_pick;     // the highlighted one; -1 = none
     bool          suggest_all;      // opened from the arrow: every game, not only matches

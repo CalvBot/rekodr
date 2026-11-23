@@ -553,10 +553,142 @@ static void timeline_on_event(const Event &e)
     else if (e.a == TL_EV_PREVIEW) tl_take_preview();
 }
 
-// After "Save and edit": open the editor once the file is there.
+// ---------------------------------------------------------------------------------------------------------------
+// Share: the range is saved as a clip, read with ffprobe on a thread, then shared as the editor's Share would share
+// the whole file (share_decide), or as a link to the host picked from the arrow.
+
+enum { TL_SHARE_NONE, TL_SHARE_SAVING, TL_SHARE_READING, TL_SHARE_RUNNING, TL_SHARE_DONE, TL_SHARE_FAILED };
+
+static struct {
+    Path          ffprobe, file;
+    MediaInfo     m;
+    char          game[64];
+    volatile LONG state; // 0 idle, 1 running, 2 read, 3 failed
+} g_tl_probe;
+
+static DWORD WINAPI tl_probe_thread(void *)
+{
+    bool ok = lib_probe(g_tl_probe.ffprobe, g_tl_probe.file, &g_tl_probe.m, g_tl_probe.game, sizeof g_tl_probe.game);
+    InterlockedExchange(&g_tl_probe.state, ok ? 2 : 3);
+    return 0;
+}
+
+static void tl_share_end(bool ok, const char *line)
+{
+    Timeline &tl = g_app.timeline;
+    tl.share_step = (u8)(ok ? TL_SHARE_DONE : TL_SHARE_FAILED);
+    str_set(tl.share_line, line);
+    log_line("timeline: share %s: %s", ok ? "done" : "failed", line);
+    ui_wake();
+}
+
+static bool tl_sharing() { return g_app.timeline.share_step >= TL_SHARE_SAVING && g_app.timeline.share_step <= TL_SHARE_RUNNING; }
+
+// What the selection would be as a file, for judging the hosts before it's saved: its length at the recording's
+// size and frame rate.
+static MediaInfo tl_share_guess()
+{
+    Timeline &tl = g_app.timeline;
+    const Config &c = g_app.config;
+    MediaInfo m = {};
+    i32 sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    m.height = c.height > 0 ? c.height : sh > 0 ? sh : 1080;
+    m.width = sh > 0 ? (i32)((i64)m.height * sw / sh) : m.height * 16 / 9;
+    m.fps = c.fps > 0 ? c.fps : 60;
+    m.duration = tl.sel_out > tl.sel_in ? (f64)(tl.sel_out - tl.sel_in) / 1e6 : 0;
+    m.track_count = 1;
+    return m;
+}
+
+// Once the clip is read: the Share itself. A first link to a free host isn't agreed to here: the library opens on
+// the clip with its Share menu instead.
+static void tl_share_go(const char *path, const MediaInfo &m, const char *game)
+{
+    Timeline &tl = g_app.timeline;
+    const char *host = tl.share_host[0] ? tl.share_host : 0;
+    ShareDecision d = host ? share_decide_host(m, 0, host) : share_decide(m, 0);
+    bool link = host || d.kind == SHARE_LINK;
+    if (link && !d.link_ok) return tl_share_end(false, d.link_why);
+    bool bucket = host ? !strcmp(host, "bucket") : r2_ready();
+    if (link && !bucket && !g_app.config.free_links_seen) {
+        log_line("timeline: share %s needs the free links notice", path);
+        tl.share_step = TL_SHARE_NONE;
+        library_share_file(path);
+        return;
+    }
+    wchar_t w[MAX_PATH];
+    utf8_to_wide(path, w, MAX_PATH);
+    char name[200];
+    const char *slash = strrchr(path, '\\');
+    str_set(name, slash ? slash + 1 : path);
+    if (char *dot = strrchr(name, '.')) *dot = 0;
+    tl.share = share_start(d.kind, w, m, 0, name, game, 0, host);
+    if (!tl.share) return tl_share_end(false, "Share is busy: try again in a moment");
+    tl.share_step = TL_SHARE_RUNNING;
+    str_set(tl.share_line, "Getting it ready");
+}
+
+// Each frame and tick while a Share runs: the save, the read, then the share's step and percent, then its end.
+static void tl_share_poll()
+{
+    Timeline &tl = g_app.timeline;
+    if (tl.share_step == TL_SHARE_SAVING) {
+        SaveJobView *v = save_view(tl.job);
+        if (v && v->state < SAVE_DONE) return;
+        if (!v || v->state != SAVE_DONE) return tl_share_end(false, v && v->error[0] ? v->error : "The save didn't finish");
+        Path ffmpeg;
+        if (g_tl_probe.state == 1) return tl_share_end(false, "Busy: try again in a moment");
+        if (!ffmpeg_find(g_app.config.ffmpeg, &ffmpeg)) return tl_share_end(false, "Share needs ffmpeg");
+        g_tl_probe.ffprobe = ffprobe_for(ffmpeg);
+        utf8_to_wide(v->path, g_tl_probe.file.s, MAX_PATH);
+        g_tl_probe.state = 1;
+        HANDLE th = CreateThread(0, 0, tl_probe_thread, 0, 0, 0);
+        if (!th) {
+            g_tl_probe.state = 0;
+            return tl_share_end(false, "Couldn't read the clip");
+        }
+        CloseHandle(th);
+        tl.share_step = TL_SHARE_READING;
+        str_set(tl.share_line, "Getting it ready");
+    } else if (tl.share_step == TL_SHARE_READING) {
+        LONG st = g_tl_probe.state;
+        if (st < 2) return;
+        g_tl_probe.state = 0;
+        if (st == 3) return tl_share_end(false, "Couldn't read the clip");
+        char path[MAX_PATH * 3];
+        wide_to_utf8(g_tl_probe.file.s, path, sizeof path);
+        tl_share_go(path, g_tl_probe.m, g_tl_probe.game);
+    } else if (tl.share_step == TL_SHARE_RUNNING) {
+        ShareJobView j = share_job(tl.share);
+        if (!j.id) tl_share_end(false, "Couldn't share it");
+        else if (j.state == SHARE_FAILED) tl_share_end(false, j.error);
+        else if (j.state == SHARE_DONE) {
+            tl_share_end(true, j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
+            if (j.kind != SHARE_LINK) editor_refresh_shares();
+        } else {
+            snprintf(tl.share_line, sizeof tl.share_line, "%s %d%%", j.verb[0] ? j.verb : "Sharing", (i32)(j.progress * 100));
+        }
+    }
+}
+
+static bool tl_save(SaveKind kind, bool edit);
+
+// Share the selection (host: a link there; 0 Share's rule)
+static void tl_share(const char *host)
+{
+    Timeline &tl = g_app.timeline;
+    if (tl_sharing() || !tl_save(SAVE_CLIP, false)) return;
+    tl.share_step = TL_SHARE_SAVING;
+    str_set(tl.share_host, host ? host : "");
+    str_set(tl.share_line, "Saving the clip");
+    log_line("timeline: share queued%s%s", host ? " to " : "", host ? host : "");
+}
+
+// After "Save and edit": open the editor once the file is there. A Share goes on a step.
 static void tl_check_job()
 {
     Timeline &tl = g_app.timeline;
+    tl_share_poll();
     if (!tl.job_edit) return;
     SaveJobView *v = save_view(tl.job);
     if (v && v->state < SAVE_DONE) return;
@@ -763,11 +895,11 @@ static bool tl_has_text(const char *name, const char *part)
     return !part[0];
 }
 
-static void tl_save(SaveKind kind, bool edit)
+static bool tl_save(SaveKind kind, bool edit)
 {
     Timeline &tl = g_app.timeline;
-    if (!tl.sel_in || tl.sel_out <= tl.sel_in || tl.job_edit) return;
-    if (!tl_has_video(*tl.idx, tl.sel_in, tl.sel_out)) return;
+    if (!tl.sel_in || tl.sel_out <= tl.sel_in || tl.job_edit || !tl.idx) return false;
+    if (!tl_has_video(*tl.idx, tl.sel_in, tl.sel_out)) return false;
     u32 id = 0;
     if (kind == SAVE_SESSION) {
         // Through sessions.cpp, so the session gets its record in Data and shows under unsaved sessions if the save fails.
@@ -778,18 +910,20 @@ static void tl_save(SaveKind kind, bool edit)
         GameTime top[1];
         if (!n[0] && games_in(*tl.idx, tl.sel_in, tl.sel_out, top, 1)) n = top[0].exe;
         u32 sid = sessions_add_manual(tl.sel_in, tl.sel_out, n);
-        if (!sid) return;
+        if (!sid) return false;
         sessions_save(sid);
         const Session *ses = session_find(sid);
         if (ses && ses->state == SES_SAVING) id = ses->job;
     } else {
         id = save_range(tl.sel_in, tl.sel_out, kind, "");
     }
-    if (!id) return;
+    if (!id) return false;
     tl.job = id;
     tl.job_edit = edit;
+    if (tl.share_step >= TL_SHARE_DONE) tl.share_step = TL_SHARE_NONE; // the status shows this save now
     log_line("timeline: save %u queued (%s%s, %.1f s)", id, kind == SAVE_SESSION ? "session" : "clip",
              edit ? ", then edit" : "", (f64)(tl.sel_out - tl.sel_in) / 1e6);
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2507,14 +2641,27 @@ static void screen_timeline()
         }
         x = ImGui::GetItemRectMax().x + 18 * s;
 
-        // The saves, on the right
-        f32 w1 = 104 * s, w2 = 124 * s, w3 = 108 * s;
-        f32 xr = top.x + avail.x - (w1 + w2 + w3 + 2 * bgap);
+        // The saves, on the right. Share's arrow (or a right-click) picks the link's host.
+        f32 w1 = 104 * s, w4 = 112 * s, w2 = 124 * s, w3 = 108 * s;
+        f32 xr = top.x + avail.x - (w1 + w4 + w2 + w3 + 3 * bgap);
         ImGui::SetCursorScreenPos(ImVec2(xr, ty));
         if (kit_button(ICON_SAVE "  Save clip", KIT_PRIMARY, ImVec2(w1, 0), can)) {
             tl_save(SAVE_CLIP, false);
             tl_quick_done();
         }
+        ImGui::SameLine(0, bgap);
+        bool sharing = tl_sharing();
+        i32 sb = kit_split_button(sharing ? "Sharing..." : ICON_SHARE "  Share", "##tlshare", KIT_SECONDARY, ImVec2(w4, 0),
+                                  can && !sharing, can && !sharing);
+        if (sb == 1) tl_share(0);
+        else if (sb == 2) ImGui::OpenPopup("tl_link_to");
+        lib_popup_style_push(6);
+        if (ImGui::BeginPopup("tl_link_to")) {
+            char pick[64];
+            if (link_to_rows(tl_share_guess(), 0, 300 * s, pick)) tl_share(pick);
+            ImGui::EndPopup();
+        }
+        lib_popup_style_pop();
         ImGui::SameLine(0, bgap);
         if (kit_button(ICON_EDIT "  Save and edit", KIT_SECONDARY, ImVec2(w2, 0), can)) tl_save(SAVE_CLIP, true);
         ImGui::SameLine(0, bgap);
@@ -2567,6 +2714,17 @@ static void screen_timeline()
             ink = COL_WARN;
         } else if (pl.open && !pl.loaded) {
             str_set(status, "Opening...");
+        } else if (tl.share_step != TL_SHARE_NONE) {
+            str_set(status, tl.share_line);
+            if (tl.share_step == TL_SHARE_DONE) icon = ICON_CHECK, ink = COL_OK;
+            else if (tl.share_step == TL_SHARE_FAILED) icon = ICON_WARNING, ink = COL_ACCENT;
+            else if (tl.share_step == TL_SHARE_SAVING && v && v->state == SAVE_RUNNING) {
+                progress = v->progress;
+                snprintf(status, sizeof status, "Saving the clip  %d%%", (int)(progress * 100));
+            } else if (tl.share_step == TL_SHARE_RUNNING) {
+                ShareJobView j = share_job(tl.share);
+                if (j.state == SHARE_MAKING || j.state == SHARE_UPLOADING) progress = j.progress;
+            }
         } else if (v) {
             const char *kind = v->kind == SAVE_SESSION ? "session" : "clip";
             if (v->state == SAVE_QUEUED) str_set(status, "Waiting for another save to finish");
