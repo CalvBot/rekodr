@@ -233,21 +233,6 @@ static f64 r2_cost_for(i64 bytes)
     return gb > 0 ? gb * R2_PRICE_GB : 0;
 }
 
-// Options' label for a budget step of `gb` bought: what clipback keeps for it and the most it costs, "Free: 10 GB",
-// "25 GB for at most $0.23 a month", "10 TB for at most $149.85 a month".
-static void r2_budget_label(i32 gb, char *out, i32 cap)
-{
-    f64 cost = r2_cost_for((i64)gb * R2_GB);
-    f64 keep = (f64)r2_limit_for_budget(cost) / (f64)R2_GB;
-    const char *unit = "GB";
-    if (keep >= 1000) keep /= 1000, unit = "TB";
-    char size[24];
-    if (fabs(keep - floor(keep + 0.5)) < 0.05) snprintf(size, sizeof size, "%.0f %s", keep, unit);
-    else snprintf(size, sizeof size, "%.1f %s", keep, unit);
-    if (cost <= 0) snprintf(out, cap, "Free: %s", size);
-    else snprintf(out, cap, "%s for at most $%.2f a month", size, ceil(cost * 100 - 1e-6) / 100);
-}
-
 // Why the bucket can't take a link now: its keys can't be read, or its account is near the month's reads
 // (r2_read_cap). 0 when it can. Such a link fails with the reason; it never goes to a free host instead.
 static const char *r2_refuses(bool keys, bool capped)

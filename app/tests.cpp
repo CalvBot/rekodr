@@ -1117,19 +1117,6 @@ static void test_r2()
     T(!r2_capped(8999999, 10000000) && r2_capped(9000000, 10000000) && r2_capped(20000000, 10000000));
     T(!r2_capped(20000000, 0) && !r2_capped(-1, 10000000));
 
-    // Options' budget label: what clipback keeps for a step and the most it costs
-    {
-        char t[64];
-        r2_budget_label(10, t, sizeof t);
-        T(!strcmp(t, "Free: 10 GB"));
-        r2_budget_label(25, t, sizeof t);
-        T(!strcmp(t, "25 GB for at most $0.23 a month"));
-        r2_budget_label(50, t, sizeof t);
-        T(!strcmp(t, "50 GB for at most $0.60 a month"));
-        r2_budget_label(10000, t, sizeof t);
-        T(!strcmp(t, "10 TB for at most $149.85 a month"));
-    }
-
     // A bucket that can't take a link says why; the link isn't passed to a free host
     T(!r2_refuses(true, false));
     T(r2_refuses(false, false) && strstr(r2_refuses(false, false), "keys"));
