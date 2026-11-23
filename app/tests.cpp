@@ -1813,6 +1813,11 @@ static void test_r2()
     T(!strcmp(card.line, "Sam - Valorant") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
     cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
     T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Sam \\\\- Valorant - Preview, first 3:30 of 25:00\"}"));
+    // with the page, the tag links to it where the preview stops
+    T(card.tag_at == 210);
+    cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "https://x.dev/p", "", cj, sizeof cj);
+    T(cn > 0 && strstr(cj, "\"Sam \\\\- Valorant - [Preview, first 3:30 of 25:00](\\u003chttps://x.dev/p#t=210"
+                           "\\u003e)\"}"));
     // a session: Watch and Download after the video, before the via line; its page links the download; the file
     // downloads by its name
     ein.session = true;

@@ -626,6 +626,7 @@ struct EmbedCard {
     bool icon;      // the game's icon beside the title and `line`
     u32  accent;    // 0 = none
     char tag[64];   // "Preview, first 3:30 of 25:00" after `line`, "" = none
+    i32  tag_at;    // the tag links to the page from there (#t=, seconds), where the preview stops
     bool via;       // the "via" line at the bottom
     bool player;    // false = a card with the picture
     bool buttons;   // "Watch" (the page) and "Download" (the whole file) under the video, for a session
@@ -690,8 +691,10 @@ static void embed_card(const EmbedInput &in, EmbedCard *out, i32 style = -1)
         else if (named && game[0]) str_set(out->line, game);
         else str_set(out->line, clipper);
     }
-    if (in.video && in.preview > 0 && in.seconds > in.preview)
+    if (in.video && in.preview > 0 && in.seconds > in.preview) {
         r2_preview_text(in.preview, in.seconds, out->tag, sizeof out->tag);
+        out->tag_at = (i32)in.preview;
+    }
     out->icon = st.icon;
     out->accent = in.accent ? in.accent : R2_CARD_ACCENT;
     out->via = true;
@@ -722,9 +725,10 @@ static void r2_json_text(const char *s, bool md, char *out, i32 cap, i32 *len)
 }
 
 // The card's JSON for Discord (its <script> in the page): `video` plays in it when the card is a player, else
-// `image` shows; `icon` is the game's icon ("" = none); with `card.buttons`, link buttons to `page` and `download`
-// (Discord takes only link buttons here, with only id, type, url, style, label and emoji). Returns the length, 0
-// when it doesn't fit Discord's limit or `cap` (then the page has only its Open Graph tags).
+// `image` shows; `icon` is the game's icon ("" = none); the tag links to `page` at `card.tag_at`; with
+// `card.buttons`, link buttons to `page` and `download` (Discord takes only link buttons here, with only id, type,
+// url, style, label and emoji). Returns the length, 0 when it doesn't fit Discord's limit or `cap` (then the page
+// has only its Open Graph tags).
 static i32 r2_card_json(const EmbedCard &card, const char *video, const char *image, const char *icon,
                         const char *page, const char *download, char *out, i32 cap)
 {
@@ -743,7 +747,17 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
         put(",{\"type\":10,\"content\":\"");
         text(card.line, true);
         if (card.line[0] && card.tag[0]) put(" - ");
+        bool link = card.tag[0] && page && page[0];
+        if (link) put("[");
         text(card.tag, true);
+        if (link) {
+            put("](");
+            text("<", false);
+            text(page, false);
+            len += snprintf(out + len, len < cap ? cap - len : 0, "#t=%d", card.tag_at);
+            text(">", false);
+            put(")");
+        }
         put("\"}");
     }
     if (section) {
@@ -810,7 +824,7 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
 // The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that plays
 // `embed` (the clip, or a small copy of it), or with none a card with the picture, and Discord's own card (`card`)
 // before them; the `note`, a session's Download link and the plain APP_DISPLAY word under it. A #t= in the address
-// (seconds, or m:ss or h:mm:ss) starts the clip there, which is where a preview's "Continue watching" lands. Paused,
+// (seconds, or m:ss or h:mm:ss) starts the clip there, which is where a card's preview tag links to. Paused,
 // the page names the clip and doesn't play it. Tiny GitHub and Releases links sit in the bottom corner, below the
 // clip, never on it. Kept from search engines. All ASCII. Returns the length, 0 if it didn't fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
