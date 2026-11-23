@@ -582,6 +582,9 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 #define R2_RELEASES_URL "https://github.com/CalvBot/clipback/releases"
 enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
 static const u32 R2_CARD_ACCENT = 0x3BA4A0; // the card's edge colour. TODO: brand colour
+// The logo as a Discord emoji, at the start of the card's "via" line; it is in Calvin's own server.
+// TODO: a new id if it moves
+#define R2_LOGO_EMOJI "<:clipback:1574532567124803645>"
 
 struct EmbedInput {
     const char *title, *game, *clipper; // the clip's name, its game, config.clipper_name ("" = none)
@@ -697,21 +700,8 @@ static void r2_json_text(const char *s, bool md, char *out, i32 cap, i32 *len)
     out[*len] = 0;
 }
 
-// A Discord custom emoji as a message writes it: "<:name:id>", the name 2 to 32 letters, digits or _.
-static bool r2_emoji_ok(const char *e)
-{
-    if (!e || e[0] != '<' || e[1] != ':') return false;
-    const char *p = e + 2;
-    i32 n = 0;
-    while (isalnum((u8)*p) || *p == '_') p++, n++;
-    if (n < 2 || n > 32 || *p++ != ':') return false;
-    n = 0;
-    while (*p >= '0' && *p <= '9') p++, n++;
-    return n >= 1 && n <= 20 && p[0] == '>' && !p[1];
-}
-
 // The card's JSON for Discord (its <script> in the page): `video` plays in it when the card is a player, else
-// `image` shows; `emoji` is the game's emoji ("<:name:id>", "" = none); the tag links to `page` at `card.tag_at`; with
+// `image` shows; `emoji` is the game's emoji (emoji_ok, "" = none); the tag links to `page` at `card.tag_at`; with
 // `card.buttons`, link buttons to `page` and `download` (Discord takes only link buttons here, with only id, type,
 // url, style, label and emoji). Returns the length, 0 when it doesn't fit Discord's limit or `cap` (then the page
 // has only its Open Graph tags).
@@ -729,7 +719,7 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
     put("**\"}");
     if (card.line[0] || card.tag[0]) {
         put(",{\"type\":10,\"content\":\"");
-        if (card.icon && card.line[0] && r2_emoji_ok(emoji)) {
+        if (card.icon && card.line[0] && emoji_ok(emoji)) {
             text(emoji, false);
             put(" ");
         }
@@ -762,7 +752,8 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
         put("\"}]}");
     }
     if (card.via) {
-        put(",{\"type\":10,\"content\":\"-# [via " APP_DISPLAY "](");
+        put(",{\"type\":10,\"content\":\"-# ");
+        text(R2_LOGO_EMOJI " [via " APP_DISPLAY "](", false);
         text("<", false);
         put(R2_HOME_URL);
         text(">", false);
@@ -1670,7 +1661,9 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     EmbedCard card;
     embed_card(in, &card);
     static thread_local char json[R2_CARD_MAX + 1];
-    if (!r2_card_json(card, embed, image, "", page, video, json, sizeof json)) json[0] = 0;
+    char emoji[64];
+    gamedb_emoji(s.game, emoji, sizeof emoji);
+    if (!r2_card_json(card, embed, image, emoji, page, video, json, sizeof json)) json[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
                      copy ? s.social_h : s.page_h, tw, th, json, ""};
     char note[96] = "";

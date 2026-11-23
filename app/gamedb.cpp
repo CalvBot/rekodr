@@ -18,6 +18,9 @@
 //   art\<id>-found.json                       what the art service has for the game; empty = it has nothing
 //   resolved\<hash>.json                      what the art service said a running Minecraft's modpack
 //                                             (mcpack.cpp) or an exe the list doesn't know (storeids.cpp) is
+//   emojis.txt        the art service's emoji for each game on Discord cards (/v1/emojis), one game a line: its
+//                     name's key (emoji_key), a tab, the emoji. Fetched again after a day; offline, the one there is
+//                     is used
 // A game the list doesn't have goes by "n" and a hash of its name's letters as its id.
 // One worker thread does the fetching and the loading. The index is never changed once built, only replaced, and
 // readers copy what they find out of it under the lock, so any thread may ask.
@@ -1857,6 +1860,176 @@ static void gamedb_publish(GameIndex *ix)
     event_post(e);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Game emojis: what a Discord card puts before the game's name. The art service keeps the list by hand
+// (data/emojis.mjs in clipback-api) and sends it whole: {"emojis":[["overwatch","<:ow:123>"], ...]}.
+
+enum { EMOJI_MAX = 4096 };
+struct EmojiRow {
+    char key[64];   // emoji_key of the game's name
+    char emoji[64]; // "<:name:id>" or "<a:name:id>"
+};
+static struct {
+    SRWLOCK   lock;
+    EmojiRow *rows; // sorted by key
+    i32       count;
+} g_emoji;
+
+// A Discord custom emoji as a message writes it: "<:name:id>", or "<a:name:id>" for an animated one; the name 2 to
+// 32 letters, digits or _.
+static bool emoji_ok(const char *e)
+{
+    if (!e || e[0] != '<') return false;
+    const char *p = e + 1;
+    if (*p == 'a') p++;
+    if (*p++ != ':') return false;
+    i32 n = 0;
+    while (isalnum((u8)*p) || *p == '_') p++, n++;
+    if (n < 2 || n > 32 || *p++ != ':') return false;
+    n = 0;
+    while (*p >= '0' && *p <= '9') p++, n++;
+    return n >= 1 && n <= 20 && p[0] == '>' && !p[1];
+}
+
+// A game's name as the emoji list matches it: its ASCII letters and digits, lower case. "Counter-Strike 2" ->
+// "counterstrike2", which stays apart from "Counter-Strike".
+static void emoji_key(const char *name, char *out, i32 cap)
+{
+    i32 n = 0;
+    for (const char *p = name ? name : ""; *p && n < cap - 1; p++)
+        if (*p >= 'A' && *p <= 'Z') out[n++] = (char)(*p - 'A' + 'a');
+        else if ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9')) out[n++] = *p;
+    out[n] = 0;
+}
+
+static int emoji_cmp(const void *a, const void *b)
+{
+    return strcmp(((const EmojiRow *)a)->key, ((const EmojiRow *)b)->key);
+}
+
+// The rows of /v1/emojis's answer, or of emojis.txt (`tsv`: "key\temoji" lines), into out (at most max), sorted.
+// A row with a key that isn't a key or an emoji that isn't one is skipped. Returns how many; -1 when `text` isn't
+// the answer at all.
+static i32 emoji_parse(const char *text, bool tsv, EmojiRow *out, i32 max)
+{
+    i32 n = 0;
+    const char *p = text;
+    if (!tsv) {
+        p = strstr(text, "\"emojis\":[");
+        if (!p) return -1;
+        p += 10;
+    }
+    while (*p && n < max) {
+        char key[96], emoji[96];
+        i32 used = 0;
+        if (tsv) {
+            const char *end = p + strcspn(p, "\r\n"), *tab = (const char *)memchr(p, '\t', end - p);
+            if (tab && tab - p < (i64)sizeof key && end - tab - 1 < (i64)sizeof emoji) {
+                memcpy(key, p, tab - p);
+                key[tab - p] = 0;
+                memcpy(emoji, tab + 1, end - tab - 1);
+                emoji[end - tab - 1] = 0;
+                used = (i32)(end - p);
+            }
+        } else {
+            while (*p == ' ' || *p == ',' || *p == '\r' || *p == '\n') p++;
+            if (*p != '[') break;
+            if (sscanf(p, "[\"%95[^\"]\",\"%95[^\"]\"]%n", key, emoji, &used) != 2 || !used) break;
+        }
+        if (used) {
+            char check[96];
+            emoji_key(key, check, sizeof check);
+            if (key[0] && !strcmp(check, key) && strlen(key) < sizeof out->key && emoji_ok(emoji)) {
+                str_set(out[n].key, key);
+                str_set(out[n].emoji, emoji);
+                n++;
+            }
+            p += used;
+        }
+        if (tsv) {
+            while (*p && *p != '\n') p++;
+            if (*p) p++;
+        }
+    }
+    qsort(out, n, sizeof *out, emoji_cmp);
+    return n;
+}
+
+// Puts `rows` in place of the list there was.
+static void emoji_publish(EmojiRow *rows, i32 n)
+{
+    AcquireSRWLockExclusive(&g_emoji.lock);
+    EmojiRow *old = g_emoji.rows;
+    g_emoji.rows = rows;
+    g_emoji.count = n;
+    ReleaseSRWLockExclusive(&g_emoji.lock);
+    free(old);
+}
+
+// The emoji for the game called `name` into out ("" and false for none). Any thread.
+static bool gamedb_emoji(const char *name, char *out, i32 cap)
+{
+    EmojiRow want;
+    emoji_key(name, want.key, sizeof want.key);
+    out[0] = 0;
+    if (!want.key[0]) return false;
+    AcquireSRWLockShared(&g_emoji.lock);
+    const EmojiRow *r =
+        g_emoji.rows ? (const EmojiRow *)bsearch(&want, g_emoji.rows, g_emoji.count, sizeof want, emoji_cmp) : 0;
+    if (r) snprintf(out, cap, "%s", r->emoji);
+    ReleaseSRWLockShared(&g_emoji.lock);
+    return out[0] != 0;
+}
+
+// Loads emojis.txt, then, online and when it is a day old or missing, fetches the list again and keeps it there.
+static void gamedb_emojis(bool fetch)
+{
+    Path file = path_join(gamedb_dir(), L"emojis.txt");
+    EmojiRow *rows = (EmojiRow *)calloc(EMOJI_MAX, sizeof(EmojiRow));
+    if (!rows) return;
+    if (char *text = read_file(file.s, 0)) {
+        i32 n = emoji_parse(text, true, rows, EMOJI_MAX);
+        free(text);
+        emoji_publish(rows, n);
+        rows = (EmojiRow *)calloc(EMOJI_MAX, sizeof(EmojiRow));
+        if (!rows) return;
+    }
+    if (!fetch || !g_gamedb.service[0]) {
+        free(rows);
+        return;
+    }
+    char *body = 0;
+    i64 len = 0;
+    u32 status = art_service_get("/v1/emojis", &body, &len);
+    i32 n = status == 200 && body ? emoji_parse(body, false, rows, EMOJI_MAX) : -1;
+    free(body);
+    if (n < 0) {
+        log_line("game emojis: couldn't fetch them (%u)", status);
+        free(rows);
+        return;
+    }
+    Path part = file;
+    wcsncat(part.s, L".part", MAX_PATH - wcslen(part.s) - 1);
+    FILE *f = _wfopen(part.s, L"wb");
+    bool ok = f != 0;
+    for (i32 i = 0; f && i < n; i++) ok &= fprintf(f, "%s\t%s\n", rows[i].key, rows[i].emoji) > 0;
+    if (f) ok &= fclose(f) == 0;
+    if (!ok || !MoveFileExW(part.s, file.s, MOVEFILE_REPLACE_EXISTING)) log_line("game emojis: couldn't keep them");
+    emoji_publish(rows, n);
+    log_line("game emojis: %d", n);
+}
+
+// Whether the emoji list is due to be fetched again: missing, or a day old.
+static bool gamedb_emojis_due()
+{
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExW(path_join(gamedb_dir(), L"emojis.txt").s, GetFileExInfoStandard, &fa)) return true;
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    i64 at = (i64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime;
+    return ((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - at > 24 * 3600 * 10000000ll;
+}
+
 static DWORD WINAPI gamedb_thread(void *)
 {
     Path dir = gamedb_dir(), json = path_join(dir, L"detectable.json"), tsv = path_join(dir, L"games.tsv");
@@ -1875,10 +2048,13 @@ static DWORD WINAPI gamedb_thread(void *)
             log_line("games list: couldn't fetch it%s", have ? "; using the one from before" : "");
         }
     }
+    gamedb_emojis(g_gamedb.online && gamedb_emojis_due());
     while (!g_gamedb.stop) {
         bool done = gamedb_fetch_asks();
         done &= gamedb_fetch_art();
-        WaitForSingleObject(g_gamedb.wake, done ? INFINITE : 2000); // some waiting their turn: look again soon
+        if (g_gamedb.online && gamedb_emojis_due()) gamedb_emojis(true);
+        // some waiting their turn: look again soon; else within the hour, for the emojis
+        WaitForSingleObject(g_gamedb.wake, done ? 3600 * 1000 : 2000);
     }
     return 0;
 }

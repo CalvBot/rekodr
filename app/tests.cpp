@@ -1794,7 +1794,8 @@ static void test_r2()
     T(strstr(cj, "\"content\":\"**ace \\u003c\\\"round\\\"\\\\\\u003e \\\\*1\\\\* caf\\u00e9 \\ud83c\\udfae**\"}") != 0);
     T(strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}") != 0);
     T(strstr(cj, "{\"type\":12,\"items\":[{\"media\":{\"url\":\"https://x.dev/clipback/abc/social.mp4?v=2\"}}]}") != 0);
-    T(strstr(cj, "\"-# [via Clipback](\\u003chttps://github.com/CalvBot/clipback\\u003e)\"}]}}") != 0);
+    T(strstr(cj, "\"-# \\u003c:clipback:1574532567124803645\\u003e [via Clipback](\\u003chttps://github.com/CalvBot/"
+                 "clipback\\u003e)\"}]}}") != 0);
     T(!strstr(cj, "thumb.jpg") && !strstr(cj, "\"type\":9"));
     card.player = false; // nothing small enough: the picture
     cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
@@ -1810,10 +1811,34 @@ static void test_r2()
     card.icon = false;
     cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "<:g_s5:1>", "", "", cj, sizeof cj);
     T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}"));
-    T(r2_emoji_ok("<:clipback:1574532567124803645>") && r2_emoji_ok("<:a_1:9>"));
-    T(!r2_emoji_ok("") && !r2_emoji_ok(0) && !r2_emoji_ok("<:a:1>") && !r2_emoji_ok("<a:ab:1>"));
-    T(!r2_emoji_ok("<:ab:>") && !r2_emoji_ok("<:ab:1> ") && !r2_emoji_ok("<:a b:1>") && !r2_emoji_ok("<:ab:x1>"));
-    T(!r2_emoji_ok("<:abcdefghijabcdefghijabcdefghijabc:1>") && !r2_emoji_ok("<:ab:123456789012345678901>"));
+    T(emoji_ok("<:clipback:1574532567124803645>") && emoji_ok("<:a_1:9>") && emoji_ok("<a:spin:9>"));
+    T(!emoji_ok("") && !emoji_ok(0) && !emoji_ok("<:a:1>") && !emoji_ok("<b:ab:1>") && !emoji_ok("<a:a:1>"));
+    T(!emoji_ok("<:ab:>") && !emoji_ok("<:ab:1> ") && !emoji_ok("<:a b:1>") && !emoji_ok("<:ab:x1>"));
+    T(!emoji_ok("<:abcdefghijabcdefghijabcdefghijabc:1>") && !emoji_ok("<:ab:123456789012345678901>"));
+
+    // The game emoji list: a game's letters and digits are its key, so Counter-Strike and Counter-Strike 2 differ
+    char ekey[64];
+    emoji_key("Counter-Strike 2", ekey, sizeof ekey);
+    T(!strcmp(ekey, "counterstrike2"));
+    emoji_key("Counter-Strike", ekey, sizeof ekey);
+    T(!strcmp(ekey, "counterstrike"));
+    static EmojiRow erows[8];
+    static const char eans[] = "{\"emojis\":[[\"overwatch\",\"<:ow:77>\"],[\"counterstrike2\",\"<:cs2:2>\"],"
+                               "[\"Bad Key\",\"<:x1:1>\"],[\"counterstrike\",\"<a:cs:1>\"],[\"nope\",\":nope:\"]]}";
+    T(emoji_parse(eans, false, erows, 8) == 3);
+    T(!strcmp(erows[0].key, "counterstrike") && !strcmp(erows[1].key, "counterstrike2"));
+    T(!strcmp(erows[2].emoji, "<:ow:77>"));
+    T(emoji_parse("{\"emojis\":[]}", false, erows, 8) == 0 && emoji_parse("<html>", false, erows, 8) == -1);
+    T(emoji_parse("overwatch\t<:ow:77>\r\nbad\nhades\t<:hades:3>\n", true, erows, 8) == 2);
+    T(!strcmp(erows[0].key, "hades") && !strcmp(erows[1].emoji, "<:ow:77>"));
+    EmojiRow *elist = (EmojiRow *)calloc(8, sizeof(EmojiRow));
+    T(emoji_parse(eans, false, elist, 8) == 3);
+    emoji_publish(elist, 3);
+    char eout[64];
+    T(gamedb_emoji("Counter-Strike 2", eout, sizeof eout) && !strcmp(eout, "<:cs2:2>"));
+    T(gamedb_emoji("COUNTER-STRIKE", eout, sizeof eout) && !strcmp(eout, "<a:cs:1>"));
+    T(!gamedb_emoji("Valorant", eout, sizeof eout) && !eout[0] && !gamedb_emoji("", eout, sizeof eout));
+    emoji_publish(0, 0);
     // the style: found by its id, the first when the id is unknown; a preview tags the line
     T(embed_style_count() == 1 && !strcmp(embed_style_id(0), "clipback") && embed_style_find("clipback") == 0);
     T(embed_style_find("nope") == -1 && !strcmp(embed_style_name(5), "Clipback"));
@@ -1836,7 +1861,7 @@ static void test_r2()
                       cj, sizeof cj);
     T(cn > 0 && strstr(cj, "\"}}]},{\"type\":1,\"components\":[{\"type\":2,\"style\":5,\"label\":\"Watch\","
                            "\"url\":\"https://x.dev/p\"},{\"type\":2,\"style\":5,\"label\":\"Download\","
-                           "\"url\":\"https://x.dev/c.mp4\"}]},{\"type\":10,\"content\":\"-# [via"));
+                           "\"url\":\"https://x.dev/c.mp4\"}]},{\"type\":10,\"content\":\"-# \\u003c:clipback"));
     pp.download = true;
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && strstr(html, "<p><a href=\"https://x.dev/clipback/abc/clip.mp4\" download>Download</a></p>"));
