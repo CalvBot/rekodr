@@ -2715,61 +2715,29 @@ static void ed_share_tab(f32 w)
     }
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 
-    // Share: the title row says what one click does, with the button beside it; the tiles under it
+    // Share: the title row says what one click does, with the button beside it
     {
-        bool any_host = links_any_host(), can = d.kind == SHARE_LINK ? d.link_ok : d.file_ok;
+        bool can = d.kind == SHARE_LINK ? d.link_ok : d.file_ok;
         ImVec2 top = ImGui::GetCursorScreenPos();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
         ed_card_head(ICON_SHARE, "Share", can ? d.why : d.link_why, iw - bw - gap, can ? 0 : col32(0xff8a92));
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
-        // Its arrow, or a right-click, picks the link's host
+        // Its arrow, or a right-click, opens the Share menu, which shows a running Share's step
         i32 sb = kit_split_button(sharing ? "Sharing..." : ICON_SHARE "  Share", "##edshare", KIT_PRIMARY, ImVec2(bw, 0),
-                                  !sharing && can, !sharing);
+                                  !sharing && can);
         if (sb == 1) ed_share_ask(d.kind);
-        else if (sb == 2) ImGui::OpenPopup("ed_link_to");
-        lib_popup_style_push(6);
-        if (ImGui::BeginPopup("ed_link_to")) {
+        else if (sb == 2) ImGui::OpenPopup("ed_share_menu");
+        lib_popup_style_push(8);
+        if (ImGui::BeginPopup("ed_share_menu")) {
+            ShareJobView j = ed.share_job ? share_job(ed.share_job) : ShareJobView{};
             char pick[64];
-            if (link_to_rows(ed_share_info(), &ed.edit, kit_px(300), pick)) ed_share_ask(SHARE_LINK, pick);
+            i32 r = share_menu_body(d, ed_share_info(), &ed.edit, share_menu_state(j), ed.item.key, ed.path.s, pick);
+            if (r == SHARE_MENU_SHARE) ed_share_ask(d.kind);
+            else if (r == SHARE_MENU_HOST) ed_share_ask(SHARE_LINK, pick);
             ImGui::EndPopup();
         }
         lib_popup_style_pop();
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + keep_row + st.ItemSpacing.y));
-
-        // The tiles, one under another at the panel's width. The running Share's tile shows its step and percent.
-        ShareJobView j = ed.share_job ? share_job(ed.share_job) : ShareJobView{};
-        bool running = j.id && j.state < SHARE_DONE;
-        i32 job_tile = !running ? -1 : j.kind == SHARE_LINK ? 2 : 0;
-        char lines[3][128], size_s[24];
-        u32 inks[3] = {COL_DIM, COL_DIM, COL_DIM};
-        f32 bars[3] = {-1, -1, -1};
-        share_size_text(d.file_bytes, size_s, sizeof size_s);
-        if (!d.file_ok) snprintf(lines[0], sizeof lines[0], "too big for %s", max_s);
-        else if (d.file_squeezed) snprintf(lines[0], sizeof lines[0], "squeezed to %s", max_s);
-        else snprintf(lines[0], sizeof lines[0], "as is, %s", size_s);
-        share_size_text((i64)ed.item.size, size_s, sizeof size_s);
-        snprintf(lines[1], sizeof lines[1], "in folder, %s, no edit", size_s);
-        if (d.link_ok) snprintf(lines[2], sizeof lines[2], "%s", d.host_label);
-        else snprintf(lines[2], sizeof lines[2], "%s", any_host ? d.link_why : "set up a host");
-        if (running) {
-            snprintf(lines[job_tile], sizeof lines[job_tile], "%s %d%%", j.verb[0] ? j.verb : "Sharing", (i32)(j.progress * 100 + 0.5f));
-            inks[job_tile] = COL_TEXT;
-            bars[job_tile] = j.progress;
-        }
-        f32 th = kit_px(62), tg = kit_px(6);
-        bool link_pick = d.kind == SHARE_LINK;
-        if (lib_share_tile("##edfile", ICON_VIDEO, "File", lines[0], inks[0], !link_pick, !d.file_ok, bars[0], iw, th) && !running)
-            ed_share(d.file_squeezed ? SHARE_SQUEEZED : SHARE_AS_IS);
-        kit_tip(d.file_ok ? "A copy with the edit and one sound track, ready to paste" : "Over the max size even squeezed: share a link");
-        ImGui::Dummy(ImVec2(1, tg - st.ItemSpacing.y));
-        if (lib_share_tile("##edoriginal", ICON_FOLDER, "Original", lines[1], inks[1], false, false, bars[1], iw, th))
-            show_in_folder(ed.path.s);
-        kit_tip("The file as it was saved, without the edit, in its folder");
-        ImGui::Dummy(ImVec2(1, tg - st.ItemSpacing.y));
-        if (lib_share_tile("##edlink", ICON_LINK, "Link", lines[2], inks[2], link_pick, any_host && !d.link_ok, bars[2], iw, th) &&
-            !running)
-            ed_share_ask(SHARE_LINK);
-        kit_tip(!any_host ? "Turn on a free host or set up Cloudflare in Options" : d.link_ok ? "Upload it and copy the link" : d.link_why);
     }
     ImGui::Dummy(ImVec2(1, kit_px(4)));
 

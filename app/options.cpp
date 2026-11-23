@@ -2961,6 +2961,10 @@ static void opt_quality_table()
     static i32 editing = -1; // the cell being typed in, row * 2 + column
     f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), sh = g_font_small->FontSize;
     f32 head_h = dp(22), cell_h = fh + dp(6), foot_h = dp(30), pad = dp(12);
+    if (g_opt_quality_jump > 0) { // the Share menu's Quality
+        g_opt_quality_jump--;
+        ImGui::SetScrollHereY(0);
+    }
     opt_row_begin(0, 0, cw, pad + head_h + 6 * cell_h + foot_h + dp(4));
     ImDrawList *dl = ImGui::GetWindowDrawList();
     opt_text_at(dl, g_font, ImVec2(g_row.x0, g_row.y + pad + head_h + floorf((cell_h - g_font->FontSize) / 2)), COL_TEXT,

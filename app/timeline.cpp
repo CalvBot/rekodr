@@ -684,6 +684,31 @@ static void tl_share(const char *host)
     log_line("timeline: share queued%s%s", host ? " to " : "", host ? host : "");
 }
 
+// The Share menu's state of the selection's Share: the save, the read and the share as one running step, then how
+// it went.
+static ShareMenuState tl_share_menu_state()
+{
+    Timeline &tl = g_app.timeline;
+    ShareMenuState st = {};
+    st.progress = -1;
+    if (tl_sharing()) {
+        st.running = true;
+        str_set(st.line, tl.share_line);
+        if (tl.share_step == TL_SHARE_RUNNING) st.progress = share_job(tl.share).progress;
+        else if (SaveJobView *v = tl.share_step == TL_SHARE_SAVING ? save_view(tl.job) : 0)
+            if (v->state == SAVE_RUNNING) st.progress = v->progress;
+        ui_wake();
+    } else if (tl.share_step == TL_SHARE_DONE) {
+        st.done = 1;
+        str_set(st.line, tl.share_line);
+    } else if (tl.share_step == TL_SHARE_FAILED) {
+        st.done = -1;
+        str_set(st.line, "Not shared");
+        str_set(st.error, tl.share_line);
+    }
+    return st;
+}
+
 // After "Save and edit": open the editor once the file is there. A Share goes on a step.
 static void tl_check_job()
 {
@@ -2652,13 +2677,16 @@ static void screen_timeline()
         ImGui::SameLine(0, bgap);
         bool sharing = tl_sharing();
         i32 sb = kit_split_button(sharing ? "Sharing..." : ICON_SHARE "  Share", "##tlshare", KIT_SECONDARY, ImVec2(w4, 0),
-                                  can && !sharing, can && !sharing);
+                                  can && !sharing, can);
         if (sb == 1) tl_share(0);
-        else if (sb == 2) ImGui::OpenPopup("tl_link_to");
-        lib_popup_style_push(6);
-        if (ImGui::BeginPopup("tl_link_to")) {
+        else if (sb == 2) ImGui::OpenPopup("tl_share_menu");
+        lib_popup_style_push(8);
+        if (ImGui::BeginPopup("tl_share_menu")) {
+            MediaInfo m = tl_share_guess();
             char pick[64];
-            if (link_to_rows(tl_share_guess(), 0, 300 * s, pick)) tl_share(pick);
+            i32 r = share_menu_body(share_decide(m, 0), m, 0, tl_share_menu_state(), 0, 0, pick);
+            if (r == SHARE_MENU_SHARE) tl_share(0);
+            else if (r == SHARE_MENU_HOST) tl_share(pick);
             ImGui::EndPopup();
         }
         lib_popup_style_pop();

@@ -2652,6 +2652,14 @@ static void lib_open_sharing()
     ui_show(SCREEN_OPTIONS);
 }
 
+// Options on Sharing, scrolled to the Quality table (it scrolls there for the next few frames, as the page settles)
+static i32 g_opt_quality_jump;
+static void lib_open_quality()
+{
+    lib_open_sharing();
+    g_opt_quality_jump = 3;
+}
+
 // The hosts a link can go to without R2: the free ones, then the player's uploaders (.sxcu), each by its name
 // (link_uploaders for an uploader) and the one shown. Read again every few seconds, and at once after an uploader is added.
 struct LinkHostName {
@@ -3100,125 +3108,6 @@ static void lib_share_pending_check()
     }
 }
 
-// Pauses or resumes a link (r2_pause, r2_resume): a paused one stops playing for anyone who has it.
-static void lib_link_pause(const R2Share &s)
-{
-    if (s.paused) r2_resume(s.key);
-    else r2_pause(s.key);
-    log_line("library: link %s %s", s.key, s.paused ? "resumed" : "paused");
-    lib_note(false, s.paused ? "Link playing again: %s" : "Link paused: %s", s.title);
-}
-
-// One of the Share menu's tiles, all one size: a title over a line, an icon in the corner. `picked` is what one-click
-// Share does (an accent edge and fill); `off` greys it and a click does nothing. `progress` >= 0 draws a bar along the
-// bottom. True when clicked.
-static bool lib_share_tile(const char *id, const char *icon, const char *title, const char *line, u32 line_ink,
-                           bool picked, bool off, f32 progress, f32 w, f32 h)
-{
-    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
-    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h)) && !off;
-    bool hot = !off && ImGui::IsItemHovered();
-    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 r = kit_px(10), pad = kit_px(14);
-    dl->AddRectFilled(a, b, col32(picked ? COL_ACCENT_SOFT : hot ? COL_HOVER : COL_PANEL2), r);
-    dl->AddRect(a, b, col32(picked ? COL_ACCENT : COL_LINE), r, 0, kit_px(picked ? 2.f : 1.f));
-    f32 fs = g_font_icon->FontSize;
-    ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
-    dl->AddText(g_font_icon, fs, ImVec2(b.x - pad - gs.x, a.y + pad), col32(off ? COL_FAINT : picked ? COL_ACCENT : COL_DIM), icon);
-    ImGui::PushFont(g_font_big);
-    text_clipped(dl, ImVec2(a.x + pad, a.y + pad - kit_px(2)), w - 2 * pad - gs.x - kit_px(6), col32(off ? COL_FAINT : COL_TEXT), title);
-    ImGui::PopFont();
-    text_clipped(dl, ImVec2(a.x + pad, b.y - pad - g_font->FontSize - kit_px(2)), w - 2 * pad,
-                 col32(off ? COL_FAINT : line_ink), line);
-    if (progress >= 0) {
-        f32 y = b.y - kit_px(7), x0 = a.x + pad, x1 = b.x - pad;
-        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + kit_px(3)), col32(COL_HOVER), kit_px(2));
-        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + (x1 - x0) * fminf(progress, 1), y + kit_px(3)), col32(COL_ACCENT), kit_px(2));
-    }
-    return clicked;
-}
-
-// "Expires in 5 h", "Expires in 20 min"
-static void lib_expires_in(i64 left_us, char *out, i32 cap)
-{
-    i64 min = (left_us + 59999999) / 60000000;
-    if (min < 60) snprintf(out, cap, "Expires in %d min", (i32)(min < 1 ? 1 : min));
-    else snprintf(out, cap, "Expires in %d h", (i32)((min + 59) / 60));
-}
-
-// The card's link under the Share menu's tiles, one row of a fixed height whether it has one or not: its host, plays
-// today and when it ends over the name, then Copy, Pause or Resume (the bucket only) and Delete, each in its place
-// and greyed when it can't be used.
-static void lib_link_row(const LibItem &it, f32 w)
-{
-    R2Share s;
-    bool has = share_clip_link(it.key, &s), r2 = has && s.host == HOST_R2, paused = r2 && s.paused;
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 h = kit_px(56), fh = ImGui::GetFrameHeight(), gap = kit_px(4), pad = kit_px(12);
-    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
-    dl->AddRect(a, b, col32(COL_LINE), kit_px(10), 0, kit_px(1));
-    f32 fs = g_font_icon->FontSize;
-    const char *icon = paused ? ICON_PAUSE : ICON_LINK;
-    ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
-    dl->AddText(g_font_icon, fs, ImVec2(a.x + pad, floorf(a.y + (h - gs.y) / 2)),
-                col32(!has ? COL_FAINT : paused ? COL_WARN : COL_ACCENT), icon);
-    f32 acts = 3 * fh + 2 * gap, tx = a.x + pad + gs.x + kit_px(10), tw = b.x - pad - acts - kit_px(10) - tx;
-    f32 ty = floorf(a.y + (h - ImGui::GetTextLineHeight() - kit_px(2) - g_font_small->FontSize) / 2);
-    char host[64] = "", line[200];
-    if (has) share_host_label(s, host, sizeof host);
-    text_clipped(dl, ImVec2(tx, ty), tw, col32(has ? COL_TEXT : COL_FAINT),
-                 !has ? "No link yet" : host[0] ? host : "Your bucket");
-    line[0] = 0;
-    if (has) {
-        char plays[48] = "", ends[48] = "";
-        if (r2 && s.plays_today >= 0) {
-            char n[32];
-            fmt_count(s.plays_today, n, sizeof n);
-            snprintf(plays, sizeof plays, "%s %s today", n, s.plays_today == 1 ? "play" : "plays");
-        }
-        if (s.expires_us) lib_expires_in(s.expires_us - now_us(), ends, sizeof ends);
-        if (paused && s.paused == 2) snprintf(line, sizeof line, "Paused until tomorrow%s%s", plays[0] ? "  -  " : "", plays);
-        else if (paused) snprintf(line, sizeof line, "Paused, nobody can play it%s%s", plays[0] ? "  -  " : "", plays);
-        else snprintf(line, sizeof line, "%s%s%s", plays, plays[0] && ends[0] ? "  -  " : "", ends);
-    } else snprintf(line, sizeof line, "Link makes one and copies it");
-    ImGui::PushFont(g_font_small);
-    text_clipped(dl, ImVec2(tx, ty + ImGui::GetTextLineHeight() + kit_px(2) + (g_font->FontSize - g_font_small->FontSize)), tw,
-                 col32(paused ? COL_WARN : COL_DIM), line);
-    ImGui::PopFont();
-    f32 by = floorf(a.y + (h - fh) / 2);
-    ImGui::SetCursorScreenPos(ImVec2(b.x - pad - acts, by));
-    kit_next_tip(paused ? "Copy link: it plays once resumed" : "Copy link");
-    if (kit_icon_button(ICON_LINK, "##lcopy", KIT_GHOST, has)) {
-        ImGui::SetClipboardText(s.url);
-        lib_note(false, "Link copied: %s", s.title);
-    }
-    ImGui::SameLine(0, gap);
-    kit_next_tip(!r2 ? "Only a link in your bucket can be paused" : s.moving ? (s.paused ? "Resuming..." : "Pausing...")
-                 : s.paused ? "Paused: click to let it play again" : "Pause: nobody can play it until resumed");
-    if (kit_icon_button(paused ? ICON_PLAY : ICON_PAUSE, "##lpause", KIT_GHOST, r2 && !s.moving, paused)) lib_link_pause(s);
-    ImGui::SameLine(0, gap);
-    kit_next_tip(host[0] ? "Remove from the list" : "Delete the link");
-    if (kit_icon_button(ICON_DELETE, "##ldelete", KIT_GHOST, has)) ImGui::OpenPopup("link_delete");
-    lib_popup_style_push(6);
-    if (ImGui::BeginPopup("link_delete")) {
-        if (host[0]) {
-            ImGui::PushFont(g_font_small);
-            kit_dim(s.expires_us ? "  The file stays on %s until it ends" : "  The file stays on %s", host);
-            ImGui::PopFont();
-        }
-        if (lib_menu_item(ICON_DELETE, host[0] ? "Remove from the list" : "Delete it from the bucket", true, kit_px(240))) {
-            log_line("library: link %s %s", s.key, host[0] ? "taken off the list" : "deleted");
-            r2_delete(s.key);
-        }
-        lib_menu_item(ICON_CLOSE, "Keep it", false, kit_px(240));
-        ImGui::EndPopup();
-    }
-    lib_popup_style_pop();
-    ImGui::SetCursorScreenPos(ImVec2(a.x, b.y));
-    ImGui::Dummy(ImVec2(w, 0));
-}
-
 // "Link to": a row for every host that's on or set up (share_host_choices), with how `m` played as `edit` goes
 // there; one that can't take it is greyed. With none, a row that opens Options on Sharing. True when a host is
 // clicked, its name in `pick`.
@@ -3266,85 +3155,332 @@ static bool link_to_rows(const MediaInfo &m, const EditRecord *edit, f32 w, char
     return picked;
 }
 
-// The Share menu, for one card: three tiles in a fixed order, File (the copy Share makes, with the edit and one mixed
-// sound track: at its size, squeezed, or too big), Original (the file as saved, shown in its folder) and Link (where
-// it goes), the one-click choice picked out. A Share started here shows its step and percent in its tile, then
-// "Copied". Under them the card's link (lib_link_row). Opened with ImGui::OpenPopup(id) where it's drawn.
+// The Share menu's state of a Share: running with its step and percent, or just finished (for 4 s) with how it went.
+struct ShareMenuState {
+    bool running;
+    f32  progress;  // 0..1 while running, < 0 for no bar
+    char line[96];  // while running: "Making 40%"; after: "Copied", "Link copied", "Not shared"
+    i32  done;      // 1 shared, -1 failed, 0 neither
+    char error[256];
+};
+
+// The menu's state of a share job (ShareJobView), done for 4 s after it ends.
+static ShareMenuState share_menu_state(const ShareJobView &j)
+{
+    static u32 done_id;
+    static u64 done_ms;
+    ShareMenuState st = {};
+    st.progress = -1;
+    if (!j.id) return st;
+    u64 now = GetTickCount64();
+    if (j.state < SHARE_DONE) {
+        st.running = true;
+        st.progress = j.progress;
+        snprintf(st.line, sizeof st.line, "%s %d%%", j.verb[0] ? j.verb : "Sharing", (i32)(j.progress * 100 + 0.5f));
+        ui_wake();
+        return st;
+    }
+    if (done_id != j.id) done_id = j.id, done_ms = now;
+    if (now - done_ms >= 4000) return st;
+    bool ok = j.state == SHARE_DONE && !j.error[0];
+    st.done = ok ? 1 : -1;
+    str_set(st.line, ok ? (j.kind == SHARE_LINK ? "Link copied" : "Copied") : "Not shared");
+    str_set(st.error, j.error);
+    ui_wake();
+    return st;
+}
+
+// A bar `w` wide of `frac` in `ink` over a dim track.
+static void share_bar(ImDrawList *dl, ImVec2 a, f32 w, f32 frac, u32 ink)
+{
+    f32 h = kit_px(5), r = h / 2;
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_FAINT, 0.45f), r);
+    if (frac <= 0) return;
+    f32 fw = w * (frac > 1 ? 1 : frac);
+    dl->AddRectFilled(a, ImVec2(a.x + (fw < h ? h : fw), a.y + h), col32(ink), r);
+}
+
+// The most a host takes, 0 for no cap.
+static i64 share_host_cap(LinkHost host)
+{
+    if (const FreeHost *f = free_host(host)) return f->max_bytes;
+    if (host == HOST_R2) return r2_limit_for_budget(r2_budget_now());
+    return 0;
+}
+
+// A square icon button in the menu, `ink` its icon's colour; true when clicked.
+static bool share_menu_icon(const char *icon, const char *id, u32 ink, f32 sz)
+{
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(sz, sz));
+    bool hot = ImGui::IsItemHovered();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (hot) dl->AddRectFilled(a, ImVec2(a.x + sz, a.y + sz), col32(COL_HOVER), kit_px(6));
+    f32 fs = g_font_icon->FontSize;
+    ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
+    dl->AddText(g_font_icon, fs, ImVec2(floorf(a.x + (sz - gs.x) / 2), floorf(a.y + (sz - gs.y) / 2)), col32(ink), icon);
+    return clicked;
+}
+
+static void open_url(const char *url); // setup.cpp
+
+enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST };
+
+// The Share menu, the same wherever it opens (a card's Share, the player's, the editor's and the Timeline's arrow),
+// drawn inside the caller's popup:
+// - Share: what one click does, with a bar of the file against the max size (green as is, amber lowered); while a
+//   Share runs the bar is its progress and the label its step, then "Copied".
+// - The clip's link (link_key's, when it has one): the address, then Copy, Open and Delete.
+// - Link to: a row per host with how much of its cap the clip takes; greyed when it can't.
+// - Original (shows `original` in its folder; greyed with none) and Quality (Options at the Quality table).
+// Its size follows only the clip: whether it has a link and how many hosts. Returns SHARE_MENU_SHARE for the
+// one-click Share, SHARE_MENU_HOST for a host, its name in `pick`.
+static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const EditRecord *edit, const ShareMenuState &st,
+                           u64 link_key, const wchar_t *original, char (&pick)[64])
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 W = kit_px(360), gap = kit_px(6), sfs = g_font_small->FontSize, line_h = ImGui::GetTextLineHeight();
+    ImVec2 o = ImGui::GetCursorScreenPos();
+    f32 y = o.y;
+    i32 result = SHARE_MENU_NONE;
+    bool any_host = links_any_host();
+
+    // Share
+    {
+        f32 h = kit_px(60), pad = kit_px(12), pill_w = kit_px(88), pill_h = kit_px(32);
+        bool link = d.kind == SHARE_LINK, can = (link ? d.link_ok : d.file_ok) || !any_host;
+        ImVec2 a(o.x, y), b(o.x + W, y + h);
+        ImGui::SetCursorScreenPos(a);
+        bool clicked = ImGui::InvisibleButton("##smshare", ImVec2(W, h));
+        bool hot = can && !st.running && ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (st.done < 0 && st.error[0]) kit_tip(st.error);
+        if (clicked && can && !st.running) result = SHARE_MENU_SHARE;
+        f32 r = kit_px(8);
+        dl->AddRectFilled(a, b, col32(COL_ACCENT, hot ? 0.28f : 0.16f), r);
+        dl->AddRect(a, b, col32(COL_ACCENT, can ? 1.f : 0.4f), r, 0, kit_px(1));
+        // The pill: plainly the button
+        ImVec2 p0(b.x - pad - pill_w, floorf(a.y + (h - pill_h) / 2)), p1(b.x - pad, p0.y + pill_h);
+        dl->AddRectFilled(p0, p1, col32(can ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : COL_PANEL2), kit_px(6));
+        {
+            f32 fs = g_font_icon->FontSize;
+            ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_SHARE);
+            ImGui::PushFont(g_font_bold);
+            ImVec2 ts = ImGui::CalcTextSize("Share");
+            f32 tx = floorf(p0.x + (pill_w - gs.x - kit_px(6) - ts.x) / 2);
+            u32 ink = can ? 0xffffff : COL_FAINT;
+            dl->AddText(g_font_icon, fs, ImVec2(tx, floorf(p0.y + (pill_h - gs.y) / 2)), col32(ink), ICON_SHARE);
+            dl->AddText(ImVec2(tx + gs.x + kit_px(6), floorf(p0.y + (pill_h - ts.y) / 2)), col32(ink), "Share");
+            ImGui::PopFont();
+        }
+        // The label and its bar
+        char label[128], size_s[24];
+        f32 frac = 0;
+        u32 ink = COL_OK;
+        if (st.running || st.done) {
+            str_set(label, st.line);
+            frac = st.running ? st.progress : 1;
+            ink = st.running ? COL_ACCENT : st.done > 0 ? COL_OK : COL_WARN;
+        } else if (!any_host && link) {
+            str_set(label, "Set up a host");
+        } else if (link && !d.link_ok) {
+            str_set(label, d.link_why);
+        } else if (link) {
+            snprintf(label, sizeof label, "Link, %s", d.host_label);
+            if (label[6] >= 'a' && label[6] <= 'z') label[6] -= 32; // "your bucket" starts the name
+            i64 cap = share_host_cap(d.host);
+            frac = d.link_squeezed ? 1 : cap > 0 ? (f32)((f64)d.link_bytes / cap) : 0;
+            ink = d.link_squeezed ? COL_WARN : COL_OK;
+        } else if (d.file_squeezed) {
+            share_size_text(d.max_bytes, size_s, sizeof size_s);
+            snprintf(label, sizeof label, "File, lowered to %s", size_s);
+            frac = 1;
+            ink = COL_WARN;
+        } else {
+            share_size_text(d.file_bytes, size_s, sizeof size_s);
+            snprintf(label, sizeof label, "File, %s", size_s);
+            frac = d.max_bytes > 0 ? (f32)((f64)d.file_bytes / d.max_bytes) : 0;
+        }
+        const char *icon = link ? ICON_LINK : ICON_FILE;
+        f32 fs = g_font_icon->FontSize, tw = p0.x - kit_px(14) - (a.x + pad);
+        ImGui::PushFont(g_font_bold);
+        f32 bh = ImGui::GetTextLineHeight(), ty = floorf(a.y + (h - bh - kit_px(8) - kit_px(5)) / 2);
+        ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
+        dl->AddText(g_font_icon, fs, ImVec2(a.x + pad, floorf(ty + (bh - gs.y) / 2)), col32(can ? COL_TEXT : COL_DIM), icon);
+        f32 lx = a.x + pad + gs.x + kit_px(8);
+        text_clipped(dl, ImVec2(lx, ty), a.x + pad + tw - lx, col32(st.done < 0 ? COL_WARN : can ? COL_TEXT : COL_DIM), label);
+        ImGui::PopFont();
+        share_bar(dl, ImVec2(a.x + pad, ty + bh + kit_px(8)), tw, frac, ink);
+        y = b.y + gap;
+    }
+
+    // The clip's link
+    R2Share s;
+    if (link_key && share_clip_link(link_key, &s)) {
+        f32 h = kit_px(40), pad = kit_px(10), isz = kit_px(30), igap = kit_px(2);
+        ImVec2 a(o.x, y), b(o.x + W, y + h);
+        dl->AddRectFilled(a, b, col32(COL_PANEL2), kit_px(7));
+        dl->AddRect(a, b, col32(COL_LINE), kit_px(7), 0, kit_px(1));
+        bool paused = s.host == HOST_R2 && s.paused;
+        f32 dr = kit_px(4);
+        dl->AddCircleFilled(ImVec2(a.x + pad + dr, a.y + h / 2), dr, col32(paused ? COL_WARN : COL_OK));
+        const char *url = s.url;
+        if (!strncmp(url, "https://", 8)) url += 8;
+        else if (!strncmp(url, "http://", 7)) url += 7;
+        f32 bx = b.x - kit_px(5) - 3 * isz - 2 * igap, tx = a.x + pad + 2 * dr + kit_px(8);
+        text_clipped(dl, ImVec2(tx, floorf(a.y + (h - line_h) / 2)), bx - kit_px(8) - tx, col32(COL_TEXT), url);
+        f32 by = floorf(a.y + (h - isz) / 2);
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
+        if (share_menu_icon(ICON_COPY, "##smcopy", COL_TEXT, isz)) {
+            ImGui::SetClipboardText(s.url);
+            lib_note(false, "Link copied: %s", s.title);
+        }
+        kit_tip(paused ? "Copy link: it plays once resumed" : "Copy link");
+        ImGui::SetCursorScreenPos(ImVec2(bx + isz + igap, by));
+        if (share_menu_icon(ICON_OPEN, "##smopen", COL_TEXT, isz)) open_url(s.url);
+        kit_tip("Open in browser");
+        char host[64];
+        share_host_label(s, host, sizeof host);
+        ImGui::SetCursorScreenPos(ImVec2(bx + 2 * (isz + igap), by));
+        if (share_menu_icon(ICON_DELETE, "##smdelete", 0xff8a92, isz)) ImGui::OpenPopup("link_delete");
+        kit_tip(host[0] ? "Remove from the list" : "Delete the link");
+        lib_popup_style_push(6);
+        if (ImGui::BeginPopup("link_delete")) {
+            if (host[0]) {
+                ImGui::PushFont(g_font_small);
+                kit_dim(s.expires_us ? "  The file stays on %s until it ends" : "  The file stays on %s", host);
+                ImGui::PopFont();
+            }
+            if (lib_menu_item(ICON_DELETE, host[0] ? "Remove from the list" : "Delete it from the bucket", true, kit_px(240))) {
+                log_line("library: link %s %s", s.key, host[0] ? "taken off the list" : "deleted");
+                r2_delete(s.key);
+            }
+            lib_menu_item(ICON_CLOSE, "Keep it", false, kit_px(240));
+            ImGui::EndPopup();
+        }
+        lib_popup_style_pop();
+        y = b.y + gap;
+    }
+
+    // Link to
+    {
+        f32 lh = sfs + kit_px(10);
+        ImGui::PushFont(g_font_small);
+        dl->AddText(ImVec2(o.x + kit_px(4), y + kit_px(4)), col32(COL_DIM), "LINK TO");
+        ImGui::PopFont();
+        y += lh;
+        static ShareHostChoice c[24];
+        i32 n = share_host_choices(m, edit, c, COUNT(c));
+        f32 h = kit_px(40), pad = kit_px(8), tile = kit_px(28), bar_w = kit_px(64);
+        if (!n) {
+            ImGui::SetCursorScreenPos(ImVec2(o.x, y));
+            if (lib_menu_item(ICON_SETTINGS, "Set up a host...", false, W)) lib_open_sharing();
+            y = ImGui::GetCursorScreenPos().y;
+        }
+        for (i32 i = 0; i < n; i++) {
+            const ShareHostChoice &x = c[i];
+            bool ok = x.fit != SHARE_FIT_NO;
+            ImGui::PushID(i);
+            ImVec2 a(o.x, y), b(o.x + W, y + h);
+            ImGui::SetCursorScreenPos(a);
+            bool clicked = ImGui::InvisibleButton("##host", ImVec2(W, h));
+            bool hot = ok && ImGui::IsItemHovered();
+            if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            char size_s[24], tip[128];
+            share_size_text(x.bytes, size_s, sizeof size_s);
+            if (!ok) str_set(tip, x.why);
+            else snprintf(tip, sizeof tip, "%s, %s", size_s, x.fit == SHARE_FIT_SQUEEZED ? "lowered to fit" : "as is");
+            kit_tip(tip);
+            if (clicked && ok && !st.running) {
+                str_set(pick, x.name);
+                dev_click("menu", x.name);
+                result = SHARE_MENU_HOST;
+            }
+            if (hot) dl->AddRectFilled(a, b, col32(COL_HOVER), kit_px(7));
+            f32 alpha = ok ? 1.f : 0.4f;
+            const char *icon = x.host == HOST_CATBOX ? ICON_PACKAGE : x.host == HOST_LITTERBOX ? ICON_CLOCK
+                             : x.host == HOST_R2 ? ICON_CLOUD : ICON_SERVER;
+            u32 tint = x.host == HOST_CATBOX ? 0x6a5acd : x.host == HOST_LITTERBOX ? 0x3a9a8a : x.host == HOST_R2 ? 0xf39a4b : 0x6b7080;
+            ImVec2 t0(a.x + pad, floorf(a.y + (h - tile) / 2)), t1(t0.x + tile, t0.y + tile);
+            dl->AddRectFilled(t0, t1, col32(tint, alpha), kit_px(7));
+            f32 fs = g_font_icon->FontSize;
+            ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
+            dl->AddText(g_font_icon, fs, ImVec2(floorf(t0.x + (tile - gs.x) / 2), floorf(t0.y + (tile - gs.y) / 2)),
+                        col32(0xffffff, alpha), icon);
+            // The bar of the host's cap, and "Upload" before it while pointed at
+            f32 bx = b.x - pad - bar_w;
+            i64 cap = share_host_cap(x.host);
+            f32 frac = !ok || x.fit == SHARE_FIT_SQUEEZED ? 1 : cap > 0 ? (f32)((f64)d.reco_bytes / cap) : 0;
+            share_bar(dl, ImVec2(bx, floorf(a.y + (h - kit_px(5)) / 2)), bar_w, frac,
+                      !ok ? COL_FAINT : x.fit == SHARE_FIT_SQUEEZED ? COL_WARN : COL_OK);
+            f32 name_end = bx - kit_px(10);
+            if (hot) {
+                ImGui::PushFont(g_font_small);
+                f32 uw = ImGui::CalcTextSize("Upload").x, ifs = sfs, ux = bx - kit_px(10) - uw;
+                ImVec2 us = g_font_icon->CalcTextSizeA(ifs, FLT_MAX, 0, ICON_UPLOAD);
+                dl->AddText(ImVec2(ux, floorf(a.y + (h - sfs) / 2)), col32(COL_TEXT), "Upload");
+                dl->AddText(g_font_icon, ifs, ImVec2(ux - kit_px(4) - us.x, floorf(a.y + (h - us.y) / 2)), col32(COL_TEXT),
+                            ICON_UPLOAD);
+                ImGui::PopFont();
+                name_end = ux - kit_px(4) - us.x - kit_px(10);
+            }
+            char name[48];
+            str_set(name, x.label);
+            if (name[0] >= 'a' && name[0] <= 'z') name[0] -= 32;
+            f32 nx = t1.x + kit_px(10);
+            text_clipped(dl, ImVec2(nx, floorf(a.y + (h - line_h) / 2)), name_end - nx, col32(ok ? COL_TEXT : COL_FAINT), name);
+            ImGui::PopID();
+            y = b.y + kit_px(2);
+        }
+        y += gap;
+    }
+
+    // Original and Quality
+    {
+        f32 cw = floorf((W - gap) / 2);
+        ImGui::SetCursorScreenPos(ImVec2(o.x, y));
+        kit_next_tip("The file as it was saved, every sound track, in its folder");
+        if (kit_button(ICON_FOLDER "  Original", KIT_SECONDARY, ImVec2(cw, 0), original != 0)) {
+            show_in_folder(original);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(o.x + W - cw, y));
+        kit_next_tip("The bitrates Share aims for");
+        if (kit_button(ICON_SLIDERS "  Quality", KIT_SECONDARY, ImVec2(cw, 0))) {
+            lib_open_quality();
+            ImGui::CloseCurrentPopup();
+        }
+        y += ImGui::GetFrameHeight();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(o.x, y));
+    ImGui::Dummy(ImVec2(W, 0));
+    return result;
+}
+
+// The Share menu for one card (share_menu_body). The edit is read once, as the menu opens. Opened with
+// ImGui::OpenPopup(id) where it's drawn.
 static void lib_share_menu(const char *id, const LibItem &it)
 {
     static u64 key;
     static ShareDecision d;
     static EditRecord rec;
     static bool edited;
-    static u64 done_ms;
     lib_popup_style_push(8);
     if (!ImGui::BeginPopup(id)) {
         lib_popup_style_pop();
         return;
     }
-    if (ImGui::IsWindowAppearing() || key != it.key) { // the edit is read once, as the menu opens
+    if (ImGui::IsWindowAppearing() || key != it.key) {
         key = it.key;
         d = lib_share_decide(it);
         edited = lib_item_edit(it, &rec);
     }
-    f32 w = kit_px(176), h = kit_px(86), gap = kit_px(8), row_w = 3 * w + 2 * gap;
     ShareJobView j = {};
     if (g_lib_share_job && g_lib_share_job_key == it.key) j = share_job(g_lib_share_job);
-    u64 now = GetTickCount64();
-    if (!j.id || j.state < SHARE_DONE) done_ms = 0;
-    else if (!done_ms) done_ms = now;
-    bool running = j.id && j.state < SHARE_DONE, fresh = j.id && !running && now - done_ms < 4000;
-    if (running || fresh) ui_wake();
-    i32 job_tile = !j.id ? -1 : j.kind == SHARE_LINK ? 2 : 0;
-
-    // Each tile's line, or the job's in the tile it runs in
-    char max_s[24], size_s[24], lines[3][128];
-    u32 inks[3] = {COL_DIM, COL_DIM, COL_DIM};
-    f32 bars[3] = {-1, -1, -1};
-    share_size_text(d.max_bytes, max_s, sizeof max_s);
-    share_size_text(d.file_bytes, size_s, sizeof size_s);
-    if (!d.file_ok) snprintf(lines[0], sizeof lines[0], "too big for %s", max_s);
-    else if (d.file_squeezed) snprintf(lines[0], sizeof lines[0], "squeezed to %s", max_s);
-    else snprintf(lines[0], sizeof lines[0], "as is, %s", size_s);
-    share_size_text((i64)it.size, size_s, sizeof size_s);
-    snprintf(lines[1], sizeof lines[1], "in folder, %s", size_s);
-    bool any_host = links_any_host();
-    if (d.link_ok) snprintf(lines[2], sizeof lines[2], "%s", d.host_label);
-    else snprintf(lines[2], sizeof lines[2], "%s", any_host ? d.link_why : "set up a host");
-    if (running) {
-        snprintf(lines[job_tile], sizeof lines[job_tile], "%s %d%%", j.verb[0] ? j.verb : "Sharing", (i32)(j.progress * 100 + 0.5f));
-        inks[job_tile] = COL_TEXT;
-        bars[job_tile] = j.progress;
-    } else if (fresh) {
-        bool ok = j.state == SHARE_DONE && !j.error[0];
-        snprintf(lines[job_tile], sizeof lines[job_tile], "%s", ok ? (j.kind == SHARE_LINK ? "Link copied" : "Copied") : "Not shared");
-        inks[job_tile] = ok ? COL_OK : COL_WARN;
-    }
-
-    bool link_pick = d.kind == SHARE_LINK;
-    if (lib_share_tile("##file", ICON_VIDEO, "File", lines[0], inks[0], !link_pick, !d.file_ok, bars[0], w, h) &&
-        !(running && job_tile == 0))
-        lib_share_item(it, d.file_squeezed ? SHARE_SQUEEZED : SHARE_AS_IS);
-    if (fresh && job_tile == 0 && j.error[0]) kit_tip(j.error);
-    else kit_tip(d.file_ok ? "A copy with the edit and one sound track, ready to paste" : "Over the max size even squeezed: share a link");
-    ImGui::SameLine(0, gap);
-    if (lib_share_tile("##original", ICON_FOLDER, "Original", lines[1], inks[1], false, false, bars[1], w, h))
-        show_in_folder(lib_item_path(it).s);
-    kit_tip("The file as it was saved, every sound track, in its folder");
-    ImGui::SameLine(0, gap);
-    if (lib_share_tile("##link", ICON_LINK, "Link", lines[2], inks[2], link_pick, any_host && !d.link_ok, bars[2], w, h) &&
-        !(running && job_tile == 2))
-        lib_share_item(it, SHARE_LINK);
-    if (fresh && job_tile == 2 && j.error[0]) kit_tip(j.error);
-    else kit_tip(!any_host ? "Turn on a free host or set up Cloudflare in Options" : d.link_ok ? "Upload it and copy the link" : d.link_why);
-    ImGui::Dummy(ImVec2(row_w, kit_px(2)));
-    ImGui::PushFont(g_font_small);
-    kit_dim("  Link to");
-    ImGui::PopFont();
     char pick[64];
-    if (link_to_rows(it.info, edited ? &rec : 0, row_w, pick) && !(running && job_tile == 2)) lib_share_item(it, SHARE_LINK, pick);
-    ImGui::Dummy(ImVec2(row_w, kit_px(2)));
-    lib_link_row(it, row_w);
+    i32 r = share_menu_body(d, it.info, edited ? &rec : 0, share_menu_state(j), it.key, lib_item_path(it).s, pick);
+    if (r == SHARE_MENU_SHARE) lib_share_decided(it);
+    else if (r == SHARE_MENU_HOST) lib_share_item(it, SHARE_LINK, pick);
     ImGui::EndPopup();
     lib_popup_style_pop();
 }
