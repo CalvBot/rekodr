@@ -3284,7 +3284,10 @@ static void opt_link_card_preview(i32 style)
     opt_text_at(dl, g_font_bold, ImVec2(x, y), TITLE, card.title, x1);
     if (line[0]) {
         f32 ly = y + title_h + lgap, lx = x;
-        ID3D11ShaderResourceView *icon = card.icon && game[0] ? game_icon(game) : 0;
+        // The game's emoji, as Discord shows it: only for a game that has one
+        char emoji[96];
+        bool has = card.icon && game[0] && gamedb_emoji(game, emoji, sizeof emoji);
+        ID3D11ShaderResourceView *icon = has ? game_icon(game) : 0;
         if (icon) { // the game's icon before the line, the line's height
             f32 is = floorf(line_h);
             dl->AddImageRounded((ImTextureID)(intptr_t)icon, ImVec2(lx, ly), ImVec2(lx + is, ly + is), ImVec2(0, 0),
