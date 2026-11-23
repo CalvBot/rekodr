@@ -1882,7 +1882,11 @@ static void r2_run_upload(const R2Task &t)
         if (r2_put_file(t.conf, social_key, t.social, job, why, sizeof why, bytes)) {
             social = 1;
             extra += social_bytes;
-        } else log_line("r2: the small copy of %s didn't go up (%s): cards show the picture", key, why);
+        } else if (!r2_cancelled(job)) { // a card without it would be cached as it is: no link instead
+            log_line("r2: the small copy of %s didn't go up (%s): no link", key, why);
+            r2_delete_share(t.conf, key, key, true, false);
+            snprintf(err, sizeof err, "The card's copy didn't upload: %s", why[0] ? why : "try again");
+        }
     }
     if (!err[0] && r2_cancelled(job)) { // in the bucket, but cancelled: it goes again, with what's beside it
         r2_delete_share(t.conf, key, key, page_w > 0, social == 1);
@@ -1941,21 +1945,10 @@ static void r2_run_upload(const R2Task &t)
         r2_make_url(t.conf.public_url, page_key, s.version, s.url, sizeof s.url);
     } else r2_make_url(t.conf.public_url, key, s.version, s.url, sizeof s.url);
     ReleaseSRWLockExclusive(&g_r2.lock);
-    if (page_w && !r2_put_page(t.conf, page, false)) { // no page: the link is the file
-        if (page.social == 1) {
-            char social_key[R2_KEY_MAX];
-            r2_social_key(key, social_key);
-            r2_delete_object(t.conf, social_key);
-        }
-        AcquireSRWLockExclusive(&g_r2.lock);
-        at = r2_find_locked(key);
-        if (at >= 0) {
-            g_r2.shares[at].page_w = g_r2.shares[at].page_h = 0;
-            g_r2.shares[at].social = 0;
-            r2_make_url(t.conf.public_url, key, g_r2.shares[at].version, g_r2.shares[at].url,
-                        sizeof g_r2.shares[at].url);
-        }
-        ReleaseSRWLockExclusive(&g_r2.lock);
+    if (page_w && !r2_put_page(t.conf, page, false)) { // no page, no link: a card without it would be cached
+        r2_undo(t.conf, key, "");
+        r2_job_end(job, false, "", "The link's page didn't upload: try again");
+        return;
     }
     folder = r2_folder_bytes(t.conf); // the real total, with this clip in it
     AcquireSRWLockExclusive(&g_r2.lock);
