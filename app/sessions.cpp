@@ -362,15 +362,16 @@ static void sessions_write()
     i64 now = now_us();
     len += snprintf(text + len, cap - len, "# clipback's open sessions and the ones still in the buffer. Rewritten by clipback.\n");
     len += snprintf(text + len, cap - len, "written_us\t%lld\nnext_id\t%u\n", (long long)now, ss.next_id);
-    len += snprintf(text + len, cap - len, "# session  id  state  custom  start_us  end_us  exe  name  video  record  display_name\n");
+    len += snprintf(text + len, cap - len,
+                    "# session  id  state  custom  start_us  end_us  exe  name  video  record  display_name  seen\n");
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         const Session &s = ss.items[i];
         if (s.state == SES_FREE) continue;
         // A save in progress dies with clipback: it comes back as not saved.
         SessionState st = s.state == SES_SAVING ? SES_NOT_SAVED : s.state;
-        len += snprintf(text + len, cap - len, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\t%s\n", s.id,
+        len += snprintf(text + len, cap - len, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\t%s\t%d\n", s.id,
                         STATE_NAMES[st], s.custom ? 1 : 0, (long long)s.start_us, (long long)s.end_us, s.exe, s.name,
-                        s.video, s.record, s.display_name);
+                        s.video, s.record, s.display_name, s.seen ? 1 : 0);
     }
     CHECK(len < cap, "sessions.txt fits its buffer; %d of %d", len, cap);
 
@@ -508,13 +509,13 @@ static void sessions_load()
         while (fgets(line, sizeof line, f)) {
             size_t len = strlen(line);
             while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
-            char *fl[11];
+            char *fl[12];
             i32 n = split_tabs(line, fl, COUNT(fl));
             if (n == 2 && !strcmp(fl[0], "written_us")) {
                 alive_until = strtoll(fl[1], 0, 10);
             } else if (n == 2 && !strcmp(fl[0], "next_id")) {
                 ss.next_id = (u32)strtoul(fl[1], 0, 10);
-            } else if (n == 11 && !strcmp(fl[0], "session")) {
+            } else if (n >= 11 && !strcmp(fl[0], "session")) { // a line without `seen` is a session not seen
                 SessionState st = SES_FREE;
                 for (i32 i = 1; i < COUNT(STATE_NAMES); i++)
                     if (!strcmp(fl[2], STATE_NAMES[i])) st = (SessionState)i;
@@ -530,7 +531,8 @@ static void sessions_load()
                 str_set(s->name, fl[7]);
                 str_set(s->video, fl[8]);
                 str_set(s->record, fl[9]);
-                if (n == 11) str_set(s->display_name, fl[10]);
+                str_set(s->display_name, fl[10]);
+                s->seen = n == 12 && atoi(fl[11]) != 0;
                 if (s->id > ss.next_id) ss.next_id = s->id;
                 loaded++;
             }
@@ -795,6 +797,25 @@ static void session_time_left(const Session &s, char *out, i32 cap)
     else fmt_length(us, left, sizeof left);
     if (start_gone) snprintf(out, cap, "Partly gone, %s left", left);
     else snprintf(out, cap, "%s left", left);
+}
+
+// The player has looked at session `id`: its row was drawn on the Sessions page, or Review was pressed on its
+// toast. Dismissing the toast, or letting it time out, isn't looking.
+static void session_seen(u32 id)
+{
+    Session *s = session_find(id);
+    if (!s || s->seen) return;
+    s->seen = true;
+    g_app.sessions.dirty = true;
+}
+
+// How many unsaved sessions haven't been looked at yet (session_seen), for the Sessions header's badge.
+static i32 sessions_unseen_count()
+{
+    i32 n = 0;
+    for (const Session &s : g_app.sessions.items)
+        if (session_listed(s) && !s.seen) n++;
+    return n;
 }
 
 // Takes the rows again when the list comes on screen or a session joins it. The Library draws them.

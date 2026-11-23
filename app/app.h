@@ -923,6 +923,8 @@ struct Session {
     char         video[256];       // the saved file's name once SAVED
     char         record[256];      // its record under save_dir, "2026\Data\<name>.session.txt"; empty = none
     char         display_name[128]; // typed by hand; shown as its title, the name and times kept under it
+    bool         seen;             // its row was drawn on the Sessions page, or Review was pressed on its toast
+                                   // (session_seen); until then it counts as new (sessions_unseen_count)
 };
 
 // A row that slides sideways (kit_strip_* in ui.cpp): where it is and where it's gliding to (px), and where and

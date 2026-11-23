@@ -593,6 +593,53 @@ static void test_toast_clip()
     T(toast_clip_for(c, "same.exe") == TOAST_CLIP_OFF && toast_clip_for(c, "full.exe") == TOAST_CLIP_FULL);
 }
 
+// An unsaved session is new until session_seen, and stays seen through sessions.txt.
+static void test_sessions_seen()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Paths keep = g_app.paths;
+    Path buffer = g_app.config.buffer_dir;
+    swprintf(g_app.paths.local_dir.s, MAX_PATH, L"%sclipback-tests-ses-%lu", temp, GetCurrentProcessId());
+    CreateDirectoryW(g_app.paths.local_dir.s, 0);
+    g_app.config.buffer_dir = g_app.paths.local_dir; // no activity.tsv: only the file comes back
+    Sessions &ss = g_app.sessions;
+    ss = {};
+    ss.loaded = true;
+    SessionState states[] = {SES_NOT_SAVED, SES_ASKING, SES_SAVED, SES_NOT_SAVED};
+    for (i32 i = 0; i < COUNT(states); i++) {
+        Session &s = ss.items[i];
+        s.id = 1 + i;
+        s.state = states[i];
+        s.start_us = 1000000ll * (i + 1);
+        s.end_us = s.start_us + 600000000;
+        snprintf(s.name, sizeof s.name, "game %d", i);
+    }
+    ss.next_id = 4;
+    T(sessions_unseen_count() == 3); // the saved one isn't in the list
+    session_seen(1);
+    session_seen(1); // once is enough
+    session_seen(99); // no such session
+    T(sessions_unseen_count() == 2 && ss.items[0].seen && ss.dirty);
+    session_seen(2);
+    sessions_stop(); // writes sessions.txt and waits for it
+    ss = {};
+    sessions_load();
+    i32 seen = 0, unseen = 0;
+    for (const Session &s : ss.items) {
+        if (s.state == SES_FREE) continue;
+        if (s.seen) seen++;
+        else unseen++;
+        T(s.seen == (s.id == 1 || s.id == 2));
+    }
+    T(seen == 2 && unseen == 2 && sessions_unseen_count() == 1);
+    DeleteFileW(path_join(g_app.paths.local_dir, L"sessions.txt").s);
+    RemoveDirectoryW(g_app.paths.local_dir.s);
+    ss = {};
+    g_app.paths = keep;
+    g_app.config.buffer_dir = buffer;
+}
+
 static void test_hotkeys()
 {
     u32 mods = 0, vk = 0;
@@ -2518,6 +2565,7 @@ int main()
     test_folder_rules();
     test_fields();
     test_hotkeys();
+    test_sessions_seen();
     test_toast_clip();
     test_popup_place();
     test_settings_round_trip();
