@@ -2072,11 +2072,12 @@ static void test_share_cancel()
     T(g_net.n == 0 && !file_exists(file.s) && !file_exists(t.social.s) && r2_job(id).state == R2_FAILED);
     t.social = {};
 
-    // A share's set: the clip, its small copy, the picture and the page
+    // A share's set: the clip, its small copy, the picture, the icon and the page
     g_net = {};
     T(r2_delete_share(conf, "clipback/k/clip.mp4", "clipback/k/clip.mp4", true, true));
     T(net_count("DELETE clipback/k/clip.mp4") == 1 && net_count("DELETE clipback/k/social.mp4") == 1);
-    T(net_count("DELETE clipback/k/thumb.jpg") == 1 && net_count("DELETE clipback/k") == 4);
+    T(net_count("DELETE clipback/k/thumb.jpg") == 1 && net_count("DELETE clipback/k/icon.png") == 1
+      && net_count("DELETE clipback/k") == 5);
 
     // Catbox, cancelled as it answered: it can't be deleted there, so it's only not kept or given out
     t.kind = R2_T_FREE;

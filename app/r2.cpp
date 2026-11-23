@@ -102,6 +102,7 @@ struct R2Share {
     i32  social_w, social_h; // the small copy's size
     f32  seconds;     // how long the clip plays, for the page's title
     f32  preview;     // the small copy is the clip's first this many seconds (save_social_copy), 0 = all of it
+    bool icon;        // with a page: the game's icon beside the picture, "<the file's folder>/icon.png" (r2_icon_key)
     // Not kept in the history:
     bool moving;      // a pause or resume is running
     i64  plays_today, plays_month, plays_24h; // GET requests for the file (local day, this month, the last 24
@@ -456,6 +457,31 @@ static void r2_thumb_key(const char *key, char out[R2_KEY_MAX])
     char dir[R2_KEY_MAX];
     r2_page_key(key, dir);
     snprintf(out, R2_KEY_MAX, "%s/thumb.jpg", dir);
+}
+
+// The game's icon beside a file in the bucket: "clipback/<id>/clip.mp4" -> "clipback/<id>/icon.png".
+static void r2_icon_key(const char *key, char out[R2_KEY_MAX])
+{
+    char dir[R2_KEY_MAX];
+    r2_page_key(key, dir);
+    snprintf(out, R2_KEY_MAX, "%s/icon.png", dir);
+}
+
+// The biggest game icon a card takes; the games database's are a few KB.
+static const i64 R2_ICON_MAX = 256 * 1024;
+
+// The game's icon as the games database has it on disk, read into memory (malloc'd; the caller frees it). Null for
+// a custom game, one with no icon, one not fetched yet, or one too big.
+static char *r2_game_icon(const char *game, i64 *len)
+{
+    GameInfo g;
+    if (!game || !game[0] || !gamedb_for_art(game, &g)) return 0;
+    Path p = gamedb_art_file(g.id, ART_ICON);
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExW(p.s, GetFileExInfoStandard, &fa) || fa.nFileSizeHigh || !fa.nFileSizeLow ||
+        fa.nFileSizeLow > R2_ICON_MAX)
+        return 0;
+    return read_file(p.s, len);
 }
 
 // Chat apps play the video a page names only when they can fetch all of it in a few seconds: Discord gives itself
@@ -1348,8 +1374,8 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
         r2_tsv_field(f, s[i].path, false);
-        fprintf(f, "%d\t%d\t%d\t%.3f\t%.3f\n", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds,
-                s[i].preview);
+        fprintf(f, "%d\t%d\t%d\t%.3f\t%.3f\t%d\n", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds,
+                s[i].preview, s[i].icon ? 1 : 0);
     }
     bool ok = fclose(f) == 0;
     return ok && MoveFileExW(part.s, file.s, MOVEFILE_REPLACE_EXISTING);
@@ -1363,16 +1389,16 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
     for (char *line = text; line && *line && n < max;) {
         char *next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char *f[23] = {};
+        char *f[24] = {};
         i32 count = 0;
-        for (char *p = line; count < 23;) {
+        for (char *p = line; count < 24;) {
             f[count++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 23 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
+        if (count == 24 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
             atoi(f[7]) >= 0 && atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
@@ -1401,6 +1427,7 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.social_h = atoi(f[20]);
             s.seconds = (f32)atof(f[21]);
             s.preview = (f32)atof(f[22]);
+            s.icon = f[23][0] == '1' && s.page_w;
             if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0))) s.social = 0;
             s.plays_today = s.plays_month = s.plays_24h = -1;
         }
@@ -1449,6 +1476,8 @@ static i32 r2_find_object_locked(const char *name)
         if (!strcmp(k, name)) return i;
         r2_thumb_key(r2_object_key(s), k);
         if (!strcmp(k, name)) return i;
+        r2_icon_key(r2_object_key(s), k);
+        if (s.icon && !strcmp(k, name)) return i;
     }
     return -1;
 }
@@ -1551,14 +1580,16 @@ static bool r2_put_bytes(const R2Conf &c, const char *key, const char *data, i64
 // Writes a share's preview page (under the lock's copy `s`): playing, or paused.
 static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
 {
-    char page_key[R2_KEY_MAX], thumb_key[R2_KEY_MAX], social_key[R2_KEY_MAX], page[512], video[512], embed[512] = "",
-         image[512], title[400];
+    char page_key[R2_KEY_MAX], thumb_key[R2_KEY_MAX], social_key[R2_KEY_MAX], icon_key[R2_KEY_MAX], page[512],
+         video[512], embed[512] = "", image[512], icon[512] = "", title[400];
     r2_page_key(s.key, page_key);
     r2_thumb_key(s.key, thumb_key);
+    r2_icon_key(s.key, icon_key);
     r2_social_key(s.key, social_key);
     r2_make_url(c.public_url, page_key, s.version, page, sizeof page);
     r2_make_url(c.public_url, s.key, s.version, video, sizeof video);
     r2_make_url(c.public_url, thumb_key, s.version, image, sizeof image);
+    if (s.icon) r2_make_url(c.public_url, icon_key, s.version, icon, sizeof icon);
     if (s.social == 1) r2_make_url(c.public_url, social_key, s.version, embed, sizeof embed);
     else if (s.social == 0) str_set(embed, video);
     i32 tw, th;
@@ -1569,7 +1600,7 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     EmbedCard card;
     embed_card(in, &card);
     static thread_local char json[R2_CARD_MAX + 1];
-    if (!r2_card_json(card, embed, image, "", json, sizeof json)) json[0] = 0;
+    if (!r2_card_json(card, embed, image, icon, json, sizeof json)) json[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
                      copy ? s.social_h : s.page_h, tw, th, json, ""};
     char note[96] = "";
@@ -1625,8 +1656,8 @@ static bool r2_make_thumb(const Path &file, const Path &ffmpeg, const Path &jpg,
 }
 
 // Deletes what a share has in the bucket: the file at `at` (where it is now), its small copy beside it with
-// `social`, and with a page the picture beside it and the page. Only the file's delete decides; the rest are tried
-// once.
+// `social`, and with a page the picture and game icon beside it and the page. Only the file's delete decides;
+// the rest are tried once.
 static bool r2_delete_share(const R2Conf &c, const char *key, const char *at, bool page, bool social)
 {
     if (!r2_delete_object(c, at)) return false;
@@ -1638,6 +1669,8 @@ static bool r2_delete_share(const R2Conf &c, const char *key, const char *at, bo
     if (page) {
         char k[R2_KEY_MAX];
         r2_thumb_key(at, k);
+        r2_delete_object(c, k);
+        r2_icon_key(at, k);
         r2_delete_object(c, k);
         r2_page_key(key, k);
         r2_delete_object(c, k);
@@ -1754,6 +1787,18 @@ static void r2_run_upload(const R2Task &t)
         free(pic);
         if (!page_w) log_line("r2: no preview page for %s: its picture couldn't be made", key);
     }
+    // The game's icon, for the card; a card without one shows the plain line.
+    bool icon = false;
+    if (!err[0] && page_w) {
+        i64 icon_len = 0;
+        char icon_key[R2_KEY_MAX];
+        r2_icon_key(key, icon_key);
+        if (char *png = r2_game_icon(w.game, &icon_len)) {
+            icon = r2_put_bytes(t.conf, icon_key, png, icon_len, "image/png");
+            if (icon) extra += icon_len + 4096;
+            free(png);
+        } else r2_delete_object(t.conf, icon_key); // shared again: an icon from before goes
+    }
     // What cards play: the small copy beside the file, the file itself, or (-1) nothing and the picture.
     i8 social = t.social_h > 0 ? -1 : (i8)t.social_h;
     if (!err[0] && page_w && social_bytes && !r2_cancelled(job)) {
@@ -1813,6 +1858,7 @@ static void r2_run_upload(const R2Task &t)
     }
     s.seconds = t.seconds;
     s.preview = s.social == 1 ? t.preview : 0;
+    s.icon = icon;
     R2Share page = s;
     if (page_w) {
         char page_key[R2_KEY_MAX];
@@ -3393,6 +3439,12 @@ static void r2_run_move(const R2Task &t)
         r2_thumb_key(to, pic_to);
         status = r2_send(t.conf, "PUT", pic_to, "", R2Body{}, 0, resp, sizeof resp, 0, 0, 0, pic_from);
         if (r2_ok(status) && !strstr(resp, "<Error>")) r2_delete_object(t.conf, pic_from);
+        if (share.icon) { // and the icon
+            r2_icon_key(from, pic_from);
+            r2_icon_key(to, pic_to);
+            status = r2_send(t.conf, "PUT", pic_to, "", R2Body{}, 0, resp, sizeof resp, 0, 0, 0, pic_from);
+            if (r2_ok(status) && !strstr(resp, "<Error>")) r2_delete_object(t.conf, pic_from);
+        }
         if (!r2_put_page(t.conf, share, pause)) log_line("r2: couldn't rewrite the page of %s", t.key);
     }
 
