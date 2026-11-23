@@ -181,6 +181,19 @@ static ShareHosts share_hosts()
     return h;
 }
 
+// Whether a link host that's on takes a file of `bytes` as it is: the bucket under its limit, Catbox and Litterbox
+// under theirs, a custom uploader (its limit isn't known) always.
+static bool share_host_fits(i64 bytes)
+{
+    ShareHosts h = share_hosts();
+    if (h.bucket && (!h.bucket_limit || bytes <= h.bucket_limit)) return true;
+    if (h.catbox && bytes <= free_host(HOST_CATBOX)->max_bytes) return true;
+    if (h.litterbox && bytes <= free_host(HOST_LITTERBOX)->max_bytes) return true;
+    for (const char *p = h.uploaders; *p; p++)
+        if (*p != ',' && *p != ' ') return true;
+    return false;
+}
+
 // How long a clip plays as `edit` (0: the whole file).
 static f64 share_seconds(const MediaInfo &m, const EditRecord *edit)
 {
