@@ -1,8 +1,8 @@
 // toast.cpp: the desktop toasts, small windows over everything in the corner of a monitor (Options > General >
 // Popups): "Clip saved" when a save finishes while a game is in front ("Save failed" when it didn't), "Session
-// ended" when a session the game is set to Ask for has ended (sessions.cpp), and the marker window `mark ask` opens. All are laid out alike, from the
-// TOAST_* sizes: a tile beside a title over a line, then a row of buttons with the main one last on the right. A
-// test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
+// ended" when a session the game is set to Ask for has ended (sessions.cpp), and the marker window `mark ask` opens.
+// All are laid out alike, from the TOAST_* sizes: a tile beside a title over a line, then a row of buttons with the
+// main one last on the right. A test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
 //
 // Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
 // Each goes after its own time (TOAST_LIFE_*): Session saved or ended 15 s, Clip saved 5 s, 10 s once a save or share
@@ -42,6 +42,7 @@ struct Toast {
     i32       hot;                // the part under the mouse
     bool      open, tracking, held; // held: the mouse is on it, so the countdown waits
     bool      brief;              // Clip saved over a game: no button row (Config.toast_small_in_game)
+    bool      failed;             // Save failed: a red tile with an X
     u8        sharing;            // Clip saved's Share: TSH_* below
     u32       share;              // its share_start job
     i32       share_pct;          // the percent last drawn
@@ -201,9 +202,9 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     DeleteObject(bg);
     HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
     HGDIOBJ old_brush = SelectObject(big, CreateSolidBrush(0));
-    // The tile: the accent behind a tick, the game's icon (a game glyph on a soft accent without one), or the
-    // marker's colour behind a flag
-    brush(saved ? COL_ACCENT : session ? COL_ACCENT_SOFT : MARKER_COLOURS[t.colour].rgb);
+    // The tile: the accent behind a tick (red behind an X when the save failed), the game's icon (a game glyph on a
+    // soft accent without one), or the marker's colour behind a flag
+    brush(saved && t.failed ? COL_RED : saved ? COL_ACCENT : session ? COL_ACCENT_SOFT : MARKER_COLOURS[t.colour].rgb);
     rounded(TR_TILE, TOAST_ROUND);
     if (session && t.tile_px) {
         RECT q = up(toast_rect(t, TR_TILE));
@@ -258,7 +259,8 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     HGDIOBJ old_font = SelectObject(dc, t.icons);
     SetTextColor(dc, session ? toast_rgb(COL_ACCENT) : RGB(255, 255, 255));
     RECT tile = toast_rect(t, TR_TILE);
-    const wchar_t glyph[] = {(wchar_t)(saved ? 0xE73E : session ? 0xE7FC : 0xE7C1), 0}; // Segoe MDL2: CheckMark, Game, Flag
+    // Segoe MDL2: Cancel, CheckMark, Game, Flag
+    const wchar_t glyph[] = {(wchar_t)(saved && t.failed ? 0xE711 : saved ? 0xE73E : session ? 0xE7FC : 0xE7C1), 0};
     if (!(session && t.tile_px)) DrawTextW(dc, glyph, 1, &tile, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // The title over its line, centred on the tile
@@ -738,6 +740,7 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     if (!toast_monitor(TOAST_SAVED, &work) || !toast_window(t)) return;
     str_set(t.path, path);
     t.brief = brief;
+    t.failed = false;
     t.sharing = TSH_NONE; // one still running carries on, unseen
     utf8_to_wide(kind == SAVE_SESSION ? "Session saved" : "Clip saved", t.title, COUNT(t.title));
     const char *name = strrchr(path, '\\');
@@ -767,6 +770,7 @@ static void toast_save_failed(SaveKind kind, const char *why)
     if (!toast_monitor(TOAST_SAVED, &work) || !toast_window(t)) return;
     t.path[0] = 0;
     t.brief = true;
+    t.failed = true;
     t.sharing = TSH_NONE;
     utf8_to_wide("Save failed", t.title, COUNT(t.title));
     char line[120];
