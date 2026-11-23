@@ -120,6 +120,10 @@ static f32 g_dpi_scale = 1;
 #define ICON_PIN       "\xEE\x9C\x98" // E718
 #define ICON_PINNED    "\xEE\xA1\x80" // E840
 #define ICON_REFRESH   "\xEE\x9C\xAC" // E72C
+#define ICON_INFO      "\xEE\xA5\x86" // E946
+#define ICON_GLOBE     "\xEE\x9D\xB4" // E774
+
+static const char *g_help_jump; // a section's title: Help opens scrolled to it (Options' info icons)
 
 // The kinds of sound track, in the order their lanes go, and how each is shown wherever tracks are: the Timeline,
 // the editor, and the app categories in Options.
@@ -1201,6 +1205,19 @@ static void help_window()
             {"[+] / [-]", "Zoom in / out"},
             {"[Home]", "Follow the recording"},
         };
+        static const HelpRow sharing[] = {
+            {"Share", "A file when the clip fits the max size, squeezed if it must; else a link"},
+            {"Squeeze", "How far over the max size a clip can be and still go as a smaller file"},
+            {"Where a link goes", "Catbox if it takes the clip, then your bucket, then Litterbox, then your servers"},
+            {"Link to", "Share's arrow: pick the host yourself"},
+            {"Catbox", "Up to 200 MB. Public, kept for good: a link can't be deleted"},
+            {"Litterbox", "Up to 1 GB. Public, gone after the hours picked"},
+            {"Your bucket", "Your own Cloudflare storage: links you can pause and delete"},
+            {"Budget and space", "The budget sets the space the bucket's links can take. Past it the oldest go first; pinned ones stay"},
+            {"Reads", "Each play of a bucket link counts. 10 million a month are free"},
+            {"Reads limit", "Near it, bucket links pause until the 1st"},
+            {"Your servers", "Upload servers of your own, added from a .sxcu file"},
+        };
         // The hotkeys set in Options, their keys as caps: "Ctrl+Alt+S" becomes [Ctrl]+[Alt]+[S]
         static char hotkey_keys[COUNT(g_app.config.hotkeys)][96];
         static HelpRow hotkeys[COUNT(g_app.config.hotkeys)];
@@ -1245,6 +1262,7 @@ static void help_window()
             {"WINDOW", window, COUNT(window)},
             {"TIMELINE", timeline, COUNT(timeline)},
             {"EDITOR", editor, COUNT(editor)},
+            {"SHARING", sharing, COUNT(sharing)},
         };
         i32 n = COUNT(all), col_of[COUNT(all)], total = 0;
         for (i32 i = 0; i < n; i++) total += all[i].count ? all[i].count + 3 : 0; // a heading is about three rows
@@ -1268,6 +1286,7 @@ static void help_window()
             ImGui::Dummy(ImVec2(col_w, 0));
             for (i32 i = 0; i < n; i++)
                 if (col_of[i] == c && all[i].count) {
+                    if (g_help_jump && !strcmp(all[i].title, g_help_jump)) ImGui::SetScrollHereY(0);
                     for (i32 r = 0; r < all[i].count; r++) shown += help_row_shown(all[i].title, all[i].rows[r], q);
                     help_section(all[i].title, all[i].rows, all[i].count, col_w, q);
                 }
@@ -1278,6 +1297,7 @@ static void help_window()
             kit_dim("Nothing matches \"%s\"", q);
         }
         ImGui::EndChild();
+        if (!ImGui::IsWindowAppearing()) g_help_jump = 0; // held for the second frame, once the rows' size is known
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
         if (!open || g_app.ui.help_close) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();

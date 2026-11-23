@@ -2634,7 +2634,7 @@ static void opt_space_row(i64 limit, bool draft)
         snprintf(sub, sizeof sub, "Save removes %d link%s", v.going, v.going == 1 ? "" : "s");
         sub_col = COL_RED;
     } else if (ready && u.class_a >= 0) snprintf(sub, sizeof sub, "About %s%.2f this month", opt_usd(), u.month_cost);
-    else str_set(sub, "What the links take up");
+    else sub[0] = 0;
     opt_row_lines("Space", g_font, sub, sub_col, false, a.x - dp(20));
     opt_row_end();
 }
@@ -2645,8 +2645,7 @@ static void opt_reads_row()
     Config &c = g_app.config;
     R2Usage u = r2_usage();
     bool known = r2_ready() && u.account_reads >= 0;
-    opt_row_begin("Reads this month", u.capped ? "Links are paused until the 1st" : "Links pause near the limit",
-                  opt_wide_w());
+    opt_row_begin("Reads this month", u.capped ? "Links are paused until the 1st" : 0, opt_wide_w(), dp(52));
     ImVec2 a, z;
     opt_bar_frame(&a, &z);
     char got[24], cap[24], t[64];
@@ -2760,23 +2759,82 @@ static i32 opt_uploaders()
     return g_uploader_count = n;
 }
 
-// The uploaders as a list of OPT_UPLOADER_ROWS rows, paged, so the card keeps its size: an icon, the name, the
-// host, a remove button and a switch. Under them, Add uploader, with the page arrows when there's more than a page.
+// Your servers: one row with an icon, the name, how many, a link to how to set one up, and Add. Once there's one,
+// a list of OPT_UPLOADER_ROWS rows under it, paged so the card keeps its size: an icon, the name, the host, remove
+// and a switch.
 enum { OPT_UPLOADER_ROWS = 3 };
 
 static void opt_uploader_rows()
 {
     Config &c = g_app.config;
     static i32 page;
-    static char note[200]; // what Add uploader did, in place of the Add row's line
+    static char note[200]; // what Add did, under the name
     i32 n = opt_uploaders(), pages = n ? (n + OPT_UPLOADER_ROWS - 1) / OPT_UPLOADER_ROWS : 1;
     if (page >= pages) page = pages - 1;
     f32 fh = ImGui::GetFrameHeight(), sw = dp(36), is = dp(30);
+    {
+        const char *how = "How to set one up";
+        f32 bw = dp(96), arrows = 2 * fh + dp(4), how_w = text_w(g_font_small, how);
+        opt_row_begin(0, 0, 0, dp(52));
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 ic(g_row.x0 + is / 2, g_row.y + g_row.h / 2);
+        dl->AddCircleFilled(ic, is / 2, col32(COL_PANEL2));
+        f32 gw = text_w(g_font_icon, ICON_GLOBE);
+        opt_text_at(dl, g_font_icon, ImVec2(floorf(ic.x - gw / 2), floorf(ic.y - g_font_icon->FontSize / 2)), COL_DIM,
+                    ICON_GLOBE, ic.x + is);
+        f32 how_x = g_row.x1 - bw - dp(12) - arrows - dp(16) - how_w;
+        f32 tx = g_row.x0 + is + dp(12), max_x = how_x - dp(20), nh = g_font->FontSize, sh = g_font_small->FontSize;
+        f32 ty = note[0] ? floorf(g_row.y + (g_row.h - nh - dp(3) - sh) / 2) : opt_row_text_y(g_font);
+        const char *name = "Your servers";
+        opt_text_at(dl, g_font, ImVec2(tx, ty), COL_TEXT, name, max_x);
+        if (n) {
+            char count[16];
+            snprintf(count, sizeof count, "%d", n);
+            opt_pill(dl, ImVec2(tx + text_w(g_font, name) + dp(8), ty + nh / 2 + 1), count, COL_PANEL2, COL_DIM);
+        }
+        if (note[0]) opt_text_at(dl, g_font_small, ImVec2(tx, ty + nh + dp(3)), COL_DIM, note, max_x);
+        // How to set one up: a small underlined link
+        ImVec2 at(how_x, floorf(g_row.y + (g_row.h - sh) / 2));
+        ImGui::SetCursorScreenPos(at);
+        if (ImGui::InvisibleButton("##uphow", ImVec2(how_w, sh))) {
+            dev_click("options", "servers how");
+            open_url("https://getsharex.com/docs/custom-uploader");
+        }
+        bool hot = ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        opt_text_at(dl, g_font_small, at, hot ? COL_TEXT : COL_DIM, how, at.x + how_w + 1);
+        dl->AddLine(ImVec2(at.x, at.y + sh), ImVec2(at.x + how_w, at.y + sh), col32(hot ? COL_TEXT : COL_DIM, 0.5f));
+        f32 x = g_row.x1 - bw - dp(12) - arrows, y = opt_row_frame_y();
+        if (pages > 1) {
+            ImGui::SetCursorScreenPos(ImVec2(x, y));
+            if (kit_icon_button(ICON_LEFT, "##uppageback", KIT_GHOST, page > 0)) page--;
+            ImGui::SetCursorScreenPos(ImVec2(x + fh + dp(4), y));
+            if (kit_icon_button(ICON_RIGHT, "##uppagenext", KIT_GHOST, page < pages - 1)) page++;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - bw, y));
+        if (kit_button(ICON_ADD "  Add...##addup", KIT_SECONDARY, ImVec2(bw, 0))) {
+            Path file = {};
+            if (pick_file(file, &file, L"Servers", L"*.sxcu")) {
+                char stem[64], why[160];
+                if (link_uploader_add(file.s, stem, sizeof stem, why, sizeof why)) {
+                    g_uploader_count = -1;
+                    snprintf(note, sizeof note, "Added %s", stem);
+                    // Show the page it's on
+                    i32 m = opt_uploaders();
+                    for (i32 i = 0; i < m; i++)
+                        if (!strcmp(g_uploaders[i].stem, stem)) page = i / OPT_UPLOADER_ROWS;
+                    options_apply(0);
+                } else snprintf(note, sizeof note, "Couldn't add it: %s", why);
+                log_line("options: server: %s", note);
+            }
+        }
+        opt_row_end();
+    }
+    if (!n) return;
     for (i32 r = 0; r < OPT_UPLOADER_ROWS; r++) {
         i32 k = page * OPT_UPLOADER_ROWS + r;
         if (k >= n) {
-            opt_row_begin(0, 0, 0, dp(52), r == 0);
-            if (n == 0 && r == 0) opt_empty_row("ShareX uploaders (.sxcu) send clips to a host of your own");
+            opt_row_begin(0, 0, 0, dp(52), false);
             opt_row_end();
             continue;
         }
@@ -2802,43 +2860,72 @@ static void opt_uploader_rows()
             char stem[64];
             str_set(stem, u.stem);
             if (!link_uploader_remove(stem)) snprintf(note, sizeof note, "Couldn't delete %s's file", stem);
+            else note[0] = 0;
             g_uploader_count = -1;
-            log_line("options: uploader %s removed", stem);
+            log_line("options: server %s removed", stem);
             options_apply(0);
         }
         ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - sw, y));
         bool on = link_host_on(u.stem);
         if (kit_toggle("##upon", &on)) {
             link_uploader_set(u.stem, on);
-            log_line("options: uploaders \"%s\"", c.link_uploaders);
+            log_line("options: servers \"%s\"", c.link_uploaders);
             options_apply(0);
         }
         ImGui::PopID();
         opt_row_end();
     }
-    f32 bw = dp(150), arrows = 2 * fh + dp(4);
-    opt_row_begin("Uploaders", note[0] ? note : "Tried after Catbox and Litterbox", bw + dp(12) + arrows);
-    f32 x = g_row.x1 - bw - dp(12) - arrows, y = opt_row_frame_y();
-    ImGui::SetCursorScreenPos(ImVec2(x, y));
-    if (kit_icon_button(ICON_LEFT, "##uppageback", KIT_GHOST, page > 0)) page--;
-    ImGui::SetCursorScreenPos(ImVec2(x + fh + dp(4), y));
-    if (kit_icon_button(ICON_RIGHT, "##uppagenext", KIT_GHOST, page < pages - 1)) page++;
-    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - bw, y));
-    if (kit_button(ICON_ADD "  Add uploader...##addup", KIT_SECONDARY, ImVec2(bw, 0))) {
-        Path file = {};
-        if (pick_file(file, &file, L"ShareX uploaders", L"*.sxcu")) {
-            char stem[64], why[160];
-            if (link_uploader_add(file.s, stem, sizeof stem, why, sizeof why)) {
-                g_uploader_count = -1;
-                snprintf(note, sizeof note, "Added %s", stem);
-                // Show the page it's on
-                i32 m = opt_uploaders();
-                for (i32 i = 0; i < m; i++)
-                    if (!strcmp(g_uploaders[i].stem, stem)) page = i / OPT_UPLOADER_ROWS;
-                options_apply(0);
-            } else snprintf(note, sizeof note, "Couldn't add it: %s", why);
-            log_line("options: uploader: %s", note);
-        }
+}
+
+// The reads limit last saved, so a drag saves once, when it ends
+static i32 g_read_cap_saved = -1;
+
+// The reads limit (r2_read_cap): bucket links pause near it until the month ends. A slider of 1 to 100 million in
+// steps of a million with a tick at R2's free 10 million, and a box for the number. Over the free ones the line
+// says what the month costs at the limit.
+static void opt_read_cap_row()
+{
+    Config &c = g_app.config;
+    static const i32 FREE_M = 10;
+    static const f64 USD_PER_M = 0.36;
+    i32 m = c.r2_read_cap / 1000000;
+    m = m < 1 ? 1 : m > 100 ? 100 : m;
+    char line[64];
+    if (m <= FREE_M) str_set(line, "Free");
+    else snprintf(line, sizeof line, "%s%.2f a month at the limit", opt_usd(), (m - FREE_M) * USD_PER_M);
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), box_w = dp(92);
+    f32 slider_w = cw - box_w - gap;
+    opt_row_begin("Reads limit", line, cw, dp(52));
+    f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+    i32 was = m;
+    f32 v = (f32)m;
+    ImGui::SetCursorScreenPos(ImVec2(x, floorf(y + (fh - dp(24)) / 2)));
+    if (lib_slider("##readcap", &v, 1, 100, slider_w, dp(24), (f32)FREE_M)) m = (i32)(v + 0.5f);
+    bool slid = ImGui::IsItemDeactivated();
+    // The number, in millions, with the M inside the box
+    static char typed[16];
+    static bool editing;
+    if (!editing) snprintf(typed, sizeof typed, "%d", m);
+    f32 pad = dp(8), unit_w = text_w(g_font, "M");
+    ImVec2 box(x + slider_w + gap, y);
+    ImGui::SetCursorScreenPos(box);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, ImGui::GetStyle().FramePadding.y));
+    ImGui::SetNextItemWidth(box_w);
+    ImGui::InputText("##readcaptype", typed, sizeof typed, ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+    editing = ImGui::IsItemActive();
+    bool typed_done = ImGui::IsItemDeactivated();
+    ImGui::PopStyleVar();
+    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(box.x + box_w - pad - unit_w, floorf(box.y + (fh - g_font->FontSize) / 2)),
+                COL_DIM, "M", box.x + box_w);
+    if (typed_done) {
+        i32 t = atoi(typed);
+        if (t >= 1) m = t > 100 ? 100 : t;
+    }
+    if (m != was) c.r2_read_cap = m * 1000000;
+    if ((slid || typed_done) && c.r2_read_cap != g_read_cap_saved) {
+        g_read_cap_saved = c.r2_read_cap;
+        log_line("options: R2 reads limit %dM", m);
+        options_apply(0);
     }
     opt_row_end();
 }
@@ -2847,7 +2934,22 @@ static void options_sharing()
 {
     Config &c = g_app.config;
     f32 fw = dp(360), bw = dp(150);
-    opt_section("SHARING");
+    {
+        ImVec2 top = ImGui::GetCursorScreenPos();
+        f32 full = ImGui::GetContentRegionAvail().x, sz = g_font_small->FontSize + dp(4);
+        opt_section("SHARING");
+        ImVec2 back = ImGui::GetCursorScreenPos(), at(top.x + full - sz - dp(4), top.y - dp(2));
+        ImGui::SetCursorScreenPos(at);
+        if (ImGui::InvisibleButton("##sharinghelp", ImVec2(sz, sz))) {
+            dev_click("options", "sharing help");
+            g_help_jump = "SHARING";
+            g_app.ui.help_open = true;
+        }
+        bool hot = ImGui::IsItemHovered();
+        kit_tip("How sharing works");
+        ImGui::GetWindowDrawList()->AddText(g_font_icon, sz, at, col32(hot ? COL_TEXT : COL_DIM), ICON_INFO);
+        ImGui::SetCursorScreenPos(back);
+    }
     opt_card_begin();
     // The largest file Share sends: five sizes and Custom as chips across the control column. Picking Custom turns
     // that chip into its number box, the same size, so nothing moves.
@@ -2859,7 +2961,7 @@ static void options_sharing()
             if (fabsf(c.share_max_mb - sizes[i]) < 0.5f) at = i;
         if (at < 0) custom = true;
         f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - n * gap) / (n + 1));
-        opt_row_begin("Max file size", "Bigger clips are squeezed or go as a link", cw);
+        opt_row_begin("Max file size", 0, cw);
         f32 x = g_row.x1 - cw, y = opt_row_frame_y();
         for (i32 i = 0; i <= n; i++) {
             ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
@@ -2893,13 +2995,8 @@ static void options_sharing()
     {
         static const f32 steps[] = {1, 1.25f, 1.5f, 2};
         static const char *const labels[] = {"Off##sq0", "1.25x##sq1", "1.5x##sq2", "2x##sq3"};
-        char sub[96], top_s[24], max_s[24];
-        share_size_label(c.share_max_mb, max_s, sizeof max_s);
-        share_size_label(floorf(c.share_max_mb * c.share_squeeze), top_s, sizeof top_s);
-        if (c.share_squeeze < 1.01f) str_set(sub, "Bigger clips go as a link");
-        else snprintf(sub, sizeof sub, "A %s clip still goes as %s", top_s, max_s);
         f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - 3 * gap) / 4);
-        opt_row_begin("Squeeze", sub, cw);
+        opt_row_begin("Squeeze", 0, cw);
         f32 x = g_row.x1 - cw, y = opt_row_frame_y();
         for (i32 i = 0; i < 4; i++) {
             ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
@@ -2912,12 +3009,9 @@ static void options_sharing()
         opt_row_end();
     }
 
-    // The free hosts, each on or off. Catbox is tried first when the clip fits it, so its links are kept.
+    // The free hosts, each on or off
     {
-        char most[24], sub[64];
-        lib_r2_size(free_host(HOST_CATBOX)->max_bytes, most, sizeof most);
-        snprintf(sub, sizeof sub, "Up to %s, kept forever", most);
-        opt_row_begin("Catbox", sub, dp(36));
+        opt_row_begin("Catbox", 0, dp(36));
         if (kit_toggle("##catbox", &c.link_catbox)) {
             log_line("options: Catbox %s", c.link_catbox ? "on" : "off");
             options_apply(0);
@@ -2930,12 +3024,8 @@ static void options_sharing()
     {
         static const char *const hours[] = {"1 h", "12 h", "24 h", "72 h"};
         static const i32 hour_v[] = {1, 12, 24, 72};
-        char most[24], sub[64];
-        lib_r2_size(free_host(HOST_LITTERBOX)->max_bytes, most, sizeof most);
-        if (r2_set_up()) str_set(sub, "Not used with Cloudflare");
-        else snprintf(sub, sizeof sub, "Up to %s, gone after", most);
         f32 seg_w = dp(200), sw = dp(36), gap = dp(16);
-        opt_row_begin("Litterbox", sub, seg_w + gap + sw);
+        opt_row_begin("Litterbox", 0, seg_w + gap + sw);
         i32 at = 3, cur = free_hours(c.litterbox_hours);
         for (i32 i = 0; i < 4; i++)
             if (hour_v[i] == cur) at = i;
@@ -2963,8 +3053,7 @@ static void options_sharing()
         f32 fh = ImGui::GetFrameHeight(), mw = text_w(g_font, "Sign in again") + dp(32), gap = dp(8);
         opt_row_begin(0, 0, mw + gap + fh, dp(60));
         char text[400];
-        if (!signed_in && !has && st.state == R2_SETUP_IDLE) str_set(text, "Your own bucket: more space, links you can delete");
-        else if (st.state == R2_SETUP_IDLE) str_set(text, r2_ready() ? "Set up" : "Not set up");
+        if (st.state == R2_SETUP_IDLE) str_set(text, r2_ready() ? "Set up" : "Not set up");
         else if (st.who[0] && st.state == R2_SETUP_OK) snprintf(text, sizeof text, "%s  -  %s", st.who, st.text);
         else str_set(text, st.text);
         u32 col = st.state == R2_SETUP_OK ? COL_OK
@@ -3036,14 +3125,12 @@ static void options_sharing()
     opt_row_end();
     // Public address: the bucket's r2.dev address or a custom domain connected to it in Cloudflare
     if (advanced) {
-        static const char *const sub = "r2.dev is rate-limited by Cloudflare; your own domain suits busy links";
         R2Domains d = r2_domains(r2_ready());
         if (d.state == -1 || !r2_set_up()) {
             // Cloudflare wouldn't list the domains (or there's no bucket yet): the address is typed
             char why[200];
-            if (r2_set_up()) snprintf(why, sizeof why, "Couldn't list the bucket's domains: %s. %s", d.why, sub);
-            else str_set(why, sub);
-            opt_row_begin("Public address", why, fw);
+            if (r2_set_up()) snprintf(why, sizeof why, "Couldn't list the bucket's domains: %s", d.why);
+            opt_row_begin("Public address", r2_set_up() ? why : 0, fw, dp(52));
             char t[MAX_PATH * 3];
             if (opt_text("##r2public", c.r2_public_url, fw, 0, "https://", t, sizeof t)) {
                 char *v = trim(t);
@@ -3078,7 +3165,7 @@ static void options_sharing()
                 items[n] = names[n];
                 cur = n++;
             }
-            opt_row_begin("Public address", d.state == 1 && !d.count && !d.r2dev[0] ? "Asking Cloudflare..." : sub, fw);
+            opt_row_begin("Public address", d.state == 1 && !d.count && !d.r2dev[0] ? "Asking Cloudflare..." : 0, fw, dp(52));
             if (opt_combo("##r2public", items, notes, n, &cur, fw)) {
                 if (cur == 0 && !(d.r2dev[0] && d.r2dev_on)) {
                     c.r2_public_url[0] = 0; // setting up turns the r2.dev address on
@@ -3089,9 +3176,10 @@ static void options_sharing()
             }
             opt_row_end();
         }
+        opt_read_cap_row();
     }
     if (token_rows) {
-        opt_row_begin("Create token", "Opens Cloudflare with the right permissions; create it and paste it below", bw);
+        opt_row_begin("Create token", 0, bw);
         if (kit_button("Create token##r2token", KIT_SECONDARY, ImVec2(bw, 0))) {
             dev_click("options", "r2 create token");
             open_url(r2_token_link());
@@ -3101,7 +3189,7 @@ static void options_sharing()
         // The token: masked, kept by Windows; clipback makes the bucket and its keys from it
         {
             f32 field_w = fw - ImGui::GetFrameHeight() - dp(8);
-            opt_row_begin("API token", "Kept in Windows' Credential Manager", fw);
+            opt_row_begin("API token", 0, fw);
             char s[512];
             if (opt_text("##r2tok", "", field_w, ImGuiInputTextFlags_Password, has ? "Saved" : "Paste the token", s, sizeof s) &&
                 trim(s)[0]) {
