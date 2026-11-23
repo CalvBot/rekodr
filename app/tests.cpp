@@ -2137,6 +2137,31 @@ static void test_edit_xml()
     i32 trans = 0;
     for (const char *p = text; (p = strstr(p, "<transitionitem>")); p++) trans++;
     T(trans == 8);
+
+    // The same as an Advanced edit with the Mic's second item moved 5 s later: each item a clip where it was put, the
+    // sequence as long as the last one's end, a clip per item per channel track
+    edit_to_advanced(&e, m);
+    i32 idx[EDIT_MAX_ITEMS], nv = track_items(e, 0, idx), nm = track_items(e, 2, idx), ng = track_items(e, 3, idx);
+    track_items(e, 2, idx);
+    EditItem &mic = e.items[idx[nm - 1]];
+    mic.start += 5;
+    T(ed_export_xml(&xml));
+    f = _wfopen(xml.s, L"rb");
+    n = f ? fread(text, 1, sizeof text - 1, f) : 0;
+    if (f) fclose(f);
+    text[n] = 0;
+    DeleteFileW(xml.s);
+    T(xml_balanced(text) && nv == 2 && nm == 2 && ng == 2);
+    char want_s[96];
+    i64 ms = (i64)(mic.start * 60 + 0.5), mi = (i64)(mic.from * 60 + 0.5), mo = (i64)(mic.to * 60 + 0.5);
+    snprintf(want_s, sizeof want_s, "<start>%lld</start><end>%lld</end><in>%lld</in><out>%lld</out>", ms, ms + mo - mi, mi, mo);
+    T(strstr(text, want_s));
+    snprintf(want_s, sizeof want_s, "<duration>%lld</duration>", ms + mo - mi);
+    T(strstr(text, want_s));
+    items = 0;
+    for (const char *p = text; (p = strstr(p, "<clipitem ")); p++) items++;
+    T(items == nv + nm + 2 * ng);
+    T(strstr(text, "<effectid>basic</effectid>") && strstr(text, "<value>200.00</value>")); // the item's zoom keys
     ed = blank;
 }
 

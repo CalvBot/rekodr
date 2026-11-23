@@ -2071,12 +2071,13 @@ static void ed_caption(const char *label)
 #include "adv_editor.cpp"
 
 // Open in Premiere Pro or DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which both import.
-// One video track with the zoom as Basic Motion keys, and each recorded track (the Mix left out) with its volume
-// times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written as keys a fifth
-// of a second apart. Key times count frames from the start of the file.
-// Transitions are transitionitems on every track: a crossfade a Cross Dissolve (Cross Fade on the sound) centred on
-// its cut; a fade through black, and the fades at the start and end, dissolves to and from black (end-black,
-// start-black).
+// A Simple edit is its pieces one after another, each a clip on every track; an Advanced edit is its items, each a
+// clip on its own track where it was put. The video track has the zoom as Basic Motion keys, and each recorded
+// track (the Mix left out) its volume as Audio Levels keys (a Simple edit's times the whole mix's); muted tracks are
+// turned off. Eased curves are written as keys a fifth of a second apart. Key times count frames from the start of
+// the file.
+// Transitions are transitionitems on each track: a crossfade a Cross Dissolve (Cross Fade on the sound) centred on
+// its cut; a fade dissolves to or from black (end-black, start-black).
 // A stereo track is a linked pair of channel tracks marked Stereo (one stereo track once in Premiere), a mono Mic or
 // chat one track marked Mono. Premiere numbers a file's audio by slot, each track taking as many slots as the widest
 // one has channels: with any stereo track, track t's channel c is slot 2t + c + 1.
@@ -2105,7 +2106,7 @@ static void xml_pathurl(FILE *f, const char *path)
     }
 }
 
-// The times a curve is written at over a piece, a fifth of a second apart (wider on long pieces).
+// The times a curve is written at over a clip, a fifth of a second apart (wider on long clips).
 static i32 xml_samples(f64 from, f64 to, f64 *at, i32 cap)
 {
     f64 step = (to - from) / (cap - 1) > 0.2 ? (to - from) / (cap - 1) : 0.2;
@@ -2117,19 +2118,80 @@ static i32 xml_samples(f64 from, f64 to, f64 *at, i32 cap)
 
 static void xml_rate(FILE *f, i32 fps) { fprintf(f, "<rate><timebase>%d</timebase><ntsc>FALSE</ntsc></rate>", fps); }
 
-// Writes <video name>.xml next to the video: a sequence of the pieces one after another, each a clipitem of the
-// file on the video track and on each audio channel's track.
+// One clip on a track of the sequence: where it is (start, end) and what of the file it plays (in, out), in frames;
+// its fades and the half of the crossfade into it, in frames; the source seconds it plays; the piece or item it is.
+struct XmlClip {
+    i64 start, end, in, out, fade_in, fade_out, cross_half;
+    f64 from, to;
+    i32 src;
+};
+enum { XML_MAX_CLIPS = EDIT_MAX_ITEMS > EDIT_MAX_PIECES ? EDIT_MAX_ITEMS : EDIT_MAX_PIECES };
+
+// Writes <video name>.xml next to the video.
 static bool ed_export_xml(Path *out)
 {
     Editor &ed = g_app.editor;
     const MediaInfo &m = ed.item.info;
     const EditRecord &e = ed.edit;
+    bool adv = e.mode == EDIT_ADVANCED;
     i32 fps = m.fps > 1 ? (i32)(m.fps + 0.5) : 60;
     auto fr = [&](f64 t) { return (i64)(t * fps + 0.5); };
-    EditPiece pc[EDIT_MAX_PIECES];
-    i32 np = pieces_of(e, ed_duration(), pc);
-    i64 starts[EDIT_MAX_PIECES + 1] = {}; // where each piece goes on the sequence, in frames
-    for (i32 i = 0; i < np; i++) starts[i + 1] = starts[i] + fr(pc[i].to) - fr(pc[i].from);
+    auto clip = [&](i64 start, f64 from, f64 to, i32 src) {
+        XmlClip c = {};
+        c.start = start, c.in = fr(from), c.out = fr(to), c.end = start + c.out - c.in;
+        c.from = from, c.to = to, c.src = src;
+        return c;
+    };
+
+    // The clips: [0] the picture, [1 + t] sound track t
+    static XmlClip clips[1 + MEDIA_MAX_TRACKS][XML_MAX_CLIPS];
+    i32 nc[1 + MEDIA_MAX_TRACKS] = {};
+    i64 seq_len = 0;
+    if (!adv) {
+        EditPiece pc[EDIT_MAX_PIECES];
+        i32 np = pieces_of(e, ed_duration(), pc);
+        Transitions tr = transitions_of(e, pc, np, ed_duration());
+        for (i32 i = 0; i < np; i++) {
+            XmlClip &c = clips[0][i];
+            c = clip(seq_len, pc[i].from, pc[i].to, i);
+            seq_len = c.end;
+            if (!i) c.fade_in = fr(tr.fade_in);
+            if (i && tr.into[i] == TRANS_CROSS) c.cross_half = fr(tr.len[i] / 2);
+            if (i && tr.into[i] == TRANS_FADE) c.fade_in = clips[0][i - 1].fade_out = fr(tr.len[i] / 2);
+        }
+        if (np) clips[0][np - 1].fade_out = fr(tr.fade_out);
+        for (i32 t = 0; t <= m.track_count && t <= MEDIA_MAX_TRACKS; t++) {
+            nc[t] = np;
+            if (t) memcpy(clips[t], clips[0], np * sizeof **clips);
+        }
+    } else {
+        for (i32 tk = 0; tk <= m.track_count && tk <= MEDIA_MAX_TRACKS; tk++) {
+            i32 idx[EDIT_MAX_ITEMS], n = track_items(e, tk, idx);
+            ItemFades fd[EDIT_MAX_ITEMS];
+            track_fades(e, ed_duration(), idx, n, fd);
+            for (i32 k = 0; k < n; k++) {
+                const EditItem &it = e.items[idx[k]];
+                XmlClip &c = clips[tk][k];
+                c = clip(fr(it.start), it.from, it.to, idx[k]);
+                c.fade_in = fr(fd[k].in), c.fade_out = fr(fd[k].out), c.cross_half = fr(fd[k].cross / 2);
+                seq_len = ImMax(seq_len, c.end);
+            }
+            nc[tk] = n;
+        }
+    }
+    auto item_keys = [&](const XmlClip &c, i32 what) {
+        i32 first;
+        return ikey_range(e, e.items[c.src].id, what, &first) > 0;
+    };
+    auto zoom_of = [&](const XmlClip &c, f64 s, f64 *z, f64 *x, f64 *y) {
+        if (adv) item_zoom_at(e, e.items[c.src].id, s, z, x, y);
+        else zoom_at(e, s, z, x, y);
+    };
+    auto level_of = [&](const XmlClip &c, i32 t, f64 s) {
+        return adv ? item_level_at(e, e.items[c.src].id, IKEY_VOLUME, s) : vol_at(e, t, s) * vol_at(e, EDIT_MASTER, s);
+    };
+    bool master_keys = e.vol_count[EDIT_MASTER] > 0;
+
     *out = ed.path;
     wchar_t *dot = wcsrchr(out->s, L'.');
     if (!dot || dot < wcsrchr(out->s, L'\\')) return false;
@@ -2142,7 +2204,6 @@ static bool ed_export_xml(Path *out)
     str_set(file_name, slash ? slash + 1 : src);
     i64 file_len = fr(m.duration);
     static f64 at[2000];
-    Transitions tr = transitions_of(e, pc, np, ed_duration());
     // A transition from `s` to `t` frames on the sequence, as a dissolve aligned `align`.
     auto trans_item = [&](i64 s, i64 t, const char *align, bool audio) {
         if (t <= s) return;
@@ -2157,121 +2218,131 @@ static bool ed_export_xml(Path *out)
                   "<effecttype>transition</effecttype><mediatype>video</mediatype></effect>", f);
         fputs("</transitionitem>\n", f);
     };
-    // The transitions on one track that go before piece i (and, after the last, at the end).
-    auto trans_before = [&](i32 i, bool audio) {
-        if (!i && tr.fade_in > 0) trans_item(0, fr(tr.fade_in), "start-black", audio);
-        if (i > 0 && i < np && tr.into[i] == TRANS_CROSS)
-            trans_item(starts[i] - fr(tr.len[i] / 2), starts[i] + fr(tr.len[i] / 2), "center", audio);
-        if (i > 0 && i < np && tr.into[i] == TRANS_FADE) {
-            trans_item(starts[i] - fr(tr.len[i] / 2), starts[i], "end-black", audio);
-            trans_item(starts[i], starts[i] + fr(tr.len[i] / 2), "start-black", audio);
+    // The transitions on a track between clip k - 1 and clip k (before the first with k 0, after the last with k n).
+    auto trans_before = [&](const XmlClip *cs, i32 n, i32 k, bool audio) {
+        if (k > 0) trans_item(cs[k - 1].end - cs[k - 1].fade_out, cs[k - 1].end, "end-black", audio);
+        if (k < n) {
+            trans_item(cs[k].start - cs[k].cross_half, cs[k].start + cs[k].cross_half, "center", audio);
+            trans_item(cs[k].start, cs[k].start + cs[k].fade_in, "start-black", audio);
         }
-        if (i == np && tr.fade_out > 0) trans_item(starts[np] - fr(tr.fade_out), starts[np], "end-black", audio);
     };
 
     fputs("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n<xmeml version=\"5\">\n<sequence id=\"sequence-1\">\n<name>", f);
     xml_text(f, ed.item.name);
-    fprintf(f, "</name>\n<duration>%lld</duration>", starts[np]);
+    fprintf(f, "</name>\n<duration>%lld</duration>", seq_len);
     xml_rate(f, fps);
     fputs("\n<media>\n<video>\n<format><samplecharacteristics>", f);
     xml_rate(f, fps);
     fprintf(f, "<width>%d</width><height>%d</height><pixelaspectratio>square</pixelaspectratio></samplecharacteristics></format>\n",
             m.width, m.height);
-    auto clip_head = [&](i32 id, i32 piece, bool enabled, const char *channel_type) {
+    // The file is written in full in the first clip, then referred to by its id
+    auto chans = [&](i32 t) { return m.channels[t] == 1 ? 1 : 2; };
+    bool file_done = false;
+    auto clip_head = [&](i32 id, const XmlClip &c, bool enabled, const char *channel_type) {
         fprintf(f, "<clipitem id=\"clipitem-%d\"%s%s%s>\n<name>", id, channel_type ? " premiereChannelType=\"" : "",
                 channel_type ? channel_type : "", channel_type ? "\"" : "");
         xml_text(f, file_name);
         fprintf(f, "</name><enabled>%s</enabled><duration>%lld</duration>", enabled ? "TRUE" : "FALSE", file_len);
         xml_rate(f, fps);
-        fprintf(f, "<start>%lld</start><end>%lld</end><in>%lld</in><out>%lld</out>\n", starts[piece], starts[piece + 1],
-                fr(pc[piece].from), fr(pc[piece].to));
+        fprintf(f, "<start>%lld</start><end>%lld</end><in>%lld</in><out>%lld</out>\n", c.start, c.end, c.in, c.out);
+        if (file_done) {
+            fputs("<file id=\"file-1\"/>\n", f);
+            return;
+        }
+        file_done = true;
+        fputs("<file id=\"file-1\"><name>", f);
+        xml_text(f, file_name);
+        fputs("</name><pathurl>", f);
+        xml_pathurl(f, src);
+        fputs("</pathurl>", f);
+        xml_rate(f, fps);
+        fprintf(f, "<duration>%lld</duration>\n<media><video><samplecharacteristics>", file_len);
+        xml_rate(f, fps);
+        fprintf(f, "<width>%d</width><height>%d</height></samplecharacteristics></video>", m.width, m.height);
+        for (i32 t = 0; t < m.track_count; t++)
+            fprintf(f, "<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>"
+                    "<channelcount>%d</channelcount></audio>", chans(t));
+        fputs("</media></file>\n", f);
     };
-    // The video, and the file (written in full once, then referred to by its id)
-    auto chans = [&](i32 t) { return m.channels[t] == 1 ? 1 : 2; };
+
+    // The video
     fputs("<track>\n", f);
-    for (i32 i = 0; i < np; i++) {
-        trans_before(i, false);
-        clip_head(1 + i, i, true, 0);
-        if (!i) {
-            fputs("<file id=\"file-1\"><name>", f);
-            xml_text(f, file_name);
-            fputs("</name><pathurl>", f);
-            xml_pathurl(f, src);
-            fputs("</pathurl>", f);
-            xml_rate(f, fps);
-            fprintf(f, "<duration>%lld</duration>\n<media><video><samplecharacteristics>", file_len);
-            xml_rate(f, fps);
-            fprintf(f, "<width>%d</width><height>%d</height></samplecharacteristics></video>", m.width, m.height);
-            for (i32 t = 0; t < m.track_count; t++)
-                fprintf(f, "<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>"
-                        "<channelcount>%d</channelcount></audio>", chans(t));
-            fputs("</media></file>\n", f);
-        } else fputs("<file id=\"file-1\"/>\n", f);
-        if (e.key_count) {
+    for (i32 k = 0; k < nc[0]; k++) {
+        const XmlClip &c = clips[0][k];
+        trans_before(clips[0], nc[0], k, false);
+        clip_head(1 + k, c, true, 0);
+        if (adv ? item_keys(c, IKEY_ZOOM) : e.key_count > 0) {
             // Scale in percent; Center moves the picture's middle, in fractions of the frame from the middle
-            i32 na = xml_samples(pc[i].from, pc[i].to, at, COUNT(at));
+            i32 na = xml_samples(c.from, c.to, at, COUNT(at));
             fputs("<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory>"
                   "<effecttype>motion</effecttype><mediatype>video</mediatype>\n"
                   "<parameter><parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax>"
                   "<value>100</value>\n", f);
-            for (i32 k = 0; k < na; k++) {
+            for (i32 q = 0; q < na; q++) {
                 f64 z, x, y;
-                zoom_at(e, at[k], &z, &x, &y);
-                fprintf(f, "<keyframe><when>%lld</when><value>%.2f</value></keyframe>\n", fr(at[k]), z * 100);
+                zoom_of(c, at[q], &z, &x, &y);
+                fprintf(f, "<keyframe><when>%lld</when><value>%.2f</value></keyframe>\n", fr(at[q]), z * 100);
             }
             fputs("</parameter>\n<parameter><parameterid>center</parameterid><name>Center</name>"
                   "<value><horiz>0</horiz><vert>0</vert></value>\n", f);
-            for (i32 k = 0; k < na; k++) {
-                ImVec2 a, b;
-                zoom_uv(e, at[k], &a, &b);
-                f64 z = b.x - a.x > 0.001f ? 1.0 / (b.x - a.x) : 1;
-                f64 cx = (0.5 - (a.x + b.x) / 2) * z, cy = (0.5 - (a.y + b.y) / 2) * z;
+            for (i32 q = 0; q < na; q++) {
+                f64 z, x, y;
+                zoom_of(c, at[q], &z, &x, &y);
+                // The kept square of the frame, held inside it as the picture shows it
+                f32 w = (f32)(1 / z), ox = (f32)(x - w / 2), oy = (f32)(y - w / 2);
+                ox = ox < 0 ? 0 : ox > 1 - w ? 1 - w : ox;
+                oy = oy < 0 ? 0 : oy > 1 - w ? 1 - w : oy;
+                f64 s = w > 0.001f ? 1.0 / w : 1;
+                f64 cx = (0.5 - (ox + (ox + w)) / 2) * s, cy = (0.5 - (oy + (oy + w)) / 2) * s;
                 fprintf(f, "<keyframe><when>%lld</when><value><horiz>%.4f</horiz><vert>%.4f</vert></value></keyframe>\n",
-                        fr(at[k]), cx, cy);
+                        fr(at[q]), cx, cy);
             }
             fputs("</parameter></effect></filter>\n", f);
         }
         fputs("</clipitem>\n", f);
     }
-    trans_before(np, false);
+    trans_before(clips[0], nc[0], nc[0], false);
     fputs("</track>\n</video>\n<audio>\n", f);
 
-    // The audio: each recorded track's channels, from the same file, a track each. The clipitem of piece i on
-    // sequence track s (from 1) is 1 + np * s + i.
+    // The audio: each recorded track's channels, from the same file, a track each. The clips are numbered on from
+    // the video's, sequence track by sequence track (seq_base).
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(m, tracks, MEDIA_MAX_TRACKS);
-    bool master_keys = e.vol_count[EDIT_MASTER] > 0;
-    i32 seq_track = 1, slots = 1;
-    auto clip_id = [&](i32 track, i32 piece) { return 1 + np * track + piece; };
+    i32 seq_base[2 * MEDIA_MAX_TRACKS + 2] = {}, ns = 1, slots = 1;
+    seq_base[1] = 1 + nc[0];
+    for (i32 ti = 0; ti < nt; ti++)
+        for (i32 c = 0; c < chans(tracks[ti]); c++, ns++) seq_base[ns + 1] = seq_base[ns] + nc[1 + tracks[ti]];
     for (i32 t = 0; t < m.track_count; t++) slots = ImMax(slots, chans(t));
+    i32 seq_track = 1;
     for (i32 ti = 0; ti < nt; ti++) {
         i32 t = tracks[ti], n = chans(t);
-        for (i32 c = 0; c < n; c++) {
+        const XmlClip *cs = clips[1 + t];
+        i32 ncs = nc[1 + t];
+        for (i32 ch = 0; ch < n; ch++) {
             fprintf(f, "<track premiereTrackType=\"%s\" currentExplodedTrackIndex=\"%d\" totalExplodedTrackCount=\"%d\">\n",
-                    n == 2 ? "Stereo" : "Mono", c, n);
-            for (i32 i = 0; i < np; i++) {
-                trans_before(i, true);
-                clip_head(clip_id(seq_track + c, i), i, !e.muted[t] && !e.muted[EDIT_MASTER], n == 2 ? "stereo" : "mono");
-                fprintf(f, "<file id=\"file-1\"/>\n<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n",
-                        slots * t + c + 1);
+                    n == 2 ? "Stereo" : "Mono", ch, n);
+            for (i32 k = 0; k < ncs; k++) {
+                const XmlClip &c = cs[k];
+                trans_before(cs, ncs, k, true);
+                clip_head(seq_base[seq_track + ch] + k, c, !e.muted[t] && !e.muted[EDIT_MASTER], n == 2 ? "stereo" : "mono");
+                fprintf(f, "<sourcetrack><mediatype>audio</mediatype><trackindex>%d</trackindex></sourcetrack>\n", slots * t + ch + 1);
                 if (n == 2) // the pair stays together
                     for (i32 l = 0; l < 2; l++)
                         fprintf(f, "<link><linkclipref>clipitem-%d</linkclipref><mediatype>audio</mediatype><trackindex>%d</trackindex>"
-                                "<clipindex>%d</clipindex><groupindex>1</groupindex></link>\n", clip_id(seq_track + l, i),
-                                seq_track + l, i + 1);
+                                "<clipindex>%d</clipindex><groupindex>1</groupindex></link>\n", seq_base[seq_track + l] + k,
+                                seq_track + l, k + 1);
                 fputs("<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels"
                       "</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\n<parameter>"
                       "<parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax>", f);
-                fprintf(f, "<value>%.4f</value>\n", vol_at(e, t, pc[i].from) * vol_at(e, EDIT_MASTER, pc[i].from));
-                if (e.vol_count[t] || master_keys) {
-                    i32 na = xml_samples(pc[i].from, pc[i].to, at, COUNT(at));
-                    for (i32 k = 0; k < na; k++)
-                        fprintf(f, "<keyframe><when>%lld</when><value>%.4f</value></keyframe>\n", fr(at[k]),
-                                vol_at(e, t, at[k]) * vol_at(e, EDIT_MASTER, at[k]));
+                fprintf(f, "<value>%.4f</value>\n", level_of(c, t, c.from));
+                if (adv ? item_keys(c, IKEY_VOLUME) : e.vol_count[t] || master_keys) {
+                    i32 na = xml_samples(c.from, c.to, at, COUNT(at));
+                    for (i32 q = 0; q < na; q++)
+                        fprintf(f, "<keyframe><when>%lld</when><value>%.4f</value></keyframe>\n", fr(at[q]), level_of(c, t, at[q]));
                 }
                 fputs("</parameter></effect></filter>\n</clipitem>\n", f);
             }
-            trans_before(np, true);
+            trans_before(cs, ncs, ncs, true);
             fputs("</track>\n", f);
         }
         seq_track += n;
@@ -2497,10 +2568,10 @@ static void ed_edit_tab(f32 w)
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // The edit as an XML sequence, into a full editor
-    ed_caption("OPEN IN"); // TODO: XML for Advanced edits
-    if (kit_button(ICON_VIDEO "  Premiere Pro", KIT_GHOST, ImVec2(bw, 0), !adv_on())) ed_open_in(true);
+    ed_caption("OPEN IN");
+    if (kit_button(ICON_VIDEO "  Premiere Pro", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(true);
     ImGui::SameLine();
-    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0), !adv_on())) ed_open_in(false);
+    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(false);
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // Its comment (the same as the card's), saved when the box is left.

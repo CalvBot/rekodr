@@ -78,7 +78,7 @@ Keep a whole session from start to finish.
   its right-click menu sets its ease (keys 1 to 5 as well) or deletes it, as Delete does.
   Playback follows the sequence: over a gap the picture is black and the clock
   moves the playhead, and each track's sound plays from its own item, so a track moved apart is heard where it was
-  put. Open In is off for Advanced edits.
+  put. Open In writes the items as clips where they were put, each with its own keys and fades.
 - **Zoom views:** the picture shows the zoom in one of two views, chosen under Zoom; the result is the same.
   *Crop* keeps the whole footage still and moves and scales the kept frame over it. *Footage* keeps the frame
   still and moves and scales the footage behind it. Outside the frame is dimmed, and dragging aims.
