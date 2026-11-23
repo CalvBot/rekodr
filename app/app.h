@@ -139,8 +139,10 @@ struct Config {
     i32  r2_read_rate;       // an R2 link read this many times in 24 hours pauses until the next day; 0 = no limit
     f64  upload_rate[3];     // bytes a second, about the last 10 uploads to R2, Catbox and Litterbox (LinkHost)
     i32  upload_rate_n[3];   // how many uploads that is, up to 10; 0 = not measured
-    char link_hosts[256];    // hosts for links without R2, in order (with R2 only catbox): "catbox,litterbox" and the names
-                             // of uploaders in <config_dir>\uploaders (.sxcu files); "" = none
+    bool link_catbox;        // free links may go to Catbox, first when the clip fits (with R2 too)
+    bool link_litterbox;     // and to Litterbox, without R2
+    char link_uploaders[256]; // the player's uploaders that are on (.sxcu files in <config_dir>\uploaders, by name),
+                             // comma separated, tried after the free hosts without R2; "" = none
     i32  litterbox_hours;    // how long Litterbox keeps a clip: 1, 12, 24 or 72
     bool free_links_seen;    // the player was told free links are public
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)

@@ -11,7 +11,7 @@ struct ShareHosts {
     bool bucket;          // the player's own R2 bucket is set up
     bool catbox, litterbox;
     i32  litterbox_hours;
-    char uploader[64];    // the first ShareX uploader in link_hosts, "" = none
+    char uploader[64];    // the first ShareX uploader that's on (link_uploaders), "" = none
 };
 
 // A size as Share's menu says it: "18 MB", "2 GB" (in MiB, as Discord counts).
@@ -86,14 +86,11 @@ static ShareHosts share_hosts()
     ShareHosts h = {};
     h.bucket = r2_set_up();
     h.litterbox_hours = c.litterbox_hours;
-    for (const char *p = c.link_hosts; *p;) {
-        const char *end = strchr(p, ',');
-        i32 len = end ? (i32)(end - p) : (i32)strlen(p);
-        if (len == 6 && !strncmp(p, "catbox", 6)) h.catbox = true;
-        else if (len == 9 && !strncmp(p, "litterbox", 9)) h.litterbox = !h.bucket;
-        else if (len > 0 && !h.uploader[0] && !h.bucket) snprintf(h.uploader, sizeof h.uploader, "%.*s", len, p);
-        if (!end) break;
-        p = end + 1;
+    h.catbox = c.link_catbox;
+    h.litterbox = c.link_litterbox && !h.bucket;
+    if (!h.bucket) {
+        const char *p = c.link_uploaders, *end = strchr(p, ',');
+        snprintf(h.uploader, sizeof h.uploader, "%.*s", end ? (int)(end - p) : (int)strlen(p), p);
     }
     return h;
 }

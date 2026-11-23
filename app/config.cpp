@@ -78,7 +78,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_max_mb = 20;
     c->share_squeeze = 1.5f;
     c->share_link_page = true;
-    str_set(c->link_hosts, "catbox,litterbox");
+    c->link_catbox = c->link_litterbox = true;
     c->litterbox_hours = 72;
     str_set(c->r2_bucket, "clipback");
     c->r2_read_cap = 10000000;  // R2's free Class B requests a month
@@ -373,7 +373,9 @@ static void config_set(Config *c, const char *key, char *value)
             if (!strcmp(key + 12, hosts[i]) && sscanf(value, "%lf %d", &c->upload_rate[i], &c->upload_rate_n[i]) != 2)
                 c->upload_rate[i] = c->upload_rate_n[i] = 0;
     }
-    else if (!strcmp(key, "link_hosts")) str_set(c->link_hosts, value);
+    else if (!strcmp(key, "link_catbox")) boolean(&c->link_catbox);
+    else if (!strcmp(key, "link_litterbox")) boolean(&c->link_litterbox);
+    else if (!strcmp(key, "link_uploaders")) str_set(c->link_uploaders, value);
     else if (!strcmp(key, "litterbox_hours")) c->litterbox_hours = atoi(value);
     else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
     else if (!strcmp(key, "share_max_mb")) real(&c->share_max_mb);
@@ -546,8 +548,10 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "upload_rate_r2 = %.0f %d\nupload_rate_catbox = %.0f %d\nupload_rate_litterbox = %.0f %d\n",
             c.upload_rate[0], c.upload_rate_n[0], c.upload_rate[1], c.upload_rate_n[1], c.upload_rate[2],
             c.upload_rate_n[2]);
-    fprintf(f, "link_hosts = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_hosts, c.litterbox_hours,
-            c.free_links_seen ? "true" : "false");
+    boolean("link_catbox", c.link_catbox);
+    boolean("link_litterbox", c.link_litterbox);
+    fprintf(f, "link_uploaders = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_uploaders,
+            c.litterbox_hours, c.free_links_seen ? "true" : "false");
     fprintf(f, "share_max_mb = %g\nshare_squeeze = %g\n", c.share_max_mb, c.share_squeeze);
     boolean("share_link_page", c.share_link_page);
     boolean("clock_24h", c.clock_24h);

@@ -512,8 +512,11 @@ static void test_settings_round_trip()
     a.inputs[0] = {"{0.0.1.00000000}.{a}", "Line (RODE AI-1)", INPUT_STEREO};
     a.inputs[1] = {"{0.0.1.00000000}.{b}", "Off one", INPUT_OFF}; // off isn't saved
 
+    a.link_catbox = false; // free links: Catbox off, Litterbox on, one uploader on
+    str_set(a.link_uploaders, "mine");
     T(config_save(a, paths));
     T(config_load(&b, paths));
+    T(!b.link_catbox && b.link_litterbox && !strcmp(b.link_uploaders, "mine"));
     {
         // An empty bucket name reads as the default
         static Config e;
@@ -1117,13 +1120,9 @@ static void test_r2()
         s[3].host = HOST_R2;
     }
 
-    // Free hosts: link_hosts' order, unknown and repeated names skipped; Litterbox's hours
-    const FreeHost *order[HOST_COUNT];
-    T(free_order("litterbox, catbox", order, HOST_COUNT) == 1 && order[0]->host == HOST_LITTERBOX);
-    T(free_order("Catbox,nope,litterbox,catbox", order, HOST_COUNT) == 2 && order[0]->host == HOST_CATBOX &&
-      order[1]->host == HOST_LITTERBOX);
-    T(free_order("", order, HOST_COUNT) == 0 && free_max_bytes("") == 0);
-    T(free_max_bytes("catbox") == 200000000 && free_max_bytes("catbox,litterbox") == 1000000000);
+    // Free hosts by name; Litterbox's hours
+    T(free_host_named("catbox")->host == HOST_CATBOX && free_host_named("Litterbox")->host == HOST_LITTERBOX);
+    T(!free_host_named("nope") && !free_host_named(""));
     T(free_hours(0) == 1 && free_hours(5) == 12 && free_hours(72) == 72 && free_hours(500) == 72);
     R2Share live = {};
     live.expires_us = 1000;

@@ -2652,8 +2652,8 @@ static void lib_open_sharing()
     ui_show(SCREEN_OPTIONS);
 }
 
-// The hosts a link can go to without R2: the free ones, then the player's uploaders (.sxcu), each by its name in
-// link_hosts and the one shown. Read again every few seconds, and at once after an uploader is added.
+// The hosts a link can go to without R2: the free ones, then the player's uploaders (.sxcu), each by its name
+// (link_uploaders for an uploader) and the one shown. Read again every few seconds, and at once after an uploader is added.
 struct LinkHostName {
     char name[64], label[64];
 };
@@ -2683,7 +2683,7 @@ static i32 link_host_names()
     return g_link_name_count = n;
 }
 
-// Where `name` is in a link_hosts list, -1 when it isn't.
+// Where `name` is in a comma-separated list (link_uploaders), -1 when it isn't.
 static i32 hosts_find(const char *hosts, const char *name)
 {
     i32 at = 0;
@@ -2698,7 +2698,7 @@ static i32 hosts_find(const char *hosts, const char *name)
     return -1;
 }
 
-// Takes `name` out of a link_hosts list, or puts it on the end when it isn't there.
+// Takes `name` out of a comma-separated list (link_uploaders), or puts it on the end when it isn't there.
 static void hosts_toggle(char *hosts, i32 cap, const char *name)
 {
     char out[256] = "";
@@ -2725,13 +2725,22 @@ static void share_size_label(f32 mb, char *out, i32 cap)
     else snprintf(out, cap, "%.0f MB", mb);
 }
 
-// A link can be made: R2 is set up, or a host in link_hosts is there to take it.
+// Whether links may go to the host named `name` (a free host's name or an uploader's).
+static bool link_host_on(const char *name)
+{
+    const Config &c = g_app.config;
+    if (!strcmp(name, "catbox")) return c.link_catbox;
+    if (!strcmp(name, "litterbox")) return c.link_litterbox;
+    return hosts_find(c.link_uploaders, name) >= 0;
+}
+
+// A link can be made: R2 is set up, or a host that's on is there to take it.
 static bool links_any_host()
 {
     if (r2_ready()) return true;
     i32 n = link_host_names();
     for (i32 i = 0; i < n; i++)
-        if (hosts_find(g_app.config.link_hosts, g_link_names[i].name) >= 0) return true;
+        if (link_host_on(g_link_names[i].name)) return true;
     return false;
 }
 
@@ -3470,19 +3479,14 @@ static void links_notice_draw()
         g_links_ask_open = false;
     }
     if (!lib_dialog_begin("free_links")) return;
-    // The hosts on, in the order they're tried, the free ones with how much they take
+    // The hosts on, the free ones first with how much they take
     char where[400] = "", what[256] = "", note[900];
-    struct { i32 at, i; } on[16];
+    i32 on[16];
     i32 n = 0, names = link_host_names();
-    for (i32 i = 0; i < names; i++) {
-        i32 at = hosts_find(g_app.config.link_hosts, g_link_names[i].name);
-        if (at < 0) continue;
-        i32 k = n++;
-        for (; k > 0 && on[k - 1].at > at; k--) on[k] = on[k - 1];
-        on[k] = {at, i};
-    }
+    for (i32 i = 0; i < names && n < (i32)COUNT(on); i++)
+        if (link_host_on(g_link_names[i].name)) on[n++] = i;
     for (i32 k = 0; k < n; k++) {
-        const LinkHostName &h = g_link_names[on[k].i];
+        const LinkHostName &h = g_link_names[on[k]];
         const FreeHost *f = 0;
         for (const FreeHost &x : FREE_HOSTS)
             if (!strcmp(x.name, h.name)) f = &x;
@@ -3496,7 +3500,7 @@ static void links_notice_draw()
         else if (f) snprintf(what + l, sizeof what - l, "%s links can't be deleted. ", f->label);
     }
     snprintf(note, sizeof note,
-             "Your clip goes to a public host, the first of these that takes it: %s. Anyone with the link can watch "
+             "Your clip goes to a public host, one of these that takes it: %s. Anyone with the link can watch "
              "it. %sFor private links you can delete, set up your own Cloudflare in Options.",
              where, what);
     const char *name = g_links_ask == ASK_ITEM ? (g_links_ask_item.display_name[0] ? g_links_ask_item.display_name

@@ -1,8 +1,8 @@
 // Links: a clip shared as a plain https link to an MP4 that Discord plays in place. Where it goes:
-//   free hosts  with nothing set up, the copy goes to a free public host, the first in the player's order
-//               (link_hosts) that takes its size: Catbox (up to 200 MB, kept, can't be deleted) or Litterbox (up to
-//               1 GB, gone after litterbox_hours). Anyone with the link can watch. A host that fails passes the clip
-//               to the next. link_hosts can also name the player's own uploaders (ShareX .sxcu files).
+//   free hosts  with nothing set up, the copy goes to a free public host that's on and takes its size (Share's
+//               rule, share.cpp): Catbox (up to 200 MB, kept, can't be deleted), else Litterbox (up to 1 GB, gone
+//               after litterbox_hours), else one of the player's own uploaders that's on (ShareX .sxcu files,
+//               link_uploaders). Anyone with the link can watch.
 //   R2          once the player has set up their own Cloudflare R2 bucket, every clip goes there instead, as
 //               clipback/<random folder>/clip.mp4, so a link names no player, game or date and can't be guessed.
 //               The link points at the bucket's public address (r2.dev or the player's own domain).
@@ -60,7 +60,7 @@ enum { R2_MAX_SHARES = 1024, R2_KEY_MAX = 48 };
 // The free public hosts, used when R2 isn't set up.
 struct FreeHost {
     LinkHost       host;
-    const char    *name;  // as in link_hosts
+    const char    *name;  // as Share names the host
     const char    *label; // for the player
     const wchar_t *server, *path;
     i64            max_bytes;
@@ -77,7 +77,7 @@ struct R2Share {
                           // (with a preview page, the page is "clipback/<id>" and its picture
                           // "clipback/<id>/thumb.jpg");
                           // a free host: "<host>/<the file's name there>"; a custom uploader:
-                          // "<its name in link_hosts>/<16 random>"
+                          // "<its name>/<16 random>"
     char url[512];    // the link as given out
     char title[256];
     char game[64];
@@ -153,7 +153,7 @@ struct R2Task {
     i32        slot;    // the job's slot (probe, upload, free)
     char       key[R2_KEY_MAX]; // delete: the share; upload: the name to reuse ("" = a new one)
     char       replace[R2_KEY_MAX]; // upload, free: the history entry this share takes the place of
-    char       hosts[256]; // free: link_hosts
+    char       hosts[256]; // free: the host Share chose, "catbox", "litterbox" or an uploader's name
     i32        hours;     // free: litterbox_hours
     Path       file;    // probe: the file; upload: the copy to send (deleted after)
     Path       ffprobe;
@@ -331,31 +331,12 @@ static const FreeHost *free_host(LinkHost h)
     return 0;
 }
 
-// The free hosts in link_hosts' order ("catbox,litterbox"), names it doesn't know skipped. Returns how many.
-static i32 free_order(const char *hosts, const FreeHost **out, i32 cap)
+// The free host by its name ("catbox", "litterbox"), 0 for any other.
+static const FreeHost *free_host_named(const char *name)
 {
-    i32 n = 0;
-    for (const char *p = hosts; *p && n < cap;) {
-        const char *end = strchr(p, ',');
-        i32 len = end ? (i32)(end - p) : (i32)strlen(p);
-        for (const FreeHost &f : FREE_HOSTS) {
-            bool dup = false;
-            for (i32 k = 0; k < n; k++) dup |= out[k] == &f;
-            if (!dup && (i32)strlen(f.name) == len && !_strnicmp(p, f.name, len)) out[n++] = &f;
-        }
-        p = end ? end + 1 : p + len;
-    }
-    return n;
-}
-
-// The biggest clip a free link takes with these hosts, 0 if none are on.
-static i64 free_max_bytes(const char *hosts)
-{
-    const FreeHost *order[HOST_COUNT];
-    i32 n = free_order(hosts, order, COUNT(order));
-    i64 most = 0;
-    for (i32 i = 0; i < n; i++) most = order[i]->max_bytes > most ? order[i]->max_bytes : most;
-    return most;
+    for (const FreeHost &f : FREE_HOSTS)
+        if (!_stricmp(name, f.name)) return &f;
+    return 0;
 }
 
 // Which shares to delete so the bucket fits `limit` once `incoming` more bytes are in it: the oldest that aren't
@@ -1462,7 +1443,7 @@ static void r2_run_cleanup(const R2Task &t)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Custom uploaders: ShareX's .sxcu files in <config_dir>\uploaders, named in link_hosts by file name without
+// Custom uploaders: ShareX's .sxcu files in <config_dir>\uploaders, named (link_uploaders) by file name without
 // ".sxcu". What's taken of one: RequestMethod (POST, PUT or PATCH), RequestURL (https only), Parameters, Headers,
 // Body (MultipartFormData with Arguments and FileFormName, or Binary) and URL, the link made from the answer:
 // {response} / $response$ for all of it, {json:a.b[0].c} / $json:a.b[0].c$ for a value in it. {filename} in a
@@ -1676,7 +1657,7 @@ static i32 uploader_list(char (*stems)[64], i32 max)
     return n;
 }
 
-// Copies an .sxcu file into the uploaders folder after checking it. Returns the name to put in link_hosts, "" with
+// Copies an .sxcu file into the uploaders folder after checking it. Returns the name for link_uploaders, "" with
 // why when it can't be used.
 static bool uploader_add(const wchar_t *file, char *stem, i32 stem_cap, char *why, i32 cap)
 {
@@ -1816,8 +1797,7 @@ static bool up_plain_link(const char *resp, char *out, i32 cap)
     return uploader_result("", resp, out, cap) && starts_with(out, "https://") && !strpbrk(out, " \r\n<\"");
 }
 
-// The upload step of a job with no R2: each host in link_hosts' order that takes the size (a free host, or a
-// custom uploader by name), until one gives a link.
+// The upload step of a job with no R2: the host Share chose (a free host, or a custom uploader by name).
 static void r2_run_free(const R2Task &t)
 {
     u32 job = 0;
@@ -1839,6 +1819,7 @@ static void r2_run_free(const R2Task &t)
     if (f == INVALID_HANDLE_VALUE) str_set(err, "Couldn't open the copy to upload");
     else GetFileSizeEx(f, &size);
     i32 tried = 0, named = 0;
+    i64 most = 0; // the biggest a free host named takes
     char hours[8];
     snprintf(hours, sizeof hours, "%dh", free_hours(t.hours));
     static thread_local char resp[16384];
@@ -1851,9 +1832,8 @@ static void r2_run_free(const R2Task &t)
         char *nm = trim(name);
         if (!nm[0]) continue;
         named++;
-        const FreeHost *h = 0;
-        for (const FreeHost &fh : FREE_HOSTS)
-            if (!_stricmp(nm, fh.name)) h = &fh;
+        const FreeHost *h = free_host_named(nm);
+        if (h && h->max_bytes > most) most = h->max_bytes;
         R2Progress prog = {job, 0, size.QuadPart > 0 ? size.QuadPart : 1};
         char why[256] = "";
         if (h) {
@@ -1909,7 +1889,7 @@ static void r2_run_free(const R2Task &t)
         if (!named) str_set(err, "Turn on a free host or set up Cloudflare in Options");
         else if (!tried)
             snprintf(err, sizeof err, "Free links take clips up to %lld MB: set up Cloudflare in Options for bigger ones",
-                     free_max_bytes(t.hosts) / 1000000);
+                     most / 1000000);
         else str_set(err, g_r2.stop ? "Stopped" : "No host took the clip");
     }
     if (!url[0]) {
