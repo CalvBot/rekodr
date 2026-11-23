@@ -1097,6 +1097,26 @@ static void test_r2()
     n = r2_plan_cleanup(s, 4, 8 * R2_GB, 6 * R2_GB, -1, plan, 4); // pinned 2 + 6: all three others go
     T(n == 3 && plan[0] == 0 && plan[1] == 2 && plan[2] == 3);
 
+    // The Space bar: the bucket's links oldest first, a free host's left out, and which go for a limit
+    {
+        static R2Share shown[4];
+        u8 goes[4];
+        s[3].host = HOST_CATBOX;
+        i32 m = r2_evict_plan(s, 4, 4 * R2_GB, 0, 0, goes, shown, 4);
+        T(m == 3 && shown[0].uploaded_us == 100 && shown[1].uploaded_us == 101 && shown[2].uploaded_us == 102);
+        T(goes[0] && !goes[1] && !goes[2]); // pinned 2 + 2 + 2 over 4: the oldest unpinned goes
+        m = r2_evict_plan(s, 4, 6 * R2_GB, 0, 0, goes, shown, 4);
+        T(m == 3 && !goes[0] && !goes[1] && !goes[2]);
+        m = r2_evict_plan(s, 4, 6 * R2_GB, 0, R2_GB, goes, shown, 4); // untracked files count too
+        T(goes[0] && !goes[1] && !goes[2]);
+        m = r2_evict_plan(s, 4, 6 * R2_GB, 4 * R2_GB, 0, goes, shown, 4); // and a link to come
+        T(goes[0] && !goes[1] && goes[2]);
+        m = r2_evict_plan(s, 4, R2_GB, 0, 0, goes, shown, 4); // pinned alone over: none go
+        T(m == 3 && !goes[0] && !goes[1] && !goes[2]);
+        T(r2_evict_plan(s, 4, R2_GB, 0, 0, goes, shown, 2) == 2);
+        s[3].host = HOST_R2;
+    }
+
     // Free hosts: link_hosts' order, unknown and repeated names skipped; Litterbox's hours
     const FreeHost *order[HOST_COUNT];
     T(free_order("litterbox, catbox", order, HOST_COUNT) == 1 && order[0]->host == HOST_LITTERBOX);

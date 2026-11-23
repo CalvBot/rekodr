@@ -146,7 +146,7 @@ struct R2Conf {
 };
 
 enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_FREE, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
-                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS };
+                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS, R2_T_CLEANUP };
 
 struct R2Task {
     R2TaskKind kind;
@@ -201,6 +201,9 @@ static struct {
     i8       signed_in; // the same for the sign-in's refresh token
     char     access[2048]; // worker: the sign-in's access token, until access_until_us
     i64      access_until_us;
+    f64      budget;       // main thread: the monthly budget in force (r2_apply_budget), once budget_known
+    bool     budget_known;
+    i64      folder_bytes; // the bucket's clipback/ folder when last listed, 0 before
     struct {
         HANDLE        thread; // listens on CF_OAUTH_PORT for the browser
         volatile LONG cancel;
@@ -380,6 +383,25 @@ static i32 r2_plan_cleanup(const R2Share *s, i32 n, i64 limit, i64 incoming, i32
         if (oldest < 0) break;
         out[count++] = oldest;
         used -= s[oldest].bytes;
+    }
+    return count;
+}
+
+// The bucket's links as the Space bar shows them, oldest first, into `out`, with goes[i] = 1 for those
+// r2_plan_cleanup clears to fit `limit` with `incoming` more bytes and what the folder holds that the history
+// doesn't know of (`untracked`). None go when the pinned links alone are over. Returns how many.
+static i32 r2_evict_plan(const R2Share *s, i32 n, i64 limit, i64 incoming, i64 untracked, u8 *goes, R2Share *out,
+                         i32 max)
+{
+    static i32 plan[R2_MAX_SHARES];
+    i32 gone = r2_plan_cleanup(s, n, limit, incoming + untracked, -1, plan, COUNT(plan));
+    i32 count = 0;
+    for (i32 i = 0; i < n && count < max; i++) { // the history is oldest first
+        if (!r2_in_bucket(s[i])) continue;
+        out[count] = s[i];
+        goes[count] = 0;
+        for (i32 k = 0; k < gone; k++) goes[count] |= plan[k] == i;
+        count++;
     }
     return count;
 }
@@ -658,6 +680,17 @@ static void r2_token_secret(const char *token, char out[65])
     SecureZeroMemory(h, sizeof h);
 }
 
+// The monthly budget in force: what was saved, until r2_apply_budget sets a new one. Options' draft in the
+// settings never changes it.
+static f64 r2_budget_now()
+{
+    if (!g_r2.budget_known) {
+        g_r2.budget = g_app.config.r2_budget;
+        g_r2.budget_known = true;
+    }
+    return g_r2.budget;
+}
+
 static bool r2_conf(R2Conf *out)
 {
     const Config &c = g_app.config;
@@ -666,7 +699,7 @@ static bool r2_conf(R2Conf *out)
     str_set(out->access, c.r2_access_key);
     str_set(out->bucket, c.r2_bucket);
     str_set(out->public_url, c.r2_public_url);
-    out->limit = r2_limit_for_budget(c.r2_budget);
+    out->limit = r2_limit_for_budget(r2_budget_now());
     char token[256];
     if (r2_token_get(token, sizeof token)) r2_token_secret(token, out->secret);
     SecureZeroMemory(token, sizeof token);
@@ -900,6 +933,11 @@ static i64 r2_folder_bytes(const R2Conf &c)
             break;
     }
     free(resp);
+    if (total >= 0) {
+        AcquireSRWLockExclusive(&g_r2.lock);
+        g_r2.folder_bytes = total;
+        ReleaseSRWLockExclusive(&g_r2.lock);
+    }
     return total;
 }
 
@@ -1403,6 +1441,24 @@ static void r2_run_upload(const R2Task &t)
     ReleaseSRWLockExclusive(&g_r2.lock);
     r2_job_end(job, true, url, "");
     if (n > 0) r2_remove_planned(t.conf, plan, n);
+}
+
+// After a new budget: the oldest unpinned links go until the bucket, at its real size, fits the limit.
+static void r2_run_cleanup(const R2Task &t)
+{
+    static i32 plan[R2_MAX_SHARES];
+    i64 folder = r2_folder_bytes(t.conf);
+    if (folder < 0) {
+        log_line("r2: couldn't read how full the bucket is to fit the new budget");
+        return;
+    }
+    AcquireSRWLockExclusive(&g_r2.lock);
+    r2_load_locked();
+    i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), -1, plan,
+                            COUNT(plan));
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (n < 0) log_line("r2: pinned links alone are over the new budget: nothing removed");
+    else if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -3000,6 +3056,7 @@ static DWORD WINAPI r2_thread(void *)
         case R2_T_PAUSE:
         case R2_T_RESUME: r2_run_move(t); break;
         case R2_T_DOMAINS: r2_run_domains(t); break;
+        case R2_T_CLEANUP: r2_run_cleanup(t); break;
         }
         SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
         SecureZeroMemory(t.token, sizeof t.token);
@@ -3020,6 +3077,41 @@ static bool r2_queue(const R2Task &t)
     ReleaseSRWLockExclusive(&g_r2.lock);
     SetEvent(g_r2.wake);
     return ok;
+}
+
+// The Space bar: the bucket's links oldest first, with goes[i] = 1 for those cleared to fit `limit` with
+// `incoming` more bytes (r2_evict_plan). Returns how many.
+static i32 r2_evict_preview(i64 limit, i64 incoming, u8 *goes, R2Share *out, i32 max)
+{
+    AcquireSRWLockExclusive(&g_r2.lock);
+    r2_load_locked();
+    i32 n = r2_evict_plan(g_r2.shares, g_r2.count, limit, incoming, r2_untracked_locked(g_r2.folder_bytes), goes,
+                          out, max);
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    return n;
+}
+
+// What the bucket's clipback/ folder holds that no link counts, from its last listing (0 before one).
+static i64 r2_untracked_bytes()
+{
+    AcquireSRWLockShared(&g_r2.lock);
+    i64 n = r2_untracked_locked(g_r2.folder_bytes);
+    ReleaseSRWLockShared(&g_r2.lock);
+    return n;
+}
+
+// Options' Save, after writing r2_budget: the new budget is in force from now, and the oldest unpinned links are
+// cleared on the worker until the bucket fits it.
+static void r2_cleanup_now()
+{
+    g_r2.budget = g_app.config.r2_budget;
+    g_r2.budget_known = true;
+    if (!r2_ready()) return;
+    static R2Task t;
+    t = {};
+    t.kind = R2_T_CLEANUP;
+    if (r2_conf(&t.conf)) r2_queue(t);
+    SecureZeroMemory(&t, sizeof t);
 }
 
 static void r2_stop()
@@ -3627,7 +3719,7 @@ static R2Usage r2_usage()
         ask = true;
     }
     ReleaseSRWLockExclusive(&g_r2.lock);
-    u.limit_bytes = r2_limit_for_budget(g_app.config.r2_budget);
+    u.limit_bytes = r2_limit_for_budget(r2_budget_now());
     u.cost_per_gb_month = R2_PRICE_GB;
     u.free_gb = R2_FREE_GB;
     u.month_cost = r2_month_cost(u.bucket_bytes >= 0 ? u.bucket_bytes : u.used_bytes, u.class_a > 0 ? u.class_a : 0,
