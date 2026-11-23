@@ -1045,9 +1045,9 @@ static void test_r2()
     r2_make_url("https://clips.example.com", "k.mp4", 3, url, sizeof url);
     T(!strcmp(url, "https://clips.example.com/k.mp4?v=3"));
 
-    // Limits: free 10 GB, then $0.015 a GB-month, of which 80% is used
-    T(r2_limit_for_budget(0) == 8 * R2_GB);
-    T(r2_limit_for_budget(1.35) / R2_GB == 80 || r2_limit_for_budget(1.35) / R2_GB == 79);
+    // Limits: free 10 GB, then $0.015 a GB-month, all of it used
+    T(r2_limit_for_budget(0) == 10 * R2_GB);
+    T(r2_limit_for_budget(1.35) / R2_GB == 100 || r2_limit_for_budget(1.35) / R2_GB == 99);
     T(fabs(r2_cost_for(100 * R2_GB) - 1.35) < 1e-9 && r2_cost_for(5 * R2_GB) == 0);
 
     // Cleanup: oldest unpinned first, until it fits
@@ -1068,6 +1068,26 @@ static void test_r2()
     T(r2_plan_cleanup(s, 4, 6 * R2_GB, 4 * R2_GB, -1, plan, 4) == -1); // pinned 4 + incoming 4 > 6
     s[1].host = HOST_LITTERBOX; // a free host's clip isn't in the bucket
     T(r2_plan_cleanup(s, 4, 8 * R2_GB, 0, -1, plan, 4) == 0);
+
+    // Before an upload: the bucket full to the limit, a link of 3 GB clears the oldest unpinned until it fits; one
+    // that exactly fills the limit fits; the link being shared again is never cleared; bigger than the limit, or
+    // only pinned links left, nothing is cleared and it's refused
+    for (i32 i = 0; i < 4; i++) {
+        s[i] = {};
+        s[i].bytes = 2 * R2_GB;
+        s[i].uploaded_us = 100 + i; // the first is the oldest
+    }
+    s[1].pinned = true;
+    T(r2_plan_cleanup(s, 4, 8 * R2_GB, 0, -1, plan, 4) == 0);
+    n = r2_plan_cleanup(s, 4, 8 * R2_GB, 3 * R2_GB, -1, plan, 4);
+    T(n == 2 && plan[0] == 0 && plan[1] == 2);
+    T(r2_plan_cleanup(s, 4, 10 * R2_GB, 2 * R2_GB, -1, plan, 4) == 0);
+    n = r2_plan_cleanup(s, 4, 10 * R2_GB, 2 * R2_GB + 1, 0, plan, 4);
+    T(n == 1 && plan[0] == 2);
+    T(r2_plan_cleanup(s, 4, 8 * R2_GB, 9 * R2_GB, -1, plan, 4) == -1);
+    T(r2_plan_cleanup(s, 4, 8 * R2_GB, 7 * R2_GB, -1, plan, 4) == -1); // pinned 2 + 7
+    n = r2_plan_cleanup(s, 4, 8 * R2_GB, 6 * R2_GB, -1, plan, 4); // pinned 2 + 6: all three others go
+    T(n == 3 && plan[0] == 0 && plan[1] == 2 && plan[2] == 3);
 
     // Free hosts: link_hosts' order, unknown and repeated names skipped; Litterbox's hours
     const FreeHost *order[HOST_COUNT];
@@ -1093,11 +1113,13 @@ static void test_r2()
     {
         char t[64];
         r2_budget_label(10, t, sizeof t);
-        T(!strcmp(t, "Free: 8 GB"));
+        T(!strcmp(t, "Free: 10 GB"));
         r2_budget_label(25, t, sizeof t);
-        T(!strcmp(t, "20 GB for at most $0.23 a month"));
+        T(!strcmp(t, "25 GB for at most $0.23 a month"));
         r2_budget_label(50, t, sizeof t);
-        T(!strcmp(t, "40 GB for at most $0.60 a month"));
+        T(!strcmp(t, "50 GB for at most $0.60 a month"));
+        r2_budget_label(10000, t, sizeof t);
+        T(!strcmp(t, "10 TB for at most $149.85 a month"));
     }
 
     // A bucket that can't take a link says why; the link isn't passed to a free host

@@ -122,6 +122,11 @@ Keep a whole session from start to finish.
     dark page with a plain "clipback" under it, and the tags chat apps read for a card with its title and a frame
     from a third of the way in (at most 1280 wide) that plays it. Catbox and Litterbox links are the .mp4. Reads of
     the page and its picture count with the clip's. A paused link's page names the clip and doesn't play it.
+    The bucket holds all that the budget buys (`r2_budget`, dollars a month; 0 = R2's free 10 GB). Before each
+    upload it's listed for its real size, and if the link, its page and picture would pass that, the oldest
+    unpinned links are cleared until they fit; their entries stay so they can be shared again. A clip bigger than
+    the budget, or one only pinned links leave no room for, is refused with nothing uploaded. Uploads to the
+    bucket run one at a time.
     An R2 link can be paused (its file moved to a hidden name). Links pause by themselves so R2 costs nothing
     unexpected: all of them until the 1st when the account's reads this month near `r2_read_cap` (10 M, R2's
     free amount), and one until the next day past `r2_read_rate` reads in 24 hours (1 M); 0 turns either off.

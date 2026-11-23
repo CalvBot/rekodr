@@ -208,14 +208,16 @@ static struct {
 // ---------------------------------------------------------------------------------------------------------------
 // Prices and limits
 
-// What may be stored for a monthly budget, in bytes. Only 80% of what the budget buys is used, leaving room for
-// Cloudflare's request charges and for files that are deleted but still billed for the rest of the month.
-static const f64 R2_HEADROOM = 0.8;
+// What may be stored for a monthly budget, in bytes: all that the budget buys. Before each upload the bucket is
+// listed for its real size and the oldest links are cleared to fit (r2_run_upload), so it never holds more.
 static i64 r2_limit_for_budget(f64 dollars)
 {
     if (dollars < 0) dollars = 0;
-    return (i64)(R2_HEADROOM * (R2_FREE_GB + dollars / R2_PRICE_GB) * (f64)R2_GB);
+    return (i64)((R2_FREE_GB + dollars / R2_PRICE_GB) * (f64)R2_GB);
 }
+
+// Room kept for a preview page and its picture while a link's room is made; the entry counts what they really take.
+static const i64 R2_PAGE_ROOM = 1 << 20;
 
 static f64 r2_cost_for(i64 bytes)
 {
@@ -223,8 +225,8 @@ static f64 r2_cost_for(i64 bytes)
     return gb > 0 ? gb * R2_PRICE_GB : 0;
 }
 
-// Options' label for a budget step of `gb` bought: what clipback keeps for it and the most it costs, "Free: 8 GB",
-// "20 GB for at most $0.23 a month", "8 TB for at most $149.85 a month".
+// Options' label for a budget step of `gb` bought: what clipback keeps for it and the most it costs, "Free: 10 GB",
+// "25 GB for at most $0.23 a month", "10 TB for at most $149.85 a month".
 static void r2_budget_label(i32 gb, char *out, i32 cap)
 {
     f64 cost = r2_cost_for((i64)gb * R2_GB);
@@ -1235,6 +1237,41 @@ static bool r2_delete_share(const R2Conf &c, const char *key, const char *at, bo
     return true;
 }
 
+// Clears the shares at `plan` (indexes, under the lock when it was made) from the bucket, keeping their entries so
+// they can be shared again. Returns whether all of them went.
+static bool r2_remove_planned(const R2Conf &c, const i32 *plan, i32 n)
+{
+    static char gone[R2_MAX_SHARES][R2_KEY_MAX];
+    static char gone_at[R2_MAX_SHARES][R2_KEY_MAX]; // where each is in the bucket
+    static bool gone_page[R2_MAX_SHARES];
+    AcquireSRWLockShared(&g_r2.lock);
+    for (i32 i = 0; i < n; i++) {
+        str_set(gone[i], g_r2.shares[plan[i]].key);
+        str_set(gone_at[i], r2_object_key(g_r2.shares[plan[i]]));
+        gone_page[i] = g_r2.shares[plan[i]].page_w > 0;
+    }
+    ReleaseSRWLockShared(&g_r2.lock);
+    bool all = true;
+    for (i32 i = 0; i < n; i++) {
+        if (!r2_delete_share(c, gone[i], gone_at[i], gone_page[i])) {
+            all = false;
+            continue;
+        }
+        AcquireSRWLockExclusive(&g_r2.lock);
+        i32 k = r2_find_locked(gone[i]);
+        if (k >= 0) {
+            g_r2.shares[k].removed = true;
+            g_r2.shares[k].paused = 0;
+            g_r2.shares[k].hidden[0] = 0;
+        }
+        r2_save_locked();
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        log_line("r2: removed %s to stay under the limit", gone[i]);
+    }
+    if (n > 0) r2_post(R2_EV_HISTORY, 0);
+    return all;
+}
+
 // The upload step of a job, then the cleanup.
 // Tells the main thread how fast an upload went, for the host's average (Config.upload_rate). Clips under 1 MB
 // say more about the wait for an answer than about speed and aren't counted.
@@ -1265,16 +1302,22 @@ static void r2_run_upload(const R2Task &t)
     char key[R2_KEY_MAX], err[256] = "";
     i32 plan[R2_MAX_SHARES];
 
-    // Room first: the pinned clips must leave space for this one.
+    // Room first, from the bucket's real size: the oldest unpinned links go until this one, its page and picture
+    // fit. Uploads run one at a time on this thread, so two can't both count the same room.
     i64 folder = r2_folder_bytes(t.conf);
+    i64 incoming = bytes + (t.page ? R2_PAGE_ROOM : 0);
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
     i32 reuse = t.key[0] ? r2_find_locked(t.key) : -1;
-    i64 untracked = r2_untracked_locked(folder);
-    if (r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, bytes + untracked, -1, plan, COUNT(plan)) < 0)
-        str_set(err, bytes > t.conf.limit ? "The clip is bigger than your limit: raise it in Options"
-                                          : "Pinned clips fill your limit: unpin some or raise it");
+    i32 clear = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit,
+                                                incoming + r2_untracked_locked(folder), reuse, plan, COUNT(plan));
+    if (folder < 0) str_set(err, "Couldn't read how full the bucket is: try again");
+    else if (clear < 0)
+        str_set(err, incoming > t.conf.limit ? "The clip is bigger than your limit: raise it in Options"
+                                             : "Pinned clips fill your limit: unpin some or raise it");
     ReleaseSRWLockExclusive(&g_r2.lock);
+    if (!err[0] && clear > 0 && !r2_remove_planned(t.conf, plan, clear))
+        str_set(err, "Couldn't make room in the bucket: try again");
     if (reuse >= 0) str_set(key, t.key);
     else r2_new_key(key);
 
@@ -1360,35 +1403,13 @@ static void r2_run_upload(const R2Task &t)
         return;
     }
     str_set(url, g_r2.shares[at].url);
-    i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), at, plan,
-                            COUNT(plan));
-    static char gone[R2_MAX_SHARES][R2_KEY_MAX];
-    static char gone_at[R2_MAX_SHARES][R2_KEY_MAX]; // where each is in the bucket
-    static bool gone_page[R2_MAX_SHARES];
-    for (i32 i = 0; i < n; i++) {
-        str_set(gone[i], g_r2.shares[plan[i]].key);
-        str_set(gone_at[i], r2_object_key(g_r2.shares[plan[i]]));
-        gone_page[i] = g_r2.shares[plan[i]].page_w > 0;
-    }
+    // The page or picture came out bigger than their room: the oldest others go now.
+    i32 n = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), at,
+                                             plan, COUNT(plan));
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);
     r2_job_end(job, true, url, "");
-
-    // Over the limit: the oldest unpinned clips leave the bucket.
-    for (i32 i = 0; i < n; i++) {
-        if (!r2_delete_share(t.conf, gone[i], gone_at[i], gone_page[i])) continue;
-        AcquireSRWLockExclusive(&g_r2.lock);
-        i32 k = r2_find_locked(gone[i]);
-        if (k >= 0) {
-            g_r2.shares[k].removed = true;
-            g_r2.shares[k].paused = 0;
-            g_r2.shares[k].hidden[0] = 0;
-        }
-        r2_save_locked();
-        ReleaseSRWLockExclusive(&g_r2.lock);
-        log_line("r2: removed %s to stay under the limit", gone[i]);
-    }
-    if (n > 0) r2_post(R2_EV_HISTORY, 0);
+    if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
