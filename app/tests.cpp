@@ -517,6 +517,69 @@ static void test_fields()
     T(toast_clip_parse("nonsense") == TOAST_CLIP_DEFAULT);
 }
 
+// Toasts not on the game's monitor go on the nearest other one; from a top corner they stack downward. Small is
+// small only on the game's monitor.
+static void test_popup_place()
+{
+    RECT mons[] = {{-1920, 0, 0, 1080}, {0, 0, 2560, 1440}, {2560, 0, 4480, 1080}};
+    T(popup_not_game(mons, 3, 1) == 0); // the middle one: both are as near, the first wins
+    T(popup_not_game(mons, 3, 0) == 1 && popup_not_game(mons, 3, 2) == 1);
+    RECT apart[] = {{0, 0, 1920, 1080}, {1920, 0, 3840, 1080}, {3840, 0, 5760, 1080}};
+    T(popup_not_game(apart, 3, 0) == 1 && popup_not_game(apart, 3, 2) == 1 && popup_not_game(apart, 1, 0) == 0);
+
+    RECT work = {0, 0, 1920, 1040};
+    POINT a = toast_spot(work, CORNER_TR, 400, 100, 16, 0, 0);
+    T(a.x == 1920 - 400 - 16 && a.y == 16);
+    RECT up[] = {{a.x, a.y, a.x + 400, a.y + 100}};
+    POINT b = toast_spot(work, CORNER_TR, 400, 80, 16, up, 1);
+    T(b.x == a.x && b.y == 16 + 100 + 16);
+    RECT two[] = {{b.x, b.y, b.x + 400, b.y + 80}, up[0]}; // either order
+    POINT c = toast_spot(work, CORNER_TR, 400, 60, 16, two, 2);
+    T(c.y == b.y + 80 + 16);
+    POINT d = toast_spot(work, CORNER_TL, 400, 100, 16, up, 1); // the other side: not in its way
+    T(d.x == 16 && d.y == 16);
+    POINT e = toast_spot(work, CORNER_BR, 400, 100, 16, 0, 0);
+    T(e.x == a.x && e.y == 1040 - 16 - 100);
+    RECT low[] = {{e.x, e.y, e.x + 400, e.y + 100}};
+    POINT f = toast_spot(work, CORNER_BR, 400, 50, 16, low, 1);
+    T(f.y == e.y - 16 - 50);
+    POINT g = toast_spot(work, CORNER_BL, 300, 50, 16, 0, 0);
+    T(g.x == 16 && g.y == 1040 - 16 - 50);
+
+    // The monitor picked: fake monitors 1, 2 and 3 (left to right), outputs 0 to 2 on them
+    static Config pc;
+    pc = {};
+    pc.popup_monitor = POPUP_RECORDED;
+    pc.output_idx = 1;
+    pc.popup_corner = CORNER_TR;
+    pc.popup_monitor_game = POPUP_NOT_GAME;
+    pc.popup_corner_game = CORNER_BL;
+    PopupMons three = {{(HMONITOR)1, (HMONITOR)2, (HMONITOR)3}, {mons[0], mons[1], mons[2]}, 3};
+    PopupMons one = {{(HMONITOR)1}, {{0, 0, 1920, 1080}}, 1};
+    HMONITOR (*outputs)(i32) = [](i32 out) -> HMONITOR {
+        return out >= 0 && out < 3 ? (HMONITOR)(intptr_t)(out + 1) : 0;
+    };
+    HMONITOR (*no_outputs)(i32) = [](i32) -> HMONITOR { return 0; };
+    PopupCorner pcorner;
+    T(popup_monitor_for(pc, false, (HMONITOR)3, three, outputs, &pcorner) == (HMONITOR)2 && pcorner == CORNER_TR);
+    T(popup_monitor_for(pc, true, (HMONITOR)2, three, outputs, &pcorner) == (HMONITOR)1 && pcorner == CORNER_BL);
+    T(popup_monitor_for(pc, true, (HMONITOR)1, three, outputs, &pcorner) == (HMONITOR)2);
+    T(popup_monitor_for(pc, true, (HMONITOR)3, three, outputs, &pcorner) == (HMONITOR)2);
+    HMONITOR alone = popup_monitor_for(pc, true, (HMONITOR)1, one, no_outputs, &pcorner); // one monitor: the game's
+    T(alone == (HMONITOR)1 && toast_clip_on(TOAST_CLIP_SMALL, (u64)alone, 1) == TOAST_CLIP_SMALL);
+    pc.popup_monitor_game = 2;
+    T(popup_monitor_for(pc, true, (HMONITOR)1, three, outputs, &pcorner) == (HMONITOR)3);
+    pc.popup_monitor_game = 5; // an output that's gone: the game's monitor
+    HMONITOR gone = popup_monitor_for(pc, true, (HMONITOR)1, three, outputs, &pcorner);
+    T(gone == (HMONITOR)1 && toast_clip_on(TOAST_CLIP_SMALL, (u64)gone, 1) == TOAST_CLIP_SMALL);
+    pc.popup_monitor_game = POPUP_AS_NORMAL;
+    T(popup_monitor_for(pc, true, (HMONITOR)3, three, outputs, &pcorner) == (HMONITOR)2 && pcorner == CORNER_TR);
+
+    T(toast_clip_on(TOAST_CLIP_SMALL, 1, 1) == TOAST_CLIP_SMALL); // game on 1, popups on 1
+    T(toast_clip_on(TOAST_CLIP_SMALL, 2, 1) == TOAST_CLIP_FULL);  // popups on 2
+    T(toast_clip_on(TOAST_CLIP_OFF, 2, 1) == TOAST_CLIP_OFF && toast_clip_on(TOAST_CLIP_FULL, 1, 1) == TOAST_CLIP_FULL);
+}
+
 // Clip saved over a game: the game's own choice, else the one for all games.
 static void test_toast_clip()
 {
@@ -588,6 +651,9 @@ static void test_settings_round_trip()
     app->toast_clip = TOAST_CLIP_OFF;
     config_app(&a, "other.exe")->category = CAT_GAME; // same as all games
     a.toast_clip = TOAST_CLIP_SMALL;
+    a.popup_corner = CORNER_TL;
+    a.popup_monitor_game = POPUP_NOT_GAME;
+    a.popup_corner_game = CORNER_BL;
     a.window_capture = true;
     str_set(app->path, "C:\\Games\\The Game\\game.exe");
     a.folder_count = 1;
@@ -613,6 +679,8 @@ static void test_settings_round_trip()
     T(b.bitrate_mbps == 42.5f && b.fps == 120 && b.buffer_by_size && b.dev_log && !strcmp(b.codec.s, "hevc"));
     T(b.hotkey_count == 1 && !strcmp(b.hotkeys[0].keys.s, "Alt+F10") && !strcmp(b.hotkeys[0].action.s, "save 30s"));
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
+    T(b.popup_corner == CORNER_TL && b.popup_monitor_game == POPUP_NOT_GAME && b.popup_corner_game == CORNER_BL);
+    for (i32 i = CORNER_BR; i <= CORNER_TL; i++) T(corner_parse(corner_name((PopupCorner)i)) == i);
     T(b.apps[0].toast_clip == TOAST_CLIP_OFF && b.apps[1].toast_clip == TOAST_CLIP_DEFAULT);
     if (b.app_count == 2) {
         const AppInfo &g = b.apps[0];
@@ -2456,6 +2524,7 @@ int main()
     test_fields();
     test_hotkeys();
     test_toast_clip();
+    test_popup_place();
     test_settings_round_trip();
     test_pieces();
     test_edit_volumes();

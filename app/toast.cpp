@@ -805,28 +805,122 @@ static void toast_fonts(Toast &t, f32 s)
     if (t.edit) SendMessageW(t.edit, WM_SETFONT, (WPARAM)t.font, TRUE);
 }
 
-// The monitor toasts go on: Config.popup_monitor, an output index or -2 the one recorded. -1 turns Clip saved off;
-// the others then go on the one recorded. While a game is in front, Config.popup_monitor_game picks instead unless
-// it is -3. A test copy's go on the monitor furthest right. False when there's none.
-static bool toast_monitor(ToastKind kind, RECT *work)
+// Of `n` monitors (their rects), the one whose centre is nearest the centre of monitor `game`, other than it; the
+// first such on a tie. `game` itself when it's the only one.
+static i32 popup_not_game(const RECT *mons, i32 n, i32 game)
 {
-    HMONITOR right;
-    if (g_app.config.popup_monitor == -1 && kind == TOAST_SAVED) return false;
-    if (is_test_copy()) return rightmost_monitor(work, &right);
-    i32 out = g_app.config.popup_monitor;
-    if (g_app.config.popup_monitor_game != -3 && sessions_game_in_front()) out = g_app.config.popup_monitor_game;
-    if (out < 0) out = g_app.config.output_idx;
+    i32 best = game;
+    i64 best_d = 0;
+    i64 gx = ((i64)mons[game].left + mons[game].right) / 2, gy = ((i64)mons[game].top + mons[game].bottom) / 2;
+    for (i32 i = 0; i < n; i++) {
+        if (i == game) continue;
+        i64 dx = ((i64)mons[i].left + mons[i].right) / 2 - gx, dy = ((i64)mons[i].top + mons[i].bottom) / 2 - gy;
+        i64 d = dx * dx + dy * dy;
+        if (best == game || d < best_d) {
+            best = i;
+            best_d = d;
+        }
+    }
+    return best;
+}
+
+// The monitors there are, as EnumDisplayMonitors gives them
+struct PopupMons {
+    HMONITOR m[16];
+    RECT     r[16]; // each one's whole rect
+    i32      n;
+};
+
+static void popup_mons(PopupMons *mons)
+{
+    *mons = {};
+    EnumDisplayMonitors(0, 0, [](HMONITOR m, HDC, LPRECT r, LPARAM p) -> BOOL {
+        PopupMons *ms = (PopupMons *)p;
+        if (ms->n < COUNT(ms->m)) {
+            ms->m[ms->n] = m;
+            ms->r[ms->n++] = *r;
+        }
+        return TRUE;
+    }, (LPARAM)mons);
+}
+
+// The monitor an output index is on (monitor_mode); 0 when there's no such output now.
+static HMONITOR popup_output_monitor(i32 out)
+{
     i32 w, h, hz;
     u64 hmon = 0;
-    HMONITOR m = monitor_mode(out, &w, &h, &hz, &hmon) && hmon ? (HMONITOR)hmon : MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    return monitor_mode(out, &w, &h, &hz, &hmon) ? (HMONITOR)hmon : 0;
+}
+
+// The monitor and corner the toasts use: Config.popup_monitor (an output index or POPUP_RECORDED) in
+// Config.popup_corner. With a game in front (`in_game`), Config.popup_monitor_game and popup_corner_game instead,
+// unless it is POPUP_AS_NORMAL; POPUP_NOT_GAME is the monitor nearest the game's (popup_not_game), the game's own
+// when it's the only one. `front` is the monitor the window in front is on, the game's while one is; an output that
+// isn't there (output_monitor gives 0) falls back to it.
+static HMONITOR popup_monitor_for(const Config &c, bool in_game, HMONITOR front, const PopupMons &mons,
+                                  HMONITOR (*output_monitor)(i32), PopupCorner *corner)
+{
+    *corner = c.popup_corner;
+    i32 out = c.popup_monitor;
+    if (in_game && c.popup_monitor_game != POPUP_AS_NORMAL) {
+        out = c.popup_monitor_game;
+        *corner = c.popup_corner_game;
+        if (out == POPUP_NOT_GAME) {
+            for (i32 i = 0; i < mons.n; i++)
+                if (mons.m[i] == front) return mons.m[popup_not_game(mons.r, mons.n, i)];
+            return front;
+        }
+    }
+    HMONITOR m = output_monitor(out < 0 ? c.output_idx : out);
+    return m ? m : front;
+}
+
+// Where the toasts go now (popup_monitor_for, the game being the window in front). A test copy's go on the monitor
+// furthest right. `mon` (may be 0) is the monitor. False when there's none.
+static bool toast_monitor(RECT *work, PopupCorner *corner, HMONITOR *mon)
+{
+    HMONITOR m = 0;
+    if (is_test_copy()) {
+        *corner = g_app.config.popup_corner;
+        if (!rightmost_monitor(work, &m)) return false;
+        if (mon) *mon = m;
+        return true;
+    }
+    PopupMons mons;
+    popup_mons(&mons);
+    m = popup_monitor_for(g_app.config, sessions_game_in_front(),
+                          MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY), mons,
+                          popup_output_monitor, corner);
     MONITORINFO mi = {sizeof mi};
     if (!GetMonitorInfoW(m, &mi)) return false;
     *work = mi.rcWork;
+    if (mon) *mon = m;
     return true;
 }
 
-// In the monitor's corner, sized for its scale, and above the other toasts that are up there
-static void toast_place(Toast &t, const RECT &work)
+// Where a w x h toast goes: in `corner` of `work`, `m` from its edges, past the `n` toasts already up in its column
+// (their window rects). Bottom corners stack upward, top ones downward.
+static POINT toast_spot(const RECT &work, PopupCorner corner, i32 w, i32 h, i32 m, const RECT *others, i32 n)
+{
+    bool left = corner == CORNER_BL || corner == CORNER_TL, top = corner == CORNER_TL || corner == CORNER_TR;
+    i32 x = left ? work.left + m : work.right - w - m;
+    i32 y = top ? work.top + m : work.bottom - m - h;
+    for (bool moved = true; moved;) { // again after a move, as it may then be in another's way
+        moved = false;
+        for (i32 i = 0; i < n; i++) {
+            const RECT &o = others[i];
+            if (o.left >= x + w || o.right <= x || o.bottom <= work.top || o.top >= work.bottom) continue;
+            if (o.top - m < y + h && o.bottom + m > y) {
+                y = top ? o.bottom + m : o.top - m - h;
+                moved = true;
+            }
+        }
+    }
+    return {x, y};
+}
+
+// In the monitor's corner, sized for its scale, and past the other toasts that are up there (toast_spot)
+static void toast_place(Toast &t, const RECT &work, PopupCorner corner)
 {
     SetWindowPos(t.hwnd, HWND_TOPMOST, work.right - 2, work.bottom - 2, 1, 1, SWP_NOACTIVATE);
     toast_fonts(t, GetDpiForWindow(t.hwnd) / 96.f);
@@ -840,15 +934,13 @@ static void toast_place(Toast &t, const RECT &work)
         ReleaseDC(t.hwnd, dc);
         w = toast_px(t, TOAST_PILL_PAD + TOAST_PILL_TILE + TOAST_PILL_GAP + TOAST_PILL_RIGHT) + ts.cx;
     }
-    i32 bottom = work.bottom - m;
-    const Toast *others[] = {&g_toast_saved, &g_toast_marker, &g_toast_session};
-    for (const Toast *other : others) {
-        RECT o;
-        if (other != &t && other->open && GetWindowRect(other->hwnd, &o) && o.left < work.right && o.right > work.left &&
-            o.bottom > work.top && o.top - m < bottom)
-            bottom = o.top - m;
-    }
-    SetWindowPos(t.hwnd, HWND_TOPMOST, work.right - w - m, bottom - h, w, h, SWP_NOACTIVATE);
+    const Toast *all[] = {&g_toast_saved, &g_toast_marker, &g_toast_session};
+    RECT others[COUNT(all)];
+    i32 n = 0;
+    for (const Toast *other : all)
+        if (other != &t && other->open && GetWindowRect(other->hwnd, &others[n])) n++;
+    POINT at = toast_spot(work, corner, w, h, m, others, n);
+    SetWindowPos(t.hwnd, HWND_TOPMOST, at.x, at.y, w, h, SWP_NOACTIVATE);
     if (t.edit) {
         RECT f = toast_rect(t, TR_FIELD);
         i32 in = toast_px(t, 12), eh = toast_px(t, 20);
@@ -863,7 +955,8 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
 {
     Toast &t = g_toast_saved;
     RECT work;
-    if (!toast_monitor(TOAST_SAVED, &work) || !toast_window(t)) return;
+    PopupCorner corner;
+    if (!toast_monitor(&work, &corner, 0) || !toast_window(t)) return;
     str_set(t.path, path);
     t.brief = brief;
     t.failed = false;
@@ -872,10 +965,16 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     utf8_to_wide(kind == SAVE_SESSION ? "Session saved" : "Clip saved", t.title, COUNT(t.title));
     const char *name = strrchr(path, '\\');
     utf8_to_wide(name ? name + 1 : path, t.line, COUNT(t.line));
-    toast_place(t, work);
+    toast_place(t, work, corner);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
     toast_countdown(t, kind == SAVE_SESSION ? TOAST_LIFE_SESSION : brief ? TOAST_LIFE_BRIEF : TOAST_LIFE_CLIP);
+}
+
+// Small is for a popup over the game: on another monitor (`popup_mon`, the game's `game_mon`) it is the whole one.
+static ToastClip toast_clip_on(ToastClip style, u64 popup_mon, u64 game_mon)
+{
+    return style == TOAST_CLIP_SMALL && popup_mon != game_mon ? TOAST_CLIP_FULL : style;
 }
 
 // How Clip saved shows now: over a game, the game being played's choice (toast_clip_for); else the whole popup.
@@ -893,6 +992,11 @@ static void toast_saved(SaveKind kind, const char *path)
     if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
     ToastClip style = kind == SAVE_SESSION ? TOAST_CLIP_FULL : toast_clip_now();
     if (style == TOAST_CLIP_OFF) return;
+    RECT work;
+    PopupCorner corner;
+    HMONITOR mon = 0;
+    if (style == TOAST_CLIP_SMALL && toast_monitor(&work, &corner, &mon))
+        style = toast_clip_on(style, (u64)mon, (u64)MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONULL));
     toast_saved_show(kind, path, style == TOAST_CLIP_SMALL);
 }
 
@@ -904,7 +1008,8 @@ static void toast_save_failed(SaveKind kind, const char *why)
     if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
     Toast &t = g_toast_saved;
     RECT work;
-    if (!toast_monitor(TOAST_SAVED, &work) || !toast_window(t)) return;
+    PopupCorner corner;
+    if (!toast_monitor(&work, &corner, 0) || !toast_window(t)) return;
     t.path[0] = 0;
     t.brief = true;
     t.failed = true;
@@ -915,7 +1020,7 @@ static void toast_save_failed(SaveKind kind, const char *why)
     str_set(line, why && why[0] ? why : "Something went wrong");
     line[strcspn(line, "\r\n")] = 0;
     utf8_to_wide(line, t.line, COUNT(t.line));
-    toast_place(t, work);
+    toast_place(t, work, corner);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
     toast_countdown(t, TOAST_LIFE_FAILED);
@@ -971,7 +1076,8 @@ static bool toast_session(const Session &s, i32 more)
 {
     Toast &t = g_toast_session;
     RECT work;
-    if (!toast_monitor(TOAST_SESSION, &work) || !toast_window(t)) return false;
+    PopupCorner corner;
+    if (!toast_monitor(&work, &corner, 0) || !toast_window(t)) return false;
     t.session = s.id;
     t.more = more;
     if (t.tile_px) HeapFree(GetProcessHeap(), 0, t.tile_px);
@@ -982,7 +1088,7 @@ static bool toast_session(const Session &s, i32 more)
     else snprintf(line, sizeof line, "%s - %s", s.name, len);
     utf8_to_wide("Session ended", t.title, COUNT(t.title));
     utf8_to_wide(line, t.line, COUNT(t.line));
-    if (!t.open) toast_place(t, work);
+    if (!t.open) toast_place(t, work, corner);
     toast_redraw(t);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
@@ -995,7 +1101,8 @@ static void toast_marker(i64 t_us)
 {
     Toast &t = g_toast_marker;
     RECT work;
-    if (!toast_monitor(TOAST_MARKER, &work) || !toast_window(t)) return;
+    PopupCorner corner;
+    if (!toast_monitor(&work, &corner, 0) || !toast_window(t)) return;
     if (t.open) toast_marker_close(true); // one being described already: it keeps what it has
     HWND front = GetForegroundWindow();
     t.before = front == t.hwnd ? 0 : front;
@@ -1006,7 +1113,7 @@ static void toast_marker(i64 t_us)
     utf8_to_wide("Marker", t.title, COUNT(t.title));
     utf8_to_wide(when, t.line, COUNT(t.line));
     SetWindowTextW(t.edit, L"");
-    toast_place(t, work);
+    toast_place(t, work, corner);
     t.open = true;
     ShowWindow(t.hwnd, SW_SHOW);
     SetForegroundWindow(t.hwnd);

@@ -21,6 +21,17 @@ enum SessionMode : u8 {
 
 // How "Clip saved" shows over a game: the whole popup, the small one (no buttons, gone sooner) or none (the clip is
 // saved all the same). DEFAULT is a game's "same as all games" (Config.toast_clip); toast_clip_for picks.
+// The corner of its monitor the toasts go in; the next one up stacks away from that edge.
+enum PopupCorner : u8 {
+    CORNER_BR, // the default
+    CORNER_BL,
+    CORNER_TR,
+    CORNER_TL,
+};
+
+// Config.popup_monitor and popup_monitor_game, besides an output index
+static const i32 POPUP_RECORDED = -2, POPUP_AS_NORMAL = -3, POPUP_NOT_GAME = -4;
+
 enum ToastClip : u8 {
     TOAST_CLIP_DEFAULT,
     TOAST_CLIP_FULL,
@@ -101,8 +112,11 @@ struct Config {
 
     // Video
     i32   output_idx; // DXGI output index on the capture GPU
-    i32   popup_monitor; // where the toasts go: an output index, -2 = the one recorded, -1 = no Clip saved
-    i32   popup_monitor_game; // and while a game is in front: an output index, -2 = the one recorded, -3 = as above
+    i32   popup_monitor; // where the toasts go: an output index or POPUP_RECORDED
+    PopupCorner popup_corner;
+    i32   popup_monitor_game; // and while a game is in front: an output index, POPUP_RECORDED, POPUP_AS_NORMAL (the
+                              // two above) or POPUP_NOT_GAME (the monitor nearest the game's)
+    PopupCorner popup_corner_game; // unless popup_monitor_game is POPUP_AS_NORMAL
     ToastClip toast_clip; // Clip saved over a game, unless the game has its own (FULL, SMALL or OFF)
     i32   fps;        // never above the monitor's refresh rate
     i32   height;     // output height (1080...); 0 = the monitor's own. Never above the monitor's

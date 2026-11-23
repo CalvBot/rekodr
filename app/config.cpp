@@ -55,8 +55,8 @@ static void config_defaults(Config *c, const Paths &paths)
     }
     c->play_dir = paths.local_dir;
     c->buffer_hours = 24;
-    c->popup_monitor = -2;
-    c->popup_monitor_game = -3;
+    c->popup_monitor = POPUP_RECORDED;
+    c->popup_monitor_game = POPUP_AS_NORMAL;
     c->toast_clip = TOAST_CLIP_FULL;
     c->buffer_gb = 100;
     c->min_free_gb = 50;
@@ -131,6 +131,16 @@ static const char *session_mode_name(SessionMode m)
 static SessionMode session_mode_parse(const char *s)
 {
     return !strcmp(s, "always") ? SESSION_ALWAYS : !strcmp(s, "never") ? SESSION_NEVER : SESSION_ASK;
+}
+
+static const char *corner_name(PopupCorner c)
+{
+    return c == CORNER_BL ? "bl" : c == CORNER_TR ? "tr" : c == CORNER_TL ? "tl" : "br";
+}
+
+static PopupCorner corner_parse(const char *s)
+{
+    return !strcmp(s, "bl") ? CORNER_BL : !strcmp(s, "tr") ? CORNER_TR : !strcmp(s, "tl") ? CORNER_TL : CORNER_BR;
 }
 
 // "" is a game's "same as all games".
@@ -353,7 +363,9 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "ffmpeg")) path(&c->ffmpeg);
     else if (!strcmp(key, "output_idx")) c->output_idx = atoi(value);
     else if (!strcmp(key, "popup_monitor")) c->popup_monitor = atoi(value);
+    else if (!strcmp(key, "popup_corner")) c->popup_corner = corner_parse(value);
     else if (!strcmp(key, "popup_monitor_game")) c->popup_monitor_game = atoi(value);
+    else if (!strcmp(key, "popup_corner_game")) c->popup_corner_game = corner_parse(value);
     else if (!strcmp(key, "toast_clip")) {
         c->toast_clip = toast_clip_parse(value);
         if (c->toast_clip == TOAST_CLIP_DEFAULT) c->toast_clip = TOAST_CLIP_FULL;
@@ -600,7 +612,9 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_link_page", c.share_link_page);
     boolean("render_edits", c.render_edits);
     boolean("clock_24h", c.clock_24h);
-    fprintf(f, "popup_monitor = %d\npopup_monitor_game = %d\n", c.popup_monitor, c.popup_monitor_game);
+    fprintf(f, "popup_monitor = %d\npopup_corner = %s\n", c.popup_monitor, corner_name(c.popup_corner));
+    fprintf(f, "popup_monitor_game = %d\npopup_corner_game = %s\n", c.popup_monitor_game,
+            corner_name(c.popup_corner_game));
     fprintf(f, "toast_clip = %s\n", toast_clip_name(c.toast_clip));
     boolean("voice_mono", c.voice_mono);
     boolean("dev_log", c.dev_log);
