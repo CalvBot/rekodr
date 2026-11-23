@@ -2496,6 +2496,47 @@ static void fmt_count(i64 n, char *out, i32 cap)
     out[o] = 0;
 }
 
+// A Cloudflare sign-in without API Tokens Write (R2_SETUP_NO_TOKEN_SCOPE), as one row `h` high: what to do, a Sign
+// in again button, and Cloudflare's switch as a picture (assets/cf-sensitive-scopes.png, ringed in red).
+enum { OPT_CF_SCOPES_RESOURCE = 11 };
+static ID3D11ShaderResourceView *resource_texture(i32 id, i32 *w, i32 *h); // setup.cpp
+
+static void opt_scope_hint(f32 h)
+{
+    static ID3D11ShaderResourceView *pic;
+    static i32 pw, ph;
+    static bool tried;
+    if (!tried) {
+        pic = resource_texture(OPT_CF_SCOPES_RESOURCE, &pw, &ph);
+        tried = true;
+    }
+    opt_row_begin(0, 0, 0, h);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 pad = dp(12), x0 = g_row.x0, x1 = g_row.x1, y0 = g_row.y + pad, inner = h - 2 * pad;
+    f32 img_h = inner, img_w = pic ? floorf(img_h * pw / ph) : 0;
+    if (img_w > (x1 - x0) * 0.5f) {
+        img_w = floorf((x1 - x0) * 0.5f);
+        img_h = floorf(img_w * ph / pw);
+    }
+    if (pic) {
+        ImVec2 a(x1 - img_w, floorf(g_row.y + (h - img_h) / 2)), b(x1, a.y + img_h);
+        dl->AddImageRounded((ImTextureID)pic, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, dp(6));
+        dl->AddRect(a, b, col32(COL_LINE), dp(6), 0, dp(1));
+    }
+    f32 tw = x1 - x0 - img_w - (pic ? dp(20) : 0);
+    opt_text_at(dl, g_font_bold, ImVec2(x0, y0), COL_WARN, "Switch on API Tokens Write", x0 + tw);
+    const char *line = "Cloudflare keeps it under Sensitive scopes, switched off. Sign in again and switch it on: " APP_NAME
+                       " needs it to make the bucket's key.";
+    dl->AddText(g_font, g_font->FontSize, ImVec2(x0, y0 + g_font_bold->FontSize + dp(6)), col32(COL_DIM), line, 0, tw);
+    f32 bw = text_w(g_font, "Sign in again") + dp(32);
+    ImGui::SetCursorScreenPos(ImVec2(x0, g_row.y + h - pad - ImGui::GetFrameHeight()));
+    if (kit_button("Sign in again##r2scope", KIT_PRIMARY, ImVec2(bw, 0))) {
+        dev_click("options", "r2 sign in again for API Tokens Write");
+        r2_sign_in();
+    }
+    opt_row_end();
+}
+
 static void options_sharing()
 {
     Config &c = g_app.config;
@@ -2647,7 +2688,8 @@ static void options_sharing()
         else if (st.state == R2_SETUP_IDLE) str_set(text, r2_ready() ? "Set up" : "Not set up");
         else if (st.who[0] && st.state == R2_SETUP_OK) snprintf(text, sizeof text, "%s  -  %s", st.who, st.text);
         else str_set(text, st.text);
-        u32 col = st.state == R2_SETUP_OK ? COL_OK : st.state == R2_SETUP_FAILED ? COL_WARN : COL_DIM;
+        u32 col = st.state == R2_SETUP_OK ? COL_OK
+                  : st.state == R2_SETUP_FAILED || st.state == R2_SETUP_NO_TOKEN_SCOPE ? COL_WARN : COL_DIM;
         opt_status(text, col, g_row.x1 - bw - dp(16), g_row.x0 + dp(80));
         if (kit_button("Set up again##r2again", KIT_SECONDARY, ImVec2(bw, 0),
                        (signed_in || has) && st.state != R2_SETUP_BUSY && !waiting)) {
@@ -2665,71 +2707,79 @@ static void options_sharing()
     }
     opt_row_end();
 
-    // The budget: steps of what the bucket may hold, the first being Cloudflare's free 10 GB; the label says what
-    // clipback keeps for it (r2_budget_label)
-    {
-        i32 n = (i32)COUNT(R2_STEPS_GB), cur = 0;
-        f64 best = 1e30;
-        for (i32 i = 0; i < n; i++) {
-            f64 d = fabs(r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB) - c.r2_budget);
-            if (d < best) {
-                best = d;
+    // The budget, reads and space rows; while a sign-in lacks API Tokens Write, the way to switch it on in their
+    // place, at their height, so nothing under them moves
+    static f32 slot_h;
+    f32 slot_y = ImGui::GetCursorScreenPos().y;
+    if (st.state == R2_SETUP_NO_TOKEN_SCOPE && slot_h > 0) opt_scope_hint(slot_h);
+    else {
+        // The budget: steps of what the bucket may hold, the first being Cloudflare's free 10 GB; the label says what
+        // clipback keeps for it (r2_budget_label)
+        {
+            i32 n = (i32)COUNT(R2_STEPS_GB), cur = 0;
+            f64 best = 1e30;
+            for (i32 i = 0; i < n; i++) {
+                f64 d = fabs(r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB) - c.r2_budget);
+                if (d < best) {
+                    best = d;
+                    cur = i;
+                }
+            }
+            f32 v = (f32)cur;
+            bool done;
+            if (opt_row_slider("Monthly budget", "Past it the oldest links that aren't pinned are removed", "##r2budget", &v, 0,
+                               (f32)(n - 1), &done)) {
+                i32 i = (i32)(v + 0.5f);
+                c.r2_budget = i == 0 ? 0 : (f32)r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB);
                 cur = i;
             }
+            if (done) {
+                log_line("options: R2 budget $%.2f a month", c.r2_budget);
+                options_apply(0);
+            }
+            char t[64];
+            r2_budget_label(R2_STEPS_GB[cur], t, sizeof t);
+            opt_row_slider_end(t);
         }
-        f32 v = (f32)cur;
-        bool done;
-        if (opt_row_slider("Monthly budget", "Past it the oldest links that aren't pinned are removed", "##r2budget", &v, 0,
-                           (f32)(n - 1), &done)) {
-            i32 i = (i32)(v + 0.5f);
-            c.r2_budget = i == 0 ? 0 : (f32)r2_cost_for((i64)R2_STEPS_GB[i] * R2_GB);
-            cur = i;
-        }
-        if (done) {
-            log_line("options: R2 budget $%.2f a month", c.r2_budget);
-            options_apply(0);
-        }
-        char t[64];
-        r2_budget_label(R2_STEPS_GB[cur], t, sizeof t);
-        opt_row_slider_end(t);
-    }
 
-    // The account's reads this month against r2_read_cap (r2.cpp pauses the links near it)
-    {
-        R2Usage u = r2_usage();
-        char got[24], cap[24], t[64];
-        u32 col = COL_TEXT;
-        const char *sub = "Links pause before the account passes R2's free reads";
-        if (!r2_ready()) {
-            str_set(t, "Not set up");
-            col = COL_DIM;
-        } else if (u.account_reads < 0) {
-            str_set(t, "Not read yet");
-            col = COL_DIM;
-        } else {
-            r2_fmt_reads(u.account_reads, got, sizeof got);
-            r2_fmt_reads(c.r2_read_cap, cap, sizeof cap);
-            if (c.r2_read_cap > 0) snprintf(t, sizeof t, "%s of %s", got, cap);
-            else str_set(t, got);
-            if (c.r2_read_cap <= 0) sub = "No limit is set";
-            else if (u.capped) sub = "Links are paused until the 1st";
+        // The account's reads this month against r2_read_cap (r2.cpp pauses the links near it)
+        {
+            R2Usage u = r2_usage();
+            char got[24], cap[24], t[64];
+            u32 col = COL_TEXT;
+            const char *sub = "Links pause before the account passes R2's free reads";
+            if (!r2_ready()) {
+                str_set(t, "Not set up");
+                col = COL_DIM;
+            } else if (u.account_reads < 0) {
+                str_set(t, "Not read yet");
+                col = COL_DIM;
+            } else {
+                r2_fmt_reads(u.account_reads, got, sizeof got);
+                r2_fmt_reads(c.r2_read_cap, cap, sizeof cap);
+                if (c.r2_read_cap > 0) snprintf(t, sizeof t, "%s of %s", got, cap);
+                else str_set(t, got);
+                if (c.r2_read_cap <= 0) sub = "No limit is set";
+                else if (u.capped) sub = "Links are paused until the 1st";
+            }
+            opt_row_value("Reads this month", sub, t, col);
         }
-        opt_row_value("Reads this month", sub, t, col);
-    }
-    {
-        R2Usage u = r2_usage();
-        char used[32], lim[32], t[96], sub[160];
-        lib_r2_size(u.bucket_bytes >= 0 ? u.bucket_bytes : u.used_bytes, used, sizeof used);
-        lib_r2_size(u.limit_bytes, lim, sizeof lim);
-        snprintf(t, sizeof t, "Using %s of %s", used, lim);
-        if (u.class_a >= 0 && u.class_b >= 0) {
-            char a[32], b[32];
-            fmt_count(u.class_a, a, sizeof a);
-            fmt_count(u.class_b, b, sizeof b);
-            snprintf(sub, sizeof sub, "%s uploads, %s plays this month, about $%.2f", a, b, u.month_cost);
-        } else str_set(sub, "What the links take up in the bucket");
-        if (r2_ready()) opt_row_value("Space", sub, t, COL_TEXT);
-        else opt_row_value("Space", "What the links take up in the bucket", "Not set up", COL_DIM);
+        {
+            R2Usage u = r2_usage();
+            char used[32], lim[32], t[96], sub[160];
+            lib_r2_size(u.bucket_bytes >= 0 ? u.bucket_bytes : u.used_bytes, used, sizeof used);
+            lib_r2_size(u.limit_bytes, lim, sizeof lim);
+            snprintf(t, sizeof t, "Using %s of %s", used, lim);
+            if (u.class_a >= 0 && u.class_b >= 0) {
+                char a[32], b[32];
+                fmt_count(u.class_a, a, sizeof a);
+                fmt_count(u.class_b, b, sizeof b);
+                snprintf(sub, sizeof sub, "%s uploads, %s plays this month, about $%.2f", a, b, u.month_cost);
+            } else str_set(sub, "What the links take up in the bucket");
+            if (r2_ready()) opt_row_value("Space", sub, t, COL_TEXT);
+            else opt_row_value("Space", "What the links take up in the bucket", "Not set up", COL_DIM);
+        }
+        slot_h = ImGui::GetCursorScreenPos().y - slot_y;
     }
 
     // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made

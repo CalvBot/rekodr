@@ -6,6 +6,9 @@
 // The first-run setup's begging picture: 15 frames, 5 across and 3 down (setup.cpp).
 10 RCDATA "../assets/setup-beg.jpg"
 
+// Cloudflare's sign-in page with its API Tokens Write switch ringed, for Options > Sharing (options.cpp).
+11 RCDATA "../assets/cf-sensitive-scopes.png"
+
 #include "version.h"
 
 1 VERSIONINFO
