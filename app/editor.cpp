@@ -637,6 +637,7 @@ static void editor_open(const LibItem &item)
     ed.adv_sel_count = 0;
     ed.adv_drag = 0;
     ed.adv_ask_simple = false;
+    ed.adv_key = -1;
     adv_resync();
     ed.result[0] = 0;
     ed.result_path[0] = ed.result_url[0] = 0;
@@ -1009,6 +1010,7 @@ static void ed_undo(bool redo)
     if (adv_on()) {
         f64 len = adv_len(ed.edit);
         if (ed.adv_u > len) ed.adv_u = len;
+        ed.adv_key = -1;
         adv_resync();
     }
 }

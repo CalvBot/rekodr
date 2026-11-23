@@ -71,7 +71,12 @@ Keep a whole session from start to finish.
   selected items at the playhead (all items there when none is selected), Delete removes the selected ones, and the
   right-click menu and the side panel's Items buttons split, link, unlink and delete. The side panel's sliders key
   zoom and colour on the picture item at the playhead and volume on each track's item there; its Transitions set
-  the fades of the selected items. Playback follows the sequence: over a gap the picture is black and the clock
+  the fades of the selected items. Under the picture row, a Zoom lane and a Colour lane (its gutter picks which
+  colour value) show each picture item's keys and the line they make; each sound item shows its volume line and
+  keys over its waveform. A key drags in time and value (Shift: time only, catching the playhead; Ctrl: value only),
+  a click on one moves the playhead there, a double-click off one adds one (Ctrl-click too on the two lanes), and
+  its right-click menu sets its ease (keys 1 to 5 as well) or deletes it, as Delete does.
+  Playback follows the sequence: over a gap the picture is black and the clock
   moves the playhead, and each track's sound plays from its own item, so a track moved apart is heard where it was
   put. Open In is off for Advanced edits.
 - **Zoom views:** the picture shows the zoom in one of two views, chosen under Zoom; the result is the same.

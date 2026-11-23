@@ -3,7 +3,7 @@
 // picture's engine, over a gap it follows the clock and the picture is black. Each audio track's engine plays the item
 // under the playhead on its own track, so a track moved apart from the picture is heard where it was put.
 
-enum AdvDrag : u8 { ADV_DRAG_NONE, ADV_DRAG_SEEK, ADV_DRAG_MOVE, ADV_DRAG_TRIM_IN, ADV_DRAG_TRIM_OUT };
+enum AdvDrag : u8 { ADV_DRAG_NONE, ADV_DRAG_SEEK, ADV_DRAG_MOVE, ADV_DRAG_TRIM_IN, ADV_DRAG_TRIM_OUT, ADV_DRAG_KEY };
 
 // Every engine is put in place again on the next update.
 static void adv_resync()
@@ -180,6 +180,7 @@ static void adv_changed()
     Editor &ed = g_app.editor;
     adv_settle(&ed.edit, ed_duration());
     adv_sel_tidy();
+    ed.adv_key = -1;
     ed.dirty = true;
     ed.heard_set = false;
     adv_resync();
@@ -297,6 +298,74 @@ static i32 adv_key_at(EditRecord &e, i32 i, i32 what, f64 t)
     return -1;
 }
 
+// Item key k taken out (the slots past the end kept clear).
+static void ikey_erase(EditRecord *e, i32 k)
+{
+    if (k < 0 || k >= e->ikey_count) return;
+    memmove(e->ikeys + k, e->ikeys + k + 1, (e->ikey_count - k - 1) * sizeof *e->ikeys);
+    e->ikeys[--e->ikey_count] = {};
+}
+
+// Where a key just put back with ikey_add went.
+static i32 ikey_find(const EditRecord &e, const ItemKey &q)
+{
+    for (i32 k = 0; k < e.ikey_count; k++) {
+        const ItemKey &c = e.ikeys[k];
+        if (c.item == q.item && c.what == q.what && c.t == q.t && c.v == q.v && c.ease == q.ease) return k;
+    }
+    return -1;
+}
+
+static bool adv_key_ok() { return g_app.editor.adv_key >= 0 && g_app.editor.adv_key < g_app.editor.edit.ikey_count; }
+
+static void adv_delete_key()
+{
+    Editor &ed = g_app.editor;
+    if (!adv_key_ok()) return;
+    ikey_erase(&ed.edit, ed.adv_key);
+    ed.adv_key = -1;
+    ed.dirty = true;
+    ed.heard_set = false;
+}
+
+static void adv_set_ease(i32 ease)
+{
+    Editor &ed = g_app.editor;
+    if (!adv_key_ok()) return;
+    ed.edit.ikeys[ed.adv_key].ease = (u8)ease;
+    ed.dirty = true;
+    ed.heard_set = false;
+}
+
+// The grabbed key moved by the drag so far (dt seconds, dfrac of its lane's height) from where it was when the drag
+// began: onto a frame inside its item, its value caught by 100% or a whole zoom. With Shift only its time moves and
+// the playhead catches it; with Ctrl only its value.
+static void adv_drag_key(f64 dt, f64 dfrac, f32 px_per_s, f32 vh, bool time_only, bool value_only)
+{
+    Editor &ed = g_app.editor;
+    const EditRecord &f = ed.drag_from;
+    i32 k = ed.adv_drag_key;
+    if (k < 0 || k >= f.ikey_count) return;
+    ItemKey q = f.ikeys[k];
+    i32 i = item_find(f, q.item);
+    if (i < 0) return;
+    const EditItem &it = f.items[i];
+    i32 l = q.what == IKEY_ZOOM ? 0 : 1;
+    if (!value_only) {
+        f64 fr = ed_frame(), nt = floor((q.t + dt) / fr + 0.5) * fr, at = adv_src(it, ed.adv_u);
+        bool under = ed.adv_u >= it.start && ed.adv_u <= item_end(it);
+        if (time_only && under && fabs(nt - at) * px_per_s < kit_px(8)) nt = at;
+        q.t = nt < it.from ? it.from : nt > it.to ? it.to : nt;
+    }
+    if (!time_only) q.v = ln_snap(l, q.v + dfrac * (ln_hi(l) - ln_lo(l)), vh);
+    ed.edit = f;
+    ikey_erase(&ed.edit, k);
+    ikey_add(&ed.edit, q);
+    ed.adv_key = ikey_find(ed.edit, q);
+    ed.dirty = true;
+    ed.heard_set = false;
+}
+
 // The picture item under the playhead, -1 over a gap.
 static i32 adv_picture_item() { return item_at(g_app.editor.edit, 0, g_app.editor.adv_u); }
 
@@ -323,6 +392,7 @@ static void adv_set_mode(bool to_adv, bool sure)
     ed.heard_set = false;
     ed.play_piece = -1;
     ed.adv_sel_count = 0;
+    ed.adv_key = -1;
     ed_sel_clear();
     ed.lane_drag = ED_DRAG_NONE;
     ed.adv_drag = ADV_DRAG_NONE;
@@ -401,11 +471,12 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
     f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(6), video_y = ruler_y + ruler_h;
-    f32 area0 = video_y + video_h + gap, content = nt * (lane_h + gap), area1 = o.y + h;
+    f32 zoom_y = video_y + video_h + gap, color_y = zoom_y + lane_h + gap;
+    f32 area0 = color_y + lane_h + gap, content = nt * (lane_h + gap), area1 = o.y + h;
     if (area1 > area0 + content) area1 = area0 + content;
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
-    f32 rows_y1 = nt ? area1 : video_y + video_h;
+    f32 rows_y1 = nt ? area1 : color_y + lane_h;
 
     // The wheel pans; with Alt it zooms around the mouse, with Alt and Shift around the playhead; Shift alone sets the
     // rows' height; over the track names it scrolls them. The middle button pans.
@@ -512,7 +583,49 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         return best;
     };
 
-    // The press: on an item it takes hold of an edge (trim) or the body (move); elsewhere it moves the playhead.
+    // Keys: the picture items' zoom and picked colour on the two lanes under the picture, each sound item's volume
+    // over its waveform. Where key q is drawn (its lane's top and bottom in y0 and y1); false when it isn't shown.
+    ed.color_pick = ed.color_pick < 0 || ed.color_pick >= EDIT_COLORS ? 0 : ed.color_pick;
+    f32 vh = lane_h - 2 * ln_pad();
+    auto key_place = [&](const ItemKey &q, ImVec2 *c, f32 *y0, f32 *y1) {
+        i32 i = item_find(e, q.item);
+        if (i < 0) return false;
+        const EditItem &it = e.items[i];
+        if (q.what == IKEY_ZOOM) {
+            *y0 = zoom_y, *y1 = zoom_y + lane_h;
+        } else if (q.what == IKEY_COLOR + ed.color_pick) {
+            *y0 = color_y, *y1 = color_y + lane_h;
+        } else if (q.what == IKEY_VOLUME) {
+            i32 r = 0;
+            for (i32 k = 0; k < nt; k++)
+                if (1 + tracks[k] == it.track) r = k + 1;
+            if (!r) return false;
+            row_y(r, y0, y1);
+            if (*y1 <= area0 || *y0 >= area1) return false;
+        } else {
+            return false;
+        }
+        *c = ImVec2(xu(it.start + (q.t - it.from)), ln_y(q.what == IKEY_ZOOM ? 0 : 1, q.v, *y0, *y1));
+        return true;
+    };
+    auto key_hit = [&](f32 x, f32 y) {
+        i32 best = -1;
+        f32 bd = kit_px(8) * kit_px(8);
+        for (i32 k = 0; k < e.ikey_count; k++) {
+            ImVec2 c;
+            f32 y0, y1;
+            if (!key_place(e.ikeys[k], &c, &y0, &y1)) continue;
+            f32 d = (x - c.x) * (x - c.x) + (y - c.y) * (y - c.y);
+            if (d < bd) bd = d, best = k;
+        }
+        return best;
+    };
+    auto lane_at = [&](f32 y) { // 0 the zoom lane, 1 the colour lane, -1 neither
+        return y >= zoom_y && y < zoom_y + lane_h ? 0 : y >= color_y && y < color_y + lane_h ? 1 : -1;
+    };
+
+    // The press: on a key it drags the key; a double-click off one (or Ctrl on a key lane) adds one. On an item it
+    // takes hold of an edge (trim) or the body (move); elsewhere it moves the playhead.
     f32 grab = wa_grab();
     ImGui::SetCursorScreenPos(ImVec2(bx0, ruler_y));
     ImGui::InvisibleButton("##adv_lanes", ImVec2(bw, ImMax(rows_y1 - ruler_y, 1.f)));
@@ -558,10 +671,33 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
     };
     if (ImGui::IsItemActivated()) {
         ed.drag_mx = mx;
+        ed.drag_my = my;
         ed.drag_moved = false;
-        ed.drag_from = e;
         ed.adv_drag_u = u_of(mx);
-        if (hover_item >= 0) {
+        bool dbl = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+        i32 hit = key_hit(mx, my), lane = lane_at(my), add_i = -1, add_what = 0, add_l = 1;
+        f32 ay0 = 0, ay1 = 0;
+        if (hit < 0 && lane >= 0 && (dbl || io.KeyCtrl)) {
+            add_i = item_under(0, mx);
+            add_what = lane ? IKEY_COLOR + ed.color_pick : IKEY_ZOOM, add_l = lane ? 1 : 0;
+            ay0 = lane ? color_y : zoom_y, ay1 = ay0 + lane_h;
+        } else if (hit < 0 && dbl && hover_row > 0 && hover_item >= 0) {
+            add_i = hover_item, add_what = IKEY_VOLUME;
+            row_y(hover_row, &ay0, &ay1);
+        }
+        if (add_i >= 0) {
+            f64 s = floor(adv_src(e.items[add_i], u_of(mx)) / ed_frame() + 0.5) * ed_frame();
+            hit = adv_key_at(e, add_i, add_what, s);
+            if (hit >= 0) e.ikeys[hit].v = ln_snap(add_l, ln_v_of(add_l, my, ay0, ay1), vh);
+            ed.dirty = true;
+            ed.heard_set = false;
+        }
+        ed.drag_from = e;
+        if (hit >= 0) {
+            ed.adv_key = ed.adv_drag_key = hit;
+            ed.adv_drag = ADV_DRAG_KEY;
+        } else if (hover_item >= 0) {
+            ed.adv_key = -1;
             const EditItem &it = e.items[hover_item];
             bool add = io.KeyCtrl || io.KeyShift;
             if (add) adv_select(hover_item, !io.KeyAlt, true, true);
@@ -570,6 +706,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
             ed.adv_drag = hover_edge < 0 ? ADV_DRAG_TRIM_IN : hover_edge > 0 ? ADV_DRAG_TRIM_OUT : ADV_DRAG_MOVE;
             if (add && !adv_selected(it.id)) ed.adv_drag = ADV_DRAG_NONE; // a Ctrl click that took it out
         } else {
+            ed.adv_key = -1;
             ed.adv_drag = ADV_DRAG_SEEK;
             p.scrubbing = true;
             adv_seek(ed.adv_drag_u);
@@ -578,7 +715,10 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
     if (ImGui::IsItemActive() && ed.adv_drag) {
         if (fabsf(mx - ed.drag_mx) > kit_px(3)) ed.drag_moved = true;
         f64 du = (mx - ed.drag_mx) / bw * span;
-        if (ed.adv_drag == ADV_DRAG_SEEK) {
+        if (ed.adv_drag == ADV_DRAG_KEY) {
+            if (fabsf(my - ed.drag_my) > kit_px(3)) ed.drag_moved = true;
+            if (ed.drag_moved) adv_drag_key(du, -(f64)(my - ed.drag_my) / vh, (f32)(bw / span), vh, io.KeyShift, io.KeyCtrl);
+        } else if (ed.adv_drag == ADV_DRAG_SEEK) {
             f64 u = u_of(mx);
             if (fabs(u - ed.adv_u) > 1e-6) adv_seek(u);
         } else if (ed.drag_moved) {
@@ -616,7 +756,13 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
             adv_resync();
         }
     } else if (ImGui::IsItemDeactivated() && ed.adv_drag) {
-        if (ed.adv_drag == ADV_DRAG_SEEK) {
+        if (ed.adv_drag == ADV_DRAG_KEY) {
+            if (!ed.drag_moved && adv_key_ok()) { // a click on a key: the playhead goes to it
+                const ItemKey &q = e.ikeys[ed.adv_key];
+                i32 i = item_find(e, q.item);
+                if (i >= 0) adv_seek(e.items[i].start + (q.t - e.items[i].from));
+            }
+        } else if (ed.adv_drag == ADV_DRAG_SEEK) {
             p.scrubbing = false;
             if (!ed.drag_moved && !io.KeyCtrl && !io.KeyShift) ed.adv_sel_count = 0;
             adv_seek(ed.adv_u);
@@ -630,10 +776,17 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
     }
     if (ed.adv_drag == ADV_DRAG_TRIM_IN || ed.adv_drag == ADV_DRAG_TRIM_OUT || (lanes_hot && !ed.adv_drag && hover_edge))
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (ed.adv_drag == ADV_DRAG_KEY || (lanes_hot && !ed.adv_drag && key_hit(mx, my) >= 0))
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
-    // A right click on an item: its menu (it's selected first, with its links, unless it already is)
+    // A right click on a key: its ease, or Delete. On an item: its menu (it's selected first, with its links, unless
+    // it already is).
     static f64 menu_u;
-    if (lanes_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ed.adv_drag) {
+    i32 right_key = lanes_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ed.adv_drag ? key_hit(mx, my) : -1;
+    if (right_key >= 0) {
+        ed.adv_key = right_key;
+        ImGui::OpenPopup("##adv_key");
+    } else if (lanes_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ed.adv_drag) {
         if (hover_item >= 0 && !adv_selected(e.items[hover_item].id)) adv_select(hover_item, !io.KeyAlt, false);
         if (hover_item >= 0) {
             menu_u = u_of(mx);
@@ -641,11 +794,19 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         }
     }
     lib_popup_style_push(6);
+    if (ImGui::BeginPopup("##adv_key")) {
+        if (adv_key_ok()) {
+            static const char *const eases[EASE_COUNT] = {"Linear", "Smooth", "Ease in", "Ease out", "Hold"};
+            for (i32 i = 0; i < EASE_COUNT; i++)
+                if (lib_menu_item(e.ikeys[ed.adv_key].ease == i ? ICON_CHECK : "", eases[i])) adv_set_ease(i);
+            ImGui::Separator();
+            if (lib_menu_item(ICON_DELETE, "Delete", true)) adv_delete_key();
+        }
+        ImGui::EndPopup();
+    }
     if (ImGui::BeginPopup("##adv_item")) {
-        i32 idx[EDIT_MAX_ITEMS];
-        if (lib_menu_item("", "Split at the playhead") ) adv_split(ed.adv_u);
+        if (lib_menu_item("", "Split at the playhead")) adv_split(ed.adv_u);
         if (lib_menu_item("", "Split here")) adv_split(menu_u);
-        (void)idx;
         ImGui::Separator();
         if (ed.adv_sel_count > 1 && !adv_sel_linked() && lib_menu_item(ICON_LINK, "Link")) adv_link_selected(true);
         if (lib_menu_item(ICON_LINK, "Unlink")) adv_link_selected(false);
@@ -681,8 +842,6 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
     }
 
     // The rows: the gutter (the track's name, and Mute and Solo for sound) and the items.
-    ImVec2 pts[4];
-    (void)pts;
     for (i32 r = 0; r < nrows; r++) {
         f32 y0, y1;
         row_y(r, &y0, &y1);
@@ -722,8 +881,8 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         f32 lh = ImGui::GetTextLineHeight();
         text_clipped(dl, ImVec2(nx, floorf((y0 + y1 - lh) / 2)), bx0 - gap - nx - kit_px(6), col32(muted ? COL_FAINT : COL_TEXT), name);
 
-        // The items: the picture's frames or the sound's waveform, shaded over the fades, a light band over a
-        // crossfade, a tick for each key, and an outline when selected
+        // The items: the picture's frames or the sound's waveform with its volume line, shaded over the fades, a
+        // light band over a crossfade, and an outline when selected
         dl->PushClipRect(ImVec2(bx0, y0), ImVec2(bx1, y1), true);
         i32 idx[EDIT_MAX_ITEMS], n = track_items(e, track, idx);
         ItemFades fd[EDIT_MAX_ITEMS];
@@ -764,6 +923,16 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
                     if (hh >= 0.5f) dl->AddRectFilled(ImVec2(x, b.y - hh), ImVec2(x + step, b.y), ed_rgba(kind_rgb, muted ? 40 : 150));
                 }
             }
+            if (r) { // the volume, as the render moves it
+                static ImVec2 vpts[2048];
+                i32 np = 0;
+                for (f32 x = cx0; np < COUNT(vpts); x += kit_px(3)) {
+                    if (x > cx1) x = cx1;
+                    vpts[np++] = ImVec2(x, ln_y(1, item_level_at(e, it.id, IKEY_VOLUME, adv_src(it, u_of(x))), y0, y1));
+                    if (x >= cx1) break;
+                }
+                dl->AddPolyline(vpts, np, col32(muted ? COL_FAINT : COL_TEXT, 0.8f), ImDrawFlags_None, kit_px(1.5f));
+            }
             u32 dark = IM_COL32(0, 0, 0, 190), clear = IM_COL32(0, 0, 0, 0);
             if (fd[k].in > 0) {
                 f32 fx = xu(it.start + fd[k].in);
@@ -778,17 +947,104 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
                 f32 c0 = xu(it.start - fd[k].cross / 2), c1 = xu(it.start + fd[k].cross / 2);
                 dl->AddRectFilled(ImVec2(c0, a.y), ImVec2(c1, b.y), IM_COL32(255, 255, 255, 46));
             }
-            for (i32 q = 0; q < e.ikey_count; q++) {
-                const ItemKey &kq = e.ikeys[q];
-                if (kq.item != it.id) continue;
-                f32 kx = xu(it.start + (kq.t - it.from));
-                diamond(dl, ImVec2(kx, b.y - kit_px(6)), kit_px(4), kq.what == IKEY_ZOOM ? col32(COL_BLUE) : kq.what == IKEY_VOLUME ? col32(COL_TEXT) : col32(COL_WARN));
-            }
             if (sel) dl->AddRect(a, b, col32(COL_ACCENT), kit_px(4), 0, kit_px(2));
             else if (hot) dl->AddRect(a, b, col32(COL_TEXT, 0.35f), kit_px(4), 0, kit_px(1));
         }
         dl->PopClipRect();
         if (r) ImGui::PopClipRect();
+    }
+
+    // The key lanes: the gutter (for the colour, which value it shows; a key at the playhead, added or deleted; the
+    // name and the value there), then the value's line through each picture item.
+    i32 pic_now = item_at(e, 0, play_u);
+    for (i32 ln = 0; ln < 2; ln++) {
+        f32 y0 = ln ? color_y : zoom_y, y1 = y0 + lane_h;
+        i32 what = ln ? IKEY_COLOR + ed.color_pick : IKEY_ZOOM, l = ln ? 1 : 0;
+        dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(bx0 - gap, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersLeft);
+        dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersRight);
+        auto value_at = [&](i32 i, f64 s) {
+            if (what != IKEY_ZOOM) return item_level_at(e, e.items[i].id, what, s);
+            f64 z, zx, zy;
+            item_zoom_at(e, e.items[i].id, s, &z, &zx, &zy);
+            return z;
+        };
+        ImGui::PushID(100 + ln);
+        f32 gx = o.x + kit_px(6), by = floorf((y0 + y1 - fh) / 2);
+        if (ln) {
+            ImGui::SetCursorScreenPos(ImVec2(gx, by));
+            kit_next_tip("Which colour this lane shows");
+            if (kit_icon_button(ICON_SLIDERS, "##pick", KIT_GHOST)) ImGui::OpenPopup("##adv_color_pick");
+            lib_popup_style_push(6);
+            if (ImGui::BeginPopup("##adv_color_pick")) {
+                for (i32 c = 0; c < EDIT_COLORS; c++)
+                    if (lib_menu_item(c == ed.color_pick ? ICON_CHECK : "", COLOR_NAMES[c])) ed.color_pick = c;
+                ImGui::EndPopup();
+            }
+            lib_popup_style_pop();
+        }
+        i32 here = -1;
+        f64 s_now = pic_now >= 0 ? adv_src(e.items[pic_now], play_u) : 0;
+        for (i32 k = 0; pic_now >= 0 && k < e.ikey_count; k++)
+            if (e.ikeys[k].item == e.items[pic_now].id && e.ikeys[k].what == what &&
+                fabs(e.ikeys[k].t - s_now) < ed_frame() / 2 + 0.01)
+                here = k;
+        ImGui::SetCursorScreenPos(ImVec2(gx + fh + kit_px(2), by));
+        kit_next_tip(here >= 0 ? "Delete this key" : "Add a key at the playhead");
+        if (kit_icon_button(here >= 0 ? ICON_DELETE : ICON_ADD, "##key", KIT_GHOST, pic_now >= 0)) {
+            if (here >= 0) {
+                ed.adv_key = here;
+                adv_delete_key();
+            } else {
+                ed.adv_key = adv_key_at(e, pic_now, what, s_now);
+                ed.dirty = true;
+                ed.heard_set = false;
+            }
+        }
+        ImGui::PopID();
+        f32 nx = gx + 2 * fh + kit_px(8), nw = bx0 - gap - nx - kit_px(6), lh = ImGui::GetTextLineHeight();
+        f32 ty = floorf((y0 + y1 - lh - g_font_small->FontSize - kit_px(2)) / 2);
+        text_clipped(dl, ImVec2(nx, ty), nw, col32(COL_TEXT), ln ? COLOR_NAMES[ed.color_pick] : "Zoom");
+        char vt[24];
+        f64 v = pic_now >= 0 ? value_at(pic_now, s_now) : 1;
+        if (ln) snprintf(vt, sizeof vt, "%.0f%%", v * 100);
+        else snprintf(vt, sizeof vt, "%.1fx", v);
+        ImGui::PushFont(g_font_small);
+        text_clipped(dl, ImVec2(nx, ty + lh + kit_px(2)), nw, col32(COL_DIM), vt);
+        ImGui::PopFont();
+
+        dl->PushClipRect(ImVec2(bx0, y0), ImVec2(bx1, y1), true);
+        f32 rest = ln_y(l, 1, y0, y1);
+        dl->AddRectFilled(ImVec2(bx0, rest), ImVec2(bx1, rest + kit_px(1)), col32(COL_LINE));
+        i32 idx[EDIT_MAX_ITEMS], n = track_items(e, 0, idx);
+        static ImVec2 pts[2048];
+        for (i32 k = 0; k < n; k++) {
+            const EditItem &it = e.items[idx[k]];
+            f32 x0 = ImMax(xu(it.start), bx0), x1 = ImMin(xu(item_end(it)), bx1);
+            if (x1 <= x0) continue;
+            dl->AddRectFilled(ImVec2(x0, y0 + kit_px(2)), ImVec2(x1, y1 - kit_px(2)), ed_rgba(0x6aa7ff, 18), kit_px(4));
+            i32 np = 0;
+            for (f32 x = x0; np < COUNT(pts); x += kit_px(3)) {
+                if (x > x1) x = x1;
+                pts[np++] = ImVec2(x, ln_y(l, value_at(idx[k], adv_src(it, u_of(x))), y0, y1));
+                if (x >= x1) break;
+            }
+            dl->AddPolyline(pts, np, col32(ln ? COL_WARN : COL_BLUE), ImDrawFlags_None, kit_px(1.5f));
+        }
+        dl->PopClipRect();
+    }
+
+    // The keys, by their ease (the selected one lit)
+    for (i32 k = 0; k < e.ikey_count; k++) {
+        const ItemKey &q = e.ikeys[k];
+        ImVec2 c;
+        f32 y0, y1;
+        if (!key_place(q, &c, &y0, &y1) || c.x < bx0 - kit_px(12) || c.x > bx1 + kit_px(12)) continue;
+        bool on = k == ed.adv_key;
+        u32 col = col32(on ? COL_ACCENT : q.what == IKEY_ZOOM ? COL_BLUE : q.what == IKEY_VOLUME ? 0xd6d9de : COL_WARN);
+        dl->PushClipRect(ImVec2(bx0 - kit_px(6), q.what == IKEY_VOLUME ? area0 : y0), ImVec2(bx1 + kit_px(6), q.what == IKEY_VOLUME ? area1 : y1), true);
+        key_shape(dl, c, kit_px(7), q.ease, on ? IM_COL32_WHITE : IM_COL32(0, 0, 0, 170));
+        key_shape(dl, c, kit_px(5), q.ease, col);
+        dl->PopClipRect();
     }
 
     // The playhead, and the time under the mouse (or at the playhead while it's dragged) on the ruler
@@ -954,7 +1210,12 @@ static void adv_keys(bool *back)
     bool ctrl = io.KeyCtrl;
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) adv_toggle();
     if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) adv_split(ed.adv_u);
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) adv_delete_selected();
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+        if (adv_key_ok()) adv_delete_key();
+        else adv_delete_selected();
+    }
+    for (i32 i = 0; i < EASE_COUNT; i++)
+        if (!ctrl && adv_key_ok() && ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_1 + i), false)) adv_set_ease(i);
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
         ed.adv_sel_count = 0;
         for (i32 i = 0; i < ed.edit.item_count; i++) adv_sel_set(ed.edit.items[i].id, true);
@@ -975,7 +1236,8 @@ static void adv_keys(bool *back)
         }
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        if (ed.adv_sel_count) ed.adv_sel_count = 0;
+        if (ed.adv_key >= 0) ed.adv_key = -1;
+        else if (ed.adv_sel_count) ed.adv_sel_count = 0;
         else *back = true;
     }
     (void)p;

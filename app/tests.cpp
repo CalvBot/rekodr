@@ -1943,7 +1943,27 @@ static void test_edit_advanced()
     T(h1.link && h1.link != h0.link && ikey_range(ed.edit, h1.id, IKEY_ZOOM, &first) == 3);
     track_items(ed.edit, 2, idx);
     T(ed.edit.items[idx[1]].link == h1.link && near(ed.edit.items[idx[1]].start, 1.5));
-    ed.edit = {};
+
+    // A dragged key stays inside its item and in its lane's range, the keys stay in order, and it's still selected
+    ed.edit = ed.drag_from = a;
+    ed.adv_u = 0;
+    ed.adv_drag_key = 0;
+    const ItemKey k0 = a.ikeys[0];
+    const EditItem &ki = a.items[item_find(a, k0.item)];
+    i32 kl = k0.what == IKEY_ZOOM ? 0 : 1;
+    adv_drag_key(1000, 10, 100, 100, false, false);
+    T(ed.edit.ikey_count == a.ikey_count && adv_key_ok());
+    const ItemKey &kd = ed.edit.ikeys[ed.adv_key];
+    T(kd.item == k0.item && kd.what == k0.what && near(kd.t, ki.to) && near(kd.v, ln_hi(kl)));
+    bool ordered = true;
+    for (i32 k = 1; k < ed.edit.ikey_count; k++) ordered = ordered && !ikey_before(ed.edit.ikeys[k], ed.edit.ikeys[k - 1]);
+    T(ordered);
+    // With Ctrl only the value moves; Delete takes the key out and leaves its slot clear
+    adv_drag_key(1000, -10, 100, 100, false, true);
+    T(near(ed.edit.ikeys[ed.adv_key].t, k0.t) && near(ed.edit.ikeys[ed.adv_key].v, ln_lo(kl)));
+    adv_delete_key();
+    T(ed.edit.ikey_count == a.ikey_count - 1 && ed.adv_key == -1 && !ed.edit.ikeys[ed.edit.ikey_count].item);
+    ed.edit = ed.drag_from = {};
 }
 
 static void test_edit_xml()

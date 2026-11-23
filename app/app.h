@@ -762,6 +762,8 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     u16        adv_drag_id;     // the item it took hold of
     f64        adv_drag_u;      // where on the sequence it was pressed
     bool       adv_ask_simple;  // asking before going back to Simple loses something
+    i32        adv_key;         // the selected item key (an index into edit.ikeys), -1 none
+    i32        adv_drag_key;    // the key being dragged, as an index into drag_from.ikeys
 };
 // timeline.cpp: the buffer and a range to save. Times are wall-clock us; 0 = not set.
 // A stretch of the buffer built for the Timeline's Play. Its file is the video segments end to end from file_start, so
