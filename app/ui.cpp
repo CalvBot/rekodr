@@ -1257,9 +1257,7 @@ static void help_window()
         };
         static const HelpRow popups[] = {
             {"Popups", "Click a monitor, then a corner: where they show"},
-            {"Same as normally", "Over a game they go where Popups says"},
-            {"Not the game's monitor", "The monitor nearest the game's. Needs two"},
-            {"Pick", "A monitor and corner of their own while a game is in front"},
+            {"Other place in games", "A monitor and corner of their own while a game is in front"},
             {"Red dot", "The monitor being recorded"},
             {"Clip saved popup", "Full: with Edit and Share. Small: a pill, gone after 3 s. Off: none"},
         };

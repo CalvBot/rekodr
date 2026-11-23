@@ -816,21 +816,14 @@ static f32 toast_clip_chips_w(i32 first)
     for (i32 i = first; i <= TOAST_CLIP_OFF; i++) w += text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14) + (i > first ? dp(6) : 0);
     return w;
 }
-// Small is greyed while popups in games go on another monitor than the game's: there's no game under it.
 static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
 {
     bool changed = false;
-    bool off_game = g_app.config.popup_monitor_game == POPUP_NOT_GAME && g_app.options.monitor_count > 1;
     for (i32 i = first; i <= TOAST_CLIP_OFF; i++) {
         if (i > first) ImGui::SameLine(0, dp(6));
         char label[48];
         snprintf(label, sizeof label, "%s##%s%d", TOAST_CLIP_CHIPS[i], id, i);
-        bool grey = i == TOAST_CLIP_SMALL && off_game;
-        if (grey) ImGui::BeginDisabled();
-        bool clicked = kit_chip(label, *v == i, 0, text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14));
-        if (grey) ImGui::EndDisabled();
-        if (grey) kit_tip("Only over the game");
-        if (clicked && *v != i) {
+        if (kit_chip(label, *v == i, 0, text_w(g_font, TOAST_CLIP_CHIPS[i]) + 2 * kit_px(14)) && *v != i) {
             *v = (ToastClip)i;
             changed = true;
         }
@@ -3648,8 +3641,6 @@ static bool accent_swatches(i32 *sel)
 
 static f32 swatches_w() { return (f32)ACCENT_COUNT * ImGui::GetFrameHeight() + (f32)(ACCENT_COUNT - 1) * dp(8); }
 
-static i32 popup_not_game(const RECT *mons, i32 n, i32 game); // toast.cpp
-
 // The monitor map's height, fixed so nothing moves whatever the monitors are
 static const f32 OPT_MAP_H = 132;
 
@@ -3819,14 +3810,12 @@ static i32 opt_map_index(i32 v)
 // A pick on the map as a setting: the monitor recorded stays POPUP_RECORDED, so it follows Recording's monitor
 static i32 opt_map_value(i32 i) { return i == g_app.config.output_idx ? POPUP_RECORDED : i; }
 
-// Popups (Config.popup_monitor, popup_corner): the map alone. Popups in games (popup_monitor_game, popup_corner_game):
-// chips for Same as normally, Not the game's monitor (needs two) and Pick, on the name's line; the map under them,
-// greyed for Same, the monitor nearest the recorded one (where the game plays) for Not the game's.
+// Popups (Config.popup_monitor, popup_corner): the map alone. Other place in games: a switch, off as
+// POPUP_AS_NORMAL; on, a map of its own (popup_monitor_game, popup_corner_game) under it, starting from Popups'.
 // Both behind "Popup areas": closed (as it starts), the row has the normal choice as a mini map and Edit; open, the
 // two rows follow it.
 static void opt_popup_maps()
 {
-    OptionsUi &o = g_app.options;
     Config &c = g_app.config;
     static i32 listed_frame = -100;
     static bool open;
@@ -3862,53 +3851,18 @@ static void opt_popup_maps()
     }
     opt_row_end();
 
-    f32 fh = ImGui::GetFrameHeight(), gap = dp(10);
-    opt_row_begin(0, 0, cw, pad + fh + gap + mh + pad);
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    opt_text_at(dl, g_font, ImVec2(g_row.x0, floorf(g_row.y + pad + (fh - g_font->FontSize) / 2)), COL_TEXT,
-                "Popups in games", g_row.x1 - cw - dp(20));
-    i32 v = c.popup_monitor_game;
-    bool two = o.monitor_count > 1;
-    i32 mode = v == POPUP_AS_NORMAL ? 0 : v == POPUP_NOT_GAME ? 1 : 2;
-    static const char *const labels[] = {"Same as normally##pg", "Not the game's monitor##pg", "Pick##pg"};
-    static const char *const names[] = {"Same as normally", "Not the game's monitor", "Pick"};
-    f32 cx = g_row.x1, chip_w[3];
-    for (i32 i = 2; i >= 0; i--) {
-        chip_w[i] = text_w(g_font, names[i]) + 2 * kit_px(14);
-        cx -= chip_w[i] + (i < 2 ? dp(6) : 0);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(cx, g_row.y + pad));
-    i32 pick = mode;
-    for (i32 i = 0; i < 3; i++) {
-        if (i) ImGui::SameLine(0, dp(6));
-        bool grey = i == 1 && !two;
-        if (grey) ImGui::BeginDisabled();
-        if (kit_chip(labels[i], mode == i, 0, chip_w[i])) pick = i;
-        if (grey) ImGui::EndDisabled();
-        if (grey) kit_tip("Needs a second monitor");
-    }
-    if (pick != mode) {
-        if (pick == 0) c.popup_monitor_game = POPUP_AS_NORMAL;
-        else if (pick == 1) c.popup_monitor_game = POPUP_NOT_GAME;
-        else { // Pick starts where they go now
-            c.popup_monitor_game = mode == 0 ? c.popup_monitor : opt_map_value(popup_not_game(g_monitor_rect, o.monitor_count,
-                                                                                               opt_map_index(POPUP_RECORDED)));
-            if (mode == 0) c.popup_corner_game = c.popup_corner;
-        }
+    bool other = c.popup_monitor_game != POPUP_AS_NORMAL;
+    if (opt_row_toggle("Other place in games", 0, "##popupsgameon", &other)) {
+        c.popup_monitor_game = other ? c.popup_monitor : POPUP_AS_NORMAL;
+        c.popup_corner_game = c.popup_corner;
         log_line("options: popups in games %d", c.popup_monitor_game);
         options_apply(0);
-        v = c.popup_monitor_game;
-        mode = pick;
     }
-    // The map: Same shows the Popups choice greyed; Not the game's the monitor it lands on now (with one monitor,
-    // the game's own), its corner still picked here; a click on another monitor makes it a Pick.
-    i32 shown = mode == 0 ? opt_map_index(c.popup_monitor)
-              : mode == 1 ? (two ? popup_not_game(g_monitor_rect, o.monitor_count, opt_map_index(POPUP_RECORDED))
-                                 : opt_map_index(POPUP_RECORDED))
-                          : opt_map_index(v);
-    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - cw, g_row.y + pad + fh + gap));
-    if (opt_monitor_map("popupsgame", shown, mode == 0 ? c.popup_corner : c.popup_corner_game, mode != 0, &mon, &corner)) {
-        if (mode != 1 || mon != shown) c.popup_monitor_game = opt_map_value(mon);
+    if (!other) return;
+    opt_row_begin(0, 0, cw, mh + 2 * pad);
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - cw, g_row.y + pad));
+    if (opt_monitor_map("popupsgame", opt_map_index(c.popup_monitor_game), c.popup_corner_game, true, &mon, &corner)) {
+        c.popup_monitor_game = opt_map_value(mon);
         c.popup_corner_game = corner;
         log_line("options: popups in games on %d, %s", c.popup_monitor_game, corner_name(corner));
         options_apply(0);
