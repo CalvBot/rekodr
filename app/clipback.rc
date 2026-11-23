@@ -16,8 +16,8 @@ BEGIN
   BEGIN
     BLOCK "040904b0"
     BEGIN
-      VALUE "ProductName", "clipback"
-      VALUE "FileDescription", "clipback replay buffer"
+      VALUE "ProductName", APP_NAME
+      VALUE "FileDescription", APP_NAME " replay buffer"
       VALUE "FileVersion", CLIPBACK_VERSION
       VALUE "ProductVersion", CLIPBACK_VERSION
     END

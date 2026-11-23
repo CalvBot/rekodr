@@ -129,7 +129,7 @@ static void setup_window()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 y = top.y + dp(12);
 
-    opt_text_at(dl, g_font_title, ImVec2(x0, y), COL_TEXT, "Welcome to clipback", x0 + w);
+    opt_text_at(dl, g_font_title, ImVec2(x0, y), COL_TEXT, "Welcome to " APP_NAME, x0 + w);
     y += g_font_title->FontSize + dp(6);
     opt_text_at(dl, g_font, ImVec2(x0, y), COL_DIM,
                 "It keeps the last while of your games, so you can save a clip after it happens.", x0 + w);
@@ -205,8 +205,8 @@ static void setup_window()
         ImGui::SetCursorScreenPos(ImVec2(x, a.y));
         ImGui::PushTextWrapPos(x + cw - ImGui::GetWindowPos().x);
         ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
-        ImGui::TextUnformatted("When you name a game clipback couldn't place, its exe and your name for it go to "
-                               "clipback's service, so the next player gets it named. Nothing else is sent.");
+        ImGui::TextUnformatted("When you name a game " APP_NAME " couldn't place, its exe and your name for it go to "
+                               APP_NAME "'s service, so the next player gets it named. Nothing else is sent.");
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();
         ImGui::SetCursorScreenPos(ImVec2(x, a.y + pic_h - dp(62)));
@@ -247,8 +247,8 @@ static void setup_window()
 
     // Where game art comes from, and the way to Options
     {
-        const char *line = service ? "Game names and art come from clipback's service."
-                                   : "clipback's service is off, so helping name games is too.";
+        const char *line = service ? "Game names and art come from " APP_NAME "'s service."
+                                   : APP_NAME "'s service is off, so helping name games is too.";
         static const char link[] = "Change in Options";
         ImVec2 p = ImGui::GetCursorScreenPos();
         f32 lx = p.x + text_w(g_font, line) + dp(8), link_w = text_w(g_font, link);

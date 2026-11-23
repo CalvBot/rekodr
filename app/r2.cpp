@@ -511,7 +511,7 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
 }
 
 // The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that
-// plays it, and the plain "clipback" word under it. Paused, the page names the clip and doesn't play it. All ASCII.
+// plays it, and the plain APP_NAME word under it. Paused, the page names the clip and doesn't play it. All ASCII.
 // Returns the length, 0 if it didn't fit.
 static i32 r2_page_html(const char *title, const char *page_url, const char *video_url, const char *image_url, i32 w,
                         i32 h, i32 tw, i32 th, bool paused, char *out, i32 cap)
@@ -524,7 +524,7 @@ static i32 r2_page_html(const char *title, const char *page_url, const char *vid
                 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
                 "<meta name=\"robots\" content=\"noindex\">\n<title>%T</title>\n"
                 "<meta property=\"og:type\" content=\"video.other\">\n<meta property=\"og:title\" content=\"%T\">\n"
-                "<meta property=\"og:site_name\" content=\"clipback\">\n<meta property=\"og:url\" content=\"%P\">\n",
+                "<meta property=\"og:site_name\" content=\"" APP_NAME "\">\n<meta property=\"og:url\" content=\"%P\">\n",
                 p, out, cap, &len);
     if (!paused)
         r2_page_put("<meta property=\"og:image\" content=\"%I\">\n<meta property=\"og:image:width\" content=\"%w\">\n"
@@ -546,7 +546,7 @@ static i32 r2_page_html(const char *title, const char *page_url, const char *vid
                     "preload=\"metadata\"></video>\n",
                     p, out, cap, &len);
     else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
-    r2_page_put("<p>clipback</p>\n</body></html>\n", p, out, cap, &len);
+    r2_page_put("<p>" APP_NAME "</p>\n</body></html>\n", p, out, cap, &len);
     return len < cap - 1 ? len : 0;
 }
 
@@ -2168,9 +2168,11 @@ static const char *r2_token_link()
         char keys[256], enc[512];
         snprintf(keys, sizeof keys, "[{\"key\":\"%s\",\"type\":\"edit\"},{\"key\":\"%s\",\"type\":\"read\"}]",
                  CF_PERM_R2_WRITE, CF_PERM_ANALYTICS);
+        char name[64];
         r2_uri_encode(keys, enc, sizeof enc);
-        snprintf(url, sizeof url, "https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%s&name=clipback",
-                 enc);
+        r2_uri_encode(APP_NAME, name, sizeof name);
+        snprintf(url, sizeof url, "https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%s&name=%s",
+                 enc, name);
     }
     return url;
 }
@@ -2552,7 +2554,7 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
             if (!r2_ok(s) || !r2_parse_perm_group(resp, CF_PERM_BUCKET_ITEMS_NAME, group, sizeof group))
                 str_set(group, CF_PERM_BUCKET_ITEMS);
             snprintf(body, sizeof body,
-                     "{\"name\":\"clipback (%s)\",\"policies\":[{\"effect\":\"allow\",\"resources\":"
+                     "{\"name\":\"" APP_NAME " (%s)\",\"policies\":[{\"effect\":\"allow\",\"resources\":"
                      "{\"com.cloudflare.edge.r2.bucket.%s_default_%s\":\"*\"},\"permission_groups\":[{\"id\":\"%s\"}]}]}",
                      c->bucket, c->account, c->bucket, group);
             s = r2_cf("POST", "/user/tokens", bearer, body, resp, sizeof resp);
@@ -2561,7 +2563,7 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
                 r2_cf_error(resp, msg, sizeof msg);
                 SecureZeroMemory(resp, sizeof resp);
                 *refused = true;
-                r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't let clipback make a key for the bucket%s%s. Use a token "
+                r2_set_status(R2_SETUP_FAILED, "Cloudflare didn't let " APP_NAME " make a key for the bucket%s%s. Use a token "
                               "instead.", msg[0] ? ": " : "", msg);
                 return false;
             }
@@ -2744,7 +2746,7 @@ static void r2_run_domains(const R2Task &t)
     static R2Domains d;
     d = {};
     d.state = -1;
-    if (!have) str_set(d.why, "clipback isn't signed in");
+    if (!have) str_set(d.why, APP_NAME " isn't signed in");
     else {
         char path[200];
         snprintf(path, sizeof path, "/accounts/%s/r2/buckets/%s/domains/managed", t.conf.account, t.conf.bucket);
@@ -2886,13 +2888,13 @@ static DWORD WINAPI r2_signin_thread(void *)
         R2Callback cb = r2_callback_parse(req, code, sizeof code, state, sizeof state);
         bool ours = cb != R2_CB_OTHER && !strcmp(state, g_r2.signin.state);
         const char *said = !ours                ? 0
-                           : cb == R2_CB_CODE   ? "Signed in. You can close this tab and go back to clipback."
+                           : cb == R2_CB_CODE   ? "Signed in. You can close this tab and go back to " APP_NAME "."
                                                 : "The sign-in was cancelled. You can close this tab.";
         char out[512];
         if (said)
             snprintf(out, sizeof out,
                      "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"
-                     "Connection: close\r\n\r\n<!doctype html><title>clipback</title>"
+                     "Connection: close\r\n\r\n<!doctype html><title>" APP_NAME "</title>"
                      "<p style=\"font:16px sans-serif;margin:40px\">%s</p>",
                      said);
         else snprintf(out, sizeof out, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");

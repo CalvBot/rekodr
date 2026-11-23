@@ -1875,7 +1875,7 @@ static void options_hotkeys()
         options_apply(APPLY_HOTKEYS);
     }
     char left[96];
-    if (is_test_copy()) snprintf(left, sizeof left, "Test copy: the real clipback keeps the hotkeys");
+    if (is_test_copy()) snprintf(left, sizeof left, "Test copy: the real " APP_NAME " keeps the hotkeys");
     else snprintf(left, sizeof left, "%d hotkey%s", c.hotkey_count, c.hotkey_count == 1 ? "" : "s");
     opt_pager("hotkeys", &o.hotkeys_page, c.hotkey_count, rows, left);
 }
@@ -2191,7 +2191,7 @@ static void options_recording()
     // ffmpeg options of the player's own, added after clipback's; a typo shows as "Not recording" on Encoder
     {
         f32 tw = fminf(dp(360), g_card.w * 0.5f);
-        opt_row_begin("Custom encoder options", "ffmpeg options added after clipback's, such as -tune ll", tw);
+        opt_row_begin("Custom encoder options", "ffmpeg options added after " APP_NAME "'s, such as -tune ll", tw);
         char args[sizeof c.encoder_args];
         if (opt_text("##encargs", c.encoder_args, tw, 0, "None", args, sizeof args) && strcmp(trim(args), c.encoder_args)) {
             str_set(c.encoder_args, trim(args));
@@ -2358,7 +2358,7 @@ static bool streamdeck_install(char *msg, i32 cap)
     }
     ShellExecuteW(0, L"open", sd.s, 0, 0, SW_SHOWMINNOACTIVE);
     log_line("integrations: Stream Deck plugin %s, Stream Deck restarted", linked ? "linked already" : "installed");
-    snprintf(msg, cap, "Installed. Stream Deck restarted: drag the clipback keys from its list");
+    snprintf(msg, cap, "Installed. Stream Deck restarted: drag the " APP_NAME " keys from its list");
     return true;
 }
 
@@ -2628,7 +2628,7 @@ static void options_sharing()
     // Sign in: the browser does the rest. While it waits the button says so, and a click gives up.
     {
         f32 sw = text_w(g_font, "Waiting for Cloudflare...") + dp(32);
-        opt_row_begin("More space, private, deletable", "Your own R2 bucket; clipback makes it and its keys", sw);
+        opt_row_begin("More space, private, deletable", "Your own R2 bucket; " APP_NAME " makes it and its keys", sw);
         if (waiting) kit_next_tip("Stop waiting");
         if (kit_button(waiting ? "Waiting for Cloudflare...##r2signin" : "Sign in with Cloudflare##r2signin",
                        waiting ? KIT_SECONDARY : KIT_PRIMARY, ImVec2(sw, 0), waiting || (!signed_in && !has))) {
@@ -2658,7 +2658,7 @@ static void options_sharing()
         opt_row_end();
     }
 
-    opt_row_begin("Sign out", "Removes clipback's access and forgets the keys. The bucket and its links stay", bw);
+    opt_row_begin("Sign out", "Removes " APP_NAME "'s access and forgets the keys. The bucket and its links stay", bw);
     if (kit_button("Sign out##r2signout", KIT_SECONDARY, ImVec2(bw, 0), (signed_in || has) && !waiting)) {
         log_line("options: R2 sign out");
         r2_sign_out();
@@ -2887,7 +2887,7 @@ static void options_integrations()
     }
     opt_row_end();
 
-    opt_row_begin("clipback keys", "Save clip, Recording on / off and Open clipback", sw + dp(12) + bw);
+    opt_row_begin(APP_NAME " keys", "Save clip, Recording on / off and Open " APP_NAME, sw + dp(12) + bw);
     {
         f32 x = ImGui::GetCursorScreenPos().x;
         opt_status(plugin_in ? "Installed" : "Not installed", plugin_in ? COL_OK : COL_DIM, x + sw, x);
@@ -2903,7 +2903,7 @@ static void options_integrations()
     char conn[96];
     if (keys) snprintf(conn, sizeof conn, "Connected");
     else snprintf(conn, sizeof conn, "%s", !plugin_in ? "Install the keys first" : !sd_running ? "Stream Deck isn't running" : "Waiting for Stream Deck");
-    opt_row_begin("Connection", sd_msg[0] ? sd_msg : "The keys talk to clipback on this PC only", sw + dp(12) + bw);
+    opt_row_begin("Connection", sd_msg[0] ? sd_msg : "The keys talk to " APP_NAME " on this PC only", sw + dp(12) + bw);
     {
         f32 x = ImGui::GetCursorScreenPos().x;
         opt_status(conn, keys ? COL_OK : sd_msg_error ? COL_WARN : COL_DIM, x + sw, x);
@@ -2953,7 +2953,7 @@ static void options_integrations()
         opt_card_begin();
         char n[64];
         snprintf(n, sizeof n, "%d connected", others);
-        opt_row_value("On the pipe", "Programs driving clipback, such as lifelog's voice commands", n, COL_TEXT);
+        opt_row_value("On the pipe", "Programs driving " APP_NAME ", such as lifelog's voice commands", n, COL_TEXT);
         opt_card_end();
     }
     (void)fh;
@@ -3226,14 +3226,14 @@ static void options_general()
     opt_card_begin();
     ImGui::BeginDisabled(!c.game_lookup);
     bool service = c.art_service.s[0] != 0;
-    if (opt_row_toggle("Art from clipback's service", "Art Discord and Steam don't have, from SteamGridDB and IGDB. Sends game names and store ids only",
+    if (opt_row_toggle("Art from " APP_NAME "'s service", "Art Discord and Steam don't have, from SteamGridDB and IGDB. Sends game names and store ids only",
                        "##artservice", &service)) {
         str_set(c.art_service.s, service ? ART_SERVICE_HOST : "");
         log_line("options: art service %s", service ? "on" : "off");
         options_apply(0);
     }
     ImGui::BeginDisabled(!service);
-    if (opt_row_toggle("Help name games", "When you name a game clipback couldn't place, that name helps name it for other players",
+    if (opt_row_toggle("Help name games", "When you name a game " APP_NAME " couldn't place, that name helps name it for other players",
                        "##sharenames", &c.share_names)) {
         log_line("options: help name games %s", c.share_names ? "on" : "off");
         options_apply(0);
@@ -3308,7 +3308,7 @@ static void options_general()
     }
     char u[MAX_PATH * 3];
     wide_to_utf8(now_value, u, sizeof u);
-    const char *runs = !set ? "Nothing runs at sign-in now" : !_wcsicmp(now_value, cmd) ? "This clipback runs at sign-in" : u;
+    const char *runs = !set ? "Nothing runs at sign-in now" : !_wcsicmp(now_value, cmd) ? "This " APP_NAME " runs at sign-in" : u;
     if (is_test_copy()) runs = "Test copy: the Run list is left alone";
     opt_card_begin();
     // On is this exe in the Run list (the installer puts it there); nothing else keeps the setting.
@@ -3354,7 +3354,7 @@ static void options_general()
         static char text[FB_TEXT_MAX + 1];
         bool busy = g_tel.fb_busy != 0;
         f32 chip_w = dp(64), send_w = text_w(g_font, "Sending") + dp(32), gap = dp(8);
-        opt_row_begin("A bug, an idea or anything else", c.game_lookup ? "Goes to clipback's service with the version number" : "Needs Look up games online",
+        opt_row_begin("A bug, an idea or anything else", c.game_lookup ? "Goes to " APP_NAME "'s service with the version number" : "Needs Look up games online",
                       3 * chip_w + 2 * gap + dp(16) + send_w);
         static const char *const labels[] = {"Bug##fbkind", "Idea##fbkind", "Other##fbkind"};
         for (i32 i = 0; i < 3; i++) {
@@ -3396,7 +3396,7 @@ static void options_general()
     opt_section("ABOUT");
     opt_card_begin();
     f32 gh_w = text_w(g_font, "GitHub") + dp(32);
-    opt_row_begin("clipback " CLIPBACK_VERSION, "Built " __DATE__, gh_w);
+    opt_row_begin(APP_NAME " " CLIPBACK_VERSION, "Built " __DATE__, gh_w);
     if (kit_button("GitHub##apprepo", KIT_SECONDARY, ImVec2(gh_w, 0))) open_url(OPT_APP_REPO_URL);
     opt_row_end();
     if (opt_row_toggle("Update by itself", "Fetches new versions and checks they're signed. You choose when to restart",
@@ -3410,7 +3410,7 @@ static void options_general()
     Path licence = path_join(ffget_dir(), L"ffmpeg-8.1.1-full_build-shared\\LICENSE");
     bool fetched = GetFileAttributesW(licence.s) != INVALID_FILE_ATTRIBUTES;
     f32 lic_w = text_w(g_font, "Licence") + dp(32);
-    opt_row_begin("FFmpeg 8.1.1 (gyan.dev build), GPL", fetched ? "Records and saves the video" : "Records and saves the video. This one is yours, not the one clipback fetches",
+    opt_row_begin("FFmpeg 8.1.1 (gyan.dev build), GPL", fetched ? "Records and saves the video" : "Records and saves the video. This one is yours, not the one " APP_NAME " fetches",
                   fetched ? lic_w : 0);
     if (fetched && kit_button("Licence##fflicence", KIT_SECONDARY, ImVec2(lic_w, 0)))
         ShellExecuteW(0, L"open", L"notepad.exe", licence.s, 0, SW_SHOWNORMAL);

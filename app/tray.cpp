@@ -30,7 +30,7 @@ static void tray_update(HWND hwnd, bool add)
     bool paused = g_app.recorder.paused;
     n.hIcon = (HICON)LoadImageW(GetModuleHandleW(0), MAKEINTRESOURCEW(paused ? 3 : 2), IMAGE_ICON,
                                 GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
-    wcscpy_s(n.szTip, paused ? L"clipback (not recording)" : L"clipback");
+    wcscpy_s(n.szTip, paused ? L"" APP_NAME " (not recording)" : L"" APP_NAME);
     if (add) {
         Shell_NotifyIconW(NIM_ADD, &n);
         n.uVersion = NOTIFYICON_VERSION_4;
@@ -61,7 +61,7 @@ static void tray_menu(HWND hwnd, char *command, i32 command_size)
 {
     command[0] = 0;
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, TRAY_OPEN, L"Open clipback");
+    AppendMenuW(menu, MF_STRING, TRAY_OPEN, L"Open " APP_NAME);
     AppendMenuW(menu, MF_STRING, TRAY_TIMELINE, L"Timeline");
     AppendMenuW(menu, MF_SEPARATOR, 0, 0);
     for (i32 i = 0; i < COUNT(g_tray_saves); i++) AppendMenuW(menu, MF_STRING, TRAY_SAVE_FIRST + i, g_tray_save_labels[i]);

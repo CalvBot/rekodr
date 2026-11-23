@@ -427,7 +427,7 @@ static bool ui_init()
         scale = dx / 96.f;
     i32 w = ImMin((i32)(1280 * scale), (i32)(work.right - work.left)), h = ImMin((i32)(800 * scale), (i32)(work.bottom - work.top));
     i32 x = work.left + (work.right - work.left - w) / 2, y = work.top + (work.bottom - work.top - h) / 2;
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"clipback", WS_OVERLAPPEDWINDOW, x, y, w, h, 0, 0, inst, 0);
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"" APP_NAME, WS_OVERLAPPEDWINDOW, x, y, w, h, 0, 0, inst, 0);
     if (!hwnd) return false;
     BOOL dark = TRUE;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
@@ -1354,7 +1354,7 @@ static void top_bar(f32 h)
     char ver[32];
     if (!why && update_status(ver, sizeof ver) && !update_busy()) {
         char label[96];
-        snprintf(label, sizeof label, "clipback %s is ready, restart to update", ver);
+        snprintf(label, sizeof label, APP_NAME " %s is ready, restart to update", ver);
         ImVec2 ls = ImGui::CalcTextSize(label);
         f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
         ImGui::SetCursorScreenPos(ImVec2(cx, cy));

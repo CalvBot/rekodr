@@ -193,7 +193,7 @@ static bool ffget_status(char *out, i32 cap, f32 *progress)
     LONG s = g_ffget.state;
     *progress = (f32)((f64)g_ffget.got / (f64)FFGET_BYTES);
     if (s == FFGET_RUNNING) {
-        snprintf(out, cap, "Getting ffmpeg, which clipback records with: %d of %d MB", (int)(g_ffget.got >> 20),
+        snprintf(out, cap, "Getting ffmpeg, which " APP_NAME " records with: %d of %d MB", (int)(g_ffget.got >> 20),
                  (int)(FFGET_BYTES >> 20));
         return true;
     }

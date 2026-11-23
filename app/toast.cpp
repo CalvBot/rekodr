@@ -638,7 +638,7 @@ static bool toast_window(Toast &t)
         registered = true;
     }
     DWORD ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | (toast_quiet(t) ? WS_EX_NOACTIVATE : 0);
-    t.hwnd = CreateWindowExW(ex, L"clipback_toast", L"clipback", WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, 0, 0, inst, 0);
+    t.hwnd = CreateWindowExW(ex, L"clipback_toast", L"" APP_NAME, WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, 0, 0, inst, 0);
     if (!t.hwnd) return false;
     SetWindowLongPtrW(t.hwnd, GWLP_USERDATA, (LONG_PTR)&t);
     // Left out of every capture, ours included, so a toast over a game never ends up in a clip. Windows before

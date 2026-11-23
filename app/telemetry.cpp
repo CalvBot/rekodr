@@ -210,7 +210,7 @@ static DWORD WINAPI tel_feedback_thread(void *)
     log_line("feedback: sent, the service answered %u", status);
     g_tel.fb_ok = status == 200;
     if (status == 200) str_set(g_tel.fb_result, "Sent. Thank you");
-    else if (status == 0) str_set(g_tel.fb_result, "Couldn't reach clipback's service");
+    else if (status == 0) str_set(g_tel.fb_result, "Couldn't reach " APP_NAME "'s service");
     else if (status == 429) str_set(g_tel.fb_result, "Sent too often. Try again in a minute");
     else snprintf(g_tel.fb_result, sizeof g_tel.fb_result, "The service turned it down (%u)", status);
     InterlockedExchange(&g_tel.fb_busy, 0);

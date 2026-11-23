@@ -283,7 +283,7 @@ static void backup_status(char *out, i32 cap)
     } else if (!c.backup_on) {
         snprintf(out, cap, "Off");
     } else {
-        snprintf(out, cap, "Starts a minute after clipback does, then every 30 minutes");
+        snprintf(out, cap, "Starts a minute after " APP_NAME " does, then every 30 minutes");
     }
     LeaveCriticalSection(&g_backup.lock);
 }

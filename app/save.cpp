@@ -646,7 +646,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     const SaveRequest &req = w->req;
     out[0] = 0;
     if (!w->cfg.ffmpeg.s[0]) {
-        snprintf(out, out_cap, "ffmpeg isn't ready yet (clipback is getting it, or set its path in Options)");
+        snprintf(out, out_cap, "ffmpeg isn't ready yet (" APP_NAME " is getting it, or set its path in Options)");
         return SAVE_EV_FAILED;
     }
     if (req.kind == SAVE_KEEP || req.kind == SAVE_SHARE || req.kind == SAVE_LINK) return edit_run(w, out, out_cap);

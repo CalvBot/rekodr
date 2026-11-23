@@ -29,12 +29,12 @@ static InstallPlace install_place()
     wchar_t *programs = 0, *menu = 0;
     if (p.test) {
         swprintf(p.dir.s, MAX_PATH, L"%s\\Programs\\clipback", p.root.s);
-        swprintf(p.shortcut.s, MAX_PATH, L"%s\\Start Menu\\Programs\\clipback.lnk", p.root.s);
+        swprintf(p.shortcut.s, MAX_PATH, L"%s\\Start Menu\\Programs\\" APP_NAME ".lnk", p.root.s);
     } else {
         SHGetKnownFolderPath(FOLDERID_UserProgramFiles, KF_FLAG_CREATE, 0, &programs);
         SHGetKnownFolderPath(FOLDERID_Programs, 0, 0, &menu);
         swprintf(p.dir.s, MAX_PATH, L"%s\\clipback", programs ? programs : L".");
-        swprintf(p.shortcut.s, MAX_PATH, L"%s\\clipback.lnk", menu ? menu : L".");
+        swprintf(p.shortcut.s, MAX_PATH, L"%s\\" APP_NAME ".lnk", menu ? menu : L".");
         CoTaskMemFree(programs);
         CoTaskMemFree(menu);
     }
@@ -185,7 +185,7 @@ static bool install_is_test_safe(const InstallPlace &p)
 {
     if (!p.test || is_test_copy()) return true;
     MessageBoxW(0, L"CLIPBACK_INSTALL_DIR is set without CLIPBACK_HOME. A test install needs both, so that it "
-                   L"leaves the real clipback and its files alone.", L"clipback", MB_ICONERROR);
+                   L"leaves the real " APP_NAME " and its files alone.", L"" APP_NAME, MB_ICONERROR);
     return false;
 }
 
@@ -196,24 +196,24 @@ static i32 install_run(const wchar_t *msg_class, ULONG_PTR copydata_command)
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(0, self, MAX_PATH);
     if (!_wcsicmp(self, p.exe.s)) {
-        install_ask(p, L"This is the installed clipback already.", L"clipback", MB_ICONINFORMATION);
+        install_ask(p, L"This is the installed " APP_NAME " already.", L"" APP_NAME, MB_ICONINFORMATION);
         return 0;
     }
     wchar_t ask[MAX_PATH + 256];
     swprintf(ask, COUNT(ask),
-             L"Install clipback %hs for you?\n\nIt goes in %s, gets a Start menu entry and starts when you sign in "
+             L"Install " APP_NAME " %hs for you?\n\nIt goes in %s, gets a Start menu entry and starts when you sign in "
              L"(Options can turn that off).",
              CLIPBACK_VERSION, p.dir.s);
-    if (install_ask(p, ask, L"Install clipback", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
+    if (install_ask(p, ask, L"Install " APP_NAME, MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
     log_line("install: clipback %s from %ls to %ls%s", CLIPBACK_VERSION, self, p.dir.s, p.test ? " (test)" : "");
     if (!install_quit_running(msg_class, copydata_command)) {
-        install_ask(p, L"clipback is still running. Quit it from its tray icon and run the installer again.",
-                    L"Install clipback", MB_ICONWARNING);
+        install_ask(p, L"" APP_NAME " is still running. Quit it from its tray icon and run the installer again.",
+                    L"Install " APP_NAME, MB_ICONWARNING);
         return 1;
     }
     SHCreateDirectoryExW(0, p.dir.s, 0);
     if (!install_swap(self, p.exe.s, p.old_exe.s, false)) {
-        install_ask(p, L"clipback couldn't be copied to its folder. The log says why.", L"Install clipback", MB_ICONERROR);
+        install_ask(p, L"" APP_NAME " couldn't be copied to its folder. The log says why.", L"Install " APP_NAME, MB_ICONERROR);
         return 1;
     }
     bool ok = install_shortcut(p);
@@ -221,7 +221,7 @@ static i32 install_run(const wchar_t *msg_class, ULONG_PTR copydata_command)
     swprintf(run, COUNT(run), L"\"%s\"", p.exe.s);
     swprintf(uninstall, COUNT(uninstall), L"\"%s\" uninstall", p.exe.s);
     ok &= install_reg_set(p, INSTALL_RUN_KEY, L"clipback", run);
-    ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayName", L"clipback");
+    ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayName", L"" APP_NAME);
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayVersion", L"" CLIPBACK_VERSION);
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"Publisher", L"CalvBot");
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayIcon", p.exe.s);
@@ -289,16 +289,16 @@ static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_comman
     InstallPlace p = install_place();
     if (!install_is_test_safe(p)) return 1;
     i32 answer = install_ask(p,
-                             L"Uninstall clipback.\n\nAlso delete your clips, sessions, the replay buffer and your "
+                             L"Uninstall " APP_NAME ".\n\nAlso delete your clips, sessions, the replay buffer and your "
                              L"settings? They go to the Recycle Bin.\n\nYes: delete them too\nNo: keep them\n"
                              L"Cancel: don't uninstall",
-                             L"Uninstall clipback", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2);
+                             L"Uninstall " APP_NAME, MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2);
     if (answer == IDCANCEL) return 0;
     log_line("install: uninstalling from %ls%s%s", p.dir.s, p.test ? " (test)" : "",
              answer == IDYES ? ", deleting the player's files" : "");
     if (!install_quit_running(msg_class, copydata_command)) {
-        install_ask(p, L"clipback is still running. Quit it from its tray icon and uninstall again.",
-                    L"Uninstall clipback", MB_ICONWARNING);
+        install_ask(p, L"" APP_NAME " is still running. Quit it from its tray icon and uninstall again.",
+                    L"Uninstall " APP_NAME, MB_ICONWARNING);
         return 1;
     }
     DeleteFileW(p.shortcut.s);
@@ -325,9 +325,9 @@ static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_comman
             CloseHandle(pi.hProcess);
         }
     }
-    install_ask(p, answer == IDYES ? L"clipback and your files are gone (your files are in the Recycle Bin)."
-                                   : L"clipback is uninstalled. Your clips, sessions and settings are still there.",
-                L"Uninstall clipback", MB_ICONINFORMATION);
+    install_ask(p, answer == IDYES ? L"" APP_NAME " and your files are gone (your files are in the Recycle Bin)."
+                                   : L"" APP_NAME " is uninstalled. Your clips, sessions and settings are still there.",
+                L"Uninstall " APP_NAME, MB_ICONINFORMATION);
     return 0;
 }
 
