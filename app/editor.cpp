@@ -2727,12 +2727,16 @@ static void ed_share_tab(f32 w)
         ShareJobView j = ed.share_job ? share_job(ed.share_job) : ShareJobView{};
         ShareMenuState js = share_menu_state(j);
         char label[48];
-        if (js.running) snprintf(label, sizeof label, "Sharing %d%%", (i32)(js.progress * 100 + 0.5f));
+        if (js.running) snprintf(label, sizeof label, ICON_CLOSE "  Cancel %d%%", (i32)(js.progress * 100 + 0.5f));
         else if (js.done) str_set(label, js.line);
         else str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
-        i32 sb = kit_split_button(label, "##edshare", KIT_PRIMARY, ImVec2(bw, 0), !sharing && can, true,
-                                  js.running ? js.progress : -1, "Share. Right-click for more options", "More share options");
-        if (sb == 1) ed_share_ask(d.kind);
+        i32 sb = kit_split_button(label, "##edshare", KIT_PRIMARY, ImVec2(bw, 0), js.running || (!sharing && can), true,
+                                  js.running ? js.progress : -1,
+                                  js.running ? "Cancel the share" : "Share. Right-click for more options", "More share options");
+        if (sb == 1 && js.running) {
+            log_line("editor: share %u cancelled", ed.share_job);
+            share_cancel(ed.share_job);
+        } else if (sb == 1) ed_share_ask(d.kind);
         else if (sb == 2) ImGui::OpenPopup("ed_share_menu");
         lib_popup_style_push(8);
         if (ImGui::BeginPopup("ed_share_menu")) {
@@ -2740,6 +2744,7 @@ static void ed_share_tab(f32 w)
             i32 r = share_menu_body(d, ed_share_info(), &ed.edit, js, ed.item.key, ed.path.s, pick);
             if (r == SHARE_MENU_SHARE) ed_share_ask(d.kind);
             else if (r == SHARE_MENU_HOST) ed_share_ask(SHARE_LINK, pick);
+            else if (r == SHARE_MENU_CANCEL) share_cancel(ed.share_job);
             ImGui::EndPopup();
         }
         lib_popup_style_pop();

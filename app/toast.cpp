@@ -380,9 +380,47 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
             Ellipse(big, c.left - grow, c.top - grow, c.right + grow + 1, c.bottom + grow + 1);
         }
     }
-    // The buttons, as the window's own: the main one in the accent, the other secondary
-    if (!t.brief) brush(t.hot == TP_MAIN && !t.sharing ? COL_ACCENT_HOVER : COL_ACCENT);
+    // The buttons, as the window's own: the main one in the accent (secondary while it's Share's Cancel), the other
+    // secondary
+    bool cancel = t.sharing == TSH_PROBING || t.sharing == TSH_RUNNING;
+    if (!t.brief && cancel) brush(t.hot == TP_MAIN ? COL_HOVER : COL_PANEL2);
+    else if (!t.brief) brush(t.hot == TP_MAIN && !t.sharing ? COL_ACCENT_HOVER : COL_ACCENT);
     if (!t.brief) rounded(TP_MAIN, TOAST_BUTTON_ROUND);
+    i32 cancel_x = 0; // Cancel's label, right of its ring: an X in a ring filled to Share's percent
+    if (!t.brief && cancel) {
+        RECT m = toast_rect(t, TP_MAIN);
+        SIZE ts = {};
+        HGDIOBJ of = SelectObject(dc, t.strong);
+        GetTextExtentPoint32W(dc, L"Cancel", 6, &ts);
+        SelectObject(dc, of);
+        i32 rr = toast_px(t, 7), gap = toast_px(t, 6);
+        i32 x0 = m.left + (m.right - m.left - 2 * rr - gap - ts.cx) / 2;
+        cancel_x = x0 + 2 * rr + gap;
+        i32 cx = (x0 + rr) * SS, cy = (m.top + m.bottom) / 2 * SS, R = rr * SS, th = toast_px(t, 2) * SS;
+        HGDIOBJ ob = SelectObject(big, GetStockObject(NULL_BRUSH));
+        HPEN track = CreatePen(PS_SOLID, th, toast_rgb(COL_FAINT));
+        HGDIOBJ op = SelectObject(big, track);
+        Ellipse(big, cx - R, cy - R, cx + R, cy + R);
+        HPEN arc = CreatePen(PS_SOLID, th, toast_rgb(COL_ACCENT));
+        if (t.share_pct > 0) {
+            SelectObject(big, arc);
+            SetArcDirection(big, AD_CLOCKWISE);
+            f32 a = 2 * 3.14159265f * (t.share_pct >= 100 ? 0.9999f : t.share_pct / 100.f);
+            Arc(big, cx - R, cy - R, cx + R, cy + R, cx, cy - R, cx + (i32)(R * sinf(a)), cy - (i32)(R * cosf(a)));
+        }
+        i32 lw = (i32)(1.5f * t.scale * SS + 0.5f), x = (i32)(R * 0.42f);
+        HPEN ink = CreatePen(PS_SOLID, lw, toast_rgb(COL_TEXT));
+        SelectObject(big, ink);
+        MoveToEx(big, cx - x, cy - x, 0);
+        LineTo(big, cx + x, cy + x);
+        MoveToEx(big, cx - x, cy + x, 0);
+        LineTo(big, cx + x, cy - x);
+        SelectObject(big, op);
+        SelectObject(big, ob);
+        DeleteObject(track);
+        DeleteObject(arc);
+        DeleteObject(ink);
+    }
     if (quiet && !t.brief) {
         brush(t.hot == TP_SECOND ? COL_HOVER : COL_PANEL2);
         rounded(TP_SECOND, TOAST_BUTTON_ROUND);
@@ -439,9 +477,15 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
 
     RECT main = toast_rect(t, TP_MAIN);
     SelectObject(dc, t.strong);
-    SetTextColor(dc, RGB(255, 255, 255));
-    const wchar_t *main_label = !saved ? L"Save" : t.sharing == TSH_DONE ? L"Copied" : t.sharing ? L"Sharing" : L"Share";
-    DrawTextW(dc, main_label, -1, &main, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (cancel) {
+        SetTextColor(dc, toast_rgb(COL_TEXT));
+        main.left = cancel_x;
+        DrawTextW(dc, L"Cancel", -1, &main, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    } else {
+        SetTextColor(dc, RGB(255, 255, 255));
+        const wchar_t *main_label = !saved ? L"Save" : t.sharing == TSH_DONE ? L"Copied" : L"Share";
+        DrawTextW(dc, main_label, -1, &main, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
     if (quiet) {
         RECT second = toast_rect(t, TP_SECOND);
         SelectObject(dc, t.font);
@@ -723,7 +767,15 @@ static LRESULT CALLBACK toast_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 toast_share(t);
                 return 0;
             }
-            if (k == TP_MAIN && t.sharing != TSH_DONE) return 0; // under way
+            if (k == TP_MAIN && t.sharing == TSH_RUNNING) { // Cancel: the poll then ends it as "Cancelled"
+                log_line("toast: share %u cancelled", t.share);
+                share_cancel(t.share);
+                return 0;
+            }
+            if (k == TP_MAIN && t.sharing == TSH_PROBING) { // the probe's answer is left unread
+                toast_share_end(t, false, "Cancelled");
+                return 0;
+            }
             toast_hide(t);
             if (k == TP_SECOND) {
                 log_line("toast: edit %s", t.path);

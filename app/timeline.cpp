@@ -2703,6 +2703,7 @@ static void screen_timeline()
             i32 r = share_menu_body(share_decide(m, 0), m, 0, js, 0, 0, pick);
             if (r == SHARE_MENU_SHARE) tl_share(0);
             else if (r == SHARE_MENU_HOST) tl_share(pick);
+            else if (r == SHARE_MENU_CANCEL) share_cancel(tl.share);
             ImGui::EndPopup();
         }
         lib_popup_style_pop();

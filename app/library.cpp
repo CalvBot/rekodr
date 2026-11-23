@@ -3194,6 +3194,22 @@ static void share_bar(ImDrawList *dl, ImVec2 a, f32 w, f32 frac, u32 ink)
     dl->AddRectFilled(a, ImVec2(a.x + (fw < h ? h : fw), a.y + h), col32(ink), r);
 }
 
+// Cancel for a running Share: an X in a ring of radius r round `c`, the ring filled to `progress` in the accent
+// clockwise from the top over a dim track.
+static void share_cancel_ring(ImDrawList *dl, ImVec2 c, f32 r, f32 progress, u32 ink)
+{
+    f32 th = kit_px(2);
+    dl->AddCircle(c, r, col32(COL_FAINT, 0.6f), 32, th);
+    if (progress > 0) {
+        f32 a0 = -3.14159265f / 2;
+        dl->PathArcTo(c, r, a0, a0 + 2 * 3.14159265f * fminf(progress, 1), 32);
+        dl->PathStroke(col32(COL_ACCENT), 0, th);
+    }
+    f32 x = floorf(r * 0.42f);
+    dl->AddLine(ImVec2(c.x - x, c.y - x), ImVec2(c.x + x, c.y + x), col32(ink), kit_px(1.5f));
+    dl->AddLine(ImVec2(c.x - x, c.y + x), ImVec2(c.x + x, c.y - x), col32(ink), kit_px(1.5f));
+}
+
 // The most a host takes, 0 for no cap.
 static ID3D11ShaderResourceView *resource_texture(i32 id, i32 *w, i32 *h); // setup.cpp
 
@@ -3250,7 +3266,7 @@ static f32 render_progress(u64 key);   // render.cpp
 static bool render_waiting(u64 key);   // render.cpp
 static bool g_card_share_open; // a card's Share was right-clicked, or Share... in its menu: its Share menu opens
 
-enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST, SHARE_MENU_EDIT };
+enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST, SHARE_MENU_EDIT, SHARE_MENU_CANCEL };
 
 // A host's label split for the menu: its name with a capital ("your bucket" -> "Your bucket"), and how long its
 // links last after ", " ("Litterbox, 72 h" -> "72 h"; "" for none).
@@ -3279,13 +3295,14 @@ static f32 share_expiry_draw(ImDrawList *dl, ImVec2 a, f32 line_h, ImFont *font,
 // The Share menu, the same wherever it opens (a card's Share, the player's, the editor's and the Timeline's arrow),
 // drawn inside the caller's popup:
 // - Share: what one click does, "Recommended: Catbox" (or File) over its size; while a Share runs the line is its
-//   step over a progress bar, then "Copied".
+//   step over a progress bar and the button its Cancel, then "Copied".
 // - The clip's link (link_key's, when it has one): the address, then Copy, Open, Pause (the bucket's) and Delete.
 // - Link to: a row per host with the clip's size against the host's cap ("35 MB of 200 MB" over a bar), and how
 //   long its links last; greyed when it can't.
 // - Original (shows `original` in its folder; greyed with none) and Edit (greyed unless `can_edit`).
 // Its size follows only the clip: whether it has a link and how many hosts. Returns SHARE_MENU_SHARE for the
-// one-click Share, SHARE_MENU_HOST for a host (its name in `pick`), SHARE_MENU_EDIT for Edit.
+// one-click Share, SHARE_MENU_HOST for a host (its name in `pick`), SHARE_MENU_EDIT for Edit, SHARE_MENU_CANCEL
+// for Cancel.
 static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const EditRecord *edit, const ShareMenuState &st,
                            u64 link_key, const wchar_t *original, char (&pick)[64], bool can_edit = false)
 {
@@ -3303,18 +3320,27 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         ImVec2 a(o.x, y), b(o.x + W, y + h);
         ImGui::SetCursorScreenPos(a);
         bool clicked = ImGui::InvisibleButton("##smshare", ImVec2(W, h));
-        bool hot = can && !st.running && ImGui::IsItemHovered();
+        bool hot = (can || st.running) && ImGui::IsItemHovered();
         if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        kit_tip(st.done < 0 && st.error[0] ? st.error : st.running ? "Sharing" : link ? "Upload it and copy the link"
-                                                                                  : "Copy the file to paste anywhere");
-        if (clicked && can && !st.running) result = SHARE_MENU_SHARE;
+        kit_tip(st.done < 0 && st.error[0] ? st.error : st.running ? "Cancel the share" : link ? "Upload it and copy the link"
+                                                                                           : "Copy the file to paste anywhere");
+        if (clicked && st.running) result = SHARE_MENU_CANCEL;
+        else if (clicked && can) result = SHARE_MENU_SHARE;
         f32 r = kit_px(7);
         dl->AddRectFilled(a, b, col32(COL_ACCENT, hot ? 0.28f : 0.16f), r);
         dl->AddRect(a, b, col32(COL_ACCENT, can ? 1.f : 0.4f), r, 0, kit_px(1));
         // The pill: plainly the button
         ImVec2 p0(b.x - pad - pill_w, floorf(a.y + (h - pill_h) / 2)), p1(b.x - pad, p0.y + pill_h);
-        dl->AddRectFilled(p0, p1, col32(can ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : COL_PANEL2), kit_px(6));
-        {
+        if (st.running) { // Cancel: the X in its ring
+            dl->AddRectFilled(p0, p1, col32(hot ? COL_HOVER : COL_PANEL2), kit_px(6));
+            ImGui::PushFont(g_font_bold);
+            ImVec2 ts = ImGui::CalcTextSize("Cancel");
+            f32 rr = kit_px(8), tx = floorf(p0.x + (pill_w - 2 * rr - kit_px(6) - ts.x) / 2);
+            share_cancel_ring(dl, ImVec2(tx + rr, p0.y + pill_h / 2), rr, st.progress, COL_TEXT);
+            dl->AddText(ImVec2(tx + 2 * rr + kit_px(6), floorf(p0.y + (pill_h - ts.y) / 2)), col32(COL_TEXT), "Cancel");
+            ImGui::PopFont();
+        } else {
+            dl->AddRectFilled(p0, p1, col32(can ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : COL_PANEL2), kit_px(6));
             f32 fs = g_font_icon->FontSize;
             ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_SHARE);
             ImGui::PushFont(g_font_bold);
@@ -3557,6 +3583,10 @@ static void lib_share_menu(const char *id, const LibItem &it)
     if (r == SHARE_MENU_SHARE) lib_share_decided(it);
     else if (r == SHARE_MENU_HOST) lib_share_item(it, SHARE_LINK, pick);
     else if (r == SHARE_MENU_EDIT) editor_open(it);
+    else if (r == SHARE_MENU_CANCEL) {
+        log_line("library: share %u cancelled", g_lib_share_job);
+        share_cancel(g_lib_share_job);
+    }
     ImGui::EndPopup();
     lib_popup_style_pop();
 }
@@ -4574,17 +4604,28 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     bool share = ImGui::InvisibleButton("##cardshare", ImVec2(sw, sh));
     bool share_hot = ImGui::IsItemHovered(), share_held = share_hot && ImGui::IsItemActive();
     bool share_menu = share_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
-    kit_tip("Share. Right-click for more options");
+    ShareJobView sj = g_lib_share_job && g_lib_share_job_key == it.key ? share_job(g_lib_share_job) : ShareJobView{};
+    bool share_running = sj.id && sj.state < SHARE_DONE; // the button is its Cancel
+    kit_tip(share_running ? "Cancel the share" : "Share. Right-click for more options");
     ImGui::PopID();
     {
         dl->AddRectFilled(s0, s1, col32(share_hot ? COL_HOVER : COL_PANEL2, share_held ? 0.8f : 1.f),
                           ImGui::GetStyle().FrameRounding);
-        f32 is = g_font_icon->FontSize;
-        ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, ICON_SHARE);
-        dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)), col32(COL_TEXT),
-                    ICON_SHARE);
+        if (share_running) {
+            share_cancel_ring(dl, ImVec2(floorf((s0.x + s1.x) / 2), floorf((s0.y + s1.y) / 2)), kit_px(8), sj.progress,
+                              COL_TEXT);
+            ui_wake();
+        } else {
+            f32 is = g_font_icon->FontSize;
+            ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, ICON_SHARE);
+            dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)),
+                        col32(COL_TEXT), ICON_SHARE);
+        }
     }
-    if (share) {
+    if (share && share_running) {
+        log_line("library: share %u cancelled", sj.id);
+        share_cancel(sj.id);
+    } else if (share) {
         dev_click("library", "card share");
         lib_share_decided(it);
     } else if (share_menu) {
