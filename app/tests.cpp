@@ -1381,6 +1381,17 @@ static void put_file(const Path &p, const char *text)
 // Links (r2.cpp): request signing, names, the history file, limits and what cleanup removes
 static void test_r2()
 {
+    { // connecting a bucket turns Litterbox off once; setting up the same bucket again leaves it as the player set it
+        static Config c;
+        c = {};
+        c.link_litterbox = c.link_catbox = true;
+        R2Conf f = {"acct", "key", "", "bucket", "https://clips.example"};
+        r2_connected(c, f);
+        T(!c.link_litterbox && c.link_catbox && !strcmp(c.r2_account, "acct") && !strcmp(c.r2_bucket, "bucket"));
+        c.link_litterbox = true; // turned back on
+        r2_connected(c, f);
+        T(c.link_litterbox && !strcmp(c.r2_public_url, "https://clips.example"));
+    }
     // AWS's own example for Signature V4 (GET Object, S3 docs)
     SigHeader h[] = {{"host", "examplebucket.s3.amazonaws.com"},
                      {"range", "bytes=0-9"},

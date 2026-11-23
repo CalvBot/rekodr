@@ -3387,11 +3387,21 @@ static void r2_on_save_event(const Event &e)
     }
 }
 
+// What the setup found goes to the settings. Connecting a bucket where there was none turns Litterbox off, once:
+// the player may turn it back on, and setting up the same bucket again leaves it as it is.
+static void r2_connected(Config &c, const R2Conf &f)
+{
+    if (!c.r2_account[0] || !c.r2_access_key[0]) c.link_litterbox = false;
+    str_set(c.r2_account, f.account);
+    str_set(c.r2_access_key, f.access);
+    str_set(c.r2_bucket, f.bucket);
+    str_set(c.r2_public_url, f.public_url);
+}
+
 static void r2_on_event(const Event &e)
 {
     share_poll();
     if (e.a == R2_EV_SETUP) {
-        // What the setup found goes to the settings
         AcquireSRWLockExclusive(&g_r2.lock);
         R2Conf f = g_r2.found;
         g_r2.fetched = {};
@@ -3399,10 +3409,7 @@ static void r2_on_event(const Event &e)
         g_r2.domains = {};
         ReleaseSRWLockExclusive(&g_r2.lock);
         Config &c = g_app.config;
-        str_set(c.r2_account, f.account);
-        str_set(c.r2_access_key, f.access);
-        str_set(c.r2_bucket, f.bucket);
-        str_set(c.r2_public_url, f.public_url);
+        r2_connected(c, f);
         config_save(c, g_app.paths);
         log_line("r2: set up: bucket %s at %s", f.bucket, f.public_url);
         return;
