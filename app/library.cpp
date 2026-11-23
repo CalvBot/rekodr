@@ -2947,10 +2947,24 @@ static bool links_ask_first(LinksAsk ask, const LibItem *it, const char *host = 
     return true;
 }
 
+// A session goes to editors as it is, never squeezed: none of the hosts on taking its size refuses its Share.
+static bool lib_share_too_big(const LibItem &it)
+{
+    return it.kind == LIB_SESSIONS && !share_host_fits((i64)it.size);
+}
+// Says so when it is, for any Share of `it`: greyed buttons still take the click so the reason shows without tips.
+static bool lib_share_refused(const LibItem &it)
+{
+    if (!lib_share_too_big(it)) return false;
+    lib_note(true, "Too big for your connected hosts: %s", it.display_name[0] ? it.display_name : it.name);
+    return true;
+}
+
 // Share on a card or in the player as `kind`, a link on `host` when one is picked. A link with no host opens Options
 // on Sharing; the first to a free host asks first (links_ask_first).
 static void lib_share_item(const LibItem &it, ShareKind kind, const char *host = 0)
 {
+    if (lib_share_refused(it)) return;
     if (kind == SHARE_LINK) {
         if (!links_any_host()) {
             lib_open_sharing();
@@ -2965,6 +2979,7 @@ static void lib_share_item(const LibItem &it, ShareKind kind, const char *host =
 // One-click Share: what share_decide picks
 static void lib_share_decided(const LibItem &it)
 {
+    if (lib_share_refused(it)) return;
     ShareDecision d = lib_share_decide(it);
     if (d.kind == SHARE_LINK && !d.link_ok && links_any_host()) lib_note(true, "Couldn't share %s: %s", it.name, d.link_why);
     else lib_share_item(it, d.kind);
@@ -3613,7 +3628,7 @@ static void card_menu()
         if (lib_menu_item(ICON_PLAY, "Play")) library_play(it);
         if (lib_menu_item(ICON_EDIT, "Edit")) editor_open(it);
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
-        if (lib_menu_item(ICON_SHARE, "Share...")) g_card_share_open = true;
+        if (lib_menu_item(ICON_SHARE, "Share...") && !lib_share_refused(it)) g_card_share_open = true;
         if (lib_menu_item(ICON_LINK, "Copy link")) lib_share_item(it, SHARE_LINK);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
@@ -4615,10 +4630,12 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     bool share_menu = share_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     ShareJobView sj = g_lib_share_job && g_lib_share_job_key == it.key ? share_job(g_lib_share_job) : ShareJobView{};
     bool share_running = sj.id && sj.state < SHARE_DONE; // the button is its Cancel
-    kit_tip(share_running ? "Cancel the share" : "Share. Right-click for more options");
+    bool share_big = !share_running && lib_share_too_big(it); // greyed, its click says why
+    kit_tip(share_running ? "Cancel the share" : share_big ? "Too big for your connected hosts"
+                                                           : "Share. Right-click for more options");
     ImGui::PopID();
     {
-        dl->AddRectFilled(s0, s1, col32(share_hot ? COL_HOVER : COL_PANEL2, share_held ? 0.8f : 1.f),
+        dl->AddRectFilled(s0, s1, col32(share_hot && !share_big ? COL_HOVER : COL_PANEL2, share_held ? 0.8f : 1.f),
                           ImGui::GetStyle().FrameRounding);
         if (share_running) {
             share_cancel_ring(dl, ImVec2(floorf((s0.x + s1.x) / 2), floorf((s0.y + s1.y) / 2)), kit_px(8), sj.progress,
@@ -4628,7 +4645,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             f32 is = g_font_icon->FontSize;
             ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, ICON_SHARE);
             dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)),
-                        col32(COL_TEXT), ICON_SHARE);
+                        col32(share_big ? COL_FAINT : COL_TEXT), ICON_SHARE);
         }
     }
     if (share && share_running) {
@@ -4637,7 +4654,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     } else if (share) {
         dev_click("library", "card share");
         lib_share_decided(it);
-    } else if (share_menu) {
+    } else if (share_menu && !lib_share_refused(it)) {
         dev_click("library", "card share menu");
         lib.target = it;
         g_card_share_open = true;
@@ -4833,7 +4850,8 @@ static void lib_player_view()
     bool share_right = ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     ImGui::SameLine(0, gap);
     kit_next_tip("More share options");
-    if (kit_icon_button(ICON_DOWN, "##sharemenu", KIT_GHOST) || share_right || g_lib_share_ask) ImGui::OpenPopup("share_menu");
+    if ((kit_icon_button(ICON_DOWN, "##sharemenu", KIT_GHOST) || share_right || g_lib_share_ask) && !lib_share_refused(lib.playing))
+        ImGui::OpenPopup("share_menu");
     g_lib_share_ask = false;
     ImGui::SameLine(0, gap);
     kit_next_tip("Edit");
