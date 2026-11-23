@@ -360,7 +360,9 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "art_service")) str_set(c->art_service.s, value);
     else if (!strcmp(key, "r2_account")) str_set(c->r2_account, value);
     else if (!strcmp(key, "r2_access_key")) str_set(c->r2_access_key, value);
-    else if (!strcmp(key, "r2_bucket")) str_set(c->r2_bucket, value);
+    else if (!strcmp(key, "r2_bucket")) {
+        if (value[0]) str_set(c->r2_bucket, value); // empty keeps the default
+    }
     else if (!strcmp(key, "r2_public_url")) str_set(c->r2_public_url, value);
     else if (!strcmp(key, "r2_budget")) real(&c->r2_budget);
     else if (!strcmp(key, "r2_read_cap")) c->r2_read_cap = atoi(value);

@@ -514,6 +514,14 @@ static void test_settings_round_trip()
 
     T(config_save(a, paths));
     T(config_load(&b, paths));
+    {
+        // An empty bucket name reads as the default
+        static Config e;
+        config_defaults(&e, paths);
+        char empty[] = "";
+        config_set(&e, "r2_bucket", empty);
+        T(!strcmp(e.r2_bucket, "clipback"));
+    }
     T(b.bitrate_mbps == 42.5f && b.fps == 120 && b.buffer_by_size && b.dev_log && !strcmp(b.codec.s, "hevc"));
     T(b.hotkey_count == 1 && !strcmp(b.hotkeys[0].keys.s, "Alt+F10") && !strcmp(b.hotkeys[0].action.s, "save 30s"));
     T(b.app_count == 1);
