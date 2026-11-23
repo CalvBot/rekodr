@@ -113,6 +113,10 @@ Keep a whole session from start to finish.
     config file). Its public address is its r2.dev address or a custom domain connected to it in Cloudflare,
     picked under Options' Advanced; r2.dev is rate-limited by Cloudflare. Each host's upload speed is averaged over
     about its last 10 uploads (`upload_rate_*`), and Catbox's row shows it beside the bucket's when tooltips are on.
+    An R2 link is a small preview page (`share_link_page`, on; off gives the .mp4 itself): the clip full width on a
+    dark page with a plain "clipback" under it, and the tags chat apps read for a card with its title and a frame
+    from a third of the way in (at most 1280 wide) that plays it. Catbox and Litterbox links are the .mp4. Reads of
+    the page and its picture count with the clip's. A paused link's page names the clip and doesn't play it.
     An R2 link can be paused (its file moved to a hidden name). Links pause by themselves so R2 costs nothing
     unexpected: all of them until the 1st when the account's reads this month near `r2_read_cap` (10 M, R2's
     free amount), and one until the next day past `r2_read_rate` reads in 24 hours (1 M); 0 turns either off.

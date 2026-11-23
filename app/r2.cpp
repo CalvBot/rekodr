@@ -65,7 +65,9 @@ static const FreeHost FREE_HOSTS[] = {
 };
 
 struct R2Share {
-    char key[R2_KEY_MAX]; // R2: object name in the bucket, "clipback/<16 random letters and digits>/clip.mp4";
+    char key[R2_KEY_MAX]; // R2: object name in the bucket, "clipback/<16 random letters and digits>/clip.mp4"
+                          // (with a preview page, the page is "clipback/<id>" and its picture
+                          // "clipback/<id>/thumb.jpg");
                           // a free host: "<host>/<the file's name there>"; a custom uploader:
                           // "<its name in link_hosts>/<16 random>"
     char url[512];    // the link as given out
@@ -84,6 +86,7 @@ struct R2Share {
                       // near its month's reads (r2_read_cap)
     char hidden[R2_KEY_MAX]; // while paused: where the file is in the bucket instead, a new random name
     i32  pause_day;   // yyyymmdd (local): the day it was paused for its reads, or resumed by hand
+    i32  page_w, page_h; // R2 with a preview page (share_link_page): the video's size; 0 = the link is the .mp4
     // Not kept in the history:
     bool moving;      // a pause or resume is running
     i64  plays_today, plays_month, plays_24h; // GET requests for the file (local day, this month, the last 24
@@ -153,6 +156,8 @@ struct R2Task {
     char       code[1024];  // sign-in: the code the browser brought back
     char       verifier[64]; // sign-in: PKCE's verifier
     u8         pause;   // pause: 1 by hand, 2 past the day's plays; resume: 1 by hand
+    bool       page;    // upload: with a preview page (share_link_page)
+    Path       ffmpeg;  // upload with a page: for its picture
 };
 
 // One link job's own data (main thread, except `info`, which the probe fills under the lock).
@@ -415,6 +420,132 @@ static void r2_make_url(const char *public_url, const char *key, i32 version, ch
     while (len > 0 && public_url[len - 1] == '/') len--;
     if (version > 1) snprintf(out, cap, "%.*s/%s?v=%d", len, public_url, key, version);
     else snprintf(out, cap, "%.*s/%s", len, public_url, key);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Preview pages: a bucket link can be a small page that shows the clip, so chat apps show a card with its picture
+// and play it. The page is "clipback/<id>" (text/html) beside the clip's folder, its picture
+// "<the file's folder>/thumb.jpg": a frame a third of the way in, at most 1280 wide.
+
+// The page's name for a share's key: "clipback/<id>/clip.mp4" -> "clipback/<id>".
+static void r2_page_key(const char *key, char out[R2_KEY_MAX])
+{
+    const char *slash = strrchr(key, '/');
+    i32 n = slash ? (i32)(slash - key) : (i32)strlen(key);
+    snprintf(out, R2_KEY_MAX, "%.*s", n, key);
+}
+
+// The picture beside a file in the bucket: "clipback/<id>/clip.mp4" -> "clipback/<id>/thumb.jpg".
+static void r2_thumb_key(const char *key, char out[R2_KEY_MAX])
+{
+    char dir[R2_KEY_MAX];
+    r2_page_key(key, dir);
+    snprintf(out, R2_KEY_MAX, "%s/thumb.jpg", dir);
+}
+
+// The picture's size for a video of w x h: at most 1280 wide, both even.
+static void r2_thumb_size(i32 w, i32 h, i32 *tw, i32 *th)
+{
+    *tw = *th = 0;
+    if (w <= 0 || h <= 0) return;
+    i32 x = w < 1280 ? w : 1280;
+    x &= ~1;
+    i32 y = (i32)((i64)h * x / w + 1) & ~1;
+    if (x < 2 || y < 2) return;
+    *tw = x;
+    *th = y;
+}
+
+// Appends `s` to out, made safe for an HTML attribute or text and ASCII only: & < > " ' as entities, anything past
+// ASCII (UTF-8) as a numeric entity, control characters left out.
+static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
+{
+    const u8 *p = (const u8 *)s;
+    while (*p && *len < cap - 12) {
+        u32 c = *p++;
+        if (c >= 0x80) {
+            i32 more = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : -1;
+            if (more < 0) continue;
+            c &= 0x3f >> more;
+            bool ok = true;
+            for (i32 k = 0; k < more; k++) {
+                if ((*p & 0xc0) != 0x80) { ok = false; break; }
+                c = c << 6 | (*p++ & 0x3f);
+            }
+            if (ok && c >= 0xa0 && c <= 0x10ffff && (c < 0xd800 || c > 0xdfff))
+                *len += snprintf(out + *len, cap - *len, "&#%u;", c);
+            continue;
+        }
+        const char *e = c == '&' ? "&amp;" : c == '<' ? "&lt;" : c == '>' ? "&gt;" : c == '"' ? "&quot;"
+                      : c == '\'' ? "&#39;" : 0;
+        if (e) *len += snprintf(out + *len, cap - *len, "%s", e);
+        else if (c >= 0x20 && c != 0x7f) out[(*len)++] = (char)c;
+    }
+    out[*len] = 0;
+}
+
+// A run of the page: text with %T (the title), %P (the page's address), %V (the video's), %I (the picture's),
+// %W %H (the video's size) and %w %h (the picture's).
+struct R2PageParts {
+    const char *title, *page, *video, *image;
+    i32 w, h, tw, th;
+};
+static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 cap, i32 *len)
+{
+    for (const char *f = fmt; *f && *len < cap - 1; f++) {
+        if (*f != '%' || !f[1]) {
+            out[(*len)++] = *f;
+            continue;
+        }
+        char c = *++f;
+        const char *s = c == 'T' ? p.title : c == 'P' ? p.page : c == 'V' ? p.video : c == 'I' ? p.image : 0;
+        if (s) r2_html_text(s, out, cap, len);
+        else {
+            i32 n = c == 'W' ? p.w : c == 'H' ? p.h : c == 'w' ? p.tw : p.th;
+            *len += snprintf(out + *len, cap - *len, "%d", n);
+        }
+    }
+    out[*len < cap ? *len : cap - 1] = 0;
+}
+
+// The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that
+// plays it, and the plain "clipback" word under it. Paused, the page names the clip and doesn't play it. All ASCII.
+// Returns the length, 0 if it didn't fit.
+static i32 r2_page_html(const char *title, const char *page_url, const char *video_url, const char *image_url, i32 w,
+                        i32 h, i32 tw, i32 th, bool paused, char *out, i32 cap)
+{
+    if (cap < 2) return 0;
+    R2PageParts p = {title && title[0] ? title : "Clip", page_url, video_url, image_url, w, h, tw, th};
+    i32 len = 0;
+    out[0] = 0;
+    r2_page_put("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
+                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
+                "<meta name=\"robots\" content=\"noindex\">\n<title>%T</title>\n"
+                "<meta property=\"og:type\" content=\"video.other\">\n<meta property=\"og:title\" content=\"%T\">\n"
+                "<meta property=\"og:site_name\" content=\"clipback\">\n<meta property=\"og:url\" content=\"%P\">\n",
+                p, out, cap, &len);
+    if (!paused)
+        r2_page_put("<meta property=\"og:image\" content=\"%I\">\n<meta property=\"og:image:width\" content=\"%w\">\n"
+                    "<meta property=\"og:image:height\" content=\"%h\">\n<meta property=\"og:video\" content=\"%V\">\n"
+                    "<meta property=\"og:video:secure_url\" content=\"%V\">\n"
+                    "<meta property=\"og:video:type\" content=\"video/mp4\">\n"
+                    "<meta property=\"og:video:width\" content=\"%W\">\n<meta property=\"og:video:height\" content=\"%H\">\n"
+                    "<meta name=\"twitter:card\" content=\"player\">\n<meta name=\"twitter:title\" content=\"%T\">\n"
+                    "<meta name=\"twitter:player\" content=\"%P\">\n<meta name=\"twitter:player:width\" content=\"%W\">\n"
+                    "<meta name=\"twitter:player:height\" content=\"%H\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
+                    p, out, cap, &len);
+    r2_page_put("<style>html,body{margin:0;min-height:100%;background:#0c0c0e;color:#7c7c86;"
+                "font:13px/1.5 system-ui,sans-serif}video{display:block;width:100%;max-height:calc(100vh - 44px);"
+                "background:#000}p{margin:0;padding:12px 16px;text-align:center;letter-spacing:.05em}</style>\n"
+                "</head><body>\n",
+                p, out, cap, &len);
+    if (!paused)
+        r2_page_put("<video src=\"%V\" poster=\"%I\" width=\"%W\" height=\"%H\" controls playsinline "
+                    "preload=\"metadata\"></video>\n",
+                    p, out, cap, &len);
+    else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
+    r2_page_put("<p>clipback</p>\n</body></html>\n", p, out, cap, &len);
+    return len < cap - 1 ? len : 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -880,9 +1011,9 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
     FILE *f = _wfopen(part.s, L"wb");
     if (!f) return false;
     for (i32 i = 0; i < n; i++) {
-        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%lld\t%d\t%s\t%d\t", s[i].key, s[i].version,
+        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%lld\t%d\t%s\t%d\t%d\t%d\t", s[i].key, s[i].version,
                 s[i].pinned ? 1 : 0, s[i].removed ? 1 : 0, s[i].bytes, s[i].uploaded_us, s[i].lib_key, (int)s[i].host,
-                s[i].expires_us, (int)s[i].paused, s[i].hidden, s[i].pause_day);
+                s[i].expires_us, (int)s[i].paused, s[i].hidden, s[i].pause_day, s[i].page_w, s[i].page_h);
         r2_tsv_field(f, s[i].url, false);
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
@@ -900,16 +1031,16 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
     for (char *line = text; line && *line && n < max;) {
         char *next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char *f[16] = {};
+        char *f[18] = {};
         i32 count = 0;
-        for (char *p = line; count < 16;) {
+        for (char *p = line; count < 18;) {
             f[count++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 16 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX && atoi(f[7]) >= 0 &&
+        if (count == 18 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX && atoi(f[7]) >= 0 &&
             atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
@@ -925,11 +1056,14 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.paused = (u8)atoi(f[9]);
             str_set(s.hidden, f[10]);
             s.pause_day = atoi(f[11]);
-            if (s.paused > 2 || (s.paused && !s.hidden[0])) s.paused = 0;
-            str_set(s.url, f[12]);
-            str_set(s.title, f[13]);
-            str_set(s.game, f[14]);
-            str_set(s.path, f[15]);
+            if (s.paused > 3 || (s.paused && !s.hidden[0])) s.paused = 0;
+            s.page_w = atoi(f[12]);
+            s.page_h = atoi(f[13]);
+            if (s.page_w <= 0 || s.page_h <= 0) s.page_w = s.page_h = 0;
+            str_set(s.url, f[14]);
+            str_set(s.title, f[15]);
+            str_set(s.game, f[16]);
+            str_set(s.path, f[17]);
             s.plays_today = s.plays_month = s.plays_24h = -1;
         }
         line = next;
@@ -958,6 +1092,22 @@ static i32 r2_find_locked(const char *key)
 {
     for (i32 i = 0; i < g_r2.count; i++)
         if (!strcmp(g_r2.shares[i].key, key)) return i;
+    return -1;
+}
+
+// The share a name in the bucket belongs to: its file (where it is now), and with a page, the page and picture.
+static i32 r2_find_object_locked(const char *name)
+{
+    for (i32 i = 0; i < g_r2.count; i++) {
+        const R2Share &s = g_r2.shares[i];
+        if (!strcmp(s.key, name) || (s.paused && !strcmp(s.hidden, name))) return i;
+        if (!s.page_w) continue;
+        char k[R2_KEY_MAX];
+        r2_page_key(s.key, k);
+        if (!strcmp(k, name)) return i;
+        r2_thumb_key(r2_object_key(s), k);
+        if (!strcmp(k, name)) return i;
+    }
     return -1;
 }
 
@@ -1014,6 +1164,77 @@ static void r2_job_end(u32 id, bool ok, const char *url, const char *error)
     r2_post(R2_EV_JOB, id);
 }
 
+static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char *tagged, i32 tagged_cap);
+
+static bool r2_put_bytes(const R2Conf &c, const char *key, const char *data, i64 len, const char *type)
+{
+    char resp[2048];
+    u32 status = r2_send(c, "PUT", key, "", R2Body{data, 0, 0, len}, type, resp, sizeof resp);
+    if (!r2_ok(status)) log_line("r2: couldn't write %s (%u)", key, status);
+    return r2_ok(status);
+}
+
+// Writes a share's preview page (under the lock's copy `s`): playing, or paused.
+static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
+{
+    char page_key[R2_KEY_MAX], thumb_key[R2_KEY_MAX], page[512], video[512], image[512];
+    r2_page_key(s.key, page_key);
+    r2_thumb_key(s.key, thumb_key);
+    r2_make_url(c.public_url, page_key, s.version, page, sizeof page);
+    r2_make_url(c.public_url, s.key, s.version, video, sizeof video);
+    r2_make_url(c.public_url, thumb_key, s.version, image, sizeof image);
+    i32 tw, th;
+    r2_thumb_size(s.page_w, s.page_h, &tw, &th);
+    static thread_local char html[8192];
+    i32 n = r2_page_html(s.title, page, video, image, s.page_w, s.page_h, tw, th, paused, html, sizeof html);
+    return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
+}
+
+// The preview page's picture from the copy: a frame a third of the way in. Fills the video's size; false (and
+// nothing made) when ffmpeg can't.
+static bool r2_make_thumb(const Path &file, const Path &ffmpeg, const Path &jpg, i32 *w, i32 *h)
+{
+    MediaInfo m = {};
+    char tagged[256];
+    i32 tw, th;
+    if (!ffmpeg.s[0] || !lib_probe(ffprobe_for(ffmpeg), file, &m, tagged, sizeof tagged)) return false;
+    r2_thumb_size(m.width, m.height, &tw, &th);
+    if (!tw) return false;
+    static thread_local wchar_t args[2048];
+    args[0] = 0;
+    char at[32], scale[64];
+    snprintf(at, sizeof at, "%.3f", m.duration > 0 ? m.duration / 3 : 0);
+    snprintf(scale, sizeof scale, "scale=%d:%d", tw, th);
+    const char *head[] = {"-hide_banner", "-loglevel", "error", "-y", "-ss", at, "-i"};
+    arg_list(args, COUNT(args), head, COUNT(head));
+    cmd_arg(args, COUNT(args), file.s);
+    const char *tail[] = {"-an", "-frames:v", "1", "-vf", scale, "-q:v", "3"};
+    arg_list(args, COUNT(args), tail, COUNT(tail));
+    cmd_arg(args, COUNT(args), jpg.s);
+    if (proc_run(ffmpeg.s, args, 30000, 0, 0) != 0 || !file_exists(jpg.s)) {
+        DeleteFileW(jpg.s);
+        return false;
+    }
+    *w = m.width;
+    *h = m.height;
+    return true;
+}
+
+// Deletes what a share has in the bucket: the file at `at` (where it is now), and with a page the picture beside
+// it and the page. Only the file's delete decides; the page and picture are tried once.
+static bool r2_delete_share(const R2Conf &c, const char *key, const char *at, bool page)
+{
+    if (!r2_delete_object(c, at)) return false;
+    if (page) {
+        char k[R2_KEY_MAX];
+        r2_thumb_key(at, k);
+        r2_delete_object(c, k);
+        r2_page_key(key, k);
+        r2_delete_object(c, k);
+    }
+    return true;
+}
+
 // The upload step of a job, then the cleanup.
 // Tells the main thread how fast an upload went, for the host's average (Config.upload_rate). Clips under 1 MB
 // say more about the wait for an answer than about speed and aren't counted.
@@ -1060,7 +1281,23 @@ static void r2_run_upload(const R2Task &t)
     i64 began = now_us();
     if (!err[0]) r2_put_file(t.conf, key, t.file, job, err, sizeof err);
     if (!err[0]) r2_rate_note(HOST_R2, bytes, now_us() - began);
-    if (!err[0]) folder = r2_folder_bytes(t.conf); // the real total, with this clip in it
+    // The preview page's picture; without one the link is the file itself.
+    i32 page_w = 0, page_h = 0;
+    i64 extra = 0;
+    if (!err[0] && t.page) {
+        Path jpg = t.file;
+        wcscat_s(jpg.s, MAX_PATH, L".jpg");
+        char *pic = 0;
+        i64 pic_len = 0;
+        if (r2_make_thumb(t.file, t.ffmpeg, jpg, &page_w, &page_h)) pic = read_file(jpg.s, &pic_len);
+        DeleteFileW(jpg.s);
+        char thumb_key[R2_KEY_MAX];
+        r2_thumb_key(key, thumb_key);
+        if (!pic || !r2_put_bytes(t.conf, thumb_key, pic, pic_len, "image/jpeg")) page_w = page_h = 0;
+        else extra = pic_len + 4096;
+        free(pic);
+        if (!page_w) log_line("r2: no preview page for %s: its picture couldn't be made", key);
+    }
     DeleteFileW(t.file.s);
     if (err[0]) {
         r2_job_end(job, false, "", err);
@@ -1089,21 +1326,49 @@ static void r2_run_upload(const R2Task &t)
     s.hidden[0] = 0;
     s.host = HOST_R2;
     s.expires_us = 0;
-    s.bytes = bytes;
+    s.bytes = bytes + extra;
     s.uploaded_us = now_us();
     s.lib_key = w.lib_key;
     str_set(s.title, w.title);
     str_set(s.game, w.game);
     wide_to_utf8(w.src.s, s.path, sizeof s.path);
-    r2_make_url(t.conf.public_url, key, s.version, s.url, sizeof s.url);
-    str_set(url, s.url);
+    s.page_w = page_w;
+    s.page_h = page_h;
+    R2Share page = s;
+    if (page_w) {
+        char page_key[R2_KEY_MAX];
+        r2_page_key(key, page_key);
+        r2_make_url(t.conf.public_url, page_key, s.version, s.url, sizeof s.url);
+    } else r2_make_url(t.conf.public_url, key, s.version, s.url, sizeof s.url);
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (page_w && !r2_put_page(t.conf, page, false)) { // no page: the link is the file
+        AcquireSRWLockExclusive(&g_r2.lock);
+        at = r2_find_locked(key);
+        if (at >= 0) {
+            g_r2.shares[at].page_w = g_r2.shares[at].page_h = 0;
+            r2_make_url(t.conf.public_url, key, g_r2.shares[at].version, g_r2.shares[at].url,
+                        sizeof g_r2.shares[at].url);
+        }
+        ReleaseSRWLockExclusive(&g_r2.lock);
+    }
+    folder = r2_folder_bytes(t.conf); // the real total, with this clip in it
+    AcquireSRWLockExclusive(&g_r2.lock);
+    at = r2_find_locked(key);
+    if (at < 0) { // gone while unlocked (deleted): nothing to hand out
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        r2_job_end(job, false, "", "The link was deleted");
+        return;
+    }
+    str_set(url, g_r2.shares[at].url);
     i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), at, plan,
                             COUNT(plan));
     static char gone[R2_MAX_SHARES][R2_KEY_MAX];
     static char gone_at[R2_MAX_SHARES][R2_KEY_MAX]; // where each is in the bucket
+    static bool gone_page[R2_MAX_SHARES];
     for (i32 i = 0; i < n; i++) {
         str_set(gone[i], g_r2.shares[plan[i]].key);
         str_set(gone_at[i], r2_object_key(g_r2.shares[plan[i]]));
+        gone_page[i] = g_r2.shares[plan[i]].page_w > 0;
     }
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);
@@ -1111,7 +1376,7 @@ static void r2_run_upload(const R2Task &t)
 
     // Over the limit: the oldest unpinned clips leave the bucket.
     for (i32 i = 0; i < n; i++) {
-        if (!r2_delete_object(t.conf, gone_at[i])) continue;
+        if (!r2_delete_share(t.conf, gone[i], gone_at[i], gone_page[i])) continue;
         AcquireSRWLockExclusive(&g_r2.lock);
         i32 k = r2_find_locked(gone[i]);
         if (k >= 0) {
@@ -1619,11 +1884,12 @@ static void r2_run_delete(const R2Task &t)
     r2_load_locked();
     i32 i = r2_find_locked(t.key);
     bool remote = i >= 0 && r2_in_bucket(g_r2.shares[i]);
+    bool page = i >= 0 && g_r2.shares[i].page_w > 0;
     char at[R2_KEY_MAX] = "";
     if (i >= 0) str_set(at, r2_object_key(g_r2.shares[i]));
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (i < 0) return;
-    if (remote && !r2_delete_object(t.conf, at)) {
+    if (remote && !r2_delete_share(t.conf, t.key, at, page)) {
         event_post_text(EV_LOG, "Couldn't delete the clip from the bucket");
         return;
     }
@@ -2423,10 +2689,10 @@ static void r2_run_usage(const R2Task &t)
         for (i32 pass = 0; pass < 3; pass++) {
             i32 n = r2_parse_plays(resp, lists[pass], keys, counts, R2_MAX_SHARES);
             for (i32 i = 0; i < n; i++) {
-                i32 k = r2_find_locked(keys[i]);
+                i32 k = r2_find_object_locked(keys[i]);
                 if (k < 0) continue;
                 R2Share &sh = g_r2.shares[k];
-                (pass == 0 ? sh.plays_month : pass == 1 ? sh.plays_today : sh.plays_24h) = counts[i];
+                (pass == 0 ? sh.plays_month : pass == 1 ? sh.plays_today : sh.plays_24h) += counts[i];
             }
         }
         g_r2.gen++;
@@ -2485,14 +2751,17 @@ static void r2_run_domains(const R2Task &t)
 }
 
 // Pauses or resumes a share by moving its file in the bucket: a server-side copy to the other name, then a delete
-// of the first. Paused, the file is under a new random name, so the link stops answering.
+// of the first. Paused, the file is under a new random name, so the link stops answering; a preview page's picture
+// moves with it, and the page is written again without the clip (paused) or with it.
 static void r2_run_move(const R2Task &t)
 {
     bool pause = t.kind == R2_T_PAUSE;
     char from[R2_KEY_MAX] = "", to[R2_KEY_MAX] = "";
+    R2Share share = {};
     AcquireSRWLockExclusive(&g_r2.lock);
     i32 i = r2_find_locked(t.key);
     bool go = i >= 0 && r2_in_bucket(g_r2.shares[i]) && (g_r2.shares[i].paused != 0) != pause;
+    if (go) share = g_r2.shares[i];
     if (go && pause) {
         str_set(from, g_r2.shares[i].key);
         r2_new_key(to);
@@ -2514,6 +2783,14 @@ static void r2_run_move(const R2Task &t)
         ok = false;
         snprintf(why, sizeof why, "the token can't delete from %s", t.conf.bucket);
     } else if (!ok) r2_why(status, resp, t.conf, why, sizeof why);
+    if (ok && share.page_w) { // the picture goes with the file; the page stops or starts playing it
+        char pic_from[R2_KEY_MAX], pic_to[R2_KEY_MAX];
+        r2_thumb_key(from, pic_from);
+        r2_thumb_key(to, pic_to);
+        status = r2_send(t.conf, "PUT", pic_to, "", R2Body{}, 0, resp, sizeof resp, 0, 0, 0, pic_from);
+        if (r2_ok(status) && !strstr(resp, "<Error>")) r2_delete_object(t.conf, pic_from);
+        if (!r2_put_page(t.conf, share, pause)) log_line("r2: couldn't rewrite the page of %s", t.key);
+    }
 
     AcquireSRWLockExclusive(&g_r2.lock);
     i = r2_find_locked(t.key);
@@ -2619,8 +2896,6 @@ static DWORD WINAPI r2_signin_thread(void *)
     WSACleanup();
     return 0;
 }
-
-static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char *tagged, i32 tagged_cap);
 
 static DWORD WINAPI r2_thread(void *)
 {
@@ -2949,6 +3224,7 @@ static void r2_on_save_event(const Event &e)
     ReleaseSRWLockShared(&g_r2.lock);
     str_set(t.hosts, w.hosts);
     t.hours = g_app.config.litterbox_hours;
+    t.page = to_r2 && g_app.config.share_link_page && ffmpeg_find(g_app.config.ffmpeg, &t.ffmpeg);
     if (!r2_queue(t)) {
         DeleteFileW(t.file.s);
         r2_fail_now(slot, "Too many links are waiting");

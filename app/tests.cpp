@@ -1248,11 +1248,11 @@ static void test_r2()
     DeleteFileW(file.s);
 
     // Preview pages: the page beside the clip's folder, the picture in it, at most 1280 wide and even
-    char pk[R2_KEY_MAX];
-    r2_page_key("clipback/abcdefghijklmnop/clip.mp4", pk);
-    T(!strcmp(pk, "clipback/abcdefghijklmnop"));
-    r2_thumb_key("clipback/qrstuvwxyzabcdef/clip.mp4", pk);
-    T(!strcmp(pk, "clipback/qrstuvwxyzabcdef/thumb.jpg"));
+    char pkey[R2_KEY_MAX];
+    r2_page_key("clipback/abcdefghijklmnop/clip.mp4", pkey);
+    T(!strcmp(pkey, "clipback/abcdefghijklmnop"));
+    r2_thumb_key("clipback/qrstuvwxyzabcdef/clip.mp4", pkey);
+    T(!strcmp(pkey, "clipback/qrstuvwxyzabcdef/thumb.jpg"));
     i32 tw, th;
     r2_thumb_size(1920, 1080, &tw, &th);
     T(tw == 1280 && th == 720);

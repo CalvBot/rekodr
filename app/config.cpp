@@ -77,6 +77,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_keep_days = 7;
     c->share_max_mb = 20;
     c->share_squeeze = 1.5f;
+    c->share_link_page = true;
     str_set(c->link_hosts, "catbox,litterbox");
     c->litterbox_hours = 72;
     str_set(c->r2_bucket, "clipback");
@@ -375,6 +376,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
     else if (!strcmp(key, "share_max_mb")) real(&c->share_max_mb);
     else if (!strcmp(key, "share_squeeze")) real(&c->share_squeeze);
+    else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
@@ -545,6 +547,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "link_hosts = %s\nlitterbox_hours = %d\nfree_links_seen = %s\n", c.link_hosts, c.litterbox_hours,
             c.free_links_seen ? "true" : "false");
     fprintf(f, "share_max_mb = %g\nshare_squeeze = %g\n", c.share_max_mb, c.share_squeeze);
+    boolean("share_link_page", c.share_link_page);
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\npopup_monitor_game = %d\n", c.popup_monitor, c.popup_monitor_game);
     boolean("toast_small_in_game", c.toast_small_in_game);
