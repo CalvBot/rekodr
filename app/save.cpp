@@ -2231,6 +2231,11 @@ static void link_fit_size(i32 w, i32 h, i32 max_h, i32 *fw, i32 *fh)
     *fh = (i32)(h * s + 0.5) & ~1;
 }
 
+// The end card a preview ends on (EditJob.end_card): its text centred on black, in Segoe UI.
+#define END_CARD_TEXT "Continues on the page"
+#define END_CARD_FONT "C\\:/Windows/Fonts/segoeui.ttf"
+static const f32 END_CARD_S = 1.5f;
+
 static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 {
     const SaveRequest &req = w->req;
@@ -2312,13 +2317,13 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     bool link_big = link && aim > 0 && m.duration > 0 && src_bytes * (span / m.duration) > aim * 1.1;
     i32 fit_w = 0, fit_h = 0; // a Link made smaller (max_h)
     if (link) link_fit_size(m.width, m.height, j.max_h, &fit_w, &fit_h);
-    bool reencode = share || zoom || colored || seq || (link && (!link_video_ok || link_big || fit_w));
+    bool reencode = share || zoom || colored || seq || j.end_card > 0 || (link && (!link_video_ok || link_big || fit_w));
     bool sized = reencode && (share || link) && aim > 0;
     ShareRate rate = {};
     i32 video_kbps = 0;
     if (sized) {
         bool audio = m.track_count > 0;
-        if (!share_rate(dur, audio, aim, limit, src_kbps - (audio ? SHARE_AUDIO_KBPS : 0), &rate)) {
+        if (!share_rate(dur + j.end_card, audio, aim, limit, src_kbps - (audio ? SHARE_AUDIO_KBPS : 0), &rate)) {
             snprintf(out, out_cap, "too long for %.0f MB: trim it shorter", (limit ? limit : aim) / SHARE_MIB);
             return SAVE_EV_FAILED;
         }
@@ -2395,6 +2400,15 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             graph_add(w, "%s[v]scale=%d:%d:flags=lanczos[vfit];\n", end > 0 && w->graph[end - 1] != ';' ? ";\n" : "",
                       fit_w, fit_h);
         }
+        if (j.end_card > 0) { // the card after the finished picture, as [vend]; the sound just ends before it
+            i32 end = w->graph_len, cw = fit_w ? fit_w : m.width, ch = fit_w ? fit_h : m.height;
+            while (end > 0 && (w->graph[end - 1] == '\n' || w->graph[end - 1] == ' ')) end--;
+            graph_add(w, "%scolor=c=black:s=%dx%d:r=%.3f:d=%.3f,format=%s,drawtext=fontfile='%s':text='%s'"
+                         ":fontcolor=0xd6d9de:fontsize=%d:x=(w-text_w)/2:y=(h-text_h)/2,setsar=1[card];\n",
+                      end > 0 && w->graph[end - 1] != ';' ? ";\n" : "", cw, ch, m.fps > 0 ? m.fps : 60.0, j.end_card,
+                      w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p", END_CARD_FONT, END_CARD_TEXT, ch / 18 > 8 ? ch / 18 : 8);
+            graph_add(w, "[%s]setsar=1[vcut];\n[vcut][card]concat=n=2:v=1:a=0[vend];\n", fit_w ? "vfit" : "v");
+        }
         if (w->graph_full) {
             snprintf(out, out_cap, "the zoom or colour has too many keyframes");
             RemoveDirectoryW(work.s);
@@ -2426,7 +2440,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             cmd_arg(a, cap, graph.s);
         }
         if (reencode) {
-            arg_pair(a, cap, "-map", fit_w ? "[vfit]" : "[v]");
+            arg_pair(a, cap, "-map", j.end_card > 0 ? "[vend]" : fit_w ? "[vfit]" : "[v]");
             edit_encoder_args(a, cap, w->cfg.vendor, sized ? video_kbps : 0);
         } else {
             arg_pair(a, cap, "-map", "0:v:0");
@@ -2709,15 +2723,17 @@ static u32 save_edit(SaveKind kind, const EditJob &job)
 // H.264 and AAC, the edit only trims and the copy isn't much over `aim` bytes; anything else is encoded at the
 // bitrate for `aim`, under `limit` (0 = no limit). With no aim it's encoded at about the source's quality. Follow it
 // with save_view(id) like any save; the caller deletes the file once it's done with it. Returns the job id, or 0 if
-// it couldn't be queued. With `max_h` the picture is made at most that tall and 1920 wide (link_fit_size).
+// it couldn't be queued. With `max_h` the picture is made at most that tall and 1920 wide (link_fit_size), and
+// with `end_card` it ends on that many seconds of END_CARD_TEXT.
 static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &edit, const char *stem, i64 aim = 0,
-                     i64 limit = 0, i32 max_h = 0)
+                     i64 limit = 0, i32 max_h = 0, f32 end_card = 0)
 {
     static EditJob j;
     j = {};
     j.aim_bytes = aim;
     j.limit_bytes = limit;
     j.max_h = max_h;
+    j.end_card = end_card;
     j.src = src;
     j.out_dir = g_app.paths.link_dir;
     j.info = info;
@@ -2726,6 +2742,89 @@ static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &e
     clean_name(j.stem);
     if (!j.stem[0]) str_set(j.stem, "clip");
     return save_queue(SAVE_LINK, 0, 0, j.stem, &j);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The social copy: the small H.264 copy a link's page gives chat apps to play. When the whole clip fits the budget
+// at SOCIAL_MIN_KBPS or better it's the whole clip; else, with SOCIAL_PREVIEW on, it's a preview: the first part at
+// 720p and SOCIAL_PREVIEW_KBPS, as long as the budget allows, then END_CARD_S of "Continues on the page".
+
+#define SOCIAL_PREVIEW 1 // experimental: 0 makes every social copy the whole clip
+enum { SOCIAL_MIN_KBPS = 1000, SOCIAL_PREVIEW_KBPS = 3000, SOCIAL_PREVIEW_H = 720 };
+
+// The edit cut to its first `secs` seconds of output: Simple pieces in order, Advanced items by where they start.
+// Keys stay on their moments in the video, so they need no change; an item's keys go with it.
+static void edit_first(EditRecord *e, f64 video_len, f64 secs)
+{
+    if (e->mode == EDIT_ADVANCED) {
+        i32 n = 0;
+        for (i32 i = 0; i < e->item_count; i++) {
+            EditItem it = e->items[i];
+            if (it.start >= secs - 0.01) continue;
+            if (item_end(it) > secs) {
+                it.to = it.from + (secs - it.start);
+                it.fade_out = 0;
+            }
+            e->items[n++] = it;
+        }
+        e->item_count = n;
+        n = 0;
+        for (i32 k = 0; k < e->ikey_count; k++)
+            if (item_find(*e, e->ikeys[k].item) >= 0) e->ikeys[n++] = e->ikeys[k];
+        e->ikey_count = n;
+        return;
+    }
+    EditPiece p[EDIT_MAX_PIECES];
+    i32 n = pieces_of(*e, video_len, p), kept = 0;
+    f64 at = 0;
+    for (; kept < n && at < secs - 0.01; kept++) {
+        f64 len = p[kept].to - p[kept].from;
+        if (at + len > secs + 0.01) {
+            p[kept].to = p[kept].from + (secs - at);
+            e->fade_out = 0; // the end card follows the cut
+        }
+        at += len;
+    }
+    if (kept < n) e->fade_out = 0;
+    pieces_store(e, p, kept, video_len);
+}
+
+// How long the preview of a `full`-second clip is in `budget` bytes: whole seconds at SOCIAL_PREVIEW_KBPS (and the
+// sound) with room for the end card. 0 when the whole clip is the copy (it fits at SOCIAL_MIN_KBPS and `max_h` > 0,
+// or SOCIAL_PREVIEW is off) or there's no room for a preview.
+static f64 social_preview_len(f64 full, bool audio, i64 budget, i32 max_h)
+{
+    ShareRate r;
+    bool whole_fits = max_h > 0 && share_rate(full, audio, budget, budget, 0, &r) && r.video_kbps >= SOCIAL_MIN_KBPS;
+    if (!SOCIAL_PREVIEW || whole_fits) return 0;
+    f64 kbit = budget * (1 - SHARE_MARGIN) * 8 * 0.98 / 1000;
+    f64 secs = floor(kbit / (SOCIAL_PREVIEW_KBPS + (audio ? SHARE_AUDIO_KBPS : 0)) - END_CARD_S);
+    return secs >= 5 && secs < full ? secs : 0;
+}
+
+// Queues the social copy of `src` with `edit` applied, at most `budget` bytes (save_link): the whole clip at most
+// `max_h` tall when it fits at SOCIAL_MIN_KBPS, else the preview (social_preview_len). `*preview_s` is the preview's
+// length (0: the whole clip), `*full_s` the clip's. Follow it with save_view(id); 0 when it couldn't be queued or
+// neither fits.
+static u32 save_social_copy(const Path &src, const MediaInfo &info, const EditRecord &edit, const char *stem,
+                            i64 budget, i32 max_h, f64 *preview_s, f64 *full_s)
+{
+    f64 full = edit.mode == EDIT_ADVANCED ? adv_len(edit) : pieces_len(edit, info.duration);
+    f64 preview = social_preview_len(full, info.track_count > 0, budget, max_h);
+    *preview_s = preview;
+    *full_s = full;
+    if (!preview) {
+        ShareRate r;
+        if (max_h <= 0 || !share_rate(full, info.track_count > 0, budget, budget, 0, &r) || r.video_kbps < SOCIAL_MIN_KBPS)
+            return 0;
+        return save_link(src, info, edit, stem, budget, budget, max_h);
+    }
+    static EditRecord cut;
+    cut = edit;
+    edit_first(&cut, info.duration, preview);
+    u32 id = save_link(src, info, cut, stem, budget, budget, SOCIAL_PREVIEW_H, END_CARD_S);
+    if (id) log_line("social %u: preview, first %.0f of %.0f s", id, preview, full);
+    return id;
 }
 
 // Saves the last `secs` seconds of the buffer as a clip in <save_dir>\<year>\Clips. A start before the oldest

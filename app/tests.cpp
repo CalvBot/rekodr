@@ -2619,6 +2619,42 @@ static void test_edit_advanced()
     ed.edit = ed.drag_from = {};
 }
 
+// The social copy: whole when it fits, else a preview as long as the budget allows; the edit cut to its first part
+static void test_social_preview()
+{
+    const i64 MB = 1024 * 1024;
+    T(social_preview_len(60, true, 80 * MB, 1080) == 0);  // a minute fits at well over SOCIAL_MIN_KBPS
+    f64 p = social_preview_len(25 * 60, true, 80 * MB, 720);
+    T(!SOCIAL_PREVIEW || (p > 120 && p < 300 && p == floor(p)));
+    T(!SOCIAL_PREVIEW || social_preview_len(25 * 60, true, 80 * MB, -1) == p); // no size fits the whole
+    T(social_preview_len(20, true, 80 * MB, -1) == 0);      // shorter than the preview would be
+
+    EditRecord e = {};
+    e.pieces[0] = {10, 40};
+    e.pieces[1] = {100, 200};
+    e.piece_count = 2;
+    e.fade_out = 1;
+    edit_first(&e, 600, 50);
+    T(e.piece_count == 2 && e.pieces[0].to == 40 && e.pieces[1].from == 100 && e.pieces[1].to == 120);
+    T(pieces_len(e, 600) == 50 && e.fade_out == 0);
+    EditRecord w = {};
+    edit_first(&w, 600, 90);
+    T(w.piece_count == 1 && w.pieces[0].from == 0 && w.pieces[0].to == 90);
+
+    EditRecord a = {};
+    a.mode = EDIT_ADVANCED;
+    a.items[0] = {0, 0, 30, 0, 0, 0, 1, 0, 0};
+    a.items[1] = {30, 50, 100, 0, 2, 0, 2, 0, 0};
+    a.items[2] = {90, 200, 210, 0, 0, 0, 3, 0, 0};
+    a.item_count = 3;
+    a.ikeys[0].item = 2;
+    a.ikeys[1].item = 3;
+    a.ikey_count = 2;
+    edit_first(&a, 600, 60);
+    T(a.item_count == 2 && a.items[1].to == 80 && a.items[1].fade_out == 0 && adv_len(a) == 60);
+    T(a.ikey_count == 1 && a.ikeys[0].item == 2);
+}
+
 static void test_edit_xml()
 {
     Editor &ed = g_app.editor;
@@ -2796,6 +2832,7 @@ int main()
     test_pieces();
     test_edit_volumes();
     test_edit_xml();
+    test_social_preview();
     test_edit_advanced();
     test_lanes();
     test_share();
