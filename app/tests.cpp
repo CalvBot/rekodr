@@ -707,7 +707,10 @@ static void test_share()
     // The lowest a copy goes at 67%, and the table set and reset
     T(fabs(share_lowest_kbps(1920, 1080, 60, 67) - 8040) < 0.01);
     share_kbps_set(3, true, 20000);
-    T(share_reco_kbps(1920, 1080, 60) == 20000 && !share_kbps_is_default());
+    cf.share_kbps_custom = false; // Use recommended: the table's kept but not used
+    T(share_reco_kbps(1920, 1080, 60) == 12000 && !share_kbps_is_default());
+    cf.share_kbps_custom = true;
+    T(share_reco_kbps(1920, 1080, 60) == 20000);
     share_kbps_set(3, true, 5);
     T(cf.share_kbps[3][1] == 100);
     share_kbps_set(9, true, 5000); // no such row

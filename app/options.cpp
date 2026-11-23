@@ -2954,24 +2954,55 @@ static void opt_mbps_text(i32 kbps, char *out, i32 cap)
     else snprintf(out, cap, "%.2f", kbps / 1000.0);
 }
 
-// Quality: the recommended bitrate (share_kbps) for each picture height at 30 and 60 fps, a box per cell in Mbps.
-// Under it the source of the defaults as a link, and Reset in its own slot while a value differs from them.
+// Quality: "Use recommended", with the source of its numbers (SHARE_KBPS_DEFAULT) as a link under it, and the
+// switch. Off (share_kbps_custom), the table opens under it with the player's own numbers, kept while the switch is
+// on: the bitrate for each picture height at 30 and 60 fps, a box per cell in Mbps. Reset, in its slot beside the
+// switch while the table's open, puts the recommended numbers in the table; dimmed while nothing differs.
 static void opt_quality_table()
 {
     Config &c = g_app.config;
     static char typed[6][2][16];
     static i32 editing = -1; // the cell being typed in, row * 2 + column
-    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), sh = g_font_small->FontSize;
-    f32 head_h = dp(22), cell_h = fh + dp(6), foot_h = dp(30), pad = dp(12);
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), sh = g_font_small->FontSize, nh = g_font->FontSize;
     if (g_opt_quality_jump > 0) { // the Share menu's Quality
         g_opt_quality_jump--;
         ImGui::SetScrollHereY(0);
     }
-    opt_row_begin(0, 0, cw, pad + head_h + 6 * cell_h + foot_h + dp(4));
+    f32 reset_w = dp(72), toggle_w = kit_px(36), gap = dp(8);
+    opt_row_begin(0, 0, reset_w + gap + toggle_w, dp(52));
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    opt_text_at(dl, g_font, ImVec2(g_row.x0, g_row.y + pad + head_h + floorf((cell_h - g_font->FontSize) / 2)), COL_TEXT,
-                "Quality", g_row.x1 - cw - dp(20));
-    f32 x = g_row.x1 - cw, label_w = dp(64), gap = dp(8), box_w = floorf((cw - label_w - gap) / 2);
+    f32 ty = floorf(g_row.y + (g_row.h - nh - dp(3) - sh) / 2);
+    opt_text_at(dl, g_font, ImVec2(g_row.x0, ty), COL_TEXT, "Use recommended", g_row.x1 - reset_w - gap - toggle_w - dp(20));
+    if (opt_link_at("##kbpssource", ImVec2(g_row.x0, ty + nh + dp(3)), "Source: YouTube recommended upload settings")) {
+        dev_click("options", "bitrate source");
+        open_url("https://support.google.com/youtube/answer/1722171");
+    }
+    f32 fy = opt_row_frame_y();
+    if (c.share_kbps_custom) {
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - toggle_w - gap - reset_w, fy));
+        bool reset = kit_button("Reset##kbpsreset", KIT_SECONDARY, ImVec2(reset_w, 0), !share_kbps_is_default());
+        kit_tip("Put the recommended numbers in the table");
+        if (reset) {
+            share_kbps_reset();
+            editing = -1;
+            log_line("options: share bitrates reset");
+            options_apply(0);
+        }
+    }
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - toggle_w, fy));
+    bool reco = !c.share_kbps_custom;
+    if (kit_toggle("##kbpsreco", &reco)) {
+        c.share_kbps_custom = !reco;
+        editing = -1;
+        log_line("options: share bitrates %s", reco ? "recommended" : "custom");
+        options_apply(0);
+    }
+    opt_row_end();
+    if (!c.share_kbps_custom) return;
+
+    f32 head_h = dp(22), cell_h = fh + dp(6), pad = dp(4);
+    opt_row_begin(0, 0, cw, head_h + 6 * cell_h + 2 * pad, false);
+    f32 x = g_row.x1 - cw, label_w = dp(64), box_w = floorf((cw - label_w - gap) / 2);
     f32 y = g_row.y + pad;
     static const char *const heads[2] = {"30 fps", "60 fps"};
     for (i32 k = 0; k < 2; k++)
@@ -3009,21 +3040,6 @@ static void opt_quality_table()
                     options_apply(0);
                 }
             }
-        }
-    }
-    f32 ly = y + floorf((foot_h - sh) / 2);
-    if (opt_link_at("##kbpssource", ImVec2(x, ly), "Source: YouTube recommended upload settings")) {
-        dev_click("options", "bitrate source");
-        open_url("https://support.google.com/youtube/answer/1722171");
-    }
-    if (!share_kbps_is_default()) {
-        const char *reset = "Reset";
-        if (opt_link_at("##kbpsreset", ImVec2(g_row.x1 - text_w(g_font_small, reset), ly), reset)) {
-            dev_click("options", "bitrate reset");
-            share_kbps_reset();
-            editing = -1;
-            log_line("options: share bitrates reset");
-            options_apply(0);
         }
     }
     opt_row_end();

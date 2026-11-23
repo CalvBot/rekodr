@@ -383,6 +383,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_max_mb")) real(&c->share_max_mb);
     else if (!strcmp(key, "share_min_quality")) c->share_min_quality = atoi(value);
     else if (!strcmp(key, "render_edits")) boolean(&c->render_edits);
+    else if (!strcmp(key, "share_kbps_custom")) boolean(&c->share_kbps_custom);
     else if (!strncmp(key, "share_kbps_", 11)) { // share_kbps_1080_60 = 12000
         i32 height = 0, fps = 0;
         if (sscanf(key + 11, "%d_%d", &height, &fps) == 2)
@@ -566,6 +567,7 @@ static bool config_save(const Config &c, const Paths &paths)
     for (i32 i = 0; i < 6; i++)
         fprintf(f, "share_kbps_%d_30 = %d\nshare_kbps_%d_60 = %d\n", SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][0],
                 SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][1]);
+    boolean("share_kbps_custom", c.share_kbps_custom);
     boolean("share_link_page", c.share_link_page);
     boolean("render_edits", c.render_edits);
     boolean("clock_24h", c.clock_24h);

@@ -2095,7 +2095,11 @@ static f64 share_reco_kbps_in(const i32 (*table)[2], i32 w, i32 h, f64 fps)
     return column(0) + (column(1) - column(0)) * (fps - 30) / 30;
 }
 
-static f64 share_reco_kbps(i32 w, i32 h, f64 fps) { return share_reco_kbps_in(g_app.config.share_kbps, w, h, fps); }
+static f64 share_reco_kbps(i32 w, i32 h, f64 fps)
+{
+    const Config &c = g_app.config;
+    return share_reco_kbps_in(c.share_kbps_custom ? c.share_kbps : SHARE_KBPS_DEFAULT, w, h, fps);
+}
 
 // Options' line under Lower quality to fit: the lowest video bitrate, in kbit/s, a w x h clip at `fps` may be made
 // at with `min_quality` (a percent, as share_min_quality).

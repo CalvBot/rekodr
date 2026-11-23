@@ -151,8 +151,9 @@ struct Config {
     f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)
     i32 share_min_quality; // Lower quality to fit: a copy may go down to this percent of the recommended bitrate
                            // to fit a size, 50 to 100; 100 = never (67)
-    i32 share_kbps[6][2];  // the recommended video bitrate in kbit/s for each SHARE_KBPS_HEIGHTS row, at 30 and
-                           // 60 fps (SHARE_KBPS_DEFAULT)
+    i32 share_kbps[6][2];  // the player's own video bitrate in kbit/s for each SHARE_KBPS_HEIGHTS row, at 30 and
+                           // 60 fps (SHARE_KBPS_DEFAULT), used while share_kbps_custom is on
+    bool share_kbps_custom; // Share uses share_kbps, else SHARE_KBPS_DEFAULT ("Use recommended", off)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
@@ -302,15 +303,17 @@ struct ActivityEntry {
     char exe[64]; // the game being played from `us` on; empty = the desktop
 };
 
+// The arrays are on the heap and grow to hold the whole buffer (buffer.cpp); buffer_idx_free lets go of them. A
+// zeroed BufferIdx is an empty one.
 struct BufferIdx {
-    VideoRun        runs[512];
-    i32             run_count;
-    VideoSeg        segs[65536]; // every run's segments, oldest first
-    i32             seg_count;
-    AudioStreamInfo streams[1024];
-    i32             stream_count;
-    AudioSeg        audio_segs[65536]; // grouped by stream (first_seg, seg_count)
-    i32             audio_seg_count;
+    VideoRun        *runs;
+    i32             run_count, run_cap;
+    VideoSeg        *segs; // every run's segments, oldest first
+    i32             seg_count, seg_cap;
+    AudioStreamInfo *streams;
+    i32             stream_count, stream_cap;
+    AudioSeg        *audio_segs; // grouped by stream (first_seg, seg_count)
+    i32             audio_seg_count, audio_seg_cap;
     ActivityEntry   activity[4096];
     i32             activity_count;
     i64             oldest_us, newest_us; // video footage span (0 if none)
@@ -845,7 +848,7 @@ struct Timeline {
     i64           hover_us;
     TimelineRow   rows[64];
     i32           row_count;
-    i16           stream_row[1024]; // the row of each idx->streams entry, -1 = none
+    i16           stream_row[16384]; // the row of each idx->streams entry, -1 = none
     TimelineFrame frames[48]; // the preview and the frames along the video row
     u32           frame_clock;
     i64           pending_key, failed_key, shown_key;
