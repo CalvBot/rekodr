@@ -180,6 +180,8 @@ struct Config {
     bool share_kbps_custom; // Share uses share_kbps, else SHARE_KBPS_DEFAULT ("Use recommended", off)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     char clipper_name[64]; // the name a link's card shows beside the game, "" = none (never taken from Windows)
+    u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
+                           // by its id ("classic")
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
 

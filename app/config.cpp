@@ -39,6 +39,10 @@ static void paths_init(Paths *p)
     wcscpy_s(g_log_path, log.s);
 }
 
+// The card styles, in r2.cpp.
+static i32 embed_style_find(const char *id);
+static const char *embed_style_id(i32 style);
+
 static void config_defaults(Config *c, const Paths &paths)
 {
     *c = {};
@@ -434,6 +438,7 @@ static void config_set(Config *c, const char *key, char *value)
     }
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
     else if (!strcmp(key, "clipper_name")) str_set(c->clipper_name, value);
+    else if (!strcmp(key, "embed_style")) { i32 i = embed_style_find(value); c->embed_style = (u8)(i < 0 ? 0 : i); }
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
@@ -614,7 +619,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_kbps_custom", c.share_kbps_custom);
     boolean("share_link_page", c.share_link_page);
     fprintf(f, "social_copy_mb = %g\n", c.social_copy_mb);
-    fprintf(f, "clipper_name = %s\n", c.clipper_name);
+    fprintf(f, "clipper_name = %s\nembed_style = %s\n", c.clipper_name, embed_style_id(c.embed_style));
     boolean("render_edits", c.render_edits);
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\npopup_corner = %s\n", c.popup_monitor, corner_name(c.popup_corner));
