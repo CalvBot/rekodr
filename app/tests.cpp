@@ -1692,6 +1692,7 @@ static void test_r2()
                           "https://x.dev/clipback/abc/clip.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg?v=2", 1920,
                           1080, 1280, 720, false, html, sizeof html);
     T(hn > 0 && hn == (i32)strlen(html));
+    T(strstr(html, "min-height:100%;") && strstr(html, "width:100%;") && !strstr(html, "100720"));
     bool ascii = true;
     for (i32 i = 0; i < hn; i++) ascii = ascii && (u8)html[i] < 0x80;
     T(ascii);

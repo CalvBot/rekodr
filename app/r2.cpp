@@ -487,7 +487,7 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 }
 
 // A run of the page: text with %T (the title), %P (the page's address), %V (the video's), %I (the picture's),
-// %W %H (the video's size) and %w %h (the picture's).
+// %W %H (the video's size) and %w %h (the picture's). Any other % is kept as it is, as in the CSS's 100%.
 struct R2PageParts {
     const char *title, *page, *video, *image;
     i32 w, h, tw, th;
@@ -495,7 +495,7 @@ struct R2PageParts {
 static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 cap, i32 *len)
 {
     for (const char *f = fmt; *f && *len < cap - 1; f++) {
-        if (*f != '%' || !f[1]) {
+        if (*f != '%' || !f[1] || !strchr("TPVIWHwh", f[1])) {
             out[(*len)++] = *f;
             continue;
         }
