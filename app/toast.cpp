@@ -1,11 +1,12 @@
 // toast.cpp: the desktop toasts, small windows over everything in the corner of a monitor (Options > General >
-// Popups): "Clip saved" when a save finishes while a game is in front, "Session ended" when a session the game is set
-// to Ask for has ended (sessions.cpp), and the marker window `mark ask` opens. All are laid out alike, from the
+// Popups): "Clip saved" when a save finishes while a game is in front ("Save failed" when it didn't), "Session
+// ended" when a session the game is set to Ask for has ended (sessions.cpp), and the marker window `mark ask` opens. All are laid out alike, from the
 // TOAST_* sizes: a tile beside a title over a line, then a row of buttons with the main one last on the right. A
 // test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
 //
 // Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
-// Each goes after its own time (TOAST_LIFE_*): Session saved or ended 15 s, Clip saved 5 s, 10 s once a share failed.
+// Each goes after its own time (TOAST_LIFE_*): Session saved or ended 15 s, Clip saved 5 s, 10 s once a save or share
+// failed.
 // A ring round the Dismiss X counts it down. While the mouse is on one the count holds at full, and starts again from
 // full when the mouse leaves.
 // Clip saved: Edit opens the file in the editor. Share does what share_decide picks and stays up while it runs, its
@@ -753,6 +754,29 @@ static void toast_saved(SaveKind kind, const char *path)
     if (kind == SAVE_PREVIEW || kind == SAVE_LINK) return;
     if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
     toast_saved_show(kind, path, g_app.config.toast_small_in_game && sessions_game_in_front());
+}
+
+// A save failed: Save failed with the first line of the reason, no buttons, unless clipback's own window is in front
+// (it shows the failure itself). Shares, previews and links say so where they were asked for.
+static void toast_save_failed(SaveKind kind, const char *why)
+{
+    if (kind != SAVE_CLIP && kind != SAVE_SESSION && kind != SAVE_KEEP) return;
+    if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
+    Toast &t = g_toast_saved;
+    RECT work;
+    if (!toast_monitor(TOAST_SAVED, &work) || !toast_window(t)) return;
+    t.path[0] = 0;
+    t.brief = true;
+    t.sharing = TSH_NONE;
+    utf8_to_wide("Save failed", t.title, COUNT(t.title));
+    char line[120];
+    str_set(line, why && why[0] ? why : "Something went wrong");
+    line[strcspn(line, "\r\n")] = 0;
+    utf8_to_wide(line, t.line, COUNT(t.line));
+    toast_place(t, work);
+    t.open = true;
+    ShowWindow(t.hwnd, SW_SHOWNOACTIVATE);
+    toast_countdown(t, TOAST_LIFE_FAILED);
 }
 
 // Session ended was answered: Save (TP_MAIN), Review (TP_SECOND), or dismissed, closed or ignored (anything else). Every

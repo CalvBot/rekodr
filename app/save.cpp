@@ -2888,6 +2888,7 @@ static void saved_check()
 }
 
 static void toast_saved(SaveKind kind, const char *path); // toast.cpp
+static void toast_save_failed(SaveKind kind, const char *why);
 static void render_on_save(u32 id, i64 what, const char *text); // render.cpp
 
 static void save_on_event(const Event &e)
@@ -2925,6 +2926,7 @@ static void save_on_event(const Event &e)
         g_app.saving.jobs_running--;
         log_line("save %u: failed: %s", id, e.text);
         pipe_saved(v->kind, false, e.text, v);
+        toast_save_failed(v->kind, e.text);
         break;
     case SAVE_EV_CANCELLED:
         v->state = SAVE_CANCELLED;
