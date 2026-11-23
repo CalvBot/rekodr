@@ -2728,6 +2728,122 @@ static void opt_budget_row()
     opt_row_end();
 }
 
+// The player's ShareX uploaders (.sxcu in the uploaders folder, r2.cpp): stem, name and the host they send to.
+// Read again every 3 s, and at once after one is added or removed (link_uploader_add / _remove, library.cpp).
+struct OptUploader {
+    char stem[64], name[64], host[96];
+};
+static OptUploader g_uploaders[32];
+static i32 g_uploader_count = -1;
+static f64 g_uploaders_at;
+
+static i32 opt_uploaders()
+{
+    f64 t = ImGui::GetTime();
+    if (g_uploader_count >= 0 && t - g_uploaders_at < 3) return g_uploader_count;
+    g_uploaders_at = t;
+    static char stems[32][64];
+    static Uploader u;
+    i32 n = uploader_list(stems, COUNT(stems));
+    for (i32 i = 0; i < n; i++) {
+        OptUploader &o = g_uploaders[i];
+        char why[160];
+        str_set(o.stem, stems[i]);
+        bool ok = uploader_load(stems[i], &u, why, sizeof why);
+        str_set(o.name, ok && u.name[0] ? u.name : stems[i]);
+        o.host[0] = 0;
+        if (ok) {
+            const char *h = strstr(u.url, "://");
+            h = h ? h + 3 : u.url;
+            snprintf(o.host, sizeof o.host, "%.*s", (int)strcspn(h, "/?:"), h);
+        } else snprintf(o.host, sizeof o.host, "%s", why);
+    }
+    return g_uploader_count = n;
+}
+
+// The uploaders as a list of OPT_UPLOADER_ROWS rows, paged, so the card keeps its size: an icon, the name, the
+// host, a remove button and a switch. Under them, Add uploader, with the page arrows when there's more than a page.
+enum { OPT_UPLOADER_ROWS = 3 };
+
+static void opt_uploader_rows()
+{
+    Config &c = g_app.config;
+    static i32 page;
+    static char note[200]; // what Add uploader did, in place of the Add row's line
+    i32 n = opt_uploaders(), pages = n ? (n + OPT_UPLOADER_ROWS - 1) / OPT_UPLOADER_ROWS : 1;
+    if (page >= pages) page = pages - 1;
+    f32 fh = ImGui::GetFrameHeight(), sw = dp(36), is = dp(30);
+    for (i32 r = 0; r < OPT_UPLOADER_ROWS; r++) {
+        i32 k = page * OPT_UPLOADER_ROWS + r;
+        if (k >= n) {
+            opt_row_begin(0, 0, 0, dp(52), r == 0);
+            if (n == 0 && r == 0) opt_empty_row("ShareX uploaders (.sxcu) send clips to a host of your own");
+            opt_row_end();
+            continue;
+        }
+        const OptUploader &u = g_uploaders[k];
+        ImGui::PushID(k);
+        opt_row_begin(0, 0, fh + dp(12) + sw, dp(52));
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        // The icon: the name's first letter on a disc
+        ImVec2 ic(g_row.x0 + is / 2, g_row.y + g_row.h / 2);
+        dl->AddCircleFilled(ic, is / 2, col32(COL_PANEL2));
+        char letter[2] = {(char)toupper((u8)u.name[0]), 0};
+        f32 lw = text_w(g_font_bold, letter);
+        opt_text_at(dl, g_font_bold, ImVec2(floorf(ic.x - lw / 2), floorf(ic.y - g_font_bold->FontSize / 2)), COL_TEXT,
+                    letter, ic.x + is);
+        f32 tx = g_row.x0 + is + dp(12), max_x = g_row.x1 - fh - dp(12) - sw - dp(20);
+        f32 nh = g_font->FontSize, sh = g_font_small->FontSize, ty = floorf(g_row.y + (g_row.h - nh - dp(3) - sh) / 2);
+        opt_text_at(dl, g_font, ImVec2(tx, ty), COL_TEXT, u.name, max_x);
+        opt_text_at(dl, g_font_small, ImVec2(tx, ty + nh + dp(3)), COL_DIM, u.host, max_x);
+        f32 y = opt_row_frame_y();
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - sw - dp(12) - fh, y));
+        kit_next_tip("Remove");
+        if (kit_icon_button(ICON_DELETE, "##upremove", KIT_GHOST)) {
+            char stem[64];
+            str_set(stem, u.stem);
+            if (!link_uploader_remove(stem)) snprintf(note, sizeof note, "Couldn't delete %s's file", stem);
+            g_uploader_count = -1;
+            log_line("options: uploader %s removed", stem);
+            options_apply(0);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - sw, y));
+        bool on = link_host_on(u.stem);
+        if (kit_toggle("##upon", &on)) {
+            link_uploader_set(u.stem, on);
+            log_line("options: uploaders \"%s\"", c.link_uploaders);
+            options_apply(0);
+        }
+        ImGui::PopID();
+        opt_row_end();
+    }
+    f32 bw = dp(150), arrows = 2 * fh + dp(4);
+    opt_row_begin("Uploaders", note[0] ? note : "Tried after Catbox and Litterbox", bw + dp(12) + arrows);
+    f32 x = g_row.x1 - bw - dp(12) - arrows, y = opt_row_frame_y();
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    if (kit_icon_button(ICON_LEFT, "##uppageback", KIT_GHOST, page > 0)) page--;
+    ImGui::SetCursorScreenPos(ImVec2(x + fh + dp(4), y));
+    if (kit_icon_button(ICON_RIGHT, "##uppagenext", KIT_GHOST, page < pages - 1)) page++;
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - bw, y));
+    if (kit_button(ICON_ADD "  Add uploader...##addup", KIT_SECONDARY, ImVec2(bw, 0))) {
+        Path file = {};
+        if (pick_file(file, &file, L"ShareX uploaders", L"*.sxcu")) {
+            char stem[64], why[160];
+            if (link_uploader_add(file.s, stem, sizeof stem, why, sizeof why)) {
+                g_uploader_count = -1;
+                snprintf(note, sizeof note, "Added %s", stem);
+                // Show the page it's on
+                i32 m = opt_uploaders();
+                for (i32 i = 0; i < m; i++)
+                    if (!strcmp(g_uploaders[i].stem, stem)) page = i / OPT_UPLOADER_ROWS;
+                options_apply(0);
+            } else snprintf(note, sizeof note, "Couldn't add it: %s", why);
+            log_line("options: uploader: %s", note);
+        }
+    }
+    opt_row_end();
+}
+
 static void options_sharing()
 {
     Config &c = g_app.config;
@@ -2837,6 +2953,8 @@ static void options_sharing()
         }
         opt_row_end();
     }
+
+    opt_uploader_rows();
 
     // Cloudflare: the player's own R2 bucket. One row for the account: who and what the setup is doing under the
     // name, then Set up again and one button that signs in, waits (a click gives up), or signs out.
