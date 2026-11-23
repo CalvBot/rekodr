@@ -339,8 +339,8 @@ static void test_telemetry()
     T(!strcmp(out, "{\"version\":\"" CLIPBACK_VERSION "\",\"kind\":\"idea\",\"text\":\"it \\\"works\\\"\"}"));
     static char longer[3000];
     memset(longer, 'a', sizeof longer - 1);
-    longer[FB_TEXT_MAX - 1] = (char)0xc3; // a two-byte character across the limit is dropped whole
-    longer[FB_TEXT_MAX] = (char)0xa9;
+    ((u8 *)longer)[FB_TEXT_MAX - 1] = 0xc3; // a two-byte character across the limit is dropped whole
+    ((u8 *)longer)[FB_TEXT_MAX] = 0xa9;
     tel_feedback_json(2, longer, out, sizeof out);
     const char *t = strstr(out, "\"text\":\"") + 8;
     T((i32)(strrchr(out, '"') - t) == FB_TEXT_MAX - 1);
