@@ -2757,10 +2757,12 @@ static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &e
 // ---------------------------------------------------------------------------------------------------------------
 // The social copy: the small H.264 copy a link's page gives chat apps to play. When the whole clip fits the budget
 // at SOCIAL_MIN_KBPS or better it's the whole clip; else, with SOCIAL_PREVIEW on, it's a preview: the first part at
-// 720p and SOCIAL_PREVIEW_KBPS, as long as the budget allows, then END_CARD_S of "Continues on the page".
+// 720p and SOCIAL_PREVIEW_KBPS, as long as the budget allows, then END_CARD_S of "Continues on the page". The budget
+// is the most chat apps play; the copy is made SOCIAL_MARGIN under it.
 
 #define SOCIAL_PREVIEW 1 // experimental: 0 makes every social copy the whole clip
 enum { SOCIAL_MIN_KBPS = 1000, SOCIAL_PREVIEW_KBPS = 3000, SOCIAL_PREVIEW_H = 720 };
+static const f64 SOCIAL_MARGIN = 0.05;
 
 // The edit cut to its first `secs` seconds of output: Simple pieces in order, Advanced items by where they start.
 // Keys stay on their moments in the video, so they need no change; an item's keys go with it.
@@ -2805,9 +2807,10 @@ static void edit_first(EditRecord *e, f64 video_len, f64 secs)
 static f64 social_preview_len(f64 full, bool audio, i64 budget, i32 max_h)
 {
     ShareRate r;
-    bool whole_fits = max_h > 0 && share_rate(full, audio, budget, budget, 0, &r) && r.video_kbps >= SOCIAL_MIN_KBPS;
+    i64 aim = (i64)(budget * (1 - SOCIAL_MARGIN));
+    bool whole_fits = max_h > 0 && share_rate(full, audio, aim, budget, 0, &r) && r.video_kbps >= SOCIAL_MIN_KBPS;
     if (!SOCIAL_PREVIEW || whole_fits) return 0;
-    f64 kbit = budget * (1 - SHARE_MARGIN) * 8 * 0.98 / 1000;
+    f64 kbit = aim * 8 * 0.98 / 1000;
     f64 secs = floor(kbit / (SOCIAL_PREVIEW_KBPS + (audio ? SHARE_AUDIO_KBPS : 0)) - END_CARD_S);
     return secs >= 5 && secs < full ? secs : 0;
 }
@@ -2823,16 +2826,17 @@ static u32 save_social_copy(const Path &src, const MediaInfo &info, const EditRe
     f64 preview = social_preview_len(full, info.track_count > 0, budget, max_h);
     *preview_s = preview;
     *full_s = full;
+    i64 aim = (i64)(budget * (1 - SOCIAL_MARGIN));
     if (!preview) {
         ShareRate r;
-        if (max_h <= 0 || !share_rate(full, info.track_count > 0, budget, budget, 0, &r) || r.video_kbps < SOCIAL_MIN_KBPS)
+        if (max_h <= 0 || !share_rate(full, info.track_count > 0, aim, budget, 0, &r) || r.video_kbps < SOCIAL_MIN_KBPS)
             return 0;
-        return save_link(src, info, edit, stem, budget, budget, max_h);
+        return save_link(src, info, edit, stem, aim, budget, max_h);
     }
     static EditRecord cut;
     cut = edit;
     edit_first(&cut, info.duration, preview);
-    u32 id = save_link(src, info, cut, stem, budget, budget, SOCIAL_PREVIEW_H, END_CARD_S);
+    u32 id = save_link(src, info, cut, stem, aim, budget, SOCIAL_PREVIEW_H, END_CARD_S);
     if (id) log_line("social %u: preview, first %.0f of %.0f s", id, preview, full);
     return id;
 }

@@ -172,6 +172,7 @@ struct Config {
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     bool render_edits;   // an edited clip's file in Clips is its edit rendered, the original in Clips\Source (on)
     f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)
+    f32 social_copy_mb;  // the biggest video chat cards play from a link (MB), made about 5% under it (80)
     i32 share_min_quality; // Lower quality to fit: a copy may go down to this percent of the recommended bitrate
                            // to fit a size, 50 to 100; 100 = never (67)
     i32 share_kbps[6][2];  // the player's own video bitrate in kbit/s for each SHARE_KBPS_HEIGHTS row, at 30 and

@@ -460,8 +460,12 @@ static void r2_thumb_key(const char *key, char out[R2_KEY_MAX])
 
 // Chat apps play the video a page names only when they can fetch all of it in a few seconds: Discord gives itself
 // about 10 s and gives up on a big file. A page names a small copy of the clip, beside it in the bucket, when the
-// clip is bigger than R2_SOCIAL_BYTES, 1080p or 1920 wide; the page itself plays the clip.
-static const i64 R2_SOCIAL_BYTES = 80ll * 1000 * 1000;
+// clip is bigger than r2_social_bytes() (social_copy_mb), 1080p or 1920 wide; the page itself plays the clip.
+static i64 r2_social_bytes()
+{
+    f64 mb = g_app.config.social_copy_mb;
+    return (i64)((mb < 8 ? 8 : mb > 2000 ? 2000 : mb) * 1000 * 1000);
+}
 
 // The small copy beside a file in the bucket: "clipback/<id>/clip.mp4" -> "clipback/<id>/social.mp4".
 static void r2_social_key(const char *key, char out[R2_KEY_MAX])
@@ -3612,16 +3616,16 @@ static void r2_start_copy(i32 slot)
     g_r2.jobs[slot].state = R2_PREPARING;
     ReleaseSRWLockExclusive(&g_r2.lock);
     bool page = !strcmp(w.hosts, "r2") && g_app.config.share_link_page;
-    w.phase = page && (w.aim > R2_SOCIAL_BYTES || w.info.width > 1920 || w.info.height > 1080) ? 1 : 0;
+    w.phase = page && (w.aim > r2_social_bytes() || w.info.width > 1920 || w.info.height > 1080) ? 1 : 0;
     w.preview = 0;
-    if (strcmp(w.hosts, "r2") && w.aim > R2_SOCIAL_BYTES) {
-        // A free host or uploader gets what a card plays, never more than R2_SOCIAL_BYTES: the clip at a smaller
+    if (strcmp(w.hosts, "r2") && w.aim > r2_social_bytes()) {
+        // A free host or uploader gets what a card plays, never more than r2_social_bytes(): the clip at a smaller
         // height, or a preview of its start
         f64 full_s = 0;
         f64 secs = w.edit.mode == EDIT_ADVANCED ? adv_len(w.edit) : pieces_len(w.edit, w.info.duration);
         i32 h = r2_social_height(secs, w.info.width, w.info.height, w.info.fps,
-                                 w.info.track_count > 0, w.aim, R2_SOCIAL_BYTES);
-        w.save = save_social_copy(w.src, w.info, w.edit, stem, R2_SOCIAL_BYTES, h, &w.preview, &full_s);
+                                 w.info.track_count > 0, w.aim, r2_social_bytes());
+        w.save = save_social_copy(w.src, w.info, w.edit, stem, r2_social_bytes(), h, &w.preview, &full_s);
         if (w.preview > 0) log_line("r2: %s gets a preview, the first %.0f of %.0f s", w.hosts, w.preview, full_s);
     } else w.save = save_link(w.src, w.info, w.edit, stem, w.aim, w.limit);
     if (!w.save) r2_fail_now(slot, "Too many saves are waiting");
@@ -3875,14 +3879,14 @@ static void r2_on_save_event(const Event &e)
         i64 bytes = GetFileAttributesExW(t.file.s, GetFileExInfoStandard, &fa)
                         ? ((i64)fa.nFileSizeHigh << 32) | fa.nFileSizeLow : 0;
         t.social_h = r2_social_height(t.seconds, w.info.width, w.info.height, w.info.fps, w.info.track_count > 0, bytes,
-                                      R2_SOCIAL_BYTES);
+                                      r2_social_bytes());
         if (t.social_h) { // the whole clip at that height, or (-1) a preview of its start
             f64 full_s = 0;
             w.full = t.file;
             w.social_h = t.social_h;
             w.preview = 0;
             w.phase = 2;
-            w.save = save_social_copy(w.src, w.info, w.edit, "social", R2_SOCIAL_BYTES, t.social_h, &w.preview,
+            w.save = save_social_copy(w.src, w.info, w.edit, "social", r2_social_bytes(), t.social_h, &w.preview,
                                       &full_s);
             if (w.save) return;
             log_line("r2: no small copy could be made: cards show the picture");
