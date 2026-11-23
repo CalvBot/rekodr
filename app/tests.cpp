@@ -1844,6 +1844,21 @@ static void test_edit_advanced()
     adv_graph(w, j, 0.5, "", "yuv420p", false, streams);
     T(strstr(w->graph, "color=c=black:s=1920x1080:r=30.0000:d=1.0000") != 0 && strstr(w->graph, "xfade") == 0);
     T(strstr(w->graph, "[o1]") == 0);
+
+    // Split at 1.5 with nothing selected: the picture and both sound items there, the second halves linked to each
+    // other and not to the first halves, each with the keys of the item it came from
+    Editor &ed = g_app.editor;
+    ed.item.info = m;
+    ed.edit = a;
+    ed.adv_sel_count = 0;
+    adv_split(1.5);
+    T(ed.edit.item_count == 9 && track_items(ed.edit, 0, idx) == 3);
+    const EditItem &h0 = ed.edit.items[idx[0]], &h1 = ed.edit.items[idx[1]];
+    T(near(item_end(h0), 1.5) && near(h1.start, 1.5) && near(h1.from, 2.5) && near(h1.to, 4));
+    T(h1.link && h1.link != h0.link && ikey_range(ed.edit, h1.id, IKEY_ZOOM, &first) == 3);
+    track_items(ed.edit, 2, idx);
+    T(ed.edit.items[idx[1]].link == h1.link && near(ed.edit.items[idx[1]].start, 1.5));
+    ed.edit = {};
 }
 
 static void test_edit_xml()

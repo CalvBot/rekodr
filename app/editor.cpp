@@ -16,6 +16,13 @@ static i32 ed_tracks(const MediaInfo &m, i32 *out, i32 cap)
     return n;
 }
 
+// Advanced editing lives in adv_editor.cpp; these are called from the shared editor code before it.
+static bool adv_on() { return g_app.editor.edit.mode == EDIT_ADVANCED; }
+static void adv_seek(f64 u);
+static void adv_toggle();
+static void adv_apply_volumes();
+static void adv_resync();
+
 static bool edit_is_default(const EditRecord &e)
 {
     if (e.mode == EDIT_ADVANCED) return false;
@@ -216,7 +223,17 @@ static void edit_write(const Path &file, const EditRecord &e)
 }
 
 // The zoom at `t`: eased between keys with smoothstep, the same curve the render uses.
-static void zoom_at(const EditRecord &e, f64 t, f64 *z, f64 *x, f64 *y) { zoom_keys_at(e.keys, e.key_count, t, z, x, y); }
+// In Advanced, the zoom of the picture item at the playhead (none over a gap); `t` is in the file either way.
+static void zoom_at(const EditRecord &e, f64 t, f64 *z, f64 *x, f64 *y)
+{
+    if (e.mode == EDIT_ADVANCED) {
+        i32 v = item_at(e, 0, g_app.editor.adv_u);
+        if (v >= 0) item_zoom_at(e, e.items[v].id, t, z, x, y);
+        else *z = 1, *x = *y = 0.5;
+        return;
+    }
+    zoom_keys_at(e.keys, e.key_count, t, z, x, y);
+}
 
 static void zoom_uv(const EditRecord &e, f64 t, ImVec2 *uv0, ImVec2 *uv1)
 {
@@ -411,7 +428,11 @@ static f64 ed_frame()
 // otherwise it's the file's own time. Keys and pieces are kept in the file's time (t).
 static bool ed_joined() { return g_app.editor.edit.piece_count > 1; }
 
-static f64 ed_axis_len() { return ed_joined() ? pieces_len(g_app.editor.edit, ed_duration()) : ed_duration(); }
+static f64 ed_axis_len()
+{
+    if (adv_on()) return ImMax(adv_len(g_app.editor.edit), ed_duration());
+    return ed_joined() ? pieces_len(g_app.editor.edit, ed_duration()) : ed_duration();
+}
 
 // A moment in the file on the axis; -1 when it's cut out.
 static f64 ed_u(f64 t)
@@ -429,6 +450,7 @@ static f64 ed_s(f64 u) { return ed_joined() ? piece_src(g_app.editor.edit, ed_du
 static f64 ed_play_u()
 {
     Editor &ed = g_app.editor;
+    if (adv_on()) return ed.adv_u;
     f64 pos = ed.player.pos;
     if (!ed_joined()) return pos;
     EditPiece pc[EDIT_MAX_PIECES];
@@ -445,6 +467,7 @@ static f64 ed_play_u()
 static void ed_seek_u(f64 u)
 {
     Editor &ed = g_app.editor;
+    if (adv_on()) return adv_seek(u);
     if (ed_joined()) player_seek(&ed.player, piece_src(ed.edit, ed_duration(), u, &ed.play_piece));
     else player_seek(&ed.player, u);
 }
@@ -506,6 +529,7 @@ static void ed_apply_volumes()
     Editor &ed = g_app.editor;
     Player &p = ed.player;
     if (!p.engine) return;
+    if (adv_on()) return adv_apply_volumes();
     i32 tracks[MEDIA_MAX_TRACKS];
     i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
     // At the playhead: each track's volume times the whole mix's (the engines can't go past 100%). Only what's
@@ -608,6 +632,12 @@ static void editor_open(const LibItem &item)
     ed.settled = ed.edit;
     ed.undo_count = ed.redo_count = 0;
     ed.aiming = false;
+    ed.adv_u = 0;
+    ed.adv_playing = false;
+    ed.adv_sel_count = 0;
+    ed.adv_drag = 0;
+    ed.adv_ask_simple = false;
+    adv_resync();
     ed.result[0] = 0;
     ed.result_path[0] = ed.result_url[0] = 0;
     ed.result_error = false;
@@ -961,12 +991,26 @@ static void ed_undo(bool redo)
     i32 *from_n = redo ? &ed.redo_count : &ed.undo_count, *to_n = redo ? &ed.undo_count : &ed.redo_count;
     if (!*from_n) return;
     ed_push(to, to_n, COUNT(ed.undo), ed.edit);
+    bool was_adv = adv_on();
     ed.edit = from[--*from_n];
     ed.settled = ed.edit;
     ed.dirty = true;
     ed.heard_set = false;
     ed.play_piece = -1;
     ed_sel_clear();
+    if (was_adv != adv_on()) { // Undo went back across Simple / Advanced
+        f64 u = was_adv ? ed.adv_u : ed.player.pos;
+        ed.tracks_ready = false;
+        ed.adv_playing = false;
+        ed.adv_sel_count = 0;
+        player_pause(&ed.player);
+        ed_seek_u(u);
+    }
+    if (adv_on()) {
+        f64 len = adv_len(ed.edit);
+        if (ed.adv_u > len) ed.adv_u = len;
+        adv_resync();
+    }
 }
 
 // ---- Pieces: playing them one after another ----
@@ -976,6 +1020,7 @@ static void ed_toggle()
 {
     Editor &ed = g_app.editor;
     Player &p = ed.player;
+    if (adv_on()) return adv_toggle();
     f64 u;
     if (p.paused && ed_joined() &&
         (!piece_out(ed.edit, ed_duration(), p.pos, &u) || ed_play_u() >= ed_axis_len() - 0.05))
@@ -989,7 +1034,7 @@ static void ed_follow_pieces()
 {
     Editor &ed = g_app.editor;
     Player &p = ed.player;
-    if (!ed_joined() || !p.loaded) {
+    if (adv_on() || !ed_joined() || !p.loaded) {
         ed.play_piece = -1;
         return;
     }
@@ -1268,22 +1313,28 @@ static void color_shader_on(const ImDrawList *, const ImDrawCmd *cmd)
 static void ed_draw_picture(const Player &p, ImVec2 a, ImVec2 b)
 {
     Editor &ed = g_app.editor;
+    const EditRecord &e = ed.edit;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    i32 pic = adv_on() ? item_at(e, 0, ed.adv_u) : -1;
+    if (adv_on() && pic < 0) { // a gap: black
+        dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 255));
+        return;
+    }
     player_draw(p, a, b);
     f32 eqv[4] = {};
     bool any = false;
     for (i32 c = 0; c < EDIT_COLORS; c++) {
-        f64 v = color_at(ed.edit, c, p.pos);
+        f64 v = pic >= 0 ? item_level_at(e, e.items[pic].id, IKEY_COLOR + c, p.pos) : color_at(e, c, p.pos);
         if (fabs(v - 1) > 0.001) any = true;
         eqv[c] = (f32)color_eq(c, v);
     }
-    ImDrawList *dl = ImGui::GetWindowDrawList();
     if (any && p.srv && p.frame_ready && color_shader_ready()) {
         dl->AddCallback(color_shader_on, eqv, sizeof eqv);
         dl->AddImage((ImTextureID)(intptr_t)p.srv, a, b);
         dl->AddCallback(ImDrawCallback_ResetRenderState, 0);
     }
     // Fades to black over it (a crossfade shows as a cut: one video plays at a time)
-    f64 g = fade_gain(ed.edit, ed_duration(), ed_play_piece(), p.pos);
+    f64 g = pic >= 0 ? item_fade_gain(e, ed_duration(), pic, p.pos) : fade_gain(e, ed_duration(), ed_play_piece(), p.pos);
     if (g < 0.999) dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, (i32)((1 - g) * 255)));
 }
 
@@ -2015,6 +2066,8 @@ static void ed_caption(const char *label)
     ImGui::PopFont();
 }
 
+#include "adv_editor.cpp"
+
 // Open in Premiere Pro or DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which both import.
 // One video track with the zoom as Basic Motion keys, and each recorded track (the Mix left out) with its volume
 // times the whole mix's as Audio Levels keys; muted tracks are turned off. Eased curves are written as keys a fifth
@@ -2262,22 +2315,13 @@ static void ed_open_in(bool premiere)
     ed.result_error = false;
 }
 
-static void ed_edit_tab(f32 w)
+// Simple's controls: zoom, colour and transitions at the playhead, and the selected keys.
+static void ed_simple_panel(f32 w)
 {
     Editor &ed = g_app.editor;
     Player &p = ed.player;
-    const ImGuiStyle &st = ImGui::GetStyle();
-    f32 fh = ImGui::GetFrameHeight(), sp = st.ItemSpacing.x;
+    f32 fh = ImGui::GetFrameHeight(), sp = ImGui::GetStyle().ItemSpacing.x;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-
-    // The game it's filed under: the library's picker (lib_game_field)
-    ed_caption("GAME");
-    if (lib_game_field("##game", ed.item, w)) {
-        snprintf(ed.result, sizeof ed.result, "Filed under %s", ed.item.info.game);
-        ed.result_error = false;
-    }
-    ImGui::Dummy(ImVec2(1, kit_px(8)));
-
 
     // Zoom at the playhead: a slider with its value on the right.
     ed_caption("ZOOM");
@@ -2422,8 +2466,27 @@ static void ed_edit_tab(f32 w)
     if (kit_button(ICON_DELETE "  Delete", KIT_GHOST, ImVec2(bw, 0), n > 0)) ed_delete_selected();
     ImGui::EndDisabled();
     ImGui::Dummy(ImVec2(1, kit_px(8)));
+}
+
+static void ed_edit_tab(f32 w)
+{
+    Editor &ed = g_app.editor;
+    const ImGuiStyle &st = ImGui::GetStyle();
+    f32 sp = st.ItemSpacing.x;
+
+    // The game it's filed under: the library's picker (lib_game_field)
+    ed_caption("GAME");
+    if (lib_game_field("##game", ed.item, w)) {
+        snprintf(ed.result, sizeof ed.result, "Filed under %s", ed.item.info.game);
+        ed.result_error = false;
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    if (adv_on()) adv_edit_panel(w);
+    else ed_simple_panel(w);
 
     // Undo and redo, as buttons too.
+    f32 bw = (w - sp) / 2;
     ed_caption("CHANGES");
     if (kit_button(ICON_UNDO "  Undo", KIT_GHOST, ImVec2(bw, 0), ed.undo_count > 0 || memcmp(&ed.edit, &ed.settled, sizeof ed.edit)))
         ed_undo(false);
@@ -2432,10 +2495,10 @@ static void ed_edit_tab(f32 w)
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // The edit as an XML sequence, into a full editor
-    ed_caption("OPEN IN");
-    if (kit_button(ICON_VIDEO "  Premiere Pro", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(true);
+    ed_caption("OPEN IN"); // TODO: XML for Advanced edits
+    if (kit_button(ICON_VIDEO "  Premiere Pro", KIT_GHOST, ImVec2(bw, 0), !adv_on())) ed_open_in(true);
     ImGui::SameLine();
-    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(false);
+    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0), !adv_on())) ed_open_in(false);
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // Its comment (the same as the card's), saved when the box is left.
@@ -2747,26 +2810,37 @@ static void screen_editor()
         ed.tracks_ready = false;
         player_open(&p, ed.path, ed_in(), false);
     }
+    // Simple plays the sound with the picture (on an engine per track when there's more than one); Advanced always
+    // has an engine per track, each moved to its own item (adv_update).
     if (p.loaded && !ed.tracks_ready) {
         i32 tracks[MEDIA_MAX_TRACKS];
         i32 n = ed_tracks(ed.item.info, tracks, PLAYER_MAX_TRACK_ENGINES);
-        if (n > 1 && p.audio_count > 1) player_set_tracks(&p, tracks, n);
+        bool adv = adv_on();
+        p.tracks_free = adv;
+        if (adv ? n >= 1 && p.audio_count >= 1 : n > 1 && p.audio_count > 1) player_set_tracks(&p, tracks, n);
+        else if (p.track_engine_count) player_set_tracks(&p, tracks, 0);
+        adv_resync();
         ed.heard_set = false;
         ed_apply_volumes();
         ed.tracks_ready = true;
     }
     // One piece plays from the in to the out; joined pieces play one after another (ed_follow_pieces).
     bool joined = ed_joined();
-    p.loop_from = joined ? ed_s(0) : ed_in();
-    p.stop_at = joined ? 0 : ed_out();
-    player_update(&p);
-    ed_follow_pieces();
+    if (adv_on()) {
+        player_update(&p);
+        adv_update();
+    } else {
+        p.loop_from = joined ? ed_s(0) : ed_in();
+        p.stop_at = joined ? 0 : ed_out();
+        player_update(&p);
+        ed_follow_pieces();
+    }
     // Every half second everything is handed over again, for a track engine that's only just loaded.
     static u64 heard_at;
     if (GetTickCount64() - heard_at > 500) { heard_at = GetTickCount64(); ed.heard_set = false; }
     if (ed.tracks_ready) ed_apply_volumes();
     // While the waveforms are measured, what's on screen goes first (each chunk measured wakes the window).
-    if (ed.wave && !ed.wave->state) {
+    if (ed.wave && !ed.wave->state && !adv_on()) {
         f64 wa = ed_s(ed.view_from), wz = ed_s(ed.view_from + ed.view_span);
         wave_view(ed.wave, wa < wz ? wa : wz, wa < wz ? wz : wa);
     }
@@ -2776,8 +2850,7 @@ static void screen_editor()
     ImVec2 avail = ImGui::GetContentRegionAvail();
     Config &cfg = g_app.config;
 
-    // Header: back, the name, and the game and when under it; the Simple / Advanced switch on the right, with
-    // Advanced not there yet.
+    // Header: back, the name, and the game and when under it; the Simple / Advanced switch on the right.
     ImVec2 h0 = ImGui::GetCursorScreenPos();
     f32 head_h = fmaxf(fh, g_font_big->FontSize + g_font_small->FontSize + kit_px(4));
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + (head_h - fh) / 2));
@@ -2787,9 +2860,8 @@ static void screen_editor()
     {
         static const char *const modes[] = {"Simple", "Advanced"};
         ImGui::SetCursorScreenPos(ImVec2(h0.x + avail.x - mode_w, h0.y + (head_h - fh) / 2));
-        ImGui::BeginDisabled();
-        lib_switch("##mode", modes, mode_w, fh, false, COL_PANEL2, COL_HOVER, 0x3a3d44);
-        ImGui::EndDisabled();
+        if (lib_switch("##mode", modes, mode_w, fh, adv_on(), COL_PANEL2, COL_HOVER, 0x3a3d44)) adv_set_mode(!adv_on(), false);
+        adv_ask_dialog();
     }
     f32 tx = h0.x + fh + kit_px(14), tw = avail.x - (tx - h0.x) - mode_w - kit_px(14);
     f32 ty = h0.y + (head_h - g_font_big->FontSize - g_font_small->FontSize - kit_px(4)) / 2;
@@ -2850,10 +2922,11 @@ static void screen_editor()
     }
     f64 z, cx, cy;
     zoom_at(ed.edit, p.pos, &z, &cx, &cy);
+    i32 pic = adv_on() ? adv_picture_item() : -1;
     if (ImGui::IsItemActivated()) {
         ed.aiming = z > 1.001;
         if (ed.aiming) {
-            ed.aim_key = ed_add_key(p.pos);
+            ed.aim_key = adv_on() ? (pic >= 0 ? adv_key_at(ed.edit, pic, IKEY_ZOOM, p.pos) : -1) : ed_add_key(p.pos);
             ed.aim_mx = io.MousePos.x;
             ed.aim_my = io.MousePos.y;
             ed.aim_kx = cx;
@@ -2861,14 +2934,17 @@ static void screen_editor()
             if (ed.aim_key < 0) ed.aiming = false;
         }
     }
-    if (ImGui::IsItemActive() && ed.aiming && ed.aim_key < ed.edit.key_count) {
-        ZoomKey &k = ed.edit.keys[ed.aim_key];
+    bool adv_aim = adv_on() && ed.aim_key < ed.edit.ikey_count && ed.edit.ikeys[ed.aim_key].what == IKEY_ZOOM;
+    if (ImGui::IsItemActive() && ed.aiming && (adv_aim || (!adv_on() && ed.aim_key < ed.edit.key_count))) {
+        f64 *kz = adv_on() ? &ed.edit.ikeys[ed.aim_key].v : &ed.edit.keys[ed.aim_key].z;
+        f64 *kx = adv_on() ? &ed.edit.ikeys[ed.aim_key].x : &ed.edit.keys[ed.aim_key].x;
+        f64 *ky = adv_on() ? &ed.edit.ikeys[ed.aim_key].y : &ed.edit.keys[ed.aim_key].y;
         // The footage follows the mouse at the zoom's scale; the frame follows it over the unzoomed footage
-        f64 s = footage_view ? -1 / k.z : 1;
+        f64 s = footage_view ? -1 / *kz : 1;
         f64 nx = ed.aim_kx + (io.MousePos.x - ed.aim_mx) / (b.x - a.x) * s;
         f64 ny = ed.aim_ky + (io.MousePos.y - ed.aim_my) / (b.y - a.y) * s;
-        k.x = nx < 0 ? 0 : nx > 1 ? 1 : nx;
-        k.y = ny < 0 ? 0 : ny > 1 ? 1 : ny;
+        *kx = nx < 0 ? 0 : nx > 1 ? 1 : nx;
+        *ky = ny < 0 ? 0 : ny > 1 ? 1 : ny;
         ed.dirty = true;
     } else if (ImGui::IsItemDeactivated()) {
         if (!ed.aiming) ed_toggle();
@@ -2912,8 +2988,9 @@ static void screen_editor()
     dl->AddRectFilled(r0, ImVec2(r0.x + main_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
     ImGui::SetCursorScreenPos(ImVec2(r0.x + pad, y));
-    kit_next_tip(p.paused ? "Play" : "Pause", "Space");
-    if (kit_icon_button(p.paused ? ICON_PLAY : ICON_PAUSE, "##play", KIT_PRIMARY)) ed_toggle();
+    bool stopped = adv_on() ? !ed.adv_playing : p.paused;
+    kit_next_tip(stopped ? "Play" : "Pause", "Space");
+    if (kit_icon_button(stopped ? ICON_PLAY : ICON_PAUSE, "##play", KIT_PRIMARY)) ed_toggle();
     f64 dur = ed_duration(), alen = ed_axis_len();
     char t1[32];
     fmt_time(ed_play_u(), t1, sizeof t1, true);
@@ -2930,13 +3007,17 @@ static void screen_editor()
     kit_next_tip("Zoom in", "+");
     if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, ed.view_span > 0.51)) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
     {
-        bool lit = ed.edit.piece_count > 0;
+        bool lit = ed.edit.piece_count > 0 && !adv_on();
         f32 x_clear = r0.x + main_w - pad - fh, text_r = x_clear;
         char ta[32], tz[32], len[32], sel[112];
         ImGui::SetCursorScreenPos(ImVec2(x_clear, y));
         kit_next_tip("Clear in and out");
         if (kit_icon_button(ICON_CLOSE, "##clear_inout", KIT_GHOST, lit)) ed_clear_trim();
-        if (!joined) {
+        if (adv_on()) {
+            fmt_time(adv_len(ed.edit), len, sizeof len, true);
+            snprintf(sel, sizeof sel, "%d item%s   %s", ed.edit.item_count, ed.edit.item_count == 1 ? "" : "s", len);
+            lit = true;
+        } else if (!joined) {
             fmt_time(ed_in(), ta, sizeof ta, true);
             fmt_time(ed_out(), tz, sizeof tz, true);
             fmt_time(ed_out() - ed_in(), len, sizeof len, true);
@@ -3018,10 +3099,14 @@ static void screen_editor()
 
     // The timeline, across the whole width.
     f32 tl_y = body_y + top_h + split;
-    ed_timeline(ImVec2(h0.x, tl_y), avail.x, body_y + body_h - tl_y);
+    if (adv_on()) adv_timeline(ImVec2(h0.x, tl_y), avail.x, body_y + body_h - tl_y);
+    else ed_timeline(ImVec2(h0.x, tl_y), avail.x, body_y + body_h - tl_y);
 
     // Keys (never while typing or with a menu open).
-    if (!io.WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {
+    bool keys_free = !io.WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
+    if (keys_free && adv_on()) {
+        adv_keys(&back);
+    } else if (keys_free) {
         bool ctrl = io.KeyCtrl;
         joined = ed_joined();
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) ed_toggle();
@@ -3061,7 +3146,7 @@ static void screen_editor()
         }
     }
     // A change settles once nothing is held: it goes on the undo list and the record is written.
-    if (!ImGui::IsAnyItemActive() && ed.lane_drag == ED_DRAG_NONE) {
+    if (!ImGui::IsAnyItemActive() && ed.lane_drag == ED_DRAG_NONE && !ed.adv_drag) {
         ed_settle();
         if (ed.dirty) ed_save_record();
     }

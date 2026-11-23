@@ -1,0 +1,982 @@
+// Advanced editing (included from editor.cpp): the sequence's playback, its timeline of items on tracks, and the side
+// panel's controls. An Advanced edit's playhead (adv_u) is on the sequence: while a picture item plays it follows the
+// picture's engine, over a gap it follows the clock and the picture is black. Each audio track's engine plays the item
+// under the playhead on its own track, so a track moved apart from the picture is heard where it was put.
+
+enum AdvDrag : u8 { ADV_DRAG_NONE, ADV_DRAG_SEEK, ADV_DRAG_MOVE, ADV_DRAG_TRIM_IN, ADV_DRAG_TRIM_OUT };
+
+// Every engine is put in place again on the next update.
+static void adv_resync()
+{
+    Editor &ed = g_app.editor;
+    ed.adv_vitem = -2;
+    for (i32 i = 0; i < PLAYER_MAX_TRACK_ENGINES; i++) ed.adv_titem[i] = -2;
+}
+
+static void adv_seek(f64 u)
+{
+    Editor &ed = g_app.editor;
+    f64 len = adv_len(ed.edit);
+    ed.adv_u = u < 0 ? 0 : u > len ? len : u;
+    ed.adv_clock = ImGui::GetTime();
+    adv_resync();
+    ui_wake(6);
+}
+
+static void adv_toggle()
+{
+    Editor &ed = g_app.editor;
+    if (!ed.adv_playing && ed.adv_u >= adv_len(ed.edit) - 0.05) adv_seek(0);
+    ed.adv_playing = !ed.adv_playing;
+    ed.adv_clock = ImGui::GetTime();
+    adv_resync();
+    ui_wake();
+}
+
+// Item it's source time at sequence time u, held inside the item.
+static f64 adv_src(const EditItem &it, f64 u)
+{
+    f64 s = it.from + (u - it.start);
+    return s < it.from ? it.from : s > it.to ? it.to : s;
+}
+
+// Each frame: the playhead moved on, and every engine on the item under it, playing or not.
+static void adv_update()
+{
+    Editor &ed = g_app.editor;
+    Player &p = ed.player;
+    const EditRecord &e = ed.edit;
+    f64 now = ImGui::GetTime(), len = adv_len(e);
+    p.loop_from = 0, p.stop_at = 0;
+    if (!p.loaded) {
+        ed.adv_clock = now;
+        return;
+    }
+    if (ed.adv_playing) {
+        i32 v = ed.adv_vitem >= 0 && ed.adv_vitem < e.item_count ? ed.adv_vitem : -1;
+        if (v < 0) {
+            ed.adv_u += (now - ed.adv_clock) * (p.rate > 0 ? p.rate : 1); // a gap: the clock
+        } else if (!p.paused && !p.seeking && !p.has_seek && p.pos >= e.items[v].from - 0.05 &&
+                   p.pos <= e.items[v].to + 0.25) {
+            ed.adv_u = e.items[v].start + (p.pos - e.items[v].from); // the picture's engine
+        } // else held while the picture gets to its place
+        if (ed.adv_u >= len) {
+            ed.adv_u = len;
+            ed.adv_playing = false;
+        }
+        ui_wake(2);
+    }
+    ed.adv_clock = now;
+    f64 u = ed.adv_u;
+
+    // The picture: on to the next item (no seek where it carries straight on in the file), paused over a gap
+    i32 v = item_at(e, 0, u);
+    if (v >= 0) {
+        f64 s = adv_src(e.items[v], u);
+        bool moved = v != ed.adv_vitem;
+        bool carries = moved && ed.adv_vitem >= 0 && ed.adv_playing && fabs(p.pos - s) < 0.08;
+        if (moved && !carries) player_seek(&p, s);
+        if (ed.adv_playing && p.paused && !p.seeking && !p.has_seek) player_play(&p);
+        if (!ed.adv_playing && !p.paused) player_pause(&p);
+    } else if (!p.paused) {
+        player_pause(&p);
+    }
+    ed.adv_vitem = v;
+
+    // The sound: each track's engine on its own item, moved back when it drifts once it has settled
+    for (i32 i = 0; i < p.track_engine_count; i++) {
+        i32 a = item_at(e, 1 + p.track_of_engine[i], u);
+        if (a >= 0) {
+            f64 s = adv_src(e.items[a], u), at = player_track_pos(p, i);
+            bool placed = p.track_synced[i] >= 0;
+            bool moved = a != ed.adv_titem[i] || !placed;
+            bool carries = moved && placed && ed.adv_titem[i] >= 0 && ed.adv_playing && at >= 0 && fabs(at - s) < 0.08;
+            bool drift = !moved && ed.adv_playing && at >= 0 && now - p.track_synced[i] > 1.0 && fabs(at - s) > 0.15;
+            if ((moved && !carries) || drift) player_track_seek(&p, i, s);
+            player_track_run(&p, i, ed.adv_playing);
+        } else {
+            player_track_run(&p, i, false);
+        }
+        ed.adv_titem[i] = a;
+    }
+}
+
+// Each track's engine at its item's volume and fades where the playhead is; silent over a gap, muted or not solo.
+static void adv_apply_volumes()
+{
+    Editor &ed = g_app.editor;
+    Player &p = ed.player;
+    const EditRecord &e = ed.edit;
+    f64 dur = ed_duration();
+    for (i32 i = 0; i < p.track_engine_count; i++) {
+        i32 t = p.track_of_engine[i];
+        i32 a = item_at(e, 1 + t, ed.adv_u);
+        f32 v = 0;
+        if (a >= 0 && !e.muted[t] && (ed.solo < 0 || ed.solo == t)) {
+            f64 s = adv_src(e.items[a], ed.adv_u);
+            v = (f32)(item_level_at(e, e.items[a].id, IKEY_VOLUME, s) * item_fade_gain(e, dur, a, s));
+        }
+        if (fabsf(v - ed.heard[t]) < 0.002f && ed.heard_set) continue;
+        player_track_volume(&p, t, v, v <= 0);
+        ed.heard[t] = v;
+    }
+    ed.heard_set = true;
+}
+
+// ---- Selecting and changing items ----
+
+static bool adv_selected(u16 id)
+{
+    const Editor &ed = g_app.editor;
+    for (i32 i = 0; i < ed.adv_sel_count; i++)
+        if (ed.adv_sel[i] == id) return true;
+    return false;
+}
+
+static void adv_sel_set(u16 id, bool on)
+{
+    Editor &ed = g_app.editor;
+    for (i32 i = 0; i < ed.adv_sel_count; i++)
+        if (ed.adv_sel[i] == id) {
+            if (!on) ed.adv_sel[i] = ed.adv_sel[--ed.adv_sel_count];
+            return;
+        }
+    if (on && ed.adv_sel_count < EDIT_MAX_ITEMS) ed.adv_sel[ed.adv_sel_count++] = id;
+}
+
+// Item i, with the items linked to it (`links`), selected alone, or added to (or with `toggle` taken out of) the
+// selection.
+static void adv_select(i32 i, bool links, bool add, bool toggle = false)
+{
+    Editor &ed = g_app.editor;
+    const EditRecord &e = ed.edit;
+    bool on = !(toggle && adv_selected(e.items[i].id));
+    if (!add) ed.adv_sel_count = 0;
+    for (i32 k = 0; k < e.item_count; k++)
+        if (k == i || (links && e.items[i].link && e.items[k].link == e.items[i].link)) adv_sel_set(e.items[k].id, on);
+}
+
+// Drops ids of items that are gone.
+static void adv_sel_tidy()
+{
+    Editor &ed = g_app.editor;
+    i32 n = 0;
+    for (i32 i = 0; i < ed.adv_sel_count; i++)
+        if (item_find(ed.edit, ed.adv_sel[i]) >= 0) ed.adv_sel[n++] = ed.adv_sel[i];
+    ed.adv_sel_count = n;
+}
+
+static u16 adv_new_link(const EditRecord &e)
+{
+    u16 l = 1;
+    for (i32 i = 0; i < e.item_count; i++)
+        if (e.items[i].link >= l) l = (u16)(e.items[i].link + 1);
+    return l;
+}
+
+// After a change: the edit kept playable, written, and every engine put in place again.
+static void adv_changed()
+{
+    Editor &ed = g_app.editor;
+    adv_settle(&ed.edit, ed_duration());
+    adv_sel_tidy();
+    ed.dirty = true;
+    ed.heard_set = false;
+    adv_resync();
+}
+
+// The items under sequence time u that are selected, or all of them when none is.
+static i32 adv_targets(f64 u, i32 *out)
+{
+    const Editor &ed = g_app.editor;
+    const EditRecord &e = ed.edit;
+    i32 n = 0;
+    for (i32 pass = 0; pass < 2 && !n; pass++)
+        for (i32 i = 0; i < e.item_count; i++) {
+            const EditItem &it = e.items[i];
+            if (u > it.start + 0.0005 && u < item_end(it) - 0.0005 && (pass || adv_selected(it.id))) out[n++] = i;
+        }
+    return n;
+}
+
+// Cuts the items at the playhead in two (the selected ones there, or all of them). The second halves are linked as
+// the first halves were, and each half keeps the keys and the fade at its own end.
+static void adv_split(f64 u)
+{
+    Editor &ed = g_app.editor;
+    EditRecord &e = ed.edit;
+    i32 idx[EDIT_MAX_ITEMS], n = adv_targets(u, idx);
+    u16 old_link[EDIT_MAX_ITEMS], new_link[EDIT_MAX_ITEMS];
+    i32 links = 0, done = 0;
+    for (i32 k = 0; k < n && e.item_count < EDIT_MAX_ITEMS; k++) {
+        EditItem &it = e.items[idx[k]];
+        f64 s = it.from + (u - it.start);
+        if (s - it.from < PIECE_LEAST || it.to - s < PIECE_LEAST) continue;
+        EditItem b = it;
+        b.id = item_new_id(e);
+        b.from = s, b.start = u;
+        b.fade_in = 0, b.cross = 0;
+        b.link = 0;
+        if (it.link) {
+            i32 j = 0;
+            while (j < links && old_link[j] != it.link) j++;
+            if (j == links) {
+                old_link[links] = it.link;
+                new_link[links++] = (u16)(adv_new_link(e) + links);
+            }
+            b.link = new_link[j];
+        }
+        it.to = s, it.fade_out = 0;
+        u16 from_id = it.id;
+        e.items[e.item_count++] = b;
+        static ItemKey copy[EDIT_MAX_ITEM_KEYS];
+        i32 nc = 0;
+        for (i32 q = 0; q < e.ikey_count; q++)
+            if (e.ikeys[q].item == from_id) copy[nc] = e.ikeys[q], copy[nc++].item = b.id;
+        for (i32 q = 0; q < nc; q++) ikey_add(&e, copy[q]);
+        done++;
+    }
+    if (!done) return;
+    adv_changed();
+    log_line("editor: split %d item%s at %.3f", done, done == 1 ? "" : "s", u);
+}
+
+static void adv_delete_selected()
+{
+    Editor &ed = g_app.editor;
+    EditRecord &e = ed.edit;
+    i32 gone = 0;
+    for (i32 i = e.item_count - 1; i >= 0; i--)
+        if (adv_selected(e.items[i].id)) item_remove(&e, i), gone++;
+    if (!gone) return;
+    ed.adv_sel_count = 0;
+    adv_changed();
+}
+
+// The selected items linked to each other (they move and trim together), or each on its own.
+static void adv_link_selected(bool link)
+{
+    Editor &ed = g_app.editor;
+    EditRecord &e = ed.edit;
+    u16 l = link ? adv_new_link(e) : 0;
+    for (i32 i = 0; i < e.item_count; i++)
+        if (adv_selected(e.items[i].id)) e.items[i].link = l;
+    adv_changed();
+}
+
+// Whether the selected items are all linked together already.
+static bool adv_sel_linked()
+{
+    const Editor &ed = g_app.editor;
+    const EditRecord &e = ed.edit;
+    u16 l = 0;
+    for (i32 i = 0; i < e.item_count; i++) {
+        if (!adv_selected(e.items[i].id)) continue;
+        if (!e.items[i].link || (l && e.items[i].link != l)) return false;
+        l = e.items[i].link;
+    }
+    return l != 0;
+}
+
+// The key of an item's kind `what` at source time t (within half a frame), added there with the curve's value if
+// there's none. Its index in e.ikeys, or -1 when there's no room.
+static i32 adv_key_at(EditRecord &e, i32 i, i32 what, f64 t)
+{
+    const EditItem &it = e.items[i];
+    t = t < it.from ? it.from : t > it.to ? it.to : t;
+    f64 tol = ed_frame() / 2 + 0.01;
+    for (i32 k = 0; k < e.ikey_count; k++)
+        if (e.ikeys[k].item == it.id && e.ikeys[k].what == what && fabs(e.ikeys[k].t - t) < tol) return k;
+    ItemKey q = {};
+    q.item = it.id, q.what = (u8)what, q.t = t, q.ease = EASE_LINEAR;
+    if (what == IKEY_ZOOM) item_zoom_at(e, it.id, t, &q.v, &q.x, &q.y);
+    else q.v = item_level_at(e, it.id, what, t);
+    if (!ikey_add(&e, q)) return -1;
+    for (i32 k = 0; k < e.ikey_count; k++)
+        if (e.ikeys[k].item == it.id && e.ikeys[k].what == what && e.ikeys[k].t == t) return k;
+    return -1;
+}
+
+// The picture item under the playhead, -1 over a gap.
+static i32 adv_picture_item() { return item_at(g_app.editor.edit, 0, g_app.editor.adv_u); }
+
+// Going between Simple and Advanced. Back to Simple asks first when it would lose something (edit_round_trips);
+// either way it's one step Undo takes back.
+static void adv_set_mode(bool to_adv, bool sure)
+{
+    Editor &ed = g_app.editor;
+    const MediaInfo &m = ed.item.info;
+    if (to_adv == adv_on()) return;
+    if (!to_adv && !sure && !edit_round_trips(ed.edit, m)) {
+        ed.adv_ask_simple = true;
+        return;
+    }
+    ed_settle();
+    f64 u = ed_play_u();
+    player_pause(&ed.player);
+    ed.adv_playing = false;
+    if (to_adv) edit_to_advanced(&ed.edit, m);
+    else edit_to_simple(&ed.edit, m);
+    ed_settle();
+    ed.dirty = true;
+    ed.tracks_ready = false;
+    ed.heard_set = false;
+    ed.play_piece = -1;
+    ed.adv_sel_count = 0;
+    ed_sel_clear();
+    ed.lane_drag = ED_DRAG_NONE;
+    ed.adv_drag = ADV_DRAG_NONE;
+    ed_seek_u(u);
+    log_line("editor: %s", to_adv ? "advanced" : "simple");
+}
+
+static void adv_ask_dialog()
+{
+    Editor &ed = g_app.editor;
+    if (ed.adv_ask_simple) {
+        ImGui::OpenPopup("##adv_simple");
+        ed.adv_ask_simple = false;
+    }
+    if (lib_dialog_begin("##adv_simple")) {
+        i32 r = lib_confirm("Back to Simple?", "Back to Simple loses the Advanced edits.", "Undo brings them back.", 0, 0,
+                            false, "Back to Simple", KIT_DANGER);
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) r = -1;
+        if (r) ImGui::CloseCurrentPopup();
+        if (r > 0) adv_set_mode(false, true);
+        lib_dialog_end();
+    }
+}
+
+// Left and Right: the next item edge on any track, the start or the end.
+static f64 adv_next_stop(f64 at, i32 dir)
+{
+    const EditRecord &e = g_app.editor.edit;
+    f64 best = dir > 0 ? adv_len(e) : 0;
+    for (i32 i = 0; i < e.item_count; i++) {
+        f64 ends[2] = {e.items[i].start, item_end(e.items[i])};
+        for (f64 x : ends)
+            if (dir > 0 ? x > at + 0.001 && x < best : x < at - 0.001 && x > best) best = x;
+    }
+    return best;
+}
+
+// ---- The timeline ----
+
+// The view bar, the ruler, then a row per track: V1 (the picture) and one for each recorded sound track, each with
+// its items. Items are selected with a click (with what's linked to them; Alt for the one alone, Ctrl or Shift to
+// add), moved by their body and trimmed by their edges, linked ones together (Shift catches the playhead and other
+// items' edges). The ruler and empty rows move the playhead; a right click opens an item's menu.
+static void adv_timeline(ImVec2 o, f32 w, f32 h)
+{
+    Editor &ed = g_app.editor;
+    Library &lib = g_app.library;
+    Player &p = ed.player;
+    EditRecord &e = ed.edit;
+    ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 fh = ImGui::GetFrameHeight();
+    f64 dur = ed_duration();
+    if (dur <= 0) return;
+    f64 alen = ed_axis_len(), slen = adv_len(e), play_u = ed.adv_u;
+    ed_view_clamp();
+    if (ed.adv_playing && !ed.adv_drag && ed.lane_drag == ED_DRAG_NONE &&
+        (play_u < ed.view_from || play_u > ed.view_from + ed.view_span)) {
+        ed.view_from = play_u - ed.view_span * 0.05; // follow the playhead a page at a time
+        ed_view_clamp();
+    }
+    f64 from = ed.view_from, span = ed.view_span;
+
+    f32 gut = kit_px(176), gap = kit_px(3), round = kit_px(6);
+    f32 bx0 = o.x + gut, bx1 = o.x + w, bw = bx1 - bx0;
+    if (bw < kit_px(40)) return;
+    f32 bar_h = wa_viewbar_h(), ruler_h = wa_ruler_h(), video_h = kit_px(56), lane_h = ed_lane_h();
+    auto xu = [&](f64 u) { return bx0 + (f32)((u - from) / span) * bw; };
+    auto u_of = [&](f32 x) {
+        f64 u = from + (f64)(x - bx0) / bw * span;
+        return u < 0 ? 0 : u > alen ? alen : u;
+    };
+    f32 mx = io.MousePos.x, my = io.MousePos.y;
+    bool over = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h), false);
+
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
+    f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(6), video_y = ruler_y + ruler_h;
+    f32 area0 = video_y + video_h + gap, content = nt * (lane_h + gap), area1 = o.y + h;
+    if (area1 > area0 + content) area1 = area0 + content;
+    if (area1 < area0) area1 = area0;
+    f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
+    f32 rows_y1 = nt ? area1 : video_y + video_h;
+
+    // The wheel pans; with Alt it zooms around the mouse, with Alt and Shift around the playhead; Shift alone sets the
+    // rows' height; over the track names it scrolls them. The middle button pans.
+    if (over && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
+        f32 wh = io.MouseWheel;
+        if (wh && io.KeyAlt) {
+            ed_view_zoom(pow(0.75, wh), !io.KeyShift && mx >= bx0 && mx < bx1 ? u_of(mx) : play_u);
+        } else if (wh && io.KeyShift) {
+            Config &cfg = g_app.config;
+            i32 v = (i32)(lane_h / kit_px(1) + 0.5f) + (wh > 0 ? 6 : -6);
+            cfg.editor_lane = v < 36 ? 36 : v > 160 ? 160 : v;
+            config_save(cfg, g_app.paths);
+        } else if (wh && my >= area0 && my < area1 && mx < bx0 && max_scroll > 0) {
+            ed.lane_scroll -= wh * lane_h * 0.6f;
+        } else {
+            ed.view_from -= (wh + io.MouseWheelH) * span * 0.15;
+            ed_view_clamp();
+        }
+    }
+    if (over && ImGui::IsMouseClicked(ImGuiMouseButton_Middle) && ed.lane_drag == ED_DRAG_NONE && !ed.adv_drag) {
+        ed.lane_drag = ED_DRAG_PAN;
+        ed.drag_mx = mx;
+        ed.drag_t = ed.view_from;
+    }
+    if (ed.lane_drag == ED_DRAG_PAN) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+            ed.view_from = ed.drag_t - (mx - ed.drag_mx) / bw * span;
+            ed_view_clamp();
+        } else {
+            ed.lane_drag = ED_DRAG_NONE;
+        }
+    }
+    ed.lane_scroll = ed.lane_scroll < 0 ? 0 : ed.lane_scroll > max_scroll ? max_scroll : ed.lane_scroll;
+
+    // The view bar: drag the window to pan, an end to zoom, beside it to bring it there; double-click shows it all.
+    ImGui::SetCursorScreenPos(ImVec2(bx0, bar_y - kit_px(4)));
+    ImGui::InvisibleButton("##adv_view", ImVec2(bw, bar_h + kit_px(8)));
+    {
+        auto bx = [&](f64 t) { return bx0 + (f32)(t / alen) * bw; };
+        f32 tx0 = bx(ed.view_from), tx1 = bx(ed.view_from + ed.view_span), grip = wa_grab();
+        if (ImGui::IsItemActivated()) {
+            ed.drag_mx = mx;
+            if (fabsf(mx - tx0) <= grip && mx < (tx0 + tx1) / 2) {
+                ed.lane_drag = ED_DRAG_BAR_IN;
+                ed.drag_t = ed.view_from + ed.view_span;
+            } else if (fabsf(mx - tx1) <= grip) {
+                ed.lane_drag = ED_DRAG_BAR_OUT;
+                ed.drag_t = ed.view_from;
+            } else {
+                if (mx < tx0 || mx > tx1) {
+                    ed.view_from = (mx - bx0) / bw * alen - ed.view_span / 2;
+                    ed_view_clamp();
+                }
+                ed.lane_drag = ED_DRAG_BAR;
+                ed.drag_t = ed.view_from;
+            }
+        }
+        if (ImGui::IsItemActive()) {
+            f64 bt = (f64)(mx - bx0) / bw * alen;
+            bt = bt < 0 ? 0 : bt > alen ? alen : bt;
+            if (ed.lane_drag == ED_DRAG_BAR) ed.view_from = ed.drag_t + (mx - ed.drag_mx) / bw * alen;
+            else if (ed.lane_drag == ED_DRAG_BAR_IN && bt < ed.drag_t) ed.view_from = bt, ed.view_span = ed.drag_t - bt;
+            else if (ed.lane_drag == ED_DRAG_BAR_OUT && bt > ed.drag_t) ed.view_span = bt - ed.drag_t;
+            ed_view_clamp();
+        } else if (ImGui::IsItemDeactivated()) {
+            ed.lane_drag = ED_DRAG_NONE;
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            ed.view_from = 0;
+            ed.view_span = alen;
+        }
+        bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (hot && (fabsf(mx - tx0) <= grip || fabsf(mx - tx1) <= grip)) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        wa_draw_viewbar(dl, bx0, bx1, bar_y, tx0, tx1, hot, bx(0), bx(slen), bx(play_u));
+    }
+    from = ed.view_from;
+    span = ed.view_span;
+
+    // Where each row is: track 0 the picture, 1 + t sound track t (row 1 + k for the k-th of `tracks`).
+    auto row_y = [&](i32 r, f32 *y0, f32 *y1) {
+        if (!r) *y0 = video_y, *y1 = video_y + video_h;
+        else *y0 = area0 + (r - 1) * (lane_h + gap) - ed.lane_scroll, *y1 = *y0 + lane_h;
+    };
+    auto row_track = [&](i32 r) { return r ? 1 + tracks[r - 1] : 0; };
+    i32 nrows = 1 + nt;
+    // The row under y, -1 for none (the ruler or below)
+    auto row_at = [&](f32 y) {
+        for (i32 r = 0; r < nrows; r++) {
+            f32 y0, y1;
+            row_y(r, &y0, &y1);
+            if (r && (y1 <= area0 || y0 >= area1)) continue;
+            if (y >= y0 && y < y1 + gap) return r;
+        }
+        return -1;
+    };
+    // The item on a track under x (by what's drawn), -1 none
+    auto item_under = [&](i32 track, f32 x) {
+        i32 best = -1;
+        for (i32 i = 0; i < e.item_count; i++) {
+            const EditItem &it = e.items[i];
+            if (it.track != track || x < xu(it.start) || x >= xu(item_end(it))) continue;
+            if (best < 0 || it.start > e.items[best].start) best = i;
+        }
+        return best;
+    };
+
+    // The press: on an item it takes hold of an edge (trim) or the body (move); elsewhere it moves the playhead.
+    f32 grab = wa_grab();
+    ImGui::SetCursorScreenPos(ImVec2(bx0, ruler_y));
+    ImGui::InvisibleButton("##adv_lanes", ImVec2(bw, ImMax(rows_y1 - ruler_y, 1.f)));
+    bool lanes_hot = ImGui::IsItemHovered();
+    i32 hover_row = lanes_hot && my >= video_y ? row_at(my) : -1;
+    i32 hover_item = hover_row >= 0 ? item_under(row_track(hover_row), mx) : -1;
+    i32 hover_edge = 0; // -1 its start, 1 its end
+    if (hover_item >= 0) {
+        f32 x0 = xu(e.items[hover_item].start), x1 = xu(item_end(e.items[hover_item]));
+        bool room = x1 - x0 > 3 * grab;
+        if (mx - x0 <= grab && room) hover_edge = -1;
+        else if (x1 - mx <= grab && room) hover_edge = 1;
+    }
+    // The selected items or the grabbed one and its links, as they were when the drag began
+    auto in_drag = [&](const EditItem &f) {
+        if (ed.adv_drag == ADV_DRAG_MOVE) return adv_selected(f.id);
+        i32 g = item_find(ed.drag_from, ed.adv_drag_id);
+        if (g < 0) return false;
+        const EditItem &gi = ed.drag_from.items[g];
+        return f.id == gi.id || (!io.KeyAlt && gi.link && f.link == gi.link);
+    };
+    // With Shift, a moved edge catches the playhead or another item's edge that comes close on screen
+    auto snap = [&](f64 d, const f64 *edges, i32 ne) {
+        if (!io.KeyShift) return d;
+        f32 best = kit_px(10);
+        f64 to = d;
+        for (i32 a = 0; a < ne; a++) {
+            f64 targets[1 + 2 * EDIT_MAX_ITEMS];
+            i32 nt2 = 0;
+            targets[nt2++] = ed.adv_drag_u >= 0 ? play_u : 0;
+            for (i32 i = 0; i < ed.drag_from.item_count; i++) {
+                const EditItem &f = ed.drag_from.items[i];
+                if (in_drag(f)) continue;
+                targets[nt2++] = f.start;
+                targets[nt2++] = item_end(f);
+            }
+            for (i32 q = 0; q < nt2; q++) {
+                f32 px = fabsf(xu(edges[a] + d) - xu(targets[q]));
+                if (px <= best) best = px, to = targets[q] - edges[a];
+            }
+        }
+        return to;
+    };
+    if (ImGui::IsItemActivated()) {
+        ed.drag_mx = mx;
+        ed.drag_moved = false;
+        ed.drag_from = e;
+        ed.adv_drag_u = u_of(mx);
+        if (hover_item >= 0) {
+            const EditItem &it = e.items[hover_item];
+            bool add = io.KeyCtrl || io.KeyShift;
+            if (add) adv_select(hover_item, !io.KeyAlt, true, true);
+            else if (!adv_selected(it.id) || io.KeyAlt) adv_select(hover_item, !io.KeyAlt, false);
+            ed.adv_drag_id = it.id;
+            ed.adv_drag = hover_edge < 0 ? ADV_DRAG_TRIM_IN : hover_edge > 0 ? ADV_DRAG_TRIM_OUT : ADV_DRAG_MOVE;
+            if (add && !adv_selected(it.id)) ed.adv_drag = ADV_DRAG_NONE; // a Ctrl click that took it out
+        } else {
+            ed.adv_drag = ADV_DRAG_SEEK;
+            p.scrubbing = true;
+            adv_seek(ed.adv_drag_u);
+        }
+    }
+    if (ImGui::IsItemActive() && ed.adv_drag) {
+        if (fabsf(mx - ed.drag_mx) > kit_px(3)) ed.drag_moved = true;
+        f64 du = (mx - ed.drag_mx) / bw * span;
+        if (ed.adv_drag == ADV_DRAG_SEEK) {
+            f64 u = u_of(mx);
+            if (fabs(u - ed.adv_u) > 1e-6) adv_seek(u);
+        } else if (ed.drag_moved) {
+            const EditRecord &f = ed.drag_from;
+            f64 lo = -1e9, hi = 1e9, edges[2 * EDIT_MAX_ITEMS];
+            i32 ne = 0;
+            for (i32 i = 0; i < f.item_count; i++) {
+                const EditItem &q = f.items[i];
+                if (!in_drag(q)) continue;
+                f64 len = q.to - q.from;
+                if (ed.adv_drag == ADV_DRAG_MOVE) {
+                    lo = ImMax(lo, -q.start);
+                    edges[ne++] = q.start, edges[ne++] = item_end(q);
+                } else if (ed.adv_drag == ADV_DRAG_TRIM_IN) {
+                    lo = ImMax(lo, ImMax(-q.from, -q.start));
+                    hi = ImMin(hi, len - PIECE_LEAST);
+                    edges[ne++] = q.start;
+                } else {
+                    lo = ImMax(lo, PIECE_LEAST - len);
+                    hi = ImMin(hi, dur - q.to);
+                    edges[ne++] = item_end(q);
+                }
+            }
+            du = snap(du, edges, ne);
+            du = du < lo ? lo : du > hi ? hi : du;
+            for (i32 i = 0; i < e.item_count && i < f.item_count; i++) {
+                const EditItem &q = f.items[i];
+                EditItem &it = e.items[i];
+                if (it.id != q.id || !in_drag(q)) continue;
+                if (ed.adv_drag == ADV_DRAG_MOVE) it.start = q.start + du;
+                else if (ed.adv_drag == ADV_DRAG_TRIM_IN) it.start = q.start + du, it.from = q.from + du;
+                else it.to = q.to + du;
+            }
+            ed.dirty = true;
+            adv_resync();
+        }
+    } else if (ImGui::IsItemDeactivated() && ed.adv_drag) {
+        if (ed.adv_drag == ADV_DRAG_SEEK) {
+            p.scrubbing = false;
+            if (!ed.drag_moved && !io.KeyCtrl && !io.KeyShift) ed.adv_sel_count = 0;
+            adv_seek(ed.adv_u);
+        } else if (ed.drag_moved) {
+            adv_changed();
+        } else if (ed.adv_drag == ADV_DRAG_MOVE && !io.KeyCtrl && !io.KeyShift) {
+            i32 i = item_find(e, ed.adv_drag_id); // a plain click on a selected item selects it (and its links) alone
+            if (i >= 0) adv_select(i, !io.KeyAlt, false);
+        }
+        ed.adv_drag = ADV_DRAG_NONE;
+    }
+    if (ed.adv_drag == ADV_DRAG_TRIM_IN || ed.adv_drag == ADV_DRAG_TRIM_OUT || (lanes_hot && !ed.adv_drag && hover_edge))
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+    // A right click on an item: its menu (it's selected first, with its links, unless it already is)
+    static f64 menu_u;
+    if (lanes_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ed.adv_drag) {
+        if (hover_item >= 0 && !adv_selected(e.items[hover_item].id)) adv_select(hover_item, !io.KeyAlt, false);
+        if (hover_item >= 0) {
+            menu_u = u_of(mx);
+            ImGui::OpenPopup("##adv_item");
+        }
+    }
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("##adv_item")) {
+        i32 idx[EDIT_MAX_ITEMS];
+        if (lib_menu_item("", "Split at the playhead") ) adv_split(ed.adv_u);
+        if (lib_menu_item("", "Split here")) adv_split(menu_u);
+        (void)idx;
+        ImGui::Separator();
+        if (ed.adv_sel_count > 1 && !adv_sel_linked() && lib_menu_item(ICON_LINK, "Link")) adv_link_selected(true);
+        if (lib_menu_item(ICON_LINK, "Unlink")) adv_link_selected(false);
+        ImGui::Separator();
+        if (lib_menu_item(ICON_DELETE, "Delete", true)) adv_delete_selected();
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+
+    // The ruler: a label every 70 px or more, small ticks between.
+    dl->AddRectFilled(ImVec2(bx0, ruler_y), ImVec2(bx1, ruler_y + ruler_h), col32(COL_PANEL), round, ImDrawFlags_RoundCornersTop);
+    {
+        static const f64 steps[] = {0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400};
+        f64 step = steps[COUNT(steps) - 1];
+        for (i32 i = 0; i < COUNT(steps); i++)
+            if (steps[i] / span * bw >= kit_px(70)) { step = steps[i]; break; }
+        f64 minor = step / 5;
+        dl->PushClipRect(ImVec2(bx0, ruler_y), ImVec2(bx1, ruler_y + ruler_h), true);
+        ImGui::PushFont(g_font_small);
+        for (i64 i = (i64)floor(from / minor), last = (i64)ceil((from + span) / minor); i <= last; i++) {
+            f32 x = floorf(xu(i * minor));
+            bool major = i % 5 == 0;
+            f32 th = major ? ruler_h * 0.42f : ruler_h * 0.2f;
+            dl->AddRectFilled(ImVec2(x, ruler_y + ruler_h - th), ImVec2(x + kit_px(1), ruler_y + ruler_h), col32(major ? COL_DIM : COL_FAINT));
+            if (major) {
+                char lt[32];
+                fmt_time(i * minor, lt, sizeof lt, step < 1);
+                dl->AddText(ImVec2(x + kit_px(4), ruler_y + kit_px(2)), col32(COL_DIM), lt);
+            }
+        }
+        ImGui::PopFont();
+        dl->PopClipRect();
+    }
+
+    // The rows: the gutter (the track's name, and Mute and Solo for sound) and the items.
+    ImVec2 pts[4];
+    (void)pts;
+    for (i32 r = 0; r < nrows; r++) {
+        f32 y0, y1;
+        row_y(r, &y0, &y1);
+        if (r && (y1 <= area0 || y0 >= area1)) continue;
+        i32 track = row_track(r), t = r ? tracks[r - 1] : -1;
+        if (r) ImGui::PushClipRect(ImVec2(o.x, area0), ImVec2(bx1, area1), true);
+        bool muted = t >= 0 && e.muted[t];
+        const char *name = t >= 0 ? ed.item.info.tracks[t] : "Picture";
+        u32 kind_rgb = t >= 0 ? KIND_LOOK[ed_track_kind(name, t)].rgb : 0x6aa7ff;
+        dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(bx0 - gap, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersLeft);
+        dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersRight);
+        dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(o.x + kit_px(3), y1), ed_rgba(kind_rgb, muted ? 70 : 220), round,
+                          ImDrawFlags_RoundCornersLeft);
+        ImGui::PushID(r);
+        f32 gx = o.x + kit_px(6), by = floorf((y0 + y1 - fh) / 2), nx = gx;
+        if (t >= 0) {
+            ImGui::SetCursorScreenPos(ImVec2(gx, by));
+            kit_next_tip(muted ? "Unmute this track" : "Mute this track");
+            if (kit_icon_button(muted ? ICON_MUTE : ICON_VOLUME, "##mute", KIT_GHOST, true, muted)) {
+                e.muted[t] = !muted;
+                ed.dirty = true;
+                ed.heard_set = false;
+                muted = !muted;
+            }
+            bool solo = ed.solo == t;
+            ImGui::SetCursorScreenPos(ImVec2(gx + fh + kit_px(2), by));
+            kit_next_tip(solo ? "Hear every track" : "Hear only this track");
+            if (kit_icon_button(ICON_SOLO, "##solo", KIT_GHOST, true, solo)) {
+                ed.solo = solo ? -1 : t;
+                ed.heard_set = false;
+            }
+            nx = gx + 2 * fh + kit_px(8);
+        } else {
+            nx = gx + kit_px(4);
+        }
+        ImGui::PopID();
+        f32 lh = ImGui::GetTextLineHeight();
+        text_clipped(dl, ImVec2(nx, floorf((y0 + y1 - lh) / 2)), bx0 - gap - nx - kit_px(6), col32(muted ? COL_FAINT : COL_TEXT), name);
+
+        // The items: the picture's frames or the sound's waveform, shaded over the fades, a light band over a
+        // crossfade, a tick for each key, and an outline when selected
+        dl->PushClipRect(ImVec2(bx0, y0), ImVec2(bx1, y1), true);
+        i32 idx[EDIT_MAX_ITEMS], n = track_items(e, track, idx);
+        ItemFades fd[EDIT_MAX_ITEMS];
+        track_fades(e, dur, idx, n, fd);
+        i32 wave_c = r - 1;
+        for (i32 k = 0; k < n; k++) {
+            const EditItem &it = e.items[idx[k]];
+            f32 x0 = xu(it.start), x1 = xu(item_end(it));
+            if (x1 < bx0 || x0 > bx1) continue;
+            ImVec2 a(x0, y0 + kit_px(2)), b(x1, y1 - kit_px(2));
+            bool sel = adv_selected(it.id), hot = idx[k] == hover_item && !ed.adv_drag;
+            dl->AddRectFilled(a, b, ed_rgba(kind_rgb, sel ? 70 : 44), kit_px(4));
+            f32 cx0 = ImMax(x0, bx0), cx1 = ImMin(x1, bx1);
+            dl->PushClipRect(a, b, true);
+            if (!r && lib_want_strip(ed.item) && lib.strip_frames > 0) {
+                f32 ih = b.y - a.y, aspect = ed.item.info.height > 0 ? (f32)ed.item.info.width / ed.item.info.height : 16.f / 9;
+                f32 tile = ih * (aspect > 0.3f ? aspect : 1.f);
+                for (f32 x = x0; x < cx1; x += tile) {
+                    if (x + tile < cx0) continue;
+                    f64 s = adv_src(it, u_of(x + tile / 2));
+                    i32 fr = (i32)(s / dur * lib.strip_frames);
+                    fr = fr < 0 ? 0 : fr >= lib.strip_frames ? lib.strip_frames - 1 : fr;
+                    f32 u0 = (f32)fr / lib.strip_frames, u1 = (f32)(fr + 1) / lib.strip_frames;
+                    dl->AddImage((ImTextureID)(intptr_t)lib.strip, ImVec2(x, a.y), ImVec2(x + tile, b.y), ImVec2(u0, 0), ImVec2(u1, 1));
+                }
+            } else if (r && ed.wave) {
+                f32 step = floorf(kit_px(2)) > 1 ? floorf(kit_px(2)) : 1, reach = b.y - a.y - kit_px(2);
+                for (f32 x = cx0; x < cx1; x += step) {
+                    f64 s0 = adv_src(it, u_of(x)), s1 = adv_src(it, u_of(x + step));
+                    f32 pk = 0;
+                    if (!wave_peak(ed.wave, wave_c, s0, s1, &pk)) {
+                        dl->AddRectFilled(ImVec2(x, b.y - kit_px(2)), ImVec2(x + step, b.y), IM_COL32(142, 147, 156, 40));
+                        continue;
+                    }
+                    f64 sm = (s0 + s1) / 2;
+                    f32 g = (f32)(item_level_at(e, it.id, IKEY_VOLUME, sm) * item_fade_gain(e, dur, idx[k], sm));
+                    f32 en = pk * g / 2, hh = sqrtf(en < 1 ? en : 1) * reach;
+                    if (hh >= 0.5f) dl->AddRectFilled(ImVec2(x, b.y - hh), ImVec2(x + step, b.y), ed_rgba(kind_rgb, muted ? 40 : 150));
+                }
+            }
+            u32 dark = IM_COL32(0, 0, 0, 190), clear = IM_COL32(0, 0, 0, 0);
+            if (fd[k].in > 0) {
+                f32 fx = xu(it.start + fd[k].in);
+                dl->AddRectFilledMultiColor(a, ImVec2(fx, b.y), dark, clear, clear, dark);
+            }
+            if (fd[k].out > 0) {
+                f32 fx = xu(item_end(it) - fd[k].out);
+                dl->AddRectFilledMultiColor(ImVec2(fx, a.y), b, clear, dark, dark, clear);
+            }
+            dl->PopClipRect();
+            if (fd[k].cross > 0) {
+                f32 c0 = xu(it.start - fd[k].cross / 2), c1 = xu(it.start + fd[k].cross / 2);
+                dl->AddRectFilled(ImVec2(c0, a.y), ImVec2(c1, b.y), IM_COL32(255, 255, 255, 46));
+            }
+            for (i32 q = 0; q < e.ikey_count; q++) {
+                const ItemKey &kq = e.ikeys[q];
+                if (kq.item != it.id) continue;
+                f32 kx = xu(it.start + (kq.t - it.from));
+                diamond(dl, ImVec2(kx, b.y - kit_px(6)), kit_px(4), kq.what == IKEY_ZOOM ? col32(COL_BLUE) : kq.what == IKEY_VOLUME ? col32(COL_TEXT) : col32(COL_WARN));
+            }
+            if (sel) dl->AddRect(a, b, col32(COL_ACCENT), kit_px(4), 0, kit_px(2));
+            else if (hot) dl->AddRect(a, b, col32(COL_TEXT, 0.35f), kit_px(4), 0, kit_px(1));
+        }
+        dl->PopClipRect();
+        if (r) ImGui::PopClipRect();
+    }
+
+    // The playhead, and the time under the mouse (or at the playhead while it's dragged) on the ruler
+    dl->PushClipRect(ImVec2(bx0 - kit_px(6), ruler_y), ImVec2(bx1 + kit_px(6), rows_y1), true);
+    f32 px = xu(ed.adv_u);
+    if (px >= bx0 - 1 && px <= bx1 + 1) wa_draw_playhead(dl, px, video_y, rows_y1);
+    bool idle = lanes_hot && !ed.adv_drag;
+    f64 pill_u = idle ? u_of(mx) : ed.adv_drag == ADV_DRAG_SEEK ? ed.adv_u : -1;
+    if (pill_u >= 0) {
+        f32 x = xu(pill_u);
+        if (idle) dl->AddLine(ImVec2(x, video_y), ImVec2(x, rows_y1), col32(COL_TEXT, 0.3f));
+        char when[32];
+        fmt_time(pill_u, when, sizeof when, true);
+        ImGui::PushFont(g_font_small);
+        wa_pill(dl, x, ruler_y + kit_px(2), bx0, bx1, when, col32(COL_HOVER), col32(COL_TEXT));
+        ImGui::PopFont();
+    }
+    dl->PopClipRect();
+}
+
+// ---- The side panel ----
+
+// Zoom and colour for the picture item under the playhead, volume for the sound items there, and the fades and
+// crossfade of the selected items (or those under the playhead). Each slider keys its value at the playhead.
+static void adv_edit_panel(f32 w)
+{
+    Editor &ed = g_app.editor;
+    EditRecord &e = ed.edit;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 fh = ImGui::GetFrameHeight(), lh = ImGui::GetTextLineHeight(), val_w = kit_px(44), cname_w = kit_px(84);
+    f64 u = ed.adv_u;
+    auto value_text = [&](const char *s, bool on) {
+        ImVec2 vp = ImGui::GetCursorScreenPos(), vs = ImGui::CalcTextSize(s);
+        dl->AddText(ImVec2(vp.x + val_w - vs.x, floorf(vp.y + (fh - vs.y) / 2)), col32(on ? COL_TEXT : COL_FAINT), s);
+        ImGui::Dummy(ImVec2(val_w, fh));
+    };
+    auto name_text = [&](const char *s, bool on) {
+        ImVec2 cp = ImGui::GetCursorScreenPos();
+        dl->AddText(ImVec2(cp.x, floorf(cp.y + (fh - lh) / 2)), col32(on ? COL_TEXT : COL_FAINT), s);
+        ImGui::Dummy(ImVec2(cname_w, fh));
+        ImGui::SameLine(0, 0);
+    };
+    // A slider that keys kind `what` of item i at the playhead; double-click puts it back to `rest`
+    auto key_slider = [&](const char *id, i32 i, i32 what, f32 lo, f32 hi, f32 rest, f32 sw, const char *fmt, f32 scale) {
+        bool on = i >= 0;
+        f64 s = on ? adv_src(e.items[i], u) : 0;
+        f32 v = on ? (f32)(what == IKEY_ZOOM ? 0 : item_level_at(e, e.items[i].id, what, s)) : rest;
+        if (on && what == IKEY_ZOOM) {
+            f64 z, x, y;
+            item_zoom_at(e, e.items[i].id, s, &z, &x, &y);
+            v = (f32)z;
+        }
+        bool set = lib_slider(id, &v, lo, hi, sw, fh, -1e9f, on);
+        if (set && what != IKEY_ZOOM && v > rest - 0.03f && v < rest + 0.03f) v = rest; // caught by 100%
+        if (on && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) v = rest, set = true;
+        if (on && set) {
+            i32 k = adv_key_at(e, i, what, s);
+            if (k >= 0) {
+                e.ikeys[k].v = v;
+                ed.dirty = true;
+                ed.heard_set = false;
+            }
+        }
+        ImGui::SameLine(0, 0);
+        char vt[16];
+        snprintf(vt, sizeof vt, fmt, v * scale);
+        value_text(vt, on);
+    };
+
+    i32 pic = adv_picture_item();
+    ed_caption("ZOOM");
+    key_slider("##adv_zoom", pic, IKEY_ZOOM, 1.f, 4.f, 1.f, w - val_w, "%.1fx", 1);
+    static const char *const views[] = {"Crop", "Footage"};
+    if (kit_segmented("##zoom_view", views, 2, &g_app.config.editor_zoom_view, (w - kit_px(6)) / 2))
+        config_save(g_app.config, g_app.paths);
+    kit_dim(pic < 0 ? "No picture at the playhead" : g_app.config.editor_zoom_view ? "Drag the footage to aim" : "Drag the frame to aim");
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    ed_caption("COLOUR");
+    for (i32 c = 0; c < EDIT_COLORS; c++) {
+        ImGui::PushID(c);
+        name_text(COLOR_NAMES[c], pic >= 0);
+        key_slider("##adv_color", pic, IKEY_COLOR + c, 0.f, 2.f, 1.f, w - cname_w - val_w, "%.0f%%", 100);
+        ImGui::PopID();
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // The sound at the playhead: a volume for each track's item there
+    ed_caption("VOLUME");
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
+    for (i32 k = 0; k < nt; k++) {
+        ImGui::PushID(k);
+        i32 t = tracks[k], a = item_at(e, 1 + t, u);
+        name_text(ed.item.info.tracks[t], a >= 0 && !e.muted[t]);
+        key_slider("##adv_vol", a, IKEY_VOLUME, 0.f, 2.f, 1.f, w - cname_w - val_w, "%.0f%%", 100);
+        ImGui::PopID();
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // Transitions of the selected items (or those under the playhead): each takes the first one's value, and a change
+    // goes to all of them
+    ed_caption("TRANSITIONS");
+    {
+        i32 idx[EDIT_MAX_ITEMS], n = 0;
+        for (i32 i = 0; i < e.item_count; i++)
+            if (adv_selected(e.items[i].id)) idx[n++] = i;
+        if (!n) n = adv_targets(u, idx);
+        auto length_row = [&](const char *name, const char *id, i32 field) {
+            bool on = n > 0;
+            name_text(name, on);
+            const EditItem *f = on ? &e.items[idx[0]] : 0;
+            f32 v = !f ? 0 : field == 0 ? f->fade_in : field == 1 ? f->fade_out : f->cross;
+            bool set = lib_slider(id, &v, 0.f, 3.f, w - cname_w - val_w, fh, -1e9f, on);
+            if (on && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) v = 0, set = true;
+            if (on && set) {
+                v = v < TRANS_LEAST ? 0 : floorf(v * 20 + 0.5f) / 20; // in twentieths of a second
+                for (i32 q = 0; q < n; q++) {
+                    EditItem &it = e.items[idx[q]];
+                    (field == 0 ? it.fade_in : field == 1 ? it.fade_out : it.cross) = v;
+                }
+                ed.dirty = true;
+                ed.heard_set = false;
+            }
+            ImGui::SameLine(0, 0);
+            char lt[16];
+            if (v > 0) snprintf(lt, sizeof lt, "%.2f s", v);
+            else str_set(lt, "Off");
+            value_text(lt, on);
+        };
+        length_row("Fade in", "##adv_fade_in", 0);
+        length_row("Fade out", "##adv_fade_out", 1);
+        length_row("Crossfade", "##adv_cross", 2);
+        kit_dim(!n ? "Select items to set their fades" : n == 1 ? "1 item" : "%d items", n);
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // The selection: split, link, delete
+    ed_caption(ed.adv_sel_count ? "SELECTED ITEMS" : "ITEMS");
+    {
+        f32 sp = ImGui::GetStyle().ItemSpacing.x, bw3 = (w - 2 * sp) / 3;
+        i32 idx[EDIT_MAX_ITEMS];
+        kit_next_tip("Split at the playhead", "S");
+        if (kit_button("Split", KIT_GHOST, ImVec2(bw3, 0), adv_targets(u, idx) > 0)) adv_split(u);
+        ImGui::SameLine();
+        bool linked = adv_sel_linked();
+        if (kit_button(linked ? ICON_LINK "  Unlink" : ICON_LINK "  Link", KIT_GHOST, ImVec2(bw3, 0),
+                       linked ? ed.adv_sel_count > 0 : ed.adv_sel_count > 1))
+            adv_link_selected(!linked);
+        ImGui::SameLine();
+        kit_next_tip("Delete the selected items", "Del");
+        if (kit_button(ICON_DELETE "  Delete", KIT_GHOST, ImVec2(bw3, 0), ed.adv_sel_count > 0)) adv_delete_selected();
+    }
+    ImGui::Dummy(ImVec2(1, kit_px(8)));
+}
+
+// The keys in Advanced (never while typing or with a menu open).
+static void adv_keys(bool *back)
+{
+    Editor &ed = g_app.editor;
+    Player &p = ed.player;
+    ImGuiIO &io = ImGui::GetIO();
+    bool ctrl = io.KeyCtrl;
+    if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) adv_toggle();
+    if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) adv_split(ed.adv_u);
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) adv_delete_selected();
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+        ed.adv_sel_count = 0;
+        for (i32 i = 0; i < ed.edit.item_count; i++) adv_sel_set(ed.edit.items[i].id, true);
+    }
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) ed_undo(io.KeyShift);
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) ed_undo(true);
+    if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
+    if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
+    for (i32 dir = -1; dir <= 1; dir += 2) {
+        f64 u = ed.adv_u;
+        if (ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_LeftArrow : ImGuiKey_RightArrow)) {
+            ed.adv_playing = false;
+            adv_seek(io.KeyShift ? u + dir : adv_next_stop(u, dir));
+        }
+        if (!ctrl && ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_Comma : ImGuiKey_Period)) {
+            ed.adv_playing = false;
+            adv_seek(u + dir * ed_frame());
+        }
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (ed.adv_sel_count) ed.adv_sel_count = 0;
+        else *back = true;
+    }
+    (void)p;
+}

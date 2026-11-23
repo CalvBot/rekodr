@@ -239,12 +239,40 @@ static void player_seek(Player *p, f64 t)
     p->seeking = true;
     if (p->scrubbing && p->engine_ex) p->engine_ex->SetCurrentTimeEx(t, MF_MEDIA_ENGINE_SEEK_MODE_APPROXIMATE);
     else p->engine->SetCurrentTime(t);
-    for (i32 i = 0; i < p->track_engine_count; i++)
+    for (i32 i = 0; i < p->track_engine_count && !p->tracks_free; i++)
         if (p->track_engine[i]) {
             p->track_engine[i]->SetCurrentTime(t);
             p->track_synced[i] = ImGui::GetTime();
         }
     ui_wake(6);
+}
+
+// With tracks_free: track engine i to source time t, and playing or not.
+static void player_track_seek(Player *p, i32 i, f64 t)
+{
+    if (i < 0 || i >= p->track_engine_count || !p->track_engine[i]) return;
+    p->track_engine[i]->SetCurrentTime(t < 0 ? 0 : t);
+    p->track_synced[i] = ImGui::GetTime();
+    ui_wake(6);
+}
+
+static void player_track_run(Player *p, i32 i, bool run)
+{
+    if (i < 0 || i >= p->track_engine_count || !p->track_engine[i]) return;
+    IMFMediaEngine *te = p->track_engine[i];
+    if (te->GetReadyState() < MF_MEDIA_ENGINE_READY_HAVE_METADATA) return;
+    bool paused = te->IsPaused() != FALSE;
+    if (run && paused) te->Play();
+    if (!run && !paused) te->Pause();
+}
+
+// Where track engine i is in the file, -1 when it can't be told yet (loading or seeking).
+static f64 player_track_pos(const Player &p, i32 i)
+{
+    if (i < 0 || i >= p.track_engine_count || !p.track_engine[i]) return -1;
+    IMFMediaEngine *te = p.track_engine[i];
+    if (te->GetReadyState() < MF_MEDIA_ENGINE_READY_HAVE_ENOUGH_DATA || te->IsSeeking()) return -1;
+    return te->GetCurrentTime();
 }
 
 static void player_play(Player *p)
@@ -326,8 +354,11 @@ static void player_on_media(const Event &e)
         if (event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA) {
             engine_pick_audio(te, *p, p->track_of_engine[i]);
             if (p->rate > 0) te->SetPlaybackRate(p->rate);
-            te->SetCurrentTime(p->pos);
-            if (!p->paused) te->Play();
+            if (p->tracks_free) p->track_synced[i] = -1; // for the editor to put in place
+            else {
+                te->SetCurrentTime(p->pos);
+                if (!p->paused) te->Play();
+            }
         }
         return;
     }
@@ -406,7 +437,7 @@ static void player_update(Player *p)
             // seek in a long file takes a while, and judging the engine again straight after it only seeks it
             // again, so on a big file it can keep seeking and never get to play.
             f64 now = ImGui::GetTime();
-            for (i32 i = 0; i < p->track_engine_count; i++) {
+            for (i32 i = 0; i < p->track_engine_count && !p->tracks_free; i++) {
                 IMFMediaEngine *te = p->track_engine[i];
                 if (!te || te->GetReadyState() < MF_MEDIA_ENGINE_READY_HAVE_METADATA) continue;
                 bool tp = te->IsPaused() != FALSE;

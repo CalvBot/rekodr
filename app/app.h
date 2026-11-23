@@ -568,6 +568,7 @@ struct Player {
     i32               track_of_engine[PLAYER_MAX_TRACK_ENGINES]; // the audio track each one plays
     i32               track_engine_count;
     f64               track_synced[PLAYER_MAX_TRACK_ENGINES]; // ImGui time each was last started or moved
+    bool              tracks_free; // the track engines don't follow the video: the editor moves each (Advanced)
     ID3D11Texture2D          *tex;
     ID3D11ShaderResourceView *srv;
     u32               width, height; // the video's own size, 0 until it's loaded
@@ -747,6 +748,19 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     EditRecord undo[20], redo[20];
     i32        undo_count, redo_count;
     i32        play_piece;      // the piece the playhead is in (more than one piece plays them joined), -1 not known
+    // Advanced (adv_editor.cpp): the playhead on the sequence, moved on by the picture's engine while an item plays and
+    // by the clock over a gap
+    f64        adv_u;
+    bool       adv_playing;
+    f64        adv_clock;       // ImGui time adv_u was last moved on
+    i32        adv_vitem;       // the item the picture's engine is on, -1 none, -2 to be moved there again
+    i32        adv_titem[PLAYER_MAX_TRACK_ENGINES]; // the same for each track engine
+    u16        adv_sel[EDIT_MAX_ITEMS]; // the selected items' ids
+    i32        adv_sel_count;
+    u8         adv_drag;        // what the mouse is doing on the Advanced timeline (ADV_DRAG_*)
+    u16        adv_drag_id;     // the item it took hold of
+    f64        adv_drag_u;      // where on the sequence it was pressed
+    bool       adv_ask_simple;  // asking before going back to Simple loses something
 };
 // timeline.cpp: the buffer and a range to save. Times are wall-clock us; 0 = not set.
 // A stretch of the buffer built for the Timeline's Play. Its file is the video segments end to end from file_start, so

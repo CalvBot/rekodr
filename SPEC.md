@@ -52,9 +52,10 @@ Keep a whole session from start to finish.
 - **Edits never change the original.** An edit is a small record: the pieces of the video kept, in the order they
   play, plus zoom keyframes and per-track volume and mute. It's saved automatically in the year's `Data` folder and
   reopens with the clip.
-- **Simple and Advanced:** the editor is Simple: one in and one out, set with the handles, I and O, and cleared with
-  Clear. The Advanced side of the switch is greyed out. An edit with more than one piece is shown and played with
-  the pieces joined, and keys stay on the moment of the video they were set on.
+- **Simple and Advanced:** a switch at the top right of the editor. Simple is one in and one out, set with the
+  handles, I and O, and cleared with Clear. An edit with more than one piece is shown and played with the pieces
+  joined, and keys stay on the moment of the video they were set on. Going back to Simple from Advanced is silent
+  when nothing would be lost; otherwise it asks, and Undo takes it back either way.
 - **Advanced edits:** an Advanced edit is a sequence of items on tracks: V1, the picture, and one audio track per
   recorded track (not the Mix, which is rebuilt). Each item is a span of the video placed at a time on the
   sequence, with its own fade in, fade out and crossfade from the item before, and its own keys: zoom and colour on
@@ -64,6 +65,15 @@ Keep a whole session from start to finish.
   that would lose something (a gap, an unlinked move, keys that differ per item) it asks first. The edit file's
   first line is `mode = advanced`. Keep, Share and Link render it with the same graph: each track's items cut out,
   keyed and faded, then joined with xfade or concat; Keep writes every track as edited and a mix of the unmuted ones.
+- **Advanced editing:** the timeline has a row per track with its items. A click selects an item with the items
+  linked to it (Alt: the one alone; Ctrl or Shift: add to the selection). An item's body drags to move it and its
+  edges drag to trim it, linked items with it; Shift catches the playhead and other items' edges. S splits the
+  selected items at the playhead (all items there when none is selected), Delete removes the selected ones, and the
+  right-click menu and the side panel's Items buttons split, link, unlink and delete. The side panel's sliders key
+  zoom and colour on the picture item at the playhead and volume on each track's item there; its Transitions set
+  the fades of the selected items. Playback follows the sequence: over a gap the picture is black and the clock
+  moves the playhead, and each track's sound plays from its own item, so a track moved apart is heard where it was
+  put. Open In is off for Advanced edits.
 - **Zoom views:** the picture shows the zoom in one of two views, chosen under Zoom; the result is the same.
   *Crop* keeps the whole footage still and moves and scales the kept frame over it. *Footage* keeps the frame
   still and moves and scales the footage behind it. Outside the frame is dimmed, and dragging aims.
