@@ -3772,6 +3772,41 @@ static bool opt_monitor_map(const char *id, i32 shown, PopupCorner corner, bool 
     return picked;
 }
 
+// The map at a glance, h high from `a` and at most max_w wide, against the right of that: the monitors as outlines,
+// the one picked in the accent with a dot in its corner. Returns the width it took.
+static f32 opt_mini_map(ImVec2 a, f32 h, f32 max_w, i32 shown, PopupCorner corner)
+{
+    i32 n = g_app.options.monitor_count;
+    if (n <= 0) return 0;
+    RECT all = g_monitor_rect[0];
+    for (i32 i = 1; i < n; i++) {
+        const RECT &r = g_monitor_rect[i];
+        all.left = r.left < all.left ? r.left : all.left;
+        all.top = r.top < all.top ? r.top : all.top;
+        all.right = r.right > all.right ? r.right : all.right;
+        all.bottom = r.bottom > all.bottom ? r.bottom : all.bottom;
+    }
+    f32 dw = (f32)(all.right - all.left), dh = (f32)(all.bottom - all.top);
+    f32 sc = fminf(max_w / fmaxf(dw, 1), h / fmaxf(dh, 1)), w = floorf(dw * sc);
+    ImVec2 o0(a.x + max_w - w, floorf(a.y + (h - dh * sc) / 2));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    for (i32 i = 0; i < n; i++) {
+        const RECT &r = g_monitor_rect[i];
+        f32 gap = dp(1);
+        ImVec2 m0(floorf(o0.x + (r.left - all.left) * sc) + gap, floorf(o0.y + (r.top - all.top) * sc) + gap);
+        ImVec2 m1(floorf(o0.x + (r.right - all.left) * sc) - gap, floorf(o0.y + (r.bottom - all.top) * sc) - gap);
+        bool on = i == shown;
+        dl->AddRectFilled(m0, m1, col32(on ? COL_HOVER : COL_PANEL2), dp(2));
+        dl->AddRect(m0, m1, col32(on ? COL_ACCENT : COL_LINE), dp(2), 0, dp(1));
+        if (on) {
+            f32 in = dp(4);
+            bool right = corner == CORNER_BR || corner == CORNER_TR, top = corner == CORNER_TR || corner == CORNER_TL;
+            dl->AddCircleFilled(ImVec2(right ? m1.x - in : m0.x + in, top ? m0.y + in : m1.y - in), dp(2), col32(COL_ACCENT));
+        }
+    }
+    return w;
+}
+
 // The output index a popup monitor setting shows on the map: POPUP_RECORDED is the monitor recorded; one no longer
 // connected shows as the first.
 static i32 opt_map_index(i32 v)
@@ -3787,14 +3822,33 @@ static i32 opt_map_value(i32 i) { return i == g_app.config.output_idx ? POPUP_RE
 // Popups (Config.popup_monitor, popup_corner): the map alone. Popups in games (popup_monitor_game, popup_corner_game):
 // chips for Same as normally, Not the game's monitor (needs two) and Pick, on the name's line; the map under them,
 // greyed for Same, the monitor nearest the recorded one (where the game plays) for Not the game's.
+// Both behind "Popup areas": closed (as it starts), the row has the normal choice as a mini map and Edit; open, the
+// two rows follow it.
 static void opt_popup_maps()
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
     static i32 listed_frame = -100;
+    static bool open;
     if (ImGui::GetFrameCount() > listed_frame + 1) options_list_monitors(); // entered again: the monitors may have changed
     listed_frame = ImGui::GetFrameCount();
     f32 cw = opt_wide_w(), mh = dp(OPT_MAP_H), pad = dp(12);
+
+    f32 edit_w = dp(84), mini_w = dp(64), mini_h = dp(20);
+    opt_row_begin("Popup areas", 0, mini_w + dp(12) + edit_w);
+    f32 fy = opt_row_frame_y();
+    ImVec2 ma(g_row.x1 - edit_w - dp(12) - mini_w, floorf(g_row.y + (g_row.h - mini_h) / 2));
+    opt_mini_map(ma, mini_h, mini_w, opt_map_index(c.popup_monitor), c.popup_corner);
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - edit_w, fy));
+    bool flip = kit_button(open ? "Edit  " ICON_CHEVRON_UP "##popupareas" : "Edit  " ICON_DOWN "##popupareas", KIT_SECONDARY,
+                           ImVec2(edit_w, 0));
+    kit_tip(open ? "Hide where the popups go" : "Where the popups go: a monitor and a corner");
+    if (flip) {
+        open = !open;
+        dev_click("options", "popup areas", open ? "open" : "shut");
+    }
+    opt_row_end();
+    if (!open) return;
 
     opt_row_begin("Popups", 0, cw, mh + 2 * pad);
     ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - cw, g_row.y + pad));
