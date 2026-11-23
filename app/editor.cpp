@@ -2724,17 +2724,23 @@ static void ed_share_tab(f32 w)
         ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + (keep_row - head_h) / 2));
         ed_card_head(ICON_SHARE, "Share", can ? d.why : d.link_why, iw - bw - gap, can ? 0 : col32(0xff8a92));
         ImGui::SetCursorScreenPos(ImVec2(top.x + iw - bw, top.y + (keep_row - fh) / 2));
-        // Its arrow, or a right-click, opens the Share menu. A running Share shows its percent and a bar on the
-        // button, then how it went.
+        // Its arrow, or a right-click, opens the Share menu. A running Share turns the button into its Cancel: the X
+        // in a ring filled to the percent, on the plain button so the accent ring shows. Then how it went.
         ShareJobView j = ed.share_job ? share_job(ed.share_job) : ShareJobView{};
         ShareMenuState js = share_menu_state(j);
         char label[48];
-        if (js.running) snprintf(label, sizeof label, ICON_CLOSE "  Cancel %d%%", (i32)(js.progress * 100 + 0.5f));
+        if (js.running) str_set(label, " ");
         else if (js.done) str_set(label, js.line);
         else str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
-        i32 sb = kit_split_button(label, "##edshare", KIT_PRIMARY, ImVec2(bw, 0), js.running || (!sharing && can), true,
-                                  js.running ? js.progress : -1,
+        ImVec2 share_at = ImGui::GetCursorScreenPos();
+        i32 sb = kit_split_button(label, "##edshare", js.running ? KIT_SECONDARY : KIT_PRIMARY, ImVec2(bw, 0),
+                                  js.running || (!sharing && can), true, -1,
                                   js.running ? "Cancel the share" : "Share. Right-click for more options", "More share options");
+        if (js.running) {
+            share_cancel_ring(ImGui::GetWindowDrawList(), ImVec2(floorf(share_at.x + (bw - fh) / 2), floorf(share_at.y + fh / 2)),
+                              kit_px(8), js.progress, COL_TEXT);
+            ui_wake();
+        }
         if (sb == 1 && js.running) {
             log_line("editor: share %u cancelled", ed.share_job);
             share_cancel(ed.share_job);
