@@ -485,6 +485,17 @@ static i32 r2_social_height(f64 seconds, i32 w, i32 h, f64 fps, bool audio, i64 
     return kbps >= R2_SOCIAL_MIN_KBPS ? 720 : -1;
 }
 
+// A clip's name that's only its game and when it was saved, as clips are named unless the player names them.
+static bool r2_default_name(const char *title, const char *game)
+{
+    size_t gl = strlen(game);
+    if (!title[0]) return true;
+    if (!gl || _strnicmp(title, game, gl)) return false;
+    for (const char *p = title + gl; *p; p++)
+        if (!strchr(" 0123456789-:.()_", *p)) return false;
+    return true;
+}
+
 // The page's title: the clip's name, its game and how long it plays, as "Overwatch, 2 minutes". A name that's only
 // the game and when it was saved (the default) gives way to the game alone.
 static void r2_page_title(const char *title, const char *game, f64 seconds, char *out, i32 cap)
@@ -503,12 +514,7 @@ static void r2_page_title(const char *title, const char *game, f64 seconds, char
         if (m) snprintf(len + n, sizeof len - n, " %lld minute%s", m, m == 1 ? "" : "s");
     }
     size_t gl = strlen(game);
-    bool plain = !title[0];
-    if (gl && !_strnicmp(title, game, gl)) {
-        plain = true;
-        for (const char *p = title + gl; *p; p++)
-            if (!strchr(" 0123456789-:.()_", *p)) plain = false;
-    }
+    bool plain = r2_default_name(title, game);
     const char *sep = len[0] ? ", " : "";
     if (plain) snprintf(out, cap, "%s%s%s", gl ? game : "Clip", sep, len);
     else if (gl) snprintf(out, cap, "%s - %s%s%s", title, game, sep, len);
@@ -530,22 +536,27 @@ static void r2_thumb_size(i32 w, i32 h, i32 *tw, i32 *th)
 
 // Appends `s` to out, made safe for an HTML attribute or text and ASCII only: & < > " ' as entities, anything past
 // ASCII (UTF-8) as a numeric entity, control characters left out.
+// The character after a UTF-8 lead byte c (read already) at *p, moving *p past it; 0 for a broken one or a
+// control or no-break character under 0xa0.
+static u32 r2_utf8_rest(u32 c, const u8 **p)
+{
+    i32 more = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : -1;
+    if (more < 0) return 0;
+    c &= 0x3f >> more;
+    for (i32 k = 0; k < more; k++) {
+        if ((**p & 0xc0) != 0x80) return 0;
+        c = c << 6 | (*(*p)++ & 0x3f);
+    }
+    return c >= 0xa0 && c <= 0x10ffff && (c < 0xd800 || c > 0xdfff) ? c : 0;
+}
+
 static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 {
     const u8 *p = (const u8 *)s;
     while (*p && *len < cap - 12) {
         u32 c = *p++;
         if (c >= 0x80) {
-            i32 more = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : -1;
-            if (more < 0) continue;
-            c &= 0x3f >> more;
-            bool ok = true;
-            for (i32 k = 0; k < more; k++) {
-                if ((*p & 0xc0) != 0x80) { ok = false; break; }
-                c = c << 6 | (*p++ & 0x3f);
-            }
-            if (ok && c >= 0xa0 && c <= 0x10ffff && (c < 0xd800 || c > 0xdfff))
-                *len += snprintf(out + *len, cap - *len, "&#%u;", c);
+            if ((c = r2_utf8_rest(c, &p))) *len += snprintf(out + *len, cap - *len, "&#%u;", c);
             continue;
         }
         const char *e = c == '&' ? "&amp;" : c == '<' ? "&lt;" : c == '>' ? "&gt;" : c == '"' ? "&quot;"
@@ -556,11 +567,123 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
     out[*len] = 0;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Discord's card for a link (a component embed): one Container with the title in bold, a line with the game (and
+// the clipper's name when the player set one), the video (or the picture when nothing small enough plays), and a
+// small grey "via" link. Other apps read the page's Open Graph tags instead.
+
+static const char R2_HOME_URL[] = "https://github.com/CalvBot/clipback";
+enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
+static const bool R2_CARD_ICON_SECTION = false; // the game's icon beside the line, as a Section with a thumbnail;
+                                                // false: the line is plain text
+
+struct EmbedInput {
+    const char *title, *game, *clipper; // the clip's name, its game, config.clipper_name ("" = none)
+    f64  seconds;                       // how long it plays
+    i64  date_us;                       // when it was shared
+    bool video;                         // something small enough to play in the card; false = the picture
+    u32  accent;                        // a colour as 0xRRGGBB, 0 = none
+};
+
+struct EmbedCard {
+    char title[200];
+    char line[200]; // "name - game" and the like, "" = none
+    bool icon;      // the game's icon beside `line`
+    u32  accent;    // 0 = none
+    char tag[64];   // "0:42" and the like, "" = none
+    bool via;       // the "via" line at the bottom
+    bool player;    // false = a card with the picture
+};
+
+// The card for `in`: its own name in bold (or the game's, or "Clip", for a name it was saved with), then the clipper
+// and the game, then the video.
+static void embed_card(const EmbedInput &in, EmbedCard *out)
+{
+    *out = {};
+    const char *game = in.game ? in.game : "", *clipper = in.clipper ? in.clipper : "";
+    bool named = in.title && !r2_default_name(in.title, game);
+    str_set(out->title, named ? in.title : game[0] ? game : "Clip");
+    if (clipper[0] && game[0] && named) snprintf(out->line, sizeof out->line, "%s - %s", clipper, game);
+    else if (named && game[0]) str_set(out->line, game);
+    else str_set(out->line, clipper);
+    out->accent = in.accent;
+    out->via = true;
+    out->player = in.video;
+}
+
+// Adds `s` as JSON string text, ASCII only: quotes, backslashes and controls escaped, other characters as \u (two
+// for one past 0xffff), and < > & as \u too so the script tag can't be closed early. With `md`, Discord's markdown
+// characters are escaped so a name shows as typed.
+static void r2_json_text(const char *s, bool md, char *out, i32 cap, i32 *len)
+{
+    const u8 *p = (const u8 *)s;
+    while (*p && *len < cap - 16) {
+        u32 c = *p++;
+        if (c >= 0x80 && !(c = r2_utf8_rest(c, &p))) continue;
+        if (md && c < 0x80 && strchr("\\*_~`|>#[]()-", (char)c)) *len += snprintf(out + *len, cap - *len, "\\\\");
+        if (c == '"' || c == '\\') *len += snprintf(out + *len, cap - *len, "\\%c", (char)c);
+        else if (c < 0x20 || c == 0x7f) continue;
+        else if (c < 0x80 && !strchr("<>&", (char)c)) out[(*len)++] = (char)c;
+        else if (c < 0x10000) *len += snprintf(out + *len, cap - *len, "\\u%04x", c);
+        else {
+            c -= 0x10000;
+            *len += snprintf(out + *len, cap - *len, "\\u%04x\\u%04x", 0xd800 + (c >> 10), 0xdc00 + (c & 0x3ff));
+        }
+    }
+    out[*len] = 0;
+}
+
+// The card's JSON for Discord (its <script> in the page): `video` plays in it when the card is a player, else
+// `image` shows; `icon` is the game's icon ("" = none). Returns the length, 0 when it doesn't fit Discord's limit or
+// `cap` (then the page has only its Open Graph tags).
+static i32 r2_card_json(const EmbedCard &card, const char *video, const char *image, const char *icon, char *out,
+                        i32 cap)
+{
+    i32 len = 0;
+    auto put = [&](const char *s) { len += snprintf(out + len, len < cap ? cap - len : 0, "%s", s); };
+    auto text = [&](const char *s, bool md) { if (len < cap) r2_json_text(s, md, out, cap, &len); };
+    if (cap < 64) return 0;
+    put("{\"component\":{\"type\":17,");
+    if (card.accent) len += snprintf(out + len, cap - len, "\"accent_color\":%u,", card.accent & 0xffffff);
+    put("\"components\":[{\"type\":10,\"content\":\"**");
+    text(card.title, true);
+    put("**\"}");
+    if (card.line[0] || card.tag[0]) {
+        bool section = card.icon && R2_CARD_ICON_SECTION && icon && icon[0];
+        put(section ? ",{\"type\":9,\"components\":[{\"type\":10,\"content\":\"" : ",{\"type\":10,\"content\":\"");
+        text(card.line, true);
+        if (card.line[0] && card.tag[0]) put(" - ");
+        text(card.tag, true);
+        put("\"}");
+        if (section) {
+            put("],\"accessory\":{\"type\":11,\"media\":{\"url\":\"");
+            text(icon, false);
+            put("\"}}}");
+        }
+    }
+    const char *media = card.player ? video : image;
+    if (media && media[0]) {
+        put(",{\"type\":12,\"items\":[{\"media\":{\"url\":\"");
+        text(media, false);
+        put("\"}}]}");
+    }
+    if (card.via) {
+        put(",{\"type\":10,\"content\":\"-# [via " APP_DISPLAY "](");
+        text("<", false);
+        put(R2_HOME_URL);
+        text(">", false);
+        put(")\"}");
+    }
+    put("]}}");
+    return len < cap && len <= R2_CARD_MAX ? len : 0;
+}
+
 // A page's parts: its title, its address, the clip's (played on the page), the video cards play ("" for none: cards
 // show the picture), the picture's, and their sizes.
 struct R2PageParts {
     const char *title, *page, *video, *embed, *image;
     i32 w, h, ew, eh, tw, th;
+    const char *card; // the card's JSON (r2_card_json), put in as it is; "" or 0 = none
 };
 
 // A run of the page: text with %T (the title), %P (the page's address), %V (the clip's), %E (what cards play), %I
@@ -586,9 +709,9 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
 }
 
 // The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that
-// plays `embed` (the clip, or a small copy of it), or with none a card with the picture; the plain APP_DISPLAY word
-// under it. Paused, the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the
-// length, 0 if it didn't fit.
+// plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and Discord's own card
+// (`card`) before them; the plain APP_DISPLAY word under it. Paused, the page names the clip and doesn't play it.
+// Kept from search engines. All ASCII. Returns the length, 0 if it didn't fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
 {
     if (cap < 2) return 0;
@@ -603,6 +726,9 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                 "<meta property=\"og:type\" content=\"video.other\">\n<meta property=\"og:title\" content=\"%T\">\n"
                 "<meta property=\"og:site_name\" content=\"" APP_DISPLAY "\">\n<meta property=\"og:url\" content=\"%P\">\n",
                 p, out, cap, &len);
+    if (!paused && p.card && p.card[0] && len + (i32)strlen(p.card) + 80 < cap)
+        len += snprintf(out + len, cap - len,
+                        "<script id=\"discord:component-embed\" type=\"application/json\">%s</script>\n", p.card);
     if (!paused)
         r2_page_put("<meta property=\"og:image\" content=\"%I\">\n<meta property=\"og:image:width\" content=\"%w\">\n"
                     "<meta property=\"og:image:height\" content=\"%h\">\n",
@@ -1365,9 +1491,14 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     r2_thumb_size(s.page_w, s.page_h, &tw, &th);
     r2_page_title(s.title, s.game, s.seconds, title, sizeof title);
     bool copy = s.social == 1;
+    EmbedInput in = {s.title, s.game, g_app.config.clipper_name, s.seconds, s.uploaded_us, embed[0] != 0, 0};
+    EmbedCard card;
+    embed_card(in, &card);
+    static thread_local char json[R2_CARD_MAX + 1];
+    if (!r2_card_json(card, embed, image, "", json, sizeof json)) json[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
-                     copy ? s.social_h : s.page_h, tw, th};
-    static thread_local char html[8192];
+                     copy ? s.social_h : s.page_h, tw, th, json};
+    static thread_local char html[16384];
     i32 n = r2_page_html(p, paused, html, sizeof html);
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
 }

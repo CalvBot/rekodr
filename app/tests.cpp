@@ -1744,6 +1744,41 @@ static void test_r2()
     T(!strstr(html, "thumb.jpg"));
     T(r2_page_html(pp, false, html, 64) == 0);
 
+    // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag
+    EmbedCard card;
+    EmbedInput ein = {"ace <\"round\"> *1*", "Valorant", "", 42, 0, true, 0};
+    embed_card(ein, &card);
+    T(!strcmp(card.title, ein.title) && !strcmp(card.line, "Valorant") && card.player && card.via && !card.accent);
+    ein.clipper = "Sam";
+    embed_card(ein, &card);
+    T(!strcmp(card.line, "Sam - Valorant"));
+    ein.title = "Valorant 2026-11-24 21-04-33";
+    embed_card(ein, &card);
+    T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Sam"));
+    ein = {"ace <\"round\"> *1* \xc3\xa9\xf0\x9f\x8e\xae", "Valorant", "", 42, 0, true, 0x112233};
+    embed_card(ein, &card);
+    static char cj[R2_CARD_MAX + 1];
+    i32 cn = r2_card_json(card, "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg",
+                          "", cj, sizeof cj);
+    T(cn > 0 && cn == (i32)strlen(cj) && !strchr(cj, '<') && !strchr(cj, '>') && !strchr(cj, '&'));
+    T(starts_with(cj, "{\"component\":{\"type\":17,\"accent_color\":1122867,\"components\":[{\"type\":10,"));
+    T(strstr(cj, "\"content\":\"**ace \\u003c\\\"round\\\"\\\\\\u003e \\\\*1\\\\* \\u00e9\\ud83c\\udfae**\"}") != 0);
+    T(strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}") != 0);
+    T(strstr(cj, "{\"type\":12,\"items\":[{\"media\":{\"url\":\"https://x.dev/clipback/abc/social.mp4?v=2\"}}]}") != 0);
+    T(strstr(cj, "\"-# [via Clipback](\\u003chttps://github.com/CalvBot/clipback\\u003e)\"}]}}") != 0);
+    T(!strstr(cj, "thumb.jpg") && !strstr(cj, "\"type\":9"));
+    card.player = false; // nothing small enough: the picture
+    card.icon = true;    // no icon file: a plain line
+    cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "", cj, sizeof cj);
+    T(cn > 0 && strstr(cj, "https://x.dev/t.jpg") && !strstr(cj, "v.mp4") && !strstr(cj, "\"type\":9"));
+    T(r2_card_json(card, "a", "b", "", cj, 100) == 0);
+    pp.card = "{\"component\":{}}";
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(strstr(html, "<script id=\"discord:component-embed\" type=\"application/json\">{\"component\":{}}</script>"));
+    T(strstr(html, "og:image\"") != 0); // the Open Graph tags stay for other apps
+    hn = r2_page_html(pp, true, html, sizeof html);
+    T(hn > 0 && !strstr(html, "component-embed"));
+
     // The page's title: the game and how long it plays; a name of its own goes first
     char pt[128];
     r2_page_title("Overwatch 2026-11-24 21-04-33", "Overwatch", 125, pt, sizeof pt);
