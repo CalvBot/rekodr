@@ -95,6 +95,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->tooltips = true;
     c->share_names = true; // "Help name games" and "Send usage stats": on, the setup asks
     c->send_stats = true;
+    c->share_sound = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
     wchar_t time_format[80] = L"";
@@ -403,6 +404,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
+    else if (!strcmp(key, "share_sound")) boolean(&c->share_sound);
     else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
     else if (!strcmp(key, "flat_look")) boolean(&c->flat_look);
@@ -591,6 +593,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("share_names", c.share_names);
     boolean("send_stats", c.send_stats);
+    boolean("share_sound", c.share_sound);
     boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);
     boolean("flat_look", c.flat_look);

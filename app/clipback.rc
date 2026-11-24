@@ -13,6 +13,7 @@
 30 RCDATA "fonts/Onest-Regular.ttf"
 31 RCDATA "fonts/Onest-SemiBold.ttf"
 32 RCDATA "fonts/Onest-Bold.ttf"
+40 RCDATA "../assets/complete.wav"
 
 #include "version.h"
 

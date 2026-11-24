@@ -5,6 +5,8 @@
 #define NOMINMAX
 #define UNICODE
 #include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #include <shellapi.h>
 #include <shlobj.h>
 #include <dwmapi.h>

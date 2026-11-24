@@ -3427,6 +3427,11 @@ static void options_sharing()
 
     opt_quality_table();
     opt_min_quality_row();
+    if (opt_row_toggle("Sound when copied", "Plays when a shared file or link is on the clipboard", "##sharesound",
+                       &c.share_sound)) {
+        log_line("options: share sound %s", c.share_sound ? "on" : "off");
+        options_apply(0);
+    }
 
     opt_uploader_rows();
 
