@@ -459,13 +459,14 @@ static void r2_thumb_key(const char *key, char out[R2_KEY_MAX])
     snprintf(out, R2_KEY_MAX, "%s/thumb.jpg", dir);
 }
 
-// Chat apps play the video a page names only when they can fetch all of it in a few seconds: Discord gives itself
-// about 10 s and gives up on a big file. A page names a small copy of the clip, beside it in the bucket, when the
-// clip is bigger than r2_social_bytes() (social_copy_mb), 1080p or 1920 wide; the page itself plays the clip.
+// Chat apps play the video a page names only when their proxy can fetch all of it: Discord's embedded H.264 up to
+// about 250 MB and cut bigger files short. A page names a social copy of the clip, beside it in the bucket, when the
+// clip is bigger than r2_social_bytes() (social_copy_mb), over 1080p or 1920 wide, or over SOCIAL_MAX_KBPS; the
+// page itself plays the clip.
 static i64 r2_social_bytes()
 {
     f64 mb = g_app.config.social_copy_mb;
-    return (i64)((mb < 8 ? 8 : mb > 2000 ? 2000 : mb) * 1000 * 1000);
+    return (i64)((mb < 8 ? 8 : mb > 250 ? 250 : mb) * 1000 * 1000);
 }
 
 // The small copy beside a file in the bucket: "clipback/<id>/clip.mp4" -> "clipback/<id>/social.mp4".
@@ -477,19 +478,16 @@ static void r2_social_key(const char *key, char out[R2_KEY_MAX])
 }
 
 // What cards play for a link with a page, its copy `bytes` big, w x h at `fps`, `seconds` long: 0 the copy itself
-// (within `budget`, 1080p and 1920 wide); else the height of a small copy made for `budget`, 1080 when the clip's
-// recommended bitrate fits at that size, else 720 down to SOCIAL_MIN_KBPS; -1 when not even that fits: the small
-// copy is a preview of the clip's start (save_social_copy), or there's none and cards show the picture.
+// (within `budget`, 1080p and 1920 wide, at most SOCIAL_MAX_KBPS of video); else SOCIAL_H, a social copy of the
+// whole clip when it fits `budget` at social_kbps' floor; -1 when it doesn't: the social copy is a preview of the
+// clip's start (save_social_copy), or there's none and cards show the picture.
 static i32 r2_social_height(f64 seconds, i32 w, i32 h, f64 fps, bool audio, i64 bytes, i64 budget)
 {
-    if (bytes <= budget && w <= 1920 && h <= 1080) return 0;
-    f64 kbps = budget * 8 * 0.98 * (1 - SHARE_MARGIN) / 1000 / (seconds > 0.1 ? seconds : 0.1) -
-               (audio ? SHARE_AUDIO_KBPS : 0);
-    i32 fw, fh;
-    link_fit_size(w, h, 1080, &fw, &fh);
-    if (!fw) fw = w, fh = h;
-    if (kbps >= share_reco_kbps(fw, fh, fps)) return 1080;
-    return kbps >= (f64)SOCIAL_MIN_KBPS ? 720 : -1;
+    f64 s = seconds > 0.1 ? seconds : 0.1, target, least;
+    f64 video_kbps = bytes * 8 / 1000.0 / s - (audio ? SHARE_AUDIO_KBPS : 0);
+    if (bytes <= budget && w <= 1920 && h <= 1080 && video_kbps <= (f64)SOCIAL_MAX_KBPS) return 0;
+    social_kbps(w, h, fps, &target, &least);
+    return social_whole_fits(s, audio, budget, least) ? SOCIAL_H : -1;
 }
 
 // A clip's name that's only its game and when it was saved, as clips are named unless the player names them.
@@ -4010,13 +4008,15 @@ static void r2_start_copy(i32 slot)
     ReleaseSRWLockExclusive(&g_r2.lock);
     // A session in the bucket keeps its tracks (for editors), so cards always get their own one-track copy
     bool page = !strcmp(w.hosts, "r2") && g_app.config.share_link_page, session = path_is_session(w.src.s);
-    w.phase = page && (session || w.aim > r2_social_bytes() || w.info.width > 1920 || w.info.height > 1080) ? 1 : 0;
+    f64 secs = w.edit.mode == EDIT_ADVANCED ? adv_len(w.edit) : pieces_len(w.edit, w.info.duration);
+    w.phase = page && (session || r2_social_height(secs, w.info.width, w.info.height, w.info.fps,
+                                                   w.info.track_count > 0, w.aim, r2_social_bytes()))
+                  ? 1 : 0;
     w.preview = 0;
     if (strcmp(w.hosts, "r2") && w.aim > r2_social_bytes()) {
         // A free host or uploader gets what a card plays, never more than r2_social_bytes(): the clip at a smaller
         // height, or a preview of its start
         f64 full_s = 0;
-        f64 secs = w.edit.mode == EDIT_ADVANCED ? adv_len(w.edit) : pieces_len(w.edit, w.info.duration);
         i32 h = r2_social_height(secs, w.info.width, w.info.height, w.info.fps,
                                  w.info.track_count > 0, w.aim, r2_social_bytes());
         w.save = save_social_copy(w.src, w.info, w.edit, stem, r2_social_bytes(), h, &w.preview, &full_s);
@@ -4238,7 +4238,7 @@ static void r2_on_save_event(const Event &e)
     t.seconds = (f32)share_seconds(w.info, memcmp(&w.edit, &none, sizeof none) ? &w.edit : 0);
     if (second) {
         t.file = w.full;
-        t.social_h = w.preview > 0 ? SOCIAL_PREVIEW_H : w.social_h;
+        t.social_h = w.preview > 0 ? SOCIAL_H : w.social_h;
         t.preview = (f32)w.preview;
         if (v->state == SAVE_DONE) utf8_to_wide(v->path, t.social.s, MAX_PATH);
         else {

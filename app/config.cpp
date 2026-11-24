@@ -81,7 +81,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
     c->share_max_mb = 20;
-    c->social_copy_mb = 80;
+    c->social_copy_mb = 150;
     c->share_min_quality = 67;
     c->render_edits = true;
     memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);

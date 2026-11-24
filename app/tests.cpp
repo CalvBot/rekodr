@@ -1902,13 +1902,26 @@ static void test_r2()
     r2_page_title("", "", 7200, pt, sizeof pt);
     T(!strcmp(pt, "Clip, 2 hours"));
 
-    // The small copy: none when the clip fits cards; else 1080 when its bitrate fits, 720, or none at all
+    // The social copy: none when the clip fits cards; else the whole clip at 1080p when it fits at the floor, or a
+    // preview
     const i64 mb = 1000 * 1000;
-    T(r2_social_height(30, 1920, 1080, 60, true, 50 * mb, 80 * mb) == 0);
-    T(r2_social_height(30, 2560, 1440, 60, true, 50 * mb, 80 * mb) == 1080);  // too big a picture
-    T(r2_social_height(20, 1920, 1080, 60, true, 200 * mb, 80 * mb) == 1080); // ~30 Mbps fits
-    T(r2_social_height(300, 1920, 1080, 60, true, 900 * mb, 80 * mb) == 720); // ~2 Mbps
-    T(r2_social_height(1500, 1920, 1080, 60, true, 3000 * mb, 80 * mb) == -1); // under 1000 kbps
+    T(r2_social_height(30, 1920, 1080, 60, true, 50 * mb, 150 * mb) == 0);     // ~13 Mbps, Medal's rate
+    T(r2_social_height(30, 1920, 1080, 60, true, 60 * mb, 150 * mb) == 1080);  // ~16 Mbps, over SOCIAL_MAX_KBPS
+    T(r2_social_height(30, 2560, 1440, 60, true, 50 * mb, 150 * mb) == 1080);  // too big a picture
+    T(r2_social_height(200, 1920, 1080, 60, true, 300 * mb, 150 * mb) == 1080); // ~5.5 Mbps fits
+    T(r2_social_height(300, 1920, 1080, 60, true, 900 * mb, 150 * mb) == -1);  // ~3.6 Mbps, under the floor
+    T(r2_social_height(300, 640, 360, 30, true, 900 * mb, 150 * mb) == 1080);  // a small picture's floor is lower
+    f64 target, least;
+    social_kbps(1920, 1080, 60, &target, &least);
+    T(target == 12000 && least == 5000);
+    social_kbps(2560, 1440, 60, &target, &least); // made at 1080p
+    T(target == 12000 && least == 5000);
+    social_kbps(1920, 1080, 120, &target, &least); // never over SOCIAL_KBPS
+    T(target == 12000 && least == 5000);
+    social_kbps(1920, 1080, 30, &target, &least);
+    T(target == 8000 && least == 5000);
+    social_kbps(640, 360, 30, &target, &least);
+    T(target == 1000 && least == 1000);
     char sk[R2_KEY_MAX];
     r2_social_key("clipback/abcdefghijklmnop/clip.mp4", sk);
     T(!strcmp(sk, "clipback/abcdefghijklmnop/social.mp4"));
@@ -2797,11 +2810,12 @@ static void test_edit_advanced()
 static void test_social_preview()
 {
     const i64 MB = 1024 * 1024;
-    T(social_preview_len(60, true, 80 * MB, 1080) == 0);  // a minute fits at well over SOCIAL_MIN_KBPS
-    f64 p = social_preview_len(25 * 60, true, 80 * MB, 720);
-    T(!SOCIAL_PREVIEW || (p > 120 && p < 300 && p == floor(p)));
-    T(!SOCIAL_PREVIEW || social_preview_len(25 * 60, true, 80 * MB, -1) == p); // no size fits the whole
-    T(social_preview_len(20, true, 80 * MB, -1) == 0);      // shorter than the preview would be
+    T(social_preview_len(60, true, 150 * MB, 1080, 5000) == 0); // a minute fits at well over the floor
+    f64 p = social_preview_len(25 * 60, true, 150 * MB, 1080, 5000);
+    T(!SOCIAL_PREVIEW || (p > 200 && p < 240 && p == floor(p)));   // about 3.8 minutes at 5 Mbps
+    T(!SOCIAL_PREVIEW || social_preview_len(25 * 60, true, 150 * MB, -1, 5000) == p);
+    T(social_preview_len(20, true, 150 * MB, -1, 5000) == 0);      // shorter than the preview would be
+    T(social_whole_fits(200, true, 150 * MB, 5000) && !social_whole_fits(300, true, 150 * MB, 5000));
 
     EditRecord e = {};
     e.pieces[0] = {10, 40};
