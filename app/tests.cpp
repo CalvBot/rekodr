@@ -196,31 +196,36 @@ static void test_lengths()
     T(parse_range_us("30s", &rf, &rt) == 0);
 }
 
-// Names from the template in Options are shown with a readable date; others as they are
+// Names from the template in Options are shown as their game alone, no date or time; others as they are
 static void test_shown_names()
 {
     str_set(g_app.config.name_template, SAVE_NAME_DEFAULT);
     g_app.config.clock_24h = false;
     char name[300], out[300];
     lib_shown_name("Minecraft 15-00 20-11-2020", out, sizeof out);
-    T(!strcmp(out, "Minecraft - 20 Nov 2020 at 3 pm"));
+    T(!strcmp(out, "Minecraft"));
     lib_shown_name("Minecraft 21-30 20-11-2020 (2)", out, sizeof out);
-    T(!strcmp(out, "Minecraft - 20 Nov 2020 at 9:30 pm (2)"));
+    T(!strcmp(out, "Minecraft (2)"));
+    lib_shown_name("Clip 21-30 20-11-2020", out, sizeof out);
+    T(!strcmp(out, GAME_DESKTOP));
     lib_shown_name("Minecraft 2026-11-19 21-30-00", out, sizeof out);
     T(!strcmp(out, "Minecraft 2026-11-19 21-30-00"));
     lib_shown_name("Minecraft 25-00 20-11-2020", out, sizeof out);
     T(!strcmp(out, "Minecraft 25-00 20-11-2020"));
     save_name_expand(SAVE_NAME_DEFAULT, "Minecraft", now_us(), name, sizeof name);
     lib_shown_name(name, out, sizeof out);
-    T(!strncmp(out, "Minecraft - today at ", 21));
-    save_name_expand(SAVE_NAME_DEFAULT, "Minecraft", now_us() - 86400ll * 1000000, name, sizeof name);
-    lib_shown_name(name, out, sizeof out);
-    T(!strncmp(out, "Minecraft - yesterday at ", 25));
-    g_app.config.clock_24h = true;
+    T(!strcmp(out, "Minecraft"));
     lib_shown_name("Over 9 15-05 20-11-2020", out, sizeof out);
-    T(!strcmp(out, "Over 9 - 20 Nov 2020 at 15:05"));
-    T(lib_name_matches("Minecraft 15-05 20-11-2020", "nov 2020"));
-    // Sorting and day headings go by the name's time, or the file's when the name has none
+    T(!strcmp(out, "Over 9"));
+    T(lib_name_matches("Clip 15-05 20-11-2020", "desktop"));
+    // A card's own date and time, with the year when it isn't this one
+    char when[48];
+    fmt_when(lib_name_us(SAVE_NAME_DEFAULT, "Minecraft 17-32 07-10-2020", 0), when, sizeof when);
+    T(!strcmp(when, "7 Oct 2020 5:32 pm"));
+    g_app.config.clock_24h = true;
+    fmt_when(lib_name_us(SAVE_NAME_DEFAULT, "Minecraft 17-32 07-10-2020", 0), when, sizeof when);
+    T(!strcmp(when, "7 Oct 2020 17:32"));
+    // Sorting and the Library's periods go by the name's time, or the file's when the name has none
     i64 at = now_us() - 3600ll * 1000000;
     save_name_expand(SAVE_NAME_DEFAULT, "Minecraft", at, name, sizeof name);
     i64 got = lib_name_us(SAVE_NAME_DEFAULT, name, 5);
@@ -228,7 +233,38 @@ static void test_shown_names()
     T(lib_name_us(SAVE_NAME_DEFAULT, "Minecraft 2026-11-19 21-30-00", 5) == 5);
     str_set(g_app.config.name_template, "{YYYY}-{MM}-{DD} {hh}.{mm} {game}");
     lib_shown_name("2020-11-20 15.05 Overwatch 2", out, sizeof out);
-    T(!strcmp(out, "Overwatch 2 - 20 Nov 2020 at 15:05"));
+    T(!strcmp(out, "Overwatch 2"));
+}
+
+// The Library's headings: periods back from today, then months, each period one run of days
+static void test_lib_periods()
+{
+    char out[32];
+    i64 now = now_us(), day_us = 86400ll * 1000000;
+    lib_period(now, out, sizeof out);
+    T(!strcmp(out, "Today"));
+    lib_period(now - day_us, out, sizeof out);
+    T(!strcmp(out, "Yesterday"));
+    lib_period(lib_name_us(SAVE_NAME_DEFAULT, "Minecraft 12-00 15-05-2020", 0), out, sizeof out);
+    T(!strcmp(out, "May 2020"));
+    // Going back a day at a time, the headings come in order and none comes back once left
+    static const char *const order[] = {"Today", "Yesterday", "This week", "Last week", "This month", "Last month"};
+    i32 at = 0;
+    i64 last = lib_period(now, 0, 0), changes = 0;
+    bool ordered = true, seen_month = false;
+    for (i32 d = 1; d < 120; d++) {
+        i64 key = lib_period(now - d * day_us, out, sizeof out);
+        if (key == last) continue;
+        changes++;
+        last = key;
+        i32 k = 0;
+        while (k < COUNT(order) && strcmp(out, order[k])) k++;
+        if (k < COUNT(order)) {
+            ordered = ordered && !seen_month && k > at;
+            at = k;
+        } else seen_month = true;
+    }
+    T(ordered && seen_month && changes >= 4);
 }
 
 // The game in a file name comes from the save template; a name it doesn't read isn't ours
@@ -3072,6 +3108,7 @@ int main()
     test_save_names();
     test_buffer_names();
     test_shown_names();
+    test_lib_periods();
     test_folder_rules();
     test_fields();
     test_hotkeys();
