@@ -104,7 +104,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->accent = ACCENT_DEFAULT;
     c->card_width = 270;
     // One hotkey, the same keys as NVIDIA's instant replay, so it's where hands already go.
-    str_set(c->hotkeys[0].keys.s, "Alt+F10");
+    str_set(c->hotkeys[0].keys.s, "Alt+F7");
     str_set(c->hotkeys[0].action.s, "save 30s");
     c->hotkey_count = 1;
 }
@@ -446,7 +446,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
-        // hotkey = Alt+F10 | save 30s
+        // hotkey = Alt+F7 | save 30s
         char *f[2];
         if (split_fields(value, f, 2) == 2 && c->hotkey_count < COUNT(c->hotkeys)) {
             Hotkey *h = &c->hotkeys[c->hotkey_count++];

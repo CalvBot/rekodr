@@ -84,7 +84,7 @@ struct InputDevice {
 };
 
 struct Hotkey {
-    Str64 keys;   // "Alt+F10"
+    Str64 keys;   // "Alt+F7"
     Str64 action; // "save 30s" | "timeline" | "open" | "pause"
 };
 

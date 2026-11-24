@@ -197,7 +197,7 @@ static void setup_window()
         dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + ph), col32(COL_PANEL), dp(12));
         f32 kx = x0 + dp(24), ky = floorf(y + (ph - kh) / 2);
         if (any) {
-            // "Alt+F10" as Alt, +, F10; a + with nothing before it is the + key itself
+            // "Alt+F7" as Alt, +, F7; a + with nothing before it is the + key itself
             char part[64];
             i32 n = 0;
             bool first = true;

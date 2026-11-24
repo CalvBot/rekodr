@@ -468,10 +468,10 @@ static void test_first_run()
     T(!setup_clip_key(c, keys, sizeof keys, &secs));
     str_set(c.hotkeys[0].keys.s, "Alt+F9");
     str_set(c.hotkeys[0].action.s, "timeline");
-    str_set(c.hotkeys[1].keys.s, "Alt+F10");
+    str_set(c.hotkeys[1].keys.s, "Alt+F7");
     str_set(c.hotkeys[1].action.s, "save 45s");
     c.hotkey_count = 2;
-    T(setup_clip_key(c, keys, sizeof keys, &secs) && !strcmp(keys, "Alt+F10") && secs == 45);
+    T(setup_clip_key(c, keys, sizeof keys, &secs) && !strcmp(keys, "Alt+F7") && secs == 45);
 }
 
 static void test_game_guess()
@@ -679,7 +679,7 @@ static void test_sessions_seen()
 static void test_hotkeys()
 {
     u32 mods = 0, vk = 0;
-    T(hotkey_parse("Alt+F10", &mods, &vk) && mods == (MOD_NOREPEAT | MOD_ALT) && vk == VK_F10);
+    T(hotkey_parse("Alt+F7", &mods, &vk) && mods == (MOD_NOREPEAT | MOD_ALT) && vk == VK_F7);
     T(hotkey_parse("ctrl + shift + s", &mods, &vk) && mods == (MOD_NOREPEAT | MOD_CONTROL | MOD_SHIFT) && vk == 'S');
     T(hotkey_parse("Win+Num5", &mods, &vk) && vk == VK_NUMPAD5);
     T(hotkey_parse("F24", &mods, &vk) && vk == VK_F24);
@@ -718,7 +718,7 @@ static void test_settings_round_trip()
     a.editor_zoom_view = 1;
     str_set(a.codec.s, "hevc");
     a.hotkey_count = 1;
-    str_set(a.hotkeys[0].keys.s, "Alt+F10");
+    str_set(a.hotkeys[0].keys.s, "Alt+F7");
     str_set(a.hotkeys[0].action.s, "save 30s");
     a.app_count = 0;
     AppInfo *app = config_app(&a, "game.exe");
@@ -769,7 +769,7 @@ static void test_settings_round_trip()
     }
     T(b.accent == 0x0a1b2c);
     T(b.bitrate_mbps == 42.5f && b.fps == 120 && b.buffer_by_size && b.dev_log && !strcmp(b.codec.s, "hevc"));
-    T(b.hotkey_count == 1 && !strcmp(b.hotkeys[0].keys.s, "Alt+F10") && !strcmp(b.hotkeys[0].action.s, "save 30s"));
+    T(b.hotkey_count == 1 && !strcmp(b.hotkeys[0].keys.s, "Alt+F7") && !strcmp(b.hotkeys[0].action.s, "save 30s"));
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
     T(b.popup_corner == CORNER_TL && b.popup_monitor_game == 1 && b.popup_corner_game == CORNER_BL);
     for (i32 i = CORNER_BR; i <= CORNER_TL; i++) T(corner_parse(corner_name((PopupCorner)i)) == i);

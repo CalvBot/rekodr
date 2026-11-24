@@ -1,4 +1,4 @@
-// Global hotkeys ("Alt+F10" -> save 30s) through RegisterHotKey on the message window. Hotkey i has id i + 1.
+// Global hotkeys ("Alt+F7" -> save 30s) through RegisterHotKey on the message window. Hotkey i has id i + 1.
 
 struct KeyName { const char *name; u32 vk; };
 

@@ -46,7 +46,7 @@ The whole program is one translation unit, `app\clipback.cpp`, which includes ev
 | `dev`, `dev off` | Turns the detailed log on or off |
 | `quit` | Stops clipback |
 
-The default hotkey is Alt+F10, which saves the last 30 seconds. Hotkeys are set in Options.
+The default hotkey is Alt+F7, which saves the last 30 seconds. Hotkeys are set in Options.
 
 ## Stream Deck
 `streamdeck\dev.calvbot.clipback.sdPlugin` is a Stream Deck plugin with three actions:
