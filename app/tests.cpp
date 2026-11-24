@@ -1663,6 +1663,7 @@ static void test_r2()
     w[0].social_h = 720;
     w[0].seconds = 125.5f;
     w[0].preview = 60;
+    snprintf(w[0].marks, sizeof w[0].marks, "12.400 First kill%c17.000 Ace", R2_MARK_SEP);
     w[1].social = -1;
     T(r2_history_write(file, w, 2));
     T(r2_history_read(file, r, 4) == 2);
@@ -1676,7 +1677,7 @@ static void test_r2()
     T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));
     T(r[0].social == 1 && r[0].social_w == 1280 && r[0].social_h == 720 && r[0].seconds == 125.5f);
-    T(r[0].preview == 60);
+    T(r[0].preview == 60 && !strcmp(r[0].marks, w[0].marks) && !r[1].marks[0]);
     T(r[1].social == -1 && !r[1].social_w);
     DeleteFileW(file.s);
 
@@ -1696,9 +1697,9 @@ static void test_r2()
     r2_thumb_size(0, 1080, &tw, &th);
     T(!tw && !th);
 
-    // The page: the tags for a card that plays, the clip full width, the word under it; the title made safe and
+    // The page: the tags for a card that plays, the name, the game line and the player; the title made safe and
     // ASCII; paused, no clip and nothing that plays it
-    static char html[8192];
+    static char html[32768];
     static const u8 past_ascii[] = {'c', 'a', 'f', 0xc3, 0xa9, ' ', 0xf0, 0x9f, 0x8e, 0xae, 0x01, 0}; // e-acute, a pad, a control
     char title[96];
     snprintf(title, sizeof title, "ace <b>\"round\"</b> & %s", (const char *)past_ascii);
@@ -1707,11 +1708,11 @@ static void test_r2()
                       1440, 1280, 720, 1280, 720};
     i32 hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && hn == (i32)strlen(html));
-    T(strstr(html, "min-height:100%;") && strstr(html, "width:100%;") && !strstr(html, "100720"));
     bool ascii = true;
     for (i32 i = 0; i < hn; i++) ascii = ascii && (u8)html[i] < 0x80;
     T(ascii);
     T(strstr(html, "<title>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</title>") != 0);
+    T(strstr(html, "<h1>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</h1>") != 0);
     T(strstr(html, "<meta property=\"og:type\" content=\"video.other\">") != 0);
     T(strstr(html, "<meta property=\"og:site_name\" content=\"Clipback\">") != 0);
     T(strstr(html, "<meta property=\"og:image\" content=\"https://x.dev/clipback/abc/thumb.jpg?v=2\">") != 0);
@@ -1734,17 +1735,36 @@ static void test_r2()
     T(strstr(html, "twitter:player:height\" content=\"720\"") != 0 && strstr(html, "twitter:image\"") != 0);
     T(strstr(html, "noindex") != 0 && !strstr(html, "og:video:width\" content=\"2560\""));
     T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
-    T(strstr(html, "width=\"2560\" height=\"1440\"") != 0);
-    T(strstr(html, " controls playsinline ") != 0 && strstr(html, "<p>Clipback</p>") != 0);
-    // #t= starts the clip there; no note, no line; a preview's note under the clip
-    T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "v.currentTime=t"));
-    T(strstr(strstr(html, "</video>"), "<p>") == strstr(html, "<p>Clipback</p>"));
-    char note[96];
-    r2_preview_text(210, 1500, note, sizeof note);
-    pp.note = note;
+    T(strstr(html, "width=\"2560\" height=\"1440\" controls playsinline") != 0 && strstr(html, "aspect-ratio:2560/1440"));
+    T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/clipback/abc/thumb.jpg?v=2')\">"));
+    // Download, Copy link, and "via Clipback" linking to the project; no game line without one
+    T(strstr(html, "<a class=\"btn\" href=\"https://x.dev/clipback/abc/clip.mp4?v=2\" download>"));
+    T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/clipback\"><img src=\"https://cdn.discordapp.com/"
+                   "emojis/1574532567124803645.webp\" alt=\"\">via Clipback</a>"));
+    T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
+    // #t= starts the clip there; no preview, no markers
+    T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "var CB={pv:0.000,m:[]};"));
+    // a preview and markers go to the player, the notes made safe for the script tag
+    pp.preview = 210;
+    char marks[96];
+    snprintf(marks, sizeof marks, "12.400 First kill%c17.000 </script>%c25.5 ", R2_MARK_SEP, R2_MARK_SEP);
+    pp.marks = marks;
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "</video>\n<p>Preview, first 3:30 of 25:00</p>\n<script>") != 0);
-    pp.note = 0;
+    T(hn > 0 && strstr(html, "var CB={pv:210.000,m:[[12.400,\"First kill\"],[17.000,\"\\u003c/script\\u003e\"],"
+                             "[25.500,\"\"]]};</script>"));
+    pp.preview = 0;
+    pp.marks = 0;
+    // the heading and the game line with its emoji
+    pp.heading = "Ace";
+    pp.line = "Valorant";
+    pp.emoji = "<a:val:123>";
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, "<h1>Ace</h1>\n<div class=\"game\"><img src=\"https://cdn.discordapp.com/emojis/123.gif\" "
+                             "alt=\"\">Valorant</div>"));
+    pp.emoji = "nope";
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, "<div class=\"game\">Valorant</div>"));
+    pp.heading = pp.line = pp.emoji = 0;
     // nothing small enough for cards: a picture card, the page still plays the clip
     pp.embed = "";
     hn = r2_page_html(pp, false, html, sizeof html);
@@ -1755,36 +1775,29 @@ static void test_r2()
           "https://x.dev/clipback/abc/clip.mp4", "https://x.dev/clipback/abc/thumb.jpg", 1920, 1080, 1920, 1080, 1280,
           720};
     hn = r2_page_html(pp, true, html, sizeof html);
-    T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "<p>Clipback</p>"));
+    T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "This clip isn't playing right now."));
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
-    T(!strstr(html, "thumb.jpg"));
-    // the corner links, paused or not
-    const char *nav = "<nav><a href=\"https://github.com/CalvBot/clipback\">GitHub</a>"
-                      "<a href=\"https://github.com/CalvBot/clipback/releases\">Releases</a></nav>";
-    T(strstr(html, nav) != 0);
+    T(!strstr(html, "thumb.jpg") && !strstr(html, "<script") && strstr(html, "via Clipback</a>"));
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, nav) && strstr(html, nav) > strstr(html, "<video"));
+    T(hn > 0 && strstr(html, "via Clipback</a>") > strstr(html, "<video"));
     T(r2_page_html(pp, false, html, 64) == 0);
 
     // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag
     EmbedCard card;
-    EmbedInput ein = {"ace <\"round\"> *1*", "Valorant", "", 42, 0, 0, true, 0};
+    EmbedInput ein = {"ace <\"round\"> *1*", "Valorant", 42, 0, 0, true, 0};
     embed_card(ein, &card);
     T(!strcmp(card.title, ein.title) && !strcmp(card.line, "Valorant") && card.player && card.via
       && card.accent == R2_CARD_ACCENT && card.icon);
-    ein.clipper = "Sam";
-    embed_card(ein, &card);
-    T(!strcmp(card.line, "Valorant - Sam"));
     ein.title = "Valorant 2026-11-24 21-04-33";
     embed_card(ein, &card);
-    T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Valorant - Sam"));
+    T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Valorant"));
     ein.title = "ace";
     ein.game = "";
     embed_card(ein, &card);
-    T(!strcmp(card.title, "ace") && !strcmp(card.line, "Sam"));
+    T(!strcmp(card.title, "ace") && !card.line[0]);
     char named[64];
     snprintf(named, sizeof named, "ace <\"round\"> *1* %s", (const char *)past_ascii); // e-acute, a pad, a control
-    ein = {named, "Valorant", "", 42, 0, 0, true, 0x112233};
+    ein = {named, "Valorant", 42, 0, 0, true, 0x112233};
     embed_card(ein, &card);
     static char cj[R2_CARD_MAX + 1];
     i32 cn = r2_card_json(card, "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg",
@@ -1842,15 +1855,15 @@ static void test_r2()
     // the style: found by its id, the first when the id is unknown; a preview tags the line
     T(embed_style_count() == 1 && !strcmp(embed_style_id(0), "clipback") && embed_style_find("clipback") == 0);
     T(embed_style_find("nope") == -1 && !strcmp(embed_style_name(5), "Clipback"));
-    ein = {"ace", "Valorant", "Sam", 1500, 210, 0, true, 0};
+    ein = {"ace", "Valorant", 1500, 210, 0, true, 0};
     embed_card(ein, &card, 0);
-    T(!strcmp(card.line, "Valorant - Sam") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
+    T(!strcmp(card.line, "Valorant") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
     cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
-    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant \\\\- Sam - Preview, first 3:30 of 25:00\"}"));
+    T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant - Preview, first 3:30 of 25:00\"}"));
     // with the page, the tag links to it where the preview stops
     T(card.tag_at == 210);
     cn = r2_card_json(card, "https://x.dev/s.mp4", "https://x.dev/t.jpg", "", "https://x.dev/p", "", cj, sizeof cj);
-    T(cn > 0 && strstr(cj, "\"Valorant \\\\- Sam - [Preview, first 3:30 of 25:00](\\u003chttps://x.dev/p#t=210"
+    T(cn > 0 && strstr(cj, "\"Valorant - [Preview, first 3:30 of 25:00](\\u003chttps://x.dev/p#t=210"
                            "\\u003e)\"}"));
     // a session: Watch and Download after the video, before the via line; its page links the download; the file
     // downloads by its name
@@ -1862,10 +1875,6 @@ static void test_r2()
     T(cn > 0 && strstr(cj, "\"}}]},{\"type\":1,\"components\":[{\"type\":2,\"style\":5,\"label\":\"Watch\","
                            "\"url\":\"https://x.dev/p\"},{\"type\":2,\"style\":5,\"label\":\"Download\","
                            "\"url\":\"https://x.dev/c.mp4\"}]},{\"type\":10,\"content\":\"-# \\u003c:clipback"));
-    pp.download = true;
-    hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "<p><a href=\"https://x.dev/clipback/abc/clip.mp4\" download>Download</a></p>"));
-    pp.download = false;
     char dtype[256];
     r2_download_type("", dtype, sizeof dtype);
     T(!strcmp(dtype, "video/mp4"));

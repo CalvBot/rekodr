@@ -437,7 +437,6 @@ static void config_set(Config *c, const char *key, char *value)
                     c->share_kbps[i][fps == 60] = atoi(value);
     }
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
-    else if (!strcmp(key, "clipper_name")) str_set(c->clipper_name, value);
     else if (!strcmp(key, "embed_style")) { i32 i = embed_style_find(value); c->embed_style = (u8)(i < 0 ? 0 : i); }
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
@@ -619,7 +618,7 @@ static bool config_save(const Config &c, const Paths &paths)
                 SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][1]);
     boolean("share_kbps_custom", c.share_kbps_custom);
     boolean("share_link_page", c.share_link_page);
-    fprintf(f, "clipper_name = %s\nembed_style = %s\n", c.clipper_name, embed_style_id(c.embed_style));
+    fprintf(f, "embed_style = %s\n", embed_style_id(c.embed_style));
     boolean("render_edits", c.render_edits);
     boolean("clock_24h", c.clock_24h);
     fprintf(f, "popup_monitor = %d\npopup_corner = %s\n", c.popup_monitor, corner_name(c.popup_corner));

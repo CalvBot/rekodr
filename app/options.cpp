@@ -3253,12 +3253,11 @@ static ID3D11ShaderResourceView *opt_own_icon()
 // picture), and the small grey "via" line with our icon. The row's height is fixed at the tallest card, so nothing below moves.
 static void opt_link_card_preview(i32 style)
 {
-    Config &c = g_app.config;
     const LibItem *it = opt_card_sample();
     char title[200];
     str_set(title, !it ? "Clip" : it->display_name[0] ? it->display_name : it->name);
     const char *game = it ? it->info.game : "";
-    EmbedInput in = {title, game, c.clipper_name, it ? it->info.duration : 42, 0, now_us(), true, 0};
+    EmbedInput in = {title, game, it ? it->info.duration : 42, 0, now_us(), true, 0};
     EmbedCard card;
     embed_card(in, &card, style);
 
@@ -3594,19 +3593,9 @@ static void options_sharing()
     }
     opt_card_end();
 
-    // A link's card in Discord: the clipper's name on it, and how it looks
+    // A link's card in Discord: how it looks
     opt_section("LINK CARD");
     opt_card_begin();
-    {
-        opt_row_begin("Your name", "Shown beside the game. Empty: no name", fw);
-        char name[64];
-        if (opt_text("##clippername", c.clipper_name, fw, 0, "None", name, sizeof name)) {
-            str_set(c.clipper_name, trim(name));
-            log_line("options: clipper name %s", c.clipper_name[0] ? "set" : "cleared");
-            options_apply(0);
-        }
-        opt_row_end();
-    }
     // The small copy a link's card plays: its size as chips across the control column
     {
         static const f32 sizes[] = {50, 80, 100, 150, 200};

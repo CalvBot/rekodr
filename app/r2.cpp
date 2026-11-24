@@ -102,6 +102,7 @@ struct R2Share {
     i32  social_w, social_h; // the small copy's size
     f32  seconds;     // how long the clip plays, for the page's title
     f32  preview;     // the small copy is the clip's first this many seconds (save_social_copy), 0 = all of it
+    char marks[1024]; // the clip's markers for its page: "<seconds> <note>" each, split by R2_MARK_SEP (r2_probe_marks)
     // Not kept in the history:
     bool moving;      // a pause or resume is running
     i64  plays_today, plays_month, plays_24h; // GET requests for the file (local day, this month, the last 24
@@ -574,12 +575,10 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Discord's card for a link (a component embed): one Container with the title in bold, a line with the game (and
-// the clipper's name when the player set one), the video (or the picture when nothing small enough plays), and a
-// small grey "via" link. Other apps read the page's Open Graph tags instead.
+// Discord's card for a link (a component embed): one Container with the title in bold, a line with the game, the
+// video (or the picture when nothing small enough plays), and a small grey "via" link. Other apps read the page's Open Graph tags instead.
 
 #define R2_HOME_URL "https://github.com/CalvBot/clipback"
-#define R2_RELEASES_URL "https://github.com/CalvBot/clipback/releases"
 enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
 static const u32 R2_CARD_ACCENT = 0x3BA4A0; // the card's edge colour. TODO: brand colour
 // The logo as a Discord emoji, at the start of the card's "via" line; it is in Calvin's own server.
@@ -587,7 +586,7 @@ static const u32 R2_CARD_ACCENT = 0x3BA4A0; // the card's edge colour. TODO: bra
 #define R2_LOGO_EMOJI "<:clipback:1574532567124803645>"
 
 struct EmbedInput {
-    const char *title, *game, *clipper; // the clip's name, its game, config.clipper_name ("" = none)
+    const char *title, *game;           // the clip's name and its game
     f64  seconds;                       // how long it plays
     f64  preview;                       // the card's video is the first this many seconds, 0 = all of it
     i64  date_us;                       // when it was shared
@@ -612,7 +611,7 @@ struct EmbedCard {
 // A card style: which parts it shows (config.embed_style). The first is the one settings start with.
 struct EmbedStyle {
     const char *id, *name; // saved in settings; its label
-    bool line;             // the game and the clipper's name under the title
+    bool line;             // the game under the title
     bool icon;             // the game's emoji at the start of that line
 };
 static const EmbedStyle EMBED_STYLES[] = {
@@ -660,12 +659,11 @@ static void embed_card(const EmbedInput &in, EmbedCard *out, i32 style = -1)
 {
     const EmbedStyle &st = embed_style(style < 0 ? g_app.config.embed_style : style);
     *out = {};
-    const char *game = in.game ? in.game : "", *clipper = in.clipper ? in.clipper : "";
+    const char *game = in.game ? in.game : "";
     bool named = in.title && !r2_default_name(in.title, game);
     str_set(out->title, named ? in.title : game[0] ? game : "Clip");
     if (st.line) {
-        if (game[0] && clipper[0]) snprintf(out->line, sizeof out->line, "%s - %s", game, clipper);
-        else str_set(out->line, game[0] ? game : clipper);
+        str_set(out->line, game);
     }
     if (in.video && in.preview > 0 && in.seconds > in.preview) {
         r2_preview_text(in.preview, in.seconds, out->tag, sizeof out->tag);
@@ -763,14 +761,31 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
     return len < cap && len <= R2_CARD_MAX ? len : 0;
 }
 
+// Splits the markers in R2PageParts.marks and R2Share.marks.
+#define R2_MARK_SEP '\x1f'
+
+// A Discord emoji's picture on Discord's CDN, for the page: "<:name:id>" -> ".../emojis/<id>.webp", animated ones
+// ".gif". False (and "") when `e` isn't one.
+static bool r2_emoji_url(const char *e, char *out, i32 cap)
+{
+    out[0] = 0;
+    if (!emoji_ok(e)) return false;
+    const char *id = strrchr(e, ':') + 1;
+    snprintf(out, cap, "https://cdn.discordapp.com/emojis/%.*s.%s", (int)(strlen(id) - 1), id, e[1] == 'a' ? "gif" : "webp");
+    return true;
+}
+
 // A page's parts: its title, its address, the clip's (played on the page), the video cards play ("" for none: cards
 // show the picture), the picture's, and their sizes.
 struct R2PageParts {
     const char *title, *page, *video, *embed, *image;
     i32 w, h, ew, eh, tw, th;
-    const char *card; // the card's JSON (r2_card_json), put in as it is; "" or 0 = none
-    const char *note; // a line under the clip (r2_preview_text when cards play a preview); "" or 0 = none
-    bool download;    // a quiet "Download" link to the clip under it (a session's)
+    const char *card;    // the card's JSON (r2_card_json), put in as it is; "" or 0 = none
+    const char *heading; // the name over the clip (the card's title); 0 = the title
+    const char *line;    // the game under it (the card's line); "" or 0 = none
+    const char *emoji;   // the game's Discord emoji ("<:name:id>", emoji_ok), shown from Discord's CDN; "" or 0 = none
+    f64 preview;         // cards play the clip's first this many seconds; 0 = all of it
+    const char *marks;   // the clip's markers: "<seconds> <note>" each, split by R2_MARK_SEP; "" or 0 = none
 };
 
 // A run of the page: text with %T (the title), %P (the page's address), %V (the clip's), %E (what cards play), %I
@@ -795,12 +810,13 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
     out[*len < cap ? *len : cap - 1] = 0;
 }
 
-// The preview page for a link: the clip full width on a dark page, with the tags chat apps read for a card that plays
-// `embed` (the clip, or a small copy of it), or with none a card with the picture, and Discord's own card (`card`)
-// before them; the `note`, a session's Download link and the plain APP_DISPLAY word under it. A #t= in the address
-// (seconds, or m:ss or h:mm:ss) starts the clip there, which is where a card's preview tag links to. Paused,
-// the page names the clip and doesn't play it. Tiny GitHub and Releases links sit in the bottom corner, below the
-// clip, never on it. Kept from search engines. All ASCII. Returns the length, 0 if it didn't fit.
+// The page for a link: the clip's picture blurred behind its name, the game line, the clip in Clipback's own player
+// and its markers, then "via Clipback" (a link to the project), Download and Copy link. The head has the tags chat
+// apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and
+// Discord's own card (`card`) before them. A #t= in the address (seconds, or m:ss or h:mm:ss) starts the clip there,
+// which is where a card's preview tag links to; when cards play a preview, a button and a green tick mark where it
+// stops. Paused, the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the
+// length, 0 if it didn't fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
 {
     if (cap < 2) return 0;
@@ -840,35 +856,208 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         r2_page_put("<meta name=\"twitter:card\" content=\"summary_large_image\">\n"
                     "<meta name=\"twitter:title\" content=\"%T\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
                     p, out, cap, &len);
-    r2_page_put("<style>html,body{margin:0;min-height:100%;background:#0c0c0e;color:#7c7c86;"
-                "position:relative;"
-                "font:13px/1.5 system-ui,sans-serif}video{display:block;width:100%;max-height:calc(100vh - 44px);"
-                "background:#000}p{margin:0;padding:12px 16px;text-align:center;letter-spacing:.05em}"
-                "a{color:inherit}nav{position:absolute;right:12px;bottom:14px;font-size:11px;opacity:.6}"
-                "nav a{margin-left:10px;text-decoration:none}</style>\n"
-                "</head><body>\n",
-                p, out, cap, &len);
-    if (!paused) {
-        r2_page_put("<video src=\"%V\" poster=\"%I\" width=\"%W\" height=\"%H\" controls playsinline "
-                    "preload=\"metadata\"></video>\n",
-                    p, out, cap, &len);
-        if (p.note && p.note[0] && len + 16 < cap) {
-            len += snprintf(out + len, cap - len, "<p>");
-            r2_html_text(p.note, out, cap, &len);
-            if (len + 6 < cap) len += snprintf(out + len, cap - len, "</p>\n");
-        }
-        if (p.download) r2_page_put("<p><a href=\"%V\" download>Download</a></p>\n", p, out, cap, &len);
-        r2_page_put("<script>(function(){var m=/[#&]t=([0-9:.]+)/.exec(location.hash),"
-                    "v=document.querySelector('video'),t=0;if(!m||!v)return;"
-                    "m[1].split(':').forEach(function(x){t=t*60+(+x||0)});function go(){v.currentTime=t}"
-                    "if(v.readyState>0)go();else v.addEventListener('loadedmetadata',go,{once:true})})()</script>\n",
-                    p, out, cap, &len);
+    // The look: the clip's picture blurred behind a centred column; the name, the game line, the player, the
+    // markers, then Download / Copy link / Get Clipback.
+    r2_page_put(
+        "<style>"
+        ":root{--fg:#ececf2;--dim:#9a9aa6;--line:#2a2a33;--panel:#15151a;--glass:#15151acc;--accent:#4f8cff;"
+        "--mark:#ffb547;--prev:#58d68d;color-scheme:dark}"
+        "html,body{margin:0;min-height:100%;background:#0c0c0e;color:var(--fg);font:14px/1.5 system-ui,sans-serif}"
+        "body{display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;overflow-x:hidden}"
+        ".bg{position:fixed;inset:-60px;background:#0c0c0e center/cover no-repeat;filter:blur(44px) brightness(.4);"
+        "z-index:-1}"
+        "main{width:min(960px,100%);display:grid;gap:12px}"
+        "h1{font-size:24px;line-height:1.2;margin:0;text-align:center;overflow-wrap:anywhere}"
+        ".game{display:flex;gap:6px;align-items:center;justify-content:center;color:#d4d4dc;font-size:13px}"
+        ".game img,.via img{width:18px;height:18px}"
+        ".player{border-radius:12px;overflow:hidden;background:#000;box-shadow:0 20px 60px #000a;outline:none}"
+        ".player:focus-visible{box-shadow:0 0 0 2px var(--accent),0 20px 60px #000a}"
+        ".view{position:relative;overflow:hidden;max-height:calc(100vh - 230px);cursor:zoom-in;touch-action:none}"
+        ".view.z{cursor:grab}.view.d{cursor:grabbing}"
+        "video{display:block;width:100%;height:100%;object-fit:contain;transform-origin:0 0;background:#000}"
+        ".tag{position:absolute;top:10px;font-size:12px;font-weight:600;background:#000b;border-radius:999px;"
+        "padding:3px 10px;font-variant-numeric:tabular-nums}"
+        ".tag button{all:unset;cursor:pointer;color:var(--dim);margin-left:8px}"
+        ".ctrl{display:grid;gap:6px;padding:8px 12px;background:var(--panel)}"
+        ".scrub{position:relative;height:18px;cursor:pointer;touch-action:none}"
+        ".scrub>*{position:absolute;pointer-events:none}"
+        ".rail{left:0;right:0;top:6px;height:6px;background:var(--line);border-radius:3px}"
+        ".done{left:0;top:6px;height:6px;background:var(--accent);border-radius:3px}"
+        ".head{top:2px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#fff}"
+        ".tick{top:2px;width:3px;height:14px;margin-left:-1px;background:var(--mark);border-radius:2px}"
+        ".tick.pv{background:var(--prev);width:2px;top:0;height:18px}"
+        ".row{display:flex;align-items:center;gap:2px;flex-wrap:wrap;font-size:12px;color:var(--dim);"
+        "font-variant-numeric:tabular-nums}"
+        ".ic{width:32px;height:32px;border:0;border-radius:6px;background:none;color:var(--fg);cursor:pointer;"
+        "display:grid;place-items:center}"
+        ".ic:hover{background:var(--line)}svg{width:18px;height:18px;fill:currentColor}"
+        ".time{margin:0 8px}.spd{display:flex;align-items:center;margin-left:auto}"
+        ".spd span{min-width:40px;text-align:center;color:var(--fg);font-weight:600}"
+        ".pill{font:inherit;font-size:12px;color:var(--fg);background:none;border:1px solid var(--prev);"
+        "border-radius:999px;padding:3px 10px;cursor:pointer}"
+        ".foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}"
+        ".via{display:flex;gap:6px;align-items:center;font-size:12px;color:#c4c4cc;text-decoration:none}"
+        ".via:hover{color:var(--fg);text-decoration:underline}"
+        ".acts{display:flex;gap:8px;flex-wrap:wrap}"
+        ".btn{font:inherit;font-size:13px;color:var(--fg);background:var(--glass);border:1px solid var(--line);"
+        "border-radius:8px;padding:7px 12px;cursor:pointer;display:inline-flex;gap:7px;align-items:center;"
+        "text-decoration:none}"
+        ".btn svg{width:15px;height:15px}"
+        "button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+        "p{margin:0;text-align:center;color:var(--dim)}"
+        "</style>\n"
+        "</head><body>\n",
+        p, out, cap, &len);
+    if (!paused && p.image && p.image[0]) r2_page_put("<div class=\"bg\" style=\"background-image:url('%I')\"></div>\n",
+                                                      p, out, cap, &len);
+    r2_page_put("<main>\n<h1>", p, out, cap, &len);
+    r2_html_text(p.heading && p.heading[0] ? p.heading : p.title, out, cap, &len);
+    r2_page_put("</h1>\n", p, out, cap, &len);
+    if (p.line && p.line[0]) {
+        r2_page_put("<div class=\"game\">", p, out, cap, &len);
+        char src[160];
+        if (r2_emoji_url(p.emoji, src, sizeof src) && len + 200 < cap)
+            len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", src);
+        r2_html_text(p.line, out, cap, &len);
+        r2_page_put("</div>\n", p, out, cap, &len);
     }
-    else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
-    // TODO: a Support link beside these
-    r2_page_put("<p>" APP_DISPLAY "</p>\n<nav><a href=\"" R2_HOME_URL "\">GitHub</a><a href=\"" R2_RELEASES_URL
-                "\">Releases</a></nav>\n</body></html>\n",
-                p, out, cap, &len);
+    if (!paused) {
+        r2_page_put(
+            "<div class=\"player\" id=\"pl\" tabindex=\"0\">"
+            "<div class=\"view\" id=\"vw\" style=\"aspect-ratio:%W/%H\">"
+            "<video src=\"%V\" poster=\"%I\" width=\"%W\" height=\"%H\" controls playsinline preload=\"metadata\">"
+            "</video>"
+            "<div class=\"tag\" id=\"zt\" style=\"right:10px\" hidden><span id=\"zv\"></span>"
+            "<button id=\"zr\" type=\"button\">Reset</button></div></div>\n"
+            "<div class=\"ctrl\" id=\"ct\" hidden><div class=\"scrub\" id=\"sc\"><i class=\"rail\"></i>"
+            "<i class=\"done\" id=\"dn\"></i><span id=\"tk\"></span><i class=\"head\" id=\"hd\"></i></div>\n"
+            "<div class=\"row\">"
+            "<button class=\"ic\" id=\"pb\" aria-label=\"Play\"><svg viewBox=\"0 0 24 24\"><path id=\"pi\" "
+            "d=\"M7 4l13 8-13 8z\"/></svg></button>"
+            "<button class=\"ic\" id=\"fb\" aria-label=\"Back one frame (,)\"><svg viewBox=\"0 0 24 24\">"
+            "<path d=\"M6 5h2v14H6zM20 5 9 12l11 7z\"/></svg></button>"
+            "<button class=\"ic\" id=\"ff\" aria-label=\"Forward one frame (.)\"><svg viewBox=\"0 0 24 24\">"
+            "<path d=\"M16 5h2v14h-2zM4 5l11 7-11 7z\"/></svg></button>"
+            "<button class=\"ic\" id=\"mu\" aria-label=\"Sound\"><svg viewBox=\"0 0 24 24\"><path id=\"mi\" "
+            "d=\"M4 9h4l5-4v14l-5-4H4z\"/></svg></button>"
+            "<span class=\"time\" id=\"tm\">0:00</span>"
+            "<button class=\"pill\" id=\"kw\" type=\"button\" hidden></button>"
+            "<span class=\"spd\"><button class=\"ic\" id=\"sl\" aria-label=\"Slower ([)\"><svg viewBox=\"0 0 24 24\">"
+            "<path d=\"M11 6 3 12l8 6zM21 6l-8 6 8 6z\"/></svg></button><span id=\"sp\">1x</span>"
+            "<button class=\"ic\" id=\"sf\" aria-label=\"Faster (])\"><svg viewBox=\"0 0 24 24\">"
+            "<path d=\"M13 6l8 6-8 6zM3 6l8 6-8 6z\"/></svg></button></span>"
+            "<button class=\"ic\" id=\"fs\" aria-label=\"Full screen\"><svg viewBox=\"0 0 24 24\">"
+            "<path d=\"M4 4h6v2H6v4H4zM14 4h6v6h-2V6h-4zM4 14h2v4h4v2H4zM18 14h2v6h-6v-2h4z\"/></svg></button>"
+            "</div></div></div>\n",
+            p, out, cap, &len);
+    } else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
+    r2_page_put("<div class=\"foot\"><a class=\"via\" href=\"" R2_HOME_URL "\">", p, out, cap, &len);
+    char logo[160];
+    if (r2_emoji_url(R2_LOGO_EMOJI, logo, sizeof logo) && len + 200 < cap)
+        len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", logo);
+    r2_page_put("via " APP_DISPLAY "</a><div class=\"acts\">", p, out, cap, &len);
+    if (!paused)
+        r2_page_put("<a class=\"btn\" href=\"%V\" download><svg viewBox=\"0 0 24 24\"><path d=\"M11 3h2v10l4-4 1.4 "
+                    "1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg>Download</a>"
+                    "<button class=\"btn\" id=\"cp\" type=\"button\"><svg viewBox=\"0 0 24 24\"><path d=\"M10.6 "
+                    "13.4a1 1 0 0 1 0-1.4l3.5-3.5a1 1 0 1 1 1.4 1.4L12 13.4a1 1 0 0 1-1.4 0zM7.1 20.5a4 4 0 0 "
+                    "1-2.8-6.8l2.8-2.8 1.4 1.4-2.8 2.8a2 2 0 1 0 2.8 2.8l2.8-2.8 1.4 1.4-2.8 2.8a4 4 0 0 1-2.8 "
+                    "1.2zM16.9 13.1l-1.4-1.4 2.8-2.8a2 2 0 1 0-2.8-2.8l-2.8 2.8-1.4-1.4 2.8-2.8a4 4 0 0 1 5.6 "
+                    "5.6z\"/></svg><span id=\"cl\">Copy link</span></button>",
+                    p, out, cap, &len);
+    r2_page_put("</div></div>\n</main>\n", p, out, cap, &len);
+    if (!paused) {
+        // The player's facts, then the player: own controls (the browser's stay without script), a scroll zooms
+        // into the picture and a drag moves it, , and . step a frame, [ and ] change the speed, markers and the
+        // end of the cards' preview jump there, and a #t= in the address (seconds, m:ss or h:mm:ss) starts there.
+        if (len + 64 < cap) len += snprintf(out + len, cap - len, "<script>var CB={pv:%.3f,m:[", p.preview);
+        const char *m = p.marks ? p.marks : "";
+        for (bool first = true; *m && len + 32 < cap;) {
+            const char *end = strchr(m, R2_MARK_SEP);
+            size_t n = end ? (size_t)(end - m) : strlen(m);
+            char one[300];
+            snprintf(one, sizeof one, "%.*s", (int)(n < sizeof one ? n : sizeof one - 1), m);
+            char *note = strchr(one, ' ');
+            if (note) *note++ = 0;
+            len += snprintf(out + len, cap - len, "%s[%.3f,\"", first ? "" : ",", atof(one));
+            r2_json_text(note ? note : "", false, out, cap, &len);
+            if (len + 4 < cap) len += snprintf(out + len, cap - len, "\"]");
+            first = false;
+            m += n;
+            if (*m) m++;
+        }
+        r2_page_put("]};</script>\n", p, out, cap, &len);
+        r2_page_put(
+            "<script>(function(){"
+            "var $=function(i){return document.getElementById(i)},v=document.querySelector('video'),pl=$('pl'),"
+            "vw=$('vw'),sc=$('sc'),S=[.1,.25,.5,1,1.5,2],si=3,fps=60,z=1,x=0,y=0,lastMT=-1,best=0,ticks=[];"
+            "function clock(s){s=Math.max(0,Math.floor(s));var h=Math.floor(s/3600),m=Math.floor(s/60)%60,r=s%60;"
+            "return(h?h+':'+(m<10?'0':''):'')+m+':'+(r<10?'0':'')+r}"
+            "v.controls=false;$('ct').hidden=false;"
+            "function D(){return isFinite(v.duration)&&v.duration>0?v.duration:0}"
+            "function ui(){var d=D(),f=d?v.currentTime/d*100:0;$('dn').style.width=f+'%';$('hd').style.left=f+'%';"
+            "$('tm').textContent=clock(v.currentTime)+' / '+clock(d);"
+            "$('pi').setAttribute('d',v.paused?'M7 4l13 8-13 8z':'M6 4h4v16H6zM14 4h4v16h-4z');"
+            "$('pb').setAttribute('aria-label',v.paused?'Play':'Pause');"
+            "$('mi').setAttribute('d',v.muted?'M4 9h4l5-4v14l-5-4H4zM16 9l5 6M21 9l-5 6':'M4 9h4l5-4v14l-5-4H4z')}"
+            "function marks(){var d=D(),tk=$('tk');if(!d||tk.childNodes.length)return;"
+            "function add(t,pv){if(t<0||t>d)return;var i=document.createElement('i');"
+            "i.className='tick'+(pv?' pv':'');i.style.left=t/d*100+'%';tk.appendChild(i);ticks.push(t)}"
+            "if(CB.pv>0&&CB.pv<d){add(CB.pv,1);var k=$('kw');k.hidden=false;"
+            "k.textContent='Keep watching from '+clock(CB.pv);k.onclick=function(){go(CB.pv);v.play()}}"
+            "CB.m.forEach(function(m){add(m[0])})}"
+            "function go(t){v.currentTime=Math.min(D()||t,Math.max(0,t));ui()}"
+            "function step(n){v.pause();go(Math.round(v.currentTime*fps+n)/fps)}"
+            "function speed(n){si=Math.min(S.length-1,Math.max(0,si+n));v.playbackRate=S[si];"
+            "$('sp').textContent=S[si]+'x'}"
+            "function toggle(){if(v.paused)v.play();else v.pause()}"
+            "function frame(n,meta){if(lastMT>=0){var dt=meta.mediaTime-lastMT;"
+            "if(dt>0.004&&dt<0.1&&(!best||dt<best)){best=dt;fps=Math.round(1/dt)}}lastMT=meta.mediaTime;"
+            "v.requestVideoFrameCallback(frame)}"
+            "if(v.requestVideoFrameCallback)v.requestVideoFrameCallback(frame);"
+            "['play','pause','timeupdate','seeked','volumechange'].forEach(function(e){v.addEventListener(e,ui)});"
+            "v.addEventListener('loadedmetadata',function(){marks();ui();"
+            "var h=/[#&]t=([0-9:.]+)/.exec(location.hash),t=0;if(h){h[1].split(':').forEach(function(p){"
+            "t=t*60+(+p||0)});go(t)}});"
+            "if(v.readyState>0)v.dispatchEvent(new Event('loadedmetadata'));"
+            "(function tick(){if(!v.paused)ui();requestAnimationFrame(tick)})();"
+            "var drag=0;function at(e){var r=sc.getBoundingClientRect(),d=D(),t=(e.clientX-r.left)/r.width*d;"
+            "ticks.forEach(function(k){if(Math.abs(k-t)/d*r.width<6)t=k});go(t)}"
+            "sc.onpointerdown=function(e){drag=1;sc.setPointerCapture(e.pointerId);at(e)};"
+            "sc.onpointermove=function(e){if(drag)at(e)};sc.onpointerup=function(){drag=0};"
+            "function zoom(){var r=vw.getBoundingClientRect();x=Math.min(0,Math.max(r.width*(1-z),x));"
+            "y=Math.min(0,Math.max(r.height*(1-z),y));v.style.transform=z>1?'translate('+x+'px,'+y+'px) scale('+z+')':'';"
+            "vw.classList.toggle('z',z>1);$('zt').hidden=z<=1;$('zv').textContent=z.toFixed(1)+'x'}"
+            "function unzoom(){z=1;x=y=0;zoom()}"
+            "vw.addEventListener('wheel',function(e){e.preventDefault();var r=vw.getBoundingClientRect(),"
+            "cx=e.clientX-r.left,cy=e.clientY-r.top,n=Math.min(8,Math.max(1,z*(e.deltaY<0?1.2:1/1.2)));"
+            "x=cx-(cx-x)*n/z;y=cy-(cy-y)*n/z;z=n;zoom()},{passive:false});"
+            "var pan=null;vw.onpointerdown=function(e){if(e.target.closest('.tag'))return;"
+            "pan={x:e.clientX,y:e.clientY,ox:x,oy:y,m:0};vw.setPointerCapture(e.pointerId)};"
+            "vw.onpointermove=function(e){if(!pan)return;var dx=e.clientX-pan.x,dy=e.clientY-pan.y;"
+            "if(Math.abs(dx)+Math.abs(dy)>4)pan.m=1;if(pan.m&&z>1){vw.classList.add('d');x=pan.ox+dx;y=pan.oy+dy;zoom()}};"
+            "vw.onpointerup=function(){if(pan&&!pan.m)toggle();pan=null;vw.classList.remove('d')};"
+            "vw.ondblclick=unzoom;$('zr').onclick=unzoom;window.addEventListener('resize',zoom);"
+            "$('pb').onclick=toggle;$('fb').onclick=function(){step(-1)};$('ff').onclick=function(){step(1)};"
+            "$('sl').onclick=function(){speed(-1)};$('sf').onclick=function(){speed(1)};"
+            "$('mu').onclick=function(){v.muted=!v.muted};"
+            "$('fs').onclick=function(){if(document.fullscreenElement)document.exitFullscreen();"
+            "else if(pl.requestFullscreen)pl.requestFullscreen()};"
+            "$('cp').onclick=function(){var u=location.href.split('#')[0],t=Math.floor(v.currentTime);"
+            "if(t>0)u+='#t='+t;function said(s){$('cl').textContent=s;setTimeout(function(){"
+            "$('cl').textContent='Copy link'},1500)}"
+            "if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){said(t>0?'Copied at '+clock(t):"
+            "'Copied')},function(){prompt('Link',u)});else prompt('Link',u)};"
+            "document.addEventListener('keydown',function(e){var k=e.key,b=e.target.tagName=='BUTTON';"
+            "if(e.ctrlKey||e.metaKey||e.altKey)return;"
+            "if(k==',')step(-1);else if(k=='.')step(1);else if(k=='[')speed(-1);else if(k==']')speed(1);"
+            "else if((k==' '&&!b)||k=='k')toggle();else if(k=='ArrowLeft')go(v.currentTime-5);"
+            "else if(k=='ArrowRight')go(v.currentTime+5);else if(k=='m')v.muted=!v.muted;"
+            "else if(k=='f')$('fs').onclick();else if(k=='0'||k=='Escape'&&z>1)unzoom();else return;"
+            "e.preventDefault()});ui()})()</script>\n",
+            p, out, cap, &len);
+    }
+    r2_page_put("</body></html>\n", p, out, cap, &len);
     return len < cap - 1 ? len : 0;
 }
 
@@ -1410,7 +1599,7 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
 // ---------------------------------------------------------------------------------------------------------------
 // History: <config_dir>\shares.tsv, one share a line, oldest first:
 //   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  expires_us  paused  hidden  pause_day  page_w
-//   page_h  url  title  game  path  social  social_w  social_h  seconds  preview
+//   page_h  url  title  game  path  social  social_w  social_h  seconds  preview  marks
 
 static void r2_tsv_field(FILE *f, const char *s, bool last)
 {
@@ -1432,8 +1621,9 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
         r2_tsv_field(f, s[i].path, false);
-        fprintf(f, "%d\t%d\t%d\t%.3f\t%.3f\n", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds,
+        fprintf(f, "%d\t%d\t%d\t%.3f\t%.3f\t", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds,
                 s[i].preview);
+        r2_tsv_field(f, s[i].marks, true);
     }
     bool ok = fclose(f) == 0;
     return ok && MoveFileExW(part.s, file.s, MOVEFILE_REPLACE_EXISTING);
@@ -1447,16 +1637,16 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
     for (char *line = text; line && *line && n < max;) {
         char *next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char *f[23] = {};
+        char *f[24] = {};
         i32 count = 0;
-        for (char *p = line; count < 23;) {
+        for (char *p = line; count < 24;) {
             f[count++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 23 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
+        if (count == 24 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
             atoi(f[7]) >= 0 && atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
@@ -1485,6 +1675,9 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.social_h = atoi(f[20]);
             s.seconds = (f32)atof(f[21]);
             s.preview = (f32)atof(f[22]);
+            char *cr = strchr(f[23], '\r');
+            if (cr) *cr = 0;
+            str_set(s.marks, f[23]);
             if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0))) s.social = 0;
             s.plays_today = s.plays_month = s.plays_24h = -1;
         }
@@ -1656,7 +1849,7 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     wchar_t src[1040];
     utf8_to_wide(s.path, src, COUNT(src));
     bool session = path_is_session(src);
-    EmbedInput in = {s.title,       s.game,          g_app.config.clipper_name, s.seconds, s.preview,
+    EmbedInput in = {s.title,       s.game,          s.seconds, s.preview,
                      s.uploaded_us, embed[0] != 0, 0,                         session};
     EmbedCard card;
     embed_card(in, &card);
@@ -1665,14 +1858,42 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     gamedb_emoji(s.game, emoji, sizeof emoji);
     if (!r2_card_json(card, embed, image, emoji, page, video, json, sizeof json)) json[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
-                     copy ? s.social_h : s.page_h, tw, th, json, ""};
-    char note[96] = "";
-    if (copy && s.preview > 0 && s.seconds > s.preview) r2_preview_text(s.preview, s.seconds, note, sizeof note);
-    p.note = note;
-    p.download = session;
-    static thread_local char html[16384];
+                     copy ? s.social_h : s.page_h, tw, th, json, card.title, card.line, emoji,
+                     copy && s.preview > 0 && s.seconds > s.preview ? s.preview : 0, s.marks};
+    static thread_local char html[32768];
     i32 n = r2_page_html(p, paused, html, sizeof html);
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
+}
+
+// The clip's markers, from its chapters (save.cpp writes one per marker, and in a session one where each game
+// starts): "<seconds> <title>" each, split by R2_MARK_SEP. A chapter at the very start is left out: it is only the
+// lead-in. "" when there are none or ffprobe can't.
+static void r2_probe_marks(const Path &file, const Path &ffmpeg, char *out, i32 cap)
+{
+    out[0] = 0;
+    if (!ffmpeg.s[0]) return;
+    static thread_local char text[65536];
+    static thread_local wchar_t args[2048];
+    args[0] = 0;
+    static const char *const head[] = {"-v", "error", "-show_chapters", "-of", "default"};
+    arg_list(args, COUNT(args), head, COUNT(head));
+    cmd_arg(args, COUNT(args), file.s);
+    if (proc_run(ffprobe_for(ffmpeg).s, args, 20000, text, sizeof text) != 0) return;
+    i32 len = 0;
+    f64 start = -1;
+    char *ctx = 0;
+    for (char *line = strtok_s(text, "\r\n", &ctx); line; line = strtok_s(0, "\r\n", &ctx)) {
+        if (!strncmp(line, "start_time=", 11)) start = atof(line + 11);
+        else if (!strncmp(line, "TAG:title=", 10) && start >= 0.05) {
+            char one[300];
+            snprintf(one, sizeof one, "%.3f %s", start, line + 10);
+            for (char *c = one; *c; c++)
+                if ((u8)*c < 0x20) *c = ' ';
+            i32 n = (i32)strlen(one) + (len ? 1 : 0);
+            if (len + n < cap) len += snprintf(out + len, cap - len, "%s%s", len ? "\x1f" : "", one);
+            start = -1;
+        } else if (!strcmp(line, "[/CHAPTER]")) start = -1;
+    }
 }
 
 // The preview page's picture from the copy: of the frames a fifth, a third, half and two thirds of the way in, the
@@ -1837,12 +2058,14 @@ static void r2_run_upload(const R2Task &t)
     // The preview page's picture; without one the link is the file itself.
     i32 page_w = 0, page_h = 0;
     i64 extra = 0;
+    char marks[sizeof(R2Share::marks)] = "";
     if (!err[0] && t.page) {
         Path jpg = t.file;
         wcscat_s(jpg.s, MAX_PATH, L".jpg");
         char *pic = 0;
         i64 pic_len = 0;
         if (r2_make_thumb(t.file, t.ffmpeg, jpg, &page_w, &page_h)) pic = read_file(jpg.s, &pic_len);
+        r2_probe_marks(t.file, t.ffmpeg, marks, sizeof marks);
         DeleteFileW(jpg.s);
         char thumb_key[R2_KEY_MAX];
         r2_thumb_key(key, thumb_key);
@@ -1914,6 +2137,7 @@ static void r2_run_upload(const R2Task &t)
     }
     s.seconds = t.seconds;
     s.preview = s.social == 1 ? t.preview : 0;
+    str_set(s.marks, marks);
     R2Share page = s;
     if (page_w) {
         char page_key[R2_KEY_MAX];
