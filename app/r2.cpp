@@ -21,6 +21,7 @@
 // steps and is told by EV_R2. This file never touches the clipboard: the UI copies the link.
 
 #include <winsock2.h>
+#include "fonts/geist_latin.h"
 #pragma comment(lib, "ws2_32.lib")
 
 static void open_url(const char *url); // setup.cpp
@@ -786,6 +787,8 @@ struct R2PageParts {
     const char *marks;   // the clip's markers: "<seconds> <note>" each, split by R2_MARK_SEP; "" or 0 = none
     const char *icon;    // the game's icon before the game line, as a data: address (r2_icon_data); "" or 0 = none
     u32 accent;          // the page's accent, 0xRRGGBB (config.accent); 0 = the default
+    const char *art;     // the game's art for behind the page, as a data: address (r2_icon_data); "" or 0 = the
+                         // clip's picture
 };
 
 // A run of the page: text with %T (the title), %P (the page's address), %V (the clip's), %E (what cards play), %I
@@ -810,8 +813,9 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
     out[*len < cap ? *len : cap - 1] = 0;
 }
 
-// The page for a link: the clip's picture blurred behind its name, the game line (after the game's icon, else its
-// emoji), the clip in Clipback's own player and its markers, then "via Clipback" (a link to the project), Download and Copy link. The head has the tags chat
+// The page for a link: the game's art (else the clip's picture) in grey and blurred behind its name, the game line
+// (after the game's icon, else its emoji), the clip in Clipback's own player and its markers, then "via Clipback" (a
+// link to the project), Download and Copy link. The head has the tags chat
 // apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and
 // Discord's own card (`card`) before them. A #t= in the address (seconds, or m:ss or h:mm:ss) starts the clip there,
 // which is where a card's preview tag links to; when cards play a preview, a button and a green tick mark where it
@@ -856,63 +860,75 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         r2_page_put("<meta name=\"twitter:card\" content=\"summary_large_image\">\n"
                     "<meta name=\"twitter:title\" content=\"%T\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
                     p, out, cap, &len);
-    // The look: the clip's picture blurred behind a centred column; the name, the game line, the player with the
-    // markers as ticks on its timeline, then "via Clipback", Download and Copy link.
-    r2_page_put(
-        "<style>"
-        ":root{--fg:#ececf2;--dim:#9a9aa6;--line:#2a2a33;--panel:#15151a;--glass:#15151acc;",
-        p, out, cap, &len);
+    // The look: flat near-black, the game's art in grey and blurred behind a centred column; the name, the game
+    // line, the player with the markers as ticks on its timeline, then "via Clipback", Download (a white pill) and
+    // Copy link. Geist is in the page itself, so it asks nothing of anyone else.
+    r2_page_put("<style>@font-face{font-family:Geist;font-weight:400 700;font-display:swap;"
+                "src:url(data:font/woff2;base64,",
+                p, out, cap, &len);
+    r2_page_put(GEIST_LATIN_WOFF2, p, out, cap, &len);
+    r2_page_put(") format(\"woff2\")}"
+                ":root{--fg:#f2f2f2;--dim:#969696;--line:#262626;--panel:#161616;--raised:#1f1f1f;--scrim:#000000c0;",
+                p, out, cap, &len);
     if (len + 24 < cap) len += snprintf(out + len, cap - len, "--accent:#%06x;", p.accent ? p.accent & 0xffffff : ACCENT_DEFAULT);
     r2_page_put(
-        "--mark:#ffb547;--prev:#58d68d;color-scheme:dark}"
-        "html{background:#0c0c0e}body{margin:0;min-height:100vh;color:var(--fg);font:14px/1.5 system-ui,sans-serif}"
+        "--mark:#fff;--prev:#4cc985;color-scheme:dark}"
+        "html{background:#0a0a0a}body{margin:0;min-height:100vh;color:var(--fg);"
+        "font:14px/1.5 Geist,\"Segoe UI\",system-ui,sans-serif}"
         "body{display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;overflow-x:hidden}"
-        ".bg{position:fixed;inset:-60px;background:#0c0c0e center/cover no-repeat;filter:blur(44px) brightness(.4);"
+        ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(36px);opacity:.3;"
         "z-index:-1}"
         "main{width:min(960px,100%);display:grid;gap:12px}"
-        "h1{font-size:24px;line-height:1.2;margin:0;text-align:center;overflow-wrap:anywhere}"
-        ".game{display:flex;gap:6px;align-items:center;justify-content:center;color:#d4d4dc;font-size:13px}"
-        ".game img,.via img{width:18px;height:18px}.game .icon{border-radius:4px}"
-        ".player{border-radius:12px;overflow:hidden;background:#000;box-shadow:0 20px 60px #000a;outline:none}"
-        ".player:focus-visible{box-shadow:0 0 0 2px var(--accent),0 20px 60px #000a}"
+        "h1{font-size:26px;line-height:1.1;font-weight:700;letter-spacing:-.025em;margin:0;text-align:center;"
+        "overflow-wrap:anywhere}"
+        ".game{display:flex;gap:6px;align-items:center;justify-content:center;color:var(--dim);font-size:13px}"
+        ".game img,.via img{width:18px;height:18px}.game .icon{border-radius:3px}"
+        ".player{border-radius:6px;overflow:hidden;background:#000;outline:none}"
+        ".player:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
         ".view{position:relative;overflow:hidden;max-height:calc(100vh - 230px);cursor:zoom-in;touch-action:none}"
         ".view.z{cursor:grab}.view.d{cursor:grabbing}"
         "video{display:block;width:100%;height:100%;object-fit:contain;transform-origin:0 0;background:#000}"
-        ".tag{position:absolute;top:10px;font-size:12px;font-weight:600;background:#000b;border-radius:999px;"
+        ".tag{position:absolute;top:10px;font-size:12px;font-weight:600;background:var(--scrim);border-radius:999px;"
         "padding:3px 10px;font-variant-numeric:tabular-nums}"
         ".tag button{all:unset;cursor:pointer;color:var(--dim);margin-left:8px}"
-        ".ctrl{display:grid;gap:6px;padding:8px 12px;background:var(--panel)}"
+        ".ctrl{display:grid;gap:6px;padding:8px 12px;background:var(--scrim)}"
         ".scrub{position:relative;height:18px;cursor:pointer;touch-action:none}"
         ".scrub>*{position:absolute;pointer-events:none}"
-        ".rail{left:0;right:0;top:6px;height:6px;background:var(--line);border-radius:3px}"
-        ".done{left:0;top:6px;height:6px;background:var(--accent);border-radius:3px}"
-        ".head{top:2px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#fff}"
-        "#tk{inset:0}.tick{position:absolute;top:2px;width:3px;height:14px;margin-left:-1px;background:var(--mark);border-radius:2px}"
-        ".tick.pv{background:var(--prev);width:2px;top:0;height:18px}"
+        ".rail{left:0;right:0;top:7px;height:4px;background:#ffffff40;border-radius:2px}"
+        ".done{left:0;top:7px;height:4px;background:var(--accent);border-radius:2px}"
+        ".head{top:3px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:#fff}"
+        "#tk{inset:0}.tick{position:absolute;top:4px;width:2px;height:10px;margin-left:-1px;background:var(--mark)}"
+        ".tick.pv{background:var(--prev);top:1px;height:16px}"
         ".row{display:flex;align-items:center;gap:2px;flex-wrap:wrap;font-size:12px;color:var(--dim);"
         "font-variant-numeric:tabular-nums}"
-        ".ic{width:32px;height:32px;border:0;border-radius:6px;background:none;color:var(--fg);cursor:pointer;"
+        ".ic{width:32px;height:32px;border:0;border-radius:999px;background:none;color:var(--fg);cursor:pointer;"
         "display:grid;place-items:center}"
-        ".ic:hover{background:var(--line)}svg{width:18px;height:18px;fill:currentColor}"
-        ".time{margin:0 8px}.spd{display:flex;align-items:center;margin-left:auto}"
+        ".ic:hover{background:#ffffff14}svg{width:18px;height:18px;fill:currentColor}"
+        "#pb{width:28px;height:28px;margin:2px;background:#fff;color:#000}#pb:hover{background:#e6e6e6}"
+        "#pb svg{width:14px;height:14px}"
+        ".time{margin:0 8px;color:var(--fg)}.spd{display:flex;align-items:center;margin-left:auto}"
         ".spd span{min-width:40px;text-align:center;color:var(--fg);font-weight:600}"
-        ".pill{font:inherit;font-size:12px;color:var(--fg);background:none;border:1px solid var(--prev);"
-        "border-radius:999px;padding:3px 10px;cursor:pointer}"
+        ".pill{font:inherit;font-size:12px;font-weight:600;color:var(--fg);background:none;"
+        "border:1px solid var(--prev);border-radius:999px;padding:3px 10px;cursor:pointer}"
         ".foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}"
-        ".via{display:flex;gap:6px;align-items:center;font-size:12px;color:#c4c4cc;text-decoration:none}"
-        ".via:hover{color:var(--fg);text-decoration:underline}"
+        ".via{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--dim);text-decoration:none}"
+        ".via b{color:var(--fg);font-weight:600}.via:hover b{text-decoration:underline}"
         ".acts{display:flex;gap:8px;flex-wrap:wrap}"
-        ".btn{font:inherit;font-size:13px;color:var(--fg);background:var(--glass);border:1px solid var(--line);"
-        "border-radius:8px;padding:7px 12px;cursor:pointer;display:inline-flex;gap:7px;align-items:center;"
-        "text-decoration:none}"
-        ".btn svg{width:15px;height:15px}"
+        ".btn{font:inherit;font-size:14px;font-weight:600;color:var(--fg);background:#ffffff1a;border:0;"
+        "border-radius:999px;height:32px;padding:0 18px;box-sizing:border-box;cursor:pointer;display:inline-flex;"
+        "gap:8px;align-items:center;text-decoration:none}"
+        ".btn:hover{background:#ffffff24}.btn.p{background:#fff;color:#000}.btn.p:hover{background:#e6e6e6}"
+        ".btn svg{width:16px;height:16px}"
         "button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
         "p{margin:0;text-align:center;color:var(--dim)}"
         "</style>\n"
         "</head><body>\n",
         p, out, cap, &len);
-    if (!paused && p.image && p.image[0]) r2_page_put("<div class=\"bg\" style=\"background-image:url('%I')\"></div>\n",
-                                                      p, out, cap, &len);
+    // Behind it all: the game's art, else the clip's picture
+    if (p.art && p.art[0] && len + (i32)strlen(p.art) + 80 < cap)
+        len += snprintf(out + len, cap - len, "<div class=\"bg\" style=\"background-image:url('%s')\"></div>\n", p.art);
+    else if (!paused && p.image && p.image[0])
+        r2_page_put("<div class=\"bg\" style=\"background-image:url('%I')\"></div>\n", p, out, cap, &len);
     r2_page_put("<main>\n<h1>", p, out, cap, &len);
     r2_html_text(p.heading && p.heading[0] ? p.heading : p.title, out, cap, &len);
     r2_page_put("</h1>\n", p, out, cap, &len);
@@ -960,9 +976,9 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     char logo[160];
     if (r2_emoji_url(R2_LOGO_EMOJI, logo, sizeof logo) && len + 200 < cap)
         len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", logo);
-    r2_page_put("via " APP_DISPLAY "</a><div class=\"acts\">", p, out, cap, &len);
+    r2_page_put("via <b>" APP_DISPLAY "</b></a><div class=\"acts\">", p, out, cap, &len);
     if (!paused)
-        r2_page_put("<a class=\"btn\" href=\"%V\" download><svg viewBox=\"0 0 24 24\"><path d=\"M11 3h2v10l4-4 1.4 "
+        r2_page_put("<a class=\"btn p\" href=\"%V\" download><svg viewBox=\"0 0 24 24\"><path d=\"M11 3h2v10l4-4 1.4 "
                     "1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg>Download</a>"
                     "<button class=\"btn\" id=\"cp\" type=\"button\"><svg viewBox=\"0 0 24 24\"><path d=\"M10.6 "
                     "13.4a1 1 0 0 1 0-1.4l3.5-3.5a1 1 0 1 1 1.4 1.4L12 13.4a1 1 0 0 1-1.4 0zM7.1 20.5a4 4 0 0 "
@@ -1834,13 +1850,14 @@ static bool r2_put_bytes(const R2Conf &c, const char *key, const char *data, i64
     return r2_ok(status);
 }
 
-// The side of the game's icon on a page, in pixels: three times what it shows at, for sharp screens.
-enum { R2_ICON_PX = 64 };
+// The side of the game's icon on a page, in pixels: three times what it shows at, for sharp screens. The game's art
+// behind the page is blurred, so a small grey copy is plenty.
+enum { R2_ICON_PX = 64, R2_ART_PX = 96 };
 
-// A picture as a data: address for a page: `png` scaled to fit R2_ICON_PX square and made a PNG, in base64. The
-// page carries it in its own text, so it costs no file in the bucket and no request of its own. False (and "") if
-// it can't be read or doesn't fit `cap`.
-static bool r2_icon_data(const Path &png, char *out, i32 cap)
+// A picture as a data: address for a page: `png` (or a JPEG) scaled to fit `px` square and made a PNG, in grey
+// when `grey`, in base64. The page carries it in its own text, so it costs no file in the bucket and no request of
+// its own. False (and "") if it can't be read or doesn't fit `cap`.
+static bool r2_icon_data(const Path &png, char *out, i32 cap, i32 px = R2_ICON_PX, bool grey = false)
 {
     out[0] = 0;
     bool com = SUCCEEDED(CoInitializeEx(0, COINIT_MULTITHREADED));
@@ -1858,19 +1875,20 @@ static bool r2_icon_data(const Path &png, char *out, i32 cap)
     if (FAILED(wic->CreateDecoderFromFilename(png.s, 0, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
     if (FAILED(dec->GetFrame(0, &frame)) || FAILED(frame->GetSize(&w, &h)) || !w || !h) goto done;
     {
-        f64 k = fmin(1.0, (f64)R2_ICON_PX / (w > h ? w : h));
+        f64 k = fmin(1.0, (f64)px / (w > h ? w : h));
         UINT sw = (UINT)fmax(1, floor(w * k + 0.5)), sh = (UINT)fmax(1, floor(h * k + 0.5));
         if (FAILED(wic->CreateBitmapScaler(&scaler)) ||
             FAILED(scaler->Initialize(frame, sw, sh, WICBitmapInterpolationModeHighQualityCubic)) ||
             FAILED(wic->CreateFormatConverter(&conv)) ||
-            FAILED(conv->Initialize(scaler, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, 0, 0,
+            FAILED(conv->Initialize(scaler, grey ? GUID_WICPixelFormat8bppGray : GUID_WICPixelFormat32bppBGRA,
+                                    WICBitmapDitherTypeNone, 0, 0,
                                     WICBitmapPaletteTypeCustom)) ||
             FAILED(CreateStreamOnHGlobal(0, TRUE, &mem)) ||
             FAILED(wic->CreateEncoder(GUID_ContainerFormatPng, 0, &enc)) ||
             FAILED(enc->Initialize(mem, WICBitmapEncoderNoCache)) || FAILED(enc->CreateNewFrame(&fenc, 0)) ||
             FAILED(fenc->Initialize(0)) || FAILED(fenc->SetSize(sw, sh)))
             goto done;
-        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+        WICPixelFormatGUID fmt = grey ? GUID_WICPixelFormat8bppGray : GUID_WICPixelFormat32bppBGRA;
         if (FAILED(fenc->SetPixelFormat(&fmt)) || FAILED(fenc->WriteSource(conv, 0)) || FAILED(fenc->Commit()) ||
             FAILED(enc->Commit()))
             goto done;
@@ -1942,13 +1960,21 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     Path icon_file;
     if (icon && (!card.line[0] || !gamedb_sgdb_icon(s.game, &icon_file) || !r2_icon_data(icon_file, icon, ICON_CAP)))
         icon[0] = 0;
+    // Behind the page: the game's art (its SteamGridDB hero, else its grid), small and grey
+    char *art = (char *)malloc(ICON_CAP);
+    GameInfo g;
+    Path art_file;
+    if (art && (!s.game[0] || !gamedb_for_art(s.game, &g) || !gamedb_art(g, ART_COVER, &art_file) ||
+                !r2_icon_data(art_file, art, ICON_CAP, R2_ART_PX, true)))
+        art[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
                      copy ? s.social_h : s.page_h, tw, th, json, card.title, card.line, emoji,
                      copy && s.preview > 0 && s.seconds > s.preview ? s.preview : 0, s.marks, icon,
-                     g_app.config.accent};
-    static thread_local char html[65536];
+                     g_app.config.accent, art};
+    static thread_local char html[131072];
     i32 n = r2_page_html(p, paused, html, sizeof html);
     free(icon);
+    free(art);
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
 }
 

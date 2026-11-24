@@ -1751,10 +1751,13 @@ static void test_r2()
     T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
     T(strstr(html, "width=\"2560\" height=\"1440\" controls playsinline") != 0 && strstr(html, "aspect-ratio:2560/1440"));
     T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/clipback/abc/thumb.jpg?v=2')\">"));
-    // Download, Copy link, and "via Clipback" linking to the project; no game line without one
-    T(strstr(html, "<a class=\"btn\" href=\"https://x.dev/clipback/abc/clip.mp4?v=2\" download>"));
+    // Geist is in the page: no font, nor anything else, from another site
+    T(strstr(html, "@font-face{font-family:Geist;") && strstr(html, "src:url(data:font/woff2;base64,d09GMg"));
+    T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Geist,\"Segoe UI\",system-ui,sans-serif"));
+    // Download (the white pill), Copy link, and "via Clipback" linking to the project; no game line without one
+    T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/clipback/abc/clip.mp4?v=2\" download>"));
     T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/clipback\"><img src=\"https://cdn.discordapp.com/"
-                   "emojis/1574532567124803645.webp\" alt=\"\">via Clipback</a>"));
+                   "emojis/1574532567124803645.webp\" alt=\"\">via <b>Clipback</b></a>"));
     T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
     // the accent: the default, or the one picked
     T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)"));
@@ -1791,6 +1794,12 @@ static void test_r2()
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && strstr(html, "<div class=\"game\">Valorant</div>"));
     pp.heading = pp.line = pp.emoji = pp.icon = 0;
+    // the game's art goes behind the page instead of the clip's picture
+    pp.art = "data:image/png;base64,iVBORw0K";
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, "<div class=\"bg\" style=\"background-image:url('data:image/png;base64,iVBORw0K')\">")
+      && !strstr(html, "url('https://x.dev/clipback/abc/thumb.jpg"));
+    pp.art = 0;
     // an icon for the page: a PNG scaled to R2_ICON_PX, in base64
     {
         static char data[32768];
@@ -1799,6 +1808,8 @@ static void test_r2()
         T(r2_icon_data(png, data, sizeof data) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
         T(strlen(data) < 24000 && !strchr(data, '"'));
         T(!r2_icon_data(png, data, 64) && !data[0]);
+        // the art behind a page: small and grey
+        T(r2_icon_data(png, data, sizeof data, R2_ART_PX, true) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
         Path none = {};
         GetFullPathNameW(L"..\\assets\\none.png", MAX_PATH, none.s, 0);
         T(!r2_icon_data(none, data, sizeof data));
@@ -1822,9 +1833,9 @@ static void test_r2()
     hn = r2_page_html(pp, true, html, sizeof html);
     T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "This clip isn't playing right now."));
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
-    T(!strstr(html, "thumb.jpg") && !strstr(html, "<script") && strstr(html, "via Clipback</a>"));
+    T(!strstr(html, "thumb.jpg") && !strstr(html, "<script") && strstr(html, "via <b>Clipback</b></a>"));
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "via Clipback</a>") > strstr(html, "<video"));
+    T(hn > 0 && strstr(html, "via <b>Clipback</b></a>") > strstr(html, "<video"));
     T(r2_page_html(pp, false, html, 64) == 0);
 
     // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag
