@@ -856,13 +856,13 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         r2_page_put("<meta name=\"twitter:card\" content=\"summary_large_image\">\n"
                     "<meta name=\"twitter:title\" content=\"%T\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
                     p, out, cap, &len);
-    // The look: the clip's picture blurred behind a centred column; the name, the game line, the player, the
-    // markers, then Download / Copy link / Get Clipback.
+    // The look: the clip's picture blurred behind a centred column; the name, the game line, the player with the
+    // markers as ticks on its timeline, then "via Clipback", Download and Copy link.
     r2_page_put(
         "<style>"
         ":root{--fg:#ececf2;--dim:#9a9aa6;--line:#2a2a33;--panel:#15151a;--glass:#15151acc;--accent:#4f8cff;"
         "--mark:#ffb547;--prev:#58d68d;color-scheme:dark}"
-        "html,body{margin:0;min-height:100%;background:#0c0c0e;color:var(--fg);font:14px/1.5 system-ui,sans-serif}"
+        "html{background:#0c0c0e}body{margin:0;min-height:100vh;color:var(--fg);font:14px/1.5 system-ui,sans-serif}"
         "body{display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;overflow-x:hidden}"
         ".bg{position:fixed;inset:-60px;background:#0c0c0e center/cover no-repeat;filter:blur(44px) brightness(.4);"
         "z-index:-1}"
@@ -884,7 +884,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         ".rail{left:0;right:0;top:6px;height:6px;background:var(--line);border-radius:3px}"
         ".done{left:0;top:6px;height:6px;background:var(--accent);border-radius:3px}"
         ".head{top:2px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#fff}"
-        ".tick{top:2px;width:3px;height:14px;margin-left:-1px;background:var(--mark);border-radius:2px}"
+        "#tk{inset:0}.tick{position:absolute;top:2px;width:3px;height:14px;margin-left:-1px;background:var(--mark);border-radius:2px}"
         ".tick.pv{background:var(--prev);width:2px;top:0;height:18px}"
         ".row{display:flex;align-items:center;gap:2px;flex-wrap:wrap;font-size:12px;color:var(--dim);"
         "font-variant-numeric:tabular-nums}"
