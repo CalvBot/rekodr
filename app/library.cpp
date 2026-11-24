@@ -3371,7 +3371,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             ImGui::PushFont(g_font_bold);
             ImVec2 ts = ImGui::CalcTextSize("Share");
             f32 tx = floorf(p0.x + (pill_w - gs.x - kit_px(6) - ts.x) / 2);
-            u32 ink = can ? 0xffffff : COL_FAINT;
+            u32 ink = can ? COL_ACCENT_INK : COL_FAINT;
             dl->AddText(g_font_icon, fs, ImVec2(tx, floorf(p0.y + (pill_h - gs.y) / 2)), col32(ink), ICON_SHARE);
             dl->AddText(ImVec2(tx + gs.x + kit_px(6), floorf(p0.y + (pill_h - ts.y) / 2)), col32(ink), "Share");
             ImGui::PopFont();
@@ -3740,7 +3740,7 @@ static i32 lib_dialog_pair(const char *action, KitKind kind, f32 right)
     if (lib_dialog_button(LIB_CANCEL, COL_HOVER, 0x383b42, COL_TEXT, bw)) r = -1;
     ImGui::SameLine(0, gap);
     bool red = kind == KIT_DANGER;
-    if (lib_dialog_button(action, red ? COL_RED : COL_ACCENT, red ? 0xf45d67 : COL_ACCENT_HOVER, 0xffffff, bw)) r = 1;
+    if (lib_dialog_button(action, red ? COL_RED : COL_ACCENT, red ? 0xf45d67 : COL_ACCENT_HOVER, red ? 0xffffff : COL_ACCENT_INK, bw)) r = 1;
     return r;
 }
 
@@ -3810,7 +3810,7 @@ static bool lib_dialog_check(const char *label, bool *v, bool enabled)
         f32 s = box * 0.8f / ImMax(cs.x, cs.y);
         ImGui::PopFont();
         dl->AddText(g_font_icon, g_font_icon->FontSize * s, ImVec2(floorf(b0.x + (box - cs.x * s) / 2), floorf(b0.y + (box - cs.y * s) / 2)),
-                    IM_COL32_WHITE, ICON_CHECK);
+                    col32(COL_ACCENT_INK), ICON_CHECK);
     } else {
         dl->AddRectFilled(b0, b1, col32(COL_BG), kit_px(4));
         dl->AddRect(b0, b1, col32(!enabled ? COL_LINE : hot ? COL_DIM : COL_FAINT), kit_px(4), 0, kit_px(1.5f));
@@ -4535,7 +4535,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             dl->AddRectFilled(b0, b1, col32(box_hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(4));
             ImVec2 cs = g_font_icon->CalcTextSizeA(box * 0.6f, FLT_MAX, 0, ICON_CHECK);
             dl->AddText(g_font_icon, box * 0.6f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
-                        IM_COL32_WHITE, ICON_CHECK);
+                        col32(COL_ACCENT_INK), ICON_CHECK);
         } else {
             bool faint = !picking && !box_hot;
             dl->AddRectFilled(b0, b1, IM_COL32(14, 14, 18, box_hot ? 235 : faint ? 90 : 220), kit_px(4)); // reads over bright pictures
@@ -4731,7 +4731,7 @@ static bool lib_track_row(i32 t, const char *title, bool ticked, f32 w)
         dl->AddRectFilled(b0, b1, col32(hot ? COL_ACCENT_HOVER : COL_ACCENT), kit_px(4));
         ImVec2 cs = g_font_icon->CalcTextSizeA(box * 0.6f, FLT_MAX, 0, ICON_CHECK);
         dl->AddText(g_font_icon, box * 0.6f, ImVec2(floorf(b0.x + (box - cs.x) / 2), floorf(b0.y + (box - cs.y) / 2)),
-                    IM_COL32_WHITE, ICON_CHECK);
+                    col32(COL_ACCENT_INK), ICON_CHECK);
     } else {
         dl->AddRectFilled(b0, b1, col32(COL_BG), kit_px(4));
         dl->AddRect(b0, b1, col32(hot ? COL_DIM : COL_FAINT), kit_px(4), 0, kit_px(1.5f));
@@ -5582,7 +5582,7 @@ static bool lib_unsaved_row(f32 full_w)
             f32 px = kit_px(7), ph = floorf(nf->FontSize + kit_px(4)), nx = a.x + iw + kit_px(4) + tw + kit_px(8);
             f32 py = floorf(a.y + (fh - ph) / 2);
             hdl->AddRectFilled(ImVec2(nx, py), ImVec2(nx + ns.x + 2 * px, py + ph), col32(COL_ACCENT), ph / 2);
-            hdl->AddText(nf, nf->FontSize, ImVec2(nx + px, floorf(py + (ph - nf->FontSize) / 2)), col32(0xffffff), "new");
+            hdl->AddText(nf, nf->FontSize, ImVec2(nx + px, floorf(py + (ph - nf->FontSize) / 2)), col32(COL_ACCENT_INK), "new");
         }
         if (hit) {
             folded = !folded;

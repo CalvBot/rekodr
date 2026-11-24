@@ -68,7 +68,7 @@ static bool setup_choice(const char *id, const char *title, const char *sub, boo
     f32 r = dp(9);
     ImVec2 c(a.x + dp(20) + r, a.y + h / 2);
     dl->AddCircleFilled(c, r, col32(chosen ? COL_ACCENT : 0x3a3d44));
-    if (chosen) dl->AddCircleFilled(c, dp(4), col32(0xffffff));
+    if (chosen) dl->AddCircleFilled(c, dp(4), col32(COL_ACCENT_INK));
     f32 tx = c.x + r + dp(16), max_x = a.x + w - dp(16);
     f32 th = g_font_bold->FontSize, sh = sub ? g_font_small->FontSize : 0, gap = sub ? dp(4) : 0;
     f32 ty = floorf(a.y + (h - th - gap - sh) / 2);

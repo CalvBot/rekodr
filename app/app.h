@@ -89,6 +89,7 @@ struct Hotkey {
 };
 
 static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev"; // clipback-api, its own repo
+static const u32 ACCENT_DEFAULT = 0x00897b; // the accent until Options picks another: teal
 
 static const char SAVE_NAME_DEFAULT[] = "{game} {hh}-{mm} {DD}-{MM}-{YYYY}";
 
@@ -189,7 +190,7 @@ struct Config {
     bool dev_log;      // the detailed log (dev mode, see base.h)
 
     // Look
-    i32 accent;     // index into ACCENTS (ui.cpp)
+    u32 accent;     // the accent colour, 0xRRGGBB: the app's, the edge of Discord cards and the clip page's
     bool games_collapsed; // Library: the games list as a rail of icons
     bool unsaved_collapsed; // Library: the unsaved sessions row folded to its heading
     bool side_folders;      // Library: the list on the left shows folders, not games

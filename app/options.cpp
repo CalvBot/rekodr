@@ -3257,7 +3257,7 @@ static void opt_link_card_preview(i32 style)
     char title[200];
     str_set(title, !it ? "Clip" : it->display_name[0] ? it->display_name : it->name);
     const char *game = it ? it->info.game : "";
-    EmbedInput in = {title, game, it ? it->info.duration : 42, 0, now_us(), true, 0};
+    EmbedInput in = {title, game, it ? it->info.duration : 42, 0, now_us(), true, g_app.config.accent};
     EmbedCard card;
     embed_card(in, &card, style);
 
@@ -3799,31 +3799,84 @@ static bool opt_row_folder(const char *name, const char *sub, const char *id, Pa
     return changed;
 }
 
-// The accent colours as a row of swatches; the one in use has a ring.
-static bool accent_swatches(i32 *sel)
+// The accent row's height and its colour wheel's size, at 100%.
+static const f32 OPT_ACCENT_H = 184, OPT_WHEEL = 164;
+
+// The accent colour: a hue wheel with a saturation and brightness triangle inside, and left of it the colour in a
+// box as hex (typed to set it exactly) and a button back to the default, which stays put and is only greyed while
+// the default is in use. The app takes the colour as it changes; it is saved when the mouse lets go.
+static void opt_accent_row()
 {
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 d = ImGui::GetFrameHeight(), gap = dp(8), r = d / 2 - dp(4);
-    ImVec2 a = ImGui::GetCursorScreenPos();
+    Config &c = g_app.config;
+    f32 fh = ImGui::GetFrameHeight(), d = dp(OPT_WHEEL), box_w = dp(112), gap = dp(8);
+    f32 bars = fh, inner = ImGui::GetStyle().ItemInnerSpacing.x;
+    opt_row_begin("Accent colour", 0, d + gap + fh + gap + box_w, dp(OPT_ACCENT_H));
+    static bool unsaved;
     bool changed = false;
-    for (i32 i = 0; i < ACCENT_COUNT; i++) {
-        ImVec2 p(a.x + i * (d + gap), a.y);
-        ImGui::SetCursorScreenPos(p);
-        ImGui::PushID(i);
-        if (ImGui::InvisibleButton("##accent", ImVec2(d, d)) && *sel != i) {
-            *sel = i;
+
+    // The wheel: ImGui's picker with nothing but the wheel and triangle; its centre sits bars/2 right of its x
+    f32 wy = g_row.y + floorf((g_row.h - d) / 2);
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - d - bars / 2, wy));
+    ImGui::SetNextItemWidth(d + bars + inner);
+    f32 col[3] = {((c.accent >> 16) & 255) / 255.f, ((c.accent >> 8) & 255) / 255.f, (c.accent & 255) / 255.f};
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    if (ImGui::ColorPicker3("##accentwheel", col,
+                            ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_NoSidePreview |
+                                ImGuiColorEditFlags_NoSmallPreview | ImGuiColorEditFlags_NoInputs |
+                                ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoTooltip |
+                                ImGuiColorEditFlags_NoOptions | ImGuiColorEditFlags_NoDragDrop |
+                                ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_DisplayRGB)) {
+        u32 v = 0;
+        for (i32 i = 0; i < 3; i++) v = v << 8 | (u32)(fminf(fmaxf(col[i], 0), 1) * 255 + 0.5f);
+        if (v != c.accent) {
+            c.accent = v;
             changed = true;
         }
-        bool hot = ImGui::IsItemHovered();
-        ImGui::PopID();
-        ImVec2 c(p.x + d / 2, p.y + d / 2);
-        dl->AddCircleFilled(c, hot ? r + dp(1) : r, col32(ACCENTS[i].base));
-        if (*sel == i) dl->AddCircle(c, d / 2 - dp(0.5f), col32(COL_TEXT), 0, dp(2));
     }
-    return changed;
-}
+    ImGui::PopStyleVar();
 
-static f32 swatches_w() { return (f32)ACCENT_COUNT * ImGui::GetFrameHeight() + (f32)(ACCENT_COUNT - 1) * dp(8); }
+    // The box: a dot of the colour, then its hex; what's typed applies once it is six digits
+    f32 y = opt_row_frame_y(), bx = g_row.x1 - d - gap - fh - gap - box_w, dot = dp(7);
+    static char typed[8];
+    static bool editing;
+    if (!editing) snprintf(typed, sizeof typed, "%06x", c.accent);
+    ImGui::SetCursorScreenPos(ImVec2(bx, y));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(dp(10) + 2 * dot + dp(8), ImGui::GetStyle().FramePadding.y));
+    ImGui::SetNextItemWidth(box_w);
+    bool typed_now = ImGui::InputText("##accenthex", typed, sizeof typed,
+                                      ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_AutoSelectAll);
+    editing = ImGui::IsItemActive(); // left half-typed, it shows the colour in use again
+    ImGui::PopStyleVar();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 dc(bx + dp(10) + dot, y + fh / 2);
+    dl->AddCircleFilled(dc, dot, col32(c.accent));
+    dl->AddCircle(dc, dot, col32(0xffffff, 0.15f), 0, dp(1));
+    if (typed_now && strlen(typed) == 6) {
+        u32 v = (u32)strtoul(typed, 0, 16);
+        if (v != c.accent) {
+            c.accent = v;
+            changed = true;
+        }
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(bx + box_w + gap, y));
+    kit_next_tip("Default colour");
+    if (kit_icon_button(ICON_UNDO, "##accentreset", KIT_GHOST, c.accent != ACCENT_DEFAULT)) {
+        c.accent = ACCENT_DEFAULT;
+        changed = true;
+    }
+    opt_row_end();
+
+    if (changed) {
+        ui_apply_accent(c.accent);
+        unsaved = true;
+    }
+    if (unsaved && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !editing) {
+        unsaved = false;
+        log_line("options: accent %06x", c.accent);
+        options_apply(0);
+    }
+}
 
 // The monitor map's height, fixed so nothing moves whatever the monitors are
 static const f32 OPT_MAP_H = 132;
@@ -4137,13 +4190,7 @@ static void options_general()
 
     opt_section("LOOK");
     opt_card_begin();
-    opt_row_begin("Accent colour", 0, swatches_w());
-    if (accent_swatches(&c.accent)) {
-        ui_apply_accent(c.accent);
-        log_line("options: accent %s", ACCENTS[c.accent].name);
-        options_apply(0);
-    }
-    opt_row_end();
+    opt_accent_row();
     static const char *const clocks[] = {"12-hour", "24-hour"}, *const clock_notes[] = {"9:04 pm", "21:04"};
     i32 clock = c.clock_24h ? 1 : 0;
     if (opt_row_combo("Clock", 0, "##clock", clocks, clock_notes, 2, &clock, dp(200))) {
@@ -4540,7 +4587,7 @@ static void screen_options()
             ImVec2 p(x + g_font_icon->FontSize - dp(9), iy);
             dl->AddRectFilled(ImVec2(p.x - r, p.y - ph / 2 - r), ImVec2(p.x + pw + r, p.y + ph / 2 + r), col32(COL_BG),
                               ph / 2 + r);
-            opt_pill(dl, p, count, COL_ACCENT, 0xffffff);
+            opt_pill(dl, p, count, COL_ACCENT, COL_ACCENT_INK);
         }
         if (active) dl->AddRectFilled(ImVec2(x, a.y + tab_h - dp(2)), ImVec2(x + line_w, a.y + tab_h), col32(COL_ACCENT), dp(1));
         ImGui::EndDisabled();

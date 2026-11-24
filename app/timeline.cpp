@@ -2781,7 +2781,7 @@ static void screen_timeline()
         } else if (tl.share_step != TL_SHARE_NONE) {
             str_set(status, tl.share_line);
             if (tl.share_step == TL_SHARE_DONE) icon = ICON_CHECK, ink = COL_OK;
-            else if (tl.share_step == TL_SHARE_FAILED) icon = ICON_WARNING, ink = COL_ACCENT;
+            else if (tl.share_step == TL_SHARE_FAILED) icon = ICON_WARNING, ink = COL_RED;
             else if (tl.share_step == TL_SHARE_SAVING && v && v->state == SAVE_RUNNING) {
                 progress = v->progress;
                 snprintf(status, sizeof status, "Saving the clip  %d%%", (int)(progress * 100));
@@ -2803,7 +2803,7 @@ static void screen_timeline()
             } else if (v->state == SAVE_FAILED) {
                 snprintf(status, sizeof status, "Save failed: %s", v->error);
                 icon = ICON_WARNING;
-                ink = COL_ACCENT;
+                ink = COL_RED;
             } else str_set(status, "Save cancelled");
         }
         if (status[0] && sz > 20 * s) {

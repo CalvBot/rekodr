@@ -1609,6 +1609,35 @@ static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out, bool *coming 
     return false;
 }
 
+// The game's SteamGridDB icon (the art service's pick, a PNG) as a file, for a shared clip's page: the game's own
+// icon when that came from SteamGridDB (a game Discord's list has no icon for), else art\<id>-sgdb.png, fetched the
+// first time and asked for again after a week when there was none. Waits on the network; not for the UI thread.
+// False if there is none or it couldn't be had now.
+static bool gamedb_sgdb_icon(const char *name, Path *out)
+{
+    GameInfo g;
+    if (!name || !name[0] || !gamedb_for_art(name, &g)) return false;
+    if (g.icon[0]) {
+        wchar_t file[64];
+        swprintf(file, COUNT(file), L"art\\%hs-sgdb.png", g.id);
+        *out = path_join(gamedb_dir(), file);
+    } else *out = gamedb_art_file(g.id, ART_ICON);
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (GetFileAttributesExW(out->s, GetFileExInfoStandard, &fa)) {
+        if (fa.nFileSizeLow > 0) return true;
+        if (!file_older_than(fa, 7 * 24 * 3600)) return false; // empty: there is none
+    }
+    if (!g_gamedb.online) return false;
+    char url[512];
+    bool later = false, wait = false;
+    if (art_service_find(g.id, g.name, ART_ICON, url, sizeof url, &later, &wait)) return http_get_url(url, *out);
+    if (!later) { // none to be had: an empty file says so
+        FILE *f = _wfopen(out->s, L"wb");
+        if (f) fclose(f);
+    }
+    return false;
+}
+
 // Fetches the art asked for, newest first. One that needs the art service while it has been asked enough for now
 // waits, and those after it go ahead. False if some is left for later.
 static bool gamedb_fetch_art()

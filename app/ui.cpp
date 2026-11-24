@@ -18,8 +18,8 @@ struct Gpu {
 static Gpu g_gpu;
 
 // Colours. One dark theme: a near-black page, a darker top bar, raised surfaces for cards and fields, and one
-// accent (clipback red unless Options picks another) for the primary action and the selected item. Recording and
-// deleting stay red whatever the accent. Blue is for zoom keys and focus.
+// accent (teal unless Options picks another colour) for the primary action and the selected item. Recording,
+// deleting and failures stay red whatever the accent. Blue is for zoom keys and focus.
 static ImVec4 rgb(u32 c, f32 a = 1) { return ImVec4(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a); }
 static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, a)); }
 static const u32 COL_BG = 0x101114,      // the page
@@ -38,26 +38,48 @@ static const f32 TOAST_W = 400, TOAST_PAD = 16, TOAST_GAP = 12, TOAST_MARGIN = 1
                  TOAST_BUTTON_W = 84, TOAST_BUTTON_H = 30, TOAST_BUTTON_GAP = 8, TOAST_BUTTON_ROUND = 7, TOAST_FIELD_H = 34,
                  TOAST_DOT = 22, TOAST_DOT_GAP = 10;
 
-// The accent choices (Options, Look), and the colours in use, set by ui_apply_accent.
-struct Accent { const char *name; u32 base, hover; };
-static const Accent ACCENTS[] = {
-    {"Red", 0xf0434f, 0xff5b66},    {"Orange", 0xf07a2e, 0xff9150}, {"Yellow", 0xe0b31f, 0xf2c642},
-    {"Green", 0x34b36b, 0x49c97f},  {"Teal", 0x1fb0a8, 0x35c8c0},   {"Blue", 0x3d8bfd, 0x5b9cff},
-    {"Purple", 0x8b5cf6, 0xa07cff}, {"Pink", 0xe8509a, 0xf56cad},
-};
-enum { ACCENT_COUNT = sizeof ACCENTS / sizeof ACCENTS[0] };
-static u32 COL_ACCENT = 0xf0434f, COL_ACCENT_HOVER = 0xff5b66, COL_ACCENT_SOFT = 0x3a1c20;
+// The accent in use (config.accent, set by ui_apply_accent): the colour, a lighter one under the mouse, a darker one
+// while pressed, a dark wash of it for selected rows, and the ink that reads on it (white, or near-black on a light
+// pick).
+static u32 COL_ACCENT = ACCENT_DEFAULT, COL_ACCENT_HOVER = 0x269b8f, COL_ACCENT_DOWN = 0x00574b,
+           COL_ACCENT_SOFT = 0x0e322f, COL_ACCENT_INK = 0xffffff;
 
-static void ui_apply_accent(i32 i)
+// A colour's relative luminance (WCAG), 0 black to 1 white.
+static f32 rgb_luminance(u32 c)
 {
-    if (i < 0 || i >= ACCENT_COUNT) i = 0;
-    COL_ACCENT = ACCENTS[i].base;
-    COL_ACCENT_HOVER = ACCENTS[i].hover;
-    // A dark wash of the accent: a quarter of it over a card.
-    u32 r = (((COL_ACCENT >> 16) & 255) + 3 * ((COL_PANEL >> 16) & 255)) / 4;
-    u32 g = (((COL_ACCENT >> 8) & 255) + 3 * ((COL_PANEL >> 8) & 255)) / 4;
-    u32 b = ((COL_ACCENT & 255) + 3 * (COL_PANEL & 255)) / 4;
-    COL_ACCENT_SOFT = (r << 16) | (g << 8) | b;
+    f32 l = 0;
+    static const f32 weight[3] = {0.2126f, 0.7152f, 0.0722f};
+    for (i32 i = 0; i < 3; i++) {
+        f32 v = ((c >> (16 - 8 * i)) & 255) / 255.f;
+        l += weight[i] * (v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f));
+    }
+    return l;
+}
+
+// `a` moved toward `b` by t (0 = a, 1 = b).
+static u32 rgb_mix(u32 a, u32 b, f32 t)
+{
+    u32 out = 0;
+    for (i32 sh = 0; sh <= 16; sh += 8) {
+        f32 x = (f32)((a >> sh) & 255), y = (f32)((b >> sh) & 255);
+        out |= (u32)(x + (y - x) * t + 0.5f) << sh;
+    }
+    return out;
+}
+
+// The ink for text and icons on a fill: white while white stands out from it (a contrast of 3 or more, enough for
+// bold labels and icons), else the page's near-black.
+static u32 ink_on(u32 fill) { return 1.05f / (rgb_luminance(fill) + 0.05f) >= 3 ? 0xffffff : COL_BG; }
+
+static void ui_apply_accent(u32 c)
+{
+    c &= 0xffffff;
+    COL_ACCENT = c;
+    COL_ACCENT_HOVER = rgb_mix(c, 0xffffff, 0.15f);
+    COL_ACCENT_DOWN = c == ACCENT_DEFAULT ? 0x00574b : rgb_mix(c, 0x000000, 0.37f);
+    COL_ACCENT_SOFT = rgb_mix(COL_PANEL, COL_ACCENT_DOWN, 0.4f); // a wash of the darker one over a card
+    COL_ACCENT_INK = ink_on(c);
+    if (ImGui::GetCurrentContext()) ImGui::GetStyle().Colors[ImGuiCol_CheckMark] = rgb(c);
 }
 
 // Fonts: Segoe UI with the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*).
@@ -482,7 +504,7 @@ static void ui_show(Screen screen)
 // Kit: the controls every screen is built from, so the screens look like one app. Rules they keep:
 // - No outlines. A control is a filled shape; the fill says what it is (accent = the main action, grey = an
 //   ordinary one, none = a quiet one that only shows a fill under the mouse).
-// - One accent (clipback red) per screen region at most: the primary button, the selected chip or nav item.
+// - One accent per screen region at most: the primary button, the selected chip or nav item.
 // - Sizes never depend on state: a segmented control sizes every segment to the widest label, a button that
 //   changes its label is given a width.
 
@@ -544,7 +566,7 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     u32 bg = COL_PANEL2, hover = COL_HOVER, text = COL_TEXT;
     f32 bg_a = 1;
     switch (kind) {
-    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; text = 0xffffff; break;
+    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; text = COL_ACCENT_INK; break;
     case KIT_GHOST: bg_a = 0; break;
     case KIT_DANGER: bg = COL_RED_SOFT; hover = 0x4a2025; text = 0xff8a92; break;
     default: break;
@@ -556,7 +578,7 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     }
     ImGui::PushStyleColor(ImGuiCol_Button, rgb(bg, bg_a));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(hover));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(hover, 0.8f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kind == KIT_PRIMARY && enabled ? rgb(COL_ACCENT_DOWN) : rgb(hover, 0.8f));
     ImGui::PushStyleColor(ImGuiCol_Text, rgb(text));
     if (kind == KIT_PRIMARY) ImGui::PushFont(g_font_bold);
     if (!enabled) ImGui::BeginDisabled();
@@ -597,7 +619,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     u32 fill = 0, ink = COL_TEXT;
     f32 fill_a = 1;
     switch (kind) {
-    case KIT_PRIMARY: fill = hot ? COL_ACCENT_HOVER : COL_ACCENT; ink = 0xffffff; break;
+    case KIT_PRIMARY: fill = held ? COL_ACCENT_DOWN : hot ? COL_ACCENT_HOVER : COL_ACCENT; ink = COL_ACCENT_INK; break;
     case KIT_SECONDARY: fill = hot ? COL_HOVER : COL_PANEL2; break;
     case KIT_DANGER: fill = hot ? 0x4a2025 : COL_RED_SOFT; ink = 0xff8a92; break;
     default:
@@ -645,7 +667,7 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
     if (hit) dev_click("button", label, hit == 2 ? "(arrow)" : "");
     u32 bg = COL_PANEL2, hover = COL_HOVER, ink = COL_TEXT;
     switch (kind) {
-    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; ink = 0xffffff; break;
+    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; ink = COL_ACCENT_INK; break;
     case KIT_DANGER: bg = COL_RED_SOFT; hover = 0x4a2025; ink = 0xff8a92; break;
     default: break;
     }
@@ -659,7 +681,7 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
     dl->AddLine(ImVec2(split, a.y + kit_px(6)), ImVec2(split, z.y - kit_px(6)), col32(0x000000, 0.3f), kit_px(1));
     if (progress >= 0) { // a thin bar along the bottom edge
         f32 by = z.y - kit_px(4), x0 = a.x + r, x1 = z.x - r, bh = kit_px(2);
-        u32 bar = kind == KIT_PRIMARY ? 0xffffff : COL_ACCENT;
+        u32 bar = kind == KIT_PRIMARY ? COL_ACCENT_INK : COL_ACCENT;
         dl->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), col32(bar, 0.25f), bh);
         dl->AddRectFilled(ImVec2(x0, by), ImVec2(x0 + (x1 - x0) * (progress > 1 ? 1 : progress), by + bh), col32(bar), bh);
     }
@@ -724,7 +746,7 @@ static f32 kit_keycap(ImDrawList *dl, f32 x, f32 y, const char *s, const char *e
     f32 drop = lit ? kit_px(1) : 0; // pressed in a little
     dl->AddRectFilled(ImVec2(x, y + kit_px(2)), ImVec2(x + cw, y + cap_h + kit_px(2)), col32(0x0c0d10), kit_px(5));
     dl->AddRectFilled(ImVec2(x, y + drop), ImVec2(x + cw, y + cap_h + drop), col32(lit ? COL_ACCENT : COL_HOVER), kit_px(5));
-    dl->AddText(ImVec2(floorf(x + (cw - ts.x) / 2), floorf(y + drop + (cap_h - sh) / 2)), col32(lit ? 0xffffff : COL_TEXT), s, e);
+    dl->AddText(ImVec2(floorf(x + (cw - ts.x) / 2), floorf(y + drop + (cap_h - sh) / 2)), col32(lit ? COL_ACCENT_INK : COL_TEXT), s, e);
     ImGui::PopFont();
     return cw;
 }
@@ -863,7 +885,7 @@ static bool kit_toggle(const char *id, bool *v)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(*v ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : (hot ? 0x45484f : 0x3a3d44)), h / 2);
     f32 r = h / 2 - kit_px(3);
-    dl->AddCircleFilled(ImVec2(*v ? a.x + w - h / 2 : a.x + h / 2, a.y + h / 2), r, col32(0xffffff));
+    dl->AddCircleFilled(ImVec2(*v ? a.x + w - h / 2 : a.x + h / 2, a.y + h / 2), r, col32(*v ? COL_ACCENT_INK : 0xffffff));
     return clicked;
 }
 

@@ -255,7 +255,7 @@ static HBITMAP toast_pill_bitmap(Toast &t, HDC screen, i32 w, i32 h, u32 **out)
     // The tick and the title
     SetBkMode(dc, TRANSPARENT);
     HGDIOBJ old_font = SelectObject(dc, t.pill_icons);
-    SetTextColor(dc, RGB(255, 255, 255));
+    SetTextColor(dc, toast_rgb(COL_ACCENT_INK));
     RECT tr = {pad, ty, pad + tile, ty + tile};
     const wchar_t tick[] = {(wchar_t)0xE73E, 0}; // Segoe MDL2: CheckMark
     DrawTextW(dc, tick, 1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -438,7 +438,7 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     SetBkMode(dc, TRANSPARENT);
 
     HGDIOBJ old_font = SelectObject(dc, t.icons);
-    SetTextColor(dc, session ? toast_rgb(COL_ACCENT) : RGB(255, 255, 255));
+    SetTextColor(dc, session ? toast_rgb(COL_ACCENT) : saved && !t.failed ? toast_rgb(COL_ACCENT_INK) : RGB(255, 255, 255));
     RECT tile = toast_rect(t, TR_TILE);
     // Segoe MDL2: Cancel, CheckMark, Game, Flag
     const wchar_t glyph[] = {(wchar_t)(saved && t.failed ? 0xE711 : saved ? 0xE73E : session ? 0xE7FC : 0xE7C1), 0};
@@ -482,7 +482,7 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
         main.left = cancel_x;
         DrawTextW(dc, L"Cancel", -1, &main, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     } else {
-        SetTextColor(dc, RGB(255, 255, 255));
+        SetTextColor(dc, toast_rgb(COL_ACCENT_INK));
         const wchar_t *main_label = !saved ? L"Save" : t.sharing == TSH_DONE ? L"Copied" : L"Share";
         DrawTextW(dc, main_label, -1, &main, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }

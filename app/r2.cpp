@@ -578,7 +578,6 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 
 #define R2_HOME_URL "https://github.com/CalvBot/clipback"
 enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
-static const u32 R2_CARD_ACCENT = 0x3BA4A0; // the card's edge colour. TODO: brand colour
 // The logo as a Discord emoji, at the start of the card's "via" line; it is in Calvin's own server.
 // TODO: a new id if it moves
 #define R2_LOGO_EMOJI "<:clipback:1574532567124803645>"
@@ -589,7 +588,7 @@ struct EmbedInput {
     f64  preview;                       // the card's video is the first this many seconds, 0 = all of it
     i64  date_us;                       // when it was shared
     bool video;                         // something small enough to play in the card; false = the picture
-    u32  accent;                        // a colour as 0xRRGGBB, 0 = none
+    u32  accent;                        // the edge colour, 0xRRGGBB (config.accent), 0 = none
     bool session;                       // a session (path_is_session): Watch and Download buttons
 };
 
@@ -668,7 +667,7 @@ static void embed_card(const EmbedInput &in, EmbedCard *out, i32 style = -1)
         out->tag_at = (i32)in.preview;
     }
     out->icon = st.icon;
-    out->accent = in.accent ? in.accent : R2_CARD_ACCENT;
+    out->accent = in.accent & 0xffffff;
     out->via = true;
     out->player = in.video;
     out->buttons = in.session;
@@ -781,9 +780,12 @@ struct R2PageParts {
     const char *card;    // the card's JSON (r2_card_json), put in as it is; "" or 0 = none
     const char *heading; // the name over the clip (the card's title); 0 = the title
     const char *line;    // the game under it (the card's line); "" or 0 = none
-    const char *emoji;   // the game's Discord emoji ("<:name:id>", emoji_ok), shown from Discord's CDN; "" or 0 = none
+    const char *emoji;   // the game's Discord emoji ("<:name:id>", emoji_ok), shown from Discord's CDN without an
+                         // icon; "" or 0 = none
     f64 preview;         // cards play the clip's first this many seconds; 0 = all of it
     const char *marks;   // the clip's markers: "<seconds> <note>" each, split by R2_MARK_SEP; "" or 0 = none
+    const char *icon;    // the game's icon before the game line, as a data: address (r2_icon_data); "" or 0 = none
+    u32 accent;          // the page's accent, 0xRRGGBB (config.accent); 0 = the default
 };
 
 // A run of the page: text with %T (the title), %P (the page's address), %V (the clip's), %E (what cards play), %I
@@ -808,8 +810,8 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
     out[*len < cap ? *len : cap - 1] = 0;
 }
 
-// The page for a link: the clip's picture blurred behind its name, the game line, the clip in Clipback's own player
-// and its markers, then "via Clipback" (a link to the project), Download and Copy link. The head has the tags chat
+// The page for a link: the clip's picture blurred behind its name, the game line (after the game's icon, else its
+// emoji), the clip in Clipback's own player and its markers, then "via Clipback" (a link to the project), Download and Copy link. The head has the tags chat
 // apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and
 // Discord's own card (`card`) before them. A #t= in the address (seconds, or m:ss or h:mm:ss) starts the clip there,
 // which is where a card's preview tag links to; when cards play a preview, a button and a green tick mark where it
@@ -858,7 +860,10 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     // markers as ticks on its timeline, then "via Clipback", Download and Copy link.
     r2_page_put(
         "<style>"
-        ":root{--fg:#ececf2;--dim:#9a9aa6;--line:#2a2a33;--panel:#15151a;--glass:#15151acc;--accent:#4f8cff;"
+        ":root{--fg:#ececf2;--dim:#9a9aa6;--line:#2a2a33;--panel:#15151a;--glass:#15151acc;",
+        p, out, cap, &len);
+    if (len + 24 < cap) len += snprintf(out + len, cap - len, "--accent:#%06x;", p.accent ? p.accent & 0xffffff : ACCENT_DEFAULT);
+    r2_page_put(
         "--mark:#ffb547;--prev:#58d68d;color-scheme:dark}"
         "html{background:#0c0c0e}body{margin:0;min-height:100vh;color:var(--fg);font:14px/1.5 system-ui,sans-serif}"
         "body{display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;overflow-x:hidden}"
@@ -867,7 +872,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         "main{width:min(960px,100%);display:grid;gap:12px}"
         "h1{font-size:24px;line-height:1.2;margin:0;text-align:center;overflow-wrap:anywhere}"
         ".game{display:flex;gap:6px;align-items:center;justify-content:center;color:#d4d4dc;font-size:13px}"
-        ".game img,.via img{width:18px;height:18px}"
+        ".game img,.via img{width:18px;height:18px}.game .icon{border-radius:4px}"
         ".player{border-radius:12px;overflow:hidden;background:#000;box-shadow:0 20px 60px #000a;outline:none}"
         ".player:focus-visible{box-shadow:0 0 0 2px var(--accent),0 20px 60px #000a}"
         ".view{position:relative;overflow:hidden;max-height:calc(100vh - 230px);cursor:zoom-in;touch-action:none}"
@@ -914,7 +919,9 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     if (p.line && p.line[0]) {
         r2_page_put("<div class=\"game\">", p, out, cap, &len);
         char src[160];
-        if (r2_emoji_url(p.emoji, src, sizeof src) && len + 200 < cap)
+        if (p.icon && p.icon[0] && len + (i32)strlen(p.icon) + 200 < cap)
+            len += snprintf(out + len, cap - len, "<img class=\"icon\" src=\"%s\" alt=\"\">", p.icon);
+        else if (r2_emoji_url(p.emoji, src, sizeof src) && len + 200 < cap)
             len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", src);
         r2_html_text(p.line, out, cap, &len);
         r2_page_put("</div>\n", p, out, cap, &len);
@@ -1827,6 +1834,80 @@ static bool r2_put_bytes(const R2Conf &c, const char *key, const char *data, i64
     return r2_ok(status);
 }
 
+// The side of the game's icon on a page, in pixels: three times what it shows at, for sharp screens.
+enum { R2_ICON_PX = 64 };
+
+// A picture as a data: address for a page: `png` scaled to fit R2_ICON_PX square and made a PNG, in base64. The
+// page carries it in its own text, so it costs no file in the bucket and no request of its own. False (and "") if
+// it can't be read or doesn't fit `cap`.
+static bool r2_icon_data(const Path &png, char *out, i32 cap)
+{
+    out[0] = 0;
+    bool com = SUCCEEDED(CoInitializeEx(0, COINIT_MULTITHREADED));
+    IWICImagingFactory *wic = 0;
+    IWICBitmapDecoder *dec = 0;
+    IWICBitmapFrameDecode *frame = 0;
+    IWICBitmapScaler *scaler = 0;
+    IWICFormatConverter *conv = 0;
+    IStream *mem = 0;
+    IWICBitmapEncoder *enc = 0;
+    IWICBitmapFrameEncode *fenc = 0;
+    UINT w = 0, h = 0;
+    bool ok = false;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) goto done;
+    if (FAILED(wic->CreateDecoderFromFilename(png.s, 0, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
+    if (FAILED(dec->GetFrame(0, &frame)) || FAILED(frame->GetSize(&w, &h)) || !w || !h) goto done;
+    {
+        f64 k = fmin(1.0, (f64)R2_ICON_PX / (w > h ? w : h));
+        UINT sw = (UINT)fmax(1, floor(w * k + 0.5)), sh = (UINT)fmax(1, floor(h * k + 0.5));
+        if (FAILED(wic->CreateBitmapScaler(&scaler)) ||
+            FAILED(scaler->Initialize(frame, sw, sh, WICBitmapInterpolationModeHighQualityCubic)) ||
+            FAILED(wic->CreateFormatConverter(&conv)) ||
+            FAILED(conv->Initialize(scaler, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, 0, 0,
+                                    WICBitmapPaletteTypeCustom)) ||
+            FAILED(CreateStreamOnHGlobal(0, TRUE, &mem)) ||
+            FAILED(wic->CreateEncoder(GUID_ContainerFormatPng, 0, &enc)) ||
+            FAILED(enc->Initialize(mem, WICBitmapEncoderNoCache)) || FAILED(enc->CreateNewFrame(&fenc, 0)) ||
+            FAILED(fenc->Initialize(0)) || FAILED(fenc->SetSize(sw, sh)))
+            goto done;
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
+        if (FAILED(fenc->SetPixelFormat(&fmt)) || FAILED(fenc->WriteSource(conv, 0)) || FAILED(fenc->Commit()) ||
+            FAILED(enc->Commit()))
+            goto done;
+        HGLOBAL hg = 0;
+        STATSTG st = {};
+        if (FAILED(mem->Stat(&st, STATFLAG_NONAME)) || FAILED(GetHGlobalFromStream(mem, &hg))) goto done;
+        i64 n = (i64)st.cbSize.QuadPart;
+        static const char head[] = "data:image/png;base64,";
+        if (n <= 0 || (i64)sizeof head + (n + 2) / 3 * 4 >= cap) goto done;
+        const u8 *b = (const u8 *)GlobalLock(hg);
+        if (!b) goto done;
+        static const char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        i32 len = snprintf(out, cap, "%s", head);
+        for (i64 i = 0; i < n; i += 3) {
+            u32 v = (u32)b[i] << 16 | (i + 1 < n ? (u32)b[i + 1] << 8 : 0) | (i + 2 < n ? b[i + 2] : 0);
+            out[len++] = digits[v >> 18 & 63];
+            out[len++] = digits[v >> 12 & 63];
+            out[len++] = i + 1 < n ? digits[v >> 6 & 63] : '=';
+            out[len++] = i + 2 < n ? digits[v & 63] : '=';
+        }
+        out[len] = 0;
+        GlobalUnlock(hg);
+        ok = true;
+    }
+done:
+    if (fenc) fenc->Release();
+    if (enc) enc->Release();
+    if (mem) mem->Release();
+    if (conv) conv->Release();
+    if (scaler) scaler->Release();
+    if (frame) frame->Release();
+    if (dec) dec->Release();
+    if (wic) wic->Release();
+    if (com) CoUninitialize();
+    return ok;
+}
+
 // Writes a share's preview page (under the lock's copy `s`): playing, or paused.
 static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
 {
@@ -1847,19 +1928,27 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     wchar_t src[1040];
     utf8_to_wide(s.path, src, COUNT(src));
     bool session = path_is_session(src);
-    EmbedInput in = {s.title,       s.game,          s.seconds, s.preview,
-                     s.uploaded_us, embed[0] != 0, 0,                         session};
+    EmbedInput in = {s.title,       s.game,          s.seconds,           s.preview,
+                     s.uploaded_us, embed[0] != 0, g_app.config.accent, session};
     EmbedCard card;
     embed_card(in, &card);
     static thread_local char json[R2_CARD_MAX + 1];
     char emoji[64];
     gamedb_emoji(s.game, emoji, sizeof emoji);
     if (!r2_card_json(card, embed, image, emoji, page, video, json, sizeof json)) json[0] = 0;
+    // The game line's icon: SteamGridDB's, in the page itself (the emoji when there is none)
+    enum { ICON_CAP = 32768 };
+    char *icon = (char *)malloc(ICON_CAP);
+    Path icon_file;
+    if (icon && (!card.line[0] || !gamedb_sgdb_icon(s.game, &icon_file) || !r2_icon_data(icon_file, icon, ICON_CAP)))
+        icon[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,
                      copy ? s.social_h : s.page_h, tw, th, json, card.title, card.line, emoji,
-                     copy && s.preview > 0 && s.seconds > s.preview ? s.preview : 0, s.marks};
-    static thread_local char html[32768];
+                     copy && s.preview > 0 && s.seconds > s.preview ? s.preview : 0, s.marks, icon,
+                     g_app.config.accent};
+    static thread_local char html[65536];
     i32 n = r2_page_html(p, paused, html, sizeof html);
+    free(icon);
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
 }
 

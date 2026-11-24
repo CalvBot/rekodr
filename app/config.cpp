@@ -100,7 +100,7 @@ static void config_defaults(Config *c, const Paths &paths)
     wchar_t time_format[80] = L"";
     c->clock_24h = !GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_STIMEFORMAT, time_format, 80) ||
                    wcschr(time_format, L'H') != 0; // "HH:mm:ss" is 24-hour, "h:mm:ss tt" 12-hour
-    c->accent = 0;
+    c->accent = ACCENT_DEFAULT;
     c->card_width = 270;
     // One hotkey, the same keys as NVIDIA's instant replay, so it's where hands already go.
     str_set(c->hotkeys[0].keys.s, "Alt+F10");
@@ -351,7 +351,11 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "buffer_gb")) real(&c->buffer_gb);
     else if (!strcmp(key, "buffer_by_size")) boolean(&c->buffer_by_size);
     else if (!strcmp(key, "desktop_bitrate_mbps")) real(&c->desktop_bitrate_mbps);
-    else if (!strcmp(key, "accent")) c->accent = atoi(value);
+    else if (!strcmp(key, "accent")) { // six hex digits, "00897b"; anything else keeps the default
+        bool hex = strlen(value) == 6;
+        for (i32 i = 0; hex && i < 6; i++) hex = isxdigit((u8)value[i]) != 0;
+        if (hex) c->accent = (u32)strtoul(value, 0, 16);
+    }
     else if (!strcmp(key, "card_width")) c->card_width = atoi(value);
     else if (!strcmp(key, "games_collapsed")) c->games_collapsed = atoi(value) != 0;
     else if (!strcmp(key, "unsaved_collapsed")) c->unsaved_collapsed = atoi(value) != 0;
@@ -627,7 +631,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "toast_clip = %s\n", toast_clip_name(c.toast_clip));
     boolean("voice_mono", c.voice_mono);
     boolean("dev_log", c.dev_log);
-    fprintf(f, "accent = %d\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);
+    fprintf(f, "accent = %06x\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);
     fprintf(f, "unsaved_collapsed = %d\nside_folders = %d\n", c.unsaved_collapsed ? 1 : 0, c.side_folders ? 1 : 0);
     fprintf(f, "timeline_lane = %d\n", c.timeline_lane);
     fprintf(f, "timeline_top = %g\ntimeline_names = %d\ntimeline_simple = %d\n", c.timeline_top, c.timeline_names,

@@ -674,6 +674,7 @@ static void test_settings_round_trip()
     a.dev_log = true;
     a.clock_24h = !a.clock_24h; // the other way from Windows' format, so loading it can't pass by default
     a.voice_mono = false;        // the default is on
+    a.accent = 0x0a1b2c;         // a colour with leading zeros
     a.timeline_top = 0.4f;
     a.timeline_names = 220;
     a.editor_top = 0.6f;
@@ -717,7 +718,20 @@ static void test_settings_round_trip()
         char empty[] = "";
         config_set(&e, "r2_bucket", empty);
         T(!strcmp(e.r2_bucket, "clipback"));
+        // The accent: six hex digits; anything else keeps the default
+        T(e.accent == ACCENT_DEFAULT);
+        char acc[16];
+        static const char *const bad[] = {"0", "+12345", "12345g", "1234567", " 12345", ""};
+        for (const char *v : bad) {
+            str_set(acc, v);
+            config_set(&e, "accent", acc);
+            T(e.accent == ACCENT_DEFAULT);
+        }
+        str_set(acc, "FFe066");
+        config_set(&e, "accent", acc);
+        T(e.accent == 0xffe066);
     }
+    T(b.accent == 0x0a1b2c);
     T(b.bitrate_mbps == 42.5f && b.fps == 120 && b.buffer_by_size && b.dev_log && !strcmp(b.codec.s, "hevc"));
     T(b.hotkey_count == 1 && !strcmp(b.hotkeys[0].keys.s, "Alt+F10") && !strcmp(b.hotkeys[0].action.s, "save 30s"));
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
@@ -1699,7 +1713,7 @@ static void test_r2()
 
     // The page: the tags for a card that plays, the name, the game line and the player; the title made safe and
     // ASCII; paused, no clip and nothing that plays it
-    static char html[32768];
+    static char html[65536];
     static const u8 past_ascii[] = {'c', 'a', 'f', 0xc3, 0xa9, ' ', 0xf0, 0x9f, 0x8e, 0xae, 0x01, 0}; // e-acute, a pad, a control
     char title[96];
     snprintf(title, sizeof title, "ace <b>\"round\"</b> & %s", (const char *)past_ascii);
@@ -1742,6 +1756,12 @@ static void test_r2()
     T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/clipback\"><img src=\"https://cdn.discordapp.com/"
                    "emojis/1574532567124803645.webp\" alt=\"\">via Clipback</a>"));
     T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
+    // the accent: the default, or the one picked
+    T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)"));
+    pp.accent = 0xffe066;
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, "--accent:#ffe066;") && !strstr(html, "#00897b"));
+    pp.accent = 0;
     // #t= starts the clip there; no preview, no markers
     T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "var CB={pv:0.000,m:[]};"));
     // a preview and markers go to the player, the notes made safe for the script tag
@@ -1761,10 +1781,35 @@ static void test_r2()
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && strstr(html, "<h1>Ace</h1>\n<div class=\"game\"><img src=\"https://cdn.discordapp.com/emojis/123.gif\" "
                              "alt=\"\">Valorant</div>"));
+    // the game's icon goes before the line instead of the emoji
+    pp.icon = "data:image/png;base64,iVBORw0K";
+    hn = r2_page_html(pp, false, html, sizeof html);
+    T(hn > 0 && strstr(html, "<div class=\"game\"><img class=\"icon\" src=\"data:image/png;base64,iVBORw0K\" "
+                             "alt=\"\">Valorant</div>") && !strstr(html, "emojis/123"));
+    pp.icon = "";
     pp.emoji = "nope";
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && strstr(html, "<div class=\"game\">Valorant</div>"));
-    pp.heading = pp.line = pp.emoji = 0;
+    pp.heading = pp.line = pp.emoji = pp.icon = 0;
+    // an icon for the page: a PNG scaled to R2_ICON_PX, in base64
+    {
+        static char data[32768];
+        Path png = {};
+        GetFullPathNameW(L"..\\assets\\clipback.png", MAX_PATH, png.s, 0);
+        T(r2_icon_data(png, data, sizeof data) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
+        T(strlen(data) < 24000 && !strchr(data, '"'));
+        T(!r2_icon_data(png, data, 64) && !data[0]);
+        Path none = {};
+        GetFullPathNameW(L"..\\assets\\none.png", MAX_PATH, none.s, 0);
+        T(!r2_icon_data(none, data, sizeof data));
+    }
+    // The accent's ink: white on the default and darker picks, the page's near-black on light ones
+    T(ink_on(ACCENT_DEFAULT) == 0xffffff && ink_on(0x4f8cff) == 0xffffff && ink_on(0xf0434f) == 0xffffff);
+    T(ink_on(0xffe066) == COL_BG && ink_on(0xffffff) == COL_BG && ink_on(0x7fffd4) == COL_BG);
+    ui_apply_accent(0xffe066);
+    T(COL_ACCENT == 0xffe066 && COL_ACCENT_INK == COL_BG && COL_ACCENT_HOVER != COL_ACCENT);
+    ui_apply_accent(ACCENT_DEFAULT);
+    T(COL_ACCENT == 0x00897b && COL_ACCENT_DOWN == 0x00574b && COL_ACCENT_INK == 0xffffff);
     // nothing small enough for cards: a picture card, the page still plays the clip
     pp.embed = "";
     hn = r2_page_html(pp, false, html, sizeof html);
@@ -1787,7 +1832,7 @@ static void test_r2()
     EmbedInput ein = {"ace <\"round\"> *1*", "Valorant", 42, 0, 0, true, 0};
     embed_card(ein, &card);
     T(!strcmp(card.title, ein.title) && !strcmp(card.line, "Valorant") && card.player && card.via
-      && card.accent == R2_CARD_ACCENT && card.icon);
+      && !card.accent && card.icon);
     ein.title = "Valorant 2026-11-24 21-04-33";
     embed_card(ein, &card);
     T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Valorant"));
@@ -1797,7 +1842,7 @@ static void test_r2()
     T(!strcmp(card.title, "ace") && !card.line[0]);
     char named[64];
     snprintf(named, sizeof named, "ace <\"round\"> *1* %s", (const char *)past_ascii); // e-acute, a pad, a control
-    ein = {named, "Valorant", 42, 0, 0, true, 0x112233};
+    ein = {named, "Valorant", 42, 0, 0, true, 0x112233}; // the accent is the card's edge
     embed_card(ein, &card);
     static char cj[R2_CARD_MAX + 1];
     i32 cn = r2_card_json(card, "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg",
