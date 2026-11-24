@@ -94,6 +94,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->game_lookup = true;
     c->auto_update = true;
     c->tooltips = true;
+    c->share_names = true; // "Help name games" and "Send usage stats": on, the setup asks
+    c->send_stats = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
     wchar_t time_format[80] = L"";

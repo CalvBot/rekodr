@@ -223,7 +223,7 @@ static void setup_window()
         ImGui::SetCursorScreenPos(ImVec2(x0, a.y + pic_h + dp(14)));
     }
 
-    // Usage stats, off unless the answer is yes
+    // Usage stats, on unless the answer is no
     ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
     opt_section("SEND USAGE STATS?");
     {
