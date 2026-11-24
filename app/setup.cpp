@@ -1,6 +1,6 @@
-// The first-run setup: one screen on a first start, over the library, while recording already runs on the
-// defaults. It shows the clip key and asks about tooltips, helping name games, usage stats and sharing. Each
-// answer changes the setting at once; Done marks it finished. Options > General runs it again.
+// The first-run setup: a few short pages on a first start, over the library, while recording already runs on the
+// defaults. They show the clip key and ask about tooltips, game detection, usage stats and sharing. Each answer
+// changes the setting at once; Done on the last page marks it finished. Options > General runs it again.
 
 enum { SETUP_BEG_RESOURCE = 10 };
 // The begging picture (assets/setup-beg.jpg): 15 frames of 240 x 230, 5 across and 3 down, at 10 a second.
@@ -56,7 +56,7 @@ done:
 }
 
 // One answer to a question: a card with a round mark, a bold title and a dim line under it. The picked one is
-// raised, ringed in white, with the accent mark; the other is flat and dim. Both keep their size and place.
+// raised and edged in the accent, with the accent mark; the other is flat and dim. Both keep their size and place.
 static bool setup_choice(const char *id, const char *title, const char *sub, bool chosen, f32 w, f32 h)
 {
     ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
@@ -65,13 +65,13 @@ static bool setup_choice(const char *id, const char *title, const char *sub, boo
     bool hot = ImGui::IsItemHovered() && !chosen;
     if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 rr = dp(12), r = dp(10);
+    f32 rr = dp(12), r = dp(9);
     dl->AddRectFilled(a, b, col32(chosen ? COL_PANEL2 : hot ? COL_HOVER : COL_PANEL), rr);
-    if (chosen) dl->AddRect(a, b, col32(COL_WHITE), rr, 0, dp(1.5f));
+    if (chosen) dl->AddRect(a, b, col32(COL_ACCENT), rr, 0, dp(1.5f));
     ImVec2 c(a.x + dp(20) + r, a.y + h / 2);
     if (chosen) {
         dl->AddCircleFilled(c, r, col32(COL_ACCENT), 32);
-        dl->AddCircleFilled(c, dp(4), col32(COL_ACCENT_INK), 24);
+        dl->AddCircleFilled(c, dp(3.5f), col32(COL_ACCENT_INK), 24);
     } else {
         dl->AddCircle(c, r - dp(0.75f), col32(hot ? COL_DIM : COL_FAINT), 32, dp(1.5f));
     }
@@ -81,18 +81,6 @@ static bool setup_choice(const char *id, const char *title, const char *sub, boo
     opt_text_at(dl, g_font_bold, ImVec2(tx, ty), chosen || hot ? COL_TEXT : COL_DIM, title, max_x);
     if (sub) opt_text_at(dl, g_font_small, ImVec2(tx, ty + th + gap), chosen ? COL_DIM : COL_FAINT, sub, max_x);
     return clicked;
-}
-
-// A section's heading: its icon in a round chip, then its name in bold. Leaves the cursor under it at x0.
-static void setup_heading(ImDrawList *dl, f32 x0, f32 x1, const char *icon, const char *title)
-{
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    f32 d = dp(30), is = g_font_icon->FontSize;
-    ImVec2 c(x0 + d / 2, p.y + d / 2), isz = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, icon);
-    dl->AddCircleFilled(c, d / 2, col32(COL_PANEL2), 32);
-    dl->AddText(g_font_icon, is, ImVec2(floorf(c.x - isz.x / 2), floorf(c.y - isz.y / 2)), col32(COL_TEXT), icon);
-    opt_text_at(dl, g_font_big, ImVec2(x0 + d + dp(12), floorf(c.y - g_font_big->FontSize / 2)), COL_TEXT, title, x1);
-    ImGui::SetCursorScreenPos(ImVec2(x0, p.y + d + dp(14)));
 }
 
 // Text with its letters `track` px further apart than the font sets them (negative: tighter). Returns the end.
@@ -120,15 +108,20 @@ static f32 setup_keycap(ImDrawList *dl, ImVec2 p, f32 h, const char *name)
     return w;
 }
 
+// The setup's pages, in order. Back and Next (Done on the last) sit in the same place on every page.
+enum SetupPage { SETUP_WELCOME, SETUP_DETECTION, SETUP_DEVELOPMENT, SETUP_SHARING, SETUP_PAGES };
+static i32 g_setup_page;
+
 static void setup_finish(const char *how)
 {
     Config &c = g_app.config;
     c.setup_done = true;
     g_app.ui.setup_open = false;
+    g_setup_page = SETUP_WELCOME;
     options_apply(0);
-    log_line("setup %s: look-up %s, art service %s, own key %s, help name games %s, tooltips %s, cloudflare %s", how,
-             c.game_lookup ? "on" : "off", c.art_service.s[0] ? c.art_service.s : "none", c.sgdb_key[0] ? "set" : "none",
-             c.share_names ? "on" : "off", c.tooltips ? "on" : "off", r2_set_up() ? "set up" : "none");
+    log_line("setup %s: look-up %s, game detection %s, own key %s, usage stats %s, tooltips %s, cloudflare %s", how,
+             c.game_lookup ? "on" : "off", c.art_service.s[0] ? c.art_service.s : "off", c.sgdb_key[0] ? "set" : "none",
+             c.send_stats ? "on" : "off", c.tooltips ? "on" : "off", r2_set_up() ? "set up" : "none");
 }
 
 // The clip key: the first hotkey that saves, and how much it saves ("save 30s" -> 30). False with none.
@@ -161,238 +154,245 @@ static i32 setup_pair(const char *id, const char *const titles[2], const char *c
     return hit;
 }
 
-// A dim small line under a section. Leaves the cursor under it at x0.
-static void setup_note(ImDrawList *dl, f32 x0, f32 x1, const char *text)
+// A page's title and the dim lines under it, wrapped to x1. Returns the y under them.
+static f32 setup_page_head(ImDrawList *dl, f32 x0, f32 x1, f32 y, const char *title, const char *text)
 {
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    opt_text_at(dl, g_font_small, ImVec2(x0, p.y + dp(10)), COL_DIM, text, x1);
-    ImGui::SetCursorScreenPos(ImVec2(x0, p.y + dp(10) + g_font_small->FontSize));
+    setup_text_tracked(dl, g_font_title, ImVec2(x0, y), COL_TEXT, title, -dp(0.4f));
+    y += g_font_title->FontSize + dp(10);
+    ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    ImGui::PushTextWrapPos(x1 - ImGui::GetWindowPos().x);
+    ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+    ImGui::PopTextWrapPos();
+    return ImGui::GetCursorScreenPos().y + dp(20);
 }
 
-static void setup_window()
+// Welcome: what clipback does, the clip key as key caps, and tooltips.
+static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)
 {
     Config &c = g_app.config;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(28), kit_px(24)));
-    ImGui::BeginChild("##setup", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
-    ImGui::PopStyleVar();
-    ImVec2 avail = ImGui::GetContentRegionAvail(), top = ImGui::GetCursorScreenPos();
-    f32 w = fminf(avail.x, dp(640)), x0 = floorf(top.x + (avail.x - w) / 2), x1 = x0 + w;
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    const f32 SECTION_GAP = dp(36), PAIR_H = dp(68);
-    f32 y = top.y + dp(28);
-
-    // The greeting, large and tight
     setup_text_tracked(dl, g_font_hero, ImVec2(x0, y), COL_TEXT, "Welcome to " APP_NAME, -dp(0.6f));
     y += g_font_hero->FontSize + dp(8);
     opt_text_at(dl, g_font, ImVec2(x0, y), COL_DIM, "It keeps the last while of your games, so you can save a clip after it happens.",
                 x1);
     y += g_font->FontSize + dp(24);
 
-    // The clip key as key caps, and what it does
-    {
-        char keys[64] = "";
-        i32 secs = 0;
-        bool any = setup_clip_key(c, keys, sizeof keys, &secs);
-        f32 ph = dp(108), kh = dp(60);
-        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + ph), col32(COL_PANEL), dp(12));
-        f32 kx = x0 + dp(24), ky = floorf(y + (ph - kh) / 2);
-        if (any) {
-            // "Alt+F7" as Alt, +, F7; a + with nothing before it is the + key itself
-            char part[64];
-            i32 n = 0;
-            bool first = true;
-            for (const char *k = keys;; k++) {
-                bool end = !*k;
-                if (!end && (*k != '+' || n == 0) && n < (i32)sizeof part - 1) {
-                    part[n++] = *k;
-                    continue;
-                }
-                part[n] = 0;
-                if (n) {
-                    if (!first) {
-                        opt_text_at(dl, g_font_big, ImVec2(kx, floorf(ky + (kh - dp(4) - g_font_big->FontSize) / 2)), COL_DIM,
-                                    "+", kx + dp(30));
-                        kx += text_w(g_font_big, "+") + dp(10);
-                    }
-                    kx += setup_keycap(dl, ImVec2(kx, ky), kh, part) + dp(10);
-                    first = false;
-                }
-                n = 0;
-                if (end) break;
+    char keys[64] = "";
+    i32 secs = 0;
+    bool any = setup_clip_key(c, keys, sizeof keys, &secs);
+    f32 ph = dp(108), kh = dp(60);
+    dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + ph), col32(COL_PANEL), dp(12));
+    f32 kx = x0 + dp(24), ky = floorf(y + (ph - kh) / 2);
+    if (any) {
+        // "Alt+F7" as Alt, +, F7; a + with nothing before it is the + key itself
+        char part[64];
+        i32 n = 0;
+        bool first = true;
+        for (const char *k = keys;; k++) {
+            bool end = !*k;
+            if (!end && (*k != '+' || n == 0) && n < (i32)sizeof part - 1) {
+                part[n++] = *k;
+                continue;
             }
-            kx += dp(14);
+            part[n] = 0;
+            if (n) {
+                if (!first) {
+                    opt_text_at(dl, g_font_big, ImVec2(kx, floorf(ky + (kh - dp(4) - g_font_big->FontSize) / 2)), COL_DIM, "+",
+                                kx + dp(30));
+                    kx += text_w(g_font_big, "+") + dp(10);
+                }
+                kx += setup_keycap(dl, ImVec2(kx, ky), kh, part) + dp(10);
+                first = false;
+            }
+            n = 0;
+            if (end) break;
         }
-        char head[96];
-        const char *sub = any ? "Press it in a game" : "Set one in Options > Hotkeys";
-        if (!any) str_set(head, "No key saves a clip yet");
-        else if (secs > 0) snprintf(head, sizeof head, "Saves the last %d seconds", secs);
-        else str_set(head, "Saves what just happened");
-        f32 bh = g_font_big->FontSize, sh = g_font->FontSize, ty = floorf(y + (ph - bh - dp(6) - sh) / 2);
-        opt_text_at(dl, g_font_big, ImVec2(kx, ty), COL_TEXT, head, x1 - dp(16));
-        opt_text_at(dl, g_font, ImVec2(kx, ty + bh + dp(6)), COL_DIM, sub, x1 - dp(16));
-        y += ph + SECTION_GAP;
+        kx += dp(14);
     }
+    char head[96];
+    const char *sub = any ? "Press it in a game" : "Set one in Options > Hotkeys";
+    if (!any) str_set(head, "No key saves a clip yet");
+    else if (secs > 0) snprintf(head, sizeof head, "Saves the last %d seconds", secs);
+    else str_set(head, "Saves what just happened");
+    f32 bh = g_font_big->FontSize, sh = g_font->FontSize, ty = floorf(y + (ph - bh - dp(6) - sh) / 2);
+    opt_text_at(dl, g_font_big, ImVec2(kx, ty), COL_TEXT, head, x1 - dp(16));
+    opt_text_at(dl, g_font, ImVec2(kx, ty + bh + dp(6)), COL_DIM, sub, x1 - dp(16));
+    y += ph + dp(32);
 
-    // Tooltips
+    opt_text_at(dl, g_font_big, ImVec2(x0, y), COL_TEXT, "Tooltips", x1);
+    y += g_font_big->FontSize + dp(12);
     ImGui::SetCursorScreenPos(ImVec2(x0, y));
-    setup_heading(dl, x0, x1, ICON_COMMENT, "Tooltips");
-    {
-        static const char *const titles[] = {"Show tooltips", "I know what I'm doing"};
-        static const char *const subs[] = {"Point at a button to see what it does", "Get them off my screen"};
-        i32 hit = setup_pair("tips", titles, subs, c.tooltips ? 0 : 1, w, PAIR_H);
-        if (hit >= 0) {
-            c.tooltips = hit == 0;
-            log_line("setup: tooltips %s", c.tooltips ? "on" : "off");
-            options_apply(0);
-        }
+    static const char *const titles[] = {"Show tooltips", "I know what I'm doing"};
+    static const char *const subs[] = {"Point at a button to see what it does", "Get them off my screen"};
+    i32 hit = setup_pair("tips", titles, subs, c.tooltips ? 0 : 1, x1 - x0, pair_h);
+    if (hit >= 0) {
+        c.tooltips = hit == 0;
+        log_line("setup: tooltips %s", c.tooltips ? "on" : "off");
+        options_apply(0);
     }
-    setup_note(dl, x0, x1, "Either way, F1 lists every key.");
-    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y + SECTION_GAP));
+    opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, "Either way, F1 lists every key.", x1);
+}
 
-    // Helping name games, with the begging picture beside the question
-    setup_heading(dl, x0, x1, ICON_GAME, "Help name games?");
-    bool service = c.game_lookup && c.art_service.s[0];
+// Game detection: whether clipback's service is asked about the player's games (art_service), and told the names
+// the player gives (share_names). No turns both off at once, so nothing about a game goes to the service; games are
+// then named from Discord's game list and the names the player types.
+static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)
+{
+    Config &c = g_app.config;
+    y = setup_page_head(dl, x0, x1, y, "Use our game detection?",
+                        APP_NAME " looks at a game's exe and checks it against our list, so your clips get the game's "
+                        "name and art.");
+    ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    static const char *const titles[] = {"Sure", "No thanks"};
+    static const char *const subs[] = {"Names and art from " APP_NAME "'s service", "Only Discord's game list and names you type"};
+    bool on = c.game_lookup && c.art_service.s[0];
+    ImGui::BeginDisabled(!c.game_lookup);
+    i32 hit = setup_pair("detect", titles, subs, on ? 0 : 1, x1 - x0, pair_h);
+    ImGui::EndDisabled();
+    if (hit >= 0) {
+        bool yes = hit == 0;
+        str_set(c.art_service.s, yes ? ART_SERVICE_HOST : "");
+        c.share_names = yes;
+        gamedb_set_service(c.art_service.s);
+        log_line("setup: game detection %s", yes ? "on" : "off");
+        options_apply(0);
+    }
+    const char *note = !c.game_lookup ? "Look up games online is off in Options, so this is too."
+                       : on           ? "A game's exe and the names you give it go to the service. Nothing else."
+                                      : "Nothing about your games goes to " APP_NAME "'s service.";
+    opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, note, x1);
+}
+
+// Help development: the daily usage counts. The begging picture shows only once the answer is no.
+static void setup_page_development(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)
+{
+    Config &c = g_app.config;
+    y = setup_page_head(dl, x0, x1, y, "Help development?",
+                        "Once a day, " APP_NAME " sends how many clips, saves, shares and links you made, with its "
+                        "version, your Windows build and encoder. No names, no files.");
+    ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    static const char *const titles[] = {"Sure, send", "No thanks"};
+    static const char *const subs[] = {"Counts, once a day", "Send nothing"};
+    ImGui::BeginDisabled(!c.game_lookup);
+    i32 hit = setup_pair("stats", titles, subs, c.send_stats && c.game_lookup ? 0 : 1, x1 - x0, pair_h);
+    ImGui::EndDisabled();
+    if (hit >= 0) {
+        c.send_stats = hit == 0;
+        log_line("setup: usage stats %s", c.send_stats ? "on" : "off");
+        options_apply(0);
+    }
+    if (c.send_stats && c.game_lookup) return;
+    static ID3D11ShaderResourceView *beg;
+    static i32 beg_w, beg_h;
+    static bool tried;
+    if (!tried) {
+        beg = resource_texture(SETUP_BEG_RESOURCE, &beg_w, &beg_h);
+        tried = true;
+    }
+    if (!beg) return;
+    f32 pic_h = dp(150), pic_w = floorf(pic_h * ((f32)beg_w / BEG_COLS) / ((f32)beg_h / BEG_ROWS));
+    ImVec2 a(floorf((x0 + x1 - pic_w) / 2), y + pair_h + dp(28));
+    i32 f = (i32)(ImGui::GetTime() * BEG_FPS) % BEG_FRAMES;
+    ImVec2 uv0((f32)(f % BEG_COLS) / BEG_COLS, (f32)(f / BEG_COLS) / BEG_ROWS);
+    ImVec2 uv1(uv0.x + 1.0f / BEG_COLS, uv0.y + 1.0f / BEG_ROWS);
+    dl->AddImageRounded((ImTextureID)beg, a, ImVec2(a.x + pic_w, a.y + pic_h), uv0, uv1, IM_COL32_WHITE, dp(4));
+    ui_wake(2); // keep drawing: it moves
+}
+
+// Sharing: the player's own Cloudflare, as an upgrade from the free host. The free host's cap on one clip, an arrow,
+// and R2's free storage for all of them; under it the account, signed in the same way as in Options.
+static void setup_page_sharing(ImDrawList *dl, f32 x0, f32 x1, f32 y)
+{
+    y = setup_page_head(dl, x0, x1, y, "Share with your own links",
+                        "Free with a Cloudflare account. Your links last, and they play in Discord.");
+    f32 pad = dp(28), sh = g_font_small->FontSize;
+    f32 big_h = g_font_number->FontSize, pill_h = big_h + dp(10);
+    f32 hero_h = pill_h + dp(8) + sh, acc_h = dp(64), card_h = pad + hero_h + pad + acc_h;
+    ImVec2 a(x0, y), b(x1, y + card_h);
+    dl->AddRectFilled(a, b, col32(COL_PANEL), dp(12));
+
+    // 200 MB -> 10 GB
     {
-        static ID3D11ShaderResourceView *beg;
-        static i32 beg_w, beg_h;
-        static bool tried;
-        if (!tried) {
-            beg = resource_texture(SETUP_BEG_RESOURCE, &beg_w, &beg_h);
-            tried = true;
+        char from[24], to[24];
+        snprintf(from, sizeof from, "%lld MB", FREE_HOSTS[0].max_bytes / 1000000);
+        snprintf(to, sizeof to, "%.0f GB", R2_FREE_GB);
+        f32 left = x0 + pad, right = x1 - pad, top = y + pad, mid = floorf(top + pill_h / 2);
+        f32 pill_w = text_w(g_font_number, to) + dp(40), pill_x = right - pill_w, cap_y = top + pill_h + dp(8);
+        opt_text_at(dl, g_font_number, ImVec2(left, floorf(mid - big_h / 2)), COL_FAINT, from, pill_x);
+        opt_text_at(dl, g_font_small, ImVec2(left, cap_y), COL_DIM, "per clip, without", pill_x);
+        f32 ax0 = left + text_w(g_font_number, from) + dp(24), ax1 = pill_x - dp(16), head = dp(8), thick = dp(2);
+        if (ax1 - ax0 > head * 2) {
+            dl->AddRectFilled(ImVec2(ax0, mid - thick / 2), ImVec2(ax1 - head, mid + thick / 2), col32(COL_DIM));
+            dl->AddTriangleFilled(ImVec2(ax1 - head * 1.4f, mid - head), ImVec2(ax1, mid), ImVec2(ax1 - head * 1.4f, mid + head),
+                                  col32(COL_DIM));
         }
-        ImVec2 a(x0, ImGui::GetCursorScreenPos().y);
-        f32 fw = beg ? (f32)beg_w / BEG_COLS : 240, fh = beg ? (f32)beg_h / BEG_ROWS : 230;
-        f32 pic_h = dp(132), pic_w = floorf(pic_h * fw / fh);
-        if (beg) {
-            i32 f = (i32)(ImGui::GetTime() * BEG_FPS) % BEG_FRAMES;
-            ImVec2 uv0((f32)(f % BEG_COLS) / BEG_COLS, (f32)(f / BEG_COLS) / BEG_ROWS);
-            ImVec2 uv1(uv0.x + 1.0f / BEG_COLS, uv0.y + 1.0f / BEG_ROWS);
-            dl->AddImageRounded((ImTextureID)beg, a, ImVec2(a.x + pic_w, a.y + pic_h), uv0, uv1, IM_COL32_WHITE, dp(4));
-            ui_wake(2); // keep drawing: it moves
-        } else {
-            dl->AddRectFilled(a, ImVec2(a.x + pic_w, a.y + pic_h), col32(COL_PANEL), dp(4));
-        }
-        f32 x = a.x + pic_w + dp(20), cw = x1 - x;
-        ImGui::SetCursorScreenPos(ImVec2(x, a.y));
-        ImGui::PushTextWrapPos(x + cw - ImGui::GetWindowPos().x);
-        ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
-        ImGui::TextUnformatted("When you name a game " APP_NAME " couldn't place, its exe and your name for it go to "
-                               APP_NAME "'s service, so the next player gets it named. Nothing else is sent.");
-        ImGui::PopStyleColor();
-        ImGui::PopTextWrapPos();
-        ImGui::SetCursorScreenPos(ImVec2(x, a.y + pic_h - PAIR_H));
-        static const char *const titles[] = {"Sure, help", "No thanks"};
-        static const char *const subs[] = {"Names you give help everyone", "Keep them to myself"};
-        ImGui::BeginDisabled(!service);
-        i32 hit = setup_pair("share", titles, subs, c.share_names && service ? 0 : 1, cw, PAIR_H);
-        ImGui::EndDisabled();
-        if (hit >= 0) {
-            c.share_names = hit == 0;
-            log_line("setup: help name games %s", c.share_names ? "on" : "off");
-            options_apply(0);
-        }
-        ImGui::SetCursorScreenPos(ImVec2(x0, a.y + pic_h + SECTION_GAP));
+        dl->AddRectFilled(ImVec2(pill_x, top), ImVec2(right, top + pill_h), col32(COL_ACCENT), pill_h / 2);
+        opt_text_at(dl, g_font_number, ImVec2(pill_x + dp(20), floorf(mid - big_h / 2)), COL_ACCENT_INK, to, right);
+        static const char store[] = "free storage";
+        opt_text_at(dl, g_font_small, ImVec2(floorf(pill_x + (pill_w - text_w(g_font_small, store)) / 2), cap_y), COL_DIM,
+                    store, right + 1);
     }
 
-    // Usage stats, on unless the answer is no
-    setup_heading(dl, x0, x1, ICON_UPLOAD, "Send usage stats?");
+    // The account: Cloudflare's mark, its name and state, and the one button
     {
-        static const char *const titles[] = {"Sure, send", "No thanks"};
-        static const char *const subs[] = {"Once a day: counts of clips, saves and links", "Send nothing"};
-        ImGui::BeginDisabled(!c.game_lookup);
-        i32 hit = setup_pair("stats", titles, subs, c.send_stats && c.game_lookup ? 0 : 1, w, PAIR_H);
-        ImGui::EndDisabled();
-        if (hit >= 0) {
-            c.send_stats = hit == 0;
-            log_line("setup: usage stats %s", c.send_stats ? "on" : "off");
-            options_apply(0);
-        }
-    }
-    setup_note(dl, x0, x1, "With the version, Windows build and encoder. No names, no files.");
-    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y + SECTION_GAP));
-
-    // Sharing: the player's own Cloudflare, signed in the same way as in Options. Skip leaves it for Options.
-    setup_heading(dl, x0, x1, ICON_SHARE, "Sharing");
-    {
-        static bool skipped;
+        f32 ay = y + pad + hero_h + pad;
+        dl->AddLine(ImVec2(x0 + pad, ay), ImVec2(x1 - pad, ay), col32(COL_LINE), dp(1));
+        f32 lg = dp(32), my = ay + acc_h / 2, tx = x0 + pad + lg + dp(14);
+        host_logo_draw(dl, HOST_R2, ImVec2(x0 + pad, floorf(my - lg / 2)), lg);
         R2Status st = r2_status();
-        bool idle = st.state == R2_SETUP_IDLE && !r2_ready();
         char status[400];
         u32 col = r2_account_line(st, status, sizeof status);
-        if (idle && skipped) str_set(status, "Later, in Options > Integrations");
-        ImVec2 a(x0, ImGui::GetCursorScreenPos().y);
-        f32 ph = dp(76), lg = dp(36), bars_h = dp(88);
-        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + ph + bars_h), col32(COL_PANEL), dp(12));
-        host_logo_draw(dl, HOST_R2, ImVec2(a.x + dp(20), floorf(a.y + (ph - lg) / 2)), lg);
-        f32 fh = ImGui::GetFrameHeight(), mw = text_w(g_font, "Sign in with Cloudflare") + dp(32);
-        f32 sw = text_w(g_font, "Skip") + dp(32), gap = dp(8);
-        f32 bx = a.x + w - dp(16) - mw, tx = a.x + dp(20) + lg + dp(16), max_x = bx - sw - gap - dp(16);
-        f32 th = g_font->FontSize, sh = g_font_small->FontSize;
-        f32 ty = floorf(a.y + (ph - th - dp(4) - sh) / 2);
-        opt_text_at(dl, g_font, ImVec2(tx, ty), COL_TEXT, "Your own links that last, and they play in Discord", max_x);
-        opt_text_at(dl, g_font_small, ImVec2(tx, ty + th + dp(4)), col, status, max_x);
-        f32 by = floorf(a.y + (ph - fh) / 2);
-        ImGui::SetCursorScreenPos(ImVec2(bx - sw - gap, by));
-        bool can_skip = idle && !skipped && !r2_signed_in() && !r2_has_token();
-        if (kit_button("Skip##setupr2", KIT_GHOST, ImVec2(sw, 0), can_skip)) {
-            skipped = true;
-            log_line("setup: sharing left for later");
-        }
-        ImGui::SetCursorScreenPos(ImVec2(bx, by));
-        r2_account_button("setup", "Sign in with Cloudflare", mw);
+        f32 th = g_font_bold->FontSize, ty = floorf(my - (th + dp(4) + sh) / 2);
+        f32 bw = text_w(g_font, "Sign in with Cloudflare") + dp(36), fh = ImGui::GetFrameHeight();
+        opt_text_at(dl, g_font_bold, ImVec2(tx, ty), COL_TEXT, "Cloudflare R2", x1 - pad - bw - dp(16));
+        opt_text_at(dl, g_font_small, ImVec2(tx, ty + th + dp(4)), col, status, x1 - pad - bw - dp(16));
+        ImGui::SetCursorScreenPos(ImVec2(x1 - pad - bw, floorf(my - fh / 2)));
+        r2_account_button("setup", "Sign in with Cloudflare", bw);
+    }
+    opt_text_at(dl, g_font_small, ImVec2(x0, b.y + dp(12)), COL_DIM, "Or later, in Options > Integrations.", x1);
+}
 
-        // What Cloudflare gives: the free host's cap on one clip, an arrow, and R2's free storage for all of them in
-        // an accent pill under the sign-in button
-        {
-            char from[24], to[24];
-            snprintf(from, sizeof from, "%lld MB", FREE_HOSTS[0].max_bytes / 1000000);
-            snprintf(to, sizeof to, "%.0f GB", R2_FREE_GB);
-            ImFont *big = g_font_number;
-            f32 nh = big->FontSize, pill_h = nh + dp(10), pill_w = text_w(big, to) + dp(40);
-            f32 right = a.x + w - dp(16), pill_x = right - pill_w, row_top = a.y + ph + dp(2);
-            f32 mid = floorf(row_top + pill_h / 2), cap_y = row_top + pill_h + dp(4);
-            opt_text_at(dl, big, ImVec2(tx, floorf(mid - nh / 2)), COL_DIM, from, pill_x);
-            opt_text_at(dl, g_font_small, ImVec2(tx, cap_y), COL_DIM, "per clip", pill_x);
-            f32 ax0 = tx + text_w(big, from) + dp(24), ax1 = pill_x - dp(16), head = dp(9), thick = dp(2.5f);
-            if (ax1 - ax0 > head * 2) {
-                dl->AddRectFilled(ImVec2(ax0, mid - thick / 2), ImVec2(ax1 - head, mid + thick / 2), col32(COL_TEXT));
-                dl->AddTriangleFilled(ImVec2(ax1 - head * 1.4f, mid - head), ImVec2(ax1, mid), ImVec2(ax1 - head * 1.4f, mid + head),
-                                      col32(COL_TEXT));
-            }
-            dl->AddRectFilled(ImVec2(pill_x, row_top), ImVec2(right, row_top + pill_h), col32(COL_ACCENT), pill_h / 2);
-            opt_text_at(dl, big, ImVec2(pill_x + dp(20), floorf(mid - nh / 2)), COL_ACCENT_INK, to, right);
-            static const char store[] = "free storage";
-            opt_text_at(dl, g_font_small, ImVec2(floorf(pill_x + (pill_w - text_w(g_font_small, store)) / 2), cap_y), COL_DIM,
-                        store, right + 1);
-        }
-        ImGui::SetCursorScreenPos(ImVec2(x0, a.y + ph + bars_h + SECTION_GAP));
+static void setup_window()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(28), kit_px(24)));
+    ImGui::BeginChild("##setup", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, 0);
+    ImGui::PopStyleVar();
+    ImVec2 avail = ImGui::GetContentRegionAvail(), top = ImGui::GetCursorScreenPos();
+    f32 w = fminf(avail.x, dp(640)), x0 = floorf(top.x + (avail.x - w) / 2), x1 = x0 + w;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const f32 PAIR_H = dp(68), PAGE_H = dp(470);
+    f32 y = top.y + dp(28);
+    i32 page = g_setup_page;
+    switch (page) {
+    case SETUP_WELCOME: setup_page_welcome(dl, x0, x1, y, PAIR_H); break;
+    case SETUP_DETECTION: setup_page_detection(dl, x0, x1, y, PAIR_H); break;
+    case SETUP_DEVELOPMENT: setup_page_development(dl, x0, x1, y, PAIR_H); break;
+    default: setup_page_sharing(dl, x0, x1, y); break;
     }
 
-    // Where game art comes from, and the way to Options
+    // Back, the page dots and Next or Done: at the window's foot, or under the tallest page if the window is short
+    f32 fh = ImGui::GetFrameHeight(), bw = dp(120);
+    f32 by = floorf(fmaxf(y + PAGE_H, top.y + avail.y - fh - dp(8)));
+    ImGui::SetCursorScreenPos(ImVec2(x0, by));
+    if (kit_button("Back##setupback", KIT_SECONDARY, ImVec2(bw, 0), page > 0)) g_setup_page = page - 1;
     {
-        const char *line = service ? "Game names and art come from " APP_NAME "'s service."
-                                   : APP_NAME "'s service is off, so helping name games is too.";
-        static const char link[] = "Change in Options";
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        f32 lx = p.x + text_w(g_font, line) + dp(8), link_w = text_w(g_font, link);
-        opt_text_at(dl, g_font, p, COL_DIM, line, x0 + w);
-        ImGui::SetCursorScreenPos(ImVec2(lx, p.y));
-        if (ImGui::InvisibleButton("##toopts", ImVec2(link_w, g_font->FontSize))) {
-            dev_click("setup", link);
-            setup_finish("left for Options");
-            g_app.ui.screen = SCREEN_OPTIONS;
-            g_app.options.tab = OPT_GENERAL;
+        f32 d = dp(6), cur = dp(18), gap = dp(6), dw = (SETUP_PAGES - 1) * d + cur + (SETUP_PAGES - 1) * gap;
+        f32 dx = floorf((x0 + x1 - dw) / 2), dy = floorf(by + (fh - d) / 2);
+        for (i32 i = 0; i < SETUP_PAGES; i++) {
+            f32 pw = i == page ? cur : d;
+            dl->AddRectFilled(ImVec2(dx, dy), ImVec2(dx + pw, dy + d), col32(i == page ? COL_TEXT : COL_FAINT), d / 2);
+            dx += pw + gap;
         }
-        bool hot = ImGui::IsItemHovered();
-        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        opt_text_at(dl, g_font, ImVec2(lx, p.y), hot ? 0xffffff : COL_ACCENT, link, lx + link_w + 1);
-        ImGui::SetCursorScreenPos(ImVec2(x0, p.y + g_font->FontSize + dp(28)));
     }
-
-    f32 bw = dp(180), bh = dp(44);
-    ImGui::SetCursorScreenPos(ImVec2(x1 - bw, ImGui::GetCursorScreenPos().y));
-    if (kit_button("Done##setupdone", KIT_PRIMARY, ImVec2(bw, bh))) setup_finish("finished");
-    ImGui::Dummy(ImVec2(0, dp(28)));
+    ImGui::SetCursorScreenPos(ImVec2(x1 - bw, by));
+    if (page < SETUP_PAGES - 1) {
+        if (kit_button("Next##setupnext", KIT_PRIMARY, ImVec2(bw, 0))) g_setup_page = page + 1;
+    } else if (kit_button("Done##setupdone", KIT_PRIMARY, ImVec2(bw, 0))) {
+        setup_finish("finished");
+    }
+    ImGui::SetCursorScreenPos(ImVec2(x0, by + fh));
+    ImGui::Dummy(ImVec2(0, dp(16)));
     ImGui::EndChild();
     ffget_bar();
 }
