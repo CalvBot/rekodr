@@ -256,8 +256,8 @@ static void setup_window()
         u32 col = r2_account_line(st, status, sizeof status);
         if (idle && skipped) str_set(status, "Later, in Options > Integrations");
         ImVec2 a(x0, ImGui::GetCursorScreenPos().y);
-        f32 ph = dp(76), lg = dp(36);
-        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + ph), col32(COL_PANEL), dp(10));
+        f32 ph = dp(76), lg = dp(36), bars_h = dp(58);
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + ph + bars_h), col32(COL_PANEL), dp(10));
         host_logo_draw(dl, HOST_R2, ImVec2(a.x + dp(20), floorf(a.y + (ph - lg) / 2)), lg);
         f32 fh = ImGui::GetFrameHeight(), mw = text_w(g_font, "Sign in with Cloudflare") + dp(32);
         f32 sw = text_w(g_font, "Skip") + dp(32), gap = dp(8);
@@ -275,7 +275,33 @@ static void setup_window()
         }
         ImGui::SetCursorScreenPos(ImVec2(bx, by));
         r2_account_button("setup", "Sign in with Cloudflare", mw);
-        ImGui::SetCursorScreenPos(ImVec2(x0, a.y + ph + dp(26)));
+
+        // What Cloudflare gives, to scale: the free host's cap on one clip beside R2's free storage for all of
+        // them, the long bar ending under the sign-in button
+        {
+            const FreeHost &fh0 = FREE_HOSTS[0];
+            char host_cap[48], r2_cap[48];
+            snprintf(host_cap, sizeof host_cap, "%lld MB per clip", fh0.max_bytes / 1000000);
+            snprintf(r2_cap, sizeof r2_cap, "%.0f GB free storage", R2_FREE_GB);
+            f32 sh2 = g_font_small->FontSize, ls = floorf(sh2 + dp(2)), bar_hh = dp(6), row_gap = dp(8);
+            f32 right = a.x + w - dp(16), bx0 = tx + ls + dp(10);
+            f32 long_w = right - bx0 - text_w(g_font_small, r2_cap) - dp(10);
+            f32 short_w = fmaxf(dp(3), floorf(long_w * (f32)((f64)fh0.max_bytes / (R2_FREE_GB * (f64)R2_GB))));
+            f32 ry = a.y + ph + dp(2);
+            const LinkHost hosts[2] = {fh0.host, HOST_R2};
+            const f32 widths[2] = {short_w, long_w};
+            const u32 bar_cols[2] = {COL_FAINT, COL_ACCENT}, text_cols[2] = {COL_DIM, COL_TEXT};
+            const char *caps[2] = {host_cap, r2_cap};
+            for (i32 i = 0; i < 2; i++) {
+                f32 row_y = ry + i * (ls + row_gap), my = row_y + ls / 2;
+                host_logo_draw(dl, hosts[i], ImVec2(tx, row_y), ls, i ? 1 : 0.6f);
+                dl->AddRectFilled(ImVec2(bx0, floorf(my - bar_hh / 2)), ImVec2(bx0 + widths[i], floorf(my - bar_hh / 2) + bar_hh),
+                                  col32(bar_cols[i]), bar_hh / 2);
+                opt_text_at(dl, g_font_small, ImVec2(bx0 + widths[i] + dp(10), floorf(my - sh2 / 2)), text_cols[i], caps[i],
+                            right + 1);
+            }
+        }
+        ImGui::SetCursorScreenPos(ImVec2(x0, a.y + ph + bars_h + dp(26)));
     }
 
     // Where game art comes from, and the way to Options
