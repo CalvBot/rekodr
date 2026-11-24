@@ -464,7 +464,7 @@ static void share_poll()
             else {
                 bool up = r.state == R2_UPLOADING;
                 j.v.state = up ? SHARE_UPLOADING : SHARE_MAKING;
-                str_set(j.v.verb, up ? "Uploading" : j.squeezed ? "Squeezing" : "Making");
+                str_set(j.v.verb, up ? "Uploading" : "Compressing for upload");
                 j.v.progress = r.progress;
             }
         }
@@ -513,7 +513,7 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
         share_end(j, true, made, "");
         return j.v.id;
     }
-    str_set(j.v.verb, j.squeezed ? "Squeezing" : "Making");
+    str_set(j.v.verb, link ? "Compressing for upload" : j.squeezed ? "Compressing" : "Exporting");
     if (link) {
         j.r2 = r2_share_file(path, j.name, game, lib_key, &m, edit, a.hosts, a.aim, a.limit);
         if (!j.r2) {

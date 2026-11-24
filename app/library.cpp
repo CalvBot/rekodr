@@ -2642,7 +2642,7 @@ static void lib_note(bool error, const char *fmt, ...)
 // What an upload is doing; its progress starts again at each step.
 static const char *lib_upload_verb(R2State s)
 {
-    return s == R2_QUEUED ? "Waiting to upload" : s == R2_PREPARING ? "Preparing" : "Uploading";
+    return s == R2_QUEUED ? "Waiting to upload" : s == R2_PREPARING ? "Compressing for upload" : "Uploading";
 }
 
 // A size as Cloudflare counts it, in thousands: "3.2 GB", "10 GB", "640 MB".
@@ -2668,7 +2668,7 @@ struct LibJobNow {
     bool link;     // it ends in a link
     bool waiting;  // not started yet: no percent
     f32  progress; // 0..1 in the current step
-    char verb[32]; // "Squeezing", "Uploading"
+    char verb[32]; // "Compressing", "Uploading"
 };
 
 static LibJobNow lib_job_now(const LibUpload &u)
@@ -3044,6 +3044,17 @@ static void ffget_bar()
     ImGui::End();
 }
 
+static void share_cancel_ring(ImDrawList *dl, ImVec2 c, f32 r, f32 progress, u32 ink);
+
+// Cancels the upload the note shows: the oldest under way. The ones after it stay queued.
+static void lib_upload_cancel(const LibUpload &u)
+{
+    log_line("library: %s %u cancelled from the note", u.share ? "share" : "upload", u.id);
+    if (u.share) share_cancel(u.id);
+    else r2_cancel(u.id);
+    lib_uploads_poll();
+}
+
 static void lib_note_draw()
 {
     bool busy = g_lib_upload_count > 0;
@@ -3079,6 +3090,29 @@ static void lib_note_draw()
     ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);
     dl->AddText(g_font_icon, fs, ImVec2(a.x + kit_px(14), floorf(a.y + (h - gs.y) / 2)), col32(ink), icon);
     f32 tx = a.x + kit_px(14) + gs.x + kit_px(10), right = b.x - kit_px(14);
+    if (busy) { // Cancel, the same X in a ring as the Share button's, at the right end
+        f32 rr = kit_px(11);
+        ImVec2 c(floorf(right - rr), floorf(a.y + h / 2));
+        ImGui::SetNextWindowPos(ImVec2(c.x - rr - kit_px(4), c.y - rr - kit_px(4)));
+        ImGui::SetNextWindowSize(ImVec2(2 * rr + kit_px(8), 2 * rr + kit_px(8)));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+        ImGui::Begin("##lib_note_cancel", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground |
+                                                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+        ImGui::PopStyleVar(2);
+        bool clicked = ImGui::InvisibleButton("##cancel", ImGui::GetContentRegionAvail());
+        bool hot = ImGui::IsItemHovered();
+        kit_tip("Cancel the share");
+        ImGui::End();
+        if (hot) dl->AddCircleFilled(c, rr + kit_px(3), col32(COL_HOVER), 32);
+        share_cancel_ring(dl, c, rr, progress < 0 ? 0 : progress, COL_TEXT);
+        right -= 2 * rr + kit_px(12);
+        if (clicked) {
+            dev_click("note", "Cancel");
+            lib_upload_cancel(g_lib_uploads[0]);
+        }
+    }
     if (pct[0]) {
         f32 pw = ImGui::CalcTextSize(pct).x;
         dl->AddText(ImVec2(right - pw, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)), col32(COL_DIM), pct);
@@ -3137,7 +3171,7 @@ static void lib_share_pending_check()
 struct ShareMenuState {
     bool running;
     f32  progress;  // 0..1 while running, < 0 for no bar
-    char line[96];  // while running: "Making 40%"; after: "Copied", "Link copied", "Not shared"
+    char line[96];  // while running: "Uploading 40%"; after: "Copied", "Link copied", "Not shared"
     i32  done;      // 1 shared, -1 failed, 0 neither
     char error[256];
 };
