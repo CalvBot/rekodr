@@ -21,7 +21,7 @@
 // steps and is told by EV_R2. This file never touches the clipboard: the UI copies the link.
 
 #include <winsock2.h>
-#include "fonts/geist_latin.h"
+#include "fonts/onest_latin.h"
 #pragma comment(lib, "ws2_32.lib")
 
 static void open_url(const char *url); // setup.cpp
@@ -862,11 +862,11 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                     p, out, cap, &len);
     // The look: flat near-black, the game's art in grey and blurred behind a centred column; the name, the game
     // line, the player with the markers as ticks on its timeline, then "via Clipback", Download (a white pill) and
-    // Copy link. Geist is in the page itself, so it asks nothing of anyone else.
-    r2_page_put("<style>@font-face{font-family:Geist;font-weight:400 700;font-display:swap;"
+    // Copy link. Onest is in the page itself, so it asks nothing of anyone else.
+    r2_page_put("<style>@font-face{font-family:Onest;font-weight:400 700;font-display:swap;"
                 "src:url(data:font/woff2;base64,",
                 p, out, cap, &len);
-    r2_page_put(GEIST_LATIN_WOFF2, p, out, cap, &len);
+    r2_page_put(ONEST_LATIN_WOFF2, p, out, cap, &len);
     r2_page_put(") format(\"woff2\")}"
                 ":root{--fg:#f2f2f2;--dim:#969696;--line:#262626;--panel:#161616;--raised:#1f1f1f;--scrim:#000000c0;",
                 p, out, cap, &len);
@@ -874,7 +874,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     r2_page_put(
         "--mark:#fff;--prev:#4cc985;color-scheme:dark}"
         "html{background:#0a0a0a}body{margin:0;min-height:100vh;color:var(--fg);"
-        "font:14px/1.5 Geist,\"Segoe UI\",system-ui,sans-serif}"
+        "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif}"
         "body{display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;overflow-x:hidden}"
         ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(36px);opacity:.3;"
         "z-index:-1}"

@@ -1787,9 +1787,9 @@ static void test_r2()
     T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
     T(strstr(html, "width=\"2560\" height=\"1440\" controls playsinline") != 0 && strstr(html, "aspect-ratio:2560/1440"));
     T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/clipback/abc/thumb.jpg?v=2')\">"));
-    // Geist is in the page: no font, nor anything else, from another site
-    T(strstr(html, "@font-face{font-family:Geist;") && strstr(html, "src:url(data:font/woff2;base64,d09GMg"));
-    T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Geist,\"Segoe UI\",system-ui,sans-serif"));
+    // Onest is in the page: no font, nor anything else, from another site
+    T(strstr(html, "@font-face{font-family:Onest;") && strstr(html, "src:url(data:font/woff2;base64,d09GMg"));
+    T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
     // Download (the white pill), Copy link, and "via Clipback" linking to the project; no game line without one
     T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/clipback/abc/clip.mp4?v=2\" download>"));
     T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/clipback\"><img src=\"https://cdn.discordapp.com/"

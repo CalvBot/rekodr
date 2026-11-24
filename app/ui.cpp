@@ -93,7 +93,7 @@ static void ui_apply_accent(u32 c)
     }
 }
 
-// Fonts: Geist (built into the exe, fonts\OFL.txt in the source) with Segoe UI behind it for letters Geist lacks,
+// Fonts: Onest (built into the exe, fonts\OFL.txt in the source) with Segoe UI behind it for letters Onest lacks,
 // and the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*).
 // g_font 14 px, g_font_bold 14 px semibold, g_font_small 12.5 px, g_font_big 18 px bold (card and dialog titles),
 // g_font_title 26 px bold (screen titles), g_font_icon 18 px icons alone (icon buttons).
@@ -258,7 +258,7 @@ static void ui_center_icons(ImFont *font, f32 mid)
     }
 }
 
-// A Geist weight built into the exe (an RCDATA resource, clipback.rc). The atlas reads it in place.
+// An Onest weight built into the exe (an RCDATA resource, clipback.rc). The atlas reads it in place.
 static void *ui_font_resource(i32 id, i32 *size)
 {
     HRSRC res = FindResourceW(0, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10)); // RT_RCDATA
@@ -297,9 +297,9 @@ static void ui_load_fonts(f32 scale)
     merge.MergeMode = true;
     merge.OversampleH = 2;
     merge.PixelSnapH = true;
-    auto add = [&](void *geist, i32 geist_n, const char *fallback, f32 px, f32 icon_px) {
-        ImFont *f = geist ? io.Fonts->AddFontFromMemoryTTF(geist, geist_n, px * scale, &cfg, ranges) : 0;
-        if (f) io.Fonts->AddFontFromFileTTF(fallback, px * scale, &merge, ranges); // only what Geist lacks
+    auto add = [&](void *face, i32 face_n, const char *fallback, f32 px, f32 icon_px) {
+        ImFont *f = face ? io.Fonts->AddFontFromMemoryTTF(face, face_n, px * scale, &cfg, ranges) : 0;
+        if (f) io.Fonts->AddFontFromFileTTF(fallback, px * scale, &merge, ranges); // only what Onest lacks
         if (f) io.Fonts->AddFontFromFileTTF(icons, icon_px * scale, &merge, icon_ranges);
         return f;
     };
@@ -320,7 +320,7 @@ static void ui_load_fonts(f32 scale)
     if (!g_font_icon) g_font_icon = g_font;
     io.Fonts->Build();
     ImFont *text_fonts[] = {g_font, g_font_bold, g_font_small, g_font_big, g_font_title};
-    for (ImFont *f : text_fonts) // Geist's capitals sit in the middle of their line
+    for (ImFont *f : text_fonts) // Onest's capitals sit in the middle of their line
         if (f != g_font_icon) ui_center_icons(f, f->FontSize / 2);
     ui_center_icons(g_font_icon, g_font_icon->FontSize / 2);
     ImGui_ImplDX11_InvalidateDeviceObjects(); // the font texture is remade on the next frame
