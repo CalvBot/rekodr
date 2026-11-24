@@ -2098,6 +2098,19 @@ static DWORD WINAPI gamedb_find_thread(void *)
     return 0;
 }
 
+// Points the lookups at another art service host, or at none with "", while they run. Workers read the host
+// without a lock, so a host is written in behind an empty first byte and the first byte goes in last.
+static void gamedb_set_service(const char *host)
+{
+    if (!strcmp(g_gamedb.service, host)) return;
+    g_gamedb.service[0] = 0;
+    MemoryBarrier();
+    if (!host[0]) return;
+    snprintf(g_gamedb.service + 1, sizeof g_gamedb.service - 1, "%s", host + 1);
+    MemoryBarrier();
+    g_gamedb.service[0] = host[0];
+}
+
 static void gamedb_start(bool online)
 {
     g_gamedb.online = online;

@@ -4317,6 +4317,7 @@ static void options_general()
     if (opt_row_toggle("Art from " APP_NAME "'s service", "Art Discord and Steam don't have, from SteamGridDB and IGDB. Sends game names and store ids only",
                        "##artservice", &service)) {
         str_set(c.art_service.s, service ? ART_SERVICE_HOST : "");
+        gamedb_set_service(c.art_service.s);
         log_line("options: art service %s", service ? "on" : "off");
         options_apply(0);
     }
