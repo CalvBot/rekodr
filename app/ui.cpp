@@ -101,6 +101,7 @@ static void ui_apply_accent(u32 c)
 // g_font_title 26 px bold (screen titles), g_font_icon 18 px icons alone (icon buttons).
 static ImFont *g_font, *g_font_bold, *g_font_small, *g_font_big, *g_font_title, *g_font_icon;
 static ImFont *g_font_number; // 40 px bold, ASCII only: a figure shown large
+static ImFont *g_font_hero;   // 30 px bold, ASCII only: a screen's greeting
 static f32 g_dpi_scale = 1;
 
 // Segoe Fluent Icons code points, as UTF-8
@@ -317,6 +318,7 @@ static void ui_load_fonts(f32 scale)
     g_font_icon = io.Fonts->AddFontFromFileTTF(icons, 17 * scale, &alone, icon_ranges);
     static const ImWchar ascii[] = {0x0020, 0x007E, 0};
     g_font_number = bold ? io.Fonts->AddFontFromMemoryTTF(bold, bold_n, 40 * scale, &cfg, ascii) : 0;
+    g_font_hero = bold ? io.Fonts->AddFontFromMemoryTTF(bold, bold_n, 30 * scale, &cfg, ascii) : 0;
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_bold) g_font_bold = g_font;
     if (!g_font_small) g_font_small = g_font;
@@ -324,6 +326,7 @@ static void ui_load_fonts(f32 scale)
     if (!g_font_title) g_font_title = g_font_big;
     if (!g_font_icon) g_font_icon = g_font;
     if (!g_font_number) g_font_number = g_font_title;
+    if (!g_font_hero) g_font_hero = g_font_title;
     io.Fonts->Build();
     ImFont *text_fonts[] = {g_font, g_font_bold, g_font_small, g_font_big, g_font_title};
     for (ImFont *f : text_fonts) // Onest's capitals sit in the middle of their line
@@ -1655,7 +1658,7 @@ static void ui_art_texture(ImVec2 p0, ImVec2 p1)
     static Shown now, before; // the art shown, and the one fading out
     static f64 changed = -1;
     Shown want = {};
-    if (g_app.ui.screen == SCREEN_LIBRARY) want.tex = game_art_texture(game, &want.w, &want.h);
+    if (g_app.ui.screen == SCREEN_LIBRARY || g_app.ui.setup_open) want.tex = game_art_texture(game, &want.w, &want.h);
     f64 t = ImGui::GetTime();
     if (want.tex != now.tex) {
         bool instant = changed < 0 || ui_reduced_motion(); // the first art shown comes in at once
@@ -1717,14 +1720,15 @@ static void ui_frame()
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PopStyleVar(2);
+    g_glass = !g_app.config.flat_look;
     if (g_app.ui.setup_open) {
+        ui_art_texture(vp->WorkPos, ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y));
         setup_window();
         help_window();
         ImGui::End();
         goto rendered;
     }
     ui_art_texture(vp->WorkPos, ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y));
-    g_glass = !g_app.config.flat_look;
     static const ImGuiCol glass_cols[] = {ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive, ImGuiCol_Button,
                                           ImGuiCol_ButtonHovered, ImGuiCol_ButtonActive, ImGuiCol_Header,
                                           ImGuiCol_HeaderHovered, ImGuiCol_HeaderActive, ImGuiCol_ScrollbarGrab};
