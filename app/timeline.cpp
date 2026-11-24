@@ -1473,7 +1473,7 @@ static void tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h, 
 
 #define TL_ICON_DOWN "\xEE\x9C\x8D" // E70D chevron down
 
-static const u32 TL_COL_VIDEO = 0x5a7fbf, TL_COL_LANE = 0x131418;
+static const u32 TL_COL_VIDEO = 0x5a7fbf, TL_COL_LANE = 0x121212;
 
 // Text cut to max_w with an ellipsis, so a long name never runs into what's next to it.
 static void tl_text_fit(ImDrawList *dl, ImVec2 p, f32 max_w, ImU32 col, const char *text)
@@ -1961,7 +1961,7 @@ static void screen_timeline()
             log_line("timeline: simple %s", cfg.timeline_simple ? "on" : "off");
         }
         ImVec2 a = ImGui::GetItemRectMin();
-        ImU32 ink = col32(all || ImGui::IsItemHovered() ? COL_TEXT : 0xc4c8cf);
+        ImU32 ink = col32(all || ImGui::IsItemHovered() ? COL_TEXT : 0xc8c8c8);
         static const f32 bars[3][2] = {{5, 15}, {9, 19}, {5, 13}}; // each bar's start and end, of 24
         for (i32 k = 0; k < 3; k++) {
             f32 y = a.y + (7 + 4.5f * k) * s;

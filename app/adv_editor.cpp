@@ -1040,7 +1040,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         f32 y0, y1;
         if (!key_place(q, &c, &y0, &y1) || c.x < bx0 - kit_px(12) || c.x > bx1 + kit_px(12)) continue;
         bool on = k == ed.adv_key;
-        u32 col = col32(on ? COL_ACCENT : q.what == IKEY_ZOOM ? COL_BLUE : q.what == IKEY_VOLUME ? 0xd6d9de : COL_WARN);
+        u32 col = col32(on ? COL_ACCENT : q.what == IKEY_ZOOM ? COL_BLUE : q.what == IKEY_VOLUME ? 0xd6d6d6 : COL_WARN);
         dl->PushClipRect(ImVec2(bx0 - kit_px(6), q.what == IKEY_VOLUME ? area0 : y0), ImVec2(bx1 + kit_px(6), q.what == IKEY_VOLUME ? area1 : y1), true);
         key_shape(dl, c, kit_px(7), q.ease, on ? IM_COL32_WHITE : IM_COL32(0, 0, 0, 170));
         key_shape(dl, c, kit_px(5), q.ease, col);

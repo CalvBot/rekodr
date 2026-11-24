@@ -346,6 +346,82 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
     return slot->srv;
 }
 
+// A game's art for behind the window: its SteamGridDB hero, else its grid (gamedb_art's ART_COVER), in grey, shrunk
+// to ART_TEXTURE_W across and blurred until only its light and shade are left. Stretched over the window, each pixel
+// covers a few dozen, and drawing it smooths between them. Made once per game. Null if it has none, and while it is
+// being fetched.
+enum { ART_TEXTURE_W = 96, ART_TEXTURE_H = 64 };
+static AppIcon g_art_textures[LIB_MAX_GAMES];
+static i32 g_art_texture_count;
+
+static ID3D11ShaderResourceView *art_texture_load(const Path &file, i32 *out_w, i32 *out_h)
+{
+    static IWICImagingFactory *wic;
+    if (!wic && FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return 0;
+    i32 w = 0, h = 0;
+    u32 *pixels = wic_load(wic, file.s, &w, &h);
+    if (!pixels) return 0;
+    i32 bw = ART_TEXTURE_W, bh = h * bw / (w > 0 ? w : 1);
+    if (bh > ART_TEXTURE_H) bh = ART_TEXTURE_H;
+    if (bh < 4 || w < bw || h < bh) {
+        HeapFree(GetProcessHeap(), 0, pixels);
+        return 0;
+    }
+    static u8 grey[ART_TEXTURE_W * ART_TEXTURE_H], pass[ART_TEXTURE_W * ART_TEXTURE_H];
+    for (i32 y = 0; y < bh; y++)
+        for (i32 x = 0; x < bw; x++) { // each pixel the average brightness of the ones it covers
+            i32 x0 = x * w / bw, x1 = (x + 1) * w / bw, y0 = y * h / bh, y1 = (y + 1) * h / bh;
+            u64 sum = 0, n = 0;
+            for (i32 sy = y0; sy < y1; sy += 2)
+                for (i32 sx = x0; sx < x1; sx += 2) {
+                    u32 p = pixels[sy * w + sx];
+                    sum += (((p >> 16) & 255) * 54 + ((p >> 8) & 255) * 183 + (p & 255) * 19) >> 8;
+                    n++;
+                }
+            grey[y * bw + x] = (u8)(n ? sum / n : 0);
+        }
+    HeapFree(GetProcessHeap(), 0, pixels);
+    for (i32 round = 0; round < 3; round++) // each pixel with the 24 around it, three times over
+        for (i32 dir = 0; dir < 2; dir++) {  // across, then down
+            for (i32 y = 0; y < bh; y++)
+                for (i32 x = 0; x < bw; x++) {
+                    u32 sum = 0, n = 0;
+                    for (i32 d = -2; d <= 2; d++) {
+                        i32 sx = dir ? x : x + d, sy = dir ? y + d : y;
+                        if (sx < 0 || sy < 0 || sx >= bw || sy >= bh) continue;
+                        sum += grey[sy * bw + sx];
+                        n++;
+                    }
+                    pass[y * bw + x] = (u8)(sum / n);
+                }
+            memcpy(grey, pass, (size_t)bw * bh);
+        }
+    static u32 out[ART_TEXTURE_W * ART_TEXTURE_H];
+    for (i32 i = 0; i < bw * bh; i++) out[i] = 0xff000000u | (u32)grey[i] * 0x010101u;
+    *out_w = bw;
+    *out_h = bh;
+    return gpu_texture(out, bw, bh);
+}
+
+static ID3D11ShaderResourceView *game_art_texture(const char *name, i32 *w, i32 *h)
+{
+    if (!name[0] || game_is_none(name) || game_is_custom(name)) return 0;
+    AppIcon *slot = icon_slot(g_art_textures, &g_art_texture_count, COUNT(g_art_textures), name);
+    if (!slot) return 0;
+    if (!slot->srv && !slot->tried && icon_lookup_ok()) {
+        slot->tried = true;
+        slot->waiting = false;
+        GameInfo g;
+        Path p = {};
+        if (gamedb_for_art(name, &g) && gamedb_art(g, ART_COVER, &p, &slot->waiting))
+            slot->srv = art_texture_load(p, &slot->w, &slot->h);
+        ui_wake();
+    }
+    *w = slot->w;
+    *h = slot->h;
+    return slot->srv;
+}
+
 // The icon for a game's name: the database's, else the app clipback knows by that name, else the installed
 // program's. Null if none has one, for a custom game (whose name may be any program's), and while it is being
 // looked up (one a frame, like app_icon).
@@ -400,6 +476,8 @@ static void gamedb_on_event(const Event &e)
         if (!g_db_icons[i].srv && (g_db_icons[i].waiting || e.a == GAMEDB_LOADED)) g_db_icons[i].tried = false;
     for (i32 i = 0; i < g_db_cover_count; i++)
         if (!g_db_covers[i].srv && (g_db_covers[i].waiting || e.a == GAMEDB_LOADED)) g_db_covers[i].tried = false;
+    for (i32 i = 0; i < g_art_texture_count; i++)
+        if (!g_art_textures[i].srv && (g_art_textures[i].waiting || e.a == GAMEDB_LOADED)) g_art_textures[i].tried = false;
     ui_wake();
 }
 

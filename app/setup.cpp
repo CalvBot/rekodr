@@ -64,10 +64,10 @@ static bool setup_choice(const char *id, const char *title, const char *sub, boo
     if (clicked) dev_click("choice", title);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(chosen ? COL_PANEL2 : hot ? 0x1d1f23 : COL_PANEL), dp(10));
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(chosen ? COL_PANEL2 : hot ? 0x1c1c1c : COL_PANEL), dp(10));
     f32 r = dp(9);
     ImVec2 c(a.x + dp(20) + r, a.y + h / 2);
-    dl->AddCircleFilled(c, r, col32(chosen ? COL_ACCENT : 0x3a3d44));
+    dl->AddCircleFilled(c, r, col32(chosen ? COL_ACCENT : COL_OFF));
     if (chosen) dl->AddCircleFilled(c, dp(4), col32(COL_ACCENT_INK));
     f32 tx = c.x + r + dp(16), max_x = a.x + w - dp(16);
     f32 th = g_font_bold->FontSize, sh = sub ? g_font_small->FontSize : 0, gap = sub ? dp(4) : 0;

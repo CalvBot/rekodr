@@ -1874,7 +1874,7 @@ static f32 badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const c
     ImVec2 ts = ImGui::CalcTextSize(text);
     f32 w = ts.x + 2 * px, h = ts.y + 2 * py;
     ImVec2 a(floorf(right ? corner.x - w : corner.x), floorf(bottom ? corner.y - h : corner.y));
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 0, 0, 180), kit_px(5));
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 0, 0, 192), h / 2);
     dl->AddText(ImVec2(a.x + px, a.y + py), IM_COL32(240, 240, 240, 255), text);
     ImGui::PopFont();
     return w;
@@ -1914,7 +1914,7 @@ static void lib_play_mark(ImDrawList *dl, ImVec2 c, f32 r)
 // A flat slider: a thin track filled up to the value and a knob, both a little bigger under the mouse. `mark` puts a
 // tick on the track (100% on a volume); below `lo` there's none. Returns true when the value changed.
 static bool lib_slider(const char *id, f32 *v, f32 lo, f32 hi, f32 w, f32 h, f32 mark = -1e9f, bool enabled = true,
-                       u32 fill = COL_TEXT)
+                       u32 fill = COL_ACCENT)
 {
     ImVec2 a = ImGui::GetCursorScreenPos();
     if (!enabled) ImGui::BeginDisabled();
@@ -1995,7 +1995,7 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
 }
 
 // A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
-// many it has on the right, with a star left of that when it's a favourite. The picked one is in the accent colour.
+// many it has on the right, with a star left of that when it's a favourite. The picked one is lit.
 // Collapsed, only the icon, where it was.
 static bool lib_game_item(const char *game, const char *label, i32 count, bool active, f32 w, bool collapsed,
                           const char *glyph = 0, bool favourite = false)
@@ -2040,21 +2040,21 @@ static bool lib_game_item(const char *game, const char *label, i32 count, bool a
         f32 psz = kit_px(12), slot = ImGui::CalcTextSize("0000").x;
         ImVec2 ps = g_font_icon->CalcTextSizeA(psz, FLT_MAX, 0, ICON_STAR_FILL);
         f32 px = floorf(a.x + w - kit_px(10) - slot - kit_px(6) - ps.x);
-        dl->AddText(g_font_icon, psz, ImVec2(px, floorf(a.y + (h - ps.y) / 2)), col32(COL_ACCENT), ICON_STAR_FILL);
+        dl->AddText(g_font_icon, psz, ImVec2(px, floorf(a.y + (h - ps.y) / 2)), col32(COL_TEXT), ICON_STAR_FILL);
         text_end = ImMin(text_end, px - kit_px(6));
     }
     dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(text_end, a.y + h), true);
-    dl->AddText(ImVec2(i1.x + kit_px(10), ty), col32(active ? COL_ACCENT : COL_TEXT), label);
+    dl->AddText(ImVec2(i1.x + kit_px(10), ty), col32(active ? COL_WHITE : COL_TEXT), label);
     dl->PopClipRect();
     dl->AddText(ImVec2(nx, ty), col32(COL_DIM), n);
     return clicked;
 }
 
 // A pill of the Library's header that drops a list: an optional picture, its label from the left and an arrow on
-// the right, outlined when `on`: when what it is set to narrows what is shown.
+// the right, outlined in white when `on`: when what it is set to narrows what is shown.
 static bool lib_pill(const char *id, const char *label, f32 w, bool on, ID3D11ShaderResourceView *picture = 0)
 {
-    f32 h = ImGui::GetFrameHeight(), round = ImGui::GetStyle().FrameRounding;
+    f32 h = ImGui::GetFrameHeight(), round = h / 2;
     ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + w, a.y + h);
     bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h)) && !kit_closed_here(ImGui::GetItemID());
     if (clicked) dev_click("pill", label);
@@ -2062,11 +2062,11 @@ static bool lib_pill(const char *id, const char *label, f32 w, bool on, ID3D11Sh
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(a, z, col32(hot ? COL_HOVER : COL_PANEL2), round);
     f32 ty = floorf(a.y + (h - g_font->FontSize) / 2);
-    if (on) dl->AddRect(a, z, col32(COL_ACCENT, 0.7f), round, 0, kit_px(1));
+    if (on) dl->AddRect(a, z, col32(COL_WHITE, 0.7f), round, 0, kit_px(1));
     f32 x = a.x + kit_px(12), is = kit_px(20);
     if (picture) {
         ImVec2 i0(x - kit_px(3), floorf(a.y + (h - is) / 2));
-        dl->AddImageRounded((ImTextureID)picture, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(4));
+        dl->AddImageRounded((ImTextureID)picture, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, kit_px(3));
         x = i0.x + is + kit_px(8);
     }
     f32 cw = g_font_small->CalcTextSizeA(g_font_small->FontSize, FLT_MAX, 0, ICON_DOWN).x, cx = z.x - kit_px(12) - cw;
@@ -2261,7 +2261,7 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
         ImGui::SetKeyboardFocusHere();
     }
     // The search box: framed like the inputs in Options' popups
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(COL_HOVER));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(12), kit_px(10)));
     ImGui::SetNextItemWidth(-1);
     bool enter = ImGui::InputTextWithHint("##game_q", "Search for a game", typed, sizeof typed,
@@ -2339,7 +2339,7 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
             right -= kit_px(10);
         }
         text_clipped(dl, ImVec2(i0.x + is + kit_px(10), floorf(r0.y + (rh - kit_px(2) - ImGui::GetFontSize()) / 2)),
-                     right - (i0.x + is + kit_px(10)), col32(!strcmp(r.name, current) ? COL_ACCENT : COL_TEXT), label);
+                     right - (i0.x + is + kit_px(10)), col32(!strcmp(r.name, current) ? COL_WHITE : COL_DIM), label);
     }
     memcpy(drawn, rows, n * sizeof rows[0]);
     drawn_n = n;
@@ -3352,12 +3352,11 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         if (clicked && st.running) result = SHARE_MENU_CANCEL;
         else if (clicked && can) result = SHARE_MENU_SHARE;
         f32 r = kit_px(7);
-        dl->AddRectFilled(a, b, col32(COL_ACCENT, hot ? 0.28f : 0.16f), r);
-        dl->AddRect(a, b, col32(COL_ACCENT, can ? 1.f : 0.4f), r, 0, kit_px(1));
+        dl->AddRectFilled(a, b, col32(COL_WHITE, hot ? 0.14f : 0.08f), r);
         // The pill: plainly the button
         ImVec2 p0(b.x - pad - pill_w, floorf(a.y + (h - pill_h) / 2)), p1(b.x - pad, p0.y + pill_h);
         if (st.running) { // Cancel: the X in its ring
-            dl->AddRectFilled(p0, p1, col32(hot ? COL_HOVER : COL_PANEL2), kit_px(6));
+            dl->AddRectFilled(p0, p1, col32(hot ? COL_HOVER : COL_PANEL2), pill_h / 2);
             ImGui::PushFont(g_font_bold);
             ImVec2 ts = ImGui::CalcTextSize("Cancel");
             f32 rr = kit_px(8), tx = floorf(p0.x + (pill_w - 2 * rr - kit_px(6) - ts.x) / 2);
@@ -3365,13 +3364,13 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             dl->AddText(ImVec2(tx + 2 * rr + kit_px(6), floorf(p0.y + (pill_h - ts.y) / 2)), col32(COL_TEXT), "Cancel");
             ImGui::PopFont();
         } else {
-            dl->AddRectFilled(p0, p1, col32(can ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : COL_PANEL2), kit_px(6));
+            dl->AddRectFilled(p0, p1, col32(can ? (hot ? 0xe6e6e6 : COL_WHITE) : COL_PANEL2), pill_h / 2);
             f32 fs = g_font_icon->FontSize;
             ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_SHARE);
             ImGui::PushFont(g_font_bold);
             ImVec2 ts = ImGui::CalcTextSize("Share");
             f32 tx = floorf(p0.x + (pill_w - gs.x - kit_px(6) - ts.x) / 2);
-            u32 ink = can ? COL_ACCENT_INK : COL_FAINT;
+            u32 ink = can ? COL_BG : COL_FAINT;
             dl->AddText(g_font_icon, fs, ImVec2(tx, floorf(p0.y + (pill_h - gs.y) / 2)), col32(ink), ICON_SHARE);
             dl->AddText(ImVec2(tx + gs.x + kit_px(6), floorf(p0.y + (pill_h - ts.y) / 2)), col32(ink), "Share");
             ImGui::PopFont();
@@ -3518,7 +3517,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             // The host's own icon; the player's servers a server glyph
             ImVec2 t0(a.x + pad, floorf(a.y + (h - tile) / 2)), t1(t0.x + tile, t0.y + tile);
             if (!host_logo_draw(dl, x.host, t0, tile, alpha)) {
-                dl->AddRectFilled(t0, t1, col32(0x6b7080, alpha), kit_px(4));
+                dl->AddRectFilled(t0, t1, col32(0x6e6e6e, alpha), kit_px(4));
                 f32 fs = floorf(tile * 0.7f);
                 ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_SERVER);
                 dl->AddText(g_font_icon, fs, ImVec2(floorf(t0.x + (tile - gs.x) / 2), floorf(t0.y + (tile - gs.y) / 2)),
@@ -3737,10 +3736,10 @@ static i32 lib_dialog_pair(const char *action, KitKind kind, f32 right)
     f32 bw = lib_dialog_button_w(action), gap = kit_px(8);
     ImGui::SetCursorScreenPos(ImVec2(right - 2 * bw - gap, ImGui::GetCursorScreenPos().y));
     i32 r = 0;
-    if (lib_dialog_button(LIB_CANCEL, COL_HOVER, 0x383b42, COL_TEXT, bw)) r = -1;
+    if (lib_dialog_button(LIB_CANCEL, COL_HOVER, 0x383838, COL_TEXT, bw)) r = -1;
     ImGui::SameLine(0, gap);
     bool red = kind == KIT_DANGER;
-    if (lib_dialog_button(action, red ? COL_RED : COL_ACCENT, red ? 0xf45d67 : COL_ACCENT_HOVER, red ? 0xffffff : COL_ACCENT_INK, bw)) r = 1;
+    if (lib_dialog_button(action, red ? COL_RED : COL_WHITE, red ? 0xf45d67 : 0xe6e6e6, red ? 0xffffff : COL_BG, bw)) r = 1;
     return r;
 }
 
@@ -4295,8 +4294,8 @@ static bool lib_bar_button(const char *id, const char *icon, const char *label, 
     if (hit) dev_click("button", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    u32 fill = danger ? (hot ? 0x4a2025 : COL_RED_SOFT) : (hot ? COL_HOVER : COL_PANEL2);
-    u32 ink = danger ? 0xff8a92 : COL_TEXT;
+    u32 fill = hot ? COL_HOVER : COL_PANEL2;
+    u32 ink = danger ? COL_RED : COL_TEXT;
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(fill), round);
     dl->AddText(g_font_icon, isz, ImVec2(a.x + pad, floorf(a.y + (h - is.y) / 2)), col32(danger ? ink : COL_DIM), icon);
     dl->AddText(ImVec2(a.x + pad + is.x + gap, floorf(a.y + (h - ts.y) / 2)), col32(ink), label);
@@ -4395,7 +4394,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right) && !ImGui::IsMouseHoveringRect(s0, s1);
     bool over = ImGui::IsWindowHovered() && !ImGui::GetDragDropPayload() &&
                 ImGui::IsMouseHoveringRect(t0, ImVec2(t1.x, t1.y + meta_h));
-    f32 round = kit_px(10);
+    f32 round = kit_px(4);
     LibThumb *th = lib_thumb(it);
     if (!(th && (th->srv || th->failed)) && it.probed && it.info.duration > 0) g_lib_missing++;
     bool sel = lib_selected(it.key), picking = lib.selected_count > 0;
@@ -4521,11 +4520,14 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         if (cs.link) mark(link_x, cs.link_paused ? ICON_PAUSE : ICON_LINK, col32(cs.link_paused ? COL_WARN : COL_TEXT));
         if (cs.file) mark(file_x, ICON_SHARE, col32(COL_TEXT));
     }
-    // Selected: an accent ring round the picture. The tick box: filled with a tick when selected, else a ring, which
+    // Selected: an accent ring just outside the picture, and the name in the accent. The tick box: filled with a tick when selected, else a ring, which
     // out of select mode shows only faintly while the card is under the mouse, and in full under the mouse itself.
     f32 box = kit_px(17);
     ImVec2 b0(t0.x + kit_px(10), t0.y + kit_px(10)), b1(b0.x + box, b0.y + box);
-    if (sel) dl->AddRect(t0, t1, col32(COL_ACCENT), round, 0, kit_px(3));
+    if (sel) {
+        f32 out = kit_px(4); // 2 px wide, 3 px off the picture
+        dl->AddRect(ImVec2(t0.x - out, t0.y - out), ImVec2(t1.x + out, t1.y + out), col32(COL_ACCENT), round + out, 0, kit_px(2));
+    }
     if (sel || over || picking) {
         ImVec2 cm = io.MousePos;
         bool box_hot = over && cm.x >= b0.x - kit_px(4) && cm.x < b1.x + kit_px(4) && cm.y >= b0.y - kit_px(4) && cm.y < b1.y + kit_px(4);
@@ -4538,7 +4540,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
                         col32(COL_ACCENT_INK), ICON_CHECK);
         } else {
             bool faint = !picking && !box_hot;
-            dl->AddRectFilled(b0, b1, IM_COL32(14, 14, 18, box_hot ? 235 : faint ? 90 : 220), kit_px(4)); // reads over bright pictures
+            dl->AddRectFilled(b0, b1, IM_COL32(10, 10, 10, box_hot ? 235 : faint ? 90 : 220), kit_px(4)); // reads over bright pictures
             dl->AddRect(b0, b1, IM_COL32(255, 255, 255, box_hot ? 255 : faint ? 80 : 220), kit_px(4), 0, kit_px(1.5f));
         }
     }
@@ -4557,9 +4559,9 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ID3D11ShaderResourceView *icon = it.info.game[0] && !no_game && !custom ? game_icon(it.info.game) : 0;
     const char *glyph = custom ? ICON_GAME : desktop ? ICON_MONITOR : ICON_VIDEO;
     if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
-                                  IM_COL32_WHITE, kit_px(6));
+                                  IM_COL32_WHITE, kit_px(3));
     else {
-        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), col32(COL_PANEL), kit_px(6));
+        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), col32(COL_PANEL), kit_px(3));
         ImGui::PushFont(g_font_icon);
         ImVec2 is = ImGui::CalcTextSize(glyph);
         dl->AddText(ImVec2(floorf(a.x + (isz - is.x) / 2), floorf(y + (isz - is.y) / 2)), col32(COL_FAINT), glyph);
@@ -4587,7 +4589,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
             if (lib_rename_apply()) lib.rename_key = 0;
             else lib.rename_focus = true;
         }
-    } else text_clipped(dl, ImVec2(tx, y), tw, col32(COL_TEXT), it.display_name[0] ? it.display_name : shown);
+    } else text_clipped(dl, ImVec2(tx, y), tw, col32(sel ? COL_ACCENT : COL_TEXT), it.display_name[0] ? it.display_name : shown);
     y += ImGui::GetFontSize() + kit_px(2);
     ImGui::PopFont();
     char when[48], size[24], line[300];
@@ -4616,7 +4618,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         p0 = ImVec2(tx, y), p1 = ImVec2(tx + aw, y + ImGui::GetFontSize());
         bool hot = ImGui::IsMouseHoveringRect(p0, p1) && over;
         if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        text_clipped(dl, p0, line_w, col32(hot ? COL_ACCENT_HOVER : COL_ACCENT), ask);
+        text_clipped(dl, p0, line_w, col32(hot ? COL_WHITE : COL_TEXT), ask);
         const char *rest = line + strlen(GAME_NOT_OURS); // "  -  <when>  -  <size>"
         f32 rx = tx + ImGui::CalcTextSize(ask).x;
         if (rx < tx + line_w) text_clipped(dl, ImVec2(rx, y), tx + line_w - rx, col32(COL_DIM), rest);
@@ -5355,7 +5357,7 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
 {
     Sessions &ss = g_app.sessions;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 fh = ImGui::GetFrameHeight(), round = kit_px(10);
+    f32 fh = ImGui::GetFrameHeight(), round = kit_px(4);
     Session *s = session_find(id);
     ImGui::PushID((i32)id);
     ImVec2 t0 = a, t1(a.x + w, a.y + thumb_h);
@@ -5432,11 +5434,11 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
         dl->PopClipRect();
     } else session_time_left(*s, text, sizeof text);
     badge(dl, ImVec2(t0.x + in, t0.y + in), false, false, text);
-    if (lib_unsaved_new(*s)) { // new: an accent dot in the top right
+    if (lib_unsaved_new(*s)) { // new: a white dot in the top right
         f32 r = kit_px(5);
         ImVec2 c(t1.x - in - r, t0.y + in + r);
         dl->AddCircleFilled(c, r + kit_px(2), IM_COL32(0, 0, 0, 110));
-        dl->AddCircleFilled(c, r, col32(COL_ACCENT));
+        dl->AddCircleFilled(c, r, col32(COL_WHITE));
     }
 
     // The caption: icon, then the file name it gets and a dim line; Save on the right
@@ -5444,9 +5446,9 @@ static void lib_unsaved_tile(u32 id, ImVec2 a, f32 w, f32 thumb_h, bool ask)
     ID3D11ShaderResourceView *icon = game_db_icon(s->name);
     if (!icon && s->exe[0]) icon = app_icon(s->exe);
     if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
-                                  IM_COL32_WHITE, kit_px(6));
+                                  IM_COL32_WHITE, kit_px(3));
     else {
-        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), col32(COL_PANEL), kit_px(6));
+        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(a.x + isz, y + isz), col32(COL_PANEL), kit_px(3));
         ImGui::PushFont(g_font_icon);
         ImVec2 gs = ImGui::CalcTextSize(ICON_GAME);
         dl->AddText(ImVec2(floorf(a.x + (isz - gs.x) / 2), floorf(y + (isz - gs.y) / 2)), col32(COL_FAINT), ICON_GAME);
@@ -5576,13 +5578,13 @@ static bool lib_unsaved_row(f32 full_w)
         ImDrawList *hdl = ImGui::GetWindowDrawList();
         hdl->AddText(g_font_icon, isz, ImVec2(floorf(a.x + (iw - is.x) / 2), floorf(a.y + (fh - is.y) / 2)), ink, ic);
         hdl->AddText(tf, tf->FontSize, ImVec2(a.x + iw + kit_px(4), ty), ink, head);
-        if (any_new) { // "new" in an accent pill after the count, past the fold's click area
+        if (any_new) { // "new" in a white pill after the count, past the fold's click area
             ImFont *nf = tf;
             ImVec2 ns = nf->CalcTextSizeA(nf->FontSize, FLT_MAX, 0, "new");
             f32 px = kit_px(7), ph = floorf(nf->FontSize + kit_px(4)), nx = a.x + iw + kit_px(4) + tw + kit_px(8);
             f32 py = floorf(a.y + (fh - ph) / 2);
-            hdl->AddRectFilled(ImVec2(nx, py), ImVec2(nx + ns.x + 2 * px, py + ph), col32(COL_ACCENT), ph / 2);
-            hdl->AddText(nf, nf->FontSize, ImVec2(nx + px, floorf(py + (ph - nf->FontSize) / 2)), col32(COL_ACCENT_INK), "new");
+            hdl->AddRectFilled(ImVec2(nx, py), ImVec2(nx + ns.x + 2 * px, py + ph), col32(COL_WHITE), ph / 2);
+            hdl->AddText(nf, nf->FontSize, ImVec2(nx + px, floorf(py + (ph - nf->FontSize) / 2)), col32(COL_BG), "new");
         }
         if (hit) {
             folded = !folded;
@@ -5656,7 +5658,7 @@ static bool lib_side_toggle(f32 w, bool collapsed)
         ImGui::PopFont();
     } else {
         static const char *const sides[] = {ICON_GAME "  Games", ICON_FOLDER "  Folders"};
-        flip = lib_switch("##sidemode", sides, w, h, folders, COL_BG, 0x15161a, COL_HOVER);
+        flip = lib_switch("##sidemode", sides, w, h, folders, COL_BG, 0x151515, COL_HOVER);
         kit_tip(folders ? "Show games" : "Show folders");
     }
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + kit_px(6)));
@@ -5869,7 +5871,7 @@ static void screen_library()
     f32 hgap = kit_px(8), view_w = kit_px(104), drop_w = kit_px(112);
     ImGui::SetCursorScreenPos(h0);
     bool flip_view = lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER,
-                                0x3a3d44);
+                                COL_OFF);
     kit_tip(lib.view == LIB_SESSIONS ? "Show clips" : "Show sessions");
     if (flip_view) lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
 

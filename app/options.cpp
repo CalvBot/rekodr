@@ -397,7 +397,7 @@ static bool opt_combo_begin(const char *id, const char *preview, f32 width, f32 
     ImGui::SetNextItemWidth(width);
     ImGui::SetNextWindowSizeConstraints(ImVec2(fmaxf(width, popup_w), 0), ImVec2(FLT_MAX, FLT_MAX));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(6), dp(6)));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
     // Clicked while its list was open: the click closed the list (ui_popups_click_through) and must not open it again
     bool closed_here = kit_closed_here(ImGui::GetID(id));
     if (closed_here) {
@@ -418,9 +418,9 @@ static bool opt_combo_begin(const char *id, const char *preview, f32 width, f32 
                 a.x + width - pad - chev - dp(6));
     if (open) {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(dp(6), dp(2)));
-        ImGui::PushStyleColor(ImGuiCol_Header, rgb(0x2e3137));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, rgb(0x34373e));
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, rgb(0x34373e));
+        ImGui::PushStyleColor(ImGuiCol_Header, rgb(0x2a2a2a));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, rgb(0x313131));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, rgb(0x313131));
     }
     return open;
 }
@@ -508,8 +508,8 @@ static void opt_keycaps(ImDrawList *dl, ImVec2 p, f32 h, const char *keys, f32 m
         snprintf(part, sizeof part, "%.*s", n < 31 ? n : 31, s);
         f32 tw = text_w(g_font_bold, part), w = fmaxf(h, tw + dp(18));
         if (x + w > max_x) break;
-        dl->AddRectFilled(ImVec2(x, p.y + dp(2)), ImVec2(x + w, p.y + h), col32(0x101114), dp(6)); // the cap's edge
-        dl->AddRectFilled(ImVec2(x, p.y), ImVec2(x + w, p.y + h - dp(2)), col32(0x2e3137), dp(6));
+        dl->AddRectFilled(ImVec2(x, p.y + dp(2)), ImVec2(x + w, p.y + h), col32(COL_BG), dp(6)); // the cap's edge
+        dl->AddRectFilled(ImVec2(x, p.y), ImVec2(x + w, p.y + h - dp(2)), col32(0x2a2a2a), dp(6));
         opt_text_at(dl, g_font_bold, ImVec2(floorf(x + (w - tw) / 2), floorf(p.y + (h - dp(2) - g_font_bold->FontSize) / 2)),
                     COL_TEXT, part, x + w);
         x += w + dp(6);
@@ -585,7 +585,7 @@ static bool opt_row_hover()
 {
     ImVec2 a(g_card.a.x + dp(6), g_row.y + 1), z(g_card.a.x + g_card.w - dp(6), g_row.y + g_row.h);
     bool hot = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(a, z);
-    if (hot) ImGui::GetWindowDrawList()->AddRectFilled(a, z, col32(0x1e2024), dp(6));
+    if (hot) ImGui::GetWindowDrawList()->AddRectFilled(a, z, col32(0x1d1d1d), dp(6));
     return hot;
 }
 
@@ -618,7 +618,7 @@ static void ago_text(i64 us, char *out, i32 cap)
 // Each category has a colour and a short name, used for its button on every app row and its filter chip.
 static const char *CATEGORY_LABELS[] = {"New", "App", "Game", "Chat", "Excluded"};
 static const u32 CATEGORY_COLOURS[] = {COL_WARN, KIND_LOOK[KIND_APP].rgb, KIND_LOOK[KIND_GAME].rgb,
-                                       KIND_LOOK[KIND_CHAT].rgb, 0x8e939c};
+                                       KIND_LOOK[KIND_CHAT].rgb, 0x969696};
 
 // The name an app gets when it has none of its own: "Overwatch" for overwatch.exe (as audio_display_name).
 static void default_app_name(const char *exe, char *out, i32 cap)
@@ -921,7 +921,7 @@ static void game_settings_popup()
     Config &c = g_app.config;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(20), dp(18)));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(dp(8), dp(10)));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     bool open = ImGui::BeginPopup("game settings");
     ImGui::PopStyleColor();
@@ -958,7 +958,7 @@ static void game_settings_popup()
     bool rec_changed = false;
     char hint[48];
 
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(COL_HOVER));
     game_line("Bitrate", x);
     f64 v = r.bitrate_mbps;
     snprintf(hint, sizeof hint, "%g", c.bitrate_mbps);
@@ -1122,7 +1122,7 @@ static void apps_add_popup(ImVec2 at, i32 rows)
     static const AppCategory add_cat_values[] = {CAT_GAME, CAT_APP, CAT_COMMUNICATION, CAT_IGNORED};
     ImGui::SetNextWindowPos(at, ImGuiCond_Appearing, ImVec2(1, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
     bool open = ImGui::BeginPopup("add app");
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
@@ -1133,7 +1133,7 @@ static void apps_add_popup(ImVec2 at, i32 rows)
     ImGui::PopFont();
     ImGui::Dummy(ImVec2(0, dp(2)));
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(COL_HOVER));
     ImGui::SetNextItemWidth(w);
     bool enter = ImGui::InputTextWithHint("##add", "name.exe", o.add_exe, sizeof o.add_exe, ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::PopStyleColor();
@@ -1200,7 +1200,7 @@ static void apps_rename_popup()
         changed_at = ImGui::GetTime();
         ImGui::SetKeyboardFocusHere();
     }
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(COL_HOVER));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(dp(12), dp(10)));
     ImGui::SetNextItemWidth(-1);
     bool enter = ImGui::InputText("##name", o.edit, 64, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
@@ -1339,7 +1339,7 @@ static bool cat_pills_draw(AppCategory own, AppCategory inherited, f32 x, f32 y,
         ImFont *font = on ? g_font_bold : g_font;
         f32 tw = text_w(font, label);
         opt_text_at(dl, font, ImVec2(floorf(p.x + (w - tw) / 2), floorf(p.y + (h - font->FontSize) / 2)),
-                    on || via ? col : hot ? COL_TEXT : included ? COL_DIM : 0x4d5059, label, p.x + w);
+                    on || via ? col : hot ? COL_TEXT : included ? COL_DIM : 0x4d4d4d, label, p.x + w);
         if (clicked && !on) {
             *picked = cat;
             changed = true;
@@ -1367,7 +1367,7 @@ static void folder_edit_popup()
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(dp(18), dp(16)));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(0x202227));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, rgb(COL_PANEL2));
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     bool open = ImGui::BeginPopup("edit folder");
     ImGui::PopStyleColor();
@@ -1387,7 +1387,7 @@ static void folder_edit_popup()
         str_set(o.edit, r.path);
         ImGui::SetKeyboardFocusHere();
     }
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(0x2a2c32));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, rgb(COL_HOVER));
     ImGui::SetNextItemWidth(w);
     bool enter = ImGui::InputText("##path", o.edit, sizeof r.path, ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::PopStyleColor();
@@ -4202,6 +4202,11 @@ static void options_general()
         log_line("options: tooltips %s", c.tooltips ? "on" : "off");
         options_apply(0);
     }
+    if (opt_row_toggle("Art texture", "The game's art, grey and blurred, behind the window", "##arttexture",
+                       &c.art_texture)) {
+        log_line("options: art texture %s", c.art_texture ? "on" : "off");
+        options_apply(0);
+    }
     // Where the toasts go: Clip saved, Session ended and the marker window, a monitor and a corner on a map of them.
     // In games picks another while a game is in front. Clip saved popup picks how Clip saved shows over a game:
     // whole, the small pill or not at all.
@@ -4577,19 +4582,20 @@ static void screen_options()
         bool hot = ImGui::IsItemHovered();
         ImFont *font = active ? g_font_bold : g_font;
         f32 ty = floorf(a.y + (tab_h - dp(4) - font->FontSize) / 2);
-        u32 ink = active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM;
+        u32 ink = active ? COL_BG : hot ? COL_TEXT : COL_DIM;
         f32 iy = floorf(a.y + (tab_h - dp(4) - g_font_icon->FontSize) / 2);
-        opt_text_at(dl, g_font_icon, ImVec2(x, iy), active ? COL_ACCENT : ink, icons[t], x + slot);
+        if (active) // the current tab: a white pill
+            dl->AddRectFilled(ImVec2(x - dp(12), a.y), ImVec2(x + w + dp(12), a.y + tab_h - dp(4)), col32(COL_WHITE),
+                              (tab_h - dp(4)) / 2);
+        opt_text_at(dl, g_font_icon, ImVec2(x, iy), ink, icons[t], x + slot);
         opt_text_at(dl, font, ImVec2(x + slot, ty), ink, names[t], x + w + 1);
-        f32 line_w = w;
         if (t == OPT_APPS && new_apps) { // a badge on the icon's top right corner, ringed in the page colour
             f32 pw = opt_pill_w(count), ph = dp(18), r = dp(2);
             ImVec2 p(x + g_font_icon->FontSize - dp(9), iy);
             dl->AddRectFilled(ImVec2(p.x - r, p.y - ph / 2 - r), ImVec2(p.x + pw + r, p.y + ph / 2 + r), col32(COL_BG),
                               ph / 2 + r);
-            opt_pill(dl, p, count, COL_ACCENT, COL_ACCENT_INK);
+            opt_pill(dl, p, count, COL_WHITE, COL_BG);
         }
-        if (active) dl->AddRectFilled(ImVec2(x, a.y + tab_h - dp(2)), ImVec2(x + line_w, a.y + tab_h), col32(COL_ACCENT), dp(1));
         ImGui::EndDisabled();
         ImGui::PopID();
         x += w + gap;

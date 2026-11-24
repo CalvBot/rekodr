@@ -2009,7 +2009,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
             ImVec2 c(kx, ln_y(l, q.v, y0, y1));
             bool on = (ed.sel[l] >> k) & 1;
             key_shape(dl, c, r0 + kit_px(2), q.ease, on ? IM_COL32_WHITE : IM_COL32(0, 0, 0, 170));
-            key_shape(dl, c, r0, q.ease, col32(on ? COL_ACCENT : !l ? COL_BLUE : l >= ED_COLOR ? COL_WARN : muted ? COL_FAINT : 0xd6d9de));
+            key_shape(dl, c, r0, q.ease, col32(on ? COL_ACCENT : !l ? COL_BLUE : l >= ED_COLOR ? COL_WARN : muted ? COL_FAINT : 0xd6d6d6));
         }
         dl->PopClipRect();
         if (row.scrolls) ImGui::PopClipRect();
@@ -2932,7 +2932,7 @@ static void screen_editor()
     {
         static const char *const modes[] = {"Simple", "Advanced"};
         ImGui::SetCursorScreenPos(ImVec2(h0.x + avail.x - mode_w, h0.y + (head_h - fh) / 2));
-        if (lib_switch("##mode", modes, mode_w, fh, adv_on(), COL_PANEL2, COL_HOVER, 0x3a3d44)) adv_set_mode(!adv_on(), false);
+        if (lib_switch("##mode", modes, mode_w, fh, adv_on(), COL_PANEL2, COL_HOVER, COL_OFF)) adv_set_mode(!adv_on(), false);
         adv_ask_dialog();
     }
     f32 tx = h0.x + fh + kit_px(14), tw = avail.x - (tx - h0.x) - mode_w - kit_px(14);

@@ -27,4 +27,6 @@ powershell -NoProfile -Command "$bad = 0; Get-ChildItem *.cpp,*.h,*.rc,*.bat | F
 
 rc /nologo /fo build\clipback.res clipback.rc || exit /b 1
 cl %FLAGS% clipback.cpp build\clipback.res /Fobuild\ /Fdbuild\ /Febuild\clipback.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS% || exit /b 1
+rem The app's typeface, Geist, is read from beside the exe (fonts\OFL.txt is its licence)
+copy /y fonts\Geist-Regular.ttf build\ >nul && copy /y fonts\Geist-SemiBold.ttf build\ >nul && copy /y fonts\Geist-Bold.ttf build\ >nul || exit /b 1
 if "%1"=="release" powershell -NoProfile -ExecutionPolicy Bypass -File release.ps1 || exit /b 1

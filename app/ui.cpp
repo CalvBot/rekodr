@@ -17,19 +17,21 @@ struct Gpu {
 
 static Gpu g_gpu;
 
-// Colours. One dark theme: a near-black page, a darker top bar, raised surfaces for cards and fields, and one
-// accent (teal unless Options picks another colour) for the primary action and the selected item. Recording,
-// deleting and failures stay red whatever the accent. Blue is for zoom keys and focus.
+// Colours. One dark theme, flat: a near-black ground (the top bar is the same colour), raised surfaces for cards and
+// fields, white for what is selected (a tab, a chip, the primary button), and the player's accent (teal unless
+// Options picks another colour) only for the selected clip, progress, slider fills, switches that are on, the saved
+// check and focus. Recording, deleting and failures stay red whatever the accent. Blue is for zoom keys.
 static ImVec4 rgb(u32 c, f32 a = 1) { return ImVec4(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a); }
 static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, a)); }
-static const u32 COL_BG = 0x101114,      // the page
-                 COL_SIDEBAR = 0x0b0c0e, // the top bar
-                 COL_PANEL = 0x18191d,   // cards, the timeline
-                 COL_PANEL2 = 0x222429,  // fields, secondary buttons, popups
-                 COL_HOVER = 0x2c2f35,   // anything under the mouse
-                 COL_LINE = 0x2a2c32,    // hairlines
-                 COL_TEXT = 0xeceef1, COL_DIM = 0x8e939c, COL_FAINT = 0x5d626b,
-                 COL_RED = 0xf0434f, COL_RED_SOFT = 0x3a1c20,
+static const u32 COL_BG = 0x0a0a0a,      // the window and the top bar
+                 COL_PANEL = 0x161616,   // cards, the timeline
+                 COL_PANEL2 = 0x1f1f1f,  // fields, secondary buttons, popups
+                 COL_HOVER = 0x262626,   // anything under the mouse; rails
+                 COL_LINE = 0x262626,    // hairlines
+                 COL_OFF = 0x363636,     // a switch that is off, the picked part of a segmented control
+                 COL_WHITE = 0xffffff,   // what is selected, with COL_BG for its text
+                 COL_TEXT = 0xf2f2f2, COL_DIM = 0x969696, COL_FAINT = 0x5c5c5c,
+                 COL_RED = 0xf0434f,
                  COL_BLUE = 0x5b9cff, COL_OK = 0x3fbf74, COL_WARN = 0xe8a33d;
 // What a sound track is, the same colour everywhere it shows (the Apps pills, the editor's lanes).
 // The toasts' sizes at 100%, shared by the desktop ones (toast.cpp) and the session popup (sessions.cpp): a tile
@@ -79,12 +81,16 @@ static void ui_apply_accent(u32 c)
     COL_ACCENT_DOWN = c == ACCENT_DEFAULT ? 0x00574b : rgb_mix(c, 0x000000, 0.37f);
     COL_ACCENT_SOFT = rgb_mix(COL_PANEL, COL_ACCENT_DOWN, 0.4f); // a wash of the darker one over a card
     COL_ACCENT_INK = ink_on(c);
-    if (ImGui::GetCurrentContext()) ImGui::GetStyle().Colors[ImGuiCol_CheckMark] = rgb(c);
+    if (ImGui::GetCurrentContext()) {
+        ImGui::GetStyle().Colors[ImGuiCol_CheckMark] = rgb(c);
+        ImGui::GetStyle().Colors[ImGuiCol_NavCursor] = rgb(c);
+    }
 }
 
-// Fonts: Segoe UI with the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*).
-// g_font 14 px, g_font_bold 14 px semibold, g_font_small 12.5 px, g_font_big 18 px semibold (card and dialog
-// titles), g_font_title 26 px semibold (screen titles), g_font_icon 18 px icons alone (icon buttons).
+// Fonts: Geist (beside the exe, fonts\OFL.txt in the source) with Segoe UI behind it for letters Geist lacks, and
+// the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*). Without Geist, Segoe UI alone.
+// g_font 14 px, g_font_bold 14 px semibold, g_font_small 12.5 px, g_font_big 18 px bold (card and dialog titles),
+// g_font_title 26 px bold (screen titles), g_font_icon 18 px icons alone (icon buttons).
 static ImFont *g_font, *g_font_bold, *g_font_small, *g_font_big, *g_font_title, *g_font_icon;
 static f32 g_dpi_scale = 1;
 
@@ -159,7 +165,7 @@ enum TrackKind : u8 { KIND_MIC, KIND_GAME, KIND_CHAT, KIND_APP, KIND_MIX, KIND_C
 struct TrackKindLook { const char *name, *icon; u32 rgb; };
 static const TrackKindLook KIND_LOOK[KIND_COUNT] = {
     {"Mic", ICON_MIC, 0xf06fa0}, {"Game", ICON_GAME, 0x3fbf74}, {"Chat", ICON_CHAT, 0xb07cff},
-    {"Apps", ICON_APPS, 0x5b9cff}, {"Mix", ICON_VOLUME, 0xeceef1},
+    {"Apps", ICON_APPS, 0x5b9cff}, {"Mix", ICON_VOLUME, 0xf2f2f2},
 };
 
 static void library_window_shown(bool shown); // library.cpp: rescans when shown, frees players and textures when hidden
@@ -252,11 +258,30 @@ static void ui_load_fonts(f32 scale)
     io.Fonts->Clear();
     wchar_t windir[MAX_PATH];
     GetWindowsDirectoryW(windir, MAX_PATH);
-    char regular[MAX_PATH * 3], semibold[MAX_PATH * 3];
+    char regular[MAX_PATH * 3], semibold[MAX_PATH * 3], bold[MAX_PATH * 3], segoe[MAX_PATH * 3], segoe_sb[MAX_PATH * 3];
     char dir[MAX_PATH * 3];
     wide_to_utf8(windir, dir, sizeof dir);
-    snprintf(regular, sizeof regular, "%s\\Fonts\\segoeui.ttf", dir);
-    snprintf(semibold, sizeof semibold, "%s\\Fonts\\seguisb.ttf", dir);
+    snprintf(segoe, sizeof segoe, "%s\\Fonts\\segoeui.ttf", dir);
+    snprintf(segoe_sb, sizeof segoe_sb, "%s\\Fonts\\seguisb.ttf", dir);
+    wchar_t exe_w[MAX_PATH];
+    char exe_dir[MAX_PATH * 3] = "";
+    DWORD exe_n = GetModuleFileNameW(0, exe_w, MAX_PATH);
+    if (exe_n > 0 && exe_n < MAX_PATH) {
+        wchar_t *slash = wcsrchr(exe_w, L'\\');
+        if (slash) *slash = 0;
+        wide_to_utf8(exe_w, exe_dir, sizeof exe_dir);
+    }
+    snprintf(regular, sizeof regular, "%s\\Geist-Regular.ttf", exe_dir);
+    snprintf(semibold, sizeof semibold, "%s\\Geist-SemiBold.ttf", exe_dir);
+    snprintf(bold, sizeof bold, "%s\\Geist-Bold.ttf", exe_dir);
+    bool geist = GetFileAttributesA(regular) != INVALID_FILE_ATTRIBUTES &&
+                 GetFileAttributesA(semibold) != INVALID_FILE_ATTRIBUTES &&
+                 GetFileAttributesA(bold) != INVALID_FILE_ATTRIBUTES;
+    if (!geist) {
+        str_set(regular, segoe);
+        str_set(semibold, segoe_sb);
+        str_set(bold, segoe_sb);
+    }
 
     char icons[MAX_PATH * 3];
     snprintf(icons, sizeof icons, "%s\\Fonts\\SegoeIcons.ttf", dir);
@@ -271,16 +296,17 @@ static void ui_load_fonts(f32 scale)
     merge.MergeMode = true;
     merge.OversampleH = 2;
     merge.PixelSnapH = true;
-    auto add = [&](const char *file, f32 px, f32 icon_px) {
+    auto add = [&](const char *file, const char *fallback, f32 px, f32 icon_px) {
         ImFont *f = io.Fonts->AddFontFromFileTTF(file, px * scale, &cfg, ranges);
+        if (f && geist) io.Fonts->AddFontFromFileTTF(fallback, px * scale, &merge, ranges); // only what Geist lacks
         if (f) io.Fonts->AddFontFromFileTTF(icons, icon_px * scale, &merge, icon_ranges);
         return f;
     };
-    g_font = add(regular, 14, 14);
-    g_font_bold = add(semibold, 14, 14);
-    g_font_small = add(regular, 12.5f, 12.5f);
-    g_font_big = add(semibold, 18, 17);
-    g_font_title = add(semibold, 26, 22);
+    g_font = add(regular, segoe, 14, 14);
+    g_font_bold = add(semibold, segoe_sb, 14, 14);
+    g_font_small = add(regular, segoe, 12.5f, 12.5f);
+    g_font_big = add(bold, segoe_sb, 18, 17);
+    g_font_title = add(bold, segoe_sb, 26, 22);
     ImFontConfig alone;
     alone.OversampleH = 2;
     alone.PixelSnapH = true;
@@ -292,10 +318,11 @@ static void ui_load_fonts(f32 scale)
     if (!g_font_title) g_font_title = g_font_big;
     if (!g_font_icon) g_font_icon = g_font;
     io.Fonts->Build();
-    // Segoe UI's letters sit a little under the middle of their line: about 0.6 px at 100%
+    // Geist's capitals sit in the middle of their line; Segoe UI's a little under it, about 0.6 px at 100%
+    f32 low = geist ? 0 : 0.6f;
     ImFont *text_fonts[] = {g_font, g_font_bold, g_font_small, g_font_big, g_font_title};
     for (ImFont *f : text_fonts)
-        if (f != g_font_icon) ui_center_icons(f, f->FontSize / 2 + 0.6f * scale * f->FontSize / (14 * scale));
+        if (f != g_font_icon) ui_center_icons(f, f->FontSize / 2 + low * f->FontSize / 14);
     ui_center_icons(g_font_icon, g_font_icon->FontSize / 2);
     ImGui_ImplDX11_InvalidateDeviceObjects(); // the font texture is remade on the next frame
 }
@@ -351,7 +378,7 @@ static void ui_style(f32 scale)
     c[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
     c[ImGuiCol_TableRowBgAlt] = ImVec4(1, 1, 1, 0.02f);
     c[ImGuiCol_TextSelectedBg] = rgb(COL_BLUE, 0.35f);
-    c[ImGuiCol_NavCursor] = rgb(COL_BLUE);
+    c[ImGuiCol_NavCursor] = rgb(COL_ACCENT);
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.6f);
     c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
     c[ImGuiCol_ScrollbarGrab] = rgb(COL_HOVER);
@@ -445,7 +472,7 @@ static bool ui_init()
     wc.hInstance = inst;
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.hCursor = LoadCursorW(0, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(0x10, 0x11, 0x14));
+    wc.hbrBackground = CreateSolidBrush(RGB(0x0a, 0x0a, 0x0a));
     wc.lpszClassName = L"clipback.window";
     RegisterClassExW(&wc);
 
@@ -566,9 +593,9 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     u32 bg = COL_PANEL2, hover = COL_HOVER, text = COL_TEXT;
     f32 bg_a = 1;
     switch (kind) {
-    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; text = COL_ACCENT_INK; break;
+    case KIT_PRIMARY: bg = COL_WHITE; hover = 0xe6e6e6; text = COL_BG; break;
     case KIT_GHOST: bg_a = 0; break;
-    case KIT_DANGER: bg = COL_RED_SOFT; hover = 0x4a2025; text = 0xff8a92; break;
+    case KIT_DANGER: text = COL_RED; break;
     default: break;
     }
     if (!enabled) { // plainly off: a quiet fill and faint text, whatever kind it is
@@ -578,14 +605,17 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     }
     ImGui::PushStyleColor(ImGuiCol_Button, rgb(bg, bg_a));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(hover));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kind == KIT_PRIMARY && enabled ? rgb(COL_ACCENT_DOWN) : rgb(hover, 0.8f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kind == KIT_PRIMARY && enabled ? rgb(0xcccccc) : rgb(hover, 0.8f));
     ImGui::PushStyleColor(ImGuiCol_Text, rgb(text));
+    // A pill: its ends round right off
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, (size.y > 0 ? size.y : ImGui::GetFrameHeight()) / 2);
     if (kind == KIT_PRIMARY) ImGui::PushFont(g_font_bold);
     if (!enabled) ImGui::BeginDisabled();
     bool clicked = ImGui::Button(label, size) && !kit_closed_here(ImGui::GetItemID());
     if (!enabled) ImGui::EndDisabled();
     if (clicked && enabled) dev_click("button", label);
     if (kind == KIT_PRIMARY) ImGui::PopFont();
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor(4);
     return clicked && enabled;
 }
@@ -619,18 +649,17 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     u32 fill = 0, ink = COL_TEXT;
     f32 fill_a = 1;
     switch (kind) {
-    case KIT_PRIMARY: fill = held ? COL_ACCENT_DOWN : hot ? COL_ACCENT_HOVER : COL_ACCENT; ink = COL_ACCENT_INK; break;
+    case KIT_PRIMARY: fill = held ? 0xcccccc : hot ? 0xe6e6e6 : COL_WHITE; ink = COL_BG; break;
     case KIT_SECONDARY: fill = hot ? COL_HOVER : COL_PANEL2; break;
-    case KIT_DANGER: fill = hot ? 0x4a2025 : COL_RED_SOFT; ink = 0xff8a92; break;
-    default:
-        if (active) fill = COL_HOVER;
-        else if (hot) fill = COL_PANEL2;
-        else fill_a = 0;
-        if (!active && !hot) ink = 0xc4c8cf;
+    case KIT_DANGER: fill = hot ? COL_HOVER : COL_PANEL2; ink = COL_RED; break;
+    default: // a veil of white over whatever is behind it
+        fill = COL_WHITE;
+        fill_a = active ? 0.14f : hot ? 0.08f : 0;
+        if (!active && !hot) ink = 0xc8c8c8;
         break;
     }
-    if (held) fill_a *= 0.8f;
-    if (fill_a > 0) dl->AddRectFilled(a, z, col32(fill, fill_a), ImGui::GetStyle().FrameRounding);
+    if (held && kind != KIT_PRIMARY) fill_a *= 0.8f;
+    if (fill_a > 0) dl->AddRectFilled(a, z, col32(fill, fill_a), size / 2);
     ImGui::PushFont(g_font_icon);
     ImVec2 ts = ImGui::CalcTextSize(icon);
     dl->AddText(ImVec2(floorf(a.x + (size - ts.x) / 2), floorf(a.y + (size - ts.y) / 2)), col32(ink, enabled ? 1 : 0.35f), icon);
@@ -644,7 +673,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
 static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImVec2 size, bool enabled = true,
                             bool arrow_enabled = true, f32 progress = -1, const char *tip = 0, const char *arrow_tip = 0)
 {
-    f32 h = size.y > 0 ? size.y : ImGui::GetFrameHeight(), aw = h, r = ImGui::GetStyle().FrameRounding;
+    f32 h = size.y > 0 ? size.y : ImGui::GetFrameHeight(), aw = h, r = h / 2, inset = ImGui::GetStyle().FrameRounding;
     ImVec2 a = ImGui::GetCursorScreenPos(), z(a.x + size.x, a.y + h);
     f32 split = z.x - aw;
     ImGui::PushID(id);
@@ -667,8 +696,8 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
     if (hit) dev_click("button", label, hit == 2 ? "(arrow)" : "");
     u32 bg = COL_PANEL2, hover = COL_HOVER, ink = COL_TEXT;
     switch (kind) {
-    case KIT_PRIMARY: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; ink = COL_ACCENT_INK; break;
-    case KIT_DANGER: bg = COL_RED_SOFT; hover = 0x4a2025; ink = 0xff8a92; break;
+    case KIT_PRIMARY: bg = COL_WHITE; hover = 0xe6e6e6; ink = COL_BG; break;
+    case KIT_DANGER: ink = COL_RED; break;
     default: break;
     }
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -680,10 +709,9 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
     }
     dl->AddLine(ImVec2(split, a.y + kit_px(6)), ImVec2(split, z.y - kit_px(6)), col32(0x000000, 0.3f), kit_px(1));
     if (progress >= 0) { // a thin bar along the bottom edge
-        f32 by = z.y - kit_px(4), x0 = a.x + r, x1 = z.x - r, bh = kit_px(2);
-        u32 bar = kind == KIT_PRIMARY ? COL_ACCENT_INK : COL_ACCENT;
-        dl->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), col32(bar, 0.25f), bh);
-        dl->AddRectFilled(ImVec2(x0, by), ImVec2(x0 + (x1 - x0) * (progress > 1 ? 1 : progress), by + bh), col32(bar), bh);
+        f32 by = z.y - kit_px(4), x0 = a.x + inset, x1 = z.x - inset, bh = kit_px(2);
+        dl->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), col32(kind == KIT_PRIMARY ? COL_BG : COL_WHITE, 0.2f), bh);
+        dl->AddRectFilled(ImVec2(x0, by), ImVec2(x0 + (x1 - x0) * (progress > 1 ? 1 : progress), by + bh), col32(COL_ACCENT), bh);
     }
     if (kind == KIT_PRIMARY) ImGui::PushFont(g_font_bold);
     const char *end = ImGui::FindRenderedTextEnd(label);
@@ -734,7 +762,7 @@ static bool kit_key_held(const char *s, const char *e)
     return false;
 }
 
-// A key cap with its top-left at (x, y), in the small font: raised, and lit in the accent while the key is held.
+// A key cap with its top-left at (x, y), in the small font: raised, and white while the key is held.
 // Returns its width.
 static f32 kit_keycap(ImDrawList *dl, f32 x, f32 y, const char *s, const char *e)
 {
@@ -744,9 +772,9 @@ static f32 kit_keycap(ImDrawList *dl, f32 x, f32 y, const char *s, const char *e
     f32 cw = fmaxf(ts.x + kit_px(14), cap_h);
     bool lit = kit_key_held(s, e);
     f32 drop = lit ? kit_px(1) : 0; // pressed in a little
-    dl->AddRectFilled(ImVec2(x, y + kit_px(2)), ImVec2(x + cw, y + cap_h + kit_px(2)), col32(0x0c0d10), kit_px(5));
-    dl->AddRectFilled(ImVec2(x, y + drop), ImVec2(x + cw, y + cap_h + drop), col32(lit ? COL_ACCENT : COL_HOVER), kit_px(5));
-    dl->AddText(ImVec2(floorf(x + (cw - ts.x) / 2), floorf(y + drop + (cap_h - sh) / 2)), col32(lit ? COL_ACCENT_INK : COL_TEXT), s, e);
+    dl->AddRectFilled(ImVec2(x, y + kit_px(2)), ImVec2(x + cw, y + cap_h + kit_px(2)), col32(0x050505), kit_px(5));
+    dl->AddRectFilled(ImVec2(x, y + drop), ImVec2(x + cw, y + cap_h + drop), col32(lit ? COL_WHITE : COL_HOVER), kit_px(5));
+    dl->AddText(ImVec2(floorf(x + (cw - ts.x) / 2), floorf(y + drop + (cap_h - sh) / 2)), col32(lit ? COL_BG : COL_TEXT), s, e);
     ImGui::PopFont();
     return cw;
 }
@@ -836,7 +864,7 @@ static bool kit_segmented(const char *id, const char *const *labels, i32 n, i32 
             dev_click(id, labels[i]);
         }
         bool on = *sel == i;
-        if (on) dl->AddRectFilled(p, ImVec2(p.x + item_w, p.y + h - 2 * pad), col32(0x3a3d44), st.FrameRounding - 2);
+        if (on) dl->AddRectFilled(p, ImVec2(p.x + item_w, p.y + h - 2 * pad), col32(COL_OFF), st.FrameRounding - 2);
         else if (hot) dl->AddRectFilled(p, ImVec2(p.x + item_w, p.y + h - 2 * pad), col32(COL_HOVER), st.FrameRounding - 2);
         ImVec2 ts = ImGui::CalcTextSize(labels[i]);
         dl->AddText(ImVec2(floorf(p.x + (item_w - ts.x) / 2), floorf(a.y + (h - ts.y) / 2)), col32(on || hot ? COL_TEXT : COL_DIM), labels[i]);
@@ -847,7 +875,8 @@ static bool kit_segmented(const char *id, const char *const *labels, i32 n, i32 
     return changed;
 }
 
-// A rounded filter pill. active = white with dark text. count is drawn after the label, dimmer. w 0 = fit.
+// A filter pill: a veil of white over what is behind it; active = white with black text. count is drawn after the
+// label, dimmer. w 0 = fit.
 static bool kit_chip(const char *id_label, bool active, const char *count = 0, f32 w = 0)
 {
     const char *end = ImGui::FindRenderedTextEnd(id_label);
@@ -860,11 +889,10 @@ static bool kit_chip(const char *id_label, bool active, const char *count = 0, f
     if (clicked) dev_click("chip", id_label, active ? "(was on)" : "");
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    u32 fill = active ? COL_TEXT : hot ? COL_HOVER : COL_PANEL2;
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(fill), h / 2);
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_WHITE, active ? 1 : hot ? 0.14f : 0.08f), h / 2);
     f32 y = floorf(a.y + (h - ls.y) / 2);
     dl->AddText(ImVec2(a.x + padx, y), col32(active ? COL_BG : COL_TEXT), id_label, end);
-    if (count) dl->AddText(ImVec2(a.x + w - padx - cs.x, y), col32(active ? 0x5d626b : COL_DIM), count);
+    if (count) dl->AddText(ImVec2(a.x + w - padx - cs.x, y), active ? col32(COL_BG, 0.55f) : col32(COL_DIM), count);
     return clicked;
 }
 
@@ -883,9 +911,9 @@ static bool kit_toggle(const char *id, bool *v)
     }
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(*v ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : (hot ? 0x45484f : 0x3a3d44)), h / 2);
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(*v ? (hot ? COL_ACCENT_HOVER : COL_ACCENT) : (hot ? 0x404040 : COL_OFF)), h / 2);
     f32 r = h / 2 - kit_px(3);
-    dl->AddCircleFilled(ImVec2(*v ? a.x + w - h / 2 : a.x + h / 2, a.y + h / 2), r, col32(*v ? COL_ACCENT_INK : 0xffffff));
+    dl->AddCircleFilled(ImVec2(*v ? a.x + w - h / 2 : a.x + h / 2, a.y + h / 2), r, col32(COL_WHITE));
     return clicked;
 }
 
@@ -1118,7 +1146,7 @@ static void help_section(const char *title, const HelpRow *rows, i32 count, f32 
                     cw = kit_keycap(dl, x, y, p + 1, end);
                 } else {
                     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw, y + cap_h), col32(COL_BG), kit_px(5));
-                    dl->AddText(ImVec2(floorf(x + kit_px(7)), floorf(y + (cap_h - sh) / 2)), col32(0xc4c8cf), p + 1, end);
+                    dl->AddText(ImVec2(floorf(x + kit_px(7)), floorf(y + (cap_h - sh) / 2)), col32(0xc8c8c8), p + 1, end);
                 }
                 x += cw + kit_px(3);
                 p = end + 1;
@@ -1373,7 +1401,7 @@ static void help_window()
     g_app.ui.help_open = g_app.ui.help_close = false;
 }
 
-// A tab in the top bar: a label, white with an accent underline when it's the current screen.
+// A tab in the top bar: an icon and a label, a white pill with black text when it's the current screen.
 static bool top_tab(const char *icon, const char *label, bool active, f32 h)
 {
     ImGui::PushFont(g_font_bold);
@@ -1385,12 +1413,11 @@ static bool top_tab(const char *icon, const char *label, bool active, f32 h)
     if (clicked) dev_click("tab", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    if (hot && !active) dl->AddRectFilled(ImVec2(a.x, a.y + kit_px(7)), ImVec2(a.x + w, a.y + h - kit_px(7)), col32(COL_PANEL), kit_px(7));
-    u32 ink = col32(active ? COL_TEXT : hot ? 0xd4d7dc : COL_DIM);
-    dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(a.x + padx, floorf(a.y + (h - g_font_icon->FontSize) / 2)),
-                active ? col32(COL_ACCENT) : ink, icon);
+    f32 ph = fminf(kit_px(34), h), py = floorf(a.y + (h - ph) / 2);
+    if (active) dl->AddRectFilled(ImVec2(a.x, py), ImVec2(a.x + w, py + ph), col32(COL_WHITE), ph / 2);
+    u32 ink = col32(active ? COL_BG : hot ? COL_TEXT : COL_DIM);
+    dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(a.x + padx, floorf(a.y + (h - g_font_icon->FontSize) / 2)), ink, icon);
     dl->AddText(ImVec2(a.x + padx + slot, floorf(a.y + (h - ts.y) / 2)), ink, label);
-    if (active) dl->AddRectFilled(ImVec2(a.x + padx, a.y + h - kit_px(3)), ImVec2(a.x + w - padx, a.y + h), col32(COL_ACCENT), kit_px(2));
     ImGui::PopFont();
     return clicked;
 }
@@ -1424,11 +1451,9 @@ static bool update_busy()
 static void top_bar(f32 h)
 {
     Recorder &rec = g_app.recorder;
-    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImDrawList *dl = ImGui::GetWindowDrawList(); // on the ground itself, so the game's art shows through
     ImVec2 o = ImGui::GetCursorScreenPos();
     f32 w = ImGui::GetContentRegionAvail().x;
-    dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), col32(COL_SIDEBAR));
-    dl->AddRectFilled(ImVec2(o.x, o.y + h - kit_px(1)), ImVec2(o.x + w, o.y + h), col32(COL_LINE));
 
     ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(12), o.y));
     Screen s = g_app.ui.screen;
@@ -1511,7 +1536,7 @@ static void top_bar(f32 h)
             apply_failed = !update_apply(true);
         }
         bool hot = ImGui::IsItemHovered();
-        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_TEXT, hot ? 0.14f : 0.07f), ch / 2);
+        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WHITE, hot ? 0.14f : 0.08f), ch / 2);
         dl->AddText(ImVec2(cx + kit_px(12), floorf(cy + (ch - ls.y) / 2)), col32(hot ? COL_TEXT : COL_DIM), label);
     }
 
@@ -1543,6 +1568,29 @@ static void dev_input()
         if (last_screen >= 0) log_line("screen %s -> %s", screen_name((Screen)last_screen), screen_name(g_app.ui.screen));
         last_screen = (i32)g_app.ui.screen;
     }
+}
+
+// Behind the whole window, under the top bar too: the game's art (game_art_texture) at 0.22, filling the window
+// and cut to fit. The game is the Library's game chip, else the game of the newest clip. Options > General > Art
+// texture turns it off.
+static ID3D11ShaderResourceView *game_art_texture(const char *name, i32 *w, i32 *h); // appicons.cpp
+
+static void ui_art_texture(ImVec2 p0, ImVec2 p1)
+{
+    const Library &lib = g_app.library;
+    if (!g_app.config.art_texture) return;
+    const char *game = !g_app.config.side_folders && lib.game[0] ? lib.game : lib.game_count > 0 ? lib.games[0] : "";
+    i32 tw = 0, th = 0;
+    ID3D11ShaderResourceView *tex = game_art_texture(game, &tw, &th);
+    if (!tex || tw <= 0 || th <= 0) return;
+    f32 w = p1.x - p0.x, h = p1.y - p0.y;
+    if (w <= 0 || h <= 0) return;
+    // Cover: the picture's middle, as much of it as has the window's shape
+    f32 u = 1, v = 1;
+    if (w / h > (f32)tw / th) v = ((f32)tw / th) / (w / h);
+    else u = (w / h) / ((f32)tw / th);
+    ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)tex, p0, p1, ImVec2((1 - u) / 2, (1 - v) / 2),
+                                         ImVec2((1 + u) / 2, (1 + v) / 2), col32(COL_WHITE, 0.22f));
 }
 
 static void ui_frame()
@@ -1580,6 +1628,7 @@ static void ui_frame()
         ImGui::End();
         goto rendered;
     }
+    ui_art_texture(vp->WorkPos, ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y));
     top_bar(kit_px(46));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
     // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail.
