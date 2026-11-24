@@ -100,6 +100,7 @@ static void ui_apply_accent(u32 c)
 // g_font 14 px, g_font_bold 14 px semibold, g_font_small 12.5 px, g_font_big 18 px bold (card and dialog titles),
 // g_font_title 26 px bold (screen titles), g_font_icon 18 px icons alone (icon buttons).
 static ImFont *g_font, *g_font_bold, *g_font_small, *g_font_big, *g_font_title, *g_font_icon;
+static ImFont *g_font_number; // 40 px bold, ASCII only: a figure shown large
 static f32 g_dpi_scale = 1;
 
 // Segoe Fluent Icons code points, as UTF-8
@@ -314,12 +315,15 @@ static void ui_load_fonts(f32 scale)
     alone.OversampleH = 2;
     alone.PixelSnapH = true;
     g_font_icon = io.Fonts->AddFontFromFileTTF(icons, 17 * scale, &alone, icon_ranges);
+    static const ImWchar ascii[] = {0x0020, 0x007E, 0};
+    g_font_number = bold ? io.Fonts->AddFontFromMemoryTTF(bold, bold_n, 40 * scale, &cfg, ascii) : 0;
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_bold) g_font_bold = g_font;
     if (!g_font_small) g_font_small = g_font;
     if (!g_font_big) g_font_big = g_font_bold;
     if (!g_font_title) g_font_title = g_font_big;
     if (!g_font_icon) g_font_icon = g_font;
+    if (!g_font_number) g_font_number = g_font_title;
     io.Fonts->Build();
     ImFont *text_fonts[] = {g_font, g_font_bold, g_font_small, g_font_big, g_font_title};
     for (ImFont *f : text_fonts) // Onest's capitals sit in the middle of their line
