@@ -301,7 +301,7 @@ static void setup_page_development(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pa
 }
 
 // Discord's upload limit on one file without Nitro, in MB.
-static const i32 DISCORD_FREE_MB = 10;
+static const i32 DISCORD_FREE_MB = 20;
 
 // Sharing: the player's own Cloudflare, as the upgrade from posting the file in Discord. Discord's cap on one file,
 // an arrow, and R2's free storage for links; under it the account, signed in the same way as in Options.
@@ -315,7 +315,7 @@ static void setup_page_sharing(ImDrawList *dl, f32 x0, f32 x1, f32 y)
     ImVec2 a(x0, y), b(x1, y + card_h);
     dl->AddRectFilled(a, b, col32(COL_PANEL), dp(12));
 
-    // 10 MB -> 10 GB
+    // 20 MB -> 10 GB
     {
         char from[24], to[24];
         snprintf(from, sizeof from, "%d MB", DISCORD_FREE_MB);
