@@ -186,7 +186,7 @@ struct Config {
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
 
     bool tooltips;     // hovering a control shows what it does and its key (asked in the first-run setup)
-    bool art_texture;  // the game's art, grey and blurred, behind the window (on)
+    bool flat_look;    // plain flat surfaces: no art texture, grain or see-through panels (off)
     bool setup_done;   // the first-run setup was finished or skipped; false only on a first start
     bool dev_log;      // the detailed log (dev mode, see base.h)
 

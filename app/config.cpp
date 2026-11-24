@@ -95,7 +95,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->game_lookup = true;
     c->auto_update = true;
     c->tooltips = true;
-    c->art_texture = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
     wchar_t time_format[80] = L"";
@@ -406,7 +405,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
     else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
-    else if (!strcmp(key, "art_texture")) boolean(&c->art_texture);
+    else if (!strcmp(key, "flat_look")) boolean(&c->flat_look);
     else if (!strcmp(key, "setup_done")) boolean(&c->setup_done);
     else if (!strcmp(key, "sgdb_key")) str_set(c->sgdb_key, value);
     else if (!strcmp(key, "art_service")) str_set(c->art_service.s, value);
@@ -604,7 +603,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("send_stats", c.send_stats);
     boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);
-    boolean("art_texture", c.art_texture);
+    boolean("flat_look", c.flat_look);
     boolean("setup_done", c.setup_done);
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed

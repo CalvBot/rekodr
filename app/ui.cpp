@@ -22,7 +22,6 @@ static Gpu g_gpu;
 // Options picks another colour) only for the selected clip, progress, slider fills, switches that are on, the saved
 // check and focus. Recording, deleting and failures stay red whatever the accent. Blue is for zoom keys.
 static ImVec4 rgb(u32 c, f32 a = 1) { return ImVec4(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a); }
-static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, a)); }
 static const u32 COL_BG = 0x0a0a0a,      // the window and the top bar
                  COL_PANEL = 0x161616,   // cards, the timeline
                  COL_PANEL2 = 0x1f1f1f,  // fields, secondary buttons, popups
@@ -33,6 +32,13 @@ static const u32 COL_BG = 0x0a0a0a,      // the window and the top bar
                  COL_TEXT = 0xf2f2f2, COL_DIM = 0x969696, COL_FAINT = 0x5c5c5c,
                  COL_RED = 0xf0434f,
                  COL_BLUE = 0x5b9cff, COL_OK = 0x3fbf74, COL_WARN = 0xe8a33d;
+// Glass: while the main window is drawn over the art texture (ui_frame), its surfaces (cards, panels, fields,
+// secondary pills, hovers, rails) are their own grey at GLASS_ALPHA, so the art shows through them a little.
+// Popups keep a solid background.
+static bool g_glass;
+static const f32 GLASS_ALPHA = 0.8f;
+static bool col_is_surface(u32 c) { return c == COL_PANEL || c == COL_PANEL2 || c == COL_HOVER || c == COL_OFF; }
+static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, g_glass && col_is_surface(c) ? a * GLASS_ALPHA : a)); }
 // What a sound track is, the same colour everywhere it shows (the Apps pills, the editor's lanes).
 // The toasts' sizes at 100%, shared by the desktop ones (toast.cpp) and the session popup (sessions.cpp): a tile
 // beside a title over a line, then a row of buttons; a marker's note field goes between them.
@@ -1563,27 +1569,116 @@ static void dev_input()
     }
 }
 
-// Behind the whole window, under the top bar too: the game's art (game_art_texture) at 0.22, filling the window
-// and cut to fit. The game is the Library's game chip, else the game of the newest clip. Options > General > Art
-// texture turns it off.
+// Behind the whole window, under the top bar too: the game's art (game_art_texture), filling the window and cut to
+// fit, at g_art_look.opacity at the top and faded out g_art_look.fade_end of the way down, and over it a still
+// film grain (art_grain_texture) at g_art_look.grain. The game is the Library's game chip, else the game of the
+// newest clip; when it changes, the old art fades into the new over ART_FADE_S, eased out, or at once when
+// Windows' "Show animations" is off. Options > General > Flat look turns it all off.
 static ID3D11ShaderResourceView *game_art_texture(const char *name, i32 *w, i32 *h); // appicons.cpp
+static const f64 ART_FADE_S = 0.35;
 
-static void ui_art_texture(ImVec2 p0, ImVec2 p1)
+// Monochrome noise, ART_GRAIN px square, tiled 1:1 over the window. Each pixel a grey around 48, near the level of
+// the art itself, so at the low grain opacity neighbouring pixels differ by a few levels without a haze over it all.
+enum { ART_GRAIN = 256 };
+static ID3D11ShaderResourceView *art_grain_texture()
 {
-    const Library &lib = g_app.library;
-    if (!g_app.config.art_texture) return;
-    const char *game = !g_app.config.side_folders && lib.game[0] ? lib.game : lib.game_count > 0 ? lib.games[0] : "";
-    i32 tw = 0, th = 0;
-    ID3D11ShaderResourceView *tex = game_art_texture(game, &tw, &th);
-    if (!tex || tw <= 0 || th <= 0) return;
+    static ID3D11ShaderResourceView *srv;
+    if (srv) return srv;
+    static u32 px[ART_GRAIN * ART_GRAIN];
+    u32 seed = 0x9e3779b9u;
+    for (i32 i = 0; i < ART_GRAIN * ART_GRAIN; i++) {
+        i32 sum = 0;
+        for (i32 k = 0; k < 3; k++) { // three uniform draws: a bell-shaped spread
+            seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
+            sum += (i32)(seed >> 24);
+        }
+        i32 v = 48 + (sum - 3 * 128) * 2 / 3;
+        v = v < 0 ? 0 : v > 255 ? 255 : v;
+        px[i] = 0xff000000u | (u32)v * 0x010101u;
+    }
+    srv = gpu_texture(px, ART_GRAIN, ART_GRAIN);
+    return srv;
+}
+
+static bool ui_reduced_motion()
+{
+    BOOL animate = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animate, 0);
+    return !animate;
+}
+
+static void art_draw(ImDrawList *dl, ID3D11ShaderResourceView *tex, i32 tw, i32 th, ImVec2 p0, ImVec2 p1, f32 alpha)
+{
     f32 w = p1.x - p0.x, h = p1.y - p0.y;
-    if (w <= 0 || h <= 0) return;
+    if (!tex || tw <= 0 || th <= 0 || w <= 0 || h <= 0 || alpha <= 0) return;
     // Cover: the picture's middle, as much of it as has the window's shape
     f32 u = 1, v = 1;
     if (w / h > (f32)tw / th) v = ((f32)tw / th) / (w / h);
     else u = (w / h) / ((f32)tw / th);
-    ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)tex, p0, p1, ImVec2((1 - u) / 2, (1 - v) / 2),
-                                         ImVec2((1 + u) / 2, (1 + v) / 2), col32(COL_WHITE, 0.22f));
+    // Strongest at the top, gone at g_art_look.fade_end of the way down, eased (smoothstep) over ART_FADE_BANDS bands
+    // whose ends the GPU blends between
+    const i32 ART_FADE_BANDS = 12;
+    f32 u0 = (1 - u) / 2, u1 = (1 + u) / 2, v0 = (1 - v) / 2, fade = g_art_look.fade_end;
+    dl->PushTextureID((ImTextureID)(intptr_t)tex);
+    dl->PrimReserve(ART_FADE_BANDS * 6, ART_FADE_BANDS * 4);
+    for (i32 i = 0; i < ART_FADE_BANDS; i++) {
+        f32 k[2] = {(f32)i / ART_FADE_BANDS, (f32)(i + 1) / ART_FADE_BANDS};
+        ImU32 col[2];
+        for (i32 j = 0; j < 2; j++) {
+            f32 s = k[j] * k[j] * (3 - 2 * k[j]);
+            col[j] = col32(COL_WHITE, alpha * (1 - s));
+        }
+        f32 y0 = p0.y + h * fade * k[0], y1 = p0.y + h * fade * k[1];
+        ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
+        dl->PrimWriteIdx(base), dl->PrimWriteIdx((ImDrawIdx)(base + 1)), dl->PrimWriteIdx((ImDrawIdx)(base + 2));
+        dl->PrimWriteIdx(base), dl->PrimWriteIdx((ImDrawIdx)(base + 2)), dl->PrimWriteIdx((ImDrawIdx)(base + 3));
+        dl->PrimWriteVtx(ImVec2(p0.x, y0), ImVec2(u0, v0 + v * fade * k[0]), col[0]);
+        dl->PrimWriteVtx(ImVec2(p1.x, y0), ImVec2(u1, v0 + v * fade * k[0]), col[0]);
+        dl->PrimWriteVtx(ImVec2(p1.x, y1), ImVec2(u1, v0 + v * fade * k[1]), col[1]);
+        dl->PrimWriteVtx(ImVec2(p0.x, y1), ImVec2(u0, v0 + v * fade * k[1]), col[1]);
+    }
+    dl->PopTextureID();
+}
+
+static void ui_art_texture(ImVec2 p0, ImVec2 p1)
+{
+    const Library &lib = g_app.library;
+    if (g_app.config.flat_look) return;
+    const char *game = !g_app.config.side_folders && lib.game[0] ? lib.game : lib.game_count > 0 ? lib.games[0] : "";
+    struct Shown { ID3D11ShaderResourceView *tex; i32 w, h; };
+    static Shown now, before; // the art shown, and the one fading out
+    static f64 changed = -1;
+    Shown want = {};
+    want.tex = game_art_texture(game, &want.w, &want.h);
+    f64 t = ImGui::GetTime();
+    if (want.tex != now.tex) {
+        bool instant = changed < 0 || ui_reduced_motion(); // the first art shown comes in at once
+        before = instant ? Shown{} : now;
+        now = want;
+        changed = t;
+    }
+    f32 e = 1;
+    if (before.tex) {
+        f32 k = (f32)((t - changed) / ART_FADE_S);
+        if (k >= 1) before = {};
+        else {
+            e = 1 - (1 - k) * (1 - k) * (1 - k); // ease out
+            ui_wake(2);
+        }
+    }
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 a = g_art_look.opacity;
+    art_draw(dl, before.tex, before.w, before.h, p0, p1, a * (1 - e));
+    art_draw(dl, now.tex, now.w, now.h, p0, p1, a * e);
+    if (g_art_look.grain <= 0) return;
+    ID3D11ShaderResourceView *grain = art_grain_texture();
+    if (!grain) return;
+    ImU32 gc = col32(COL_WHITE, g_art_look.grain);
+    const f32 tile = (f32)ART_GRAIN;
+    for (f32 y = floorf(p0.y); y < p1.y; y += tile)
+        for (f32 x = floorf(p0.x); x < p1.x; x += tile)
+            dl->AddImage((ImTextureID)(intptr_t)grain, ImVec2(x, y), ImVec2(x + tile, y + tile), ImVec2(0, 0),
+                         ImVec2(1, 1), gc);
 }
 
 static void ui_frame()
@@ -1622,6 +1717,16 @@ static void ui_frame()
         goto rendered;
     }
     ui_art_texture(vp->WorkPos, ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y));
+    g_glass = !g_app.config.flat_look;
+    static const ImGuiCol glass_cols[] = {ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive, ImGuiCol_Button,
+                                          ImGuiCol_ButtonHovered, ImGuiCol_ButtonActive, ImGuiCol_Header,
+                                          ImGuiCol_HeaderHovered, ImGuiCol_HeaderActive, ImGuiCol_ScrollbarGrab};
+    if (g_glass)
+        for (ImGuiCol k : glass_cols) {
+            ImVec4 v = ImGui::GetStyle().Colors[k];
+            v.w *= GLASS_ALPHA;
+            ImGui::PushStyleColor(k, v);
+        }
     top_bar(kit_px(46));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
     // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail.
@@ -1640,6 +1745,8 @@ static void ui_frame()
     ImGui::EndChild();
     links_notice_draw();
     help_window();
+    if (g_glass) ImGui::PopStyleColor(COUNT(glass_cols));
+    g_glass = false;
     ImGui::End();
 
 rendered:

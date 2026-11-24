@@ -346,80 +346,296 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
     return slot->srv;
 }
 
-// A game's art for behind the window: its SteamGridDB hero, else its grid (gamedb_art's ART_COVER), in grey, shrunk
-// to ART_TEXTURE_W across and blurred until only its light and shade are left. Stretched over the window, each pixel
-// covers a few dozen, and drawing it smooths between them. Made once per game. Null if it has none, and while it is
-// being fetched.
-enum { ART_TEXTURE_W = 96, ART_TEXTURE_H = 64 };
-static AppIcon g_art_textures[LIB_MAX_GAMES];
-static i32 g_art_texture_count;
+// A game's art for behind the window (ui_art_texture): its SteamGridDB hero, else its grid (gamedb_art's ART_COVER),
+// in grey, shrunk to g_art_look.w across, Gaussian blurred (g_art_look.blur texels) until only its big light and
+// dark masses are left, and its levels stretched so its darkest and lightest parts reach black and white. Stretched
+// over the window, drawing it smooths between the texels. A worker thread makes one for every game whose art is
+// there, at start and as art arrives, the Library's games first, and keeps it in local_dir\arttex\<game id>.grey,
+// so a later start only reads it back.
+struct ArtLook {
+    i32 w;          // texels across
+    f32 blur;       // Gaussian sigma, in texels
+    f32 opacity;    // of the art over the ground, at the top of the window
+    f32 fade_end;   // where down the window (0 top, 1 bottom) the art has faded out to the ground
+    f32 grain;      // of the grain over the art
+};
+static constexpr ArtLook g_art_look = {192, 1.2f, 0.26f, 0.5f, 0.025f};
+// The tallest kept is 5/8 of the width; a taller picture is cut to its middle.
+enum { ART_W_MAX = 192, ART_H_MAX = ART_W_MAX * 5 / 8 };
+static_assert(g_art_look.w <= ART_W_MAX);
 
-static ID3D11ShaderResourceView *art_texture_load(const Path &file, i32 *out_w, i32 *out_h)
+static i32 art_clamp(i32 v, i32 lo, i32 hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+enum ArtState : u8 { ART_NEW, ART_QUEUED, ART_MAKING, ART_MADE, ART_DONE };
+struct ArtTexture {
+    char      name[64];
+    ArtState  state;   // NEW: not looked at; QUEUED/MAKING: with the worker; MADE: `grey` waits to be uploaded
+    bool      waiting; // its art is being fetched: looked at again when it arrives
+    i32       w, h;
+    u8       *grey;    // MADE: the worker's picture, w x h (heap)
+    Path      art, cache;
+    ID3D11ShaderResourceView *srv;
+};
+static ArtTexture g_art[LIB_MAX_GAMES];
+static i32 g_art_count;
+static struct {
+    SRWLOCK lock; // over the slots' state, w, h and grey
+    HANDLE  wake, thread;
+    u64     games_hash; // of the Library's games last asked for
+    bool    dirty;      // the games list or art changed: ask again
+    bool    sweep;      // under the lock: the worker is to look through every game's art
+    Path    art_dir, cache_dir;
+} g_art_worker;
+
+// The look's key, kept in each cached file: a file made with another look is made again.
+static u32 art_look_key() { return (u32)g_art_look.w * 1000u + (u32)(g_art_look.blur * 100.0f + 0.5f); }
+
+// The art file as the grey picture, into `grey` (ART_W_MAX x ART_H_MAX). Worker thread.
+static bool art_grey_make(IWICImagingFactory *wic, const Path &file, u8 *grey, i32 *out_w, i32 *out_h)
 {
-    static IWICImagingFactory *wic;
-    if (!wic && FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return 0;
     i32 w = 0, h = 0;
     u32 *pixels = wic_load(wic, file.s, &w, &h);
-    if (!pixels) return 0;
-    i32 bw = ART_TEXTURE_W, bh = h * bw / (w > 0 ? w : 1);
-    if (bh > ART_TEXTURE_H) bh = ART_TEXTURE_H;
+    if (!pixels) return false;
+    i32 bw = g_art_look.w, bh = h * bw / (w > 0 ? w : 1);
+    if (bh > bw * 5 / 8) bh = bw * 5 / 8;
     if (bh < 4 || w < bw || h < bh) {
         HeapFree(GetProcessHeap(), 0, pixels);
-        return 0;
+        return false;
     }
-    static u8 grey[ART_TEXTURE_W * ART_TEXTURE_H], pass[ART_TEXTURE_W * ART_TEXTURE_H];
+    static f32 a[ART_W_MAX * ART_H_MAX], b[ART_W_MAX * ART_H_MAX];
+    // Each texel the average brightness of the pixels it covers
+    i32 used_h = (i32)((i64)w * bh / bw), top = (h - used_h) / 2;
+    if (used_h > h) used_h = h, top = 0;
     for (i32 y = 0; y < bh; y++)
-        for (i32 x = 0; x < bw; x++) { // each pixel the average brightness of the ones it covers
-            i32 x0 = x * w / bw, x1 = (x + 1) * w / bw, y0 = y * h / bh, y1 = (y + 1) * h / bh;
+        for (i32 x = 0; x < bw; x++) {
+            i32 x0 = x * w / bw, x1 = (x + 1) * w / bw, y0 = top + y * used_h / bh, y1 = top + (y + 1) * used_h / bh;
             u64 sum = 0, n = 0;
-            for (i32 sy = y0; sy < y1; sy += 2)
-                for (i32 sx = x0; sx < x1; sx += 2) {
+            for (i32 sy = y0; sy < y1; sy++)
+                for (i32 sx = x0; sx < x1; sx++) {
                     u32 p = pixels[sy * w + sx];
                     sum += (((p >> 16) & 255) * 54 + ((p >> 8) & 255) * 183 + (p & 255) * 19) >> 8;
                     n++;
                 }
-            grey[y * bw + x] = (u8)(n ? sum / n : 0);
+            a[y * bw + x] = n ? (f32)sum / n : 0;
         }
     HeapFree(GetProcessHeap(), 0, pixels);
-    for (i32 round = 0; round < 3; round++) // each pixel with the 24 around it, three times over
-        for (i32 dir = 0; dir < 2; dir++) {  // across, then down
-            for (i32 y = 0; y < bh; y++)
-                for (i32 x = 0; x < bw; x++) {
-                    u32 sum = 0, n = 0;
-                    for (i32 d = -2; d <= 2; d++) {
-                        i32 sx = dir ? x : x + d, sy = dir ? y + d : y;
-                        if (sx < 0 || sy < 0 || sx >= bw || sy >= bh) continue;
-                        sum += grey[sy * bw + sx];
-                        n++;
-                    }
-                    pass[y * bw + x] = (u8)(sum / n);
+    // Gaussian blur, across then down, the edges held
+    f32 kernel[64];
+    i32 r = (i32)(g_art_look.blur * 3.0f + 0.5f);
+    if (r > 31) r = 31;
+    f32 ksum = 0;
+    for (i32 i = -r; i <= r; i++) ksum += kernel[i + r] = expf(-(f32)(i * i) / (2 * g_art_look.blur * g_art_look.blur + 1e-6f));
+    for (i32 i = 0; i <= 2 * r; i++) kernel[i] /= ksum;
+    for (i32 dir = 0; dir < 2; dir++) {
+        f32 *from = dir ? b : a, *to = dir ? a : b;
+        for (i32 y = 0; y < bh; y++)
+            for (i32 x = 0; x < bw; x++) {
+                f32 v = 0;
+                for (i32 d = -r; d <= r; d++) {
+                    i32 sx = dir ? x : art_clamp(x + d, 0, bw - 1), sy = dir ? art_clamp(y + d, 0, bh - 1) : y;
+                    v += from[sy * bw + sx] * kernel[d + r];
                 }
-            memcpy(grey, pass, (size_t)bw * bh);
-        }
-    static u32 out[ART_TEXTURE_W * ART_TEXTURE_H];
-    for (i32 i = 0; i < bw * bh; i++) out[i] = 0xff000000u | (u32)grey[i] * 0x010101u;
+                to[y * bw + x] = v;
+            }
+    }
+    // Levels: the darkest 2% to black, the lightest 2% to white
+    u32 hist[256] = {};
+    for (i32 i = 0; i < bw * bh; i++) hist[art_clamp((i32)a[i], 0, 255)]++;
+    i32 lo = 0, hi = 255, cut = bw * bh / 50;
+    for (u32 n = 0; lo < 255 && (n += hist[lo]) <= (u32)cut;) lo++;
+    for (u32 n = 0; hi > 0 && (n += hist[hi]) <= (u32)cut;) hi--;
+    if (hi - lo < 16) hi = lo + 16;
+    for (i32 i = 0; i < bw * bh; i++) grey[i] = (u8)art_clamp((i32)((a[i] - lo) * 255.0f / (hi - lo) + 0.5f), 0, 255);
     *out_w = bw;
     *out_h = bh;
-    return gpu_texture(out, bw, bh);
+    return true;
 }
 
-static ID3D11ShaderResourceView *game_art_texture(const char *name, i32 *w, i32 *h)
+struct ArtFileHead { u32 magic, key; u16 w, h; };
+static const u32 ART_MAGIC = 0x54414243; // "CBAT"
+
+// A cached grey picture, when it is newer than the art and made with this look. Worker thread.
+static bool art_grey_read(const Path &cache, const Path &art, u8 *grey, i32 *w, i32 *h)
 {
-    if (!name[0] || game_is_none(name) || game_is_custom(name)) return 0;
-    AppIcon *slot = icon_slot(g_art_textures, &g_art_texture_count, COUNT(g_art_textures), name);
-    if (!slot) return 0;
-    if (!slot->srv && !slot->tried && icon_lookup_ok()) {
-        slot->tried = true;
-        slot->waiting = false;
+    WIN32_FILE_ATTRIBUTE_DATA fc, fa;
+    if (!GetFileAttributesExW(cache.s, GetFileExInfoStandard, &fc) || !GetFileAttributesExW(art.s, GetFileExInfoStandard, &fa))
+        return false;
+    if (CompareFileTime(&fc.ftLastWriteTime, &fa.ftLastWriteTime) < 0) return false;
+    FILE *f = _wfopen(cache.s, L"rb");
+    if (!f) return false;
+    ArtFileHead head = {};
+    bool ok = fread(&head, sizeof head, 1, f) == 1 && head.magic == ART_MAGIC && head.key == art_look_key() &&
+              head.w >= 4 && head.w <= ART_W_MAX && head.h >= 4 && head.h <= ART_H_MAX &&
+              fread(grey, (size_t)head.w * head.h, 1, f) == 1;
+    fclose(f);
+    *w = head.w;
+    *h = head.h;
+    return ok;
+}
+
+static void art_grey_write(const Path &cache, const u8 *grey, i32 w, i32 h)
+{
+    Path tmp = cache;
+    wcscat_s(tmp.s, L".part");
+    FILE *f = _wfopen(tmp.s, L"wb");
+    if (!f) return;
+    ArtFileHead head = {ART_MAGIC, art_look_key(), (u16)w, (u16)h};
+    bool ok = fwrite(&head, sizeof head, 1, f) == 1 && fwrite(grey, (size_t)w * h, 1, f) == 1;
+    ok &= fclose(f) == 0;
+    if (!ok || !MoveFileExW(tmp.s, cache.s, MOVEFILE_REPLACE_EXISTING)) DeleteFileW(tmp.s);
+}
+
+// The grey picture for an art file: the cached one, else made from the art and cached. Worker thread.
+static bool art_grey_cached(IWICImagingFactory *wic, const Path &art, const Path &cache, u8 *grey, i32 *w, i32 *h)
+{
+    if (art_grey_read(cache, art, grey, w, h)) return true;
+    if (!wic || !art_grey_make(wic, art, grey, w, h)) return false;
+    art_grey_write(cache, grey, *w, *h);
+    return true;
+}
+
+enum { GAMEDB_ART_TEXTURE = 4 }; // gamedb_on_event: a game's art texture has been made
+
+static DWORD WINAPI art_worker(void *)
+{
+    CoInitializeEx(0, COINIT_MULTITHREADED);
+    IWICImagingFactory *wic = 0;
+    CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+    static u8 grey[ART_W_MAX * ART_H_MAX];
+    for (;;) {
+        WaitForSingleObject(g_art_worker.wake, INFINITE);
+        for (;;) {
+            AcquireSRWLockExclusive(&g_art_worker.lock);
+            ArtTexture *t = 0;
+            for (i32 i = 0; i < g_art_count && !t; i++)
+                if (g_art[i].state == ART_QUEUED) t = &g_art[i];
+            if (t) t->state = ART_MAKING;
+            ReleaseSRWLockExclusive(&g_art_worker.lock);
+            if (!t) break;
+            i32 w = 0, h = 0;
+            bool ok = art_grey_cached(wic, t->art, t->cache, grey, &w, &h);
+            u8 *copy = ok ? (u8 *)malloc((size_t)w * h) : 0;
+            if (copy) memcpy(copy, grey, (size_t)w * h);
+            AcquireSRWLockExclusive(&g_art_worker.lock);
+            t->grey = copy;
+            t->w = w;
+            t->h = h;
+            t->state = copy ? ART_MADE : ART_DONE;
+            ReleaseSRWLockExclusive(&g_art_worker.lock);
+            Event e = {};
+            e.kind = EV_GAMEDB;
+            e.a = GAMEDB_ART_TEXTURE;
+            event_post(e);
+        }
+        // Then every game's art there is, the Library's or not, so a game shown later has its texture ready
+        AcquireSRWLockExclusive(&g_art_worker.lock);
+        bool sweep = g_art_worker.sweep;
+        g_art_worker.sweep = false;
+        ReleaseSRWLockExclusive(&g_art_worker.lock);
+        if (!sweep) continue;
+        WIN32_FIND_DATAW fd;
+        HANDLE find = FindFirstFileW(path_join(g_art_worker.art_dir, L"*-art.jpg").s, &fd);
+        for (BOOL more = find != INVALID_HANDLE_VALUE; more; more = FindNextFileW(find, &fd)) {
+            if (!fd.nFileSizeLow && !fd.nFileSizeHigh) continue; // none to be had
+            wchar_t name[MAX_PATH];
+            swprintf(name, COUNT(name), L"%s", fd.cFileName);
+            *wcsstr(name, L"-art.jpg") = 0;
+            wcscat_s(name, L".grey");
+            i32 w = 0, h = 0;
+            art_grey_cached(wic, path_join(g_art_worker.art_dir, fd.cFileName), path_join(g_art_worker.cache_dir, name),
+                            grey, &w, &h);
+        }
+        if (find != INVALID_HANDLE_VALUE) FindClose(find);
+    }
+}
+
+// Starts the worker on what is queued, and with `sweep` on every game's art as well. Main thread.
+static void art_worker_wake(bool sweep)
+{
+    if (!g_art_worker.thread) {
+        g_art_worker.art_dir = path_join(gamedb_dir(), L"art");
+        g_art_worker.cache_dir = path_join(g_app.paths.local_dir, L"arttex");
+        CreateDirectoryW(g_art_worker.cache_dir.s, 0);
+        g_art_worker.wake = CreateEventW(0, FALSE, FALSE, 0);
+        g_art_worker.thread = CreateThread(0, 0, art_worker, 0, 0, 0);
+    }
+    if (sweep) {
+        AcquireSRWLockExclusive(&g_art_worker.lock);
+        g_art_worker.sweep = true;
+        ReleaseSRWLockExclusive(&g_art_worker.lock);
+    }
+    SetEvent(g_art_worker.wake);
+}
+
+// Asks for every Library game's art texture that isn't made yet: from the cache, else from its art once that is
+// there. Main thread; cheap when nothing changed.
+static void art_textures_update()
+{
+    if (g_app.config.flat_look) return;
+    const Library &lib = g_app.library;
+    u64 hash = fnv64(lib.games, sizeof lib.games[0] * (size_t)lib.game_count);
+    if (!g_art_worker.dirty && hash == g_art_worker.games_hash) return;
+    g_art_worker.dirty = false;
+    g_art_worker.games_hash = hash;
+    bool queued = false;
+    for (i32 i = 0; i < lib.game_count; i++) {
+        const char *name = lib.games[i];
+        if (!name[0] || game_is_none(name) || game_is_custom(name)) continue;
+        ArtTexture *t = 0;
+        for (i32 k = 0; k < g_art_count && !t; k++)
+            if (str_eq(g_art[k].name, name)) t = &g_art[k];
+        if (!t) {
+            if (g_art_count >= COUNT(g_art)) continue;
+            AcquireSRWLockExclusive(&g_art_worker.lock);
+            t = &g_art[g_art_count++];
+            *t = {};
+            str_set(t->name, name);
+            ReleaseSRWLockExclusive(&g_art_worker.lock);
+        }
+        if (t->state != ART_NEW) continue; // only the main thread moves a slot on from NEW
         GameInfo g;
         Path p = {};
-        if (gamedb_for_art(name, &g) && gamedb_art(g, ART_COVER, &p, &slot->waiting))
-            slot->srv = art_texture_load(p, &slot->w, &slot->h);
-        ui_wake();
+        t->waiting = false;
+        if (!gamedb_for_art(name, &g) || !gamedb_art(g, ART_COVER, &p, &t->waiting)) {
+            t->state = ART_DONE;
+            continue;
+        }
+        wchar_t file[64];
+        swprintf(file, COUNT(file), L"%hs.grey", g.id);
+        AcquireSRWLockExclusive(&g_art_worker.lock);
+        t->art = p;
+        t->cache = path_join(path_join(g_app.paths.local_dir, L"arttex"), file);
+        t->state = ART_QUEUED;
+        ReleaseSRWLockExclusive(&g_art_worker.lock);
+        queued = true;
     }
-    *w = slot->w;
-    *h = slot->h;
-    return slot->srv;
+    if (queued) art_worker_wake(false);
+}
+
+// A game's art texture and its size, once made. Null if it has none, and while it is being fetched or made.
+static ID3D11ShaderResourceView *game_art_texture(const char *name, i32 *w, i32 *h)
+{
+    art_textures_update();
+    if (!name[0]) return 0;
+    ArtTexture *t = 0;
+    for (i32 k = 0; k < g_art_count && !t; k++)
+        if (str_eq(g_art[k].name, name)) t = &g_art[k];
+    if (!t) return 0;
+    if (!t->srv) {
+        AcquireSRWLockExclusive(&g_art_worker.lock);
+        if (t->state == ART_MADE) {
+            static u32 bgra[ART_W_MAX * ART_H_MAX];
+            for (i32 i = 0; i < t->w * t->h; i++) bgra[i] = 0xff000000u | (u32)t->grey[i] * 0x010101u;
+            t->srv = gpu_texture(bgra, t->w, t->h);
+            free(t->grey);
+            t->grey = 0;
+            t->state = ART_DONE;
+        }
+        ReleaseSRWLockExclusive(&g_art_worker.lock);
+    }
+    *w = t->w;
+    *h = t->h;
+    return t->srv;
 }
 
 // The icon for a game's name: the database's, else the app clipback knows by that name, else the installed
@@ -454,6 +670,10 @@ static void library_rescan(); // library.cpp
 // The games list has loaded, art has arrived, or a modpack has been named. Main thread.
 static void gamedb_on_event(const Event &e)
 {
+    if (e.a == GAMEDB_ART_TEXTURE) {
+        ui_wake();
+        return;
+    }
     if (e.a == GAMEDB_LOADED || e.a == GAMEDB_RESOLVED) {
         Config &c = g_app.config;
         bool changed = false;
@@ -476,8 +696,14 @@ static void gamedb_on_event(const Event &e)
         if (!g_db_icons[i].srv && (g_db_icons[i].waiting || e.a == GAMEDB_LOADED)) g_db_icons[i].tried = false;
     for (i32 i = 0; i < g_db_cover_count; i++)
         if (!g_db_covers[i].srv && (g_db_covers[i].waiting || e.a == GAMEDB_LOADED)) g_db_covers[i].tried = false;
-    for (i32 i = 0; i < g_art_texture_count; i++)
-        if (!g_art_textures[i].srv && (g_art_textures[i].waiting || e.a == GAMEDB_LOADED)) g_art_textures[i].tried = false;
+    for (i32 i = 0; i < g_art_count; i++)
+        if (g_art[i].state == ART_DONE && !g_art[i].srv && (g_art[i].waiting || e.a == GAMEDB_LOADED)) {
+            g_art[i].state = ART_NEW;
+            g_art_worker.dirty = true;
+        }
+    if (e.a == GAMEDB_LOADED) g_art_worker.dirty = true;
+    if (!g_app.config.flat_look && (e.a == GAMEDB_LOADED || e.a == GAMEDB_ART)) art_worker_wake(true);
+    art_textures_update(); // with the window hidden too, so the textures are ready when it shows
     ui_wake();
 }
 

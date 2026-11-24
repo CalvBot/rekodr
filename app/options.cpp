@@ -4202,9 +4202,9 @@ static void options_general()
         log_line("options: tooltips %s", c.tooltips ? "on" : "off");
         options_apply(0);
     }
-    if (opt_row_toggle("Art texture", "The game's art, grey and blurred, behind the window", "##arttexture",
-                       &c.art_texture)) {
-        log_line("options: art texture %s", c.art_texture ? "on" : "off");
+    if (opt_row_toggle("Flat look", "Plain flat colours: no game art behind the window, no grain", "##flatlook",
+                       &c.flat_look)) {
+        log_line("options: flat look %s", c.flat_look ? "on" : "off");
         options_apply(0);
     }
     // Where the toasts go: Clip saved, Session ended and the marker window, a monitor and a corner on a map of them.
