@@ -87,8 +87,8 @@ static void ui_apply_accent(u32 c)
     }
 }
 
-// Fonts: Geist (beside the exe, fonts\OFL.txt in the source) with Segoe UI behind it for letters Geist lacks, and
-// the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*). Without Geist, Segoe UI alone.
+// Fonts: Geist (built into the exe, fonts\OFL.txt in the source) with Segoe UI behind it for letters Geist lacks,
+// and the Segoe Fluent Icons glyphs merged in, so a label can start with an icon (ICON_*).
 // g_font 14 px, g_font_bold 14 px semibold, g_font_small 12.5 px, g_font_big 18 px bold (card and dialog titles),
 // g_font_title 26 px bold (screen titles), g_font_icon 18 px icons alone (icon buttons).
 static ImFont *g_font, *g_font_bold, *g_font_small, *g_font_big, *g_font_title, *g_font_icon;
@@ -252,36 +252,30 @@ static void ui_center_icons(ImFont *font, f32 mid)
     }
 }
 
+// A Geist weight built into the exe (an RCDATA resource, clipback.rc). The atlas reads it in place.
+static void *ui_font_resource(i32 id, i32 *size)
+{
+    HRSRC res = FindResourceW(0, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10)); // RT_RCDATA
+    HGLOBAL mem = res ? LoadResource(0, res) : 0;
+    *size = res ? (i32)SizeofResource(0, res) : 0;
+    return mem ? LockResource(mem) : 0;
+}
+
 static void ui_load_fonts(f32 scale)
 {
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
     wchar_t windir[MAX_PATH];
     GetWindowsDirectoryW(windir, MAX_PATH);
-    char regular[MAX_PATH * 3], semibold[MAX_PATH * 3], bold[MAX_PATH * 3], segoe[MAX_PATH * 3], segoe_sb[MAX_PATH * 3];
+    char segoe[MAX_PATH * 3], segoe_sb[MAX_PATH * 3];
     char dir[MAX_PATH * 3];
     wide_to_utf8(windir, dir, sizeof dir);
     snprintf(segoe, sizeof segoe, "%s\\Fonts\\segoeui.ttf", dir);
     snprintf(segoe_sb, sizeof segoe_sb, "%s\\Fonts\\seguisb.ttf", dir);
-    wchar_t exe_w[MAX_PATH];
-    char exe_dir[MAX_PATH * 3] = "";
-    DWORD exe_n = GetModuleFileNameW(0, exe_w, MAX_PATH);
-    if (exe_n > 0 && exe_n < MAX_PATH) {
-        wchar_t *slash = wcsrchr(exe_w, L'\\');
-        if (slash) *slash = 0;
-        wide_to_utf8(exe_w, exe_dir, sizeof exe_dir);
-    }
-    snprintf(regular, sizeof regular, "%s\\Geist-Regular.ttf", exe_dir);
-    snprintf(semibold, sizeof semibold, "%s\\Geist-SemiBold.ttf", exe_dir);
-    snprintf(bold, sizeof bold, "%s\\Geist-Bold.ttf", exe_dir);
-    bool geist = GetFileAttributesA(regular) != INVALID_FILE_ATTRIBUTES &&
-                 GetFileAttributesA(semibold) != INVALID_FILE_ATTRIBUTES &&
-                 GetFileAttributesA(bold) != INVALID_FILE_ATTRIBUTES;
-    if (!geist) {
-        str_set(regular, segoe);
-        str_set(semibold, segoe_sb);
-        str_set(bold, segoe_sb);
-    }
+    i32 regular_n, semibold_n, bold_n;
+    void *regular = ui_font_resource(30, &regular_n);
+    void *semibold = ui_font_resource(31, &semibold_n);
+    void *bold = ui_font_resource(32, &bold_n);
 
     char icons[MAX_PATH * 3];
     snprintf(icons, sizeof icons, "%s\\Fonts\\SegoeIcons.ttf", dir);
@@ -292,21 +286,22 @@ static void ui_load_fonts(f32 scale)
     static const ImWchar icon_ranges[] = {0xE700, 0xF8FF, 0};
     ImFontConfig cfg;
     cfg.OversampleH = 2;
+    cfg.FontDataOwnedByAtlas = false; // resource memory, never freed
     ImFontConfig merge;
     merge.MergeMode = true;
     merge.OversampleH = 2;
     merge.PixelSnapH = true;
-    auto add = [&](const char *file, const char *fallback, f32 px, f32 icon_px) {
-        ImFont *f = io.Fonts->AddFontFromFileTTF(file, px * scale, &cfg, ranges);
-        if (f && geist) io.Fonts->AddFontFromFileTTF(fallback, px * scale, &merge, ranges); // only what Geist lacks
+    auto add = [&](void *geist, i32 geist_n, const char *fallback, f32 px, f32 icon_px) {
+        ImFont *f = geist ? io.Fonts->AddFontFromMemoryTTF(geist, geist_n, px * scale, &cfg, ranges) : 0;
+        if (f) io.Fonts->AddFontFromFileTTF(fallback, px * scale, &merge, ranges); // only what Geist lacks
         if (f) io.Fonts->AddFontFromFileTTF(icons, icon_px * scale, &merge, icon_ranges);
         return f;
     };
-    g_font = add(regular, segoe, 14, 14);
-    g_font_bold = add(semibold, segoe_sb, 14, 14);
-    g_font_small = add(regular, segoe, 12.5f, 12.5f);
-    g_font_big = add(bold, segoe_sb, 18, 17);
-    g_font_title = add(bold, segoe_sb, 26, 22);
+    g_font = add(regular, regular_n, segoe, 14, 14);
+    g_font_bold = add(semibold, semibold_n, segoe_sb, 14, 14);
+    g_font_small = add(regular, regular_n, segoe, 12.5f, 12.5f);
+    g_font_big = add(bold, bold_n, segoe_sb, 18, 17);
+    g_font_title = add(bold, bold_n, segoe_sb, 26, 22);
     ImFontConfig alone;
     alone.OversampleH = 2;
     alone.PixelSnapH = true;
@@ -318,11 +313,9 @@ static void ui_load_fonts(f32 scale)
     if (!g_font_title) g_font_title = g_font_big;
     if (!g_font_icon) g_font_icon = g_font;
     io.Fonts->Build();
-    // Geist's capitals sit in the middle of their line; Segoe UI's a little under it, about 0.6 px at 100%
-    f32 low = geist ? 0 : 0.6f;
     ImFont *text_fonts[] = {g_font, g_font_bold, g_font_small, g_font_big, g_font_title};
-    for (ImFont *f : text_fonts)
-        if (f != g_font_icon) ui_center_icons(f, f->FontSize / 2 + low * f->FontSize / 14);
+    for (ImFont *f : text_fonts) // Geist's capitals sit in the middle of their line
+        if (f != g_font_icon) ui_center_icons(f, f->FontSize / 2);
     ui_center_icons(g_font_icon, g_font_icon->FontSize / 2);
     ImGui_ImplDX11_InvalidateDeviceObjects(); // the font texture is remade on the next frame
 }

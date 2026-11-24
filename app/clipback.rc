@@ -11,6 +11,11 @@
 21 RCDATA "../assets/host-litterbox.png"
 22 RCDATA "../assets/host-cloudflare.png"
 
+// The app's typeface, Geist (fonts/OFL.txt is its licence), read in place by ui_load_fonts.
+30 RCDATA "fonts/Geist-Regular.ttf"
+31 RCDATA "fonts/Geist-SemiBold.ttf"
+32 RCDATA "fonts/Geist-Bold.ttf"
+
 #include "version.h"
 
 1 VERSIONINFO
