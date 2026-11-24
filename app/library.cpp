@@ -5835,6 +5835,8 @@ static void lib_folder_list(f32 w, bool collapsed)
     ImGui::PopID();
 }
 
+enum { LIB_PAD_Y = 16 }; // the screen's padding above and below, which the list on the left keeps too
+
 static void screen_library()
 {
     Library &lib = g_app.library;
@@ -5843,17 +5845,105 @@ static void screen_library()
         lib_folders_load();
         lib_refilter();
     }
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 fh = ImGui::GetFrameHeight(), view_w = kit_px(104);
+    // The list down the left, docked to the window's left edge from the top bar to the bottom: a flat panel with a
+    // hairline on its inner edge. A Games / Folders switch level with the Clips and Sessions one, then all of them
+    // and each game in this view with how many it has, most recent first, or this view's folders. It scrolls on its
+    // own (the wheel, no bar) when there are more than fit. The button at its foot, level with the footer, collapses
+    // it to a rail of icons, which stay where they were.
+    if (!lib.player.open) {
+        bool &collapsed = g_app.config.games_collapsed;
+        f32 icon_end = kit_px(6 + 8 + 20); // a row's icon ends this far in from the list's left
+        f32 side_w = collapsed ? icon_end + kit_px(14) : 2 * view_w + kit_px(4), side_h = ImGui::GetContentRegionAvail().y;
+        f32 pad_y = kit_px(LIB_PAD_Y);
+        ImVec2 s0 = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL));
+        dl->AddRectFilled(ImVec2(s0.x + side_w - kit_px(1), s0.y), ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_LINE));
+        ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + pad_y));
+        f32 foot = fh + kit_px(6);
+        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - 2 * pad_y - foot), 0,
+                          ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
+        bool &by_folder = g_app.config.side_folders;
+        if (lib_side_toggle(side_w - kit_px(12), collapsed)) {
+            by_folder = !by_folder;
+            lib.folder_renaming = 0;
+            config_save(g_app.config, g_app.paths);
+            lib.scroll = lib.scroll_to = 0;
+            lib_refilter();
+        }
+        i32 pick = -1;
+        static char game_target[64]; // the game a right-click menu is about
+        bool game_menu = false;
+        i32 order[LIB_MAX_GAMES + 1] = {0}; // All games, then the favourite games, then the rest
+        i32 shown = by_folder ? 0 : 1 + lib_favourite_order("games", lib.game_count, [&](i32 i) { return (const char *)lib.games[i]; }, order + 1);
+        for (i32 o = 1; o < shown; o++) order[o]++;
+        if (by_folder) lib_folder_list(side_w - kit_px(12), collapsed);
+        else for (i32 o = 0; o < shown; o++) {
+            i32 c = order[o];
+            const char *name = c == 0 ? "All games" : lib.games[c - 1];
+            bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
+            ImGui::PushID(c);
+            // No game gets a built-in glyph: a monitor for Desktop, a video for files not ours; a custom game a
+            // controller
+            bool none = c > 0 && game_is_none(name), custom = c > 0 && !none && game_is_custom(name);
+            const char *glyph = custom ? ICON_GAME : !none ? 0 : !strcmp(name, GAME_DESKTOP) ? ICON_MONITOR : ICON_VIDEO;
+            if (lib_game_item(c == 0 || none || custom ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
+                              side_w - kit_px(12), collapsed, glyph, c > 0 && lib_favourite_find("games", name) >= 0))
+                pick = c;
+            if (c > 0 && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                str_set(game_target, name);
+                game_menu = true;
+            }
+            ImGui::PopID();
+        }
+        if (game_menu) ImGui::OpenPopup("game_menu");
+        lib_popup_style_push(6);
+        if (ImGui::BeginPopup("game_menu")) {
+            bool favourite = lib_favourite_find("games", game_target) >= 0;
+            if (lib_menu_item(favourite ? ICON_STAR : ICON_STAR_FILL, favourite ? "Unfavourite" : "Favourite"))
+                lib_favourite_set("games", game_target, !favourite);
+            ImGui::EndPopup();
+        }
+        lib_popup_style_pop();
+        ImGui::EndChild();
+        // The collapse button at the list's foot: in its bottom left corner, in the middle of the rail it collapses to,
+        // so it's in the same place either way and only its arrow turns.
+        f32 rail_w = icon_end + kit_px(14);
+        ImGui::SetCursorScreenPos(ImVec2(floorf(s0.x + (rail_w - fh) / 2), s0.y + side_h - pad_y - fh));
+        kit_next_tip(collapsed ? "Show the list" : "Collapse the list");
+        if (kit_icon_button(collapsed ? ICON_RIGHT : ICON_LEFT, "##games_collapse")) {
+            collapsed = !collapsed;
+            config_save(g_app.config, g_app.paths);
+            log_line("library: the list on the left %s", collapsed ? "collapsed" : "shown");
+        }
+        if (pick >= 0) {
+            if (pick == 0) lib.game[0] = 0;
+            else str_set(lib.game, lib.games[pick - 1]);
+            lib.scroll = lib.scroll_to = 0;
+            lib_refilter();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(s0.x + side_w, s0.y));
+    }
+
+    // Everything else, the player too, right of the list in the screen's usual padding (the Library's screen has
+    // none of its own, so the list reaches the window's edges)
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(UI_GUTTER), kit_px(LIB_PAD_Y)));
+    ImGui::BeginChild("##libmain", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar();
     lib_uploads_poll();
     lib_note_draw();
     ffget_bar();
     lib_share_pending_check();
     if (lib.player.open) {
         lib_player_view();
+        ImGui::EndChild();
         return;
     }
     ImGuiIO &io = ImGui::GetIO();
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 full_w = ImGui::GetContentRegionAvail().x, fh = ImGui::GetFrameHeight();
+    dl = ImGui::GetWindowDrawList();
+    f32 full_w = ImGui::GetContentRegionAvail().x;
 
     // Header, all of one height: the Clips / Sessions switch, then pills that each drop a list (the date range, the
     // order), and the search on the right. A list that is narrowing what's shown is outlined.
@@ -5861,7 +5951,7 @@ static void screen_library()
     static const char *const views[] = {ICON_VIDEO "  Clips", ICON_GAME "  Sessions"};
     static const char *const ranges[] = {"All time", "Today", "This week", "This month", "Custom"};
     static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
-    f32 hgap = kit_px(8), view_w = kit_px(104), drop_w = kit_px(112);
+    f32 hgap = kit_px(8), drop_w = kit_px(112);
     ImGui::SetCursorScreenPos(h0);
     bool flip_view = lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER,
                                 COL_OFF);
@@ -5954,82 +6044,6 @@ static void screen_library()
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
 
-    // The list down the left, as wide as the Clips and Sessions toggle over it: a Games / Folders switch, then all
-    // of them and each game in this view with how many it has, most recent first, or this view's folders. It
-    // scrolls on its own when there are more than fit. The button at its foot collapses it to a rail of icons,
-    // which stay where they were.
-    {
-        bool &collapsed = g_app.config.games_collapsed;
-        f32 icon_end = kit_px(6 + 8 + 20); // a row's icon ends this far in from the list's left
-        f32 side_w = collapsed ? icon_end + kit_px(14) : 2 * view_w + kit_px(4), side_h = ImGui::GetContentRegionAvail().y;
-        ImVec2 s0 = ImGui::GetCursorScreenPos();
-        dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL), kit_px(10));
-        ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + kit_px(6)));
-        f32 foot = fh + kit_px(6);
-        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - kit_px(12) - foot), 0, ImGuiWindowFlags_NoBackground);
-        bool &by_folder = g_app.config.side_folders;
-        if (lib_side_toggle(side_w - kit_px(12), collapsed)) {
-            by_folder = !by_folder;
-            lib.folder_renaming = 0;
-            config_save(g_app.config, g_app.paths);
-            lib.scroll = lib.scroll_to = 0;
-            lib_refilter();
-        }
-        i32 pick = -1;
-        static char game_target[64]; // the game a right-click menu is about
-        bool game_menu = false;
-        i32 order[LIB_MAX_GAMES + 1] = {0}; // All games, then the favourite games, then the rest
-        i32 shown = by_folder ? 0 : 1 + lib_favourite_order("games", lib.game_count, [&](i32 i) { return (const char *)lib.games[i]; }, order + 1);
-        for (i32 o = 1; o < shown; o++) order[o]++;
-        if (by_folder) lib_folder_list(side_w - kit_px(12), collapsed);
-        else for (i32 o = 0; o < shown; o++) {
-            i32 c = order[o];
-            const char *name = c == 0 ? "All games" : lib.games[c - 1];
-            bool active = c == 0 ? !lib.game[0] : !strcmp(lib.game, name);
-            ImGui::PushID(c);
-            // No game gets a built-in glyph: a monitor for Desktop, a video for files not ours; a custom game a
-            // controller
-            bool none = c > 0 && game_is_none(name), custom = c > 0 && !none && game_is_custom(name);
-            const char *glyph = custom ? ICON_GAME : !none ? 0 : !strcmp(name, GAME_DESKTOP) ? ICON_MONITOR : ICON_VIDEO;
-            if (lib_game_item(c == 0 || none || custom ? 0 : name, name, c == 0 ? lib.range_count : lib.game_items[c - 1], active,
-                              side_w - kit_px(12), collapsed, glyph, c > 0 && lib_favourite_find("games", name) >= 0))
-                pick = c;
-            if (c > 0 && ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-                str_set(game_target, name);
-                game_menu = true;
-            }
-            ImGui::PopID();
-        }
-        if (game_menu) ImGui::OpenPopup("game_menu");
-        lib_popup_style_push(6);
-        if (ImGui::BeginPopup("game_menu")) {
-            bool favourite = lib_favourite_find("games", game_target) >= 0;
-            if (lib_menu_item(favourite ? ICON_STAR : ICON_STAR_FILL, favourite ? "Unfavourite" : "Favourite"))
-                lib_favourite_set("games", game_target, !favourite);
-            ImGui::EndPopup();
-        }
-        lib_popup_style_pop();
-        ImGui::EndChild();
-        // The collapse button at the list's foot: in its bottom left corner, in the middle of the rail it collapses to,
-        // so it's in the same place either way and only its arrow turns.
-        f32 rail_w = icon_end + kit_px(14);
-        ImGui::SetCursorScreenPos(ImVec2(floorf(s0.x + (rail_w - fh) / 2), s0.y + side_h - kit_px(6) - fh));
-        kit_next_tip(collapsed ? "Show the list" : "Collapse the list");
-        if (kit_icon_button(collapsed ? ICON_RIGHT : ICON_LEFT, "##games_collapse")) {
-            collapsed = !collapsed;
-            config_save(g_app.config, g_app.paths);
-            log_line("library: the list on the left %s", collapsed ? "collapsed" : "shown");
-        }
-        if (pick >= 0) {
-            if (pick == 0) lib.game[0] = 0;
-            else str_set(lib.game, lib.games[pick - 1]);
-            lib.scroll = lib.scroll_to = 0;
-            lib_refilter();
-        }
-        f32 side_gap = kit_px(16);
-        ImGui::SetCursorScreenPos(ImVec2(s0.x + side_w + side_gap, s0.y));
-        full_w -= side_w + side_gap;
-    }
 
     g_lib_missing = 0;
     lib_unsaved_over = false;
@@ -6193,5 +6207,6 @@ static void screen_library()
     f32 msg_x = f0.x + kit_px(320);
     text_clipped(dl, ImVec2(msg_x, ty), f0.x + full_w - msg_x, col32(lib.message_error ? 0xff8a92 : COL_DIM), lib.message);
     ImGui::SetCursorScreenPos(ImVec2(f0.x, f0.y + fh));
+    ImGui::EndChild();
 }
 

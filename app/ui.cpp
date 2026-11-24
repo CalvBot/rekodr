@@ -37,6 +37,8 @@ static const u32 COL_BG = 0x0a0a0a,      // the window and the top bar
 // Popups keep a solid background.
 static bool g_glass;
 static const f32 GLASS_ALPHA = 0.8f;
+// The window's side margin: the screens' content and the top bar's tabs and Help keep this far from its edges.
+enum { UI_GUTTER = 24 };
 static bool col_is_surface(u32 c) { return c == COL_PANEL || c == COL_PANEL2 || c == COL_HOVER || c == COL_OFF; }
 static ImU32 col32(u32 c, f32 a = 1) { return ImGui::GetColorU32(rgb(c, g_glass && col_is_surface(c) ? a * GLASS_ALPHA : a)); }
 // What a sound track is, the same colour everywhere it shows (the Apps pills, the editor's lanes).
@@ -1454,7 +1456,7 @@ static void top_bar(f32 h)
     ImVec2 o = ImGui::GetCursorScreenPos();
     f32 w = ImGui::GetContentRegionAvail().x;
 
-    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(12), o.y));
+    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(UI_GUTTER), o.y));
     Screen s = g_app.ui.screen;
     if (top_tab(ICON_LIBRARY, "Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR, h)) g_app.ui.screen = SCREEN_LIBRARY;
     ImGui::SameLine(0, kit_px(4));
@@ -1465,7 +1467,7 @@ static void top_bar(f32 h)
     // Right: recording on or off as one switch, what it's doing just before it, then Help. The switch and Help stay
     // put; the words end where the switch starts.
     f32 fh = ImGui::GetFrameHeight(), y = o.y + (h - fh) / 2;
-    f32 help_x = o.x + w - kit_px(12) - fh, sw_w = kit_px(36), sw_x = help_x - kit_px(14) - sw_w;
+    f32 help_x = o.x + w - kit_px(UI_GUTTER) - fh, sw_w = kit_px(36), sw_x = help_x - kit_px(14) - sw_w;
     ImGui::SetCursorScreenPos(ImVec2(sw_x, y));
     bool on = !rec.paused;
     if (kit_toggle("##recording", &on)) event_post_text(EV_COMMAND, "toggle");
@@ -1731,8 +1733,10 @@ static void ui_frame()
         }
     top_bar(kit_px(46));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
-    // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(24), kit_px(16)));
+    // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail. The
+    // Library pads itself, right of the list it docks to the window's left edge.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                        g_app.ui.screen == SCREEN_LIBRARY ? ImVec2(0, 0) : ImVec2(kit_px(UI_GUTTER), kit_px(16)));
     ImGui::BeginChild("##screen", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
