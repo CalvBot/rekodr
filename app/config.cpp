@@ -86,7 +86,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->render_edits = true;
     memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);
     c->share_link_page = true;
-    c->link_catbox = true;
     str_set(c->r2_bucket, "clipback");
     c->r2_read_cap = 10000000;  // R2's free Class B requests a month
     c->r2_read_rate = 1000000;
@@ -419,15 +418,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "r2_budget")) real(&c->r2_budget);
     else if (!strcmp(key, "r2_read_cap")) c->r2_read_cap = atoi(value);
     else if (!strcmp(key, "r2_read_rate")) c->r2_read_rate = atoi(value);
-    else if (!strncmp(key, "upload_rate_", 12)) {
-        static const char *const hosts[] = {"r2", "catbox"}; // LinkHost order
-        for (i32 i = 0; i < 2; i++)
-            if (!strcmp(key + 12, hosts[i]) && sscanf(value, "%lf %d", &c->upload_rate[i], &c->upload_rate_n[i]) != 2)
-                c->upload_rate[i] = c->upload_rate_n[i] = 0;
-    }
-    else if (!strcmp(key, "link_catbox")) boolean(&c->link_catbox);
     else if (!strcmp(key, "link_uploaders")) str_set(c->link_uploaders, value);
-    else if (!strcmp(key, "free_links_seen")) boolean(&c->free_links_seen);
     else if (!strcmp(key, "share_max_mb")) real(&c->share_max_mb);
     else if (!strcmp(key, "social_copy_mb")) real(&c->social_copy_mb);
     else if (!strcmp(key, "share_min_quality")) c->share_min_quality = atoi(value);
@@ -609,10 +600,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "r2_account = %s\nr2_access_key = %s\nr2_bucket = %s\nr2_public_url = %s\nr2_budget = %g\n",
             c.r2_account, c.r2_access_key, c.r2_bucket, c.r2_public_url, c.r2_budget);
     fprintf(f, "r2_read_cap = %d\nr2_read_rate = %d\n", c.r2_read_cap, c.r2_read_rate);
-    fprintf(f, "upload_rate_r2 = %.0f %d\nupload_rate_catbox = %.0f %d\n", c.upload_rate[0], c.upload_rate_n[0],
-            c.upload_rate[1], c.upload_rate_n[1]);
-    boolean("link_catbox", c.link_catbox);
-    fprintf(f, "link_uploaders = %s\nfree_links_seen = %s\n", c.link_uploaders, c.free_links_seen ? "true" : "false");
+    fprintf(f, "link_uploaders = %s\n", c.link_uploaders);
     fprintf(f, "share_max_mb = %g\nshare_min_quality = %d\n", c.share_max_mb, c.share_min_quality);
     fprintf(f, "social_copy_mb = %g\n", c.social_copy_mb);
     for (i32 i = 0; i < 6; i++)

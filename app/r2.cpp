@@ -1,15 +1,14 @@
 // Links: a clip shared as a plain https link to an MP4 that Discord plays in place. Where it goes:
-//   free hosts  with nothing set up, the copy goes to a free public host that's on and takes its size (Share's
-//               rule, share.cpp): Catbox (up to 200 MB, kept, can't be deleted), else one of the player's own
-//               uploaders that's on (ShareX .sxcu files, link_uploaders). Anyone with the link can watch.
-//   R2          once the player has set up their own Cloudflare R2 bucket, every clip goes there instead, as
-//               clipback/<random folder>/clip.mp4, so a link names no player, game or date and can't be guessed.
-//               The link points at the bucket's public address (r2.dev or the player's own domain).
+//   R2          the player's own Cloudflare R2 bucket, as clipback/<random folder>/clip.mp4, so a link names no
+//               player, game or date and can't be guessed. The link points at the bucket's public address (r2.dev
+//               or the player's own domain).
+//   uploaders   without a bucket, one of the player's own upload servers that's on (ShareX .sxcu files,
+//               link_uploaders), or one picked in Share's menu.
 //
 // A share runs in three steps:
 //   preparing  save_link (save.cpp) makes an H.264 copy with the Mix only, played from the start while it loads
 //   uploading  the copy goes to the bucket over R2's S3 API (signed with AWS Signature V4), in parts when large,
-//              or to a free host as a form upload; the copy is deleted after
+//              or to an uploader as its .sxcu says; the copy is deleted after
 //   cleanup    R2 only: while the bucket's clipback/ folder holds more than the player's limit (its real total,
 //              listed after each upload), the oldest clips that aren't pinned are deleted from it; their history
 //              entries stay, marked removed, and can be shared again under the same name
@@ -59,24 +58,11 @@ struct R2Status {
     char         who[128];  // the Cloudflare account's name, once known
 };
 
-// The free public hosts, used when R2 isn't set up.
-struct FreeHost {
-    LinkHost       host;
-    const char    *name;  // as Share names the host
-    const char    *label; // for the player
-    const wchar_t *server, *path;
-    i64            max_bytes;
-};
-static const FreeHost FREE_HOSTS[] = {
-    {HOST_CATBOX, "catbox", "Catbox", L"catbox.moe", L"/user/api.php", 200000000},
-};
-
 struct R2Share {
     char key[R2_KEY_MAX]; // R2: object name in the bucket, "clipback/<16 random letters and digits>/clip.mp4"
                           // (with a preview page, the page is "clipback/<id>" and its picture
                           // "clipback/<id>/thumb.jpg");
-                          // a free host: "<host>/<the file's name there>"; a custom uploader:
-                          // "<its name>/<16 random>"
+                          // a custom uploader: "<its name>/<16 random>"
     char url[512];    // the link as given out
     char title[256];
     char game[64];
@@ -141,7 +127,7 @@ static const i64 R2_GB = 1000000000;
 static const i64 R2_PART = 64ll << 20;       // multipart part size
 static const i64 R2_SINGLE_MAX = 100ll << 20; // larger files go up in parts
 
-enum R2EventKind : u8 { R2_EV_PROBED, R2_EV_JOB, R2_EV_STATUS, R2_EV_SETUP, R2_EV_HISTORY, R2_EV_USAGE, R2_EV_RATE };
+enum R2EventKind : u8 { R2_EV_PROBED, R2_EV_JOB, R2_EV_STATUS, R2_EV_SETUP, R2_EV_HISTORY, R2_EV_USAGE };
 
 // What a network task needs of the settings, copied when the task is queued.
 struct R2Conf {
@@ -149,15 +135,15 @@ struct R2Conf {
     i64  limit;
 };
 
-enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_FREE, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
+enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_UPLOADER, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
                         R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS, R2_T_CLEANUP };
 
 struct R2Task {
     R2TaskKind kind;
-    i32        slot;    // the job's slot (probe, upload, free)
+    i32        slot;    // the job's slot (probe, upload, uploader)
     char       key[R2_KEY_MAX]; // delete: the share; upload: the name to reuse ("" = a new one)
-    char       replace[R2_KEY_MAX]; // upload, free: the history entry this share takes the place of
-    char       hosts[256]; // free: the host Share chose, "catbox" or an uploader's name
+    char       replace[R2_KEY_MAX]; // upload, uploader: the history entry this share takes the place of
+    char       hosts[256]; // uploader: the uploader Share chose, by name
     Path       file;    // probe: the file; upload: the copy to send (deleted after)
     Path       ffprobe;
     R2Conf     conf;
@@ -186,7 +172,7 @@ struct R2Work {
     char       title[256], game[64];
     u64        lib_key;
     char       reuse[R2_KEY_MAX]; // the removed share it brings back
-    char       hosts[64]; // where the link goes by Share's rule: "r2", "catbox" or an uploader's name
+    char       hosts[64]; // where the link goes by Share's rule: "r2" or an uploader's name
     i64        aim, limit; // the copy's size, as save_link takes them
     u8         phase;      // 1 the copy's save, a small copy to come after; 2 the small copy's save; 0 the one save
     Path       full;       // while the small copy is made: the copy, made already
@@ -250,31 +236,12 @@ static f64 r2_cost_for(i64 bytes)
 }
 
 // Why the bucket can't take a link now: its keys can't be read, or its account is near the month's reads
-// (r2_read_cap). 0 when it can. Such a link fails with the reason; it never goes to a free host instead.
+// (r2_read_cap). 0 when it can. Such a link fails with the reason; it never goes to an uploader instead.
 static const char *r2_refuses(bool keys, bool capped)
 {
     if (!keys) return "Your Cloudflare keys can't be read: set up again in Options";
     if (capped) return "Links wait until the 1st: your Cloudflare account has nearly used the month's free reads";
     return 0;
-}
-
-// Adds one upload's speed (bytes a second) to a host's average of about its last 10.
-static void r2_rate_add(f64 *avg, i32 *n, f64 rate)
-{
-    if (*n < 10) ++*n;
-    *avg += (rate - *avg) / *n;
-}
-
-// The Catbox row's tooltip: Catbox's upload speed beside the bucket's ("" for no bucket), from the averages.
-static void r2_rates_tip(const f64 *rate, const i32 *n, bool bucket, char *out, i32 cap)
-{
-    char a[32], b[32];
-    if (n[HOST_CATBOX]) snprintf(a, sizeof a, "%.1f MB/s", rate[HOST_CATBOX] / 1e6);
-    else str_set(a, "not measured yet");
-    if (n[HOST_R2]) snprintf(b, sizeof b, "%.1f MB/s", rate[HOST_R2] / 1e6);
-    else str_set(b, "not measured yet");
-    if (bucket) snprintf(out, cap, "Upload speed from your last uploads: Catbox %s, your bucket %s", a, b);
-    else snprintf(out, cap, "Upload speed from your last uploads: Catbox %s", a);
 }
 
 // In the bucket now: an R2 share that cleanup hasn't removed.
@@ -326,21 +293,6 @@ static void r2_fmt_reads(i64 n, char *out, i32 cap)
     else if (n < 1000000) snprintf(out, cap, "%lld K", n / 1000);
     else if (n % 1000000 < 50000 || n >= 100000000) snprintf(out, cap, "%lld M", (n + 500000) / 1000000);
     else snprintf(out, cap, "%.1f M", (f64)n / 1e6);
-}
-
-static const FreeHost *free_host(LinkHost h)
-{
-    for (const FreeHost &f : FREE_HOSTS)
-        if (f.host == h) return &f;
-    return 0;
-}
-
-// The free host by its name ("catbox"), 0 for any other.
-static const FreeHost *free_host_named(const char *name)
-{
-    for (const FreeHost &f : FREE_HOSTS)
-        if (!_stricmp(name, f.name)) return &f;
-    return 0;
 }
 
 // Which shares to delete so the bucket fits `limit` once `incoming` more bytes are in it: the oldest that aren't
@@ -1144,7 +1096,7 @@ static bool r2_ready()
     return c.r2_account[0] && c.r2_access_key[0] && c.r2_bucket[0] && c.r2_public_url[0] && r2_has_token();
 }
 
-// The bucket has been set up: links go there, never to a free host.
+// The bucket has been set up: Share's rule sends links there.
 static bool r2_set_up()
 {
     const Config &c = g_app.config;
@@ -2094,15 +2046,6 @@ static bool r2_remove_planned(const R2Conf &c, const i32 *plan, i32 n)
 }
 
 // The upload step of a job, then the cleanup.
-// Tells the main thread how fast an upload went, for the host's average (Config.upload_rate). Clips under 1 MB
-// say more about the wait for an answer than about speed and aren't counted.
-static void r2_rate_note(LinkHost host, i64 bytes, i64 us)
-{
-    if (bytes < 1000000 || us <= 0 || host > HOST_CATBOX) return;
-    i64 rate = (i64)(bytes * 1e6 / us);
-    r2_post(R2_EV_RATE, rate << 2 | host);
-}
-
 static void r2_run_upload(const R2Task &t)
 {
     u32 job = 0;
@@ -2146,11 +2089,9 @@ static void r2_run_upload(const R2Task &t)
     if (reuse >= 0) str_set(key, t.key);
     else r2_new_key(key);
 
-    i64 began = now_us();
     // A session goes to editors: its file downloads when opened, named as the share is.
     bool session = path_is_session(w.src.s);
     if (!err[0]) r2_put_file(t.conf, key, t.file, job, err, sizeof err, 0, social_bytes, session ? w.title : "");
-    if (!err[0]) r2_rate_note(HOST_R2, bytes, now_us() - began);
     // The preview page's picture; without one the link is the file itself.
     i32 page_w = 0, page_h = 0;
     i64 extra = 0;
@@ -2524,8 +2465,6 @@ static bool uploader_add(const wchar_t *file, char *stem, i32 stem_cap, char *wh
     if (dot) *dot = 0;
     for (char *c = name; *c; c++)
         if (*c == ',' || *c == '/' || *c == '\\' || *c == ':') *c = '-';
-    for (const FreeHost &f : FREE_HOSTS)
-        if (!_stricmp(name, f.name)) strncat(name, "-custom", sizeof name - strlen(name) - 1);
     snprintf(stem, stem_cap, "%.60s", name);
     Path dir = uploader_dir();
     CreateDirectoryW(dir.s, 0);
@@ -2551,7 +2490,7 @@ static bool uploader_remove(const char *stem)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Uploads to free hosts and custom uploaders
+// Uploads to custom uploaders
 
 // One upload request: a form with the file in `form_name` ("clip.mp4", video/mp4) after `fields`, or with no
 // form_name the file as the whole body.
@@ -2646,12 +2585,6 @@ static u32 up_send(const UpRequest &q, HANDLE f, i64 size, R2Progress *prog, cha
     return status;
 }
 
-// A link from what a host answered: a plain https address with nothing else on the line.
-static bool up_plain_link(const char *resp, char *out, i32 cap)
-{
-    return uploader_result("", resp, out, cap) && starts_with(out, "https://") && !strpbrk(out, " \r\n<\"");
-}
-
 // Fetches `url` (a custom uploader's DeletionURL), the answer dropped. Whether it answered 2xx.
 static bool up_get(const char *url)
 {
@@ -2685,8 +2618,8 @@ static bool up_get(const char *url)
     return r2_ok(code);
 }
 
-// The upload step of a job with no R2: the host Share chose (a free host, or a custom uploader by name).
-static void r2_run_free(const R2Task &t)
+// The upload step of a job with no R2: the uploaders Share chose, by name, each tried in turn until one gives a link.
+static void r2_run_uploader(const R2Task &t)
 {
     u32 job = 0;
     R2Work w = {};
@@ -2702,13 +2635,11 @@ static void r2_run_free(const R2Task &t)
 
     if (r2_cancelled_before(job, t.file)) return;
     char err[256] = "", url[512] = "", used_name[64] = "", undo[512] = "";
-    const FreeHost *used = 0;
     HANDLE f = CreateFileW(t.file.s, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
     LARGE_INTEGER size = {};
     if (f == INVALID_HANDLE_VALUE) str_set(err, "Couldn't open the copy to upload");
     else GetFileSizeEx(f, &size);
-    i32 tried = 0, named = 0;
-    i64 most = 0; // the biggest a free host named takes
+    i32 named = 0;
     static thread_local char resp[16384];
     static thread_local Uploader u;
     for (const char *p = t.hosts; *p && !err[0] && !url[0] && !g_r2.stop && !r2_cancelled(job);) {
@@ -2719,36 +2650,9 @@ static void r2_run_free(const R2Task &t)
         char *nm = trim(name);
         if (!nm[0]) continue;
         named++;
-        const FreeHost *h = free_host_named(nm);
-        if (h && h->max_bytes > most) most = h->max_bytes;
         R2Progress prog = {job, 0, size.QuadPart > 0 ? size.QuadPart : 1};
         char why[256] = "";
-        if (h) {
-            if (size.QuadPart > h->max_bytes) continue;
-            tried++;
-            const char *fields[][2] = {{"reqtype", "fileupload"}};
-            wchar_t wurl[300];
-            char curl[300];
-            swprintf(wurl, COUNT(wurl), L"https://%s%s", h->server, h->path);
-            wide_to_utf8(wurl, curl, sizeof curl);
-            UpRequest q = {"POST", curl, "", fields, 1, "fileToUpload"};
-            i64 began = 0;
-            u32 status = 0;
-            for (i32 attempt = 0;; attempt++) {
-                prog.done = 0;
-                r2_set_progress(job, 0);
-                began = now_us();
-                status = up_send(q, f, size.QuadPart, &prog, resp, sizeof resp);
-                if (r2_ok(status) || !r2_retry_wait(job, attempt, h->label, status)) break;
-            }
-            if (status == 200 && up_plain_link(resp, url, sizeof url)) {
-                used = h;
-                r2_rate_note(h->host, size.QuadPart, now_us() - began);
-            }
-            else if (!status) snprintf(why, sizeof why, "Couldn't reach %s", h->label);
-            else snprintf(why, sizeof why, "%s answered %u: %.80s", h->label, status, trim(resp));
-        } else if (uploader_load(nm, &u, why, sizeof why)) {
-            tried++;
+        if (uploader_load(nm, &u, why, sizeof why)) {
             char headers[2600] = "";
             i32 hl = 0;
             for (i32 i = 0; i < u.count[0]; i++)
@@ -2777,26 +2681,23 @@ static void r2_run_free(const R2Task &t)
             } else if (!status) snprintf(why, sizeof why, "Couldn't reach %s", u.name);
             else if (status >= 200 && status < 300) snprintf(why, sizeof why, "%s answered without a link", u.name);
             else snprintf(why, sizeof why, "%s answered %u: %.80s", u.name, status, trim(resp));
-        } else tried++;
+        }
         if (!url[0] && why[0]) {
             log_line("r2: %s", why);
             str_set(err, why);
-            if (*p) err[0] = 0; // the next host gets the clip
+            if (*p) err[0] = 0; // the next uploader gets the clip
         }
     }
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
     DeleteFileW(t.file.s);
-    if (r2_cancelled(job)) { // what went up goes again where the host allows it; Catbox keeps its own
+    if (r2_cancelled(job)) { // what went up is deleted where the uploader allows it
         if (url[0] && undo[0]) up_get(undo);
         url[0] = 0;
         str_set(err, "Cancelled");
     }
     if (!url[0] && !err[0]) {
-        if (!named) str_set(err, "Turn on a free host or set up Cloudflare in Options");
-        else if (!tried)
-            snprintf(err, sizeof err, "Free links take clips up to %lld MB: set up Cloudflare in Options for bigger ones",
-                     most / 1000000);
-        else str_set(err, g_r2.stop ? "Stopped" : "No host took the clip");
+        if (!named) str_set(err, SHARE_NO_BUCKET);
+        else str_set(err, g_r2.stop ? "Stopped" : "No uploader took the clip");
     }
     if (!url[0]) {
         r2_job_end(job, false, "", err);
@@ -2809,16 +2710,10 @@ static void r2_run_free(const R2Task &t)
     r2_room_locked();
     R2Share &s = g_r2.shares[g_r2.count++];
     s = {};
-    if (used) {
-        const char *name = strrchr(url, '/');
-        snprintf(s.key, sizeof s.key, "%s/%.*s", used->name, (int)(sizeof s.key - strlen(used->name) - 2), name + 1);
-        s.host = used->host;
-    } else {
-        char rnd[17];
-        r2_random(rnd, 16);
-        snprintf(s.key, sizeof s.key, "%.30s/%s", used_name, rnd); // the uploader, and a name of its own
-        s.host = HOST_CUSTOM;
-    }
+    char rnd[17];
+    r2_random(rnd, 16);
+    snprintf(s.key, sizeof s.key, "%.30s/%s", used_name, rnd); // the uploader, and a name of its own
+    s.host = HOST_CUSTOM;
     s.version = 1;
     s.bytes = size.QuadPart;
     s.uploaded_us = now_us();
@@ -3939,7 +3834,7 @@ static DWORD WINAPI r2_thread(void *)
             r2_post(R2_EV_PROBED, t.slot);
         } break;
         case R2_T_UPLOAD: r2_run_upload(t); break;
-        case R2_T_FREE: r2_run_free(t); break;
+        case R2_T_UPLOADER: r2_run_uploader(t); break;
         case R2_T_DELETE: r2_run_delete(t); break;
         case R2_T_SETUP: {
             static char bearer[2048];
@@ -4108,7 +4003,7 @@ static void r2_start_copy(i32 slot)
                   ? 1 : 0;
     w.preview = 0;
     if (strcmp(w.hosts, "r2") && w.aim > r2_social_bytes()) {
-        // A free host or uploader gets what a card plays, never more than r2_social_bytes(): the clip at a smaller
+        // An uploader gets what a card plays, never more than r2_social_bytes(): the clip at a smaller
         // height, or a preview of its start
         f64 full_s = 0;
         i32 h = r2_social_height(secs, w.info.width, w.info.height, w.info.fps,
@@ -4119,22 +4014,21 @@ static void r2_start_copy(i32 slot)
     if (!w.save) r2_fail_now(slot, "Too many saves are waiting");
 }
 
-// Whether share `s` is on the host named `hosts` ("r2" or "bucket", "catbox", an uploader's name);
-// any host when none is named.
+// Whether share `s` is on the host named `hosts` ("r2" or "bucket", an uploader's name); any host when none is
+// named.
 static bool r2_share_on(const R2Share &s, const char *hosts)
 {
     if (!hosts || !hosts[0]) return true;
     if (!_stricmp(hosts, "r2") || !_stricmp(hosts, "bucket")) return s.host == HOST_R2;
-    if (const FreeHost *f = free_host_named(hosts)) return s.host == f->host;
     size_t n = strlen(hosts);
     return s.host == HOST_CUSTOM && !_strnicmp(s.key, hosts, n) && s.key[n] == '/';
 }
 
-// Shares a file as a link, to R2 when it's set up, else to a free host: `info` and `edit` when the caller has them
+// Shares a file as a link, to R2 when it's set up, else to an uploader: `info` and `edit` when the caller has them
 // (an editor render passes its edit; with no info the file is probed first). A library item already shared gives
-// back its link at once while that still plays; one removed to make room is shared again under its old name, one a
-// free host dropped gets a new link. `hosts` is where Share decided it goes, with the copy made for `aim` bytes and
-// at most `limit` (save_link); with hosts and no aim (the pipe's "link catbox ...") the copy is made for that host,
+// back its link at once while that still plays; one removed to make room is shared again under its old name, one an
+// uploader dropped gets a new link. `hosts` is where Share decided it goes, with the copy made for `aim` bytes and
+// at most `limit` (save_link); with hosts and no aim (the pipe's "link bucket ...") the copy is made for that host,
 // with no hosts Share's rule decides, once the file is probed. A link on the library card `lib_key` already made on
 // that host (any host when none is named) is given again. Follow the job with r2_job(id); EV_R2 says when it moves
 // on. Returns the job id, 0 if every job slot is busy.
@@ -4244,8 +4138,8 @@ static R2Job r2_job(u32 id)
 }
 
 // Stops a link at once and deletes what it made: the copy being made or sent, the parts of an upload in pieces,
-// what is already in the bucket with its page and picture, a custom uploader's file at its DeletionURL. A free
-// host's upload stopped mid-way leaves nothing; one that finished stays there (Catbox can't delete it), only no
+// what is already in the bucket with its page and picture, a custom uploader's file at its DeletionURL. An
+// uploader's upload stopped mid-way leaves nothing; one that finished with no DeletionURL stays there, only no
 // longer given out.
 static void r2_cancel(u32 id)
 {
@@ -4328,7 +4222,7 @@ static void r2_on_save_event(const Event &e)
         }
     } else {
         utf8_to_wide(v->path, t.file.s, MAX_PATH);
-        t.preview = (f32)w.preview; // a free host's copy may be a preview
+        t.preview = (f32)w.preview; // an uploader's copy may be a preview
     }
     if (t.social.s[0] && r2_cancelled(g_r2.jobs[slot].id)) DeleteFileW(t.social.s);
     if (r2_cancelled_before(g_r2.jobs[slot].id, t.file)) return;
@@ -4340,7 +4234,7 @@ static void r2_on_save_event(const Event &e)
         return;
     }
     r2_conf(&t.conf);
-    t.kind = to_r2 ? R2_T_UPLOAD : R2_T_FREE;
+    t.kind = to_r2 ? R2_T_UPLOAD : R2_T_UPLOADER;
     str_set(t.replace, w.reuse);
     AcquireSRWLockShared(&g_r2.lock);
     i32 old = w.reuse[0] ? r2_find_locked(w.reuse) : -1;
@@ -4403,13 +4297,6 @@ static void r2_on_event(const Event &e)
     }
     if (e.a == R2_EV_USAGE) {
         r2_auto_pause();
-        return;
-    }
-    if (e.a == R2_EV_RATE) {
-        Config &c = g_app.config;
-        i32 host = (i32)(e.b & 3);
-        r2_rate_add(&c.upload_rate[host], &c.upload_rate_n[host], (f64)(e.b >> 2));
-        config_save(c, g_app.paths);
         return;
     }
     if (e.a != R2_EV_PROBED) return; // the rest only wake the UI
@@ -4684,8 +4571,8 @@ static void r2_pin(const char *key, bool on)
     ReleaseSRWLockExclusive(&g_r2.lock);
 }
 
-// Drops a share from the history, deleting it from the bucket first when it's there. A free host's copy stays
-// there (Catbox keeps it).
+// Drops a share from the history, deleting it from the bucket first when it's there. An uploader's copy stays
+// there.
 static void r2_delete(const char *key)
 {
     R2Task t = {};

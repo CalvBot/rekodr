@@ -800,15 +800,14 @@ static void ed_share(ShareKind kind, const char *host)
     }
 }
 
-// Share as `kind` (a link on `host` when one is picked), with a first link to a free host asked about first
-// (links_ask_first)
+// Share as `kind` (a link on `host` when one is picked); a link with no host opens Options where Cloudflare signs in
 static void ed_share_ask(ShareKind kind, const char *host = 0)
 {
     if (kind == SHARE_LINK && !links_any_host()) {
         lib_open_sharing();
         return;
     }
-    if (kind != SHARE_LINK || !links_ask_first(ASK_EDITOR, 0, host)) ed_share(kind, host);
+    ed_share(kind, host);
 }
 
 static bool ed_share_busy()

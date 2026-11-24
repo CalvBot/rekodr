@@ -9,7 +9,6 @@ static void telemetry_shared();                        // telemetry.cpp
 // The hosts a link can go to now.
 struct ShareHosts {
     bool bucket;           // the player's own R2 bucket is set up
-    bool catbox;           // switched on
     char uploaders[256];   // the ShareX uploaders switched on (link_uploaders), "" = none
     i64  bucket_limit;     // what the budget keeps, 0 = not checked
 };
@@ -31,8 +30,8 @@ static f64 share_floor(i32 min_quality)
 }
 
 // The decision for a clip of recommended size `reco`, with quality lowered to fit down to `floor` of it. A file: as
-// is under the max, squeezed to it when `floor` of the clip fits. A link: Catbox when it's on and takes the clip (as
-// is up to its 200 MB, squeezed when `floor` of it fits), else the bucket as is, else the first uploader as is.
+// is under the max, squeezed to it when `floor` of the clip fits. A link: the bucket as is, else the first uploader
+// as is; with neither, no link, and the way to one.
 static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 floor, const ShareHosts &h)
 {
     ShareDecision d = {};
@@ -42,18 +41,8 @@ static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 floor, const Sha
     d.file_ok = reco * floor <= d.max_bytes;
     d.file_bytes = d.file_squeezed ? (i64)(d.max_bytes * (1 - SHARE_MARGIN)) : reco;
 
-    i64 most = 0;
-    auto takes = [&](LinkHost host, bool on) {
-        if (!on) return false;
-        most = free_host(host)->max_bytes;
-        if (reco * floor > most) return false;
-        d.host = host;
-        d.link_squeezed = reco > most;
-        return true;
-    };
     d.link_ok = true;
-    if (takes(HOST_CATBOX, h.catbox)) str_set(d.host_label, "Catbox");
-    else if (h.bucket) {
+    if (h.bucket) {
         d.host = HOST_R2;
         str_set(d.host_label, "your bucket");
     } else if (h.uploaders[0]) {
@@ -63,10 +52,9 @@ static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 floor, const Sha
                  h.uploaders);
     } else {
         d.link_ok = false;
-        str_set(d.link_why, h.catbox ? "Needs your own Cloudflare: too big for Catbox"
-                                     : "Turn on Catbox or set up Cloudflare in Options");
+        str_set(d.link_why, SHARE_NO_BUCKET);
     }
-    d.link_bytes = d.link_ok && d.link_squeezed ? (i64)(most * (1 - SHARE_MARGIN)) : reco;
+    d.link_bytes = reco;
 
     char r[24], m[24];
     share_size_text(reco, r, sizeof r);
@@ -85,41 +73,31 @@ static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 floor, const Sha
     return d;
 }
 
-// How a clip of `reco` goes on a host that takes at most `most` (0 = no cap): as is, squeezed when `floor` of it
-// fits, or not.
-static ShareFit share_fit(i64 reco, f64 floor, i64 most)
-{
-    if (most <= 0 || reco <= most) return SHARE_FIT_AS_IS;
-    return reco * floor <= most ? SHARE_FIT_SQUEEZED : SHARE_FIT_NO;
-}
-
-// The hosts on in `h` and how a clip of `reco` goes on each (share_host_choices). The bucket takes a clip as is up to
-// its limit, an uploader as is.
-static i32 share_hosts_for(i64 reco, f64 floor, const ShareHosts &h, ShareHostChoice *out, i32 max)
+// The hosts on in `h` and whether a clip of `reco` fits each (share_host_choices): the bucket up to its limit, an
+// uploader always.
+static i32 share_hosts_for(i64 reco, const ShareHosts &h, ShareHostChoice *out, i32 max)
 {
     i32 n = 0;
-    auto add = [&](const char *name, const char *label, LinkHost host, i64 most, bool squeezes) {
+    auto add = [&](const char *name, const char *label, LinkHost host, i64 most) {
         if (n >= max) return;
         ShareHostChoice &c = out[n++];
         c = {};
         str_set(c.name, name);
         str_set(c.label, label);
         c.host = host;
-        c.fit = share_fit(reco, squeezes ? floor : 1, most);
-        c.bytes = c.fit == SHARE_FIT_AS_IS ? reco : c.fit == SHARE_FIT_SQUEEZED ? (i64)(most * (1 - SHARE_MARGIN)) : 0;
-        if (c.fit != SHARE_FIT_NO) return;
+        c.fits = most <= 0 || reco <= most;
+        c.bytes = c.fits ? reco : 0;
+        if (c.fits) return;
         char m[24];
         share_size_text(most, m, sizeof m);
-        if (host == HOST_R2) snprintf(c.why, sizeof c.why, "Bigger than your bucket's %s: raise it in Options", m);
-        else snprintf(c.why, sizeof c.why, "Too big for %s even squeezed", free_host(host)->label);
+        snprintf(c.why, sizeof c.why, "Bigger than your bucket's %s: raise it in Options", m);
     };
-    if (h.catbox) add("catbox", "Catbox", HOST_CATBOX, free_host(HOST_CATBOX)->max_bytes, true);
-    if (h.bucket) add("bucket", "your bucket", HOST_R2, h.bucket_limit, false);
+    if (h.bucket) add("bucket", "your bucket", HOST_R2, h.bucket_limit);
     for (const char *p = h.uploaders; *p;) {
         const char *end = strchr(p, ',');
         char name[64];
         snprintf(name, sizeof name, "%.*s", end ? (int)(end - p) : (int)strlen(p), p);
-        if (name[0]) add(name, name, HOST_CUSTOM, 0, false);
+        if (name[0]) add(name, name, HOST_CUSTOM, 0);
         if (!end) break;
         p = end + 1;
     }
@@ -132,12 +110,12 @@ static ShareDecision share_decide_on(i64 reco, f64 max_mb, f64 floor, const Shar
 {
     ShareDecision d = share_decide_for(reco, max_mb, floor, h);
     d.kind = SHARE_LINK;
-    d.link_ok = d.link_squeezed = false;
+    d.link_ok = false;
     d.host = HOST_R2;
     d.link_bytes = 0;
     d.host_label[0] = d.link_why[0] = 0;
     static ShareHostChoice list[24];
-    i32 n = share_hosts_for(reco, floor, h, list, COUNT(list));
+    i32 n = share_hosts_for(reco, h, list, COUNT(list));
     const char *want = !_stricmp(host, "r2") ? "bucket" : host;
     const ShareHostChoice *c = 0;
     for (i32 i = 0; i < n && !c; i++)
@@ -145,17 +123,16 @@ static ShareDecision share_decide_on(i64 reco, f64 max_mb, f64 floor, const Shar
     char r[24];
     share_size_text(reco, r, sizeof r);
     if (!c) {
-        if (!strcmp(want, "bucket")) str_set(d.link_why, "Set up your own Cloudflare in Options first");
+        if (!strcmp(want, "bucket")) str_set(d.link_why, SHARE_NO_BUCKET);
         else snprintf(d.link_why, sizeof d.link_why, "%s isn't switched on in Options", want);
-    } else if (c->fit == SHARE_FIT_NO) str_set(d.link_why, c->why);
+    } else if (!c->fits) str_set(d.link_why, c->why);
     else {
         d.link_ok = true;
         d.host = c->host;
-        d.link_squeezed = c->fit == SHARE_FIT_SQUEEZED;
         d.link_bytes = c->bytes;
         str_set(d.host_label, c->label);
     }
-    if (d.link_ok) snprintf(d.why, sizeof d.why, "%s%s: a link, %s", r, d.link_squeezed ? " squeezed" : "", d.host_label);
+    if (d.link_ok) snprintf(d.why, sizeof d.why, "%s: a link, %s", r, d.host_label);
     else snprintf(d.why, sizeof d.why, "%s: %s", r, d.link_why);
     return d;
 }
@@ -166,19 +143,17 @@ static ShareHosts share_hosts()
     const Config &c = g_app.config;
     ShareHosts h = {};
     h.bucket = r2_set_up();
-    h.catbox = c.link_catbox;
     str_set(h.uploaders, c.link_uploaders);
     h.bucket_limit = h.bucket ? r2_limit_for_budget(r2_budget_now()) : 0;
     return h;
 }
 
-// Whether a link host that's on takes a file of `bytes` as it is: the bucket under its limit, Catbox under its own, a
-// custom uploader (its limit isn't known) always.
+// Whether a link host that's on takes a file of `bytes` as it is: the bucket under its limit, a custom uploader (its
+// limit isn't known) always.
 static bool share_host_fits(i64 bytes)
 {
     ShareHosts h = share_hosts();
     if (h.bucket && (!h.bucket_limit || bytes <= h.bucket_limit)) return true;
-    if (h.catbox && bytes <= free_host(HOST_CATBOX)->max_bytes) return true;
     for (const char *p = h.uploaders; *p; p++)
         if (*p != ',' && *p != ' ') return true;
     return false;
@@ -211,7 +186,7 @@ static ShareDecision share_decide_host(const MediaInfo &m, const EditRecord *edi
 static i32 share_host_choices(const MediaInfo &m, const EditRecord *edit, ShareHostChoice *out, i32 max)
 {
     i64 reco = share_reco_bytes(share_seconds(m, edit), m.width, m.height, m.fps, m.track_count > 0);
-    return share_hosts_for(reco, share_floor(g_app.config.share_min_quality), share_hosts(), out, max);
+    return share_hosts_for(reco, share_hosts(), out, max);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -373,9 +348,7 @@ static ShareAims share_aims(bool link, const wchar_t *path, const MediaInfo &m, 
     const ShareDecision &d = a.d;
     if (link) {
         a.aim = d.link_bytes;
-        a.limit = d.host == HOST_CATBOX ? free_host(d.host)->max_bytes : 0;
-        a.squeezed = d.link_squeezed;
-        str_set(a.hosts, d.host == HOST_R2 ? "r2" : d.host == HOST_CATBOX ? "catbox" : d.host_label);
+        str_set(a.hosts, d.host == HOST_R2 ? "r2" : d.host_label);
     } else {
         a.aim = d.file_squeezed ? d.max_bytes : d.reco_bytes;
         a.limit = d.max_bytes;
@@ -657,7 +630,7 @@ static ClipShareState share_clip_state(u64 lib_key, const wchar_t *path, const M
 }
 
 // What deleting the clip takes with it: its share files, and its links where they can be deleted (the bucket's).
-// Catbox and uploader links can't be: `cant` says how many stay up ("" for none). Returns how many files and links go.
+// Uploader links can't be: `cant` says how many stay up ("" for none). Returns how many files and links go.
 static i32 share_clip_delete_preview(u64 lib_key, char *cant, i32 cap)
 {
     if (cap > 0) cant[0] = 0;
@@ -670,20 +643,15 @@ static i32 share_clip_delete_preview(u64 lib_key, char *cant, i32 cap)
             n++;
     static R2Share list[R2_MAX_SHARES];
     i32 count = r2_history(list, COUNT(list)), stay = 0;
-    const char *host = 0;
     for (i32 i = 0; i < count; i++) {
         const R2Share &s = list[i];
         if (s.lib_key != lib_key || s.removed) continue;
         if (s.host == HOST_R2) n++;
-        else if (s.host == HOST_CATBOX || s.host == HOST_CUSTOM) {
-            const char *h = s.host == HOST_CATBOX ? "Catbox" : "uploader";
-            host = !host || !strcmp(host, h) ? h : "";
-            stay++;
-        }
+        else stay++;
     }
     if (stay && cap > 0)
-        snprintf(cant, cap, "%d %s%slink%s can't be removed and stay%s up", stay, host, host[0] ? " " : "",
-                 stay > 1 ? "s" : "", stay > 1 ? "" : "s");
+        snprintf(cant, cap, "%d uploader link%s can't be removed and stay%s up", stay, stay > 1 ? "s" : "",
+                 stay > 1 ? "" : "s");
     return n;
 }
 

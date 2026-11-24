@@ -161,12 +161,8 @@ struct Config {
     f32  r2_budget;          // dollars a month to spend on storage; 0 = the free 10 GB
     i32  r2_read_cap;        // R2 links pause near this many reads (Class B) in the account's month; 0 = no cap
     i32  r2_read_rate;       // an R2 link read this many times in 24 hours pauses until the next day; 0 = no limit
-    f64  upload_rate[2];     // bytes a second, about the last 10 uploads to R2 and Catbox (LinkHost)
-    i32  upload_rate_n[2];   // how many uploads that is, up to 10; 0 = not measured
-    bool link_catbox;        // free links may go to Catbox, first when the clip fits (with R2 too)
     char link_uploaders[256]; // the player's uploaders that are on (.sxcu files in <config_dir>\uploaders, by name),
-                             // comma separated, tried after the free hosts without R2; "" = none
-    bool free_links_seen;    // the player was told free links are public
+                             // comma separated, used without R2; "" = none
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     bool render_edits;   // an edited clip's file in Clips is its edit rendered, the original in Clips\Source (on)
@@ -491,8 +487,10 @@ static const i32 SHARE_KBPS_DEFAULT[6][2] = {{1000, 1500}, {2500, 4000},   {5000
 // share_max_mb Share makes a file at that size; when share_min_quality of it fits the max, a file squeezed to the
 // max; further over, a link. The link's copy follows the same rule against its host. Length, picture size and frame
 // rate never change, only the bitrate; files and links are H.264.
-enum LinkHost : u8 { HOST_R2, HOST_CATBOX, HOST_CUSTOM, HOST_COUNT };
+enum LinkHost : u8 { HOST_R2, HOST_CUSTOM, HOST_COUNT };
 enum ShareKind : u8 { SHARE_AS_IS, SHARE_SQUEEZED, SHARE_LINK };
+// Why a link can't be made with no bucket and no uploader on, and what to do.
+static const char SHARE_NO_BUCKET[] = "Sign in with Cloudflare in Options to share links";
 
 struct ShareDecision {
     ShareKind kind;            // what Share does with one click
@@ -505,30 +503,27 @@ struct ShareDecision {
     // Link: where the link goes and the copy made for it
     bool      link_ok;         // false: no host takes it (link_why)
     LinkHost  host;
-    bool      link_squeezed;   // the copy is squeezed to the host's most
     i64       link_bytes;      // about what the copy comes out at
-    char      host_label[48];  // "your bucket", "Catbox", an uploader's name
+    char      host_label[48];  // "your bucket", an uploader's name
     char      why[96];         // the menu's line for the one-click choice: "18 MB, as is", "28 MB squeezed to 20 MB"
-    char      link_why[96];    // why there's no link: "Needs your own Cloudflare: too big for Catbox"
+    char      link_why[96];    // why there's no link: "Sign in with Cloudflare in Options to share links"
 };
 
 // What Share would do with `m` played as `edit` (0: the whole file). Cheap: a menu can ask each frame.
 static ShareDecision share_decide(const MediaInfo &m, const EditRecord *edit);
 
 // A host the player can pick for a link, and how the clip goes there.
-enum ShareFit : u8 { SHARE_FIT_NO, SHARE_FIT_AS_IS, SHARE_FIT_SQUEEZED };
 struct ShareHostChoice {
-    char     name[64];  // for share_start: "catbox", "bucket" or an uploader's name (link_uploaders)
-    char     label[48]; // "Catbox", "your bucket", the uploader's name
+    char     name[64];  // for share_start: "bucket" or an uploader's name (link_uploaders)
+    char     label[48]; // "your bucket", the uploader's name
     LinkHost host;
-    ShareFit fit;
+    bool     fits;      // the host takes the clip as it is
     i64      bytes;     // about what the copy comes out at, 0 when it doesn't fit
-    char     why[96];   // when it doesn't fit: "Too big for Catbox even squeezed"
+    char     why[96];   // when it doesn't fit: "Bigger than your bucket's 10 GB: raise it in Options"
 };
 
-// Every host that's switched on or set up, in the order Catbox, the bucket, the uploaders, with how
-// `m` played as `edit` goes there as Lower quality to fit allows. Cheap: a menu can ask each frame. Returns how
-// many.
+// Every host that's set up or switched on, the bucket first, then the uploaders, with whether `m` played as `edit`
+// fits there. Cheap: a menu can ask each frame. Returns how many.
 static i32 share_host_choices(const MediaInfo &m, const EditRecord *edit, ShareHostChoice *out, i32 max);
 
 // A Share under way or done. File: made (or found already made) and put on the clipboard as a file. Link: made,
@@ -570,7 +565,7 @@ struct R2Share;
 // The clip's newest link not removed, for its menu row (r2_pause, r2_resume, r2_delete take its key).
 static bool share_clip_link(u64 lib_key, R2Share *out);
 // Deleting a clip: how many of its share files and links go with it, and in `cant` the links that stay up ("1
-// Catbox link can't be removed and stays up"; "" for none). share_clip_delete deletes them; the clip is the caller's.
+// uploader link can't be removed and stays up"; "" for none). share_clip_delete deletes them; the clip is the caller's.
 static i32 share_clip_delete_preview(u64 lib_key, char *cant, i32 cap);
 static void share_clip_delete(u64 lib_key);
 

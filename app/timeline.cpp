@@ -602,8 +602,7 @@ static MediaInfo tl_share_guess()
     return m;
 }
 
-// Once the clip is read: the Share itself. A first link to a free host isn't agreed to here: the library opens on
-// the clip with its Share menu instead.
+// Once the clip is read: the Share itself. A link with no host fails with the way to one (sign in with Cloudflare).
 static void tl_share_go(const char *path, const MediaInfo &m, const char *game)
 {
     Timeline &tl = g_app.timeline;
@@ -611,13 +610,6 @@ static void tl_share_go(const char *path, const MediaInfo &m, const char *game)
     ShareDecision d = host ? share_decide_host(m, 0, host) : share_decide(m, 0);
     bool link = host || d.kind == SHARE_LINK;
     if (link && !d.link_ok) return tl_share_end(false, d.link_why);
-    bool bucket = host ? !strcmp(host, "bucket") : r2_ready();
-    if (link && !bucket && !g_app.config.free_links_seen) {
-        log_line("timeline: share %s needs the free links notice", path);
-        tl.share_step = TL_SHARE_NONE;
-        library_share_file(path);
-        return;
-    }
     wchar_t w[MAX_PATH];
     utf8_to_wide(path, w, MAX_PATH);
     char name[200];

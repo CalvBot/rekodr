@@ -300,8 +300,11 @@ static void setup_page_development(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pa
     ui_wake(2); // keep drawing: it moves
 }
 
-// Sharing: the player's own Cloudflare, as an upgrade from the free host. The free host's cap on one clip, an arrow,
-// and R2's free storage for all of them; under it the account, signed in the same way as in Options.
+// Discord's upload limit on one file without Nitro, in MB.
+static const i32 DISCORD_FREE_MB = 10;
+
+// Sharing: the player's own Cloudflare, as the upgrade from posting the file in Discord. Discord's cap on one file,
+// an arrow, and R2's free storage for links; under it the account, signed in the same way as in Options.
 static void setup_page_sharing(ImDrawList *dl, f32 x0, f32 x1, f32 y)
 {
     y = setup_page_head(dl, x0, x1, y, "Share with your own links",
@@ -312,15 +315,15 @@ static void setup_page_sharing(ImDrawList *dl, f32 x0, f32 x1, f32 y)
     ImVec2 a(x0, y), b(x1, y + card_h);
     dl->AddRectFilled(a, b, col32(COL_PANEL), dp(12));
 
-    // 200 MB -> 10 GB
+    // 10 MB -> 10 GB
     {
         char from[24], to[24];
-        snprintf(from, sizeof from, "%lld MB", FREE_HOSTS[0].max_bytes / 1000000);
+        snprintf(from, sizeof from, "%d MB", DISCORD_FREE_MB);
         snprintf(to, sizeof to, "%.0f GB", R2_FREE_GB);
         f32 left = x0 + pad, right = x1 - pad, top = y + pad, mid = floorf(top + pill_h / 2);
         f32 pill_w = text_w(g_font_number, to) + dp(40), pill_x = right - pill_w, cap_y = top + pill_h + dp(8);
         opt_text_at(dl, g_font_number, ImVec2(left, floorf(mid - big_h / 2)), COL_FAINT, from, pill_x);
-        opt_text_at(dl, g_font_small, ImVec2(left, cap_y), COL_DIM, "per clip, without", pill_x);
+        opt_text_at(dl, g_font_small, ImVec2(left, cap_y), COL_DIM, "a file in Discord", pill_x);
         f32 ax0 = left + text_w(g_font_number, from) + dp(24), ax1 = pill_x - dp(16), head = dp(8), thick = dp(2);
         if (ax1 - ax0 > head * 2) {
             dl->AddRectFilled(ImVec2(ax0, mid - thick / 2), ImVec2(ax1 - head, mid + thick / 2), col32(COL_DIM));

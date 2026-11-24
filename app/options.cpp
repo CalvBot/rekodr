@@ -3428,21 +3428,6 @@ static void options_sharing()
     opt_quality_table();
     opt_min_quality_row();
 
-    // Catbox, on or off
-    {
-        opt_row_begin(0, 0, dp(36));
-        opt_host_name(HOST_CATBOX, "Catbox", false, "https://catbox.moe/faq.php", 0, 0, false, g_row.x1 - dp(56));
-        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - dp(36), opt_row_frame_y()));
-        if (kit_toggle("##catbox", &c.link_catbox)) {
-            log_line("options: Catbox %s", c.link_catbox ? "on" : "off");
-            options_apply(0);
-        }
-        char tip[160];
-        r2_rates_tip(c.upload_rate, c.upload_rate_n, r2_set_up(), tip, sizeof tip);
-        kit_tip(tip);
-        opt_row_end();
-    }
-
     opt_uploader_rows();
 
     // Cloudflare: the player's own R2 bucket. One row for the account: who and what the setup is doing under the

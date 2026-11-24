@@ -2696,8 +2696,8 @@ static void lib_open_sharing()
     ui_show(SCREEN_OPTIONS);
 }
 
-// The hosts a link can go to without R2: the free ones, then the player's uploaders (.sxcu), each by its name
-// (link_uploaders for an uploader) and the one shown. Read again every few seconds, and at once after an uploader is added.
+// The hosts a link can go to without R2: the player's uploaders (.sxcu), each by its name (link_uploaders) and the
+// one shown. Read again every few seconds, and at once after an uploader is added.
 struct LinkHostName {
     char name[64], label[64];
 };
@@ -2711,12 +2711,7 @@ static i32 link_host_names()
     if (g_link_name_count >= 0 && t - g_link_names_at < 3) return g_link_name_count;
     g_link_names_at = t;
     i32 n = 0;
-    for (const FreeHost &f : FREE_HOSTS) {
-        str_set(g_link_names[n].name, f.name);
-        str_set(g_link_names[n].label, f.label);
-        n++;
-    }
-    static char stems[14][64];
+    static char stems[16][64];
     static Uploader u;
     i32 m = uploader_list(stems, COUNT(stems));
     for (i32 i = 0; i < m && n < (i32)COUNT(g_link_names); i++, n++) {
@@ -2769,12 +2764,10 @@ static void share_size_label(f32 mb, char *out, i32 cap)
     else snprintf(out, cap, "%.0f MB", mb);
 }
 
-// Whether links may go to the host named `name` (a free host's name or an uploader's).
+// Whether links may go to the uploader named `name`.
 static bool link_host_on(const char *name)
 {
-    const Config &c = g_app.config;
-    if (!strcmp(name, "catbox")) return c.link_catbox;
-    return hosts_find(c.link_uploaders, name) >= 0;
+    return hosts_find(g_app.config.link_uploaders, name) >= 0;
 }
 
 // Switches the uploader `stem` on or off for links (link_uploaders). The caller saves the settings.
@@ -2802,7 +2795,7 @@ static bool link_uploader_remove(const char *stem)
     return uploader_remove(stem);
 }
 
-// A link can be made: R2 is set up, or a host that's on is there to take it.
+// A link can be made: R2 is set up, or an uploader that's on is there to take it.
 static bool links_any_host()
 {
     if (r2_ready()) return true;
@@ -2812,12 +2805,11 @@ static bool links_any_host()
     return false;
 }
 
-// The host a share went to as shown: "Catbox", an uploader's name, "" for R2.
+// The host a share went to as shown: an uploader's name, "" for R2.
 static void share_host_label(const R2Share &s, char *out, i32 cap)
 {
     out[0] = 0;
-    if (const FreeHost *f = free_host(s.host)) snprintf(out, cap, "%s", f->label);
-    else if (s.host == HOST_CUSTOM) {
+    if (s.host == HOST_CUSTOM) {
         const char *slash = strchr(s.key, '/');
         snprintf(out, cap, "%.*s", (int)(slash ? slash - s.key : (i64)strlen(s.key)), s.key);
         i32 n = link_host_names();
@@ -2825,13 +2817,6 @@ static void share_host_label(const R2Share &s, char *out, i32 cap)
             if (!_stricmp(g_link_names[i].name, out)) snprintf(out, cap, "%s", g_link_names[i].label);
     }
 }
-
-// The first link to a free host asks first (links_notice_draw): what's waiting for the answer.
-enum LinksAsk : u8 { ASK_NONE, ASK_ITEM, ASK_EDITOR };
-static LinksAsk g_links_ask;
-static LibItem g_links_ask_item;
-static char g_links_ask_host[64]; // the host picked for it, "" for Share's rule
-static bool g_links_ask_open; // the dialog opens on the next frame
 
 static void ed_share(ShareKind kind, const char *host = 0); // editor.cpp
 static void edit_read(const Path &file, EditRecord *e); // editor.cpp
@@ -2892,7 +2877,7 @@ static void lib_delete_note(const u64 *keys, i32 n, char *out, i32 cap)
     if (gone) snprintf(out, cap, "%s %d share %s deleted too.", gone == 1 ? "Its" : "Their", gone, gone == 1 ? "copy or link is" : "copies and links are");
     if (stay) {
         size_t l = strlen(out);
-        snprintf(out + l, cap - l, "%s%s.", l ? " " : "", stay == 1 ? cant : "Some links on free hosts can't be removed and stay up");
+        snprintf(out + l, cap - l, "%s%s.", l ? " " : "", stay == 1 ? cant : "Some uploader links can't be removed and stay up");
     }
     if (link) { // a posted link's preview is the chat app's own copy
         size_t l = strlen(out);
@@ -2927,20 +2912,6 @@ static u32 lib_share_now(const LibItem &it, ShareKind kind, const char *host = 0
     return id;
 }
 
-// True when a link would go to a free host and the player hasn't yet been told what that means: the dialog opens,
-// and `ask` runs once they agree. `host` is the one picked (0: Share's rule, a free host only with no bucket).
-static bool links_ask_first(LinksAsk ask, const LibItem *it, const char *host = 0)
-{
-    bool bucket = host ? !strcmp(host, "bucket") || !strcmp(host, "r2") : r2_ready();
-    if (bucket || g_app.config.free_links_seen || !links_any_host()) return false;
-    g_links_ask = ask;
-    str_set(g_links_ask_host, host ? host : "");
-    if (it) g_links_ask_item = *it;
-    g_links_ask_open = true;
-    ui_wake(6);
-    return true;
-}
-
 // A session goes to editors as it is, never squeezed: none of the hosts on taking its size refuses its Share.
 static bool lib_share_too_big(const LibItem &it)
 {
@@ -2955,17 +2926,14 @@ static bool lib_share_refused(const LibItem &it)
 }
 
 // Share on a card or in the player as `kind`, a link on `host` when one is picked. A link with no host opens Options
-// on Sharing; the first to a free host asks first (links_ask_first).
+// where Cloudflare signs in.
 static void lib_share_item(const LibItem &it, ShareKind kind, const char *host = 0)
 {
     if (lib_share_refused(it)) return;
-    if (kind == SHARE_LINK) {
-        if (!links_any_host()) {
-            lib_open_sharing();
-            lib_note(true, "Turn on a free host or set up Cloudflare first");
-            return;
-        }
-        if (links_ask_first(ASK_ITEM, &it, host)) return;
+    if (kind == SHARE_LINK && !links_any_host()) {
+        lib_open_sharing();
+        lib_note(true, "Sign in with Cloudflare to share links");
+        return;
     }
     lib_share_now(it, kind, host);
 }
@@ -3229,20 +3197,19 @@ static void share_cancel_ring(ImDrawList *dl, ImVec2 c, f32 r, f32 progress, u32
 // The most a host takes, 0 for no cap.
 static ID3D11ShaderResourceView *resource_texture(i32 id, i32 *w, i32 *h); // setup.cpp
 
-// A host's own icon, as its site shows it (built into the exe): Catbox and Cloudflare R2; 0 for the player's
-// servers. Loaded once.
+// A host's own icon, as its site shows it (built into the exe): Cloudflare R2's; 0 for the player's servers.
+// Loaded once.
 static ImTextureID host_logo(LinkHost host)
 {
-    static ID3D11ShaderResourceView *tex[2];
-    static bool tried[2];
-    i32 i = host == HOST_CATBOX ? 0 : host == HOST_R2 ? 1 : -1;
-    if (i < 0) return 0;
-    if (!tried[i]) {
-        tried[i] = true;
+    static ID3D11ShaderResourceView *tex;
+    static bool tried;
+    if (host != HOST_R2) return 0;
+    if (!tried) {
+        tried = true;
         i32 w = 0, h = 0;
-        tex[i] = resource_texture(20 + i, &w, &h);
+        tex = resource_texture(21, &w, &h);
     }
-    return (ImTextureID)(intptr_t)tex[i];
+    return (ImTextureID)(intptr_t)tex;
 }
 
 // The host's icon in the sz square at `a`, as it is (only faded by `alpha`); false when it has none.
@@ -3256,7 +3223,6 @@ static bool host_logo_draw(ImDrawList *dl, LinkHost host, ImVec2 a, f32 sz, f32 
 
 static i64 share_host_cap(LinkHost host)
 {
-    if (const FreeHost *f = free_host(host)) return f->max_bytes;
     if (host == HOST_R2) return r2_limit_for_budget(r2_budget_now());
     return 0;
 }
@@ -3293,11 +3259,11 @@ static void share_label_name(const char *label, char *name, i32 name_cap)
 
 // The Share menu, the same wherever it opens (a card's Share, the player's, the editor's and the Timeline's arrow),
 // drawn inside the caller's popup:
-// - Share: what one click does, "Recommended: Catbox" (or File) over its size; while a Share runs the line is its
+// - Share: what one click does, "Recommended: Your bucket" (or File) over its size; while a Share runs the line is its
 //   step over a progress bar and the button its Cancel, then "Copied".
 // - The clip's link (link_key's, when it has one): the address, then Copy, Open, Pause (the bucket's) and Delete.
-// - Link to: a row per host with the clip's size against the host's cap ("35 MB of 200 MB" over a bar), and how
-//   long its links last; greyed when it can't.
+// - Link to: a row per host with the clip's size against the host's cap ("35 MB of 10 GB" over a bar); greyed when
+//   it can't.
 // - Original (shows `original` in its folder; greyed with none) and Edit (greyed unless `can_edit`).
 // Its size follows only the clip: whether it has a link and how many hosts. Returns SHARE_MENU_SHARE for the
 // one-click Share, SHARE_MENU_HOST for a host (its name in `pick`), SHARE_MENU_EDIT for Edit, SHARE_MENU_CANCEL
@@ -3358,7 +3324,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             if (st.running) progress = st.progress;
             if (st.done < 0) ink = COL_WARN, str_set(sub, st.error);
         } else if (!any_host && link) {
-            str_set(label, "Set up a host");
+            str_set(label, "Sign in with Cloudflare");
         } else if (link && !d.link_ok) {
             str_set(label, "No host takes it");
             str_set(sub, d.link_why);
@@ -3461,12 +3427,12 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         f32 h = kit_px(32), pad = kit_px(8), tile = kit_px(16), bar_w = kit_px(96), bar_h = kit_px(3);
         if (!n) {
             ImGui::SetCursorScreenPos(ImVec2(o.x, y));
-            if (lib_menu_item(ICON_SETTINGS, "Set up a host...", false, W)) lib_open_sharing();
+            if (lib_menu_item(ICON_SETTINGS, "Sign in with Cloudflare...", false, W)) lib_open_sharing();
             y = ImGui::GetCursorScreenPos().y;
         }
         for (i32 i = 0; i < n; i++) {
             const ShareHostChoice &x = c[i];
-            bool ok = x.fit != SHARE_FIT_NO;
+            bool ok = x.fits;
             ImGui::PushID(i);
             ImVec2 a(o.x, y), b(o.x + W, y + h);
             ImGui::SetCursorScreenPos(a);
@@ -3504,7 +3470,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
                 share_size_text(cap, cap_s, sizeof cap_s);
                 snprintf(fit, sizeof fit, "%s of %s", size_s, cap_s);
             } else str_set(fit, size_s);
-            f32 frac = !ok || x.fit == SHARE_FIT_SQUEEZED ? 1 : cap > 0 ? (f32)((f64)bytes / cap) : 0;
+            f32 frac = !ok ? 1 : cap > 0 ? (f32)((f64)bytes / cap) : 0;
             f32 fy = floorf(a.y + (h - sfs - kit_px(3) - bar_h) / 2);
             ImGui::PushFont(g_font_small);
             f32 fw = ImGui::CalcTextSize(fit).x;
@@ -3512,7 +3478,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             ImGui::PopFont();
             ImVec2 q0(bx, fy + sfs + kit_px(3));
             dl->AddRectFilled(q0, ImVec2(bx + bar_w, q0.y + bar_h), col32(COL_FAINT, 0.45f), bar_h / 2);
-            u32 bar_ink = !ok ? COL_FAINT : x.fit == SHARE_FIT_SQUEEZED ? COL_WARN : COL_OK;
+            u32 bar_ink = ok ? COL_OK : COL_FAINT;
             if (frac > 0) dl->AddRectFilled(q0, ImVec2(bx + fmaxf(bar_h, bar_w * fminf(frac, 1)), q0.y + bar_h), col32(bar_ink), bar_h / 2);
             // The name
             f32 nx = t1.x + kit_px(10), name_end = fminf(bx, b.x - pad - fw) - kit_px(10);
@@ -3784,70 +3750,6 @@ static bool lib_dialog_check(const char *label, bool *v, bool enabled)
     dl->AddText(ImVec2(b0.x + box + gap, floorf(a.y + (h - ImGui::GetTextLineHeight()) / 2)),
                 col32(enabled ? COL_TEXT : COL_FAINT), label);
     return hit;
-}
-
-// What a free link means, before the first one: public, and per host whether it can be deleted or when it ends.
-// "Share it" shares and doesn't ask again; Cancel shares nothing and asks next time. Drawn on every screen.
-static void links_notice_draw()
-{
-    if (g_links_ask_open) {
-        ImGui::OpenPopup("free_links");
-        g_links_ask_open = false;
-    }
-    if (!lib_dialog_begin("free_links")) return;
-    // The hosts on, the free ones first with how much they take
-    char where[400] = "", what[256] = "", note[900];
-    i32 on[16];
-    i32 n = 0, names = link_host_names();
-    for (i32 i = 0; i < names && n < (i32)COUNT(on); i++)
-        if (link_host_on(g_link_names[i].name)) on[n++] = i;
-    for (i32 k = 0; k < n; k++) {
-        const LinkHostName &h = g_link_names[on[k]];
-        const FreeHost *f = 0;
-        for (const FreeHost &x : FREE_HOSTS)
-            if (!strcmp(x.name, h.name)) f = &x;
-        size_t l = strlen(where);
-        char most[24] = "";
-        if (f) lib_r2_size(f->max_bytes, most, sizeof most);
-        snprintf(where + l, sizeof where - l, "%s%s%s%s%s", k ? ", " : "", h.label, f ? " (up to " : "", most, f ? ")" : "");
-        l = strlen(what);
-        if (f) snprintf(what + l, sizeof what - l, "%s links can't be deleted. ", f->label);
-    }
-    snprintf(note, sizeof note,
-             "Your clip goes to a public host, one of these that takes it: %s. Anyone with the link can watch "
-             "it. %sFor private links you can delete, set up your own Cloudflare in Options.",
-             where, what);
-    const char *name = g_links_ask == ASK_ITEM ? (g_links_ask_item.display_name[0] ? g_links_ask_item.display_name
-                                                                                   : g_links_ask_item.name)
-                                               : "";
-    f32 w = kit_px(440);
-    ImGui::PushFont(g_font_title);
-    ImGui::TextUnformatted("Free links are public");
-    ImGui::PopFont();
-    ImVec2 a = ImGui::GetCursorScreenPos();
-    if (name[0]) {
-        ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
-        text_clipped(ImGui::GetWindowDrawList(), a, w, col32(COL_DIM), name);
-    }
-    ImGui::PushTextWrapPos(a.x - ImGui::GetWindowPos().x + w);
-    ImGui::TextUnformatted(note);
-    ImGui::PopTextWrapPos();
-    ImGui::Dummy(ImVec2(w, kit_px(12)));
-    i32 r = lib_dialog_pair(ICON_LINK "  Share it", KIT_PRIMARY, a.x + w);
-    if (r) {
-        LinksAsk ask = g_links_ask;
-        g_links_ask = ASK_NONE;
-        ImGui::CloseCurrentPopup();
-        if (r > 0) {
-            g_app.config.free_links_seen = true;
-            config_save(g_app.config, g_app.paths);
-            log_line("library: free links agreed to");
-            const char *host = g_links_ask_host[0] ? g_links_ask_host : 0;
-            if (ask == ASK_ITEM) lib_share_now(g_links_ask_item, SHARE_LINK, host);
-            else if (ask == ASK_EDITOR) ed_share(SHARE_LINK, host);
-        }
-    }
-    lib_dialog_end();
 }
 
 // Renames lib.target to what's in lib.rename_buf, with its edit. True when done (renamed, or the name didn't

@@ -742,11 +742,10 @@ static void test_settings_round_trip()
     a.inputs[0] = {"{0.0.1.00000000}.{a}", "Line (RODE AI-1)", INPUT_STEREO};
     a.inputs[1] = {"{0.0.1.00000000}.{b}", "Off one", INPUT_OFF}; // off isn't saved
 
-    a.link_catbox = false; // free links: Catbox off, one uploader on
-    str_set(a.link_uploaders, "mine");
+    str_set(a.link_uploaders, "mine"); // one uploader on
     T(config_save(a, paths));
     T(config_load(&b, paths));
-    T(!b.link_catbox && !strcmp(b.link_uploaders, "mine"));
+    T(!strcmp(b.link_uploaders, "mine"));
     {
         // An empty bucket name reads as the default
         static Config e;
@@ -985,67 +984,49 @@ static void test_share()
     T((r.video_kbps + 4.0 * r.audio_kbps) * 125 * 20 <= r.ceiling);
 
     // One click: a file as is under the max, squeezed to it when 67% of it fits, a link further over
-    ShareHosts free = {false, true, ""}, bucket = {true, true, ""}, none = {};
-    ShareDecision d = share_decide_for(15 * mb, 20, 0.67, free);
+    ShareHosts bucket = {true, ""}, none = {};
+    ShareDecision d = share_decide_for(15 * mb, 20, 0.67, bucket);
     T(d.kind == SHARE_AS_IS && d.file_ok && !d.file_squeezed && d.file_bytes == 15 * mb && !strcmp(d.why, "15 MB, as is"));
-    d = share_decide_for(25 * mb, 20, 0.67, free);
+    d = share_decide_for(25 * mb, 20, 0.67, bucket);
     T(d.kind == SHARE_SQUEEZED && d.file_ok && d.file_squeezed && d.file_bytes < 20 * mb);
     T(!strcmp(d.why, "25 MB squeezed to 20 MB"));
-    d = share_decide_for(31 * mb, 20, 0.67, free);
-    T(d.kind == SHARE_LINK && !d.file_ok && d.link_ok && d.host == HOST_CATBOX && !d.link_squeezed);
-    T(d.link_bytes == 31 * mb && !strcmp(d.host_label, "Catbox"));
-    d = share_decide_for(21 * mb, 20, 1.0, free); // never lower
+    d = share_decide_for(31 * mb, 20, 0.67, bucket);
+    T(d.kind == SHARE_LINK && !d.file_ok && d.link_ok && d.host == HOST_R2 && d.link_bytes == 31 * mb);
+    T(!strcmp(d.host_label, "your bucket"));
+    d = share_decide_for(21 * mb, 20, 1.0, bucket); // never lower
     T(d.kind == SHARE_LINK);
-    // No bucket: Catbox as is to 200 MB, squeezed to about 300 MB; bigger needs a bucket
-    d = share_decide_for(250000000, 20, 0.67, free);
-    T(d.host == HOST_CATBOX && d.link_squeezed && d.link_bytes < 200000000);
-    d = share_decide_for(400000000, 20, 0.67, free);
-    T(!d.link_ok && starts_with(d.link_why, "Needs your own Cloudflare"));
+    d = share_decide_for(5000000000, 20, 0.67, bucket); // the bucket takes it as is, however big
+    T(d.link_ok && d.host == HOST_R2 && d.link_bytes == 5000000000);
+    // No bucket: the first uploader as is; with none, the way to sign in
     d = share_decide_for(2000000000, 20, 0.67, none);
-    T(!d.link_ok && starts_with(d.link_why, "Turn on Catbox"));
-    ShareHosts up = {false, false, "MyUploader"};
+    T(!d.link_ok && !strcmp(d.link_why, SHARE_NO_BUCKET));
+    ShareHosts up = {false, "MyUploader"};
     d = share_decide_for(2000000000, 20, 0.67, up);
-    T(d.link_ok && d.host == HOST_CUSTOM && !d.link_squeezed && !strcmp(d.host_label, "MyUploader"));
-    // A bucket: Catbox (when on) for what it takes, else the bucket as is, however big
-    d = share_decide_for(250000000, 20, 0.67, bucket);
-    T(d.host == HOST_CATBOX && d.link_squeezed);
-    d = share_decide_for(400000000, 20, 0.67, bucket);
-    T(d.host == HOST_R2 && !d.link_squeezed && d.link_bytes == 400000000 && !strcmp(d.host_label, "your bucket"));
-    bucket.catbox = false;
-    d = share_decide_for(50 * mb, 20, 0.67, bucket);
-    T(d.host == HOST_R2 && !d.link_squeezed);
-    d = share_decide_for(5000000000, 20, 0.67, bucket);
-    T(d.link_ok && d.host == HOST_R2);
+    T(d.link_ok && d.host == HOST_CUSTOM && d.link_bytes == 2000000000 && !strcmp(d.host_label, "MyUploader"));
     // A bucket: the uploaders are left out by the rule even when on
-    ShareHosts all = {true, false, "Up1,Up2", 3000000000};
+    ShareHosts all = {true, "Up1,Up2", 3000000000};
     d = share_decide_for(1200000000, 20, 0.67, all);
     T(d.host == HOST_R2);
-    // The hosts to pick from: each that's on, with how a clip goes there
+    // The hosts to pick from: each that's on, with whether a clip fits
     ShareHostChoice ch[8];
-    all.catbox = true;
-    T(share_hosts_for(250000000, 0.67, all, ch, 8) == 4);
-    T(!strcmp(ch[0].name, "catbox") && ch[0].fit == SHARE_FIT_SQUEEZED && ch[0].bytes < 200000000);
-    T(!strcmp(ch[1].name, "bucket") && ch[1].host == HOST_R2 && ch[1].fit == SHARE_FIT_AS_IS);
-    T(!strcmp(ch[2].name, "Up1") && !strcmp(ch[3].name, "Up2") && ch[3].host == HOST_CUSTOM);
-    T(share_hosts_for(4000000000, 0.67, all, ch, 8) == 4);
-    T(ch[0].fit == SHARE_FIT_NO && !strcmp(ch[0].why, "Too big for Catbox even squeezed") && !ch[0].bytes);
-    T(ch[1].fit == SHARE_FIT_NO && starts_with(ch[1].why, "Bigger than your bucket's"));
-    T(ch[2].fit == SHARE_FIT_AS_IS && ch[2].bytes == 4000000000);
-    T(share_hosts_for(mb, 1.0, none, ch, 8) == 0 && share_hosts_for(mb, 0.67, all, ch, 2) == 2);
-    T(share_hosts_for(250000000, 1.0, free, ch, 8) == 1 && ch[0].fit == SHARE_FIT_NO); // never lower
-    // A picked host: there as quality may be lowered, or no link with why
-    d = share_decide_on(250000000, 20, 0.67, all, "catbox");
-    T(d.link_ok && d.host == HOST_CATBOX && d.link_squeezed);
+    T(share_hosts_for(250000000, all, ch, 8) == 3);
+    T(!strcmp(ch[0].name, "bucket") && ch[0].host == HOST_R2 && ch[0].fits && ch[0].bytes == 250000000);
+    T(!strcmp(ch[1].name, "Up1") && !strcmp(ch[2].name, "Up2") && ch[2].host == HOST_CUSTOM);
+    T(share_hosts_for(4000000000, all, ch, 8) == 3);
+    T(!ch[0].fits && starts_with(ch[0].why, "Bigger than your bucket's") && !ch[0].bytes);
+    T(ch[1].fits && ch[1].bytes == 4000000000);
+    T(share_hosts_for(mb, none, ch, 8) == 0 && share_hosts_for(mb, all, ch, 2) == 2);
+    // A picked host: there when it fits, or no link with why
     d = share_decide_on(250000000, 20, 0.67, all, "r2");
     T(d.link_ok && d.host == HOST_R2 && !strcmp(d.host_label, "your bucket"));
     d = share_decide_on(250000000, 20, 0.67, all, "up2");
     T(d.link_ok && d.host == HOST_CUSTOM && !strcmp(d.host_label, "Up2"));
-    d = share_decide_on(400000000, 20, 0.67, all, "catbox");
-    T(!d.link_ok && !strcmp(d.link_why, "Too big for Catbox even squeezed"));
-    d = share_decide_on(mb, 20, 0.67, free, "bucket");
-    T(!d.link_ok && starts_with(d.link_why, "Set up your own Cloudflare"));
-    d = share_decide_on(mb, 20, 0.67, up, "catbox");
-    T(!d.link_ok && !strcmp(d.link_why, "catbox isn't switched on in Options"));
+    d = share_decide_on(4000000000, 20, 0.67, all, "bucket");
+    T(!d.link_ok && starts_with(d.link_why, "Bigger than your bucket's"));
+    d = share_decide_on(mb, 20, 0.67, up, "bucket");
+    T(!d.link_ok && !strcmp(d.link_why, SHARE_NO_BUCKET));
+    d = share_decide_on(mb, 20, 0.67, up, "other");
+    T(!d.link_ok && !strcmp(d.link_why, "other isn't switched on in Options"));
     // Sizes in the menu: whole MB from 10, one decimal under, GB from 1000
     char t[24];
     share_size_text(5 * mb + mb / 2, t, sizeof t);
@@ -1428,13 +1409,12 @@ static void put_file(const Path &p, const char *text)
 // Links (r2.cpp): request signing, names, the history file, limits and what cleanup removes
 static void test_r2()
 {
-    { // connecting a bucket fills in its settings and leaves Catbox as the player set it
+    { // connecting a bucket fills in its settings
         static Config c;
         c = {};
-        c.link_catbox = true;
         R2Conf f = {"acct", "key", "", "bucket", "https://clips.example"};
         r2_connected(c, f);
-        T(c.link_catbox && !strcmp(c.r2_account, "acct") && !strcmp(c.r2_bucket, "bucket"));
+        T(!strcmp(c.r2_account, "acct") && !strcmp(c.r2_bucket, "bucket"));
         T(!strcmp(c.r2_public_url, "https://clips.example"));
     }
     // AWS's own example for Signature V4 (GET Object, S3 docs)
@@ -1490,7 +1470,7 @@ static void test_r2()
     n = r2_plan_cleanup(s, 4, 12 * R2_GB, 4 * R2_GB, -1, plan, 4); // 12 + 4 incoming: 1 goes, then 0
     T(n == 1 && plan[0] == 1);
     T(r2_plan_cleanup(s, 4, 6 * R2_GB, 4 * R2_GB, -1, plan, 4) == -1); // pinned 4 + incoming 4 > 6
-    s[1].host = HOST_CATBOX; // a free host's clip isn't in the bucket
+    s[1].host = HOST_CUSTOM; // an uploader's clip isn't in the bucket
     T(r2_plan_cleanup(s, 4, 8 * R2_GB, 0, -1, plan, 4) == 0);
 
     // Before an upload: the bucket full to the limit, a link of 3 GB clears the oldest unpinned until it fits; one
@@ -1513,11 +1493,11 @@ static void test_r2()
     n = r2_plan_cleanup(s, 4, 8 * R2_GB, 6 * R2_GB, -1, plan, 4); // pinned 2 + 6: all three others go
     T(n == 3 && plan[0] == 0 && plan[1] == 2 && plan[2] == 3);
 
-    // The Space bar: the bucket's links oldest first, a free host's left out, and which go for a limit
+    // The Space bar: the bucket's links oldest first, an uploader's left out, and which go for a limit
     {
         static R2Share shown[4];
         u8 goes[4];
-        s[3].host = HOST_CATBOX;
+        s[3].host = HOST_CUSTOM;
         i32 m = r2_evict_plan(s, 4, 4 * R2_GB, 0, 0, goes, shown, 4);
         T(m == 3 && shown[0].uploaded_us == 100 && shown[1].uploaded_us == 101 && shown[2].uploaded_us == 102);
         T(goes[0] && !goes[1] && !goes[2]); // pinned 2 + 2 + 2 over 4: the oldest unpinned goes
@@ -1533,9 +1513,6 @@ static void test_r2()
         s[3].host = HOST_R2;
     }
 
-    // Free hosts by name
-    T(free_host_named("catbox")->host == HOST_CATBOX && free_host_named("Catbox")->host == HOST_CATBOX);
-    T(!free_host_named("nope") && !free_host_named(""));
     {
         // Uploaders switched on and off by name, once each
         char kept[256];
@@ -1564,30 +1541,6 @@ static void test_r2()
     T(!r2_refuses(true, false));
     T(r2_refuses(false, false) && strstr(r2_refuses(false, false), "keys"));
     T(r2_refuses(true, true) && strstr(r2_refuses(true, true), "until the 1st"));
-
-    // Upload speed: the mean of the first 10, then each new one counts a tenth
-    {
-        f64 avg = 0;
-        i32 cnt_n = 0;
-        r2_rate_add(&avg, &cnt_n, 2e6);
-        r2_rate_add(&avg, &cnt_n, 4e6);
-        T(cnt_n == 2 && fabs(avg - 3e6) < 1);
-        for (i32 i = 0; i < 20; i++) r2_rate_add(&avg, &cnt_n, 3e6);
-        T(cnt_n == 10 && fabs(avg - 3e6) < 1);
-        r2_rate_add(&avg, &cnt_n, 13e6);
-        T(cnt_n == 10 && fabs(avg - 4e6) < 1);
-        f64 rate[3] = {11.4e6, 2.1e6, 0};
-        i32 cnt[3] = {3, 2, 0};
-        char t[160];
-        r2_rates_tip(rate, cnt, true, t, sizeof t);
-        T(!strcmp(t, "Upload speed from your last uploads: Catbox 2.1 MB/s, your bucket 11.4 MB/s"));
-        cnt[HOST_R2] = 0;
-        r2_rates_tip(rate, cnt, true, t, sizeof t);
-        T(!strcmp(t, "Upload speed from your last uploads: Catbox 2.1 MB/s, your bucket not measured yet"));
-        cnt[HOST_CATBOX] = 0;
-        r2_rates_tip(rate, cnt, false, t, sizeof t);
-        T(!strcmp(t, "Upload speed from your last uploads: Catbox not measured yet"));
-    }
 
     // The bucket's custom domains: only those enabled, owned and with a certificate
     {
@@ -1621,7 +1574,7 @@ static void test_r2()
     ap.moving = true;
     T(r2_auto_action(ap, 1, true, 1) == 0);
     ap.moving = false;
-    ap.host = HOST_CATBOX;
+    ap.host = HOST_CUSTOM;
     T(r2_auto_action(ap, 1, true, 1) == 0);
 
     char rd[24];
@@ -1664,7 +1617,6 @@ static void test_r2()
     T(uploader_result("", "  https://h/x.mp4\n", link, sizeof link) && !strcmp(link, "https://h/x.mp4"));
     T(uploader_result("https://h/{response}", "abc\n", link, sizeof link) && !strcmp(link, "https://h/abc"));
     T(json_path("[{\"link\":\"q\"}]", 15, "[0].link", link, sizeof link) && !strcmp(link, "q"));
-    T(up_plain_link("https://files.catbox.moe/ab12cd.mp4", link, sizeof link) && !up_plain_link("<html>", link, sizeof link));
 
     // History file round trip, a tab in a title made a space
     wchar_t temp[MAX_PATH];
@@ -1687,7 +1639,7 @@ static void test_r2()
     str_set(w[1].key, "def.mp4");
     w[1].removed = true;
     w[1].version = 1;
-    w[1].host = HOST_CATBOX;
+    w[1].host = HOST_CUSTOM;
     w[0].paused = 2;
     str_set(w[0].hidden, "clipback/qrstuvwxyzabcdef/clip.mp4");
     w[0].pause_day = 20261121;
@@ -1706,7 +1658,7 @@ static void test_r2()
     T(!strcmp(r[0].game, "Valorant") && !strcmp(r[0].path, w[0].path) && r[0].bytes == w[0].bytes);
     T(r[0].uploaded_us == w[0].uploaded_us && r[0].pinned && !r[0].removed && r[0].version == 2);
     T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
-    T(r[0].host == HOST_R2 && r[1].host == HOST_CATBOX);
+    T(r[0].host == HOST_R2 && r[1].host == HOST_CUSTOM);
     T(r[0].paused == 2 && !strcmp(r[0].hidden, w[0].hidden) && r[0].pause_day == 20261121 && !r[1].paused);
     T(r[0].plays_today == -1 && r[0].plays_month == -1 && r[0].plays_24h == -1);
     T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
@@ -2162,7 +2114,6 @@ static u32 net_fake(const char *method, const char *where, const char *query, R2
     }
     const char *body = "";
     if (!strcmp(method, "POST") && !strcmp(query, "uploads=")) body = "<UploadId>u1</UploadId>";
-    else if (!strcmp(method, "POST") && strstr(where, "catbox.moe")) body = "https://files.catbox.moe/abc123.mp4";
     else if (!strcmp(method, "POST") && strstr(where, "up.example"))
         body = "{\"url\":\"https://up.example/f/1.mp4\",\"del\":\"https://up.example/del/1\"}";
     else if (!strcmp(method, "GET") && strstr(query, "list-type")) body = "<ListBucketResult></ListBucketResult>";
@@ -2249,19 +2200,7 @@ static void test_share_cancel()
     T(net_count("DELETE clipback/k/clip.mp4") == 1 && net_count("DELETE clipback/k/social.mp4") == 1);
     T(net_count("DELETE clipback/k/thumb.jpg") == 1 && net_count("DELETE clipback/k") == 4);
 
-    // Catbox, cancelled as it answered: it can't be deleted there, so it's only not kept or given out
-    t.kind = R2_T_FREE;
-    str_set(t.hosts, "catbox");
-    id = job(&slot);
-    t.slot = slot;
-    make(1000);
-    g_net.cancel_on = "POST";
-    r2_run_free(t);
-    r = r2_job(id);
-    T(r.state == R2_FAILED && !strcmp(r.error, "Cancelled") && !file_exists(file.s) && g_r2.count == 0);
-    T(g_net.n == 1);
-
-    // A custom uploader with a DeletionURL: what went up is deleted there
+    // A custom uploader with a DeletionURL, cancelled as it answered: what went up is deleted there
     Path dir = path_join(g_app.paths.config_dir, L"uploaders"), sxcu = path_join(dir, L"mine.sxcu");
     CreateDirectoryW(dir.s, 0);
     FILE *f = _wfopen(sxcu.s, L"wb");
@@ -2269,13 +2208,15 @@ static void test_share_cancel()
           "\"Body\":\"MultipartFormData\",\"FileFormName\":\"file\",\"URL\":\"{json:url}\","
           "\"DeletionURL\":\"{json:del}\"}", f);
     fclose(f);
+    t.kind = R2_T_UPLOADER;
     str_set(t.hosts, "mine");
     id = job(&slot);
     t.slot = slot;
     make(1000);
     g_net.cancel_on = "POST";
-    r2_run_free(t);
-    T(r2_job(id).state == R2_FAILED && !file_exists(file.s) && g_r2.count == 0);
+    r2_run_uploader(t);
+    r = r2_job(id);
+    T(r.state == R2_FAILED && !strcmp(r.error, "Cancelled") && !file_exists(file.s) && g_r2.count == 0);
     T(net_count("GET https://up.example/del/1") == 1);
 
     // Quiet retries: a server error or no answer goes again, up to three more times; a refusal doesn't
@@ -2297,7 +2238,7 @@ static void test_share_cancel()
     g_net.fail_status = 502;
     t.slot = slot;
     make(1000);
-    r2_run_free(t);
+    r2_run_uploader(t);
     T(r2_job(id).state == R2_DONE && net_count("POST https://up.example/upload") == 3);
     g_net.fail = 0;
     g_r2.count = 0;

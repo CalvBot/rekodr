@@ -1304,9 +1304,8 @@ static void help_window()
             {"Recommended size", "What a clip needs to look right: the Quality table's bitrate for its height and frame rate"},
             {"Use recommended", "YouTube's published upload bitrates. Off, your own table; Reset fills it with theirs"},
             {"Lower quality to fit", "How far under the recommended bitrate a file may go to fit the max size. At 100% bigger clips go as a link"},
-            {"Where a link goes", "Catbox if it takes the clip, then your bucket, then your servers"},
+            {"Where a link goes", "Your bucket, or without one your servers"},
             {"Link to", "In the Share menu: pick the host yourself"},
-            {"Catbox", "Up to 200 MB. Public, kept for good: a link can't be deleted"},
             {"Your bucket", "Your own Cloudflare storage: links you can pause and delete"},
             {"Budget and space", "The budget sets the space the bucket's links can take. Past it the oldest go first; pinned ones stay"},
             {"Reads", "Each play of a bucket link counts. 10 million a month are free"},
@@ -1756,7 +1755,6 @@ static void ui_frame()
     }
     library_hover_end_frame(); // the Library cards' preview stops once no card has the mouse
     ImGui::EndChild();
-    links_notice_draw();
     help_window();
     if (g_glass) ImGui::PopStyleColor(COUNT(glass_cols));
     g_glass = false;

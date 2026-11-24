@@ -11,7 +11,7 @@
 // full when the mouse leaves.
 // Clip saved: Edit opens the file in the editor. Share does what share_decide picks and stays up while it runs, its
 // line showing the step and percent over a thin bar, then what went on the clipboard; then it counts down again. A
-// first link to a free host isn't agreed to here: the library opens on the clip with its Share menu instead.
+// link with no host fails with the way to one (sign in with Cloudflare).
 // Session ended: the game's icon, its name and length. Save saves it; Review opens it on the timeline, or the
 // Library's unsaved sessions when several are waiting. Closed or ignored, the sessions it asked about are unsaved.
 // The marker window takes the keyboard, and gives it back to the window that had it. Enter or Save keeps what was
@@ -633,13 +633,6 @@ static void toast_share_start(Toast &t, const MediaInfo &m, const char *game, u6
     ShareDecision d = share_decide(m, 0);
     if (d.kind == SHARE_LINK && !d.link_ok) {
         toast_share_end(t, false, d.link_why);
-        return;
-    }
-    if (d.kind == SHARE_LINK && !r2_ready() && !g_app.config.free_links_seen) { // asked in the library first
-        log_line("toast: share %s needs the free links notice", t.path);
-        toast_hide(t);
-        t.sharing = TSH_NONE;
-        library_share_file(t.path);
         return;
     }
     wchar_t w[MAX_PATH];

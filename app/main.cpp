@@ -33,7 +33,7 @@ static void run_command(const char *text)
     }
     else if (!strcmp(cmd, "fetch-ffmpeg")) ffget_start(true); // fetches the pinned ffmpeg even when one is found
     else if (!strcmp(cmd, "link") && *arg) {
-        // link [host] <path>: shares a file as a link, on the host if one is named (catbox, bucket or an uploader's
+        // link [host] <path>: shares a file as a link, on the host if one is named (bucket or an uploader's
         // name), else where Share's rule sends it; the log gets the address
         char host[64] = "";
         const char *path = arg;
@@ -113,9 +113,6 @@ static void run_command(const char *text)
             lib_sel_clear();
             for (i32 i = 0; i < atoi(trim(arg + 6)) && i < lib.shown_count; i++) lib_sel_set(lib.items[lib.shown[i]].key, true);
             if (lib.selected_count) lib.select_anchor = lib.items[lib.shown[0]].key;
-        }
-        else if (starts_with(arg, "free-links")) { // the first free link's notice, for the first clip shown
-            if (lib.shown_count) links_ask_first(ASK_ITEM, &lib.items[lib.shown[0]]);
         }
         else if (starts_with(arg, "session-toast")) { // session-toast [<more>]: Session ended for a made-up session
             Session s = {};
