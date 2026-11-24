@@ -33,8 +33,8 @@ static void run_command(const char *text)
     }
     else if (!strcmp(cmd, "fetch-ffmpeg")) ffget_start(true); // fetches the pinned ffmpeg even when one is found
     else if (!strcmp(cmd, "link") && *arg) {
-        // link [host] <path>: shares a file as a link, on the host if one is named (catbox, litterbox, bucket or an
-        // uploader's name), else where Share's rule sends it; the log gets the address
+        // link [host] <path>: shares a file as a link, on the host if one is named (catbox, bucket or an uploader's
+        // name), else where Share's rule sends it; the log gets the address
         char host[64] = "";
         const char *path = arg;
         if (const char *sp = strchr(arg, ' ')) { // a host is one plain word: no \ / : or .

@@ -3387,7 +3387,7 @@ static void options_sharing()
     opt_quality_table();
     opt_min_quality_row();
 
-    // The free hosts, each on or off
+    // Catbox, on or off
     {
         opt_row_begin(0, 0, dp(36));
         opt_host_name(HOST_CATBOX, "Catbox", false, "https://catbox.moe/faq.php", 0, 0, false, g_row.x1 - dp(56));
@@ -3399,30 +3399,6 @@ static void options_sharing()
         char tip[160];
         r2_rates_tip(c.upload_rate, c.upload_rate_n, r2_set_up(), tip, sizeof tip);
         kit_tip(tip);
-        opt_row_end();
-    }
-    {
-        static const char *const hours[] = {"1 h", "12 h", "24 h", "72 h"};
-        static const i32 hour_v[] = {1, 12, 24, 72};
-        f32 seg_w = dp(200), sw = dp(36), gap = dp(16);
-        opt_row_begin(0, 0, seg_w + gap + sw);
-        opt_host_name(HOST_LITTERBOX, "Litterbox", false, "https://litterbox.catbox.moe/", 0, 0, false,
-                      g_row.x1 - seg_w - gap - sw - dp(20));
-        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - seg_w - gap - sw, opt_row_frame_y()));
-        i32 at = 3, cur = free_hours(c.litterbox_hours);
-        for (i32 i = 0; i < 4; i++)
-            if (hour_v[i] == cur) at = i;
-        i32 hit = lib_segments("##litterbox", hours, 4, seg_w, ImGui::GetFrameHeight(), at, COL_PANEL2, COL_HOVER, COL_HOVER);
-        if (hit >= 0 && hour_v[hit] != c.litterbox_hours) {
-            c.litterbox_hours = hour_v[hit];
-            log_line("options: Litterbox keeps links %d hours", c.litterbox_hours);
-            options_apply(0);
-        }
-        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - sw, opt_row_frame_y()));
-        if (kit_toggle("##litterboxon", &c.link_litterbox)) {
-            log_line("options: Litterbox %s", c.link_litterbox ? "on" : "off");
-            options_apply(0);
-        }
         opt_row_end();
     }
 

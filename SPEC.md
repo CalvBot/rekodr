@@ -114,17 +114,16 @@ Keep a whole session from start to finish.
     its bucket links; Catbox links can't be deleted and stay up, which the delete asks about.
   - **Link:** the edit is made into a copy Discord plays (H.264, one stereo mix), uploaded, and its link goes on the
     clipboard. The copy follows Share's rule against its host. Without a bucket: Catbox (when it's on) as is up to
-    its 200 MB and squeezed to it when Lower quality to fit allows, else Litterbox the same way against its 1 GB, else an
-    uploader as is; bigger fails with "needs your own Cloudflare". With the player's own R2 bucket set up in
-    Options: Catbox (when it's on) for what it takes, to save the bucket's space, else the bucket as is; Litterbox
-    and uploaders aren't used. When the bucket can't take a link (its keys unreadable, or the month's reads near `r2_read_cap`)
+    its 200 MB and squeezed to it when Lower quality to fit allows, else an uploader as is; bigger fails with
+    "needs your own Cloudflare". With the player's own R2 bucket set up in Options: Catbox (when it's on) for what it
+    takes, to save the bucket's space, else the bucket as is; uploaders aren't used. When the bucket can't take a link (its keys unreadable, or the month's reads near `r2_read_cap`)
     the link fails with the reason rather than going to a free host. The bucket is `clipback` (`r2_bucket` in the
     config file). Its public address is its r2.dev address or a custom domain connected to it in Cloudflare,
     picked under Options' Advanced; r2.dev is rate-limited by Cloudflare. Each host's upload speed is averaged over
     about its last 10 uploads (`upload_rate_*`), and Catbox's row shows it beside the bucket's when tooltips are on.
     An R2 link is a small preview page (`share_link_page`, on; off gives the .mp4 itself): the clip full width on a
     dark page with a plain "clipback" under it, and the tags chat apps read for a card with its title and a frame
-    from a third of the way in (at most 1280 wide) that plays it. Catbox and Litterbox links are the .mp4. Reads of
+    from a third of the way in (at most 1280 wide) that plays it. Catbox links are the .mp4. Reads of
     the page and its picture count with the clip's. A paused link's page names the clip and doesn't play it.
     The bucket holds all that the budget buys (`r2_budget`, dollars a month; 0 = R2's free 10 GB). Before each
     upload it's listed for its real size, and if the link, its page and picture would pass that, the oldest

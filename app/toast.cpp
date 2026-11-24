@@ -710,8 +710,7 @@ static void toast_share_poll(Toast &t)
     else if (j.state == SHARE_FAILED) toast_share_end(t, false, j.error);
     else if (j.state == SHARE_DONE) {
         char done[64];
-        if (j.kind == SHARE_LINK && j.expires_h) snprintf(done, sizeof done, "Link copied, expires in %d h", j.expires_h);
-        else str_set(done, j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
+        str_set(done, j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
         toast_share_end(t, true, j.error[0] ? j.error : done);
         if (j.kind != SHARE_LINK) editor_refresh_shares();
         ui_wake();

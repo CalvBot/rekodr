@@ -9,8 +9,7 @@ static void telemetry_shared();                        // telemetry.cpp
 // The hosts a link can go to now.
 struct ShareHosts {
     bool bucket;           // the player's own R2 bucket is set up
-    bool catbox, litterbox; // switched on (the rule leaves Litterbox out when there is a bucket)
-    i32  litterbox_hours;
+    bool catbox;           // switched on
     char uploaders[256];   // the ShareX uploaders switched on (link_uploaders), "" = none
     i64  bucket_limit;     // what the budget keeps, 0 = not checked
 };
@@ -33,8 +32,7 @@ static f64 share_floor(i32 min_quality)
 
 // The decision for a clip of recommended size `reco`, with quality lowered to fit down to `floor` of it. A file: as
 // is under the max, squeezed to it when `floor` of the clip fits. A link: Catbox when it's on and takes the clip (as
-// is up to its 200 MB, squeezed when `floor` of it fits), else the bucket as is; with no bucket, Litterbox the same
-// way up to its 1 GB, then the first uploader as is.
+// is up to its 200 MB, squeezed when `floor` of it fits), else the bucket as is, else the first uploader as is.
 static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 floor, const ShareHosts &h)
 {
     ShareDecision d = {};
@@ -58,17 +56,15 @@ static ShareDecision share_decide_for(i64 reco, f64 max_mb, f64 floor, const Sha
     else if (h.bucket) {
         d.host = HOST_R2;
         str_set(d.host_label, "your bucket");
-    } else if (takes(HOST_LITTERBOX, h.litterbox))
-        snprintf(d.host_label, sizeof d.host_label, "Litterbox, %d h", h.litterbox_hours);
-    else if (h.uploaders[0]) {
+    } else if (h.uploaders[0]) {
         d.host = HOST_CUSTOM;
         const char *end = strchr(h.uploaders, ',');
         snprintf(d.host_label, sizeof d.host_label, "%.*s", end ? (int)(end - h.uploaders) : (int)strlen(h.uploaders),
                  h.uploaders);
     } else {
         d.link_ok = false;
-        str_set(d.link_why, h.catbox || h.litterbox ? "Needs your own Cloudflare: too big for the free hosts"
-                                                    : "Turn on a free host or set up Cloudflare in Options");
+        str_set(d.link_why, h.catbox ? "Needs your own Cloudflare: too big for Catbox"
+                                     : "Turn on Catbox or set up Cloudflare in Options");
     }
     d.link_bytes = d.link_ok && d.link_squeezed ? (i64)(most * (1 - SHARE_MARGIN)) : reco;
 
@@ -117,10 +113,7 @@ static i32 share_hosts_for(i64 reco, f64 floor, const ShareHosts &h, ShareHostCh
         if (host == HOST_R2) snprintf(c.why, sizeof c.why, "Bigger than your bucket's %s: raise it in Options", m);
         else snprintf(c.why, sizeof c.why, "Too big for %s even squeezed", free_host(host)->label);
     };
-    char label[48];
     if (h.catbox) add("catbox", "Catbox", HOST_CATBOX, free_host(HOST_CATBOX)->max_bytes, true);
-    snprintf(label, sizeof label, "Litterbox, %d h", h.litterbox_hours);
-    if (h.litterbox) add("litterbox", label, HOST_LITTERBOX, free_host(HOST_LITTERBOX)->max_bytes, true);
     if (h.bucket) add("bucket", "your bucket", HOST_R2, h.bucket_limit, false);
     for (const char *p = h.uploaders; *p;) {
         const char *end = strchr(p, ',');
@@ -173,22 +166,19 @@ static ShareHosts share_hosts()
     const Config &c = g_app.config;
     ShareHosts h = {};
     h.bucket = r2_set_up();
-    h.litterbox_hours = c.litterbox_hours;
     h.catbox = c.link_catbox;
-    h.litterbox = c.link_litterbox;
     str_set(h.uploaders, c.link_uploaders);
     h.bucket_limit = h.bucket ? r2_limit_for_budget(r2_budget_now()) : 0;
     return h;
 }
 
-// Whether a link host that's on takes a file of `bytes` as it is: the bucket under its limit, Catbox and Litterbox
-// under theirs, a custom uploader (its limit isn't known) always.
+// Whether a link host that's on takes a file of `bytes` as it is: the bucket under its limit, Catbox under its own, a
+// custom uploader (its limit isn't known) always.
 static bool share_host_fits(i64 bytes)
 {
     ShareHosts h = share_hosts();
     if (h.bucket && (!h.bucket_limit || bytes <= h.bucket_limit)) return true;
     if (h.catbox && bytes <= free_host(HOST_CATBOX)->max_bytes) return true;
-    if (h.litterbox && bytes <= free_host(HOST_LITTERBOX)->max_bytes) return true;
     for (const char *p = h.uploaders; *p; p++)
         if (*p != ',' && *p != ' ') return true;
     return false;
@@ -383,10 +373,9 @@ static ShareAims share_aims(bool link, const wchar_t *path, const MediaInfo &m, 
     const ShareDecision &d = a.d;
     if (link) {
         a.aim = d.link_bytes;
-        a.limit = d.host == HOST_CATBOX || d.host == HOST_LITTERBOX ? free_host(d.host)->max_bytes : 0;
+        a.limit = d.host == HOST_CATBOX ? free_host(d.host)->max_bytes : 0;
         a.squeezed = d.link_squeezed;
-        str_set(a.hosts, d.host == HOST_R2 ? "r2" : d.host == HOST_CATBOX ? "catbox"
-                       : d.host == HOST_LITTERBOX ? "litterbox" : d.host_label);
+        str_set(a.hosts, d.host == HOST_R2 ? "r2" : d.host == HOST_CATBOX ? "catbox" : d.host_label);
     } else {
         a.aim = d.file_squeezed ? d.max_bytes : d.reco_bytes;
         a.limit = d.max_bytes;
@@ -460,7 +449,6 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
     }
     if (j.v.kind == SHARE_LINK) {
         str_set(j.v.url, what);
-        j.v.expires_h = r2_url_hours_left(what);
         ImGui::SetClipboardText(what);
     } else {
         str_set(j.v.path, what);
@@ -610,7 +598,7 @@ static void share_cancel(u32 id)
 // ---------------------------------------------------------------------------------------------------------------
 // Per clip (by library key)
 
-// The clip's newest link that hasn't been removed or expired (it may be paused). Its whole history entry, for the
+// The clip's newest link that hasn't been removed (it may be paused). Its whole history entry, for the
 // menu's link row: r2_pause, r2_resume and r2_delete take its key.
 static bool share_clip_link(u64 lib_key, R2Share *out)
 {
@@ -621,10 +609,9 @@ static bool share_clip_link(u64 lib_key, R2Share *out)
         gen = r2_history_gen();
         count = r2_history(list, COUNT(list)); // newest first
     }
-    i64 now = now_us();
     for (i32 i = 0; i < count && lib_key; i++) {
         const R2Share &s = list[i];
-        if (s.lib_key != lib_key || s.removed || (s.expires_us && now >= s.expires_us)) continue;
+        if (s.lib_key != lib_key || s.removed) continue;
         if (out) *out = s;
         return true;
     }
@@ -669,9 +656,8 @@ static ClipShareState share_clip_state(u64 lib_key, const wchar_t *path, const M
     return st;
 }
 
-// What deleting the clip takes with it: its share files, and its links where they can be deleted (the bucket's;
-// Litterbox drops its own when it expires). Catbox and uploader links can't be: `cant` says how many stay up ("" for
-// none). Returns how many files and links go.
+// What deleting the clip takes with it: its share files, and its links where they can be deleted (the bucket's).
+// Catbox and uploader links can't be: `cant` says how many stay up ("" for none). Returns how many files and links go.
 static i32 share_clip_delete_preview(u64 lib_key, char *cant, i32 cap)
 {
     if (cap > 0) cant[0] = 0;
@@ -685,10 +671,9 @@ static i32 share_clip_delete_preview(u64 lib_key, char *cant, i32 cap)
     static R2Share list[R2_MAX_SHARES];
     i32 count = r2_history(list, COUNT(list)), stay = 0;
     const char *host = 0;
-    i64 now = now_us();
     for (i32 i = 0; i < count; i++) {
         const R2Share &s = list[i];
-        if (s.lib_key != lib_key || s.removed || (s.expires_us && now >= s.expires_us)) continue;
+        if (s.lib_key != lib_key || s.removed) continue;
         if (s.host == HOST_R2) n++;
         else if (s.host == HOST_CATBOX || s.host == HOST_CUSTOM) {
             const char *h = s.host == HOST_CATBOX ? "Catbox" : "uploader";

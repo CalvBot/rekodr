@@ -2612,7 +2612,7 @@ static void lib_tags_dialog()
 
 // ---------------------------------------------------------------------------------------------------------------
 // Share (share.cpp) and links (r2.cpp): Share makes a file or a link and puts it on the clipboard; Share again in the
-// Shared list uploads an expired link's file again. The jobs under way, then what they did or why one failed, show in
+// Shared list uploads a removed link's file again. The jobs under way, then what they did or why one failed, show in
 // a note at the bottom of the window.
 
 enum { LIB_UPLOADS_MAX = 8 };
@@ -2774,7 +2774,6 @@ static bool link_host_on(const char *name)
 {
     const Config &c = g_app.config;
     if (!strcmp(name, "catbox")) return c.link_catbox;
-    if (!strcmp(name, "litterbox")) return c.link_litterbox;
     return hosts_find(c.link_uploaders, name) >= 0;
 }
 
@@ -2991,8 +2990,6 @@ static void lib_uploads_poll()
             if (!j.id) lib_note(true, "Couldn't share %s", u.name);
             else if (j.state == SHARE_FAILED) lib_note(true, "Couldn't share %s: %s", u.name, j.error);
             else if (j.state == SHARE_DONE && j.error[0]) lib_note(true, "%s: %s", u.name, j.error);
-            else if (j.state == SHARE_DONE && j.kind == SHARE_LINK && j.expires_h)
-                lib_note(false, "Link copied, expires in %d h: %s", j.expires_h, u.name);
             else if (j.state == SHARE_DONE && j.kind == SHARE_LINK) lib_note(false, "Link copied: %s", u.name);
             else if (j.state == SHARE_DONE) {
                 lib_note(false, "Copied %s, ready to paste", u.name);
@@ -3197,8 +3194,7 @@ static ShareMenuState share_menu_state(const ShareJobView &j)
     if (now - done_ms >= 4000) return st;
     bool ok = j.state == SHARE_DONE && !j.error[0];
     st.done = ok ? 1 : -1;
-    if (ok && j.kind == SHARE_LINK && j.expires_h) snprintf(st.line, sizeof st.line, "Link copied, expires in %d h", j.expires_h);
-    else str_set(st.line, ok ? (j.kind == SHARE_LINK ? "Link copied" : "Copied") : "Not shared");
+    str_set(st.line, ok ? (j.kind == SHARE_LINK ? "Link copied" : "Copied") : "Not shared");
     str_set(st.error, j.error);
     ui_wake();
     return st;
@@ -3233,13 +3229,13 @@ static void share_cancel_ring(ImDrawList *dl, ImVec2 c, f32 r, f32 progress, u32
 // The most a host takes, 0 for no cap.
 static ID3D11ShaderResourceView *resource_texture(i32 id, i32 *w, i32 *h); // setup.cpp
 
-// A host's own icon, as its site shows it (built into the exe): Catbox, Litterbox and Cloudflare R2; 0 for the
-// player's servers. Loaded once.
+// A host's own icon, as its site shows it (built into the exe): Catbox and Cloudflare R2; 0 for the player's
+// servers. Loaded once.
 static ImTextureID host_logo(LinkHost host)
 {
-    static ID3D11ShaderResourceView *tex[3];
-    static bool tried[3];
-    i32 i = host == HOST_CATBOX ? 0 : host == HOST_LITTERBOX ? 1 : host == HOST_R2 ? 2 : -1;
+    static ID3D11ShaderResourceView *tex[2];
+    static bool tried[2];
+    i32 i = host == HOST_CATBOX ? 0 : host == HOST_R2 ? 1 : -1;
     if (i < 0) return 0;
     if (!tried[i]) {
         tried[i] = true;
@@ -3288,28 +3284,11 @@ static bool g_card_share_open; // a card's Share was right-clicked, or Share... 
 
 enum ShareMenuPick { SHARE_MENU_NONE, SHARE_MENU_SHARE, SHARE_MENU_HOST, SHARE_MENU_EDIT, SHARE_MENU_CANCEL };
 
-// A host's label split for the menu: its name with a capital ("your bucket" -> "Your bucket"), and how long its
-// links last after ", " ("Litterbox, 72 h" -> "72 h"; "" for none).
-static void share_label_split(const char *label, char *name, i32 name_cap, char *expiry, i32 expiry_cap)
+// A host's label for the menu: its name with a capital ("your bucket" -> "Your bucket").
+static void share_label_name(const char *label, char *name, i32 name_cap)
 {
-    const char *comma = strstr(label, ", ");
-    i32 n = comma ? (i32)(comma - label) : (i32)strlen(label);
-    if (n >= name_cap) n = name_cap - 1;
-    memcpy(name, label, n);
-    name[n] = 0;
+    snprintf(name, name_cap, "%s", label);
     if (name[0] >= 'a' && name[0] <= 'z') name[0] -= 32;
-    snprintf(expiry, expiry_cap, "%s", comma ? comma + 2 : "");
-}
-
-// A clock and `expiry` ("72 h") from `a`, dim, `fs` its text size; returns where it ends.
-static f32 share_expiry_draw(ImDrawList *dl, ImVec2 a, f32 line_h, ImFont *font, const char *expiry, u32 ink)
-{
-    f32 fs = font->FontSize, ifs = floorf(fs * 0.95f);
-    ImVec2 gs = g_font_icon->CalcTextSizeA(ifs, FLT_MAX, 0, ICON_CLOCK);
-    dl->AddText(g_font_icon, ifs, ImVec2(a.x, floorf(a.y + (line_h - gs.y) / 2)), col32(ink), ICON_CLOCK);
-    f32 x = a.x + gs.x + kit_px(4);
-    dl->AddText(font, fs, ImVec2(x, floorf(a.y + (line_h - fs) / 2)), col32(ink), expiry);
-    return x + font->CalcTextSizeA(fs, FLT_MAX, 0, expiry).x;
 }
 
 // The Share menu, the same wherever it opens (a card's Share, the player's, the editor's and the Timeline's arrow),
@@ -3371,7 +3350,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             ImGui::PopFont();
         }
         // The line and what's under it: the size, or the Share's progress
-        char label[128], sub[128] = "", size_s[24], expiry[24] = "";
+        char label[128], sub[128] = "", size_s[24];
         f32 progress = -1;
         u32 ink = COL_TEXT;
         if (st.running || st.done) {
@@ -3386,7 +3365,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             ink = COL_DIM;
         } else if (link) {
             char name[48];
-            share_label_split(d.host_label, name, sizeof name, expiry, sizeof expiry);
+            share_label_name(d.host_label, name, sizeof name);
             snprintf(label, sizeof label, "Recommended: %s", name);
             str_set(sub, d.why);
         } else {
@@ -3399,10 +3378,8 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         f32 tx = a.x + pad, tw = p0.x - kit_px(10) - tx, bh = g_font_bold->FontSize;
         f32 ty = floorf(a.y + (h - bh - kit_px(3) - sfs) / 2);
         ImGui::PushFont(g_font_bold);
-        f32 lw = fminf(ImGui::CalcTextSize(label).x, tw);
         text_clipped(dl, ImVec2(tx, ty), tw, col32(ink), label);
         ImGui::PopFont();
-        if (expiry[0] && tx + lw + kit_px(8) < tx + tw) share_expiry_draw(dl, ImVec2(tx + lw + kit_px(8), ty), bh, g_font_small, expiry, COL_DIM);
         f32 sy = ty + bh + kit_px(3);
         if (progress >= 0) share_bar(dl, ImVec2(tx, floorf(sy + (sfs - kit_px(5)) / 2)), tw, progress, COL_ACCENT);
         else if (sub[0]) {
@@ -3459,7 +3436,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         lib_popup_style_push(6);
         if (ImGui::BeginPopup("link_delete")) {
             ImGui::PushFont(g_font_small);
-            if (host[0]) kit_dim(s.expires_us ? "  The file stays on %s until it ends" : "  The file stays on %s", host);
+            if (host[0]) kit_dim("  The file stays on %s", host);
             else kit_dim("  Discord may keep showing it for a while");
             ImGui::PopFont();
             if (lib_menu_item(ICON_DELETE, host[0] ? "Remove from the list" : "Delete it from the bucket", true, kit_px(240))) {
@@ -3496,10 +3473,9 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             bool clicked = ImGui::InvisibleButton("##host", ImVec2(W, h));
             bool hot = ok && ImGui::IsItemHovered();
             if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            char name[48], expiry[24], tip[128] = "";
-            share_label_split(x.label, name, sizeof name, expiry, sizeof expiry);
+            char name[48], tip[128] = "";
+            share_label_name(x.label, name, sizeof name);
             if (!ok) str_set(tip, x.why);
-            else if (expiry[0]) snprintf(tip, sizeof tip, "Deleted after %s", expiry);
             else if (x.host == HOST_R2) str_set(tip, "Your bucket");
             if (tip[0]) kit_tip(tip);
             if (clicked && ok && !st.running) {
@@ -3538,14 +3514,10 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
             dl->AddRectFilled(q0, ImVec2(bx + bar_w, q0.y + bar_h), col32(COL_FAINT, 0.45f), bar_h / 2);
             u32 bar_ink = !ok ? COL_FAINT : x.fit == SHARE_FIT_SQUEEZED ? COL_WARN : COL_OK;
             if (frac > 0) dl->AddRectFilled(q0, ImVec2(bx + fmaxf(bar_h, bar_w * fminf(frac, 1)), q0.y + bar_h), col32(bar_ink), bar_h / 2);
-            // The name, then how long its links last
+            // The name
             f32 nx = t1.x + kit_px(10), name_end = fminf(bx, b.x - pad - fw) - kit_px(10);
             f32 ny = floorf(a.y + (h - line_h) / 2);
             text_clipped(dl, ImVec2(nx, ny), name_end - nx, col32(ok ? COL_TEXT : COL_FAINT), name);
-            if (expiry[0]) {
-                f32 ex = nx + ImGui::CalcTextSize(name).x + kit_px(8);
-                if (ex + kit_px(40) < name_end) share_expiry_draw(dl, ImVec2(ex, ny), line_h, g_font_small, expiry, ok ? COL_DIM : COL_FAINT);
-            }
             ImGui::PopID();
             y = b.y;
         }
@@ -3839,9 +3811,7 @@ static void links_notice_draw()
         if (f) lib_r2_size(f->max_bytes, most, sizeof most);
         snprintf(where + l, sizeof where - l, "%s%s%s%s%s", k ? ", " : "", h.label, f ? " (up to " : "", most, f ? ")" : "");
         l = strlen(what);
-        if (f && f->expires)
-            snprintf(what + l, sizeof what - l, "%s links end after %d hours. ", f->label, free_hours(g_app.config.litterbox_hours));
-        else if (f) snprintf(what + l, sizeof what - l, "%s links can't be deleted. ", f->label);
+        if (f) snprintf(what + l, sizeof what - l, "%s links can't be deleted. ", f->label);
     }
     snprintf(note, sizeof note,
              "Your clip goes to a public host, one of these that takes it: %s. Anyone with the link can watch "

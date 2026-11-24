@@ -6,10 +6,9 @@
 // The first-run setup's begging picture: 15 frames, 5 across and 3 down (setup.cpp).
 10 RCDATA "../assets/setup-beg.jpg"
 
-// The free hosts' and Cloudflare's own icons, from their sites, for Share's host rows (library.cpp host_logo).
+// Catbox's and Cloudflare's own icons, from their sites, for Share's host rows (library.cpp host_logo).
 20 RCDATA "../assets/host-catbox.png"
-21 RCDATA "../assets/host-litterbox.png"
-22 RCDATA "../assets/host-cloudflare.png"
+21 RCDATA "../assets/host-cloudflare.png"
 
 // The app's typeface, Onest (fonts/OFL.txt is its licence), read in place by ui_load_fonts.
 30 RCDATA "fonts/Onest-Regular.ttf"

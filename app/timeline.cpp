@@ -666,8 +666,7 @@ static void tl_share_poll()
         else if (j.state == SHARE_FAILED) tl_share_end(false, j.error);
         else if (j.state == SHARE_DONE) {
             char done[64];
-            if (j.kind == SHARE_LINK && j.expires_h) snprintf(done, sizeof done, "Link copied, expires in %d h", j.expires_h);
-            else str_set(done, j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
+            str_set(done, j.kind == SHARE_LINK ? "Link copied" : "Copied, ready to paste");
             tl_share_end(true, done);
             if (j.kind != SHARE_LINK) editor_refresh_shares();
         } else {

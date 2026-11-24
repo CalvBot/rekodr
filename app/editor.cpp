@@ -836,7 +836,6 @@ static void ed_share_poll()
     if (j.state == SHARE_DONE && j.kind == SHARE_LINK) {
         str_set(ed.result_url, j.url);
         if (j.error[0]) str_set(ed.result, j.error);
-        else if (j.expires_h) snprintf(ed.result, sizeof ed.result, "Link copied, expires in %d h.", j.expires_h);
         else str_set(ed.result, "Link copied, ready to paste.");
         ed.result_error = j.error[0] != 0;
     } else if (j.state == SHARE_DONE) {

@@ -1,8 +1,7 @@
 // Links: a clip shared as a plain https link to an MP4 that Discord plays in place. Where it goes:
 //   free hosts  with nothing set up, the copy goes to a free public host that's on and takes its size (Share's
-//               rule, share.cpp): Catbox (up to 200 MB, kept, can't be deleted), else Litterbox (up to 1 GB, gone
-//               after litterbox_hours), else one of the player's own uploaders that's on (ShareX .sxcu files,
-//               link_uploaders). Anyone with the link can watch.
+//               rule, share.cpp): Catbox (up to 200 MB, kept, can't be deleted), else one of the player's own
+//               uploaders that's on (ShareX .sxcu files, link_uploaders). Anyone with the link can watch.
 //   R2          once the player has set up their own Cloudflare R2 bucket, every clip goes there instead, as
 //               clipback/<random folder>/clip.mp4, so a link names no player, game or date and can't be guessed.
 //               The link points at the bucket's public address (r2.dev or the player's own domain).
@@ -67,12 +66,9 @@ struct FreeHost {
     const char    *label; // for the player
     const wchar_t *server, *path;
     i64            max_bytes;
-    bool           expires; // files go after litterbox_hours
 };
 static const FreeHost FREE_HOSTS[] = {
-    {HOST_CATBOX, "catbox", "Catbox", L"catbox.moe", L"/user/api.php", 200000000, false},
-    {HOST_LITTERBOX, "litterbox", "Litterbox", L"litterbox.catbox.moe", L"/resources/internals/api.php", 1000000000,
-     true},
+    {HOST_CATBOX, "catbox", "Catbox", L"catbox.moe", L"/user/api.php", 200000000},
 };
 
 struct R2Share {
@@ -92,7 +88,6 @@ struct R2Share {
     i32  version;     // 1, then one more each time it's shared again; links past the first end in ?v=<version>
     u64  lib_key;     // the library item it was made from, 0 for an editor render
     LinkHost host;
-    i64  expires_us;  // when a free host drops it, 0 = kept
     u8   paused;      // R2: 0 plays, 1 paused by hand, 2 too many reads in a day (r2_read_rate), 3 the account
                       // near its month's reads (r2_read_cap)
     char hidden[R2_KEY_MAX]; // while paused: where the file is in the bucket instead, a new random name
@@ -162,8 +157,7 @@ struct R2Task {
     i32        slot;    // the job's slot (probe, upload, free)
     char       key[R2_KEY_MAX]; // delete: the share; upload: the name to reuse ("" = a new one)
     char       replace[R2_KEY_MAX]; // upload, free: the history entry this share takes the place of
-    char       hosts[256]; // free: the host Share chose, "catbox", "litterbox" or an uploader's name
-    i32        hours;     // free: litterbox_hours
+    char       hosts[256]; // free: the host Share chose, "catbox" or an uploader's name
     Path       file;    // probe: the file; upload: the copy to send (deleted after)
     Path       ffprobe;
     R2Conf     conf;
@@ -192,7 +186,7 @@ struct R2Work {
     char       title[256], game[64];
     u64        lib_key;
     char       reuse[R2_KEY_MAX]; // the removed share it brings back
-    char       hosts[64]; // where the link goes by Share's rule: "r2", "catbox", "litterbox" or an uploader's name
+    char       hosts[64]; // where the link goes by Share's rule: "r2", "catbox" or an uploader's name
     i64        aim, limit; // the copy's size, as save_link takes them
     u8         phase;      // 1 the copy's save, a small copy to come after; 2 the small copy's save; 0 the one save
     Path       full;       // while the small copy is made: the copy, made already
@@ -286,10 +280,10 @@ static void r2_rates_tip(const f64 *rate, const i32 *n, bool bucket, char *out, 
 // In the bucket now: an R2 share that cleanup hasn't removed.
 static bool r2_in_bucket(const R2Share &s) { return s.host == HOST_R2 && !s.removed; }
 
-// The link still plays: not removed and not past a free host's expiry.
-static bool r2_share_live(const R2Share &s, i64 now)
+// The link still plays: not removed or paused.
+static bool r2_share_live(const R2Share &s)
 {
-    return !s.removed && !s.paused && (!s.expires_us || now < s.expires_us);
+    return !s.removed && !s.paused;
 }
 
 // Where the share's file is in the bucket: its own name, or the hidden one while paused.
@@ -334,15 +328,6 @@ static void r2_fmt_reads(i64 n, char *out, i32 cap)
     else snprintf(out, cap, "%.1f M", (f64)n / 1e6);
 }
 
-// Litterbox keeps files for 1, 12, 24 or 72 hours: the nearest of those at or above `hours`.
-static i32 free_hours(i32 hours)
-{
-    static const i32 allowed[] = {1, 12, 24, 72};
-    for (i32 h : allowed)
-        if (hours <= h) return h;
-    return 72;
-}
-
 static const FreeHost *free_host(LinkHost h)
 {
     for (const FreeHost &f : FREE_HOSTS)
@@ -350,7 +335,7 @@ static const FreeHost *free_host(LinkHost h)
     return 0;
 }
 
-// The free host by its name ("catbox", "litterbox"), 0 for any other.
+// The free host by its name ("catbox"), 0 for any other.
 static const FreeHost *free_host_named(const char *name)
 {
     for (const FreeHost &f : FREE_HOSTS)
@@ -1619,8 +1604,8 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
 
 // ---------------------------------------------------------------------------------------------------------------
 // History: <config_dir>\shares.tsv, one share a line, oldest first:
-//   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  expires_us  paused  hidden  pause_day  page_w
-//   page_h  url  title  game  path  social  social_w  social_h  seconds  preview  marks
+//   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  paused  hidden  pause_day  page_w  page_h  url
+//   title  game  path  social  social_w  social_h  seconds  preview  marks
 
 static void r2_tsv_field(FILE *f, const char *s, bool last)
 {
@@ -1635,9 +1620,9 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
     FILE *f = _wfopen(part.s, L"wb");
     if (!f) return false;
     for (i32 i = 0; i < n; i++) {
-        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%lld\t%d\t%s\t%d\t%d\t%d\t", s[i].key, s[i].version,
+        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%d\t%s\t%d\t%d\t%d\t", s[i].key, s[i].version,
                 s[i].pinned ? 1 : 0, s[i].removed ? 1 : 0, s[i].bytes, s[i].uploaded_us, s[i].lib_key, (int)s[i].host,
-                s[i].expires_us, (int)s[i].paused, s[i].hidden, s[i].pause_day, s[i].page_w, s[i].page_h);
+                (int)s[i].paused, s[i].hidden, s[i].pause_day, s[i].page_w, s[i].page_h);
         r2_tsv_field(f, s[i].url, false);
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
@@ -1658,16 +1643,16 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
     for (char *line = text; line && *line && n < max;) {
         char *next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char *f[24] = {};
+        char *f[23] = {};
         i32 count = 0;
-        for (char *p = line; count < 24;) {
+        for (char *p = line; count < 23;) {
             f[count++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 24 && strlen(f[0]) < R2_KEY_MAX && strlen(f[10]) < R2_KEY_MAX &&
+        if (count == 23 && strlen(f[0]) < R2_KEY_MAX && strlen(f[9]) < R2_KEY_MAX &&
             atoi(f[7]) >= 0 && atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
@@ -1679,26 +1664,25 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.uploaded_us = _atoi64(f[5]);
             s.lib_key = _strtoui64(f[6], 0, 10);
             s.host = (LinkHost)atoi(f[7]);
-            s.expires_us = _atoi64(f[8]);
-            s.paused = (u8)atoi(f[9]);
-            str_set(s.hidden, f[10]);
-            s.pause_day = atoi(f[11]);
+            s.paused = (u8)atoi(f[8]);
+            str_set(s.hidden, f[9]);
+            s.pause_day = atoi(f[10]);
             if (s.paused > 3 || (s.paused && !s.hidden[0])) s.paused = 0;
-            s.page_w = atoi(f[12]);
-            s.page_h = atoi(f[13]);
+            s.page_w = atoi(f[11]);
+            s.page_h = atoi(f[12]);
             if (s.page_w <= 0 || s.page_h <= 0) s.page_w = s.page_h = 0;
-            str_set(s.url, f[14]);
-            str_set(s.title, f[15]);
-            str_set(s.game, f[16]);
-            str_set(s.path, f[17]);
-            s.social = (i8)atoi(f[18]);
-            s.social_w = atoi(f[19]);
-            s.social_h = atoi(f[20]);
-            s.seconds = (f32)atof(f[21]);
-            s.preview = (f32)atof(f[22]);
-            char *cr = strchr(f[23], '\r');
+            str_set(s.url, f[13]);
+            str_set(s.title, f[14]);
+            str_set(s.game, f[15]);
+            str_set(s.path, f[16]);
+            s.social = (i8)atoi(f[17]);
+            s.social_w = atoi(f[18]);
+            s.social_h = atoi(f[19]);
+            s.seconds = (f32)atof(f[20]);
+            s.preview = (f32)atof(f[21]);
+            char *cr = strchr(f[22], '\r');
             if (cr) *cr = 0;
-            str_set(s.marks, f[23]);
+            str_set(s.marks, f[22]);
             if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0))) s.social = 0;
             s.plays_today = s.plays_month = s.plays_24h = -1;
         }
@@ -1769,9 +1753,8 @@ static void r2_room_locked()
 {
     if (g_r2.count < R2_MAX_SHARES) return;
     i32 drop = 0;
-    i64 now = now_us();
     for (i32 i = 0; i < g_r2.count; i++)
-        if (!r2_share_live(g_r2.shares[i], now) && !r2_in_bucket(g_r2.shares[i])) { drop = i; break; }
+        if (!r2_share_live(g_r2.shares[i]) && !r2_in_bucket(g_r2.shares[i])) { drop = i; break; }
     r2_drop_locked(drop);
 }
 
@@ -2115,7 +2098,7 @@ static bool r2_remove_planned(const R2Conf &c, const i32 *plan, i32 n)
 // say more about the wait for an answer than about speed and aren't counted.
 static void r2_rate_note(LinkHost host, i64 bytes, i64 us)
 {
-    if (bytes < 1000000 || us <= 0 || host > HOST_LITTERBOX) return;
+    if (bytes < 1000000 || us <= 0 || host > HOST_CATBOX) return;
     i64 rate = (i64)(bytes * 1e6 / us);
     r2_post(R2_EV_RATE, rate << 2 | host);
 }
@@ -2233,7 +2216,6 @@ static void r2_run_upload(const R2Task &t)
     s.paused = 0;
     s.hidden[0] = 0;
     s.host = HOST_R2;
-    s.expires_us = 0;
     s.bytes = bytes + extra;
     s.uploaded_us = now_us();
     s.lib_key = w.lib_key;
@@ -2727,8 +2709,6 @@ static void r2_run_free(const R2Task &t)
     else GetFileSizeEx(f, &size);
     i32 tried = 0, named = 0;
     i64 most = 0; // the biggest a free host named takes
-    char hours[8];
-    snprintf(hours, sizeof hours, "%dh", free_hours(t.hours));
     static thread_local char resp[16384];
     static thread_local Uploader u;
     for (const char *p = t.hosts; *p && !err[0] && !url[0] && !g_r2.stop && !r2_cancelled(job);) {
@@ -2746,12 +2726,12 @@ static void r2_run_free(const R2Task &t)
         if (h) {
             if (size.QuadPart > h->max_bytes) continue;
             tried++;
-            const char *fields[][2] = {{"reqtype", "fileupload"}, {"time", hours}};
+            const char *fields[][2] = {{"reqtype", "fileupload"}};
             wchar_t wurl[300];
             char curl[300];
             swprintf(wurl, COUNT(wurl), L"https://%s%s", h->server, h->path);
             wide_to_utf8(wurl, curl, sizeof curl);
-            UpRequest q = {"POST", curl, "", fields, h->expires ? 2 : 1, "fileToUpload"};
+            UpRequest q = {"POST", curl, "", fields, 1, "fileToUpload"};
             i64 began = 0;
             u32 status = 0;
             for (i32 attempt = 0;; attempt++) {
@@ -2806,7 +2786,7 @@ static void r2_run_free(const R2Task &t)
     }
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
     DeleteFileW(t.file.s);
-    if (r2_cancelled(job)) { // what went up goes again where the host allows it; Catbox and Litterbox keep theirs
+    if (r2_cancelled(job)) { // what went up goes again where the host allows it; Catbox keeps its own
         if (url[0] && undo[0]) up_get(undo);
         url[0] = 0;
         str_set(err, "Cancelled");
@@ -2842,7 +2822,6 @@ static void r2_run_free(const R2Task &t)
     s.version = 1;
     s.bytes = size.QuadPart;
     s.uploaded_us = now_us();
-    s.expires_us = used && used->expires ? s.uploaded_us + (i64)free_hours(t.hours) * 3600 * 1000000 : 0;
     s.lib_key = w.lib_key;
     s.seconds = t.seconds;
     s.preview = t.preview;
@@ -4140,7 +4119,7 @@ static void r2_start_copy(i32 slot)
     if (!w.save) r2_fail_now(slot, "Too many saves are waiting");
 }
 
-// Whether share `s` is on the host named `hosts` ("r2" or "bucket", "catbox", "litterbox", an uploader's name);
+// Whether share `s` is on the host named `hosts` ("r2" or "bucket", "catbox", an uploader's name);
 // any host when none is named.
 static bool r2_share_on(const R2Share &s, const char *hosts)
 {
@@ -4173,7 +4152,7 @@ static u32 r2_share_file(const wchar_t *path, const char *title, const char *gam
         for (i32 i = g_r2.count - 1; i >= 0 && found < 0; i--)
             if (g_r2.shares[i].lib_key == lib_key && r2_share_on(g_r2.shares[i], hosts)) found = i;
         char url[512] = "", resume[R2_KEY_MAX] = "";
-        if (found >= 0 && r2_share_live(g_r2.shares[found], now_us())) str_set(url, g_r2.shares[found].url);
+        if (found >= 0 && r2_share_live(g_r2.shares[found])) str_set(url, g_r2.shares[found].url);
         else if (found >= 0 && g_r2.shares[found].paused && !g_r2.shares[found].removed) {
             str_set(url, g_r2.shares[found].url); // a paused one is brought back
             str_set(resume, g_r2.shares[found].key);
@@ -4266,8 +4245,8 @@ static R2Job r2_job(u32 id)
 
 // Stops a link at once and deletes what it made: the copy being made or sent, the parts of an upload in pieces,
 // what is already in the bucket with its page and picture, a custom uploader's file at its DeletionURL. A free
-// host's upload stopped mid-way leaves nothing; one that finished stays there (Catbox and Litterbox can't delete
-// it), only no longer given out.
+// host's upload stopped mid-way leaves nothing; one that finished stays there (Catbox can't delete it), only no
+// longer given out.
 static void r2_cancel(u32 id)
 {
     for (i32 i = 0; i < COUNT(g_r2.jobs); i++) {
@@ -4293,27 +4272,14 @@ static void r2_cancel(u32 id)
     }
 }
 
-// When a link made here stops playing: how many hours it has left, rounded up; 0 for one kept, or not known.
-static i32 r2_url_hours_left(const char *url)
-{
-    i64 left = 0;
-    AcquireSRWLockShared(&g_r2.lock);
-    for (i32 i = 0; i < g_r2.count; i++)
-        if (!strcmp(g_r2.shares[i].url, url) && g_r2.shares[i].expires_us)
-            left = g_r2.shares[i].expires_us - now_us();
-    ReleaseSRWLockShared(&g_r2.lock);
-    const i64 hour = 3600ll * 1000000;
-    return left > 0 ? (i32)((left + hour - 1) / hour) : 0;
-}
-
-// Whether a link made here still plays (not removed, paused or expired).
+// Whether a link made here still plays (not removed or paused).
 static bool r2_url_live(const char *url)
 {
     bool live = false;
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
     for (i32 i = 0; i < g_r2.count; i++)
-        if (!strcmp(g_r2.shares[i].url, url)) live = r2_share_live(g_r2.shares[i], now_us());
+        if (!strcmp(g_r2.shares[i].url, url)) live = r2_share_live(g_r2.shares[i]);
     ReleaseSRWLockExclusive(&g_r2.lock);
     return live;
 }
@@ -4381,7 +4347,6 @@ static void r2_on_save_event(const Event &e)
     if (t.kind == R2_T_UPLOAD && old >= 0 && g_r2.shares[old].host == HOST_R2) str_set(t.key, w.reuse);
     ReleaseSRWLockShared(&g_r2.lock);
     str_set(t.hosts, w.hosts);
-    t.hours = g_app.config.litterbox_hours;
     t.page = to_r2 && g_app.config.share_link_page && ffmpeg_find(g_app.config.ffmpeg, &t.ffmpeg);
     if (t.page && !second) { // cards that can't fetch the copy fast enough get a small copy of it
         WIN32_FILE_ATTRIBUTE_DATA fa = {};
@@ -4411,11 +4376,9 @@ static void r2_on_save_event(const Event &e)
     }
 }
 
-// What the setup found goes to the settings. Connecting a bucket where there was none turns Litterbox off, once:
-// the player may turn it back on, and setting up the same bucket again leaves it as it is.
+// What the setup found goes to the settings.
 static void r2_connected(Config &c, const R2Conf &f)
 {
-    if (!c.r2_account[0] || !c.r2_access_key[0]) c.link_litterbox = false;
     str_set(c.r2_account, f.account);
     str_set(c.r2_access_key, f.access);
     str_set(c.r2_bucket, f.bucket);
@@ -4680,9 +4643,8 @@ static bool r2_link_for(u64 lib_key, char *url, i32 cap)
     url[0] = 0;
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
-    i64 now = now_us();
     for (i32 i = g_r2.count - 1; i >= 0 && lib_key; i--)
-        if (g_r2.shares[i].lib_key == lib_key && r2_share_live(g_r2.shares[i], now)) {
+        if (g_r2.shares[i].lib_key == lib_key && r2_share_live(g_r2.shares[i])) {
             snprintf(url, cap, "%s", g_r2.shares[i].url);
             break;
         }
@@ -4723,7 +4685,7 @@ static void r2_pin(const char *key, bool on)
 }
 
 // Drops a share from the history, deleting it from the bucket first when it's there. A free host's copy stays
-// there (Catbox keeps it, Litterbox drops it when it expires).
+// there (Catbox keeps it).
 static void r2_delete(const char *key)
 {
     R2Task t = {};
