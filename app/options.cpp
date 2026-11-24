@@ -3323,6 +3323,47 @@ static void opt_link_card_preview(i32 style)
     opt_row_end();
 }
 
+// The Cloudflare account's line: who it is and what the setup is doing. Returns its colour: green when it works,
+// amber when it needs the player, dim on the way. Options' Cloudflare row and the first-run setup show the same.
+static u32 r2_account_line(const R2Status &st, char *text, i32 cap)
+{
+    if (st.state == R2_SETUP_IDLE) snprintf(text, cap, "%s", r2_ready() ? "Set up" : "Not set up");
+    else if (st.who[0] && st.state == R2_SETUP_OK) snprintf(text, cap, "%s  -  %s", st.who, st.text);
+    else snprintf(text, cap, "%s", st.text);
+    return st.state == R2_SETUP_OK ? COL_OK
+           : st.state == R2_SETUP_FAILED || st.state == R2_SETUP_NO_TOKEN_SCOPE ? COL_WARN : COL_DIM;
+}
+
+// The account's one button, `w` wide at the cursor: signs in (`sign_in` its words), waits while the browser is out
+// (a click gives up), or signs out. `where` names the screen in the log.
+static void r2_account_button(const char *where, const char *sign_in, f32 w)
+{
+    R2Status st = r2_status();
+    bool signed_in = r2_signed_in(), has = r2_has_token(), waiting = st.state == R2_SETUP_WAITING;
+    char label[64];
+    if (waiting) {
+        kit_next_tip("Stop waiting");
+        if (kit_button("Waiting...##r2main", KIT_SECONDARY, ImVec2(w, 0))) {
+            dev_click(where, "r2 sign-in cancel");
+            r2_sign_in_cancel();
+        }
+    } else if (st.state == R2_SETUP_NO_TOKEN_SCOPE || (!signed_in && !has)) {
+        bool again = signed_in || has || st.state == R2_SETUP_NO_TOKEN_SCOPE;
+        snprintf(label, sizeof label, "%s##r2main", again ? "Sign in again" : sign_in);
+        if (kit_button(label, KIT_PRIMARY, ImVec2(w, 0))) {
+            dev_click(where, "r2 sign in");
+            r2_sign_in();
+        }
+    } else {
+        kit_next_tip("Forgets the keys. The bucket and its links stay");
+        if (kit_button("Sign out##r2main", KIT_SECONDARY, ImVec2(w, 0))) {
+            log_line("%s: R2 sign out", where);
+            r2_sign_out();
+        }
+    }
+    if (st.state == R2_SETUP_BUSY || waiting) ui_wake();
+}
+
 static void options_sharing()
 {
     Config &c = g_app.config;
@@ -3412,11 +3453,7 @@ static void options_sharing()
         f32 fh = ImGui::GetFrameHeight(), mw = text_w(g_font, "Sign in again") + dp(32), gap = dp(8);
         opt_row_begin(0, 0, mw + gap + fh, dp(60));
         char text[400];
-        if (st.state == R2_SETUP_IDLE) str_set(text, r2_ready() ? "Set up" : "Not set up");
-        else if (st.who[0] && st.state == R2_SETUP_OK) snprintf(text, sizeof text, "%s  -  %s", st.who, st.text);
-        else str_set(text, st.text);
-        u32 col = st.state == R2_SETUP_OK ? COL_OK
-                  : st.state == R2_SETUP_FAILED || st.state == R2_SETUP_NO_TOKEN_SCOPE ? COL_WARN : COL_DIM;
+        u32 col = r2_account_line(st, text, sizeof text);
         opt_host_name(HOST_R2, "Cloudflare", true, "https://developers.cloudflare.com/r2/pricing/", text, col, col != COL_DIM,
                       g_row.x1 - mw - gap - fh - dp(20));
         f32 x = g_row.x1 - mw - gap - fh, y = opt_row_frame_y();
@@ -3429,26 +3466,7 @@ static void options_sharing()
             r2_setup_again();
         }
         ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - mw, y));
-        if (waiting) {
-            kit_next_tip("Stop waiting");
-            if (kit_button("Waiting...##r2main", KIT_SECONDARY, ImVec2(mw, 0))) {
-                dev_click("options", "r2 sign-in cancel");
-                r2_sign_in_cancel();
-            }
-        } else if (st.state == R2_SETUP_NO_TOKEN_SCOPE || (!signed_in && !has)) {
-            if (kit_button(signed_in || has || st.state == R2_SETUP_NO_TOKEN_SCOPE ? "Sign in again##r2main" : "Sign in##r2main",
-                           KIT_PRIMARY, ImVec2(mw, 0))) {
-                dev_click("options", "r2 sign in");
-                r2_sign_in();
-            }
-        } else {
-            kit_next_tip("Forgets the keys. The bucket and its links stay");
-            if (kit_button("Sign out##r2main", KIT_SECONDARY, ImVec2(mw, 0))) {
-                log_line("options: R2 sign out");
-                r2_sign_out();
-            }
-        }
-        if (st.state == R2_SETUP_BUSY || waiting) ui_wake();
+        r2_account_button("options", "Sign in", mw);
         opt_row_end();
     }
 

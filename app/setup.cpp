@@ -83,9 +83,9 @@ static void setup_finish(const char *how)
     c.setup_done = true;
     g_app.ui.setup_open = false;
     options_apply(0);
-    log_line("setup %s: look-up %s, art service %s, own key %s, help name games %s, tooltips %s", how,
+    log_line("setup %s: look-up %s, art service %s, own key %s, help name games %s, tooltips %s, cloudflare %s", how,
              c.game_lookup ? "on" : "off", c.art_service.s[0] ? c.art_service.s : "none", c.sgdb_key[0] ? "set" : "none",
-             c.share_names ? "on" : "off", c.tooltips ? "on" : "off");
+             c.share_names ? "on" : "off", c.tooltips ? "on" : "off", r2_set_up() ? "set up" : "none");
 }
 
 // The clip key: the first hotkey that saves, and how much it saves ("save 30s" -> 30). False with none.
@@ -243,6 +243,39 @@ static void setup_window()
         kit_dim("With the version, Windows build and encoder. No names, no files.");
         ImGui::Dummy(ImVec2(0, dp(14)));
         ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+    }
+
+    // Sharing: the player's own Cloudflare, signed in the same way as in Options. Skip leaves it for Options.
+    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+    opt_section("SHARING");
+    {
+        static bool skipped;
+        R2Status st = r2_status();
+        bool idle = st.state == R2_SETUP_IDLE && !r2_ready();
+        char status[400];
+        u32 col = r2_account_line(st, status, sizeof status);
+        if (idle && skipped) str_set(status, "Later, in Options > Integrations");
+        ImVec2 a(x0, ImGui::GetCursorScreenPos().y);
+        f32 ph = dp(76), lg = dp(36);
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + ph), col32(COL_PANEL), dp(10));
+        host_logo_draw(dl, HOST_R2, ImVec2(a.x + dp(20), floorf(a.y + (ph - lg) / 2)), lg);
+        f32 fh = ImGui::GetFrameHeight(), mw = text_w(g_font, "Sign in with Cloudflare") + dp(32);
+        f32 sw = text_w(g_font, "Skip") + dp(32), gap = dp(8);
+        f32 bx = a.x + w - dp(16) - mw, tx = a.x + dp(20) + lg + dp(16), max_x = bx - sw - gap - dp(16);
+        f32 th = g_font->FontSize, sh = g_font_small->FontSize;
+        f32 ty = floorf(a.y + (ph - th - dp(4) - sh) / 2);
+        opt_text_at(dl, g_font, ImVec2(tx, ty), COL_TEXT, "Your own links that last, and they play in Discord", max_x);
+        opt_text_at(dl, g_font_small, ImVec2(tx, ty + th + dp(4)), col, status, max_x);
+        f32 by = floorf(a.y + (ph - fh) / 2);
+        ImGui::SetCursorScreenPos(ImVec2(bx - sw - gap, by));
+        bool can_skip = idle && !skipped && !r2_signed_in() && !r2_has_token();
+        if (kit_button("Skip##setupr2", KIT_GHOST, ImVec2(sw, 0), can_skip)) {
+            skipped = true;
+            log_line("setup: sharing left for later");
+        }
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
+        r2_account_button("setup", "Sign in with Cloudflare", mw);
+        ImGui::SetCursorScreenPos(ImVec2(x0, a.y + ph + dp(26)));
     }
 
     // Where game art comes from, and the way to Options
