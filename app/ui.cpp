@@ -1569,11 +1569,12 @@ static void dev_input()
     }
 }
 
-// Behind the whole window, under the top bar too: the game's art (game_art_texture), filling the window and cut to
-// fit, at g_art_look.opacity at the top and faded out g_art_look.fade_end of the way down, and over it a still
-// film grain (art_grain_texture) at g_art_look.grain. The game is the Library's game chip, else the game of the
-// newest clip; when it changes, the old art fades into the new over ART_FADE_S, eased out, or at once when
-// Windows' "Show animations" is off. Options > General > Flat look turns it all off.
+// On the Library screen, behind the whole window, under the top bar too: the game's art (game_art_texture),
+// filling the window and cut to fit, at g_art_look.opacity at the top and faded out g_art_look.fade_end of the way
+// down, and over it a still film grain (art_grain_texture) at g_art_look.grain. The game is the Library's game
+// chip, else the game of the newest clip. Other screens have the plain ground. When the game changes, or on going
+// to or from the Library, the old art fades into the new (or the ground) over ART_FADE_S, eased out, the grain
+// with it, or at once when Windows' "Show animations" is off. Options > General > Flat look turns it all off.
 static ID3D11ShaderResourceView *game_art_texture(const char *name, i32 *w, i32 *h); // appicons.cpp
 static const f64 ART_FADE_S = 0.35;
 
@@ -1649,7 +1650,7 @@ static void ui_art_texture(ImVec2 p0, ImVec2 p1)
     static Shown now, before; // the art shown, and the one fading out
     static f64 changed = -1;
     Shown want = {};
-    want.tex = game_art_texture(game, &want.w, &want.h);
+    if (g_app.ui.screen == SCREEN_LIBRARY) want.tex = game_art_texture(game, &want.w, &want.h);
     f64 t = ImGui::GetTime();
     if (want.tex != now.tex) {
         bool instant = changed < 0 || ui_reduced_motion(); // the first art shown comes in at once
@@ -1670,10 +1671,11 @@ static void ui_art_texture(ImVec2 p0, ImVec2 p1)
     f32 a = g_art_look.opacity;
     art_draw(dl, before.tex, before.w, before.h, p0, p1, a * (1 - e));
     art_draw(dl, now.tex, now.w, now.h, p0, p1, a * e);
-    if (g_art_look.grain <= 0) return;
+    f32 shown = (now.tex ? e : 0) + (before.tex ? 1 - e : 0); // how much of the window has art: the grain's share
+    if (g_art_look.grain <= 0 || shown <= 0) return;
     ID3D11ShaderResourceView *grain = art_grain_texture();
     if (!grain) return;
-    ImU32 gc = col32(COL_WHITE, g_art_look.grain);
+    ImU32 gc = col32(COL_WHITE, g_art_look.grain * (shown > 1 ? 1 : shown));
     const f32 tile = (f32)ART_GRAIN;
     for (f32 y = floorf(p0.y); y < p1.y; y += tile)
         for (f32 x = floorf(p0.x); x < p1.x; x += tile)
