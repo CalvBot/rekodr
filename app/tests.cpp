@@ -847,6 +847,22 @@ static void test_hotkeys()
     T(hotkey_hold_verdict(false, 100) == HOLD_TAP);
     T(hotkey_hold_verdict(true, HOTKEY_HOLD_MS) == HOLD_HELD);
     T(hotkey_hold_verdict(false, HOTKEY_HOLD_MS + 500) == HOLD_TAP); // released before the check saw it held
+
+    // The tray's Save clip: the first save hotkey's length, else 30 s
+    static Config c;
+    char action[64];
+    wchar_t label[64];
+    c.hotkey_count = 0;
+    tray_save(c, action, sizeof action, label, COUNT(label));
+    T(!strcmp(action, "save 30s") && !wcscmp(label, L"Save clip (30 s)"));
+    c.hotkey_count = 2;
+    str_set(c.hotkeys[0].action.s, "open");
+    str_set(c.hotkeys[1].action.s, "save 2m");
+    tray_save(c, action, sizeof action, label, COUNT(label));
+    T(!strcmp(action, "save 2m") && !wcscmp(label, L"Save clip (2 min)"));
+    // The default hotkey isn't any other clip tool's
+    config_defaults(&c, g_app.paths);
+    T(c.hotkey_count == 1 && !strcmp(c.hotkeys[0].keys.s, "Alt+F6"));
 }
 
 // What is saved comes back the same.

@@ -46,7 +46,7 @@ The whole program is one translation unit, `app\rekodr.cpp`, which includes ever
 | `dev`, `dev off` | Turns the detailed log on or off |
 | `quit` | Stops Rekodr |
 
-The default hotkey is Alt+F7, which saves the last 30 seconds. Hotkeys are set in Options.
+The default hotkey is Alt+F6, which saves the last 30 seconds. Hotkeys are set in Options.
 
 ## Stream Deck
 `streamdeck\dev.calvbot.rekodr.sdPlugin` is a Stream Deck plugin with three actions:

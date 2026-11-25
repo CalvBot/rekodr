@@ -3,19 +3,23 @@
 
 #define WM_APP_TRAY (WM_APP + 2)
 
-enum TrayCommand : u32 {
-    TRAY_OPEN = 1,
-    TRAY_TIMELINE,
-    TRAY_PAUSE,
-    TRAY_OPTIONS,
-    TRAY_FOLDER,
-    TRAY_QUIT,
-    TRAY_SAVE_FIRST = 100, // + index into g_tray_saves
-};
+enum TrayCommand : u32 { TRAY_OPEN = 1, TRAY_SAVE, TRAY_PAUSE, TRAY_FOLDER, TRAY_QUIT };
 
-static const char *g_tray_saves[] = {"30s", "2m", "10m", "30m", "1h"};
-static const wchar_t *g_tray_save_labels[] = {L"Save last 30 s", L"Save last 2 min", L"Save last 10 min",
-                                              L"Save last 30 min", L"Save last hour"};
+// What the menu's Save clip does: the first save hotkey's tap length, else 30 s. `label` is its menu text,
+// "Save clip (30 s)".
+static void tray_save(const Config &c, char *action, i32 action_cap, wchar_t *label, i32 label_cap)
+{
+    snprintf(action, action_cap, "save 30s");
+    for (i32 i = 0; i < c.hotkey_count; i++)
+        if (!strncmp(c.hotkeys[i].action.s, "save ", 5)) {
+            snprintf(action, action_cap, "%s", c.hotkeys[i].action.s);
+            break;
+        }
+    char *end = 0;
+    f64 v = strtod(action + 5, &end);
+    const wchar_t *unit = *end == 'h' ? L"h" : *end == 'm' ? L"min" : L"s";
+    swprintf(label, label_cap, L"Save clip (%g %s)", v, unit);
+}
 
 static UINT g_taskbar_created; // Explorer restarted: add the icon again
 static bool g_tray_paused_shown;
@@ -61,13 +65,12 @@ static void tray_menu(HWND hwnd, char *command, i32 command_size)
 {
     command[0] = 0;
     HMENU menu = CreatePopupMenu();
+    char save[64];
+    wchar_t save_label[64];
+    tray_save(g_app.config, save, sizeof save, save_label, COUNT(save_label));
     AppendMenuW(menu, MF_STRING, TRAY_OPEN, L"Open " APP_NAME);
-    AppendMenuW(menu, MF_STRING, TRAY_TIMELINE, L"Timeline");
-    AppendMenuW(menu, MF_SEPARATOR, 0, 0);
-    for (i32 i = 0; i < COUNT(g_tray_saves); i++) AppendMenuW(menu, MF_STRING, TRAY_SAVE_FIRST + i, g_tray_save_labels[i]);
-    AppendMenuW(menu, MF_SEPARATOR, 0, 0);
+    AppendMenuW(menu, MF_STRING, TRAY_SAVE, save_label);
     AppendMenuW(menu, MF_STRING, TRAY_PAUSE, g_app.recorder.paused ? L"Start recording" : L"Stop recording");
-    AppendMenuW(menu, MF_STRING, TRAY_OPTIONS, L"Options");
     AppendMenuW(menu, MF_STRING, TRAY_FOLDER, L"Open clips folder");
     AppendMenuW(menu, MF_SEPARATOR, 0, 0);
     AppendMenuW(menu, MF_STRING, TRAY_QUIT, L"Quit");
@@ -81,13 +84,10 @@ static void tray_menu(HWND hwnd, char *command, i32 command_size)
 
     switch (cmd) {
     case TRAY_OPEN: snprintf(command, command_size, "open"); break;
-    case TRAY_TIMELINE: snprintf(command, command_size, "timeline"); break;
+    case TRAY_SAVE: snprintf(command, command_size, "%s", save); break;
     case TRAY_PAUSE: snprintf(command, command_size, "toggle"); break;
-    case TRAY_OPTIONS: snprintf(command, command_size, "options"); break;
     case TRAY_FOLDER: snprintf(command, command_size, "folder"); break;
     case TRAY_QUIT: snprintf(command, command_size, "quit"); break;
-    default:
-        if (cmd >= TRAY_SAVE_FIRST && cmd < TRAY_SAVE_FIRST + (u32)COUNT(g_tray_saves))
-            snprintf(command, command_size, "save %s", g_tray_saves[cmd - TRAY_SAVE_FIRST]);
+    default: break;
     }
 }
