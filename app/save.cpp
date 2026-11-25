@@ -15,6 +15,7 @@
 enum SaveEventKind : i64 {
     SAVE_EV_STARTED,  // the worker took the job
     SAVE_EV_PATH,     // text: the file it's writing
+    SAVE_EV_GAME,     // text: the game played most in it ("" for none)
     SAVE_EV_PROGRESS, // value: progress in 1/1000
     SAVE_EV_DONE,     // text: the file saved
     SAVE_EV_FAILED,   // text: why
@@ -762,6 +763,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     char final8[MAX_PATH * 3];
     wide_to_utf8(final_path.s, final8, sizeof final8);
     save_post(SAVE_EV_PATH, req.id, 0, final8);
+    save_post(SAVE_EV_GAME, req.id, 0, w->game_count ? game : "");
 
     // Lists and the filter graph go in files (graphs get long).
     Path work = work_file(w->cfg.work_dir, L"save-%d", (i32)req.id);
@@ -3074,7 +3076,7 @@ static void saved_check()
     }
 }
 
-static void toast_saved(SaveKind kind, const char *path); // toast.cpp
+static void toast_saved(SaveKind kind, const char *path, const char *game); // toast.cpp
 static void toast_save_failed(SaveKind kind, const char *why);
 static void render_on_save(u32 id, i64 what, const char *text); // render.cpp
 
@@ -3095,6 +3097,7 @@ static void save_on_event(const Event &e)
     switch (e.a) {
     case SAVE_EV_STARTED: v->state = SAVE_RUNNING; break;
     case SAVE_EV_PATH: str_set(v->path, e.text); break;
+    case SAVE_EV_GAME: str_set(v->game, e.text); break;
     case SAVE_EV_PROGRESS: v->progress = (f32)value / 1000.0f; break;
     case SAVE_EV_DONE:
         v->state = SAVE_DONE;
@@ -3105,7 +3108,7 @@ static void save_on_event(const Event &e)
         log_line("save %u: saved %s", id, e.text);
         saved_add(v->kind, v->from_us, v->to_us, e.text);
         pipe_saved(v->kind, true, e.text, v);
-        toast_saved(v->kind, e.text);
+        toast_saved(v->kind, e.text, v->game);
         break;
     case SAVE_EV_FAILED:
         v->state = SAVE_FAILED;

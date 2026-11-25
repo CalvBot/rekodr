@@ -126,8 +126,15 @@ static void run_command(const char *text)
             s.start_us = s.end_us - (i64)(83 * 60e6);
             toast_session(s, atoi(trim(arg + 13)));
         }
-        else if (starts_with(arg, "saved-toast")) { // saved-toast [small]: Clip saved for a made-up clip
-            toast_saved_show(SAVE_CLIP, "C:\\Clips\\Minecraft 2026-11-21 20-14-03.mp4", strstr(arg, "small") != 0);
+        else if (starts_with(arg, "saved-toast")) { // saved-toast [small|session] [<game>]: Clip saved (Session
+            // saved) for a made-up clip of the game, Minecraft when none is named
+            char *rest = trim(arg + 11);
+            bool brief = starts_with(rest, "small"), session = starts_with(rest, "session");
+            if (brief || session) rest = trim(rest + (brief ? 5 : 7));
+            const char *game = rest[0] ? rest : "Minecraft";
+            char path[MAX_PATH];
+            snprintf(path, sizeof path, "C:\\Clips\\%s 2026-11-21 20-14-03.mp4", game);
+            toast_saved_show(session ? SAVE_SESSION : SAVE_CLIP, path, brief, game);
         }
         else if (starts_with(arg, "delete-folder")) { // on the list of folders, which it belongs to
             g_app.config.side_folders = true;

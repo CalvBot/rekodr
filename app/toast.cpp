@@ -22,6 +22,9 @@
 // no file name and no buttons, gone after 3 s, and a click closes it. Its rounded ends are see-through, so it is a
 // layered window drawn with its own alpha. Save failed is the full toast without its buttons. Popups in games picks
 // another monitor for every toast while a game is in front.
+// Clip saved, Session saved and Session ended have the game's grey art behind them, the window's own (game_art_grey):
+// filling the toast and cut to fit, strongest at the right and faded out towards the left, as the window's. With no
+// art, or Flat look, they have the plain panel.
 
 enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
 // The parts a click lands on: the buttons counted from the right, Dismiss at the left, then the marker's colours
@@ -40,6 +43,8 @@ struct Toast {
     i32       more;               // and how many more
     u32      *tile_px;            // Session ended: the game's icon over the panel, tile_w x tile_h BGRA; null for none
     i32       tile_w, tile_h;
+    u8       *art;                // the game's grey art behind it, art_w x art_h (game_art_grey, malloc); null for none
+    i32       art_w, art_h;
     u8        colour;
     i32       hot;                // the part under the mouse
     bool      open, tracking, held; // held: the mouse is on it, so the countdown waits
@@ -322,8 +327,47 @@ static void toast_set_pill(Toast &t, bool pill)
     if (!pill && want != ex) RedrawWindow(t.hwnd, 0, 0, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
 }
 
-// The toast without its dial, into dc (r, the client size): the shapes first, then the text and the icons at their
-// real size.
+// The game's art behind the toast into `big` (SS times the toast's size), over the panel, faded across it as the
+// window's is (art_fade): strongest at the right, none at the left. It fills the toast, cut to fit, and is smoothed
+// between its texels.
+static void toast_draw_art(Toast &t, HDC big, RECT r, i32 SS)
+{
+    i32 w = r.right, h = r.bottom, aw = t.art_w, ah = t.art_h;
+    if (!t.art || w <= 0 || h <= 0 || aw < 2 || ah < 2) return;
+    u32 *px = (u32 *)malloc((size_t)w * h * 4);
+    if (!px) return;
+    f32 su = 1, sv = 1; // the part of the picture used: its middle, of the toast's shape
+    if ((f32)w / h > (f32)aw / ah) sv = ((f32)aw / ah) / ((f32)w / h);
+    else su = ((f32)w / h) / ((f32)aw / ah);
+    u32 ground = COL_PANEL;
+    for (i32 y = 0; y < h; y++) {
+        f32 fy = ((1 - sv) / 2 + sv * (y + 0.5f) / h) * ah - 0.5f;
+        i32 y0 = art_clamp((i32)floorf(fy), 0, ah - 1), y1 = art_clamp(y0 + 1, 0, ah - 1);
+        f32 dy = fy - floorf(fy);
+        for (i32 x = 0; x < w; x++) {
+            f32 fx = ((1 - su) / 2 + su * (x + 0.5f) / w) * aw - 0.5f;
+            i32 x0 = art_clamp((i32)floorf(fx), 0, aw - 1), x1 = art_clamp(x0 + 1, 0, aw - 1);
+            f32 dx = fx - floorf(fx), a = art_fade((x + 0.5f) / w);
+            const u8 *g = t.art;
+            f32 v = (g[y0 * aw + x0] * (1 - dx) + g[y0 * aw + x1] * dx) * (1 - dy) +
+                    (g[y1 * aw + x0] * (1 - dx) + g[y1 * aw + x1] * dx) * dy;
+            u32 out = 0;
+            for (i32 sh = 0; sh < 24; sh += 8) {
+                f32 c = ((ground >> sh) & 255) * (1 - a) + v * a;
+                out |= (u32)(c + 0.5f) << sh;
+            }
+            px[y * w + x] = out;
+        }
+    }
+    BITMAPINFO bi = {};
+    bi.bmiHeader = {sizeof bi.bmiHeader, w, -h, 1, 32, BI_RGB};
+    SetStretchBltMode(big, COLORONCOLOR);
+    StretchDIBits(big, 0, 0, w * SS, h * SS, 0, 0, w, h, px, &bi, DIB_RGB_COLORS, SRCCOPY);
+    free(px);
+}
+
+// The toast without its dial, into dc (r, the client size): the panel and the game's art, the shapes, then the text
+// and the icons at their real size.
 static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
 {
     const i32 SS = TOAST_SS;
@@ -343,6 +387,7 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
     HBRUSH bg = CreateSolidBrush(toast_rgb(COL_PANEL));
     FillRect(big, &all, bg);
     DeleteObject(bg);
+    if (!t.pill) toast_draw_art(t, big, r, SS);
     HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
     HGDIOBJ old_brush = SelectObject(big, CreateSolidBrush(0));
     // The tile: the accent behind a tick (red behind an X when the save failed), the game's icon (a game glyph on a
@@ -499,8 +544,9 @@ static void toast_draw(Toast &t, HDC wdc, HDC dc, RECT r)
 }
 
 // The countdown dial onto wdc: a thin ring in the accent round the Dismiss X, which empties clockwise from the top
-// over the toast's life (when it ends, the toast is dismissed), full while the mouse is on it.
-static void toast_draw_dial(Toast &t, HDC wdc)
+// over the toast's life (when it ends, the toast is dismissed), full while the mouse is on it. Round it and inside it
+// is the toast as drawn in `under` (the panel, the art, the Dismiss button's hover).
+static void toast_draw_dial(Toast &t, HDC wdc, HDC under)
 {
     const i32 SS = TOAST_SS;
     RECT d = toast_rect(t, TR_DIAL);
@@ -510,11 +556,8 @@ static void toast_draw_dial(Toast &t, HDC wdc)
     HDC big = CreateCompatibleDC(wdc), dc = CreateCompatibleDC(wdc);
     HBITMAP big_bmp = CreateCompatibleBitmap(wdc, W, H), bmp = CreateCompatibleBitmap(wdc, w, h);
     HGDIOBJ old_big = SelectObject(big, big_bmp), old_bmp = SelectObject(dc, bmp);
-    RECT all = {0, 0, W, H};
-    u32 back = t.hot == TP_DISMISS ? COL_HOVER : COL_PANEL; // the Dismiss button's own fill
-    HBRUSH bg = CreateSolidBrush(toast_rgb(back));
-    FillRect(big, &all, bg);
-    DeleteObject(bg);
+    SetStretchBltMode(big, COLORONCOLOR);
+    StretchBlt(big, 0, 0, W, H, under, d.left, d.top, w, h, SRCCOPY);
     HGDIOBJ old_pen = SelectObject(big, GetStockObject(NULL_PEN));
     HGDIOBJ old_brush = SelectObject(big, CreateSolidBrush(toast_rgb(COL_PANEL2)));
     auto brush = [&](u32 rgb) { DeleteObject(SelectObject(big, CreateSolidBrush(toast_rgb(rgb)))); };
@@ -525,9 +568,12 @@ static void toast_draw_dial(Toast &t, HDC wdc)
         f32 a = 3.14159265f * (0.5f - 2 * left), cx = W / 2.f, cy = H / 2.f;
         Pie(big, 0, 0, W + 1, H + 1, (i32)(cx + cx * cosf(a)), (i32)(cy - cy * sinf(a)), (i32)cx, 0);
     }
-    brush(back); // hollowed out to a ring
-    i32 ring = toast_px(t, TOAST_DIAL_RING) * SS;
-    Ellipse(big, ring, ring, W - ring + 1, H - ring + 1);
+    i32 ring = toast_px(t, TOAST_DIAL_RING) * SS; // hollowed out to a ring: the toast again inside it
+    HRGN inside = CreateEllipticRgn(ring, ring, W - ring + 1, H - ring + 1);
+    SelectClipRgn(big, inside);
+    StretchBlt(big, 0, 0, W, H, under, d.left, d.top, w, h, SRCCOPY);
+    SelectClipRgn(big, 0);
+    DeleteObject(inside);
     DeleteObject(SelectObject(big, old_brush));
     SelectObject(big, old_pen);
     SetStretchBltMode(dc, HALFTONE);
@@ -573,7 +619,7 @@ static void toast_paint(Toast &t)
     BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
     if (dial) {
         SelectClipRgn(wdc, 0);
-        toast_draw_dial(t, wdc);
+        toast_draw_dial(t, wdc, dc);
     }
     SelectObject(dc, old_bmp);
     DeleteDC(dc);
@@ -970,8 +1016,15 @@ static void toast_place(Toast &t, const RECT &work, PopupCorner corner)
     toast_redraw(t);
 }
 
-// Clip saved for path, brief (no buttons) or with its buttons
-static void toast_saved_show(SaveKind kind, const char *path, bool brief)
+// The art behind the toast: `game`'s (game_art_grey), or none
+static void toast_set_art(Toast &t, const char *game)
+{
+    free(t.art);
+    t.art = game && game[0] ? game_art_grey(game, &t.art_w, &t.art_h) : 0;
+}
+
+// Clip saved (Session saved) for path, of `game` ("" for none), brief (no buttons) or with its buttons
+static void toast_saved_show(SaveKind kind, const char *path, bool brief, const char *game)
 {
     Toast &t = g_toast_saved;
     RECT work;
@@ -981,6 +1034,7 @@ static void toast_saved_show(SaveKind kind, const char *path, bool brief)
     t.brief = brief;
     t.failed = false;
     toast_set_pill(t, brief);
+    toast_set_art(t, brief ? "" : game);
     t.sharing = TSH_NONE; // one still running carries on, unseen
     utf8_to_wide(kind == SAVE_SESSION ? "Session saved" : "Clip saved", t.title, COUNT(t.title));
     const char *name = strrchr(path, '\\');
@@ -1036,7 +1090,7 @@ static ImTextureID toast_preview(bool pill, f32 scale, const char *name, i32 *w,
             HGDIOBJ old = SelectObject(dc, bmp);
             RECT r = {0, 0, pw, ph};
             toast_draw(t, screen, dc, r);
-            toast_draw_dial(t, dc);
+            toast_draw_dial(t, dc, dc);
             GdiFlush();
             SelectObject(dc, old);
             DeleteDC(dc);
@@ -1070,7 +1124,7 @@ static ToastClip toast_clip_now()
 
 // A save finished: Clip saved as toast_clip_now says (Session saved always whole), unless clipback's own window is
 // in front (it shows the save itself).
-static void toast_saved(SaveKind kind, const char *path)
+static void toast_saved(SaveKind kind, const char *path, const char *game)
 {
     if (kind == SAVE_PREVIEW || kind == SAVE_LINK) return;
     if (g_app.ui.shown && GetForegroundWindow() == g_app.ui.hwnd) return;
@@ -1081,7 +1135,7 @@ static void toast_saved(SaveKind kind, const char *path)
     HMONITOR mon = 0;
     if (style == TOAST_CLIP_SMALL && toast_monitor(&work, &corner, &mon))
         style = toast_clip_on(style, (u64)mon, (u64)MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONULL));
-    toast_saved_show(kind, path, style == TOAST_CLIP_SMALL);
+    toast_saved_show(kind, path, style == TOAST_CLIP_SMALL, game);
 }
 
 // A save failed: Save failed with the first line of the reason, no buttons, unless clipback's own window is in front
@@ -1098,6 +1152,7 @@ static void toast_save_failed(SaveKind kind, const char *why)
     t.brief = true;
     t.failed = true;
     toast_set_pill(t, false);
+    toast_set_art(t, "");
     t.sharing = TSH_NONE;
     utf8_to_wide("Save failed", t.title, COUNT(t.title));
     char line[120];
@@ -1167,6 +1222,7 @@ static bool toast_session(const Session &s, i32 more)
     t.more = more;
     if (t.tile_px) HeapFree(GetProcessHeap(), 0, t.tile_px);
     t.tile_px = toast_game_pixels(s, &t.tile_w, &t.tile_h);
+    toast_set_art(t, s.name);
     char len[32], line[192];
     fmt_length(s.end_us - s.start_us, len, sizeof len);
     if (more) snprintf(line, sizeof line, "%s - %s, +%d more", s.name, len, more);

@@ -590,6 +590,7 @@ struct SaveJobView {
     f32       progress;  // 0..1 while running
     char      name[256]; // the name asked for; empty = named after the game played most
     char      path[512]; // the output file once known (UTF-8)
+    char      game[96];  // the game played most in it, once known; empty for none or when it isn't known
     char      error[512];
 };
 

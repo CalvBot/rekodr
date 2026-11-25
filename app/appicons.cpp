@@ -346,12 +346,12 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
     return slot->srv;
 }
 
-// A game's art for behind the window (ui_art_texture): its SteamGridDB hero, else its grid (gamedb_art's ART_COVER),
-// in grey, shrunk to g_art_look.w across, Gaussian blurred (g_art_look.blur texels) until only its big light and
-// dark masses are left, and its levels stretched so its darkest and lightest parts reach black and white. Stretched
-// over the window, drawing it smooths between the texels. A worker thread makes one for every game whose art is
-// there, at start and as art arrives, the Library's games first, and keeps it in local_dir\arttex\<game id>.grey,
-// so a later start only reads it back.
+// A game's art for behind the window (ui_art_texture) and the toasts (game_art_grey): its SteamGridDB hero, else its
+// grid (gamedb_art's ART_COVER), in grey, shrunk to g_art_look.w across, Gaussian blurred (g_art_look.blur texels)
+// until only its big light and dark masses are left, and its levels stretched so its darkest and lightest parts reach
+// black and white. Stretched over the window, drawing it smooths between the texels. A worker thread makes one for
+// every game whose art is there, at start and as art arrives, the Library's games first, and keeps it in
+// local_dir\arttex\<game id>.grey, so a later start only reads it back.
 struct ArtLook {
     i32 w;          // texels across
     f32 blur;       // Gaussian sigma, in texels
@@ -567,6 +567,29 @@ static void art_worker_wake(bool sweep)
     SetEvent(g_art_worker.wake);
 }
 
+// Where a game's grey picture is kept: local_dir\arttex\<game id>.grey
+static Path art_cache_path(const GameInfo &g)
+{
+    wchar_t file[64];
+    swprintf(file, COUNT(file), L"%hs.grey", g.id);
+    return path_join(path_join(g_app.paths.local_dir, L"arttex"), file);
+}
+
+// A game's grey picture, the one behind the window, for drawing without the GPU (the toasts): the worker's cached
+// file read back, w x h bytes (malloc; the caller frees it). Null for a game with none, while it is being fetched or
+// made, and with Flat look.
+static u8 *game_art_grey(const char *name, i32 *w, i32 *h)
+{
+    if (g_app.config.flat_look || !name[0] || game_is_none(name) || game_is_custom(name)) return 0;
+    GameInfo g;
+    Path art = {};
+    if (!gamedb_for_art(name, &g) || !gamedb_art(g, ART_COVER, &art)) return 0;
+    u8 *grey = (u8 *)malloc(ART_W_MAX * ART_H_MAX);
+    if (grey && art_grey_read(art_cache_path(g), art, grey, w, h)) return grey;
+    free(grey);
+    return 0;
+}
+
 // Asks for every Library game's art texture that isn't made yet: from the cache, else from its art once that is
 // there. Main thread; cheap when nothing changed.
 static void art_textures_update()
@@ -600,11 +623,9 @@ static void art_textures_update()
             t->state = ART_DONE;
             continue;
         }
-        wchar_t file[64];
-        swprintf(file, COUNT(file), L"%hs.grey", g.id);
         AcquireSRWLockExclusive(&g_art_worker.lock);
         t->art = p;
-        t->cache = path_join(path_join(g_app.paths.local_dir, L"arttex"), file);
+        t->cache = art_cache_path(g);
         t->state = ART_QUEUED;
         ReleaseSRWLockExclusive(&g_art_worker.lock);
         queued = true;
