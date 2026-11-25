@@ -52,9 +52,10 @@ Keep a whole session from start to finish.
   scrolling grid with hover-scrub and a player.
 - **Other apps' clips:** the videos in other recorders' folders show among the clips too, in place: OBS's
   recording folders, ShadowPlay's and Game Bar's Captures, found on the PC and each switched on by default, plus any
-  folder added in Options > General > Folders. A folder right under one (ShadowPlay's folder per game) is read too,
-  and names the game of the videos in it that have none. They get no playable copies; the library rescans when a
-  file is added there while it shows.
+  folder added in Options > General > Folders. Discord's clips show too once its folder is picked there (Discord
+  keeps it in its own data, which Rekodr doesn't read); Videos\Discord or Documents\Discord is taken if there is
+  one. A folder right under one (ShadowPlay's folder per game) is read too, and names the game of the videos in it
+  that have none. They get no playable copies; the library rescans when a file is added there while it shows.
 - **Edits never change the original.** An edit is a small record: the pieces of the video kept, in the order they
   play, plus zoom keyframes and per-track volume and mute. It's saved automatically in the year's `Data` folder and
   reopens with the clip.

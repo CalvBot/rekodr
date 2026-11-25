@@ -4441,6 +4441,30 @@ static void opt_watch_rows(Config &c)
         opt_row_end();
         ImGui::PopID();
     }
+    // Discord's clips: the folder picked in Discord's own settings, picked here again (Config.discord_dir)
+    {
+        char sub[MAX_PATH * 3] = "From Discord's Settings > Clips";
+        if (c.discord_dir.s[0]) wide_to_utf8(c.discord_dir.s, sub, sizeof sub);
+        opt_row_begin("Discord", sub, fh + gap + fh);
+        f32 y = opt_row_frame_y();
+        kit_next_tip("Choose the folder");
+        Path pick = {};
+        if (kit_icon_button(ICON_FOLDER, "##discord", KIT_SECONDARY) &&
+            pick_folder(c.discord_dir.s[0] ? c.discord_dir : c.save_dir, &pick)) {
+            watch_tidy(pick.s);
+            if (_wcsicmp(pick.s, c.discord_dir.s)) {
+                c.discord_dir = pick;
+                changed = true;
+            }
+        }
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
+        kit_next_tip("Stop showing it");
+        if (kit_icon_button(ICON_CLOSE, "##discordoff", KIT_GHOST, c.discord_dir.s[0] != 0)) {
+            c.discord_dir = {};
+            changed = true;
+        }
+        opt_row_end();
+    }
     for (i32 i = 0; i < c.watch_count; i++) {
         bool is_found = false;
         for (i32 f = 0; f < found_count; f++) is_found |= !_wcsicmp(found[f].s, c.watch_dirs[i].s);

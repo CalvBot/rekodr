@@ -42,7 +42,7 @@ struct LibShared {
     i32                task_count;
     bool               scan_running, scan_queued;
     Path               save_dir, cache_dir, ffmpeg; // copied with every scan request
-    Path               buffer_dir, watch[WATCH_MAX];
+    Path               buffer_dir, watch[WATCH_MAX + 1]; // and discord_dir
     i32                watch_count;
     char               name_template[128];
     LibItem            items[LIB_MAX_ITEMS];        // the newest scan's published list
@@ -916,7 +916,7 @@ static DWORD WINAPI lib_thread(void *)
         g_lib.task_count--;
         memmove(g_lib.tasks + pick, g_lib.tasks + pick + 1, (g_lib.task_count - pick) * sizeof g_lib.tasks[0]);
         Path save_dir = g_lib.save_dir, cache = g_lib.cache_dir, ffmpeg = g_lib.ffmpeg, buffer_dir = g_lib.buffer_dir;
-        Path watch[WATCH_MAX];
+        Path watch[WATCH_MAX + 1];
         i32 watch_count = g_lib.watch_count;
         memcpy(watch, g_lib.watch, sizeof watch);
         char tmpl[sizeof g_lib.name_template];
@@ -985,7 +985,8 @@ static void library_rescan()
     g_lib.save_dir = g_app.config.save_dir;
     g_lib.buffer_dir = g_app.config.buffer_dir;
     g_lib.watch_count = g_app.config.watch_count;
-    memcpy(g_lib.watch, g_app.config.watch_dirs, sizeof g_lib.watch);
+    memcpy(g_lib.watch, g_app.config.watch_dirs, sizeof g_app.config.watch_dirs);
+    if (g_app.config.discord_dir.s[0]) g_lib.watch[g_lib.watch_count++] = g_app.config.discord_dir;
     str_set(g_lib.name_template, g_app.config.name_template);
     g_lib.cache_dir = cache;
     g_lib.ffmpeg = ffmpeg;

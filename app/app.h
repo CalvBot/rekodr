@@ -160,6 +160,9 @@ struct Config {
     Path ffmpeg;       // empty = find it
     Path watch_dirs[WATCH_MAX]; // other apps' folders (OBS, ShadowPlay...) whose videos show in the library too;
     i32  watch_count;           // by default the ones found on the PC (watch_found)
+    Path discord_dir;           // where Discord saves its clips, shown like those; "" = none. Discord keeps it in
+                                // its own data, which isn't read: the player picks it, else Videos\Discord or
+                                // Documents\Discord if there is one
 
     // Video
     i32   output_idx; // DXGI output index on the capture GPU

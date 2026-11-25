@@ -139,6 +139,19 @@ static void config_defaults(Config *c, const Paths &paths)
     }
     c->play_dir = paths.local_dir;
     c->watch_count = watch_found(c->watch_dirs, 0, WATCH_MAX);
+    const KNOWNFOLDERID *discord_in[] = {&FOLDERID_Videos, &FOLDERID_Documents};
+    for (const KNOWNFOLDERID *id : discord_in) {
+        wchar_t *dir = 0;
+        if (c->discord_dir.s[0] || FAILED(SHGetKnownFolderPath(*id, 0, 0, &dir))) {
+            CoTaskMemFree(dir);
+            continue;
+        }
+        Path p = {};
+        swprintf(p.s, MAX_PATH, L"%s\\Discord", dir);
+        CoTaskMemFree(dir);
+        DWORD a = GetFileAttributesW(p.s);
+        if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) c->discord_dir = p;
+    }
     c->buffer_hours = 24;
     c->popup_monitor = POPUP_RECORDED;
     c->popup_monitor_game = POPUP_AS_NORMAL;
@@ -531,6 +544,10 @@ static void config_set(Config *c, const char *key, char *value)
     if (!strcmp(key, "save_dir")) path(&c->save_dir);
     else if (!strcmp(key, "buffer_dir")) path(&c->buffer_dir);
     else if (!strcmp(key, "play_dir")) path(&c->play_dir);
+    else if (!strcmp(key, "discord_dir")) {
+        path(&c->discord_dir);
+        watch_tidy(c->discord_dir.s);
+    }
     else if (!strcmp(key, "watch")) {
         if (c->watch_count < WATCH_MAX) {
             path(&c->watch_dirs[c->watch_count]);
@@ -787,6 +804,7 @@ static bool config_save(const Config &c, const Paths &paths)
     path("ffmpeg", c.ffmpeg);
     if (!c.watch_count) fprintf(f, "watch = none\n");
     for (i32 i = 0; i < c.watch_count; i++) path("watch", c.watch_dirs[i]);
+    path("discord_dir", c.discord_dir);
     fprintf(f, "\noutput_idx = %d\nfps = %d\nheight = %d\ncodec = %s\nencoder = %s\nbitrate_mbps = %g\n"
                "desktop_bitrate_mbps = %g\n",
             c.output_idx, c.fps, c.height, c.codec.s, c.encoder.s, c.bitrate_mbps, c.desktop_bitrate_mbps);

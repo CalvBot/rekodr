@@ -1028,6 +1028,11 @@ static void test_settings_round_trip()
           !wcscmp(back.watch_dirs[0].s, L"D:\\Videos\\NVIDIA") && !wcscmp(back.watch_dirs[1].s, L"E:\\"));
         none.watch_count = 0;
         T(config_save(none, paths) && config_load(&back, paths) && back.watch_count == 0);
+        // Discord's folder comes back, and none stays none
+        wcscpy_s(none.discord_dir.s, L"D:\\Discord clips");
+        T(config_save(none, paths) && config_load(&back, paths) && !wcscmp(back.discord_dir.s, L"D:\\Discord clips"));
+        none.discord_dir = {};
+        T(config_save(none, paths) && config_load(&back, paths) && !back.discord_dir.s[0]);
         T(config_save(a, paths));
     }
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
