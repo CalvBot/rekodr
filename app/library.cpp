@@ -2859,17 +2859,13 @@ static ClipShareState lib_clip_state(const LibItem &it)
     return s.st;
 }
 
-// What Share gives at once, as a dot in the top right corner of a Share button [b0, b1], drawn over it so nothing
-// moves: filled in the accent for a link that plays, which Share copies, a ring for a copy ready on disk, else
-// nothing. `light`: the button is white, so the ring is dark.
-static void share_ready_dot(ImDrawList *dl, ImVec2 b0, ImVec2 b1, const ClipShareState &cs, bool light = false)
+// How a Share button looks for what one click gives, at the same size and place whatever it is: filled in the accent
+// with the link glyph for a link that plays (Share copies it), tinted for a copy ready on disk, else `plain`.
+static KitKind share_ready_kind(const ClipShareState &cs, KitKind plain)
 {
-    if (!cs.link_ready && !cs.file) return;
-    f32 r = kit_px(3.5f);
-    ImVec2 c(floorf(b1.x - kit_px(6)), floorf(b0.y + kit_px(6)));
-    if (cs.link_ready) dl->AddCircleFilled(c, r, col32(COL_ACCENT));
-    else dl->AddCircle(c, r - kit_px(0.75f), col32(light ? COL_BG : COL_TEXT), 0, kit_px(1.5f));
+    return cs.link_ready ? KIT_ACCENT : cs.file ? KIT_TINT : plain;
 }
+static const char *share_ready_icon(const ClipShareState &cs) { return cs.link_ready ? ICON_LINK : ICON_SHARE; }
 
 // The Share button's tip: what one click does.
 static const char *share_ready_tip(const ClipShareState &cs)
@@ -4433,14 +4429,14 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     {
         ClipShareState cs = lib_clip_state(it);
         f32 r = kit_px(11), msz = kit_px(12);
-        auto mark = [&](f32 cx, const char *icon, u32 ink) {
+        auto mark = [&](f32 cx, const char *icon, u32 ink, u32 disc = IM_COL32(0, 0, 0, 170)) {
             ImVec2 c(cx, t0.y + kit_px(8) + r);
-            dl->AddCircleFilled(c, r, IM_COL32(0, 0, 0, 170));
+            dl->AddCircleFilled(c, r, disc);
             ImVec2 gs = g_font_icon->CalcTextSizeA(msz, FLT_MAX, 0, icon);
             dl->AddText(g_font_icon, msz, ImVec2(floorf(c.x - gs.x / 2), floorf(c.y - gs.y / 2)), ink, icon);
         };
         f32 link_x = t1.x - kit_px(8) - r, file_x = link_x - 2 * r - kit_px(4);
-        if (cs.link_ready) mark(link_x, ICON_LINK, col32(COL_ACCENT));
+        if (cs.link_ready) mark(link_x, ICON_LINK, col32(COL_WHITE), col32(COL_ACCENT));
         else if (cs.link && cs.link_paused) mark(link_x, ICON_PAUSE, col32(COL_WARN));
         if (cs.file) mark(file_x, ICON_SHARE, col32(COL_TEXT));
     }
@@ -4561,18 +4557,23 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
                                                            : share_ready_tip(share_cs));
     ImGui::PopID();
     {
-        dl->AddRectFilled(s0, s1, col32(share_hot && !share_big ? COL_HOVER : COL_PANEL2, share_held ? 0.8f : 1.f),
-                          ImGui::GetStyle().FrameRounding);
+        KitKind sk = share_running || share_big ? KIT_SECONDARY : share_ready_kind(share_cs, KIT_SECONDARY);
+        u32 sfill = sk == KIT_ACCENT ? (share_hot ? COL_ACCENT_HOVER : COL_ACCENT)
+                                     : share_hot && !share_big ? COL_HOVER : COL_PANEL2;
+        dl->AddRectFilled(s0, s1, col32(sfill, share_held ? 0.8f : 1.f), ImGui::GetStyle().FrameRounding);
+        if (sk == KIT_TINT)
+            dl->AddRectFilled(s0, s1, col32(COL_ACCENT, share_hot ? 0.3f : 0.2f), ImGui::GetStyle().FrameRounding);
         if (share_running) {
             share_cancel_ring(dl, ImVec2(floorf((s0.x + s1.x) / 2), floorf((s0.y + s1.y) / 2)), kit_px(8), sj.progress,
                               COL_TEXT);
             ui_wake();
         } else {
             f32 is = g_font_icon->FontSize;
-            ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, ICON_SHARE);
+            const char *sicon = share_big ? ICON_SHARE : share_ready_icon(share_cs);
+            u32 ink = share_big ? COL_FAINT : sk == KIT_ACCENT ? COL_WHITE : sk == KIT_TINT ? COL_ACCENT_HOVER : COL_TEXT;
+            ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, sicon);
             dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)),
-                        col32(share_big ? COL_FAINT : COL_TEXT), ICON_SHARE);
-            if (!share_big) share_ready_dot(dl, s0, s1, share_cs);
+                        col32(ink), sicon);
         }
     }
     if (share && share_running) {
@@ -4773,8 +4774,8 @@ static void lib_player_view()
     ImVec2 share_at = ImGui::GetCursorScreenPos();
     ClipShareState share_cs = lib_clip_state(lib.playing);
     kit_next_tip(share_ready_tip(share_cs));
-    if (kit_icon_button(ICON_SHARE, "##share", KIT_GHOST)) lib_share_decided(lib.playing);
-    share_ready_dot(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), share_cs);
+    if (kit_icon_button(share_ready_icon(share_cs), "##share", share_ready_kind(share_cs, KIT_GHOST)))
+        lib_share_decided(lib.playing);
     bool share_right = ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     ImGui::SameLine(0, gap);
     kit_next_tip("More share options");

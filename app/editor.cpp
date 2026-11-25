@@ -2729,14 +2729,14 @@ static void ed_share_tab(f32 w)
         char label[48];
         if (js.running) str_set(label, " ");
         else if (js.done) str_set(label, js.line);
-        else str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
-        ImVec2 share_at = ImGui::GetCursorScreenPos();
         ClipShareState cs = share_clip_state(ed.item.key, ed.path.s, ed_share_info(), &ed.edit);
-        i32 sb = kit_split_button(label, "##edshare", js.running ? KIT_SECONDARY : KIT_PRIMARY, ImVec2(bw, 0),
+        if (!js.running && !js.done && !sharing && cs.link_ready) str_set(label, ICON_LINK "  Copy link");
+        else if (!js.running && !js.done) str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
+        ImVec2 share_at = ImGui::GetCursorScreenPos();
+        KitKind kind = js.running ? KIT_SECONDARY : js.done || sharing ? KIT_PRIMARY : share_ready_kind(cs, KIT_PRIMARY);
+        i32 sb = kit_split_button(label, "##edshare", kind, ImVec2(bw, 0),
                                   js.running || (!sharing && (can || cs.link_ready)), true, -1,
                                   js.running ? "Cancel the share" : share_ready_tip(cs), "More share options");
-        if (!js.running && !js.done && !sharing)
-            share_ready_dot(ImGui::GetWindowDrawList(), share_at, ImVec2(share_at.x + bw - fh, share_at.y + fh), cs, true);
         if (js.running) {
             share_cancel_ring(ImGui::GetWindowDrawList(), ImVec2(floorf(share_at.x + (bw - fh) / 2), floorf(share_at.y + fh / 2)),
                               kit_px(8), js.progress, COL_TEXT);
