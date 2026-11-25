@@ -334,6 +334,78 @@ static i32 split_fields(char *s, char **fields, i32 max)
     return n;
 }
 
+// The accent is a hue alone. Its lightness and chroma are the default teal's in OKLCH (lightness and colourfulness
+// as the eye sees them), so every hue stands out from the dark UI as much as teal does; a hue the screen can't show
+// at that chroma gives up chroma until it can. Hues go in ACCENT_STEP degree steps from teal's, so a colour snapped
+// to one snaps to the same one again and the default stays exactly ACCENT_DEFAULT.
+enum { ACCENT_STEP = 2, ACCENT_HUES = 360 / ACCENT_STEP };
+
+static f64 srgb_linear(f64 v) { return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4); }
+static f64 linear_srgb(f64 v) { return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1 / 2.4) - 0.055; }
+
+// 0xRRGGBB as OKLab
+static void rgb_oklab(u32 c, f64 out[3])
+{
+    f64 r = srgb_linear(((c >> 16) & 255) / 255.0), g = srgb_linear(((c >> 8) & 255) / 255.0), b = srgb_linear((c & 255) / 255.0);
+    f64 l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    f64 m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    f64 s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    out[0] = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    out[1] = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    out[2] = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+}
+
+// OKLab as 0xRRGGBB; false when the screen can't show it
+static bool oklab_rgb(f64 L, f64 a, f64 b, u32 *out)
+{
+    f64 l = L + 0.3963377774 * a + 0.2158037573 * b, m = L - 0.1055613458 * a - 0.0638541728 * b,
+        s = L - 0.0894841775 * a - 1.2914855480 * b;
+    l = l * l * l, m = m * m * m, s = s * s * s;
+    f64 v[3] = {4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+                -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s};
+    u32 c = 0;
+    for (i32 i = 0; i < 3; i++) {
+        if (v[i] < -1e-4 || v[i] > 1 + 1e-4) return false;
+        c = c << 8 | (u32)(linear_srgb(v[i] < 0 ? 0 : v[i] > 1 ? 1 : v[i]) * 255 + 0.5);
+    }
+    *out = c;
+    return true;
+}
+
+// A colour's OKLCH hue in degrees, 0 to 360
+static f64 rgb_hue(u32 c)
+{
+    f64 lab[3];
+    rgb_oklab(c, lab);
+    f64 h = atan2(lab[2], lab[1]) * 180 / 3.14159265358979;
+    return h < 0 ? h + 360 : h;
+}
+
+// The accent of hue step k (0 = teal, ACCENT_HUES of them round the circle)
+static u32 accent_at_step(i32 k)
+{
+    f64 base[3];
+    rgb_oklab(ACCENT_DEFAULT, base);
+    f64 chroma = sqrt(base[1] * base[1] + base[2] * base[2]);
+    f64 h = (rgb_hue(ACCENT_DEFAULT) + (((k % ACCENT_HUES) + ACCENT_HUES) % ACCENT_HUES) * ACCENT_STEP) * 3.14159265358979 / 180;
+    u32 out = ACCENT_DEFAULT;
+    for (f64 ch = chroma; ch > 0.001; ch *= 0.98)
+        if (oklab_rgb(base[0], ch * cos(h), ch * sin(h), &out)) break;
+    return out;
+}
+
+// The hue step nearest colour c's
+static i32 accent_step(u32 c)
+{
+    f64 d = rgb_hue(c & 0xffffff) - rgb_hue(ACCENT_DEFAULT);
+    if (d < 0) d += 360;
+    return (i32)floor(d / (f64)ACCENT_STEP + 0.5) % ACCENT_HUES;
+}
+
+// Colour c as an accent: the nearest hue, at teal's lightness and chroma
+static u32 accent_lock(u32 c) { return accent_at_step(accent_step(c)); }
+
 static void config_set(Config *c, const char *key, char *value)
 {
     wchar_t wide[MAX_PATH];
@@ -352,10 +424,11 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "buffer_gb")) real(&c->buffer_gb);
     else if (!strcmp(key, "buffer_by_size")) boolean(&c->buffer_by_size);
     else if (!strcmp(key, "desktop_bitrate_mbps")) real(&c->desktop_bitrate_mbps);
-    else if (!strcmp(key, "accent")) { // six hex digits, "00897b"; anything else keeps the default
+    else if (!strcmp(key, "accent")) { // six hex digits, "00897b", taken as its hue (accent_lock); anything else
+                                         // keeps the default
         bool hex = strlen(value) == 6;
         for (i32 i = 0; hex && i < 6; i++) hex = isxdigit((u8)value[i]) != 0;
-        if (hex) c->accent = (u32)strtoul(value, 0, 16);
+        if (hex) c->accent = accent_lock((u32)strtoul(value, 0, 16));
     }
     else if (!strcmp(key, "card_width")) c->card_width = atoi(value);
     else if (!strcmp(key, "games_collapsed")) c->games_collapsed = atoi(value) != 0;

@@ -878,8 +878,20 @@ static void test_settings_round_trip()
         char empty[] = "";
         config_set(&e, "r2_bucket", empty);
         T(!strcmp(e.r2_bucket, "rekodr"));
-        // The accent: six hex digits; anything else keeps the default
-        T(e.accent == ACCENT_DEFAULT);
+        // The accent: six hex digits, taken as their hue; anything else keeps the default
+        T(e.accent == ACCENT_DEFAULT && accent_lock(ACCENT_DEFAULT) == ACCENT_DEFAULT && accent_at_step(0) == ACCENT_DEFAULT);
+        bool steady = true, same_light = true;
+        f64 teal[3];
+        rgb_oklab(ACCENT_DEFAULT, teal);
+        for (i32 k = 0; k < ACCENT_HUES; k++) {
+            u32 v = accent_at_step(k);
+            f64 lab[3];
+            rgb_oklab(v, lab);
+            steady = steady && accent_lock(v) == v && accent_step(v) == k;
+            same_light = same_light && fabs(lab[0] - teal[0]) < 0.01;
+        }
+        T(steady && same_light);
+        T(accent_lock(0xff0000) == accent_lock(0x400000) && accent_lock(0x0000ff) != accent_lock(0xff0000));
         char acc[16];
         static const char *const bad[] = {"0", "+12345", "12345g", "1234567", " 12345", ""};
         for (const char *v : bad) {
@@ -889,9 +901,9 @@ static void test_settings_round_trip()
         }
         str_set(acc, "FFe066");
         config_set(&e, "accent", acc);
-        T(e.accent == 0xffe066);
+        T(e.accent == accent_lock(0xffe066) && e.accent != 0xffe066);
     }
-    T(b.accent == 0x0a1b2c);
+    T(b.accent == accent_lock(0x0a1b2c));
     T(b.bitrate_mbps == 42.5f && b.fps == 120 && b.buffer_by_size && b.dev_log && !strcmp(b.codec.s, "hevc"));
     T(b.hotkey_count == 1 && !strcmp(b.hotkeys[0].keys.s, "Alt+F7") && !strcmp(b.hotkeys[0].action.s, "save 30s"));
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
