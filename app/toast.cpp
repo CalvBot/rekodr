@@ -22,9 +22,10 @@
 // no file name and no buttons, gone after 3 s, and a click closes it. Its rounded ends are see-through, so it is a
 // layered window drawn with its own alpha. Save failed is the full toast without its buttons. Popups in games picks
 // another monitor for every toast while a game is in front.
-// Clip saved, Session saved and Session ended have the game's grey art behind them, the window's own (game_art_grey):
-// filling the toast and cut to fit, strongest at the right and faded out across the toast (art_fade, over
-// g_art_look.toast_fade_end of its width). With no art, or Flat look, they have the plain panel.
+// Clip saved, Session saved and Session ended have the game's art behind them, the window's own picture
+// (game_art_picture) with some of its colour (g_art_look.toast_colour): filling the toast and cut to fit, strongest
+// at the right and faded out across the toast (art_fade, over g_art_look.toast_fade_end of its width). With no art,
+// or Flat look, they have the plain panel.
 
 enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
 // The parts a click lands on: the buttons counted from the right, Dismiss at the left, then the marker's colours
@@ -43,7 +44,7 @@ struct Toast {
     i32       more;               // and how many more
     u32      *tile_px;            // Session ended: the game's icon over the panel, tile_w x tile_h BGRA; null for none
     i32       tile_w, tile_h;
-    u8       *art;                // the game's grey art behind it, art_w x art_h (game_art_grey, malloc); null for none
+    u32      *art;                // the game's art behind it, art_w x art_h BGR (toast_set_art, malloc); null for none
     i32       art_w, art_h;
     u8        colour;
     i32       hot;                // the part under the mouse
@@ -348,11 +349,11 @@ static void toast_draw_art(Toast &t, HDC big, RECT r, i32 SS)
             f32 fx = ((1 - su) / 2 + su * (x + 0.5f) / w) * aw - 0.5f;
             i32 x0 = art_clamp((i32)floorf(fx), 0, aw - 1), x1 = art_clamp(x0 + 1, 0, aw - 1);
             f32 dx = fx - floorf(fx), a = art_fade((x + 0.5f) / w, g_art_look.toast_fade_end);
-            const u8 *g = t.art;
-            f32 v = (g[y0 * aw + x0] * (1 - dx) + g[y0 * aw + x1] * dx) * (1 - dy) +
-                    (g[y1 * aw + x0] * (1 - dx) + g[y1 * aw + x1] * dx) * dy;
+            const u32 *g = t.art;
             u32 out = 0;
             for (i32 sh = 0; sh < 24; sh += 8) {
+                f32 v = (((g[y0 * aw + x0] >> sh) & 255) * (1 - dx) + ((g[y0 * aw + x1] >> sh) & 255) * dx) * (1 - dy) +
+                        (((g[y1 * aw + x0] >> sh) & 255) * (1 - dx) + ((g[y1 * aw + x1] >> sh) & 255) * dx) * dy;
                 f32 c = ((ground >> sh) & 255) * (1 - a) + v * a;
                 out |= (u32)(c + 0.5f) << sh;
             }
@@ -1016,11 +1017,32 @@ static void toast_place(Toast &t, const RECT &work, PopupCorner corner)
     toast_redraw(t);
 }
 
-// The art behind the toast: `game`'s (game_art_grey), or none
+// The art behind the toast: `game`'s picture (game_art_picture), or none. Each texel is the grey with
+// g_art_look.toast_colour of the colour's own tint on it, scaled to the grey's brightness (the grey's levels are
+// stretched, the colour's are not).
 static void toast_set_art(Toast &t, const char *game)
 {
     free(t.art);
-    t.art = game && game[0] ? game_art_grey(game, &t.art_w, &t.art_h) : 0;
+    t.art = 0;
+    i32 w = 0, h = 0;
+    u8 *pic = game && game[0] ? game_art_picture(game, &w, &h) : 0;
+    if (pic) t.art = (u32 *)malloc((size_t)w * h * 4);
+    if (t.art) {
+        i32 n = w * h;
+        for (i32 i = 0; i < n; i++) {
+            f32 v = pic[i], c[3] = {(f32)pic[n + i], (f32)pic[2 * n + i], (f32)pic[3 * n + i]}; // b, g, r
+            f32 lum = (c[2] * 54 + c[1] * 183 + c[0] * 19) / 256, scale = (v + 16) / (lum + 16);
+            u32 out = 0;
+            for (i32 k = 0; k < 3; k++) {
+                f32 tinted = v + g_art_look.toast_colour * (c[k] - lum) * scale;
+                out |= (u32)art_clamp((i32)(tinted + 0.5f), 0, 255) << (8 * k);
+            }
+            t.art[i] = out;
+        }
+        t.art_w = w;
+        t.art_h = h;
+    }
+    free(pic);
 }
 
 // Clip saved (Session saved) for path, of `game` ("" for none), brief (no buttons) or with its buttons
