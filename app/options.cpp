@@ -1632,34 +1632,35 @@ static void options_apps()
     bool menu = ImGui::BeginPopup("app menu");
     lib_popup_style_pop();
     if (menu) {
+        // The app, its file (only when its path is known), its folder's rule, then taking it off the list
         AppInfo *a = o.menu_app >= 0 && o.menu_app < c.app_count ? &c.apps[o.menu_app] : 0;
-        if (a && app_category(c, *a) == CAT_GAME && lib_menu_item(ICON_SETTINGS, "Recording settings")) open_popup = 2;
-        if (a && lib_menu_item(ICON_RENAME, "Name or game")) open_popup = 3;
-        ImGui::BeginDisabled(!o.menu_path.s[0]);
-        if (lib_menu_item(ICON_FOLDER, "Open file location")) reveal_file(o.menu_path);
-        ImGui::EndDisabled();
-        if (!o.menu_path.s[0]) {
-            ImGui::PushFont(g_font_small);
-            kit_dim("  Not running, and lifelog hasn't seen where it is");
-            ImGui::PopFont();
+        if (a) {
+            if (app_category(c, *a) == CAT_GAME && lib_menu_item(ICON_SETTINGS, "Recording settings")) open_popup = 2;
+            if (lib_menu_item(ICON_RENAME, "Name or game")) open_popup = 3;
+            if (o.menu_path.s[0]) {
+                ImGui::Separator();
+                if (lib_menu_item(ICON_FOLDER, "Show in folder")) reveal_file(o.menu_path);
+            }
+            // Its folder: a rule for every app in it (shown under Folders), or back to following the one there is
+            char dir[MAX_PATH * 2] = "";
+            path_folder(a->path, dir, sizeof dir);
+            bool follow = a->category != CAT_NONE && folder_rule_for(c.folders, c.folder_count, a->path) >= 0;
+            bool add = dir[0] && folder_find(dir) < 0 && c.folder_count < COUNT(c.folders);
+            if (follow || add) ImGui::Separator();
+            if (follow && lib_menu_item(ICON_FOLDER, "Follow its folder's rule")) {
+                app_set_category(a, CAT_NONE);
+                o.order_dirty = true;
+            }
+            if (add && lib_menu_item(ICON_ADD, "Rule for its folder")) {
+                AppCategory cat = app_category(c, *a);
+                folder_set(dir, cat != CAT_NONE ? cat : CAT_APP);
+                o.filter = FILTER_FOLDERS;
+                o.folders_page = 0;
+                o.search[0] = 0;
+            }
+            ImGui::Separator();
+            if (lib_menu_item(ICON_CLOSE, "Remove from list")) app_dismiss(o.menu_app);
         }
-        // Its folder: a rule for every app in it (shown under Folders), or back to following the one there is
-        char dir[MAX_PATH * 2] = "";
-        if (a) path_folder(a->path, dir, sizeof dir);
-        i32 rule = a ? folder_rule_for(c.folders, c.folder_count, a->path) : -1;
-        if (a && a->category != CAT_NONE && rule >= 0 && lib_menu_item(ICON_FOLDER, "Follow its folder's rule")) {
-            app_set_category(a, CAT_NONE);
-            o.order_dirty = true;
-        }
-        if (a && dir[0] && folder_find(dir) < 0 && c.folder_count < COUNT(c.folders) &&
-            lib_menu_item(ICON_ADD, "Rule for its folder")) {
-            AppCategory cat = app_category(c, *a);
-            folder_set(dir, cat != CAT_NONE ? cat : CAT_APP);
-            o.filter = FILTER_FOLDERS;
-            o.folders_page = 0;
-            o.search[0] = 0;
-        }
-        if (a && lib_menu_item(ICON_CLOSE, "Dismiss")) app_dismiss(o.menu_app);
         ImGui::EndPopup();
     }
     if (open_popup == 4) ImGui::OpenPopup("folder menu");
