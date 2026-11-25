@@ -6020,8 +6020,9 @@ static void screen_library()
     f32 content_h = rows * card_h, max_scroll = content_h > grid_h ? content_h - grid_h : 0;
 
     bool popup = ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId);
-    f32 bar_w = kit_px(14);
-    ImGui::BeginChild("##grid", ImVec2(full_w + bar_w, grid_h), 0,
+    f32 bar_w = kit_px(14), edge = kit_px(4); // edge: room left of the first column for a selected card's outline
+    ImGui::SetCursorScreenPos(ImVec2(g0.x - edge, g0.y));
+    ImGui::BeginChild("##grid", ImVec2(edge + full_w + bar_w, grid_h), 0,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
     dl = ImGui::GetWindowDrawList();
     if (!popup && !ctrl && io.MouseWheel != 0 &&
