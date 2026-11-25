@@ -3260,7 +3260,7 @@ static bool host_logo_draw(ImDrawList *dl, LinkHost host, ImVec2 a, f32 sz, f32 
 
 static i64 share_host_cap(LinkHost host)
 {
-    if (host == HOST_R2) return r2_limit_for_budget(r2_budget_now());
+    if (host == HOST_R2) return r2_cap_now();
     return 0;
 }
 

@@ -144,7 +144,7 @@ static ShareHosts share_hosts()
     ShareHosts h = {};
     h.bucket = r2_set_up();
     str_set(h.uploaders, c.link_uploaders);
-    h.bucket_limit = h.bucket ? r2_limit_for_budget(r2_budget_now()) : 0;
+    h.bucket_limit = h.bucket ? r2_cap_now() : 0;
     return h;
 }
 

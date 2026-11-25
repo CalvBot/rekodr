@@ -161,7 +161,8 @@ struct Config {
     char r2_access_key[72];  // the R2 API token's access key ID
     char r2_bucket[64];
     char r2_public_url[256]; // the bucket's public address: https://pub-<id>.r2.dev or a custom domain
-    f32  r2_budget;          // dollars a month to spend on storage; 0 = the free 10 GB
+    f32  r2_budget;          // dollars a month to spend on storage beyond Rekodr's space
+    f32  r2_space_gb;        // GB of the account's free storage Rekodr may use; < 0 = not set (r2_space_default)
     i32  r2_read_cap;        // R2 links pause near this many reads (Class B) in the account's month; 0 = no cap
     i32  r2_read_rate;       // an R2 link read this many times in 24 hours pauses until the next day; 0 = no limit
     char link_uploaders[256]; // the player's uploaders that are on (.sxcu files in <config_dir>\uploaders, by name),

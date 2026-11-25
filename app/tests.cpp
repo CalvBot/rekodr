@@ -1586,9 +1586,17 @@ static void test_r2()
     r2_make_url("https://clips.example.com", "k.mp4", 3, url, sizeof url);
     T(!strcmp(url, "https://clips.example.com/k.mp4?v=3"));
 
-    // Limits: free 10 GB, then $0.015 a GB-month, all of it used
-    T(r2_limit_for_budget(0) == 10 * R2_GB);
-    T(r2_limit_for_budget(1.35) / R2_GB == 100 || r2_limit_for_budget(1.35) / R2_GB == 99);
+    // Space: the free 10 GB less the other buckets less 5%, 2 GB when the account's total can't be read, nothing
+    // when the other buckets already hold it all; the player's value wins. Then $0.015 a GB-month more.
+    T(r2_space_default(3 * R2_GB) == 6500000000ll);
+    T(r2_space_default(0) == 9500000000ll);
+    T(r2_space_default(-1) == 2 * R2_GB);
+    T(r2_space_default(12 * R2_GB) == 0 && r2_space_default(9600000000ll) == 0);
+    T(r2_cap_for(0, -1, 3 * R2_GB) == 6500000000ll);
+    T(r2_cap_for(0, -1, -1) == 2 * R2_GB);
+    T(r2_cap_for(0, 4, 3 * R2_GB) == 4 * R2_GB && r2_cap_for(0, 4, -1) == 4 * R2_GB && r2_cap_for(0, 0, 0) == 0);
+    T(r2_cap_for(1.35, 10, -1) / R2_GB == 100 || r2_cap_for(1.35, 10, -1) / R2_GB == 99);
+    T(r2_cap_for(1.5, -1, 12 * R2_GB) / R2_GB == 100 || r2_cap_for(1.5, -1, 12 * R2_GB) / R2_GB == 99);
     T(fabs(r2_cost_for(100 * R2_GB) - 1.35) < 1e-9 && r2_cost_for(5 * R2_GB) == 0);
 
     // Cleanup: oldest unpinned first, until it fits
@@ -2153,6 +2161,48 @@ static void test_r2()
                      "{\"sum\":{\"requests\":7},\"dimensions\":{\"actionType\":\"PutObject\"}}]}]}}}",
                      &f));
     T(f.account_reads == 1000 && f.class_b == 0);
+    // No "total" in the answer: the account's storage isn't known
+    T(f.account_bytes == -1);
+    // The account's storage: each bucket's newest count (rows come newest first), added up
+    T(r2_parse_usage("{\"data\":{\"viewer\":{\"accounts\":[{\"storage\":[{\"max\":{\"payloadSize\":1000,\"metadataSize\":0}}],"
+                     "\"ops\":[],\"total\":["
+                     "{\"max\":{\"payloadSize\":1000,\"metadataSize\":0},\"dimensions\":{\"bucketName\":\"rekodr\"}},"
+                     "{\"max\":{\"payloadSize\":3000,\"metadataSize\":5},\"dimensions\":{\"bucketName\":\"music\"}},"
+                     "{\"max\":{\"payloadSize\":900,\"metadataSize\":0},\"dimensions\":{\"bucketName\":\"rekodr\"}},"
+                     "{\"max\":{\"payloadSize\":2000,\"metadataSize\":0},\"dimensions\":{\"bucketName\":\"music\"}}]}]}}}",
+                     &f));
+    T(f.bytes == 1000 && f.account_bytes == 4005);
+    T(r2_parse_usage("{\"data\":{\"viewer\":{\"accounts\":[{\"storage\":[],\"ops\":[],\"total\":[]}]}}}", &f));
+    T(f.account_bytes == 0);
+    // The cap in force uses the other buckets from the last answer: 4005 - 1000 of them here
+    {
+        R2Fetched keep_f = g_r2.fetched;
+        i64 keep_us = g_r2.usage_us;
+        f64 keep_budget = g_r2.budget;
+        f32 keep_space = g_r2.space_gb;
+        bool keep_known = g_r2.budget_known;
+        g_r2.fetched = {};
+        g_r2.fetched.bytes = 1000;
+        g_r2.fetched.account_bytes = 4005;
+        g_r2.usage_us = 1;
+        g_r2.budget = 0;
+        g_r2.space_gb = -1;
+        g_r2.budget_known = true;
+        T(r2_others_now() == 3005 && r2_cap_now() == r2_space_default(3005));
+        g_r2.space_gb = 3;
+        T(r2_cap_now() == 3 * R2_GB);
+        g_r2.space_gb = -1;
+        g_r2.fetched.account_bytes = -1;
+        T(r2_others_now() == -1 && r2_cap_now() == 2 * R2_GB);
+        g_r2.fetched.account_bytes = 4005;
+        g_r2.usage_us = 0; // not asked yet
+        T(r2_cap_now() == 2 * R2_GB);
+        g_r2.fetched = keep_f;
+        g_r2.usage_us = keep_us;
+        g_r2.budget = keep_budget;
+        g_r2.space_gb = keep_space;
+        g_r2.budget_known = keep_known;
+    }
     T(r2_op_class("UploadPart") == 'A' && r2_op_class("HeadObject") == 'B' && r2_op_class("DeleteObject") == 0);
     char q[3200];
     r2_usage_query("acc1", "rekodr", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", "2026-11-20T23:00:00Z",
@@ -2164,6 +2214,9 @@ static void test_r2()
       strstr(q, "r2OperationsAdaptiveGroups") && strstr(q, "\"startDate\":\"2026-11-01T00:00:00Z\""));
     // Cloudflare orders only by a field the query asks for
     T(strstr(q, "orderBy:[datetime_DESC]){max{payloadSize metadataSize} dimensions{datetime}}"));
+    // The account's storage: every bucket, newest first, by bucket
+    T(strstr(q, "total:r2StorageAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate},"
+                "orderBy:[datetime_DESC]){max{payloadSize metadataSize} dimensions{datetime bucketName}}"));
 
     // Plays per file
     const char *pl = "{\"data\":{\"viewer\":{\"accounts\":[{\"month\":[{\"sum\":{\"requests\":12},\"dimensions\":"
@@ -2280,7 +2333,12 @@ static void test_share_cancel()
     g_r2.count = 0;
     g_r2.loaded = false;
     r2_net_fake = net_fake;
-    R2Conf conf = {"acct", "key", "secret", "bucket", "https://clips.example", 1ll << 40};
+    R2Conf conf = {"acct", "key", "secret", "bucket", "https://clips.example"};
+    // A cap far above these files: uploads here never clear room
+    f32 keep_space = g_r2.space_gb;
+    bool keep_known = g_r2.budget_known;
+    g_r2.space_gb = 1000;
+    g_r2.budget_known = true;
     Path file = path_join(g_app.paths.config_dir, L"copy.mp4");
     auto make = [&](i64 bytes) { // sized without writing it all
         HANDLE h = CreateFileW(file.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
@@ -2400,6 +2458,8 @@ static void test_share_cancel()
     T(GetFileAttributesW(g_app.paths.config_dir.s) == INVALID_FILE_ATTRIBUTES); // nothing else was left in it
     g_r2.count = 0;
     g_r2.loaded = false;
+    g_r2.space_gb = keep_space;
+    g_r2.budget_known = keep_known;
     g_app.paths = keep;
 }
 

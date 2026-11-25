@@ -92,7 +92,8 @@ struct R2Share {
 };
 
 struct R2Usage {
-    i64 used_bytes, limit_bytes; // what the links take up (the history), and what the budget allows
+    i64 used_bytes, limit_bytes; // what the links take up (the history), and the cap (r2_cap_for)
+    i64 other_bytes;             // what the account's other buckets hold, -1 when not known
     f64 cost_per_gb_month, free_gb;
     i64 bucket_bytes;            // Cloudflare's count of what the bucket holds, -1 until fetched
     i64 class_a, class_b;        // requests to the bucket this month (UTC), -1 until fetched
@@ -113,9 +114,10 @@ struct R2Domains {
     i64  asked_us;
 };
 
-// What Cloudflare's analytics say about the bucket, and the account's reads
+// What Cloudflare's analytics say about the bucket, and the account's reads and storage (account_bytes, every
+// bucket's; -1 when the answer didn't have it)
 struct R2Fetched {
-    i64 bytes, class_a, class_b, account_reads;
+    i64 bytes, class_a, class_b, account_reads, account_bytes;
 };
 
 // Cloudflare's R2 prices: storage per GB-month, and per million Class A (writes, lists) and Class B (reads)
@@ -132,7 +134,6 @@ enum R2EventKind : u8 { R2_EV_PROBED, R2_EV_JOB, R2_EV_STATUS, R2_EV_SETUP, R2_E
 // What a network task needs of the settings, copied when the task is queued.
 struct R2Conf {
     char account[40], access[72], secret[96], bucket[64], public_url[256];
-    i64  limit;
 };
 
 enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_UPLOADER, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
@@ -200,7 +201,8 @@ static struct {
     i8       signed_in; // the same for the sign-in's refresh token
     char     access[2048]; // worker: the sign-in's access token, until access_until_us
     i64      access_until_us;
-    f64      budget;       // main thread: the monthly budget in force (r2_apply_budget), once budget_known
+    f64      budget;       // the monthly budget in force (r2_cleanup_now), once budget_known
+    f32      space_gb;     // the same for the space setting (Config::r2_space_gb)
     bool     budget_known;
     i64      folder_bytes; // the bucket's rekodr/ folder when last listed, 0 before
     struct {
@@ -219,12 +221,33 @@ static struct {
 // ---------------------------------------------------------------------------------------------------------------
 // Prices and limits
 
-// What may be stored for a monthly budget, in bytes: all that the budget buys. Before each upload the bucket is
-// listed for its real size and the oldest links are cleared to fit (r2_run_upload), so it never holds more.
-static i64 r2_limit_for_budget(f64 dollars)
+// The free storage is the account's, shared with its other buckets. Rekodr's space when the player hasn't set
+// one: the free 10 GB less what the other buckets hold (`others`, bytes) less 5% spare, or 2 GB when the account's
+// total couldn't be read (`others` < 0).
+static const f64 R2_SPARE = 0.05, R2_UNREAD_GB = 2;
+static i64 r2_space_default(i64 others)
+{
+    if (others < 0) return (i64)(R2_UNREAD_GB * (f64)R2_GB);
+    i64 room = (i64)(R2_FREE_GB * (1 - R2_SPARE) * (f64)R2_GB) - others;
+    return room > 0 ? room : 0;
+}
+
+// What Rekodr may store, in bytes: its space (`space_gb`, or the default when < 0) and all that the monthly
+// budget buys. Before each upload the bucket is listed for its real size and the oldest links are cleared to fit
+// (r2_run_upload), so it never holds more.
+static i64 r2_cap_for(f64 dollars, f32 space_gb, i64 others)
 {
     if (dollars < 0) dollars = 0;
-    return (i64)((R2_FREE_GB + dollars / R2_PRICE_GB) * (f64)R2_GB);
+    i64 space = space_gb >= 0 ? (i64)((f64)space_gb * (f64)R2_GB) : r2_space_default(others);
+    return space + (i64)(dollars / R2_PRICE_GB * (f64)R2_GB);
+}
+
+// What the account's other buckets hold, from the last usage answer; -1 when not known.
+static i64 r2_others_locked()
+{
+    if (!g_r2.usage_us || g_r2.fetched.account_bytes < 0) return -1;
+    i64 n = g_r2.fetched.account_bytes - g_r2.fetched.bytes;
+    return n > 0 ? n : 0;
 }
 
 // Room kept for a preview page and its picture while a link's room is made; the entry counts what they really take.
@@ -1139,15 +1162,33 @@ static void r2_token_secret(const char *token, char out[65])
     SecureZeroMemory(h, sizeof h);
 }
 
-// The monthly budget in force: what was saved, until r2_apply_budget sets a new one. Options' draft in the
-// settings never changes it.
-static f64 r2_budget_now()
+// The cap in force (r2_cap_for), with the lock held: the budget and space that were saved, until r2_cleanup_now
+// puts new ones in force. Options' drafts never change them.
+static i64 r2_cap_locked()
 {
     if (!g_r2.budget_known) {
         g_r2.budget = g_app.config.r2_budget;
+        g_r2.space_gb = g_app.config.r2_space_gb;
         g_r2.budget_known = true;
     }
-    return g_r2.budget;
+    return r2_cap_for(g_r2.budget, g_r2.space_gb, r2_others_locked());
+}
+
+static i64 r2_cap_now()
+{
+    AcquireSRWLockExclusive(&g_r2.lock);
+    i64 n = r2_cap_locked();
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    return n;
+}
+
+// What the account's other buckets hold, for Options; -1 when not known.
+static i64 r2_others_now()
+{
+    AcquireSRWLockShared(&g_r2.lock);
+    i64 n = r2_others_locked();
+    ReleaseSRWLockShared(&g_r2.lock);
+    return n;
 }
 
 static bool r2_conf(R2Conf *out)
@@ -1158,7 +1199,6 @@ static bool r2_conf(R2Conf *out)
     str_set(out->access, c.r2_access_key);
     str_set(out->bucket, c.r2_bucket);
     str_set(out->public_url, c.r2_public_url);
-    out->limit = r2_limit_for_budget(r2_budget_now());
     char token[256];
     if (r2_token_get(token, sizeof token)) r2_token_secret(token, out->secret);
     SecureZeroMemory(token, sizeof token);
@@ -2082,12 +2122,13 @@ static void r2_run_upload(const R2Task &t)
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
     i32 reuse = t.key[0] ? r2_find_locked(t.key) : -1;
-    i32 clear = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit,
+    i64 cap = r2_cap_locked();
+    i32 clear = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, cap,
                                                 incoming + r2_untracked_locked(folder), reuse, plan, COUNT(plan));
     if (folder < 0) str_set(err, "Couldn't read how full the bucket is: try again");
     else if (clear < 0)
-        str_set(err, incoming > t.conf.limit ? "The clip is bigger than your limit: raise it in Options"
-                                             : "Pinned clips fill your limit: unpin some or raise it");
+        str_set(err, incoming > cap ? "The clip is bigger than your limit: raise it in Options"
+                                    : "Pinned clips fill your limit: unpin some or raise it");
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (!err[0] && clear > 0 && !r2_remove_planned(t.conf, plan, clear))
         str_set(err, "Couldn't make room in the bucket: try again");
@@ -2201,8 +2242,8 @@ static void r2_run_upload(const R2Task &t)
     }
     str_set(url, g_r2.shares[at].url);
     // The page or picture came out bigger than their room: the oldest others go now.
-    i32 n = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), at,
-                                             plan, COUNT(plan));
+    i32 n = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, r2_cap_locked(), r2_untracked_locked(folder),
+                                             at, plan, COUNT(plan));
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (!r2_job_end(job, true, url, "", key)) {
@@ -2212,7 +2253,7 @@ static void r2_run_upload(const R2Task &t)
     if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
-// After a new budget: the oldest unpinned links go until the bucket, at its real size, fits the limit.
+// After a new budget or space: the oldest unpinned links go until the bucket, at its real size, fits the cap.
 static void r2_run_cleanup(const R2Task &t)
 {
     static i32 plan[R2_MAX_SHARES];
@@ -2223,7 +2264,7 @@ static void r2_run_cleanup(const R2Task &t)
     }
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
-    i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, t.conf.limit, r2_untracked_locked(folder), -1, plan,
+    i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, r2_cap_locked(), r2_untracked_locked(folder), -1, plan,
                             COUNT(plan));
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (n < 0) log_line("r2: pinned links alone are over the new budget: nothing removed");
@@ -2942,7 +2983,8 @@ static bool r2_parse_oauth(const char *resp, R2OAuth *o)
     return json_path(resp, len, "access_token", o->access, sizeof o->access);
 }
 
-// The GraphQL answer to r2_usage_query: what the bucket holds (its last count this month) and the requests by class.
+// The GraphQL answer to r2_usage_query: what the bucket holds (its last count this month), the requests by class,
+// and what the whole account holds: each bucket's newest count, added up.
 static bool r2_parse_usage(const char *resp, R2Fetched *out)
 {
     i64 len = (i64)strlen(resp);
@@ -2972,13 +3014,30 @@ static bool r2_parse_usage(const char *resp, R2Fetched *out)
         snprintf(path, sizeof path, "%saccount[%d].sum.requests", acc, i);
         if (r2_op_class(action) == 'B' && json_path(resp, len, path, v, sizeof v)) out->account_reads += _atoi64(v);
     }
+    out->account_bytes = strstr(resp, "\"total\":[") ? 0 : -1;
+    static char seen[64][64];
+    i32 buckets = 0;
+    char name[64];
+    for (i32 i = 0; out->account_bytes >= 0 && i < 1000; i++) {
+        snprintf(path, sizeof path, "%stotal[%d].dimensions.bucketName", acc, i);
+        if (!json_path(resp, len, path, name, sizeof name)) break;
+        bool dup = false;
+        for (i32 k = 0; k < buckets && !dup; k++) dup = !strcmp(seen[k], name);
+        if (dup) continue; // an older count of a bucket already added: rows come newest first
+        if (buckets == (i32)COUNT(seen)) break;
+        str_set(seen[buckets++], name);
+        snprintf(path, sizeof path, "%stotal[%d].max.payloadSize", acc, i);
+        if (json_path(resp, len, path, v, sizeof v)) out->account_bytes += _atoi64(v);
+        snprintf(path, sizeof path, "%stotal[%d].max.metadataSize", acc, i);
+        if (json_path(resp, len, path, v, sizeof v)) out->account_bytes += _atoi64(v);
+    }
     // An empty month has empty lists; an error has no data at all
     return any || has_ops || strstr(resp, "\"storage\":[]") != 0;
 }
 
 // The GraphQL request for a bucket from `start` to `end` (ISO 8601, UTC): its storage, its requests by type, the
 // GET requests for each file (plays) over that time, since `day` (local midnight, in UTC) and since `since` (24
-// hours ago), and the requests by type to every bucket of the account.
+// hours ago), the requests by type to every bucket of the account, and every bucket's storage newest first.
 static void r2_usage_query(const char *account, const char *bucket, const char *start, const char *end,
                            const char *day, const char *since, char *out, i32 cap)
 {
@@ -2996,7 +3055,9 @@ static void r2_usage_query(const char *account, const char *bucket, const char *
              "day:r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$since,datetime_leq:$endDate,"
              "bucketName:$bucketName,actionType:$get}){sum{requests} dimensions{objectName}} "
              "account:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate})"
-             "{sum{requests} dimensions{actionType}}}}}\","
+             "{sum{requests} dimensions{actionType}} "
+             "total:r2StorageAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate},"
+             "orderBy:[datetime_DESC]){max{payloadSize metadataSize} dimensions{datetime bucketName}}}}}\","
              "\"variables\":{\"accountTag\":\"%s\",\"bucketName\":\"%s\",\"startDate\":\"%s\",\"endDate\":\"%s\","
              "\"dayStart\":\"%s\",\"since\":\"%s\",\"get\":\"GetObject\"}}",
              account, bucket, start, end, day, since);
@@ -3461,7 +3522,6 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
     }
     str_set(c->access, token_id);
     r2_token_secret(token, c->secret);
-    c->limit = t.conf.limit;
     return true;
 }
 
@@ -3932,12 +3992,15 @@ static i64 r2_untracked_bytes()
     return n;
 }
 
-// Options' Save, after writing r2_budget: the new budget is in force from now, and the oldest unpinned links are
-// cleared on the worker until the bucket fits it.
+// Options' Save, after writing r2_budget or r2_space_gb: the new cap is in force from now, and the oldest unpinned
+// links are cleared on the worker until the bucket fits it.
 static void r2_cleanup_now()
 {
+    AcquireSRWLockExclusive(&g_r2.lock);
     g_r2.budget = g_app.config.r2_budget;
+    g_r2.space_gb = g_app.config.r2_space_gb;
     g_r2.budget_known = true;
+    ReleaseSRWLockExclusive(&g_r2.lock);
     if (!r2_ready()) return;
     static R2Task t;
     t = {};
@@ -4650,12 +4713,13 @@ static R2Usage r2_usage()
     u.class_b = u.usage_us ? g_r2.fetched.class_b : -1;
     u.account_reads = u.usage_us ? g_r2.fetched.account_reads : -1;
     u.capped = r2_capped(u.account_reads, g_app.config.r2_read_cap);
+    u.limit_bytes = r2_cap_locked();
+    u.other_bytes = r2_others_locked();
     if (r2_ready() && (!g_r2.usage_asked_us || now - g_r2.usage_asked_us > R2_USAGE_EVERY_US)) {
         g_r2.usage_asked_us = now;
         ask = true;
     }
     ReleaseSRWLockExclusive(&g_r2.lock);
-    u.limit_bytes = r2_limit_for_budget(r2_budget_now());
     u.cost_per_gb_month = R2_PRICE_GB;
     u.free_gb = R2_FREE_GB;
     u.month_cost = r2_month_cost(u.bucket_bytes >= 0 ? u.bucket_bytes : u.used_bytes, u.class_a > 0 ? u.class_a : 0,

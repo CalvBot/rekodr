@@ -2529,9 +2529,10 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
 // Sharing: links to clips (r2.cpp). With no setup they go to the free public hosts and the player's uploaders (ShareX
 // .sxcu files) in link_hosts; with the player's
 // own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
-// The budget picks the most a month may cost; the bucket holds all that buys (r2_limit_for_budget), and the oldest
-// unpinned links are removed before an upload that wouldn't fit, or when a lower budget is saved.
-// The budget is US dollars a month, what Cloudflare bills in. The slider runs from $0 (the free 10 GB) to
+// Space for Rekodr is its share of the account's free 10 GB; the budget picks the most a month may cost for more. The
+// bucket holds both (r2_cap_for), and the oldest unpinned links are removed before an upload that wouldn't fit, or
+// when a lower space or budget is saved.
+// The budget is US dollars a month, what Cloudflare bills in. The slider runs from $0 (no paid space) to
 // R2_BUDGET_TOP (about 10 TB) on a cubic curve, so the low end isn't cramped, in steps of $0.05; typed amounts go to
 // the cent, up to R2_BUDGET_MOST.
 static const f64 R2_BUDGET_TOP = 150, R2_BUDGET_MOST = 10000;
@@ -2548,17 +2549,22 @@ static const char *opt_usd()
     return sign;
 }
 
-// The budget's label: the amount, then the space it buys. "Free: 10 GB", "$4.50 a month: 310 GB".
+// A size in GB, or TB from 1000 GB: "10 GB", "9.5 GB", "1.2 TB"
+static void opt_gb(f64 gb, char *out, i32 cap)
+{
+    const char *unit = "GB";
+    if (gb >= 1000) gb /= 1000, unit = "TB";
+    if (fabs(gb - floor(gb + 0.5)) < 0.05) snprintf(out, cap, "%.0f %s", gb, unit);
+    else snprintf(out, cap, "%.1f %s", gb, unit);
+}
+
+// The budget's label: the amount, then the space it buys past Rekodr's free space. "$4.50 a month: 300 GB more".
 static void opt_budget_label(f64 dollars, char *out, i32 cap)
 {
-    f64 keep = (f64)r2_limit_for_budget(dollars) / (f64)R2_GB;
-    const char *unit = "GB";
-    if (keep >= 1000) keep /= 1000, unit = "TB";
     char size[24];
-    if (fabs(keep - floor(keep + 0.5)) < 0.05) snprintf(size, sizeof size, "%.0f %s", keep, unit);
-    else snprintf(size, sizeof size, "%.1f %s", keep, unit);
-    if (dollars <= 0) snprintf(out, cap, "Free: %s", size);
-    else snprintf(out, cap, "%s%.2f a month: %s", opt_usd(), dollars, size);
+    opt_gb(dollars / R2_PRICE_GB, size, sizeof size);
+    if (dollars <= 0) snprintf(out, cap, "None: the free space only");
+    else snprintf(out, cap, "%s%.2f a month: %s more", opt_usd(), dollars, size);
 }
 
 // A count with thousands commas: 1,204
@@ -2739,9 +2745,58 @@ static void opt_reads_row()
     opt_row_end();
 }
 
-// The budget being picked, -1 for none: a draft the Space bar previews until Save writes it to r2_budget and the
-// bucket is cleaned up to it, or the undo button drops it.
-static f32 g_budget_draft = -1;
+// The budget and space being picked, -1 for none: drafts the Space bar previews until Save writes them to r2_budget
+// or r2_space_gb and the bucket is cleaned up to them, or the undo button drops them.
+static f32 g_budget_draft = -1, g_space_draft = -1;
+
+// Space for Rekodr: a slider over the free 10 GB, with the player's value or, until they move it, the default
+// (r2_space_default, marked on the track). What the account's other buckets hold is grey at the track's right end.
+// Save and undo sit in the same slots as the budget's.
+static void opt_space_gb_row()
+{
+    Config &c = g_app.config;
+    f32 &draft = g_space_draft;
+    i64 others = r2_others_now();
+    f32 deflt = (f32)((f64)r2_space_default(others) / (f64)R2_GB);
+    f32 saved = c.r2_space_gb >= 0 ? c.r2_space_gb : deflt;
+    if (draft >= 0 && c.r2_space_gb >= 0 && fabsf(draft - c.r2_space_gb) < 0.05f && !ImGui::IsAnyItemActive())
+        draft = -1;
+    f32 shown = draft >= 0 ? draft : saved;
+    bool dirty = draft >= 0 && (c.r2_space_gb < 0 || fabsf(draft - c.r2_space_gb) >= 0.05f);
+    char size[24], free_gb[24], label[96];
+    opt_gb(shown, size, sizeof size);
+    opt_gb(R2_FREE_GB, free_gb, sizeof free_gb);
+    if (draft >= 0 || c.r2_space_gb >= 0) snprintf(label, sizeof label, "%s of the free %s", size, free_gb);
+    else if (others >= 0) snprintf(label, sizeof label, "%s: what other buckets leave", size);
+    else snprintf(label, sizeof label, "%s until the account is read", size);
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), save_w = dp(72);
+    f32 slider_w = cw - save_w - fh - 2 * gap;
+    opt_row_begin("Space for Rekodr", label, cw);
+    f32 x = g_row.x1 - cw, y = opt_row_frame_y(), top = (f32)R2_FREE_GB;
+    f32 v = fminf(fmaxf(shown, 0), top);
+    ImVec2 at(x, floorf(y + (fh - dp(24)) / 2));
+    ImGui::SetCursorScreenPos(at);
+    if (lib_slider("##r2space", &v, 0, top, slider_w, dp(24), c.r2_space_gb >= 0 || draft >= 0 ? deflt : -1e9f))
+        draft = floorf(v * 10 + 0.5f) / 10;
+    if (others > 0) {
+        // The same track ends as lib_slider's: inside its knob padding
+        f32 pad = kit_px(7), x0 = at.x + pad, x1 = at.x + slider_w - pad, cy = floorf(at.y + dp(24) / 2), th = kit_px(4);
+        f32 gx = x1 - (x1 - x0) * fminf(1.f, (f32)((f64)others / (f64)R2_GB / top));
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(gx, cy - th / 2), ImVec2(x1, cy + th / 2), col32(COL_FAINT), th);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(x + slider_w + gap, y));
+    if (kit_button("Save##r2spacesave", KIT_PRIMARY, ImVec2(save_w, 0), dirty)) {
+        c.r2_space_gb = draft;
+        draft = -1;
+        log_line("options: R2 space %.1f GB", c.r2_space_gb);
+        options_apply(0);
+        r2_cleanup_now();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
+    kit_next_tip("Put it back");
+    if (kit_icon_button(ICON_UNDO, "##r2spaceundo", KIT_GHOST, dirty)) draft = -1;
+    opt_row_end();
+}
 
 // The budget: a slider (R2_BUDGET_TOP above), a box for an exact amount, then Save and undo, all in fixed slots.
 static void opt_budget_row()
@@ -3461,8 +3516,11 @@ static void options_sharing()
         opt_row_end();
     }
 
+    opt_space_gb_row();
     opt_budget_row();
-    opt_space_row(r2_limit_for_budget(g_budget_draft >= 0 ? g_budget_draft : c.r2_budget), g_budget_draft >= 0);
+    opt_space_row(r2_cap_for(g_budget_draft >= 0 ? g_budget_draft : c.r2_budget,
+                             g_space_draft >= 0 ? g_space_draft : c.r2_space_gb, r2_others_now()),
+                  g_budget_draft >= 0 || g_space_draft >= 0);
     opt_reads_row();
 
     // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made
