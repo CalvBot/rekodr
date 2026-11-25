@@ -4410,12 +4410,26 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         fmt_time(it.info.duration, text, sizeof text);
         badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, text);
     }
-    // Bottom left, where nothing else goes: edited in Advanced mode
-    if (lib_is_advanced(it)) badge(dl, ImVec2(t0.x + kit_px(8), t1.y - kit_px(10)), false, true, "Advanced");
-    // Along the top edge while its playable copy is being made (render.cpp): a thin bar of how far it's got. Waiting
-    // its turn, the empty track alone.
+    // Bottom left, where nothing else goes: edited in Advanced mode, then a round badge while its playable copy is
+    // being made (render.cpp): an accent arc turning while it renders, a still faint ring while it waits its turn.
+    f32 bx = t0.x + kit_px(8);
+    if (lib_is_advanced(it)) bx += badge(dl, ImVec2(bx, t1.y - kit_px(10)), false, true, "Advanced") + kit_px(4);
     f32 rf = render_progress(it.key);
-    if (rf < 0 && render_waiting(it.key)) rf = 0;
+    bool rendering = rf >= 0;
+    if (!rendering && render_waiting(it.key)) rf = 0;
+    if (rf >= 0) {
+        f32 br = (g_font_small->FontSize + kit_px(4)) / 2, ar = br - kit_px(4);
+        ImVec2 bc(floorf(bx + br), floorf(t1.y - kit_px(10) - br));
+        dl->AddCircleFilled(bc, br, IM_COL32(0, 0, 0, 192), 24);
+        dl->AddCircle(bc, ar, col32(0xffffff, rendering ? 0.2f : 0.45f), 24, kit_px(1.5f));
+        if (rendering) {
+            f32 a0 = (f32)fmod(ImGui::GetTime() * 2.5, 2 * IM_PI);
+            dl->PathArcTo(bc, ar, a0, a0 + IM_PI * 0.7f, 16);
+            dl->PathStroke(col32(COL_ACCENT), 0, kit_px(1.5f));
+        }
+    }
+    // Along the top edge while its playable copy is being made: a thin bar of how far it's got. Waiting its turn, the
+    // empty track alone.
     if (rf >= 0) {
         f32 eh = kit_px(3);
         dl->PushClipRect(t0, ImVec2(t1.x, t0.y + eh), true);
