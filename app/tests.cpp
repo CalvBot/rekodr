@@ -534,6 +534,35 @@ static void test_watch_scan()
     SHFileOperationW(&op);
 }
 
+static void test_backup_places()
+{
+    const char *info = "{\"personal\": {\"path\": \"C:\\\\Users\\\\me\\\\Dropbox\", \"host\": 1, \"is_team\": false},"
+                       " \"business\": {\"path\": \"D:\\\\Dropbox (Work)\"}}";
+    static char paths[2][MAX_PATH * 3];
+    const char *names[2];
+    T(backup_dropbox_paths(info, (i64)strlen(info), paths, names) == 2 && !strcmp(paths[0], "C:\\Users\\me\\Dropbox") &&
+      !strcmp(names[0], "Dropbox") && !strcmp(paths[1], "D:\\Dropbox (Work)") && !strcmp(names[1], "Dropbox (work)"));
+    const char *one = "{\"business\": {\"path\": \"E:\\\\Box\"}}";
+    T(backup_dropbox_paths(one, (i64)strlen(one), paths, names) == 1 && !strcmp(names[0], "Dropbox (work)"));
+    T(backup_dropbox_paths("{}", 2, paths, names) == 0);
+
+    wchar_t d[MAX_PATH];
+    backup_mount_dir(L"g", d, MAX_PATH);
+    T(!wcscmp(d, L"G:\\"));
+    backup_mount_dir(L"G:", d, MAX_PATH);
+    T(!wcscmp(d, L"G:\\"));
+    backup_mount_dir(L"G:\\", d, MAX_PATH);
+    T(!wcscmp(d, L"G:\\"));
+    backup_mount_dir(L"D:\\Google Drive", d, MAX_PATH);
+    T(!wcscmp(d, L"D:\\Google Drive"));
+
+    BackupPlace p = {};
+    wcscpy_s(p.dir.s, L"G:\\My Drive");
+    T(!wcscmp(backup_place_target(p).s, L"G:\\My Drive\\" APP_NAME));
+    wcscpy_s(p.dir.s, L"N:\\");
+    T(!wcscmp(backup_place_target(p).s, L"N:\\" APP_NAME));
+}
+
 static void test_backup()
 {
     wchar_t temp[MAX_PATH];
@@ -3713,6 +3742,7 @@ int main()
     test_first_run();
     test_telemetry();
     test_backup();
+    test_backup_places();
     test_buffer_many();
     test_erase();
     test_save_names();

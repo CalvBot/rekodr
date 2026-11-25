@@ -4747,6 +4747,38 @@ static void options_general()
         options_apply(0);
         if (c.backup_on) backup_now();
     }
+    {
+        // Cloud folders and network drives on this PC, looked for when this section comes into view
+        static BackupPlace places[8];
+        static i32 n_places, seen_frame;
+        i32 frame_now = ImGui::GetFrameCount();
+        if (!seen_frame || frame_now - seen_frame > 1) n_places = backup_places(places, COUNT(places));
+        seen_frame = frame_now;
+        if (n_places) {
+            f32 gap = kit_px(6), w = 0, max_w = opt_wide_w();
+            i32 shown = 0;
+            for (i32 i = 0; i < n_places; i++) {
+                f32 cw = ImGui::CalcTextSize(places[i].name).x + 2 * kit_px(14);
+                if (w + (shown ? gap : 0) + cw > max_w) break;
+                w += (shown ? gap : 0) + cw;
+                shown++;
+            }
+            opt_row_begin("Found on this PC", 0, w);
+            for (i32 i = 0; i < shown; i++) {
+                Path target = backup_place_target(places[i]);
+                char id[96];
+                snprintf(id, sizeof id, "%s##bkplace%d", places[i].name, i);
+                if (i) ImGui::SameLine(0, gap);
+                if (kit_chip(id, !_wcsicmp(c.backup_dir.s, target.s))) {
+                    c.backup_dir = target;
+                    log_line("options: backup folder %ls (%s)", target.s, places[i].name);
+                    options_apply(0);
+                    if (c.backup_on) backup_now();
+                }
+            }
+            opt_row_end();
+        }
+    }
     if (opt_row_toggle("Clips too", "Not only sessions", "##backupclips", &c.backup_clips)) {
         log_line("options: backup clips %s", c.backup_clips ? "on" : "off");
         options_apply(0);

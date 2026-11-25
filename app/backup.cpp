@@ -296,3 +296,145 @@ static void backup_status(char *out, i32 cap)
     }
     LeaveCriticalSection(&g_backup.lock);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Places found on this PC for the backup, offered as picks in Options: the Google Drive, OneDrive and Dropbox
+// folders their desktop apps sync, from those apps' own registry keys and files (nothing is signed in to), and
+// mapped network drives (a NAS). A pick backs up into an APP_NAME folder there.
+
+#pragma comment(lib, "mpr.lib")
+
+struct BackupPlace {
+    char name[64];
+    Path dir;
+};
+
+static bool backup_dir_exists(const wchar_t *p)
+{
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static void backup_place_add(BackupPlace *out, i32 cap, i32 *n, const char *name, const wchar_t *dir)
+{
+    if (*n >= cap || !dir[0]) return;
+    for (i32 i = 0; i < *n; i++)
+        if (!_wcsicmp(out[i].dir.s, dir)) return;
+    str_set(out[*n].name, name);
+    swprintf(out[*n].dir.s, COUNT(out[*n].dir.s), L"%s", dir);
+    size_t l = wcslen(out[*n].dir.s);
+    if (l > 3 && out[*n].dir.s[l - 1] == '\\') out[*n].dir.s[l - 1] = 0;
+    (*n)++;
+}
+
+// Google Drive's mount point as its setting holds it ("G", "G:" or a folder) as a folder: "G:\".
+static void backup_mount_dir(const wchar_t *v, wchar_t *out, i32 cap)
+{
+    if (iswalpha(v[0]) && (!v[1] || (v[1] == ':' && (!v[2] || (v[2] == '\\' && !v[3]))))) swprintf(out, cap, L"%c:\\", towupper(v[0]));
+    else swprintf(out, cap, L"%s", v);
+}
+
+// Dropbox's info.json: {"personal": {"path": ...}, "business": {"path": ...}}. Returns how many it holds.
+static i32 backup_dropbox_paths(const char *json, i64 len, char (*out)[MAX_PATH * 3], const char **names)
+{
+    static const char *const keys[2] = {"personal.path", "business.path"};
+    static const char *const shown[2] = {"Dropbox", "Dropbox (work)"};
+    i32 n = 0;
+    for (i32 i = 0; i < 2; i++)
+        if (j_get(json, len, keys[i], out[n], MAX_PATH * 3)) names[n++] = shown[i];
+    return n;
+}
+
+static i32 backup_places(BackupPlace *out, i32 cap)
+{
+    i32 n = 0;
+    wchar_t v[MAX_PATH], dir[MAX_PATH];
+
+    // Google Drive for desktop: its mount point setting, else a drive it has mounted (named "Google Drive")
+    bool drive = false;
+    static const HKEY roots[2] = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    for (i32 r = 0; r < 2 && !drive; r++) {
+        DWORD bytes = sizeof v;
+        if (RegGetValueW(roots[r], L"Software\\Google\\DriveFS", L"DefaultMountPoint", RRF_RT_REG_SZ, 0, v, &bytes) == ERROR_SUCCESS && v[0]) {
+            backup_mount_dir(v, dir, MAX_PATH);
+            drive = backup_dir_exists(dir);
+        }
+    }
+    DWORD letters = GetLogicalDrives();
+    for (i32 d = 0; d < 26 && !drive; d++) {
+        if (!(letters & (1u << d))) continue;
+        wchar_t root[4] = {(wchar_t)('A' + d), ':', '\\', 0};
+        UINT type = GetDriveTypeW(root);
+        if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE) continue;
+        wchar_t label[64] = L"";
+        if (GetVolumeInformationW(root, label, COUNT(label), 0, 0, 0, 0, 0) && !_wcsicmp(label, L"Google Drive")) {
+            wcscpy_s(dir, root);
+            drive = true;
+        }
+    }
+    if (drive) {
+        wchar_t mine[MAX_PATH];
+        swprintf(mine, MAX_PATH, L"%s%sMy Drive", dir, dir[wcslen(dir) - 1] == '\\' ? L"" : L"\\");
+        backup_place_add(out, cap, &n, "Google Drive", backup_dir_exists(mine) ? mine : dir);
+    }
+
+    // OneDrive: each account's folder
+    HKEY accounts;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\OneDrive\\Accounts", 0, KEY_READ, &accounts) == ERROR_SUCCESS) {
+        wchar_t sub[128];
+        for (DWORD i = 0; RegEnumKeyW(accounts, i, sub, COUNT(sub)) == ERROR_SUCCESS; i++) {
+            DWORD bytes = sizeof v;
+            if (RegGetValueW(accounts, sub, L"UserFolder", RRF_RT_REG_SZ, 0, v, &bytes) != ERROR_SUCCESS || !backup_dir_exists(v)) continue;
+            backup_place_add(out, cap, &n, _wcsnicmp(sub, L"Business", 8) ? "OneDrive" : "OneDrive (work)", v);
+        }
+        RegCloseKey(accounts);
+    }
+
+    // Dropbox: info.json in either AppData folder
+    static const wchar_t *const appdata[2] = {L"LOCALAPPDATA", L"APPDATA"};
+    for (i32 a = 0; a < 2; a++) {
+        wchar_t base[MAX_PATH], info[MAX_PATH];
+        if (!GetEnvironmentVariableW(appdata[a], base, MAX_PATH)) continue;
+        swprintf(info, MAX_PATH, L"%s\\Dropbox\\info.json", base);
+        FILE *f = _wfopen(info, L"rb");
+        if (!f) continue;
+        char json[8192];
+        size_t len = fread(json, 1, sizeof json - 1, f);
+        fclose(f);
+        json[len] = 0;
+        static char paths[2][MAX_PATH * 3];
+        const char *names[2];
+        i32 k = backup_dropbox_paths(json, (i64)len, paths, names);
+        for (i32 i = 0; i < k; i++) {
+            utf8_to_wide(paths[i], v, MAX_PATH);
+            if (backup_dir_exists(v)) backup_place_add(out, cap, &n, names[i], v);
+        }
+    }
+
+    // Mapped network drives, named after their share; not touched (one that's offline would hang a moment)
+    for (i32 d = 0; d < 26; d++) {
+        if (!(letters & (1u << d))) continue;
+        wchar_t root[4] = {(wchar_t)('A' + d), ':', '\\', 0}, local[3] = {(wchar_t)('A' + d), ':', 0};
+        if (GetDriveTypeW(root) != DRIVE_REMOTE) continue;
+        wchar_t unc[MAX_PATH] = L"";
+        DWORD ul = MAX_PATH;
+        char name[64];
+        if (WNetGetConnectionW(local, unc, &ul) == NO_ERROR && unc[0]) {
+            const wchar_t *share = wcsrchr(unc, '\\');
+            snprintf(name, sizeof name, "%ls (%c:)", share && share[1] ? share + 1 : unc, 'A' + d);
+        } else {
+            snprintf(name, sizeof name, "%c:", 'A' + d);
+        }
+        backup_place_add(out, cap, &n, name, root);
+    }
+    return n;
+}
+
+// The folder a pick backs up into: <place>\APP_NAME.
+static Path backup_place_target(const BackupPlace &p)
+{
+    Path t;
+    size_t l = wcslen(p.dir.s);
+    swprintf(t.s, COUNT(t.s), L"%s%s%hs", p.dir.s, l && p.dir.s[l - 1] == '\\' ? L"" : L"\\", APP_NAME);
+    return t;
+}
