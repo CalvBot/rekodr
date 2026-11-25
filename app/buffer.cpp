@@ -11,8 +11,8 @@
 //   buffer\activity.tsv               "us<TAB>exe" per change of the game being played (empty exe = desktop)
 //   buffer\focus.tsv                  "us<TAB>exe" per change of the program in front, whatever it is
 //
-// Every time is wall-clock us, so video and every audio stream line up. Files are only read, never changed:
-// ffmpeg may be writing them right now.
+// Every time is wall-clock us, so video and every audio stream line up. Files are only read here: ffmpeg may be
+// writing them right now. The pruner (recorder.cpp) and Delete footage (erase.cpp) change them.
 
 static i64 filetime_to_us(FILETIME ft)
 {

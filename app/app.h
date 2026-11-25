@@ -879,6 +879,10 @@ struct Timeline {
     i64           pending_key, failed_key, shown_key;
     char          session_name[128];
     u32           job;          // the last save started here
+    // Delete footage (erase.cpp): the selection asked about, then deleted
+    bool          erase_ask;    // open the confirm next frame
+    bool          erase_open;   // the confirm is showing: the selection is drawn red
+    u8            erase_step;   // TL_ERASE_*
     bool          job_edit;     // open the editor when it's done
     // Share (timeline.cpp): the range saved as a clip (job), read, then shared (share, a share_start job)
     u8            share_step;       // TL_SHARE_*

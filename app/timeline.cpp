@@ -19,6 +19,8 @@ enum TimelineEventKind : i64 {
     TL_EV_PREVIEW, // a frame (or a failure) is waiting in g_tl
 };
 
+enum { TL_ERASE_NONE, TL_ERASE_RUNNING, TL_ERASE_DONE, TL_ERASE_FAILED }; // Timeline::erase_step
+
 enum { TL_FRAME_W = 640, TL_FRAME_H = 360, TL_FRAME_BYTES = TL_FRAME_W * TL_FRAME_H * 4 };
 
 static const i64 TL_SEC = 1000000;
@@ -48,6 +50,7 @@ struct TlShared {
     CONDITION_VARIABLE index_wake, preview_wake, batch_wake;
     HANDLE             index_thread, preview_thread; // started on first use; main thread only
     bool               index_want;
+    bool               index_full; // the next read is a whole one: footage was deleted mid-run (erase.cpp)
     Path               buffer_dir;
     BufferIdx         *spare; // the block the worker fills next; 0 while it's filling it
     BufferIdx         *ready; // filled, not taken by the main thread yet
@@ -88,11 +91,13 @@ static DWORD WINAPI tl_index_thread(void *)
         BufferIdx *b = g_tl.spare, *last = g_tl.last;
         g_tl.spare = 0;
         g_tl.index_want = false;
+        bool whole = g_tl.index_full;
+        g_tl.index_full = false;
         dir = g_tl.buffer_dir;
         ReleaseSRWLockExclusive(&g_tl.lock);
 
         u64 started = GetTickCount64();
-        bool same = last && !_wcsicmp(dir.s, last_dir.s), full = true;
+        bool same = last && !whole && !_wcsicmp(dir.s, last_dir.s), full = true;
         buffer_read(dir, b, same ? last : 0, &full);
         u64 ms = GetTickCount64() - started;
         if (!last) last = tl_alloc_idx();
@@ -334,11 +339,10 @@ static void timeline_review(i64 from_us, i64 to_us, const char *name)
     ui_wake(4);
 }
 
-// Frees the index blocks and preview textures while the screen isn't shown (SPEC: hidden, the window holds nothing).
-static void tl_release()
+// Lets go of the preview textures, and of the frames asked for and not read yet.
+static void tl_frames_drop()
 {
     Timeline &tl = g_app.timeline;
-    tl_play_stop();
     for (i32 i = 0; i < COUNT(tl.frames); i++) {
         if (tl.frames[i].srv) tl.frames[i].srv->Release();
         tl.frames[i] = {};
@@ -356,6 +360,14 @@ static void tl_release()
     g_tl.batch_n = 0;
     ReleaseSRWLockExclusive(&g_tl.lock);
     g_tl_batch_failed_n = 0;
+}
+
+// Frees the index blocks and preview textures while the screen isn't shown (SPEC: hidden, the window holds nothing).
+static void tl_release()
+{
+    Timeline &tl = g_app.timeline;
+    tl_play_stop();
+    tl_frames_drop();
     if (!tl.idx) return;
     AcquireSRWLockExclusive(&g_tl.lock);
     BufferIdx *spare = g_tl.spare, *ready = g_tl.ready, *last = g_tl.last;
@@ -959,9 +971,54 @@ static bool tl_save(SaveKind kind, bool edit)
     tl.job = id;
     tl.job_edit = edit;
     if (tl.share_step >= TL_SHARE_DONE) tl.share_step = TL_SHARE_NONE; // the status shows this save now
+    tl.erase_step = TL_ERASE_NONE;
     log_line("timeline: save %u queued (%s%s, %.1f s)", id, kind == SAVE_SESSION ? "session" : "clip",
              edit ? ", then edit" : "", (f64)(tl.sel_out - tl.sel_in) / 1e6);
     return true;
+}
+
+static void tl_clock(i64 us, bool secs, char *out, i32 cap);
+static void tl_length(i64 us, char *out, i32 cap);
+
+// Delete footage: a confirm over the window naming the selection, which shows red behind it. Delete for good hands
+// it to erase.cpp; until then nothing is touched.
+static void tl_erase_dialog()
+{
+    Timeline &tl = g_app.timeline;
+    bool has_sel = tl.sel_in && tl.sel_out > tl.sel_in;
+    if (tl.erase_ask && has_sel && !tl.job_edit) ImGui::OpenPopup("Delete footage");
+    tl.erase_ask = false;
+    tl.erase_open = false;
+    if (!lib_dialog_begin("Delete footage")) return;
+    tl.erase_open = has_sel;
+    char a[16], z[16], len[32], range[96];
+    tl_clock(tl.sel_in, true, a, sizeof a);
+    tl_clock(tl.sel_out, true, z, sizeof z);
+    tl_length(tl.sel_out - tl.sel_in, len, sizeof len);
+    snprintf(range, sizeof range, "%s - %s   %s", a, z, len);
+    i32 b = lib_confirm("Delete footage?", range, "The video and sound recorded then are gone for good. Saved clips stay.",
+                        0, 0, false, ICON_DELETE "  Delete for good", KIT_DANGER);
+    bool close = b == -1 || ImGui::IsKeyPressed(ImGuiKey_Escape) || !has_sel;
+    if (b == 1 && has_sel) {
+        Path ffmpeg = {};
+        if (!ffmpeg_find(g_app.config.ffmpeg, &ffmpeg)) ffmpeg = {};
+        Path posters = path_join(path_join(g_app.paths.local_dir, L"thumbs"), L"posters");
+        tl_play_stop(); // its pieces are made from this footage
+        if (erase_start(g_app.config.buffer_dir, ffmpeg, posters, tl.sel_in, tl.sel_out)) {
+            log_line("timeline: deleting %s", range);
+            tl.erase_step = TL_ERASE_RUNNING;
+            tl.sel_in = tl.sel_out = 0;
+        } else {
+            tl.erase_step = TL_ERASE_FAILED;
+        }
+        if (tl.share_step >= TL_SHARE_DONE) tl.share_step = TL_SHARE_NONE; // the status shows this now
+        close = true;
+    }
+    if (close) {
+        tl.erase_open = false;
+        ImGui::CloseCurrentPopup();
+    }
+    lib_dialog_end();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1404,6 +1461,7 @@ static void tl_keys(i64 now)
         tl_quick_done();
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) tl_quick_done();
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && tl.sel_in && tl.sel_out > tl.sel_in) tl.erase_ask = true;
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) tl_play_toggle();
     i64 centre = tl.view_end_us - tl.view_span_us / 2;
     if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd)) tl_zoom(0.5, centre, now);
@@ -1626,6 +1684,24 @@ static const TlPeaks *tl_peaks(const BufferIdx &b, const AudioStreamInfo &info, 
     CloseHandle(h);
     (void)b;
     return p;
+}
+
+// Footage was deleted (erase.cpp): the next read is a whole one, and the frames and waveforms are read again.
+static void timeline_on_erase(const Event &e)
+{
+    Timeline &tl = g_app.timeline;
+    AcquireSRWLockExclusive(&g_tl.lock);
+    g_tl.index_full = true;
+    ReleaseSRWLockExclusive(&g_tl.lock);
+    tl_frames_drop();
+    for (TlPeaks &q : g_tl_peaks) {
+        free(q.v);
+        free(q.coarse);
+        q = {};
+    }
+    if (tl.idx) tl_ask_index();
+    if (e.b && tl.erase_step == TL_ERASE_RUNNING) tl.erase_step = TL_ERASE_DONE;
+    ui_wake(2);
 }
 
 // The loudest of a stream's peaks from a to z (wall clock), 0..1 as drawn
@@ -2440,6 +2516,18 @@ static void screen_timeline()
         bool idle = bar_hovered && tl.drag == TL_DRAG_NONE;
         wa_draw_inout(dl, tl_x(c, tl.sel_in), tl_x(c, tl.sel_out), y_ruler, y_tracks, y_bottom,
                       tl.drag == TL_DRAG_IN || (idle && near_in), tl.drag == TL_DRAG_OUT || (idle && near_out));
+        // Asked to delete it: red and hatched on every row until the confirm closes
+        if (tl.erase_open) {
+            f32 xa = ImMax(tl_x(c, tl.sel_in), c.x0), xb = ImMin(tl_x(c, tl.sel_out), c.x1);
+            if (xb > xa) {
+                dl->AddRectFilled(ImVec2(xa, y_tracks), ImVec2(xb, y_bottom), col32(COL_RED, 0.28f));
+                dl->PushClipRect(ImVec2(xa, y_tracks), ImVec2(xb, y_bottom), true);
+                f32 step = 10 * s, hgt = y_bottom - y_tracks;
+                for (f32 x = xa - hgt; x < xb; x += step)
+                    dl->AddLine(ImVec2(x, y_bottom), ImVec2(x + hgt, y_tracks), col32(COL_RED, 0.45f), 1.5f * s);
+                dl->PopClipRect();
+            }
+        }
     }
 
     // Markers: a diamond on the ruler in the marker's colour (the playhead's is a white triangle), bigger when picked
@@ -2679,9 +2767,9 @@ static void screen_timeline()
         }
         x = ImGui::GetItemRectMax().x + 18 * s;
 
-        // The saves, on the right. Share's arrow (or a right-click) picks the link's host.
+        // The saves, on the right, then Delete footage. Share's arrow (or a right-click) picks the link's host.
         f32 w1 = 104 * s, w4 = 112 * s, w2 = 124 * s, w3 = 108 * s;
-        f32 xr = top.x + avail.x - (w1 + w4 + w2 + w3 + 3 * bgap);
+        f32 xr = top.x + avail.x - (w1 + w4 + w2 + w3 + fh + 4 * bgap);
         ImGui::SetCursorScreenPos(ImVec2(xr, ty));
         if (kit_button(ICON_SAVE "  Save clip", KIT_PRIMARY, ImVec2(w1, 0), can)) {
             tl_save(SAVE_CLIP, false);
@@ -2722,6 +2810,10 @@ static void screen_timeline()
         ImGui::SameLine(0, bgap);
         ImVec2 ses_pos = ImGui::GetCursorScreenPos();
         if (kit_button(ICON_GAME "  Session...", KIT_SECONDARY, ImVec2(w3, 0), can)) ImGui::OpenPopup("##session");
+        ImGui::SameLine(0, bgap);
+        kit_next_tip("Delete footage", "Delete");
+        if (kit_icon_button(ICON_DELETE, "##erase", KIT_GHOST, has_sel && !busy)) tl.erase_ask = true;
+        tl_erase_dialog();
 
         // The selection: start, end and length, and a button to clear it
         char sel_max[48];
@@ -2769,6 +2861,10 @@ static void screen_timeline()
             ink = COL_WARN;
         } else if (pl.open && !pl.loaded) {
             str_set(status, "Opening...");
+        } else if (tl.erase_step != TL_ERASE_NONE) {
+            if (tl.erase_step == TL_ERASE_RUNNING) str_set(status, "Deleting footage...");
+            else if (tl.erase_step == TL_ERASE_DONE) str_set(status, "Footage deleted"), icon = ICON_CHECK, ink = COL_OK;
+            else str_set(status, "Too many deletes waiting; try again"), icon = ICON_WARNING, ink = COL_RED;
         } else if (tl.share_step != TL_SHARE_NONE) {
             str_set(status, tl.share_line);
             if (tl.share_step == TL_SHARE_DONE) icon = ICON_CHECK, ink = COL_OK;

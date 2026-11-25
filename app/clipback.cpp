@@ -80,6 +80,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "pipe.cpp"
 #include "buffer.cpp"
 #include "save.cpp"
+#include "erase.cpp"
 #include "r2.cpp"
 #include "share.cpp"
 #include "hotkeys.cpp"

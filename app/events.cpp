@@ -15,6 +15,7 @@ enum EventKind : u8 {
     EV_TIMELINE,
     EV_GAMEDB,  // gamedb.cpp: the games list was loaded (b: how many), or art that was asked for has arrived
     EV_R2,      // r2.cpp: a link job or the bucket test moved on
+    EV_ERASE,   // erase.cpp: footage was deleted from the buffer (b = 1: the stretch is done)
 };
 
 struct Event {

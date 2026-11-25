@@ -363,6 +363,127 @@ static void test_buffer_many()
     T(SHFileOperationW(&op) == 0);
 }
 
+// Delete footage (erase.cpp): video segments over the stretch go, sound over it is silenced exactly, the rest stays.
+static void test_erase()
+{
+    Path ffmpeg = {};
+    if (!ffmpeg_find(Path{}, &ffmpeg)) {
+        printf("test_erase: no ffmpeg, skipped\n");
+        return;
+    }
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path root = {};
+    swprintf(root.s, MAX_PATH, L"%sclipback-test-erase-%u", temp, GetCurrentProcessId());
+    Path run = path_join(path_join(root, L"video"), L"run1"), stream = path_join(path_join(root, L"audio"), L"s1_mic_0");
+    Path posters = path_join(root, L"posters");
+    SHCreateDirectoryExW(0, run.s, 0);
+    SHCreateDirectoryExW(0, stream.s, 0);
+    CreateDirectoryW(posters.s, 0);
+    auto put = [](const Path &p, const char *text) {
+        FILE *f = _wfopen(p.s, L"wb");
+        if (f) { fputs(text, f); fclose(f); }
+    };
+    // 30 s of a tone, as the recorder writes it: 10 s Opus segments whose timestamps carry on from the start
+    const i64 t0 = 1700000000000000ll;
+    char text[256];
+    snprintf(text, sizeof text, "{\"kind\":\"mic\",\"exe\":\"mic\",\"start_us\":%lld}", t0);
+    put(path_join(stream, L"meta.json"), text);
+    wchar_t args[2048] = {};
+    static const char *const gen[] = {"-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i",
+                                      "sine=frequency=440:duration=30:sample_rate=48000", "-ac", "2", "-c:a", "libopus",
+                                      "-b:a", "128k", "-f", "segment", "-segment_time", "10", "-segment_format",
+                                      "matroska", "-reset_timestamps", "0", "-segment_list_type", "csv", "-segment_list"};
+    arg_list(args, COUNT(args), gen, COUNT(gen));
+    cmd_arg(args, COUNT(args), path_join(stream, L"list.csv").s);
+    cmd_arg(args, COUNT(args), path_join(stream, L"a_%05d.mka").s);
+    T(proc_run(ffmpeg.s, args, 60000, 0, 0) == 0);
+    u8 peaks[300];
+    memset(peaks, 200, sizeof peaks);
+    FILE *pf = _wfopen(path_join(stream, L"peaks.bin").s, L"wb");
+    if (pf) { fwrite(peaks, 1, sizeof peaks, pf); fclose(pf); }
+    // 15 video segments of 2 s (their content isn't read)
+    snprintf(text, sizeof text, "%lld", t0);
+    put(path_join(run, L"anchor.txt"), text);
+    static char list[2048];
+    list[0] = 0;
+    for (i32 k = 0; k < 15; k++) {
+        wchar_t seg[32];
+        swprintf(seg, 32, L"v_%05d.mkv", k);
+        put(path_join(run, seg), "x");
+        char line[64];
+        snprintf(line, sizeof line, "v_%05d.mkv,%d.000000,%d.000000\n", k, k * 2, k * 2 + 2);
+        strcat(list, line);
+    }
+    put(path_join(run, L"list.csv"), list);
+    wchar_t pname[64];
+    swprintf(pname, COUNT(pname), L"p-%016llx.jpg", (u64)(t0 + 12000000));
+    put(path_join(posters, pname), "x");
+
+    // 13 s to 15.5 s: video segments 6 and 7 (12-16 s) go; sound segment 1 (10-20 s) is silent from 13 s to 15.5 s
+    EraseJob j = {};
+    j.from_us = t0 + 13000000;
+    j.to_us = t0 + 15500000;
+    j.buffer_dir = root;
+    j.ffmpeg = ffmpeg;
+    j.posters = posters;
+    BufferIdx *b = (BufferIdx *)calloc(1, sizeof(BufferIdx));
+    EraseDone *done = (EraseDone *)malloc(ERASE_DONE_MAX * sizeof(EraseDone));
+    i32 done_n = 0, videos = 0;
+    bool open = true;
+    u64 before0 = 0, before1 = 0;
+    {
+        WIN32_FILE_ATTRIBUTE_DATA a = {};
+        if (GetFileAttributesExW(path_join(stream, L"a_00000.mka").s, GetFileExInfoStandard, &a)) before0 = a.nFileSizeLow;
+        if (GetFileAttributesExW(path_join(stream, L"a_00001.mka").s, GetFileExInfoStandard, &a)) before1 = a.nFileSizeLow;
+    }
+    T(erase_pass(j, b, done, &done_n, &videos, &open));
+    T(!open && videos == 2 && done_n == 1 && !strcmp(done[0].name, "a_00001.mka"));
+    T(!file_exists(path_join(run, L"v_00006.mkv").s) && !file_exists(path_join(run, L"v_00007.mkv").s));
+    T(file_exists(path_join(run, L"v_00005.mkv").s) && file_exists(path_join(run, L"v_00008.mkv").s));
+    T(!file_exists(path_join(posters, pname).s));
+    T(buffer_read(root, b) && b->seg_count == 13 && b->audio_seg_count >= 3);
+    {
+        WIN32_FILE_ATTRIBUTE_DATA a = {};
+        T(GetFileAttributesExW(path_join(stream, L"a_00000.mka").s, GetFileExInfoStandard, &a) && a.nFileSizeLow == before0);
+        T(GetFileAttributesExW(path_join(stream, L"a_00001.mka").s, GetFileExInfoStandard, &a) && a.nFileSizeLow != before1);
+    }
+    // The loudest sound in the stretch, and either side of it
+    auto loudest = [&](f64 a, f64 z) {
+        wchar_t c[2048] = {};
+        static const char *const head[] = {"-hide_banner", "-nostdin", "-copyts", "-i"};
+        arg_list(c, COUNT(c), head, COUNT(head));
+        cmd_arg(c, COUNT(c), path_join(stream, L"a_00001.mka").s);
+        arg_pair(c, COUNT(c), "-af", "atrim=start=%.3f:end=%.3f,volumedetect", a, z);
+        cmd_arg8(c, COUNT(c), "-f");
+        cmd_arg8(c, COUNT(c), "null");
+        cmd_arg8(c, COUNT(c), "-");
+        static char out[16384];
+        proc_run(ffmpeg.s, c, 60000, out, sizeof out);
+        const char *m = strstr(out, "max_volume:");
+        return m ? atof(m + 11) : 0.0;
+    };
+    T(loudest(13.1, 15.4) < -80);
+    T(loudest(11.0, 12.8) > -40);
+    T(loudest(15.7, 19.0) > -40);
+    FILE *rf = _wfopen(path_join(stream, L"peaks.bin").s, L"rb");
+    if (rf) { fread(peaks, 1, sizeof peaks, rf); fclose(rf); }
+    T(peaks[129] == 200 && peaks[130] == 0 && peaks[154] == 0 && peaks[155] == 200);
+    // Again: nothing more to do
+    T(!erase_pass(j, b, done, &done_n, &videos, &open) && done_n == 1);
+    buffer_idx_free(b);
+    free(b);
+    free(done);
+    SHFILEOPSTRUCTW op = {};
+    static wchar_t from[MAX_PATH + 2];
+    memset(from, 0, sizeof from);
+    wcscpy(from, root.s);
+    op.wFunc = FO_DELETE;
+    op.pFrom = from;
+    op.fFlags = FOF_NO_UI;
+    T(SHFileOperationW(&op) == 0);
+}
+
 static void test_backup()
 {
     wchar_t temp[MAX_PATH];
@@ -3031,6 +3152,7 @@ int main()
     test_telemetry();
     test_backup();
     test_buffer_many();
+    test_erase();
     test_save_names();
     test_buffer_names();
     test_shown_names();

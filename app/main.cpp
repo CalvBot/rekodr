@@ -101,6 +101,12 @@ static void run_command(const char *text)
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]]);
             g_lib_share_ask = !strcmp(arg, "share-menu");
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
+        else if (!strcmp(arg, "erase")) { // the timeline with 20 s selected and its Delete footage confirm
+            ui_show(SCREEN_TIMELINE);
+            g_app.timeline.sel_out = now_us() - 5000000;
+            g_app.timeline.sel_in = g_app.timeline.sel_out - 20000000;
+            g_app.timeline.erase_ask = true;
+        }
         else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
         else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail
             g_app.config.games_collapsed = !strcmp(arg, "list-collapsed");
@@ -173,6 +179,7 @@ static void handle_event(const Event &e)
         telemetry_on_save(e); break;
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
+    case EV_ERASE: timeline_on_erase(e); break;
     case EV_GAMEDB: gamedb_on_event(e); break;
     case EV_R2: r2_on_event(e); library_r2_event(); break;
     default: break;

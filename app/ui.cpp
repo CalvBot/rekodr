@@ -1296,6 +1296,7 @@ static void help_window()
             {"[I] / [O] or [Q] / [E]", "Set the start / end at the playhead"},
             {"Right-click the selection", "Clear in and out"},
             {"[Enter]", "Save the selection as a clip"},
+            {"[Delete]", "Delete the selected footage for good (asks first)"},
             {"[+] / [-]", "Zoom in / out"},
             {"[Home]", "Follow the recording"},
         };

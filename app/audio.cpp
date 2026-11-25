@@ -345,8 +345,9 @@ static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, const c
         w->log = w->peaks = INVALID_HANDLE_VALUE;
         return false;
     }
-    w->peaks = CreateFileW(path_join(dir, L"peaks.bin").s, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, 0,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    // Shared for writing too: Delete footage zeroes stretches of it (erase.cpp)
+    w->peaks = CreateFileW(path_join(dir, L"peaks.bin").s, GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
     w->open = true;
     w->start_us = start_us;
     char name[MAX_PATH * 3];
