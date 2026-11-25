@@ -1919,23 +1919,6 @@ static void top_bar(f32 h)
         dl->AddText(ImVec2(cx + kit_px(10), floorf(cy + (ch - ls.y) / 2)), col32(COL_WARN), label);
     }
 
-    // After an update, until opened: a quiet chip with what this version brought.
-    if (news_unseen()) {
-        char label[64];
-        snprintf(label, sizeof label, ICON_STAR "  What's new in %s", REKODR_VERSION);
-        ImVec2 ls = ImGui::CalcTextSize(label);
-        f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
-        chip_r = cx - kit_px(8);
-        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
-        if (ImGui::InvisibleButton("##news", ImVec2(cw, ch))) {
-            dev_click("top bar", "what's new chip");
-            g_app.ui.news_open = g_app.ui.news_since = true;
-        }
-        bool hot = ImGui::IsItemHovered();
-        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WHITE, hot ? 0.14f : 0.08f), ch / 2);
-        dl->AddText(ImVec2(cx + kit_px(12), floorf(cy + (ch - ls.y) / 2)), col32(hot ? COL_TEXT : COL_DIM), label);
-    }
-
     // A verified update waiting: a quiet chip whose click restarts into it. Restarting stops recording for a few
     // seconds, so it isn't offered while a save or share runs or a game is in front.
     // After a failed restart (this copy carries on), the reason in its place until clicked away.
@@ -1946,6 +1929,7 @@ static void top_bar(f32 h)
         snprintf(label, sizeof label, ICON_WARNING "  Couldn't update: %s", why);
         ImVec2 ls = ImGui::CalcTextSize(label);
         f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
+        chip_r = cx - kit_px(8);
         ImGui::SetCursorScreenPos(ImVec2(cx, cy));
         if (ImGui::InvisibleButton("##updatefail", ImVec2(cw, ch))) apply_failed = false;
         bool hot = ImGui::IsItemHovered();
@@ -1958,10 +1942,29 @@ static void top_bar(f32 h)
         snprintf(label, sizeof label, APP_NAME " %s is ready, restart to update", ver);
         ImVec2 ls = ImGui::CalcTextSize(label);
         f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
+        chip_r = cx - kit_px(8);
         ImGui::SetCursorScreenPos(ImVec2(cx, cy));
         if (ImGui::InvisibleButton("##update", ImVec2(cw, ch))) {
             dev_click("top bar", "update chip");
             apply_failed = !update_apply(true);
+        }
+        bool hot = ImGui::IsItemHovered();
+        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WHITE, hot ? 0.14f : 0.08f), ch / 2);
+        dl->AddText(ImVec2(cx + kit_px(12), floorf(cy + (ch - ls.y) / 2)), col32(hot ? COL_TEXT : COL_DIM), label);
+    }
+
+    // After an update, until opened: a quiet chip with what this version brought. Left of
+    // the update chips, so closing it moves nothing.
+    if (news_unseen()) {
+        char label[64];
+        snprintf(label, sizeof label, ICON_STAR "  What's new in %s", REKODR_VERSION);
+        ImVec2 ls = ImGui::CalcTextSize(label);
+        f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
+        chip_r = cx - kit_px(8);
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        if (ImGui::InvisibleButton("##news", ImVec2(cw, ch))) {
+            dev_click("top bar", "what's new chip");
+            g_app.ui.news_open = g_app.ui.news_since = true;
         }
         bool hot = ImGui::IsItemHovered();
         dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WHITE, hot ? 0.14f : 0.08f), ch / 2);
