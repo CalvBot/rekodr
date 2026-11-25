@@ -130,6 +130,33 @@ static DWORD WINAPI cam_pic_thread(void *arg)
     }
 }
 
+// The recorded size from ffmpeg's line for the H.264 output stream ("Stream #1:0: Video: h264 (Main), nv12(...),
+// 1280x720 [SAR 1:1 DAR 16:9], ..."). False for any other line.
+static bool cam_parse_size(const char *line, i32 *w, i32 *h)
+{
+    const char *v = strstr(line, "Video: h264");
+    if (!v) return false;
+    for (const char *c = v; *c; c++) {
+        if (c[0] != ' ' || c[1] < '1' || c[1] > '9') continue;
+        i32 x = 0, y = 0;
+        if (sscanf(c + 1, "%dx%d", &x, &y) == 2 && x >= 16 && y >= 16) {
+            *w = x;
+            *h = y;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void cam_write_small(const Path &dir, const wchar_t *name, const char *text)
+{
+    HANDLE f = CreateFileW(path_join(dir, name).s, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD written;
+    WriteFile(f, text, (DWORD)strlen(text), &written, 0);
+    CloseHandle(f);
+}
+
 static DWORD WINAPI cam_err_thread(void *arg)
 {
     CamRun *r = (CamRun *)arg;
@@ -141,16 +168,16 @@ static DWORD WINAPI cam_err_thread(void *arg)
             f64 us = v ? strtod(v + 1, 0) : 0;
             if (us > 0 && r->run_dir.s[0]) {
                 char text[32];
-                i32 n = snprintf(text, sizeof text, "%lld", (i64)llround(us));
-                HANDLE f = CreateFileW(path_join(r->run_dir, L"anchor.txt").s, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS,
-                                       FILE_ATTRIBUTE_NORMAL, 0);
-                if (f != INVALID_HANDLE_VALUE) {
-                    DWORD written;
-                    WriteFile(f, text, (DWORD)n, &written, 0);
-                    CloseHandle(f);
-                }
+                snprintf(text, sizeof text, "%lld", (i64)llround(us));
+                cam_write_small(r->run_dir, L"anchor.txt", text);
             }
             continue;
+        }
+        i32 sw, sh; // saves fit a later run of another size into this one's
+        if (r->run_dir.s[0] && cam_parse_size(line, &sw, &sh)) {
+            char text[32];
+            snprintf(text, sizeof text, "%d %d", sw, sh);
+            cam_write_small(r->run_dir, L"size.txt", text);
         }
         if (starts_with(line, "  ") || strstr(line, "Opening '")) continue;
         if (log) fprintf(log, "%s\n", line);

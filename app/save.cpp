@@ -23,6 +23,7 @@ enum SaveEventKind : i64 {
 };
 
 static const i64 SEGMENT_US = 2000000; // video segment length
+static const i32 CAM_SAVE_GROUPS = 32;  // stretches of webcam footage one save takes; any after them stay black
 
 // What the worker needs from Config and Paths, copied on the main thread with every job.
 struct SaveSettings {
@@ -114,6 +115,8 @@ struct SaveWork {
     // and the last speed it reported ("1.23x")
     u64          ff_first_ms, ff_ms;
     char         ff_speed[24];
+    // Where run_ffmpeg's progress lands in the save's 1000: from ff_from over ff_span (0 = all of it)
+    i32          ff_from, ff_span;
 };
 
 static SaveWork g_save_work;
@@ -605,7 +608,7 @@ static i32 run_ffmpeg(SaveWork *w, i64 total_us, char *error, i32 error_cap)
                 if (!w->ff_first_ms && t > 0) w->ff_first_ms = GetTickCount64() - started;
                 i64 permille = t <= 0 ? 0 : t >= total_us ? 1000 : t * 1000 / total_us;
                 if (permille != last_permille) {
-                    save_post(SAVE_EV_PROGRESS, w->req.id, permille, 0);
+                    save_post(SAVE_EV_PROGRESS, w->req.id, w->ff_span ? w->ff_from + permille * w->ff_span / 1000 : permille, 0);
                     last_permille = permille;
                 }
             }
@@ -655,6 +658,9 @@ static void remove_work_files(const Path &dir, i32 streams)
     DeleteFileW(path_join(dir, L"graph.txt").s);
     DeleteFileW(path_join(dir, L"chapters.txt").s);
     for (i32 i = 0; i < streams; i++) DeleteFileW(work_file(dir, L"audio%d.txt", i).s);
+    DeleteFileW(path_join(dir, L"cam.mkv").s);
+    DeleteFileW(path_join(dir, L"camgraph.txt").s);
+    for (i32 i = 0; i < CAM_SAVE_GROUPS; i++) DeleteFileW(work_file(dir, L"cam%d.txt", i).s);
     RemoveDirectoryW(dir.s);
 }
 
@@ -677,10 +683,126 @@ static void arg_pair(wchar_t *a, i32 cap, const char *key, const char *fmt, ...)
 // Runs one job. Returns the event to finish with; `out` gets the path saved or the error.
 static i64 edit_run(SaveWork *w, char *out, i32 out_cap); // Keep, Share and Link, below
 
+static void edit_encoder_args(wchar_t *a, i32 cap, u8 vendor, i32 kbps);
+
+static BufferIdx g_save_cam; // the worker's index of the webcam's footage
+
+// The webcam over the clip's pieces as one H.264 file, <work>\cam.mkv, the clip's whole length: each stretch of
+// footage at its place in the clip, black where the camera has none, all at the size of the first stretch's run.
+// Reads g_save_cam. 1 = made; 0 = the clip has no webcam footage or the pass failed (the clip goes without it);
+// -2 = cancelled.
+static i32 save_cam(SaveWork *w, const Path &work, i64 total_us)
+{
+    const BufferIdx &c = g_save_cam;
+    struct Group { i64 out_us, len_us; i32 run; } groups[CAM_SAVE_GROUPS];
+    i32 n = 0;
+    FILE *f = 0;
+    bool full = false;
+    Path cam_dir = path_join(w->cfg.buffer_dir, L"cam");
+    for (i32 k = 0; k < w->piece_count && !full; k++) {
+        const Piece &p = w->pieces[k];
+        for (i32 i = 0; i < c.seg_count && !full; i++) {
+            const VideoSeg &s = c.segs[i];
+            i64 from = s.start_us > p.start_us ? s.start_us : p.start_us;
+            i64 to = s.end_us < p.end_us ? s.end_us : p.end_us;
+            if (to - from < 20000) continue;
+            i64 at = p.offset_us + from - p.start_us; // in the clip
+            Group *g = n ? &groups[n - 1] : 0;
+            // A stretch carries on while the run does and lands where the last one ended
+            if (!g || g->run != s.run || llabs(g->out_us + g->len_us - at) > 50000) {
+                if (f) fclose(f);
+                f = n < CAM_SAVE_GROUPS ? _wfopen(work_file(work, L"cam%d.txt", n).s, L"wb") : 0;
+                if (!f) { full = true; break; }
+                g = &groups[n++];
+                *g = {at, 0, s.run};
+            }
+            wchar_t run[64], name[32];
+            utf8_to_wide(c.runs[s.run].name, run, COUNT(run));
+            utf8_to_wide(s.name, name, COUNT(name));
+            concat_line(f, path_join(path_join(cam_dir, run), name).s);
+            fprintf(f, "inpoint %.6f\noutpoint %.6f\n", s.inpoint + (f64)(from - s.start_us) / 1e6,
+                    s.inpoint + (f64)(to - s.start_us) / 1e6);
+            g->len_us = at + to - from - g->out_us;
+        }
+    }
+    if (f) fclose(f);
+    if (!n) return 0;
+
+    // The size the camera's ffmpeg wrote down for the first run; a later run of another size is fitted inside it.
+    i32 cw = 1280, ch = 720;
+    {
+        wchar_t run[64];
+        utf8_to_wide(c.runs[groups[0].run].name, run, COUNT(run));
+        char text[32];
+        i32 x = 0, y = 0;
+        if (read_small(path_join(path_join(cam_dir, run), L"size.txt"), text, sizeof text) &&
+            sscanf(text, "%d %d", &x, &y) == 2 && x >= 16 && y >= 16 && x <= 4096 && y <= 4096) {
+            cw = x & ~1;
+            ch = y & ~1;
+        }
+    }
+    const char *pf = w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p";
+    w->graph_len = 0;
+    w->graph_full = false;
+    i32 parts = 0;
+    i64 t = 0;
+    for (i32 i = 0; i <= n; i++) {
+        i64 next = i < n ? groups[i].out_us : total_us;
+        if (next - t > 40000)
+            graph_add(w, "color=c=black:s=%dx%d:r=30:d=%.6f,setsar=1,format=%s[p%d];\n", cw, ch, (f64)(next - t) / 1e6, pf,
+                      parts++);
+        if (i == n) break;
+        // Each stretch at 30 fps, held on its last frame to exactly its length
+        graph_add(w,
+                  "[%d:v]setpts=PTS-STARTPTS,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:-1:-1,setsar=1,"
+                  "fps=30,format=%s,tpad=stop_mode=clone:stop_duration=1,trim=duration=%.6f,setpts=PTS-STARTPTS[p%d];\n",
+                  i, cw, ch, cw, ch, pf, (f64)groups[i].len_us / 1e6, parts++);
+        t = groups[i].out_us + groups[i].len_us;
+    }
+    for (i32 i = 0; i < parts; i++) graph_add(w, "[p%d]", i);
+    graph_add(w, "concat=n=%d:v=1:a=0[cam]\n", parts);
+    f = w->graph_full ? 0 : _wfopen(path_join(work, L"camgraph.txt").s, L"wb");
+    if (!f) return 0;
+    fwrite(w->graph, 1, w->graph_len, f);
+    fclose(f);
+
+    wchar_t *a = w->args;
+    i32 cap = COUNT(w->args);
+    a[0] = 0;
+    static const char *const head[] = {"-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y"};
+    static const char *const concat[] = {"-f", "concat", "-safe", "0", "-i"};
+    arg_list(a, cap, head, COUNT(head));
+    for (i32 i = 0; i < n; i++) {
+        arg_list(a, cap, concat, COUNT(concat));
+        cmd_arg(a, cap, work_file(work, L"cam%d.txt", i).s);
+    }
+    cmd_arg8(a, cap, "-/filter_complex");
+    cmd_arg(a, cap, path_join(work, L"camgraph.txt").s);
+    arg_pair(a, cap, "-map", "[cam]");
+    edit_encoder_args(a, cap, w->cfg.vendor, 0);
+    arg_pair(a, cap, "-f", "matroska");
+    cmd_arg(a, cap, path_join(work, L"cam.mkv").s);
+    w->ff_from = 0;
+    w->ff_span = 300;
+    char err[512];
+    i32 code = run_ffmpeg(w, total_us, err, sizeof err);
+    w->ff_from = 300;
+    w->ff_span = 700;
+    if (code == -2) return -2;
+    if (code) {
+        log_line("save %u: the webcam is left out: %s", w->req.id, err[0] ? err : "ffmpeg failed");
+        w->ff_span = 0;
+        return 0;
+    }
+    log_line("save %u: webcam %dx%d in %d stretches, %.1f s", w->req.id, cw, ch, n, (f64)w->ff_ms / 1000);
+    return 1;
+}
+
 static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 {
     const SaveRequest &req = w->req;
     out[0] = 0;
+    w->ff_span = 0;
     if (!w->cfg.ffmpeg.s[0]) {
         snprintf(out, out_cap, "ffmpeg isn't ready yet (" APP_NAME " is getting it, or set its path in Options)");
         return SAVE_EV_FAILED;
@@ -698,6 +820,17 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         bool known = buffer_video_newest_end(w->cfg.buffer_dir, &end, &written);
         bool live = req.recording || (known && now_us() - written < SEGMENT_US + 3000000);
         if (!live || end >= req.to_us - 100000 || GetTickCount64() > deadline) break;
+        if (save_cancelled(req.id)) return SAVE_EV_CANCELLED;
+        Sleep(150);
+    }
+
+    // The webcam's newest segment, when it's still recording, gets a moment more to cover `to` too.
+    for (bool wait = req.kind != SAVE_PREVIEW; wait;) {
+        buffer_read_cam(w->cfg.buffer_dir, &g_save_cam);
+        const BufferIdx &c = g_save_cam;
+        i64 end = c.seg_count ? c.segs[c.seg_count - 1].end_us : 0;
+        if (!end || end >= req.to_us - 100000 || now_us() - end > SEGMENT_US + 3000000 || GetTickCount64() > deadline + 2500)
+            break;
         if (save_cancelled(req.id)) return SAVE_EV_CANCELLED;
         Sleep(150);
     }
@@ -877,6 +1010,13 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     fwrite(w->graph, 1, w->graph_len, f);
     fclose(f);
 
+    // The webcam goes beside the game as a second video stream, made first in a pass of its own.
+    i32 cam = preview ? 0 : save_cam(w, work, total_us);
+    if (cam == -2) {
+        remove_work_files(work, w->stream_count);
+        return SAVE_EV_CANCELLED;
+    }
+
     // The command line.
     wchar_t *a = w->args;
     i32 cap = COUNT(w->args);
@@ -896,11 +1036,22 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         cmd_arg(a, cap, path_join(work, L"chapters.txt").s);
         arg_pair(a, cap, "-map_chapters", "%d", w->stream_count + 1);
     }
+    if (cam) {
+        cmd_arg8(a, cap, "-i");
+        cmd_arg(a, cap, path_join(work, L"cam.mkv").s);
+    }
     cmd_arg8(a, cap, "-/filter_complex");
     cmd_arg(a, cap, path_join(work, L"graph.txt").s);
     arg_pair(a, cap, "-map", "0:v");
+    if (cam) arg_pair(a, cap, "-map", "%d:v", w->stream_count + 1 + (chapter_count ? 1 : 0));
     arg_pair(a, cap, "-c:v", "copy");
-    if (!strcmp(w->cfg.codec, "hevc")) arg_pair(a, cap, "-tag:v", "hvc1"); // so Apple and browser players take it
+    if (!strcmp(w->cfg.codec, "hevc")) arg_pair(a, cap, "-tag:v:0", "hvc1"); // so Apple and browser players take it
+    if (cam) { // players show the game; the webcam is there for editors
+        arg_pair(a, cap, "-disposition:v:0", "default");
+        arg_pair(a, cap, "-disposition:v:1", "0");
+        arg_pair(a, cap, "-metadata:s:v:1", "title=" CAM_STREAM_TITLE);
+        arg_pair(a, cap, "-metadata:s:v:1", "handler_name=" CAM_STREAM_TITLE);
+    }
     arg_pair(a, cap, "-map", "[mix]");
     i32 own_tracks = preview ? 0 : w->track_count; // a preview is only played here: its Mix is enough
     for (i32 tr = 0; tr < own_tracks; tr++) arg_pair(a, cap, "-map", "[o%d]", tr);
@@ -937,9 +1088,9 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         return SAVE_EV_FAILED;
     }
 
-    log_line("save %u: %.1f s from %lld, %d video segments in %d pieces, %d audio streams on %d tracks, %d chapters -> %s",
+    log_line("save %u: %.1f s from %lld, %d video segments in %d pieces, %d audio streams on %d tracks, %d chapters%s -> %s",
              req.id, (f64)total_us / 1e6, clip_start, end - first, w->piece_count, w->stream_count,
-             own_tracks + 1, chapter_count, final8);
+             own_tracks + 1, chapter_count, cam ? ", webcam" : "", final8);
     u64 t_ready = GetTickCount64();
     i32 code = run_ffmpeg(w, total_us, out, out_cap);
     u64 t_ran = GetTickCount64();
@@ -2502,6 +2653,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             edit_encoder_args(a, cap, w->cfg.vendor, sized ? video_kbps : 0);
         } else {
             arg_pair(a, cap, "-map", "0:v:0");
+            if (!link) arg_pair(a, cap, "-map", "0:v:1?"); // the webcam stays with a kept copy, title and all
             arg_pair(a, cap, "-c:v", "copy");
         }
         i32 outs = 0; // audio streams written

@@ -1147,7 +1147,8 @@ static AmCs2State automarks_cs2_state();
 static void automarks_uninstall();
 static void achievements_apply(); // achievements.cpp
 
-// Webcam (webcam.cpp)
+// Webcam (webcam.cpp). A saved clip carries the webcam as its second video stream, titled CAM_STREAM_TITLE.
+#define CAM_STREAM_TITLE "Webcam"
 static void webcam_run(wchar_t *out, i32 cap); // the run folder being written, "" when none
 static bool webcam_devices(char (*out)[128], i32 cap, i32 *n);
 static void webcam_list_again();

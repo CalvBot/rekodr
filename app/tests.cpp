@@ -596,6 +596,11 @@ static void test_watch_scan()
 
 static void test_webcam()
 {
+    i32 sw = 0, sh = 0;
+    T(cam_parse_size("  Stream #1:0: Video: h264 (Main), nv12(tv, progressive), 1280x720 [SAR 1:1 DAR 16:9], q=2-31, 30 fps", &sw,
+                     &sh) && sw == 1280 && sh == 720);
+    T(cam_parse_size("  Stream #1:0: Video: h264 (avc1 / 0x31637661), yuv420p, 640x480, 30 fps", &sw, &sh) && sw == 640 && sh == 480);
+    T(!cam_parse_size("  Stream #0:0: Video: rawvideo, bgra, 256x144, 10 fps", &sw, &sh));
     const char *list =
         "[in#0 @ 0000026dd2097140] \"Pixel 10 Pro XL (Windows Virtual Camera)\" (video)\r\n"
         "[in#0 @ 0000026dd2097140]   Alternative name \"@device_pnp_\\\\?\\swd#vcamdevapi#92de\"\r\n"
