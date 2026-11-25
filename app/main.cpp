@@ -2,7 +2,8 @@
 //
 // `rekodr.exe` with no arguments starts Rekodr (or opens the window of the copy already running).
 // `rekodr.exe <command>` hands the command to the running copy as WM_COPYDATA and exits; Stream Deck keys use
-// this. With no running copy it starts Rekodr and runs the command there.
+// this. With no running copy it starts Rekodr and runs the command there, except `save`, which plays the Failed
+// sound and exits: there's no buffer to save from.
 //
 // Commands: open | timeline | options | save <length> | pause | resume | toggle | folder | quit | dev [off]
 
@@ -417,6 +418,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
             if (send_to_running(command)) return 0;
             Sleep(250);
         }
+        return 1;
+    }
+    if (!strncmp(command, "save", 4) && (!command[4] || command[4] == ' ')) {
+        paths_init(&g_app.paths);
+        config_load(&g_app.config, g_app.paths);
+        const SoundPick &p = g_app.config.sounds[SOUND_FAILED];
+        if (p.on) sound_play_pick(p.sound, p.own, true);
+        CloseHandle(single);
         return 1;
     }
 

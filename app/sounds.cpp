@@ -88,9 +88,11 @@ static bool sound_own_check(const Path &file, char *why, size_t why_size)
 static SRWLOCK g_sound_lock = SRWLOCK_INIT;
 static u8 *g_sound_own;
 
-// Plays a library sound, or `own` for SOUND_OWN. Nothing when the file can't be played.
-static void sound_play_pick(u8 sound, const Path &own)
+// Plays a library sound, or `own` for SOUND_OWN; `wait` returns once it has played. Nothing when the file can't be
+// played.
+static void sound_play_pick(u8 sound, const Path &own, bool wait = false)
 {
+    DWORD how = SND_MEMORY | SND_NODEFAULT | (wait ? SND_SYNC : SND_ASYNC);
     if (sound == SOUND_OWN) {
         if (!own.s[0]) return;
         u32 len;
@@ -105,7 +107,7 @@ static void sound_play_pick(u8 sound, const Path &own)
         PlaySoundW(0, 0, 0); // stops the one playing before its memory goes
         free(g_sound_own);
         g_sound_own = wav;
-        PlaySoundW((LPCWSTR)wav, 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+        PlaySoundW((LPCWSTR)wav, 0, how);
         ReleaseSRWLockExclusive(&g_sound_lock);
         return;
     }
@@ -113,7 +115,7 @@ static void sound_play_pick(u8 sound, const Path &own)
     HRSRC res = FindResourceW(0, MAKEINTRESOURCEW(SOUND_RES + sound), MAKEINTRESOURCEW(10)); // RT_RCDATA
     HGLOBAL mem = res ? LoadResource(0, res) : 0;
     void *wav = mem ? LockResource(mem) : 0;
-    if (wav) PlaySoundW((LPCWSTR)wav, 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    if (wav) PlaySoundW((LPCWSTR)wav, 0, how);
 }
 
 // An event happened: its sound, when its switch is on.
