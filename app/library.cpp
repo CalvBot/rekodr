@@ -4426,22 +4426,17 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         dl->PopClipRect();
         if (render_progress(it.key) >= 0) ui_wake(); // waiting, it changes only with the look every 10 s
     }
-    // Top right, where nothing else goes: what's ready to share, each mark in its own place whether the other shows.
-    // The link's on the right, in the accent when it plays for the clip as it is (Share copies it), amber when
-    // paused, and not shown when it's gone or was made before the clip changed; the file's left of it.
+    // Top right, where nothing else goes: an amber pause mark while the clip's link is paused, which its Share
+    // button doesn't show. What Share gives at once is on the button itself (share_ready_kind).
     {
         ClipShareState cs = lib_clip_state(it);
-        f32 r = kit_px(11), msz = kit_px(12);
-        auto mark = [&](f32 cx, const char *icon, u32 ink, u32 disc = IM_COL32(0, 0, 0, 170)) {
-            ImVec2 c(cx, t0.y + kit_px(8) + r);
-            dl->AddCircleFilled(c, r, disc);
-            ImVec2 gs = g_font_icon->CalcTextSizeA(msz, FLT_MAX, 0, icon);
-            dl->AddText(g_font_icon, msz, ImVec2(floorf(c.x - gs.x / 2), floorf(c.y - gs.y / 2)), ink, icon);
-        };
-        f32 link_x = t1.x - kit_px(8) - r, file_x = link_x - 2 * r - kit_px(4);
-        if (cs.link_ready) mark(link_x, ICON_LINK, col32(COL_WHITE), col32(COL_ACCENT));
-        else if (cs.link && cs.link_paused) mark(link_x, ICON_PAUSE, col32(COL_WARN));
-        if (cs.file) mark(file_x, ICON_SHARE, col32(COL_TEXT));
+        if (cs.link && cs.link_paused && !cs.link_ready) {
+            f32 r = kit_px(11), msz = kit_px(12);
+            ImVec2 c(t1.x - kit_px(8) - r, t0.y + kit_px(8) + r);
+            dl->AddCircleFilled(c, r, IM_COL32(0, 0, 0, 170));
+            ImVec2 gs = g_font_icon->CalcTextSizeA(msz, FLT_MAX, 0, ICON_PAUSE);
+            dl->AddText(g_font_icon, msz, ImVec2(floorf(c.x - gs.x / 2), floorf(c.y - gs.y / 2)), col32(COL_WARN), ICON_PAUSE);
+        }
     }
     // Selected: an accent ring just outside the picture, and the name in the accent. The tick box: filled with a tick when selected, else a ring, which
     // out of select mode shows only faintly while the card is under the mouse, and in full under the mouse itself.
