@@ -1608,6 +1608,7 @@ static void folders_rows(i32 rows, f32 rh, i32 *open_popup)
     o.folders_shown = n;
 }
 
+static bool g_opt_show_game; // "show game-settings": the first game's Recording settings, once
 static void options_apps()
 {
     OptionsUi &o = g_app.options;
@@ -1789,6 +1790,15 @@ static void options_apps()
     }
     if (open_popup == 5) ImGui::OpenPopup("edit folder");
     folder_edit_popup();
+    if (g_opt_show_game) {
+        g_opt_show_game = false;
+        for (i32 i = 0; i < c.app_count; i++)
+            if (app_category(c, c.apps[i]) == CAT_GAME) {
+                o.menu_app = i;
+                open_popup = 2;
+                break;
+            }
+    }
     if (open_popup == 2) ImGui::OpenPopup("game settings");
     if (open_popup == 3) ImGui::OpenPopup("rename app");
     game_settings_popup();
