@@ -1069,6 +1069,35 @@ static bool kit_segmented(const char *id, const char *const *labels, i32 n, i32 
     return changed;
 }
 
+// A soft drop shadow under the rounded rect [a, b]: rings just outside it, fading out and reaching a little further
+// below than above. Nothing is drawn inside the rect, so it may go before or after the shape, and a see-through
+// shape isn't darkened. `strength` 1 is the controls' (subtle); popups use more.
+static void kit_shadow(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 rounding, f32 strength = 1)
+{
+    i32 n = (i32)ceilf(kit_px(7));
+    for (i32 i = 0; i < n; i++) {
+        f32 e = i + 1.f, t = 1 - (f32)i / n;
+        ImVec2 p(a.x - e + 0.5f, a.y - e * 0.5f + 0.5f), q(b.x + e - 0.5f, b.y + e * 1.5f - 0.5f);
+        dl->AddRect(p, q, col32(0x000000, 0.16f * strength * t * t), rounding + e, 0, 1.5f);
+    }
+}
+
+// Every open popup and menu gets a shadow (kit_shadow) on what's under it. Once a frame, after the frame's windows
+// and before ImGui::Render.
+static void ui_popup_shadows()
+{
+    ImGuiContext &g = *GImGui;
+    for (ImGuiWindow *w : g.Windows) {
+        if (!w->Active || w->Hidden || !(w->Flags & ImGuiWindowFlags_Popup) || (w->Flags & ImGuiWindowFlags_Tooltip))
+            continue;
+        f32 m = kit_px(16);
+        ImVec2 a = w->Pos, b(w->Pos.x + w->Size.x, w->Pos.y + w->Size.y);
+        w->DrawList->PushClipRect(ImVec2(a.x - m, a.y - m), ImVec2(b.x + m, b.y + m * 2), false);
+        kit_shadow(w->DrawList, a, b, w->WindowRounding, 1.6f);
+        w->DrawList->PopClipRect();
+    }
+}
+
 // A filter pill: a veil of white over what is behind it; active = white with black text. count is drawn after the
 // label, dimmer. w 0 = fit.
 static bool kit_chip(const char *id_label, bool active, const char *count = 0, f32 w = 0)
@@ -2138,6 +2167,7 @@ static void ui_frame()
 rendered:
     {
         FRAME_PART("render");
+        ui_popup_shadows();
         ImGui::Render();
         const ImVec4 bg = rgb(COL_BG);
         const f32 clear[4] = {bg.x, bg.y, bg.z, 1};
