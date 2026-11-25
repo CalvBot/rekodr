@@ -594,7 +594,8 @@ static void lib_scan_watched(const Path &save_dir, const Path &buffer_dir, const
         FindClose(h);
 
         for (i32 d = 0; d < dir_count; d++) {
-            u8 dir = d ? 0 : lib_dir_add(top, ""); // the watched one even while it's empty, for lib_watch_poll
+            u8 dir = lib_dir_add(dirs[d], games[d]); // even while it's empty, for lib_watch_thread
+            if (!dir) break;
             WIN32_FIND_DATAW f;
             HANDLE fh = FindFirstFileW(path_join(dirs[d], L"*").s, &f);
             if (fh == INVALID_HANDLE_VALUE) continue;
@@ -603,7 +604,6 @@ static void lib_scan_watched(const Path &save_dir, const Path &buffer_dir, const
                 wchar_t *dot = wcsrchr(f.cFileName, L'.');
                 if (!dot || (_wcsicmp(dot, L".mp4") && _wcsicmp(dot, L".mkv") && _wcsicmp(dot, L".mov"))) continue;
                 if (*n == LIB_MAX_ITEMS) break;
-                if (!dir && !(dir = lib_dir_add(dirs[d], games[d]))) break;
                 LibItem *it = &items[(*n)++];
                 *it = {};
                 wide_to_utf8(dot, it->ext, sizeof it->ext);

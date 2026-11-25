@@ -535,7 +535,14 @@ static void test_watch_scan()
     put(watch, L"obs.mkv");
     put(watch, L"notes.txt");
     put(game, L"sp.mp4");
+    Path empty = path_join(watch, L"Empty Game");
+    SHCreateDirectoryExW(0, empty.s, 0);
     lib_scan(save, path_join(root, L"cache"), Path{}, SAVE_NAME_DEFAULT, path_join(root, L"buffer"), &watch, 1);
+    { // a folder with no videos yet is watched too
+        bool held = false;
+        for (i32 i = 0; i < (i32)g_lib_dir_count; i++) held |= !_wcsicmp(g_lib_dirs[i].path.s, empty.s) && g_lib_dirs[i].live;
+        T(held);
+    }
     i32 n = g_lib.item_count, ours = 0, obs = -1, sp = -1;
     for (i32 i = 0; i < n; i++) {
         const LibItem &it = g_lib.items[i];
