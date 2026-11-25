@@ -553,7 +553,8 @@ static void ui_show(Screen screen)
 //   changes its label is given a width.
 
 // KIT_ACCENT: filled in the accent, white ink. KIT_TINT: a faint accent fill with accent ink, a quieter state.
-enum KitKind { KIT_SECONDARY, KIT_PRIMARY, KIT_GHOST, KIT_DANGER, KIT_ACCENT, KIT_TINT };
+// KIT_QUIET: a ghost in dim ink until the mouse is over it, for a button that's always there but rarely used.
+enum KitKind { KIT_SECONDARY, KIT_PRIMARY, KIT_GHOST, KIT_DANGER, KIT_ACCENT, KIT_TINT, KIT_QUIET };
 
 static f32 kit_px(f32 v) { return v * g_dpi_scale; }
 
@@ -844,7 +845,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     default: // a veil of white over whatever is behind it
         fill = COL_WHITE;
         fill_a = active ? 0.14f : hot ? 0.08f : 0;
-        if (!active && !hot) ink = 0xc8c8c8;
+        if (!active && !hot) ink = kind == KIT_QUIET ? COL_DIM : 0xc8c8c8;
         break;
     }
     if (held && kind != KIT_PRIMARY && kind != KIT_ACCENT) fill_a *= 0.8f;

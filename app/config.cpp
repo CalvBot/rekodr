@@ -642,10 +642,13 @@ static bool config_load(Config *c, const Paths &paths)
         if (!eq) continue;
         *eq = 0;
         char *key = trim(s), *value = trim(eq + 1);
-        if (!strcmp(key, "hotkey") && !hotkeys_seen) {
-            c->hotkey_count = 0; // the file's hotkeys replace the default one
+        // The file's hotkeys replace the default one; "hotkeys = none" says the player removed them all
+        bool none = !strcmp(key, "hotkeys") && !strcmp(value, "none");
+        if ((none || !strcmp(key, "hotkey")) && !hotkeys_seen) {
+            c->hotkey_count = 0;
             hotkeys_seen = true;
         }
+        if (none) continue;
         config_set(c, key, value);
     }
     fclose(f);
@@ -746,6 +749,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\neditor_zoom_view = %d\n", c.editor_top, c.editor_side,
             c.editor_lane, c.editor_zoom_view);
     fprintf(f, "\n# hotkey = keys | action\n");
+    if (!c.hotkey_count) fprintf(f, "hotkeys = none\n");
     for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
                " | height | where it was last heard | capture window | clip saved\n"

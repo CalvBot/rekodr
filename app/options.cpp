@@ -2028,11 +2028,9 @@ static void options_hotkeys()
                            : same ? "Same keys as another hotkey" : 0;
         if (warn) opt_text_at(dl, g_font, ImVec2(warn_x, opt_row_text_y(g_font)), COL_WARN, warn, del_x - dp(8));
 
-        if (hot && !o.capture_slot) {
-            ImGui::SetCursorScreenPos(ImVec2(del_x, cy));
-            kit_next_tip("Remove");
-            if (kit_icon_button(ICON_DELETE, "##remove")) remove = i;
-        }
+        ImGui::SetCursorScreenPos(ImVec2(del_x, cy));
+        kit_next_tip("Remove");
+        if (kit_icon_button(ICON_DELETE, "##remove", hot ? KIT_GHOST : KIT_QUIET, !o.capture_slot)) remove = i;
         ImGui::PopID();
         opt_row_end();
     }
