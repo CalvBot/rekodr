@@ -1585,8 +1585,8 @@ static void dev_input()
 }
 
 // On the Library screen, behind the whole window, under the top bar too: the game's art (game_art_texture),
-// filling the window and cut to fit, at g_art_look.opacity at the top and faded out g_art_look.fade_end of the way
-// down, and over it a still film grain (art_grain_texture) at g_art_look.grain. The game is the Library's game
+// filling the window and cut to fit, at g_art_look.opacity on the right and faded out across the window (art_fade),
+// and over it a still film grain (art_grain_texture) at g_art_look.grain. The game is the Library's game
 // chip, else the game of the newest clip. Other screens have the plain ground. When the game changes, or on going
 // to or from the Library, the old art fades into the new (or the ground) over ART_FADE_S, eased out, the grain
 // with it, or at once when Windows' "Show animations" is off. Options > General > Flat look turns it all off.
@@ -1623,6 +1623,19 @@ static bool ui_reduced_motion()
     return !animate;
 }
 
+// The art's opacity over the ground at x across a picture (0 its left edge, 1 its right): g_art_look.opacity at the
+// right edge, eased (smoothstep) out to none g_art_look.fade_end of the width in from it, and none left of that, so
+// the tabs and the list on the left stay on the plain ground. The window and the toasts both fade their art by it.
+static f32 art_fade(f32 x)
+{
+    f32 k = (1 - x) / g_art_look.fade_end;
+    if (k >= 1) return 0;
+    if (k < 0) k = 0;
+    return g_art_look.opacity * (1 - k * k * (3 - 2 * k));
+}
+
+// The art over p0..p1, cut to fit, faded by art_fade times `alpha` (for crossfades), in ART_FADE_BANDS bands across
+// whose ends the GPU blends between.
 static void art_draw(ImDrawList *dl, ID3D11ShaderResourceView *tex, i32 tw, i32 th, ImVec2 p0, ImVec2 p1, f32 alpha)
 {
     f32 w = p1.x - p0.x, h = p1.y - p0.y;
@@ -1631,27 +1644,21 @@ static void art_draw(ImDrawList *dl, ID3D11ShaderResourceView *tex, i32 tw, i32 
     f32 u = 1, v = 1;
     if (w / h > (f32)tw / th) v = ((f32)tw / th) / (w / h);
     else u = (w / h) / ((f32)tw / th);
-    // Strongest at the top, gone at g_art_look.fade_end of the way down, eased (smoothstep) over ART_FADE_BANDS bands
-    // whose ends the GPU blends between
     const i32 ART_FADE_BANDS = 12;
-    f32 u0 = (1 - u) / 2, u1 = (1 + u) / 2, v0 = (1 - v) / 2, fade = g_art_look.fade_end;
+    f32 u0 = (1 - u) / 2, v0 = (1 - v) / 2, v1 = (1 + v) / 2, start = 1 - g_art_look.fade_end;
     dl->PushTextureID((ImTextureID)(intptr_t)tex);
     dl->PrimReserve(ART_FADE_BANDS * 6, ART_FADE_BANDS * 4);
     for (i32 i = 0; i < ART_FADE_BANDS; i++) {
-        f32 k[2] = {(f32)i / ART_FADE_BANDS, (f32)(i + 1) / ART_FADE_BANDS};
-        ImU32 col[2];
-        for (i32 j = 0; j < 2; j++) {
-            f32 s = k[j] * k[j] * (3 - 2 * k[j]);
-            col[j] = col32(COL_WHITE, alpha * (1 - s));
-        }
-        f32 y0 = p0.y + h * fade * k[0], y1 = p0.y + h * fade * k[1];
+        f32 k[2] = {start + (1 - start) * i / ART_FADE_BANDS, start + (1 - start) * (i + 1) / ART_FADE_BANDS};
+        ImU32 col[2] = {col32(COL_WHITE, alpha * art_fade(k[0])), col32(COL_WHITE, alpha * art_fade(k[1]))};
+        f32 x0 = p0.x + w * k[0], x1 = p0.x + w * k[1];
         ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
         dl->PrimWriteIdx(base), dl->PrimWriteIdx((ImDrawIdx)(base + 1)), dl->PrimWriteIdx((ImDrawIdx)(base + 2));
         dl->PrimWriteIdx(base), dl->PrimWriteIdx((ImDrawIdx)(base + 2)), dl->PrimWriteIdx((ImDrawIdx)(base + 3));
-        dl->PrimWriteVtx(ImVec2(p0.x, y0), ImVec2(u0, v0 + v * fade * k[0]), col[0]);
-        dl->PrimWriteVtx(ImVec2(p1.x, y0), ImVec2(u1, v0 + v * fade * k[0]), col[0]);
-        dl->PrimWriteVtx(ImVec2(p1.x, y1), ImVec2(u1, v0 + v * fade * k[1]), col[1]);
-        dl->PrimWriteVtx(ImVec2(p0.x, y1), ImVec2(u0, v0 + v * fade * k[1]), col[1]);
+        dl->PrimWriteVtx(ImVec2(x0, p0.y), ImVec2(u0 + u * k[0], v0), col[0]);
+        dl->PrimWriteVtx(ImVec2(x1, p0.y), ImVec2(u0 + u * k[1], v0), col[1]);
+        dl->PrimWriteVtx(ImVec2(x1, p1.y), ImVec2(u0 + u * k[1], v1), col[1]);
+        dl->PrimWriteVtx(ImVec2(x0, p1.y), ImVec2(u0 + u * k[0], v1), col[0]);
     }
     dl->PopTextureID();
 }
@@ -1683,9 +1690,8 @@ static void ui_art_texture(ImVec2 p0, ImVec2 p1)
         }
     }
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 a = g_art_look.opacity;
-    art_draw(dl, before.tex, before.w, before.h, p0, p1, a * (1 - e));
-    art_draw(dl, now.tex, now.w, now.h, p0, p1, a * e);
+    art_draw(dl, before.tex, before.w, before.h, p0, p1, 1 - e);
+    art_draw(dl, now.tex, now.w, now.h, p0, p1, e);
     f32 shown = (now.tex ? e : 0) + (before.tex ? 1 - e : 0); // how much of the window has art: the grain's share
     if (g_art_look.grain <= 0 || shown <= 0) return;
     ID3D11ShaderResourceView *grain = art_grain_texture();

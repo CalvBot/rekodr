@@ -355,8 +355,8 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
 struct ArtLook {
     i32 w;          // texels across
     f32 blur;       // Gaussian sigma, in texels
-    f32 opacity;    // of the art over the ground, at the top of the window
-    f32 fade_end;   // where down the window (0 top, 1 bottom) the art has faded out to the ground
+    f32 opacity;    // of the art over the ground, at its right edge (art_fade)
+    f32 fade_end;   // how far in from the right edge, as a share of the width, the art has faded out to the ground
     f32 grain;      // of the grain over the art
 };
 static constexpr ArtLook g_art_look = {192, 1.2f, 0.26f, 0.5f, 0.025f};
