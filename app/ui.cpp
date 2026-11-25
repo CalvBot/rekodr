@@ -975,7 +975,9 @@ static void kit_card_end()
 // A fade into `bg` at the edges of a scrolling area (a to b on screen) that says there's more: at the bottom while
 // `below` px are still below, at the top while `above` px are above. Each comes in over its first KIT_FADE px of
 // scroll, so neither pops in, and an area that doesn't scroll has none. Draws on the current window's draw list
-// and adds no items, so clicks go through.
+// and adds no items, so clicks go through. On COL_BG the fade is into the window's ground itself, art and grain
+// included (ui_ground_over); other grounds (popups, cards) are flat.
+static void ui_ground_over(ImDrawList *dl, ImVec2 r0, ImVec2 r1, f32 a0, f32 a1);
 static const f32 KIT_FADE = 44;
 static void kit_scroll_fade(ImVec2 a, ImVec2 b, f32 above, f32 below, u32 bg = COL_BG)
 {
@@ -983,6 +985,11 @@ static void kit_scroll_fade(ImVec2 a, ImVec2 b, f32 above, f32 below, u32 bg = C
     if (h <= 0 || b.x <= a.x) return;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 top = fminf(1.f, above / h), bot = fminf(1.f, below / h);
+    if (bg == COL_BG) {
+        if (top > 0) ui_ground_over(dl, a, ImVec2(b.x, a.y + h), top, 0);
+        if (bot > 0) ui_ground_over(dl, ImVec2(a.x, b.y - h), b, 0, bot);
+        return;
+    }
     ImU32 clear = col32(bg, 0);
     if (top > 0) {
         ImU32 c = col32(bg, top);
@@ -1682,16 +1689,24 @@ static f32 art_fade(f32 x, f32 span = g_art_look.fade_end)
 
 // The art over p0..p1, cut to fit, faded by art_fade times `alpha` (for crossfades), in ART_FADE_BANDS bands across
 // whose ends the GPU blends between.
+static const i32 ART_FADE_BANDS = 12;
+
+// Cover: the picture's middle, as much of it as has the shape of a w x h window, as UVs u0..u0+u, v0..v0+v.
+static void art_cover(i32 tw, i32 th, f32 w, f32 h, f32 *u0, f32 *v0, f32 *u, f32 *v)
+{
+    *u = 1, *v = 1;
+    if (w / h > (f32)tw / th) *v = ((f32)tw / th) / (w / h);
+    else *u = (w / h) / ((f32)tw / th);
+    *u0 = (1 - *u) / 2, *v0 = (1 - *v) / 2;
+}
+
 static void art_draw(ImDrawList *dl, ID3D11ShaderResourceView *tex, i32 tw, i32 th, ImVec2 p0, ImVec2 p1, f32 alpha)
 {
     f32 w = p1.x - p0.x, h = p1.y - p0.y;
     if (!tex || tw <= 0 || th <= 0 || w <= 0 || h <= 0 || alpha <= 0) return;
-    // Cover: the picture's middle, as much of it as has the window's shape
-    f32 u = 1, v = 1;
-    if (w / h > (f32)tw / th) v = ((f32)tw / th) / (w / h);
-    else u = (w / h) / ((f32)tw / th);
-    const i32 ART_FADE_BANDS = 12;
-    f32 u0 = (1 - u) / 2, v0 = (1 - v) / 2, v1 = (1 + v) / 2, start = 1 - g_art_look.fade_end;
+    f32 u0, v0, u, v;
+    art_cover(tw, th, w, h, &u0, &v0, &u, &v);
+    f32 v1 = v0 + v, start = 1 - g_art_look.fade_end;
     dl->PushTextureID((ImTextureID)(intptr_t)tex);
     dl->PrimReserve(ART_FADE_BANDS * 6, ART_FADE_BANDS * 4);
     for (i32 i = 0; i < ART_FADE_BANDS; i++) {
@@ -1709,9 +1724,18 @@ static void art_draw(ImDrawList *dl, ID3D11ShaderResourceView *tex, i32 tw, i32 
     dl->PopTextureID();
 }
 
+// The window's ground as ui_art_texture drew it this frame, layer by layer over COL_BG, for ui_ground_over.
+struct GroundArt { ID3D11ShaderResourceView *tex; i32 w, h; f32 alpha; };
+static struct {
+    ImVec2    p0, p1;
+    GroundArt art[2]; // the art fading out, then the art shown
+    f32       grain;  // the grain's opacity, 0 for none
+} g_ground;
+
 static void ui_art_texture(ImVec2 p0, ImVec2 p1)
 {
     const Library &lib = g_app.library;
+    g_ground = {};
     if (g_app.config.flat_look) return;
     const char *game = !g_app.config.side_folders && lib.game[0] ? lib.game : lib.game_count > 0 ? lib.games[0] : "";
     struct Shown { ID3D11ShaderResourceView *tex; i32 w, h; };
@@ -1738,16 +1762,131 @@ static void ui_art_texture(ImVec2 p0, ImVec2 p1)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     art_draw(dl, before.tex, before.w, before.h, p0, p1, 1 - e);
     art_draw(dl, now.tex, now.w, now.h, p0, p1, e);
+    g_ground.p0 = p0, g_ground.p1 = p1;
+    g_ground.art[0] = {before.tex, before.w, before.h, 1 - e};
+    g_ground.art[1] = {now.tex, now.w, now.h, e};
     f32 shown = (now.tex ? e : 0) + (before.tex ? 1 - e : 0); // how much of the window has art: the grain's share
     if (g_art_look.grain <= 0 || shown <= 0) return;
     ID3D11ShaderResourceView *grain = art_grain_texture();
     if (!grain) return;
-    ImU32 gc = col32(COL_WHITE, g_art_look.grain * (shown > 1 ? 1 : shown));
+    g_ground.grain = g_art_look.grain * (shown > 1 ? 1 : shown);
+    ImU32 gc = col32(COL_WHITE, g_ground.grain);
     const f32 tile = (f32)ART_GRAIN;
     for (f32 y = floorf(p0.y); y < p1.y; y += tile)
         for (f32 x = floorf(p0.x); x < p1.x; x += tile)
             dl->AddImage((ImTextureID)(intptr_t)grain, ImVec2(x, y), ImVec2(x + tile, y + tile), ImVec2(0, 0),
                          ImVec2(1, 1), gc);
+}
+
+// The opacity art_draw gives a layer at screen x: art_fade at its bands' ends, straight between them as the GPU
+// blends.
+static f32 ground_art_alpha(const GroundArt &l, f32 x)
+{
+    f32 w = g_ground.p1.x - g_ground.p0.x;
+    if (!l.tex || l.alpha <= 0 || w <= 0) return 0;
+    f32 k = (x - g_ground.p0.x) / w, start = 1 - g_art_look.fade_end, band = (1 - start) / ART_FADE_BANDS;
+    if (k <= start) return 0;
+    i32 i = (i32)((k - start) / band);
+    if (i >= ART_FADE_BANDS) i = ART_FADE_BANDS - 1;
+    f32 k0 = start + band * i, t = (k - k0) / band;
+    return l.alpha * (art_fade(k0) + (art_fade(k0 + band) - art_fade(k0)) * t);
+}
+
+// The window's ground again over r0..r1 at an opacity going from a0 at its top to a1 at its bottom, so what's under
+// it fades into the ground exactly: each layer (COL_BG, the art, the grain) is drawn at the opacity that leaves it
+// the same share of every pixel it has in the ground, times the fade. Drawn in strips and columns small enough that
+// the GPU's blending between their corners matches.
+static void ui_ground_over(ImDrawList *dl, ImVec2 r0, ImVec2 r1, f32 a0, f32 a1)
+{
+    if (r1.x <= r0.x || r1.y <= r0.y) return;
+    bool art = g_ground.art[0].tex || g_ground.art[1].tex;
+    if (!art) {
+        ImU32 c0 = col32(COL_BG, a0), c1 = col32(COL_BG, a1);
+        dl->AddRectFilledMultiColor(r0, r1, c0, c0, c1, c1);
+        return;
+    }
+    // Columns: split at the art's band ends and the grain's tile edges, so each has one straight piece of both
+    enum { MAX_COLS = 96 };
+    f32 xs[MAX_COLS];
+    i32 nx = 0;
+    xs[nx++] = r0.x;
+    f32 gw = g_ground.p1.x - g_ground.p0.x, start = 1 - g_art_look.fade_end;
+    for (i32 i = 0; i <= ART_FADE_BANDS; i++) {
+        f32 x = g_ground.p0.x + gw * (start + (1 - start) * i / ART_FADE_BANDS);
+        if (x > r0.x && x < r1.x && nx < MAX_COLS - 1) xs[nx++] = x;
+    }
+    const f32 tile = (f32)ART_GRAIN, gx = floorf(g_ground.p0.x), gy = floorf(g_ground.p0.y);
+    for (f32 x = gx + tile * ceilf((r0.x - gx) / tile); x < r1.x && nx < MAX_COLS - 1; x += tile)
+        if (x > r0.x) xs[nx++] = x;
+    xs[nx++] = r1.x;
+    for (i32 i = 1; i < nx; i++) // the two runs of edges into one
+        for (i32 j = i; j > 0 && xs[j] < xs[j - 1]; j--) {
+            f32 s = xs[j];
+            xs[j] = xs[j - 1], xs[j - 1] = s;
+        }
+    i32 rows = (i32)ceilf((r1.y - r0.y) / 2); // 2 px strips
+    // Layers from the bottom: 0 COL_BG, 1-2 the art, 3 the grain. For the fade `a` and the layers' own opacities
+    // al[], layer i gets b[i] = a * al[i] * prod(1 - al[j], j > i) / prod(1 - b[j], j > i).
+    auto betas = [&](f32 x, f32 a, f32 *b) {
+        f32 al[4] = {1, ground_art_alpha(g_ground.art[0], x), ground_art_alpha(g_ground.art[1], x), g_ground.grain};
+        f32 pa = 1, pb = 1;
+        for (i32 i = 3; i >= 0; i--) {
+            f32 w = a * al[i] * pa;
+            b[i] = pb > 1e-6f ? fminf(1.f, w / pb) : 0;
+            pa *= 1 - al[i];
+            pb *= 1 - b[i];
+        }
+    };
+    ID3D11ShaderResourceView *grain = g_ground.grain > 0 ? art_grain_texture() : 0;
+    ImVec2 white = dl->_Data->TexUvWhitePixel;
+    for (i32 layer = 0; layer < 4; layer++) {
+        ID3D11ShaderResourceView *tex = 0;
+        f32 u0 = 0, v0 = 0, u = 1, v = 1;
+        if (layer == 1 || layer == 2) {
+            const GroundArt &l = g_ground.art[layer - 1];
+            if (!l.tex || l.alpha <= 0) continue;
+            tex = l.tex;
+            art_cover(l.w, l.h, gw, g_ground.p1.y - g_ground.p0.y, &u0, &v0, &u, &v);
+        } else if (layer == 3) {
+            if (!grain) continue;
+            tex = grain;
+        }
+        if (tex) dl->PushTextureID((ImTextureID)(intptr_t)tex);
+        for (i32 r = 0; r < rows; r++) {
+            f32 y0 = r0.y + (r1.y - r0.y) * r / rows, y1 = r0.y + (r1.y - r0.y) * (r + 1) / rows;
+            f32 fa0 = a0 + (a1 - a0) * r / rows, fa1 = a0 + (a1 - a0) * (r + 1) / rows;
+            for (i32 c = 0; c + 1 < nx; c++) {
+                f32 x0 = xs[c], x1 = xs[c + 1];
+                if (x1 <= x0) continue;
+                f32 b00[4], b10[4], b01[4], b11[4];
+                betas(x0, fa0, b00), betas(x1, fa0, b10), betas(x0, fa1, b01), betas(x1, fa1, b11);
+                if (b00[layer] <= 0 && b10[layer] <= 0 && b01[layer] <= 0 && b11[layer] <= 0) continue;
+                u32 col = layer == 0 ? COL_BG : COL_WHITE;
+                ImVec2 t00 = white, t10 = white, t11 = white, t01 = white;
+                if (layer == 1 || layer == 2) {
+                    f32 ka = (x0 - g_ground.p0.x) / gw, kb = (x1 - g_ground.p0.x) / gw;
+                    f32 gh = g_ground.p1.y - g_ground.p0.y;
+                    f32 va = v0 + v * (y0 - g_ground.p0.y) / gh, vb = v0 + v * (y1 - g_ground.p0.y) / gh;
+                    t00 = ImVec2(u0 + u * ka, va), t10 = ImVec2(u0 + u * kb, va);
+                    t11 = ImVec2(u0 + u * kb, vb), t01 = ImVec2(u0 + u * ka, vb);
+                } else if (layer == 3) {
+                    f32 tx = gx + tile * floorf(((x0 + x1) / 2 - gx) / tile);
+                    f32 ty = gy + tile * floorf(((y0 + y1) / 2 - gy) / tile);
+                    f32 ua = (x0 - tx) / tile, ub = (x1 - tx) / tile, va = (y0 - ty) / tile, vb = (y1 - ty) / tile;
+                    t00 = ImVec2(ua, va), t10 = ImVec2(ub, va), t11 = ImVec2(ub, vb), t01 = ImVec2(ua, vb);
+                }
+                dl->PrimReserve(6, 4);
+                ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
+                dl->PrimWriteIdx(base), dl->PrimWriteIdx((ImDrawIdx)(base + 1)), dl->PrimWriteIdx((ImDrawIdx)(base + 2));
+                dl->PrimWriteIdx(base), dl->PrimWriteIdx((ImDrawIdx)(base + 2)), dl->PrimWriteIdx((ImDrawIdx)(base + 3));
+                dl->PrimWriteVtx(ImVec2(x0, y0), t00, col32(col, b00[layer]));
+                dl->PrimWriteVtx(ImVec2(x1, y0), t10, col32(col, b10[layer]));
+                dl->PrimWriteVtx(ImVec2(x1, y1), t11, col32(col, b11[layer]));
+                dl->PrimWriteVtx(ImVec2(x0, y1), t01, col32(col, b01[layer]));
+            }
+        }
+        if (tex) dl->PopTextureID();
+    }
 }
 
 static void ui_frame()
