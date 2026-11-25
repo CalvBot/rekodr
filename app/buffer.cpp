@@ -180,7 +180,7 @@ static bool read_small(const Path &p, char *buf, i32 cap)
 }
 
 // The value after "key": in a flat JSON object, as text (strings without their quotes). Enough for meta.json,
-// which clipback writes itself.
+// which Rekodr writes itself.
 static bool json_field(const char *json, const char *key, char *out, i32 cap)
 {
     char pat[80];

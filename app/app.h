@@ -88,7 +88,9 @@ struct Hotkey {
     Str64 action; // "save 30s" | "timeline" | "open" | "pause"
 };
 
-static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev"; // clipback-api, its own repo
+// The service (clipback-api, its own repo): its host and the header its requests are signed in
+static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev";
+#define ART_SERVICE_SIG_HEADER L"x-clipback"
 static const u32 ACCENT_DEFAULT = 0x00897b; // the accent until Options picks another: teal
 
 static const char SAVE_NAME_DEFAULT[] = "{game} {hh}-{mm} {DD}-{MM}-{YYYY}";
@@ -98,7 +100,7 @@ static const char GAME_DESKTOP[] = "Desktop";
 static const char GAME_NOT_OURS[] = "Other";
 
 struct Config {
-    Path save_dir;     // <Videos>\clipback, holding Clips, Sessions and Data (save_clips_dir and the rest)
+    Path save_dir;     // <Videos>\Rekodr, holding Clips, Sessions and Data (save_clips_dir and the rest)
     Path buffer_dir;   // the rolling buffer
     Path play_dir;     // the Timeline's Play files (preview-*.mp4); the local folder unless moved to a faster drive
     bool backup_on;    // copy sessions to backup_dir (backup.cpp)
@@ -133,7 +135,7 @@ struct Config {
     i32   cq;
     f32   peak_factor;
     bool  spatial_aq;
-    char  encoder_args[256]; // the player's own ffmpeg options for the encoder, added after clipback's ("" = none)
+    char  encoder_args[256]; // the player's own ffmpeg options for the encoder, added after Rekodr's ("" = none)
     Path  premiere;   // Adobe Premiere Pro's exe, for "Open in Premiere Pro"; empty = find it
     Path  resolve;    // DaVinci Resolve's exe; empty = find it
 
@@ -177,7 +179,7 @@ struct Config {
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
                            // by its id ("classic")
-    f32 share_keep_days; // share copies older than this are cleared from %TEMP%\clipback\share (7)
+    f32 share_keep_days; // share copies older than this are cleared from %TEMP%\Rekodr\share (7)
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
 
     bool tooltips;     // hovering a control shows what it does and its key (asked in the first-run setup)
@@ -283,7 +285,7 @@ enum AudioTrack : u8 {
 };
 
 struct AudioLive {
-    u32        id;       // the audio worker's stream number, unique while clipback runs
+    u32        id;       // the audio worker's stream number, unique while Rekodr runs
     AudioKind  kind;
     AudioTrack track;
     Str64      exe;      // lower-case exe, "mic" for the mic
@@ -417,7 +419,7 @@ struct EditPiece {
 };
 
 // Advanced edits: items, each a span of the video placed on a track of the sequence. Track 0 is the picture, 1 + t the
-// file's audio track t (a clipback file's Mix has none: it's rebuilt). Items on one track never overlap; time with no
+// file's audio track t (a Rekodr file's Mix has none: it's rebuilt). Items on one track never overlap; time with no
 // item plays as black or silence.
 enum EditMode : u8 { EDIT_SIMPLE, EDIT_ADVANCED };
 enum { EDIT_MAX_ITEMS = 128, EDIT_MAX_ITEM_KEYS = 512 };
@@ -615,11 +617,11 @@ struct Saving {
 };
 
 struct Paths {
-    Path config_dir; // %APPDATA%\clipback (or %CLIPBACK_HOME%\config)
-    Path local_dir;  // %LOCALAPPDATA%\clipback (or %CLIPBACK_HOME%\local): log, thumbnail cache
+    Path config_dir; // %APPDATA%\Rekodr (or %REKODR_HOME%\config)
+    Path local_dir;  // %LOCALAPPDATA%\Rekodr (or %REKODR_HOME%\local): log, thumbnail cache
     Path settings;   // config_dir\settings.txt
-    Path share_dir;  // %TEMP%\clipback\share
-    Path link_dir;   // %TEMP%\clipback\link: copies made for a link, until they're uploaded
+    Path share_dir;  // %TEMP%\Rekodr\share
+    Path link_dir;   // %TEMP%\Rekodr\link: copies made for a link, until they're uploaded
 };
 
 // Screens, one struct each, owned by the file of the same name (included from ui.cpp).

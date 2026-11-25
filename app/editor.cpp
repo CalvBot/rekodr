@@ -7,7 +7,7 @@
 // The preview plays the video muted and each edited audio track on its own audio-only engine (player.cpp), so
 // mutes and volumes are heard as they're set (up to 100%: the engine can't go louder).
 
-// The tracks that can be edited: in clipback's files the first track is a Mix of the others, so it's left out
+// The tracks that can be edited: in Rekodr's files the first track is a Mix of the others, so it's left out
 // (Keep and Share rebuild it).
 static i32 ed_tracks(const MediaInfo &m, i32 *out, i32 cap)
 {
@@ -172,7 +172,7 @@ static void edit_write(const Path &file, const EditRecord &e)
     }
     if (e.mode == EDIT_ADVANCED) {
         fprintf(f, "mode = advanced\n"
-                   "# clipback edit, Advanced: items (id track start from to link, then fade in, fade out and crossfade\n"
+                   "# Rekodr edit, Advanced: items (id track start from to link, then fade in, fade out and crossfade\n"
                    "# from the item before, seconds; track 0 the picture, 1 + n audio track n; start on the sequence,\n"
                    "# from and to in the video), item keys (item z time zoom x y ease, or item b, c, s or v for\n"
                    "# brightness, contrast, saturation or volume, then time value ease; times in the video),\n"
@@ -194,7 +194,7 @@ static void edit_write(const Path &file, const EditRecord &e)
         MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
         return;
     }
-    fprintf(f, "# clipback edit: pieces kept in the order they play (from to, seconds; then f fade or x crossfade and\n"
+    fprintf(f, "# Rekodr edit: pieces kept in the order they play (from to, seconds; then f fade or x crossfade and\n"
                "# its length when the piece before goes into it that way), fades from and to black (in out, seconds),\n"
                "# zoom keys (time zoom x y ease), volumes (track volume muted), volume keys (track time volume ease); track m is the whole mix;\n"
                "# colour keys (b brightness, c contrast or s saturation, time value ease; 1 = as recorded);\n"

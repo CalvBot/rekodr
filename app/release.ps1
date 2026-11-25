@@ -1,8 +1,8 @@
-# `build release` runs this after the build. It writes dist\clipback-<version>.exe, the same exe as
-# clipback-setup.exe (the download for new players), its .pdb (for reading crash dumps from that version) and
+# `build release` runs this after the build. It writes dist\rekodr-<version>.exe, the same exe as
+# rekodr-setup.exe (the download for new players), its .pdb (for reading crash dumps from that version) and
 # latest.txt, the manifest the update check reads (update.cpp):
 #   version <version>
-#   url <where clipback-<version>.exe is downloaded from>
+#   url <where rekodr-<version>.exe is downloaded from>
 #   size <bytes>
 #   sha256 <hex>
 #   sig <hex>
@@ -13,19 +13,19 @@ param([string]$Build = "$PSScriptRoot\build", [string]$Dist = "$PSScriptRoot\..\
 $ErrorActionPreference = "Stop"
 
 $base = "TODO"
-$version = [regex]::Match((Get-Content "$PSScriptRoot\version.h" -Raw), 'CLIPBACK_VERSION "([^"]+)"').Groups[1].Value
-if (-not $version) { throw "version.h has no CLIPBACK_VERSION" }
-$built = (Get-Item "$Build\clipback.exe").VersionInfo.ProductVersion
-if ($built -notlike "$version*") { throw "$Build\clipback.exe says $built, version.h says $version" }
+$version = [regex]::Match((Get-Content "$PSScriptRoot\version.h" -Raw), 'REKODR_VERSION "([^"]+)"').Groups[1].Value
+if (-not $version) { throw "version.h has no REKODR_VERSION" }
+$built = (Get-Item "$Build\rekodr.exe").VersionInfo.ProductVersion
+if ($built -notlike "$version*") { throw "$Build\rekodr.exe says $built, version.h says $version" }
 
 New-Item -ItemType Directory -Force $Dist | Out-Null
-$exe = Join-Path $Dist "clipback-$version.exe"
-Copy-Item "$Build\clipback.exe" $exe
-Copy-Item "$Build\clipback.exe" (Join-Path $Dist "clipback-setup.exe") # the same exe; by this name it installs
-Copy-Item "$Build\clipback.pdb" (Join-Path $Dist "clipback-$version.pdb")
+$exe = Join-Path $Dist "rekodr-$version.exe"
+Copy-Item "$Build\rekodr.exe" $exe
+Copy-Item "$Build\rekodr.exe" (Join-Path $Dist "rekodr-setup.exe") # the same exe; by this name it installs
+Copy-Item "$Build\rekodr.pdb" (Join-Path $Dist "rekodr-$version.pdb")
 $size = (Get-Item $exe).Length
 $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 # LF line ends and no BOM: the signature covers these exact bytes
-$text = "version $version`nurl $base/clipback-$version.exe`nsize $size`nsha256 $sha`n"
+$text = "version $version`nurl $base/rekodr-$version.exe`nsize $size`nsha256 $sha`n"
 [IO.File]::WriteAllText((Join-Path $Dist "latest.txt"), $text)
-Write-Host "$exe ($size bytes), clipback-setup.exe and latest.txt, not signed yet"
+Write-Host "$exe ($size bytes), rekodr-setup.exe and latest.txt, not signed yet"

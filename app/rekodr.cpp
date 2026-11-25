@@ -1,4 +1,4 @@
-// clipback: the whole program, built as one translation unit (build.bat compiles only this file).
+// rekodr: the whole program, built as one translation unit (build.bat compiles only this file).
 // See SPEC.md for what it does and how it's put together.
 
 #define WIN32_LEAN_AND_MEAN
@@ -37,7 +37,7 @@
 // so the crash handler writes a minidump (main.cpp).
 static void imgui_assert_failed(const char *expr, const char *file, int line);
 #define IM_ASSERT(e) ((e) ? (void)0 : imgui_assert_failed(#e, __FILE__, __LINE__))
-// ImGui's own debug log (errors always; popups and focus in dev mode, see ui_frame) goes to clipback's log.
+// ImGui's own debug log (errors always; popups and focus in dev mode, see ui_frame) goes to Rekodr's log.
 static void imgui_debug_print(const char *fmt, ...);
 #define IMGUI_DEBUG_PRINTF(_FMT, ...) imgui_debug_print(_FMT, __VA_ARGS__)
 

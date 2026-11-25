@@ -19,7 +19,7 @@ static Diag g_diag;
 static bool dev_env()
 {
     wchar_t v[8] = {};
-    return GetEnvironmentVariableW(L"CLIPBACK_DEV", v, COUNT(v)) && v[0] && wcscmp(v, L"0");
+    return GetEnvironmentVariableW(L"REKODR_DEV", v, COUNT(v)) && v[0] && wcscmp(v, L"0");
 }
 
 static void diag_beat() { g_diag.beat_ms = (i64)GetTickCount64(); }
@@ -44,7 +44,7 @@ static void diag_init()
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_diag.main_thread,
                     THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
     diag_beat();
-    // Symbols from clipback.pdb next to the exe (build.bat writes it there), loaded the first time a stack is walked.
+    // Symbols from rekodr.pdb next to the exe (build.bat writes it there), loaded the first time a stack is walked.
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_FAIL_CRITICAL_ERRORS);
     wchar_t dir[MAX_PATH];
     GetModuleFileNameW(0, dir, MAX_PATH);
@@ -197,7 +197,7 @@ static void diag_watchdog_start()
 {
     HANDLE t = CreateThread(0, 0, diag_watchdog, 0, 0, 0);
     if (t) {
-        SetThreadDescription(t, L"clipback watchdog");
+        SetThreadDescription(t, L"" APP_NAME " watchdog");
         CloseHandle(t);
     }
 }

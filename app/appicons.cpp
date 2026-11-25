@@ -28,7 +28,7 @@ static bool app_find_path(const char *exe, Path *out)
     // lifelog's list of where each exe it saw lives (a test copy reads <home>\\import\\lifelog-paths.txt instead)
     Path paths = {};
     wchar_t home[MAX_PATH] = {}, *local = 0;
-    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
+    if (GetEnvironmentVariableW(L"REKODR_HOME", home, MAX_PATH) && home[0]) {
         swprintf(paths.s, MAX_PATH, L"%s\\import\\lifelog-paths.txt", home);
     } else {
         SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, &local);
@@ -667,7 +667,7 @@ static ID3D11ShaderResourceView *game_art_texture(const char *name, i32 *w, i32 
     return t->srv;
 }
 
-// The icon for a game's name: the database's, else the app clipback knows by that name, else the installed
+// The icon for a game's name: the database's, else the app Rekodr knows by that name, else the installed
 // program's. Null if none has one, for a custom game (whose name may be any program's), and while it is being
 // looked up (one a frame, like app_icon).
 static AppIcon g_game_icons[LIB_MAX_GAMES];
@@ -709,7 +709,7 @@ static void gamedb_on_event(const Event &e)
         for (i32 i = 0; i < c.app_count; i++) changed |= gamedb_name_app(&c.apps[i]);
         if (e.a == GAMEDB_LOADED) {
             log_line("games list: %lld games", e.b);
-            // Videos clipback didn't save may now be placed by their names (game_guess)
+            // Videos Rekodr didn't save may now be placed by their names (game_guess)
             const Library &lib = g_app.library;
             bool other = false;
             for (i32 i = 0; i < lib.item_count && !other; i++) other = !strcmp(lib.items[i].info.game, GAME_NOT_OURS);

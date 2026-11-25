@@ -1,9 +1,9 @@
-// Usage stats and feedback, both to clipback's service (clipback-api) as signed POSTs, like /v1/resolve.
+// Usage stats and feedback, both to Rekodr's service (clipback-api) as signed POSTs, like /v1/resolve.
 //   /v1/stats     once a day at most, only while "Send usage stats" is on: the version, Windows build, encoder, fps
 //                 and height, and how many clips, saves, shares, links and slow-PC warnings since the last report
 //                 that went through. The counts are kept in <local_dir>\stats.txt so they outlive a restart.
 //   /v1/feedback  what the player writes in Options > General > Feedback, with its kind.
-// With "Look up games online" off, neither is sent. The version is CLIPBACK_VERSION (version.h).
+// With "Look up games online" off, neither is sent. The version is REKODR_VERSION (version.h).
 
 struct StatCounts { i32 clips, saves, shares, links, strain; };
 
@@ -100,7 +100,7 @@ static u32 tel_post(const char *path, const char *json)
     utf8_to_wide(path, wpath, COUNT(wpath));
     char sig[128];
     art_service_sign(path, tel_unix_now(), sig, sizeof sig, json);
-    swprintf(header, COUNT(header), L"x-clipback: %hs\r\ncontent-type: application/json\r\n", sig);
+    swprintf(header, COUNT(header), ART_SERVICE_SIG_HEADER L": %hs\r\ncontent-type: application/json\r\n", sig);
     char *body = 0;
     i64 len = 0;
     u32 status = http_get(host, wpath, header, 0, &body, &len, json);
@@ -127,7 +127,7 @@ static void tel_stats_json(const StatCounts &c, char *out, i32 cap)
     snprintf(out, cap,
              "{\"version\":\"%s\",\"windows\":\"%s\",\"encoder\":\"%s\",\"fps\":%d,\"height\":%d,\"clips\":%d,"
              "\"saves\":%d,\"shares\":%d,\"links\":%d,\"strain\":%d}",
-             CLIPBACK_VERSION, win, enc, (int)cfg.fps, (int)cfg.height, c.clips, c.saves, c.shares, c.links, c.strain);
+             REKODR_VERSION, win, enc, (int)cfg.fps, (int)cfg.height, c.clips, c.saves, c.shares, c.links, c.strain);
 }
 
 static DWORD WINAPI tel_stats_thread(void *arg)
@@ -202,7 +202,7 @@ static void tel_feedback_json(i32 kind, const char *text, char *out, i32 cap)
     memcpy(cut, text, n);
     cut[n] = 0;
     json_escape(trim(cut), esc, sizeof esc);
-    snprintf(out, cap, "{\"version\":\"%s\",\"kind\":\"%s\",\"text\":\"%s\"}", CLIPBACK_VERSION, FEEDBACK_KINDS[kind], esc);
+    snprintf(out, cap, "{\"version\":\"%s\",\"kind\":\"%s\",\"text\":\"%s\"}", REKODR_VERSION, FEEDBACK_KINDS[kind], esc);
 }
 
 // After a send, Send waits FEEDBACK_WAIT_MS. How much of the wait is left: 1 just sent, 0 = it may send again.

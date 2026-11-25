@@ -1,11 +1,11 @@
 // Builds the installable Stream Deck plugin: node streamdeck\pack.mjs
 // Checks the manifest the way Stream Deck and the Marketplace do, then zips the .sdPlugin folder into
-// streamdeck\build\dev.calvbot.clipback.streamDeckPlugin. Double-clicking that file installs the plugin.
+// streamdeck\build\dev.calvbot.rekodr.streamDeckPlugin. Double-clicking that file installs the plugin.
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 
-const UUID = "dev.calvbot.clipback";
+const UUID = "dev.calvbot.rekodr";
 const root = path.join(import.meta.dirname, UUID + ".sdPlugin");
 const out = path.join(import.meta.dirname, "build", UUID + ".streamDeckPlugin");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));

@@ -263,7 +263,7 @@ static void ui_center_icons(ImFont *font, f32 mid)
     }
 }
 
-// An Onest weight built into the exe (an RCDATA resource, clipback.rc). The atlas reads it in place.
+// An Onest weight built into the exe (an RCDATA resource, rekodr.rc). The atlas reads it in place.
 static void *ui_font_resource(i32 id, i32 *size)
 {
     HRSRC res = FindResourceW(0, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10)); // RT_RCDATA
@@ -456,7 +456,7 @@ static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-// The work area of the monitor furthest right, where a test copy (CLIPBACK_HOME) puts its window and toasts.
+// The work area of the monitor furthest right, where a test copy (REKODR_HOME) puts its window and toasts.
 static bool rightmost_monitor(RECT *work, HMONITOR *mon)
 {
     struct Best { RECT work; HMONITOR mon; } best = {{LONG_MIN}, 0};
@@ -482,10 +482,10 @@ static bool ui_init()
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.hCursor = LoadCursorW(0, IDC_ARROW);
     wc.hbrBackground = CreateSolidBrush(RGB(0x0a, 0x0a, 0x0a));
-    wc.lpszClassName = L"clipback.window";
+    wc.lpszClassName = L"rekodr.window";
     RegisterClassExW(&wc);
 
-    // Centered on the main monitor, sized for it. A test copy (CLIPBACK_HOME) starts on the rightmost monitor instead,
+    // Centered on the main monitor, sized for it. A test copy (REKODR_HOME) starts on the rightmost monitor instead,
     // away from the user's work.
     f32 scale = GetDpiForSystem() / 96.f;
     RECT work;
@@ -530,7 +530,7 @@ static void ui_show(Screen screen)
     DEV_LOG("show window, screen %d (was %s)", (int)screen, ui.shown ? "shown" : "hidden");
     ui.screen = screen;
     g_app.timeline.quick = false;
-    // A test copy (CLIPBACK_HOME) shows itself without taking the foreground, so tests leave the user's work alone
+    // A test copy (REKODR_HOME) shows itself without taking the foreground, so tests leave the user's work alone
     bool test = is_test_copy();
     if (!ui.shown) {
         ShowWindow(ui.hwnd, IsZoomed(ui.hwnd) ? SW_SHOWMAXIMIZED : test ? SW_SHOWNOACTIVATE : SW_SHOW);
@@ -1133,7 +1133,7 @@ static bool help_row_shown(const char *title, const HelpRow &r, const char *q)
 }
 
 // One group of the Help window, in a column w wide, with only the rows matching the search find (none: nothing drawn).
-// A row's keys are written with markup: [Ctrl] is drawn as a key cap (lit while held), `clipback open` as a command,
+// A row's keys are written with markup: [Ctrl] is drawn as a key cap (lit while held), `Rekodr open` as a command,
 // and anything else (mouse actions, "+", " / ") as plain text.
 static void help_section(const char *title, const HelpRow *rows, i32 count, f32 w, const char *find)
 {
@@ -1213,10 +1213,10 @@ static void help_window()
     bool open = true;
     if (ImGui::BeginPopupModal("Help", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
         static const HelpRow anywhere[] = {
-            {"`clipback save 90s`", "Save the last 90 s (or 30s, 2m, 1h ...)"},
-            {"`clipback timeline`", "Open the buffer timeline"},
-            {"`clipback open`", "Open this window"},
-            {"`clipback toggle`", "Recording on / off"},
+            {"`rekodr save 90s`", "Save the last 90 s (or 30s, 2m, 1h ...)"},
+            {"`rekodr timeline`", "Open the buffer timeline"},
+            {"`rekodr open`", "Open this window"},
+            {"`rekodr toggle`", "Recording on / off"},
         };
         static const HelpRow window[] = {{"[F1]", "This help"}, {"[Esc]", "Close this help"},
                                          {"[Esc]", "Options, setting a hotkey's keys: cancel"}};

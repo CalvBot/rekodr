@@ -1,5 +1,5 @@
 // Icon 1 is the app icon; 2 and 3 are the tray icons (recording, paused). Drawn by assets/make_icons.py.
-1 ICON "../assets/clipback.ico"
+1 ICON "../assets/rekodr.ico"
 2 ICON "../assets/tray-recording.ico"
 3 ICON "../assets/tray-paused.ico"
 
@@ -18,8 +18,8 @@
 #include "version.h"
 
 1 VERSIONINFO
-FILEVERSION CLIPBACK_VERSION_NUM
-PRODUCTVERSION CLIPBACK_VERSION_NUM
+FILEVERSION REKODR_VERSION_NUM
+PRODUCTVERSION REKODR_VERSION_NUM
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -27,8 +27,8 @@ BEGIN
     BEGIN
       VALUE "ProductName", APP_NAME
       VALUE "FileDescription", APP_NAME " replay buffer"
-      VALUE "FileVersion", CLIPBACK_VERSION
-      VALUE "ProductVersion", CLIPBACK_VERSION
+      VALUE "FileVersion", REKODR_VERSION
+      VALUE "ProductVersion", REKODR_VERSION
     END
   END
   BLOCK "VarFileInfo"

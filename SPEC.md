@@ -1,6 +1,6 @@
-# clipback spec
+# Rekodr spec
 
-clipback records the screen and every app's audio all the time into a long buffer on disk. Later it turns parts of
+Rekodr records the screen and every app's audio all the time into a long buffer on disk. Later it turns parts of
 that buffer into files worth keeping or sharing. This spec describes it: one native C++ program plus
 ffmpeg. It replaced an earlier Rust service with a C# window and Edge pages; no code carried over, and that
 version is in the git history only.
@@ -22,7 +22,7 @@ Keep a whole session from start to finish.
   desktop toast asks, laid out like Clip saved: *Session ended*, `Overwatch - 2 h 14 min`, **Review** and **Save**.
   - It appears in the corner of the popups' monitor and never takes the keyboard focus. If a game is in front, it
     waits until it isn't. It goes after 5 s, counted down by a ring round its Dismiss X, unless the mouse is on it.
-  - **Review** opens clipback on the session in the timeline. With several sessions waiting, the toast shows the
+  - **Review** opens Rekodr on the session in the timeline. With several sessions waiting, the toast shows the
     newest with "+N more", and Review opens the Library's unsaved sessions instead.
   - Closing or ignoring it leaves the session in the Sessions screen under *Not saved*. It shows how long the
     session will stay in the buffer before it's gone, and it can still be saved from there.
@@ -37,7 +37,7 @@ Keep a whole session from start to finish.
 ### 2. Clips from the buffer
 - **Quick save:** a hotkey, Stream Deck key or tray item saves the last *N* (30 s, 2 min, 1 h, any length) into
   `Clips\<year>\`. The video is stream-copied, so a save takes seconds.
-- **Timeline:** a hotkey, Stream Deck key (`clipback timeline`) or tray item opens the window on the buffer timeline:
+- **Timeline:** a hotkey, Stream Deck key (`Rekodr timeline`) or tray item opens the window on the buffer timeline:
   - It shows the last hour, and zooms out to the whole buffer.
   - **Rows:** thumbnails, a band per game played, and one row per audio stream showing when each app made sound.
   - Drag to select a range and play to check it. **Save** writes it to `Clips\<year>` with every audio track.
@@ -107,7 +107,7 @@ Keep a whole session from start to finish.
     size, default 20) Share makes a file at the recommended size; when *Lower quality to fit* (`share_min_quality`,
     a percent from 50 to 100, default 67, 100 = off) of it fits the max, a file squeezed to the max; further over,
     a link. Every file is a new H.264 copy with the edit applied and one stereo mix, in
-    `%TEMP%\clipback\share\` and on the clipboard, ready to paste; share copies never go in the Clips folder. The
+    `%TEMP%\Rekodr\share\` and on the clipboard, ready to paste; share copies never go in the Clips folder. The
     original is the untouched clip, shown in its folder. A file or link made for the same clip, edit and settings
     is given again at once (`made-shares.tsv` in the local folder); a new edit or new settings make a new one.
     Share files are kept 7 days from their last use (`share_keep_days`). Deleting a clip deletes its share files and
@@ -117,11 +117,11 @@ Keep a whole session from start to finish.
     Without one: the first uploader that's on; with none, Share says to sign in with Cloudflare (from the library
     and the editor it opens Options there).
     When the bucket can't take a link (its keys unreadable, or the month's reads near `r2_read_cap`)
-    the link fails with the reason rather than going to an uploader. The bucket is `clipback` (`r2_bucket` in the
+    the link fails with the reason rather than going to an uploader. The bucket is `Rekodr` (`r2_bucket` in the
     config file). Its public address is its r2.dev address or a custom domain connected to it in Cloudflare,
     picked under Options' Advanced; r2.dev is rate-limited by Cloudflare.
     An R2 link is a small preview page (`share_link_page`, on; off gives the .mp4 itself): the clip full width on a
-    dark page with a plain "clipback" under it, and the tags chat apps read for a card with its title and a frame
+    dark page with a plain "Rekodr" under it, and the tags chat apps read for a card with its title and a frame
     from a third of the way in (at most 1280 wide) that plays it. Uploader links are the .mp4. Reads of
     the page and its picture count with the clip's. A paused link's page names the clip and doesn't play it.
     The bucket holds all that the budget buys (`r2_budget`, dollars a month; 0 = R2's free 10 GB). Before each
@@ -160,17 +160,17 @@ Keep a whole session from start to finish.
 
 ## Folders
 
-Everything clipback saves goes under one folder (setting, default `<Videos>\clipback`), videos in a folder per year:
+Everything Rekodr saves goes under one folder (setting, default `<Videos>\Rekodr`), videos in a folder per year:
 
 ```
-<Videos>\clipback\Clips\2026\<Game> 2026-11-15 21-04-10.mp4    clips (quick saves, timeline saves, Keep)
-<Videos>\clipback\Clips\2026\Source\                          edited clips' originals (Playable copies)
-<Videos>\clipback\Sessions\2026\<Name> 2026-11-15 19-02.mp4    sessions
-<Videos>\clipback\Data\                                       everything that isn't video
+<Videos>\Rekodr\Clips\2026\<Game> 2026-11-15 21-04-10.mp4    clips (quick saves, timeline saves, Keep)
+<Videos>\Rekodr\Clips\2026\Source\                          edited clips' originals (Playable copies)
+<Videos>\Rekodr\Sessions\2026\<Name> 2026-11-15 19-02.mp4    sessions
+<Videos>\Rekodr\Data\                                       everything that isn't video
 <buffer>\                                                      the rolling buffer (format below)
-%APPDATA%\clipback\config                                      settings
-%LOCALAPPDATA%\clipback\                                       log, thumbnail cache
-%TEMP%\clipback\share\                                         share copies
+%APPDATA%\Rekodr\config                                      settings
+%LOCALAPPDATA%\Rekodr\                                       log, thumbnail cache
+%TEMP%\Rekodr\share\                                         share copies
 ```
 
 `Data` holds one small text file per clip or session, named after the video, for every year:
@@ -205,7 +205,7 @@ This works today and stays the same, including the on-disk buffer format, so swi
 - **Audio:** WASAPI process loopback per app (including its child processes), plus the mic. Each stream is encoded
   to Opus in 10 s segments in `buffer\audio\<stream>\`, timed to the wall clock from WASAPI packet timestamps.
   - A stream starts when an app plays sound and ends 30 s after it goes quiet or exits.
-  - Excluded apps and clipback's own playback are never recorded.
+  - Excluded apps and Rekodr's own playback are never recorded.
 - **Which game:** every 2 s, the game being played is the game whose window is in front. Failing that, it's the last
   one played if it's still running, then any running game, then the desktop. Changes are logged to
   `buffer\activity.tsv`. This log drives file names, tags, sessions and per-game bitrate.
@@ -228,7 +228,7 @@ This works today and stays the same, including the on-disk buffer format, so swi
 
 **One process, plus ffmpeg.** ffmpeg does all capture and encoding in child processes: recording, audio
 encoding, saves, Keep, Share and thumbnails. They talk through command-line arguments and files, and they are tied
-to clipback with a job object so they die with it. Everything else is `clipback.exe`.
+to Rekodr with a job object so they die with it. Everything else is `rekodr.exe`.
 
 **One state struct, one owner.** The main thread owns `App` and is the only thread that changes it. Worker threads
 keep their own private data (WASAPI clients, ffmpeg pipes). They report events to the main thread through a queue,
@@ -267,12 +267,12 @@ struct App {
 **Video playback** uses Media Foundation with hardware decoding into D3D11 textures on the UI's device, both for
 clips and for buffer segments. Scrubbing uses thumbnail strips.
 
-**Outside control:** `clipback.exe <command>` (`save 90s`, `timeline`, `open`, `pause`, `quit` …) finds the running
-copy, hands it the command as a `WM_COPYDATA` message and exits. With no running copy, it starts clipback. Hotkeys
+**Outside control:** `rekodr.exe <command>` (`save 90s`, `timeline`, `open`, `pause`, `quit` …) finds the running
+copy, hands it the command as a `WM_COPYDATA` message and exits. With no running copy, it starts Rekodr. Hotkeys
 use `RegisterHotKey`.
 
-Programs that also show clipback's state use the named pipe `\\.\pipe\clipback` (`app/pipe.cpp`): the same commands
-go in, a line each, and clipback sends back its state (recording, paused, the game, how far back the buffer goes)
+Programs that also show Rekodr's state use the named pipe `\\.\pipe\rekodr` (`app/pipe.cpp`): the same commands
+go in, a line each, and Rekodr sends back its state (recording, paused, the game, how far back the buffer goes)
 and the result of each save as lines of JSON. The Stream Deck plugin in `streamdeck/` uses it. A pipe is local to
 the PC, so this is not a network API.
 
@@ -286,7 +286,7 @@ was moved), and a range that can't be saved still gets a failed `saved` line.
 - Asserts state what was expected and what was found, and go to the log.
 - A crash writes a minidump and the log line.
 - After a crash the app starts itself again (once, if the new copy also crashes within a minute).
-- ffmpeg stops with clipback, because it runs in a job that closes with it, so no orphan is left. The restarted
+- ffmpeg stops with Rekodr, because it runs in a job that closes with it, so no orphan is left. The restarted
   copy records again within a few seconds, and the buffer on disk is kept. A self-update leaves the same short gap.
 
 ## Screens
@@ -314,27 +314,27 @@ One window with a header (status, pause, Help, Options):
 - Dark theme, as today.
 
 ## Targets
-- Window hidden: about 0% CPU for clipback itself (ffmpeg aside), under 50 MB private memory, no GPU work.
+- Window hidden: about 0% CPU for Rekodr itself (ffmpeg aside), under 50 MB private memory, no GPU work.
 - Window appears in under 100 ms.
 - Quick saves and timeline saves finish in seconds, even for an hour.
 
 ## Code
-- **Build:** C++, one unity build. `build.bat` runs `cl` on a single `clipback.cpp` that includes everything else.
+- **Build:** C++, one unity build. `build.bat` runs `cl` on a single `rekodr.cpp` that includes everything else.
   No CMake or Ninja.
 - **Style:** plain structs that are valid when zeroed (ZII), and functions that operate on them. No class
   hierarchies or RAII wrappers. Data-oriented: fixed arrays where the maximum is known.
 - **Dependencies:** the Windows SDK (D3D11, DXGI, Media Foundation, WASAPI, Shell) and Dear ImGui (vendored
   source). ffmpeg and ffprobe are found on the PATH or set in settings.
 - **Games database** (`gamedb.cpp`): which exe is which game, its proper name, its icon and cover. Nothing is
-  shipped; clipback fetches Discord's public list of detectable games (about 25,000, with each game's exe names,
+  shipped; Rekodr fetches Discord's public list of detectable games (about 25,000, with each game's exe names,
   the folders they sit in, and the command line that tells apart an exe several games share, such as `javaw.exe`)
-  and keeps it under `%LOCALAPPDATA%\clipback\gamedb`, fetching it again after a week. Icons come from Discord's
+  and keeps it under `%LOCALAPPDATA%\Rekodr\gamedb`, fetching it again after a week. Icons come from Discord's
   image server and covers from Steam's, each the first time something shows it. A known game is named properly and,
   if it hasn't been sorted, becomes a Game. An app the list can't place is named by hand: naming an app in
-  Options searches the list as you type. These are the only web requests clipback makes, and Options › General
+  Options searches the list as you type. These are the only web requests Rekodr makes, and Options › General
   turns them off.
 - **lifelog:** no code link. Shared data (the game list, app categories, and lifelog's view of what's playing if
-  wanted) goes through plain files that both read. clipback has its own small process watcher, icon extraction and
+  wanted) goes through plain files that both read. Rekodr has its own small process watcher, icon extraction and
   clipboard code.
 
 ## Not doing
@@ -342,7 +342,7 @@ One window with a header (status, pause, Help, Options):
 - Web or Edge pages.
 - A separate UI process.
 - Recording more than one monitor at once.
-- Accounts or logging in to clipback.
+- Accounts or logging in to Rekodr.
 - Joining several clips into one video (montages).
 - Cropping to vertical for Shorts or TikTok.
 - Play-time stats per game.
@@ -352,4 +352,4 @@ One window with a header (status, pause, Help, Options):
 ## Open questions
 1. Cuts snap to the 2 s keyframes today. Should they be frame-exact, by re-encoding only the first part?
 2. Audio: keep one ffmpeg per stream for Opus, or link libopus and write the segments directly?
-3. Which files lifelog and clipback share, given lifelog is being rewritten too.
+3. Which files lifelog and Rekodr share, given lifelog is being rewritten too.

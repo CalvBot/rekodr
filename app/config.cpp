@@ -1,16 +1,16 @@
 // Folders and settings. Settings live in a plain `key = value` text file (settings.txt), written whenever Options
 // changes something. Unknown keys are ignored, missing keys keep their defaults.
 //
-// CLIPBACK_HOME (for development and tests) moves every folder clipback uses under that one folder, so a test copy
+// REKODR_HOME (for development and tests) moves every folder Rekodr uses under that one folder, so a test copy
 // never touches the real settings, buffer or clips.
 
-// A test copy (CLIPBACK_HOME) leaves the hotkeys and Windows' Run list to the real clipback.
+// A test copy (REKODR_HOME) leaves the hotkeys and Windows' Run list to the real Rekodr.
 static bool is_test_copy() { return test_home_hash() != 0; }
 
 static void paths_init(Paths *p)
 {
     wchar_t home[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
+    if (GetEnvironmentVariableW(L"REKODR_HOME", home, MAX_PATH) && home[0]) {
         swprintf(p->config_dir.s, MAX_PATH, L"%s\\config", home);
         swprintf(p->local_dir.s, MAX_PATH, L"%s\\local", home);
         swprintf(p->share_dir.s, MAX_PATH, L"%s\\share", home);
@@ -19,23 +19,23 @@ static void paths_init(Paths *p)
         wchar_t *roaming = 0, *local = 0;
         SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, 0, &roaming);
         SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, &local);
-        swprintf(p->config_dir.s, MAX_PATH, L"%s\\clipback", roaming ? roaming : L".");
-        swprintf(p->local_dir.s, MAX_PATH, L"%s\\clipback", local ? local : L".");
+        swprintf(p->config_dir.s, MAX_PATH, L"%s\\" APP_NAME, roaming ? roaming : L".");
+        swprintf(p->local_dir.s, MAX_PATH, L"%s\\" APP_NAME, local ? local : L".");
         CoTaskMemFree(roaming);
         CoTaskMemFree(local);
         wchar_t temp[MAX_PATH];
         GetTempPathW(MAX_PATH, temp); // ends in a backslash
-        swprintf(p->share_dir.s, MAX_PATH, L"%sclipback\\share", temp);
-        swprintf(p->link_dir.s, MAX_PATH, L"%sclipback\\link", temp);
+        swprintf(p->share_dir.s, MAX_PATH, L"%s" APP_NAME L"\\share", temp);
+        swprintf(p->link_dir.s, MAX_PATH, L"%s" APP_NAME L"\\link", temp);
     }
     p->settings = path_join(p->config_dir, L"settings.txt");
     SHCreateDirectoryExW(0, p->config_dir.s, 0);
     SHCreateDirectoryExW(0, p->local_dir.s, 0);
-    Path log = path_join(p->local_dir, L"clipback-native.log");
-    // Past 10 MB the log starts again; the previous one is kept as clipback-native.old.log.
+    Path log = path_join(p->local_dir, L"rekodr-native.log");
+    // Past 10 MB the log starts again; the previous one is kept as rekodr-native.old.log.
     WIN32_FILE_ATTRIBUTE_DATA fa;
     if (GetFileAttributesExW(log.s, GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 10u << 20))
-        MoveFileExW(log.s, path_join(p->local_dir, L"clipback-native.old.log").s, MOVEFILE_REPLACE_EXISTING);
+        MoveFileExW(log.s, path_join(p->local_dir, L"rekodr-native.old.log").s, MOVEFILE_REPLACE_EXISTING);
     wcscpy_s(g_log_path, log.s);
 }
 
@@ -47,7 +47,7 @@ static void config_defaults(Config *c, const Paths &paths)
 {
     *c = {};
     wchar_t home[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
+    if (GetEnvironmentVariableW(L"REKODR_HOME", home, MAX_PATH) && home[0]) {
         swprintf(c->save_dir.s, MAX_PATH, L"%s\\" APP_NAME, home);
         swprintf(c->buffer_dir.s, MAX_PATH, L"%s\\buffer", home);
     } else {
@@ -86,7 +86,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->render_edits = true;
     memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);
     c->share_link_page = true;
-    str_set(c->r2_bucket, "clipback");
+    str_set(c->r2_bucket, "rekodr");
     c->r2_read_cap = 10000000;  // R2's free Class B requests a month
     c->r2_read_rate = 1000000;
     c->wave_keep_days = 30;
@@ -561,7 +561,7 @@ static bool config_save(const Config &c, const Paths &paths)
     auto path = [&](const char *k, const Path &p) { wide_to_utf8(p.s, u, sizeof u); fprintf(f, "%s = %s\n", k, u); };
     auto boolean = [&](const char *k, bool b) { fprintf(f, "%s = %s\n", k, b ? "true" : "false"); };
 
-    fprintf(f, "# clipback settings. Options writes this file; it's safe to edit while clipback is closed.\n\n");
+    fprintf(f, "# " APP_NAME " settings. Options writes this file; it's safe to edit while " APP_NAME " is closed.\n\n");
     path("save_dir", c.save_dir);
     path("buffer_dir", c.buffer_dir);
     path("play_dir", c.play_dir);

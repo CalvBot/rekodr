@@ -3,7 +3,7 @@
 //
 // Workers, none of which touch g_app:
 // - detection: a one-frame test encode per vendor and codec at start, retried while no GPU encoder works (the
-//   driver can still be loading when Windows starts clipback);
+//   driver can still be loading when Windows starts Rekodr);
 // - the recorder thread: starts ffmpeg, and restarts it when it exits (lock screen, UAC, display change, driver
 //   reset), on pause and resume, and when settings that affect it change;
 // - the pruner: every 30 s deletes footage older than buffer_hours, or the oldest early when free space is low.
@@ -167,7 +167,7 @@ struct RecShared {
     u8          works[CODEC_COUNT]; // per codec, bit per vendor whose test encode worked
     wchar_t     run[64];    // the run folder being written; the pruner leaves it alone
     HANDLE      wake;        // auto-reset: the recorder thread looks at the shared state now
-    HANDLE      stop;        // manual-reset: clipback is quitting
+    HANDLE      stop;        // manual-reset: Rekodr is quitting
     HANDLE      detect_done; // manual-reset: detection has a result
     HANDLE      recorder_thread, prune_thread;
 };
@@ -189,7 +189,7 @@ static bool rec_stopping()
     return WaitForSingleObject(g_rec.stop, 0) == WAIT_OBJECT_0;
 }
 
-// Sleeps up to `ms`, ending early when clipback quits (then returns true) or, with `wake`, when the main thread
+// Sleeps up to `ms`, ending early when Rekodr quits (then returns true) or, with `wake`, when the main thread
 // changed something.
 static bool rec_sleep(u32 ms, bool wake)
 {
@@ -505,7 +505,7 @@ static void detect_summary(const u8 *works, char *out, i32 cap)
 
 // Until ffmpeg is found (being downloaded by ffget, or a path still to be set in Options) it is looked for every
 // 5 s, and the encoders are tested as soon as it is there. A GPU driver can still be loading when Windows starts
-// clipback, so finding no GPU encoder is then retried 4 times, 30 s apart. The recorder thread switches over when
+// Rekodr, so finding no GPU encoder is then retried 4 times, 30 s apart. The recorder thread switches over when
 // a retry finds one.
 static DWORD WINAPI detect_thread(void *)
 {
@@ -680,7 +680,7 @@ static void rec_snapshot(RecSnapshot *out)
     ReleaseSRWLockShared(&g_rec.lock);
 }
 
-// Runs until clipback quits. Only changes of state are logged, so hours on the lock screen don't flood the log.
+// Runs until Rekodr quits. Only changes of state are logged, so hours on the lock screen don't flood the log.
 static DWORD WINAPI recorder_thread(void *)
 {
     static RecSnapshot snap, now; // big (paths); static keeps them off the thread's stack

@@ -1,11 +1,11 @@
-// Tests for the parts of clipback that are plain logic: parsing, folder rules, the settings file. `test.bat` builds
+// Tests for the parts of Rekodr that are plain logic: parsing, folder rules, the settings file. `test.bat` builds
 // this into build\tests.exe and runs it; it exits with the number of failures.
 //
-// It is the whole program (clipback.cpp) with its entry point renamed, so every function can be called as it is.
+// It is the whole program (rekodr.cpp) with its entry point renamed, so every function can be called as it is.
 // Nothing here starts the recorder, opens a window or touches the real settings.
 
-#define wWinMain clipback_main
-#include "clipback.cpp"
+#define wWinMain rekodr_main
+#include "rekodr.cpp"
 #undef wWinMain
 
 static i32 g_failed, g_checked;
@@ -308,7 +308,7 @@ static void test_buffer_many()
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     Path root = {};
-    swprintf(root.s, MAX_PATH, L"%sclipback-test-buffer-%u", temp, GetCurrentProcessId());
+    swprintf(root.s, MAX_PATH, L"%srekodr-test-buffer-%u", temp, GetCurrentProcessId());
     Path audio = path_join(root, L"audio");
     SHCreateDirectoryExW(0, audio.s, 0);
     const i32 streams = 1100, segs = 70; // 77000 segments
@@ -374,7 +374,7 @@ static void test_erase()
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     Path root = {};
-    swprintf(root.s, MAX_PATH, L"%sclipback-test-erase-%u", temp, GetCurrentProcessId());
+    swprintf(root.s, MAX_PATH, L"%srekodr-test-erase-%u", temp, GetCurrentProcessId());
     Path run = path_join(path_join(root, L"video"), L"run1"), stream = path_join(path_join(root, L"audio"), L"s1_mic_0");
     Path posters = path_join(root, L"posters");
     SHCreateDirectoryExW(0, run.s, 0);
@@ -489,7 +489,7 @@ static void test_backup()
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     Path root = {};
-    swprintf(root.s, MAX_PATH, L"%sclipback-test-backup-%u", temp, GetCurrentProcessId());
+    swprintf(root.s, MAX_PATH, L"%srekodr-test-backup-%u", temp, GetCurrentProcessId());
     Path from = path_join(root, L"from"), to = path_join(root, L"to");
     auto put = [](const Path &dir, const wchar_t *name, const char *text, i64 age_s) {
         SHCreateDirectoryExW(0, dir.s, 0);
@@ -557,9 +557,9 @@ static void test_telemetry()
     static char out[8192];
     StatCounts c = {3, 1, 2, 4, 5};
     tel_stats_json(c, out, sizeof out);
-    T(strstr(out, "\"version\":\"" CLIPBACK_VERSION "\"") && strstr(out, "\"clips\":3,\"saves\":1,\"shares\":2,\"links\":4,\"strain\":5}"));
+    T(strstr(out, "\"version\":\"" REKODR_VERSION "\"") && strstr(out, "\"clips\":3,\"saves\":1,\"shares\":2,\"links\":4,\"strain\":5}"));
     tel_feedback_json(1, "  it \"works\"\n", out, sizeof out);
-    T(!strcmp(out, "{\"version\":\"" CLIPBACK_VERSION "\",\"kind\":\"idea\",\"text\":\"it \\\"works\\\"\"}"));
+    T(!strcmp(out, "{\"version\":\"" REKODR_VERSION "\",\"kind\":\"idea\",\"text\":\"it \\\"works\\\"\"}"));
     static char longer[3000];
     memset(longer, 'a', sizeof longer - 1);
     ((u8 *)longer)[FB_TEXT_MAX - 1] = 0xc3; // a two-byte character across the limit is dropped whole
@@ -761,7 +761,7 @@ static void test_sessions_seen()
     GetTempPathW(MAX_PATH, temp);
     Paths keep = g_app.paths;
     Path buffer = g_app.config.buffer_dir;
-    swprintf(g_app.paths.local_dir.s, MAX_PATH, L"%sclipback-tests-ses-%lu", temp, GetCurrentProcessId());
+    swprintf(g_app.paths.local_dir.s, MAX_PATH, L"%srekodr-tests-ses-%lu", temp, GetCurrentProcessId());
     CreateDirectoryW(g_app.paths.local_dir.s, 0);
     g_app.config.buffer_dir = g_app.paths.local_dir; // no activity.tsv: only the file comes back
     Sessions &ss = g_app.sessions;
@@ -821,7 +821,7 @@ static void test_settings_round_trip()
     static Paths paths;
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
-    swprintf(paths.config_dir.s, MAX_PATH, L"%sclipback-tests-%lu", temp, GetCurrentProcessId());
+    swprintf(paths.config_dir.s, MAX_PATH, L"%srekodr-tests-%lu", temp, GetCurrentProcessId());
     paths.local_dir = paths.config_dir;
     paths.settings = path_join(paths.config_dir, L"settings.txt");
     CreateDirectoryW(paths.config_dir.s, 0);
@@ -877,7 +877,7 @@ static void test_settings_round_trip()
         config_defaults(&e, paths);
         char empty[] = "";
         config_set(&e, "r2_bucket", empty);
-        T(!strcmp(e.r2_bucket, "clipback"));
+        T(!strcmp(e.r2_bucket, "rekodr"));
         // The accent: six hex digits; anything else keeps the default
         T(e.accent == ACCENT_DEFAULT);
         char acc[16];
@@ -978,7 +978,7 @@ static void test_render()
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     Path keep = g_app.config.save_dir;
-    swprintf(g_app.config.save_dir.s, MAX_PATH, L"%sclipback-test-render-%u", temp, GetCurrentProcessId());
+    swprintf(g_app.config.save_dir.s, MAX_PATH, L"%srekodr-test-render-%u", temp, GetCurrentProcessId());
     Path root = g_app.config.save_dir;
     Path clips = path_join(path_join(root, L"Clips"), L"2026"), data = path_join(root, L"Data");
     Path source = path_join(clips, L"Source");
@@ -1366,7 +1366,7 @@ static void test_edit_volumes()
     wchar_t dir[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
     Path file = {};
-    swprintf(file.s, MAX_PATH, L"%sclipback-test-%u.edit.txt", dir, GetCurrentProcessId());
+    swprintf(file.s, MAX_PATH, L"%srekodr-test-%u.edit.txt", dir, GetCurrentProcessId());
     edit_write(file, e);
     static EditRecord r;
     edit_read(file, &r);
@@ -1389,7 +1389,7 @@ static void test_gamedb()
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     Path dir = {};
-    swprintf(dir.s, MAX_PATH, L"%sclipback-test-gamedb-%u", temp, GetCurrentProcessId());
+    swprintf(dir.s, MAX_PATH, L"%srekodr-test-gamedb-%u", temp, GetCurrentProcessId());
     CreateDirectoryW(dir.s, 0);
     Path json = path_join(dir, L"d.json"), tsv = path_join(dir, L"g.tsv");
     static const char *list =
@@ -1560,13 +1560,13 @@ static void test_r2()
     char code[32];
     T(r2_xml("<Error><Code>NoSuchBucket</Code></Error>", "Code", code, sizeof code) && !strcmp(code, "NoSuchBucket"));
 
-    // Names: clipback/<16 letters and digits>/clip.mp4, never the same twice
+    // Names: rekodr/<16 letters and digits>/clip.mp4, never the same twice
     char a[R2_KEY_MAX], b[R2_KEY_MAX];
     r2_new_key(a);
     r2_new_key(b);
-    T(strlen(a) == 34 && starts_with(a, "clipback/") && !strcmp(a + 25, "/clip.mp4") && strcmp(a, b));
+    T(strlen(a) == 32 && starts_with(a, "rekodr/") && !strcmp(a + 23, "/clip.mp4") && strcmp(a, b));
     bool plain = true;
-    for (i32 i = 9; i < 25; i++) plain &= isalnum((u8)a[i]) != 0;
+    for (i32 i = 7; i < 23; i++) plain &= isalnum((u8)a[i]) != 0;
     T(plain);
     char url[128];
     r2_make_url("https://pub-x.r2.dev/", "k.mp4", 1, url, sizeof url);
@@ -1747,10 +1747,10 @@ static void test_r2()
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     Path file = {};
-    swprintf(file.s, MAX_PATH, L"%sclipback-tests-%lu-shares.tsv", temp, GetCurrentProcessId());
+    swprintf(file.s, MAX_PATH, L"%srekodr-tests-%lu-shares.tsv", temp, GetCurrentProcessId());
     static R2Share w[2], r[4];
     w[0] = {};
-    str_set(w[0].key, "clipback/abcdefghijklmnop/clip.mp4");
+    str_set(w[0].key, "rekodr/abcdefghijklmnop/clip.mp4");
     str_set(w[0].url, "https://x/abc.mp4?v=2");
     str_set(w[0].title, "ace\tround");
     str_set(w[0].game, "Valorant");
@@ -1766,7 +1766,7 @@ static void test_r2()
     w[1].version = 1;
     w[1].host = HOST_CUSTOM;
     w[0].paused = 2;
-    str_set(w[0].hidden, "clipback/qrstuvwxyzabcdef/clip.mp4");
+    str_set(w[0].hidden, "rekodr/qrstuvwxyzabcdef/clip.mp4");
     w[0].pause_day = 20261121;
     w[0].page_w = 1920;
     w[0].page_h = 1080;
@@ -1795,10 +1795,10 @@ static void test_r2()
 
     // Preview pages: the page beside the clip's folder, the picture in it, at most 1280 wide and even
     char pkey[R2_KEY_MAX];
-    r2_page_key("clipback/abcdefghijklmnop/clip.mp4", pkey);
-    T(!strcmp(pkey, "clipback/abcdefghijklmnop"));
-    r2_thumb_key("clipback/qrstuvwxyzabcdef/clip.mp4", pkey);
-    T(!strcmp(pkey, "clipback/qrstuvwxyzabcdef/thumb.jpg"));
+    r2_page_key("rekodr/abcdefghijklmnop/clip.mp4", pkey);
+    T(!strcmp(pkey, "rekodr/abcdefghijklmnop"));
+    r2_thumb_key("rekodr/qrstuvwxyzabcdef/clip.mp4", pkey);
+    T(!strcmp(pkey, "rekodr/qrstuvwxyzabcdef/thumb.jpg"));
     i32 tw, th;
     r2_thumb_size(1920, 1080, &tw, &th);
     T(tw == 1280 && th == 720);
@@ -1815,8 +1815,8 @@ static void test_r2()
     static const u8 past_ascii[] = {'c', 'a', 'f', 0xc3, 0xa9, ' ', 0xf0, 0x9f, 0x8e, 0xae, 0x01, 0}; // e-acute, a pad, a control
     char title[96];
     snprintf(title, sizeof title, "ace <b>\"round\"</b> & %s", (const char *)past_ascii);
-    R2PageParts pp = {title, "https://x.dev/clipback/abc?v=2", "https://x.dev/clipback/abc/clip.mp4?v=2",
-                      "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg?v=2", 2560,
+    R2PageParts pp = {title, "https://x.dev/rekodr/abc?v=2", "https://x.dev/rekodr/abc/clip.mp4?v=2",
+                      "https://x.dev/rekodr/abc/social.mp4?v=2", "https://x.dev/rekodr/abc/thumb.jpg?v=2", 2560,
                       1440, 1280, 720, 1280, 720};
     i32 hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && hn == (i32)strlen(html));
@@ -1826,11 +1826,11 @@ static void test_r2()
     T(strstr(html, "<title>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</title>") != 0);
     T(strstr(html, "<h1>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</h1>") != 0);
     T(strstr(html, "<meta property=\"og:type\" content=\"video.other\">") != 0);
-    T(strstr(html, "<meta property=\"og:site_name\" content=\"Clipback\">") != 0);
-    T(strstr(html, "<meta property=\"og:image\" content=\"https://x.dev/clipback/abc/thumb.jpg?v=2\">") != 0);
+    T(strstr(html, "<meta property=\"og:site_name\" content=\"Rekodr\">") != 0);
+    T(strstr(html, "<meta property=\"og:image\" content=\"https://x.dev/rekodr/abc/thumb.jpg?v=2\">") != 0);
     T(strstr(html, "og:image:width\" content=\"1280\"") != 0 && strstr(html, "og:image:height\" content=\"720\"") != 0);
     // cards play the small copy at its size; the page plays the clip
-    const char *copy = "https://x.dev/clipback/abc/social.mp4?v=2";
+    const char *copy = "https://x.dev/rekodr/abc/social.mp4?v=2";
     char tag[160];
     static const char *const og_video[] = {"og:video", "og:video:url", "og:video:secure_url"};
     for (const char *name : og_video) {
@@ -1846,16 +1846,16 @@ static void test_r2()
     T(strstr(html, tag) != 0 && strstr(html, "twitter:player:stream:content_type\" content=\"video/mp4\"") != 0);
     T(strstr(html, "twitter:player:height\" content=\"720\"") != 0 && strstr(html, "twitter:image\"") != 0);
     T(strstr(html, "noindex") != 0 && !strstr(html, "og:video:width\" content=\"2560\""));
-    T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\" poster=\"https://x.dev/clipback/abc/thumb.jpg?v=2\"") != 0);
+    T(strstr(html, "<video src=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" poster=\"https://x.dev/rekodr/abc/thumb.jpg?v=2\"") != 0);
     T(strstr(html, "width=\"2560\" height=\"1440\" controls playsinline") != 0 && strstr(html, "aspect-ratio:2560/1440"));
-    T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/clipback/abc/thumb.jpg?v=2')\">"));
+    T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/rekodr/abc/thumb.jpg?v=2')\">"));
     // Onest is in the page: no font, nor anything else, from another site
     T(strstr(html, "@font-face{font-family:Onest;") && strstr(html, "src:url(data:font/woff2;base64,d09GMg"));
     T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
-    // Download (the white pill), Copy link, and "via Clipback" linking to the project; no game line without one
-    T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/clipback/abc/clip.mp4?v=2\" download>"));
+    // Download (the white pill), Copy link, and "via Rekodr" linking to the project; no game line without one
+    T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" download>"));
     T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/clipback\"><img src=\"https://cdn.discordapp.com/"
-                   "emojis/1574532567124803645.webp\" alt=\"\">via <b>Clipback</b></a>"));
+                   "emojis/1574532567124803645.webp\" alt=\"\">via <b>Rekodr</b></a>"));
     T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
     // the accent: the default, or the one picked
     T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)"));
@@ -1896,13 +1896,13 @@ static void test_r2()
     pp.art = "data:image/png;base64,iVBORw0K";
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && strstr(html, "<div class=\"bg\" style=\"background-image:url('data:image/png;base64,iVBORw0K')\">")
-      && !strstr(html, "url('https://x.dev/clipback/abc/thumb.jpg"));
+      && !strstr(html, "url('https://x.dev/rekodr/abc/thumb.jpg"));
     pp.art = 0;
     // an icon for the page: a PNG scaled to R2_ICON_PX, in base64
     {
         static char data[32768];
         Path png = {};
-        GetFullPathNameW(L"..\\assets\\clipback.png", MAX_PATH, png.s, 0);
+        GetFullPathNameW(L"..\\assets\\rekodr.png", MAX_PATH, png.s, 0);
         T(r2_icon_data(png, data, sizeof data) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
         T(strlen(data) < 24000 && !strchr(data, '"'));
         T(!r2_icon_data(png, data, 64) && !data[0]);
@@ -1924,16 +1924,16 @@ static void test_r2()
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && !strstr(html, "og:video") && !strstr(html, "twitter:player") && !strstr(html, "social.mp4"));
     T(strstr(html, "twitter:card\" content=\"summary_large_image\"") && strstr(html, "og:image\""));
-    T(strstr(html, "<video src=\"https://x.dev/clipback/abc/clip.mp4?v=2\"") != 0);
-    pp = {"ace", "https://x.dev/clipback/abc", "https://x.dev/clipback/abc/clip.mp4",
-          "https://x.dev/clipback/abc/clip.mp4", "https://x.dev/clipback/abc/thumb.jpg", 1920, 1080, 1920, 1080, 1280,
+    T(strstr(html, "<video src=\"https://x.dev/rekodr/abc/clip.mp4?v=2\"") != 0);
+    pp = {"ace", "https://x.dev/rekodr/abc", "https://x.dev/rekodr/abc/clip.mp4",
+          "https://x.dev/rekodr/abc/clip.mp4", "https://x.dev/rekodr/abc/thumb.jpg", 1920, 1080, 1920, 1080, 1280,
           720};
     hn = r2_page_html(pp, true, html, sizeof html);
     T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "This clip isn't playing right now."));
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
-    T(!strstr(html, "thumb.jpg") && !strstr(html, "<script") && strstr(html, "via <b>Clipback</b></a>"));
+    T(!strstr(html, "thumb.jpg") && !strstr(html, "<script") && strstr(html, "via <b>Rekodr</b></a>"));
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "via <b>Clipback</b></a>") > strstr(html, "<video"));
+    T(hn > 0 && strstr(html, "via <b>Rekodr</b></a>") > strstr(html, "<video"));
     T(r2_page_html(pp, false, html, 64) == 0);
 
     // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag
@@ -1954,14 +1954,14 @@ static void test_r2()
     ein = {named, "Valorant", 42, 0, 0, true, 0x112233}; // the accent is the card's edge
     embed_card(ein, &card);
     static char cj[R2_CARD_MAX + 1];
-    i32 cn = r2_card_json(card, "https://x.dev/clipback/abc/social.mp4?v=2", "https://x.dev/clipback/abc/thumb.jpg",
+    i32 cn = r2_card_json(card, "https://x.dev/rekodr/abc/social.mp4?v=2", "https://x.dev/rekodr/abc/thumb.jpg",
                           "", "", "", cj, sizeof cj);
     T(cn > 0 && cn == (i32)strlen(cj) && !strchr(cj, '<') && !strchr(cj, '>') && !strchr(cj, '&'));
     T(starts_with(cj, "{\"component\":{\"type\":17,\"accent_color\":1122867,\"components\":[{\"type\":10,"));
     T(strstr(cj, "\"content\":\"**ace \\u003c\\\"round\\\"\\\\\\u003e \\\\*1\\\\* caf\\u00e9 \\ud83c\\udfae**\"}") != 0);
     T(strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}") != 0);
-    T(strstr(cj, "{\"type\":12,\"items\":[{\"media\":{\"url\":\"https://x.dev/clipback/abc/social.mp4?v=2\"}}]}") != 0);
-    T(strstr(cj, "\"-# \\u003c:clipback:1574532567124803645\\u003e [via Clipback](\\u003chttps://github.com/CalvBot/"
+    T(strstr(cj, "{\"type\":12,\"items\":[{\"media\":{\"url\":\"https://x.dev/rekodr/abc/social.mp4?v=2\"}}]}") != 0);
+    T(strstr(cj, "\"-# \\u003c:rekodr:1574532567124803645\\u003e [via Rekodr](\\u003chttps://github.com/CalvBot/"
                  "clipback\\u003e)\"}]}}") != 0);
     T(!strstr(cj, "thumb.jpg") && !strstr(cj, "\"type\":9"));
     card.player = false; // nothing small enough: the picture
@@ -1978,7 +1978,7 @@ static void test_r2()
     card.icon = false;
     cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "<:g_s5:1>", "", "", cj, sizeof cj);
     T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}"));
-    T(emoji_ok("<:clipback:1574532567124803645>") && emoji_ok("<:a_1:9>") && emoji_ok("<a:spin:9>"));
+    T(emoji_ok("<:rekodr:1574532567124803645>") && emoji_ok("<:a_1:9>") && emoji_ok("<a:spin:9>"));
     T(!emoji_ok("") && !emoji_ok(0) && !emoji_ok("<:a:1>") && !emoji_ok("<b:ab:1>") && !emoji_ok("<a:a:1>"));
     T(!emoji_ok("<:ab:>") && !emoji_ok("<:ab:1> ") && !emoji_ok("<:a b:1>") && !emoji_ok("<:ab:x1>"));
     T(!emoji_ok("<:abcdefghijabcdefghijabcdefghijabc:1>") && !emoji_ok("<:ab:123456789012345678901>"));
@@ -2007,8 +2007,8 @@ static void test_r2()
     T(!gamedb_emoji("Valorant", eout, sizeof eout) && !eout[0] && !gamedb_emoji("", eout, sizeof eout));
     emoji_publish(0, 0);
     // the style: found by its id, the first when the id is unknown; a preview tags the line
-    T(embed_style_count() == 1 && !strcmp(embed_style_id(0), "clipback") && embed_style_find("clipback") == 0);
-    T(embed_style_find("nope") == -1 && !strcmp(embed_style_name(5), "Clipback"));
+    T(embed_style_count() == 1 && !strcmp(embed_style_id(0), "rekodr") && embed_style_find("rekodr") == 0);
+    T(embed_style_find("nope") == -1 && !strcmp(embed_style_name(5), "Rekodr"));
     ein = {"ace", "Valorant", 1500, 210, 0, true, 0};
     embed_card(ein, &card, 0);
     T(!strcmp(card.line, "Valorant") && !strcmp(card.tag, "Preview, first 3:30 of 25:00") && card.player);
@@ -2028,7 +2028,7 @@ static void test_r2()
                       cj, sizeof cj);
     T(cn > 0 && strstr(cj, "\"}}]},{\"type\":1,\"components\":[{\"type\":2,\"style\":5,\"label\":\"Watch\","
                            "\"url\":\"https://x.dev/p\"},{\"type\":2,\"style\":5,\"label\":\"Download\","
-                           "\"url\":\"https://x.dev/c.mp4\"}]},{\"type\":10,\"content\":\"-# \\u003c:clipback"));
+                           "\"url\":\"https://x.dev/c.mp4\"}]},{\"type\":10,\"content\":\"-# \\u003c:rekodr"));
     char dtype[256];
     r2_download_type("", dtype, sizeof dtype);
     T(!strcmp(dtype, "video/mp4"));
@@ -2077,8 +2077,8 @@ static void test_r2()
     social_kbps(640, 360, 30, &target, &least);
     T(target == 1000 && least == 1000);
     char sk[R2_KEY_MAX];
-    r2_social_key("clipback/abcdefghijklmnop/clip.mp4", sk);
-    T(!strcmp(sk, "clipback/abcdefghijklmnop/social.mp4"));
+    r2_social_key("rekodr/abcdefghijklmnop/clip.mp4", sk);
+    T(!strcmp(sk, "rekodr/abcdefghijklmnop/social.mp4"));
 
     // The bucket's S3 secret from an API token
     char secret[65];
@@ -2109,7 +2109,7 @@ static void test_r2()
     T(!strcmp(domain, "pub-0123abcd.r2.dev") && !on);
     T(r2_parse_domain("{\"result\":{\"domain\":\"pub-0123abcd.r2.dev\",\"enabled\":true}}", domain, sizeof domain, &on) && on);
     char value[128];
-    T(r2_parse_new_token("{\"result\":{\"id\":\"0123456789abcdef0123456789abcd02\",\"name\":\"clipback\","
+    T(r2_parse_new_token("{\"result\":{\"id\":\"0123456789abcdef0123456789abcd02\",\"name\":\"rekodr\","
                          "\"value\":\"test-token-value-00000000000000000000000\"},\"success\":true}",
                          id, sizeof id, value, sizeof value));
     T(!strcmp(id, "0123456789abcdef0123456789abcd02") && !strcmp(value, "test-token-value-00000000000000000000000"));
@@ -2142,21 +2142,21 @@ static void test_r2()
     T(f.account_reads == 1000 && f.class_b == 0);
     T(r2_op_class("UploadPart") == 'A' && r2_op_class("HeadObject") == 'B' && r2_op_class("DeleteObject") == 0);
     char q[3200];
-    r2_usage_query("acc1", "clipback", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", "2026-11-20T23:00:00Z",
+    r2_usage_query("acc1", "rekodr", "2026-11-01T00:00:00Z", "2026-11-21T10:00:00Z", "2026-11-20T23:00:00Z",
                    "2026-11-20T10:00:00Z", q, sizeof q);
     T(strstr(q, "objectName") && strstr(q, "\"get\":\"GetObject\"") && strstr(q, "\"dayStart\":\"2026-11-20T23:00:00Z\""));
     T(strstr(q, "\"since\":\"2026-11-20T10:00:00Z\"") && strstr(q, "day:r2Op") &&
       strstr(q, "account:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate})"));
-    T(strstr(q, "\"accountTag\":\"acc1\"") && strstr(q, "\"bucketName\":\"clipback\"") &&
+    T(strstr(q, "\"accountTag\":\"acc1\"") && strstr(q, "\"bucketName\":\"rekodr\"") &&
       strstr(q, "r2OperationsAdaptiveGroups") && strstr(q, "\"startDate\":\"2026-11-01T00:00:00Z\""));
 
     // Plays per file
     const char *pl = "{\"data\":{\"viewer\":{\"accounts\":[{\"month\":[{\"sum\":{\"requests\":12},\"dimensions\":"
-                     "{\"objectName\":\"clipback/a/x.mp4\"}},{\"sum\":{\"requests\":3},\"dimensions\":{\"objectName\":"
+                     "{\"objectName\":\"rekodr/a/x.mp4\"}},{\"sum\":{\"requests\":3},\"dimensions\":{\"objectName\":"
                      "\"b.mp4\"}}],\"today\":[{\"sum\":{\"requests\":4},\"dimensions\":{\"objectName\":\"b.mp4\"}}]}]}}}";
     static char pk[4][R2_KEY_MAX];
     i64 pc[4];
-    T(r2_parse_plays(pl, "month", pk, pc, 4) == 2 && !strcmp(pk[0], "clipback/a/x.mp4") && pc[0] == 12 && pc[1] == 3);
+    T(r2_parse_plays(pl, "month", pk, pc, 4) == 2 && !strcmp(pk[0], "rekodr/a/x.mp4") && pc[0] == 12 && pc[1] == 3);
     T(r2_parse_plays(pl, "today", pk, pc, 4) == 1 && !strcmp(pk[0], "b.mp4") && pc[0] == 4);
     T(r2_parse_plays(pl, "month", pk, pc, 1) == 1);
 
@@ -2164,7 +2164,7 @@ static void test_r2()
     T(r2_month_cost(5 * R2_GB, 100, 100) == 0);
     T(fabs(r2_month_cost(20 * R2_GB, 3000000, 20000000) - (0.15 + 9.0 + 3.6)) < 1e-9);
 
-    T(r2_bucket_name_ok("clipback") && r2_bucket_name_ok("my-clips-2"));
+    T(r2_bucket_name_ok("rekodr") && r2_bucket_name_ok("my-clips-2"));
     T(!r2_bucket_name_ok("ab") && !r2_bucket_name_ok("-clips") && !r2_bucket_name_ok("Clips") && !r2_bucket_name_ok("a_b"));
     T(strstr(r2_token_link(), "permissionGroupKeys=%5B%7B%22key%22%3A%22bf7481a1826f439697cb59a20b22293e%22") != 0);
 
@@ -2260,7 +2260,7 @@ static void test_share_cancel()
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     Paths keep = g_app.paths;
-    swprintf(g_app.paths.config_dir.s, MAX_PATH, L"%sclipback-tests-cancel-%lu", temp, GetCurrentProcessId());
+    swprintf(g_app.paths.config_dir.s, MAX_PATH, L"%srekodr-tests-cancel-%lu", temp, GetCurrentProcessId());
     CreateDirectoryW(g_app.paths.config_dir.s, 0);
     g_r2.count = 0;
     g_r2.loaded = false;
@@ -2288,9 +2288,9 @@ static void test_share_cancel()
     u32 id = job(&slot);
     make(R2_SINGLE_MAX + R2_PART);
     g_net.cancel_on = "PUT";
-    T(!r2_put_file(conf, "clipback/k/clip.mp4", file, id, err, sizeof err) && !strcmp(err, "Cancelled"));
-    T(net_count("PUT ") == 1 && net_count("DELETE clipback/k/clip.mp4?uploadId=u1") == 1);
-    T(net_count("POST clipback/k/clip.mp4?uploadId=") == 0); // never completed
+    T(!r2_put_file(conf, "rekodr/k/clip.mp4", file, id, err, sizeof err) && !strcmp(err, "Cancelled"));
+    T(net_count("PUT ") == 1 && net_count("DELETE rekodr/k/clip.mp4?uploadId=u1") == 1);
+    T(net_count("POST rekodr/k/clip.mp4?uploadId=") == 0); // never completed
 
     // To the bucket, cancelled as the file went up: it's deleted there, the copy here, and no link is kept
     R2Task t = {};
@@ -2306,7 +2306,7 @@ static void test_share_cancel()
     R2Job r = r2_job(id);
     T(r.state == R2_FAILED && !strcmp(r.error, "Cancelled") && !r.url[0]);
     T(!file_exists(file.s) && g_r2.count == 0);
-    T(net_count("PUT clipback/") == 1 && net_count("DELETE clipback/") == 1);
+    T(net_count("PUT rekodr/") == 1 && net_count("DELETE rekodr/") == 1);
 
     // Cancelled while waiting its turn: nothing is sent and the copy goes, with its small copy
     id = job(&slot);
@@ -2321,9 +2321,9 @@ static void test_share_cancel()
 
     // A share's set: the clip, its small copy, the picture and the page
     g_net = {};
-    T(r2_delete_share(conf, "clipback/k/clip.mp4", "clipback/k/clip.mp4", true, true));
-    T(net_count("DELETE clipback/k/clip.mp4") == 1 && net_count("DELETE clipback/k/social.mp4") == 1);
-    T(net_count("DELETE clipback/k/thumb.jpg") == 1 && net_count("DELETE clipback/k") == 4);
+    T(r2_delete_share(conf, "rekodr/k/clip.mp4", "rekodr/k/clip.mp4", true, true));
+    T(net_count("DELETE rekodr/k/clip.mp4") == 1 && net_count("DELETE rekodr/k/social.mp4") == 1);
+    T(net_count("DELETE rekodr/k/thumb.jpg") == 1 && net_count("DELETE rekodr/k") == 4);
 
     // A custom uploader with a DeletionURL, cancelled as it answered: what went up is deleted there
     Path dir = path_join(g_app.paths.config_dir, L"uploaders"), sxcu = path_join(dir, L"mine.sxcu");
@@ -2349,15 +2349,15 @@ static void test_share_cancel()
     g_net.n = 0;
     g_net.fail = 2;
     g_net.fail_status = 503;
-    T(r2_put_bytes(conf, "clipback/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT clipback/r/thumb.jpg") == 3);
+    T(r2_put_bytes(conf, "rekodr/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT rekodr/r/thumb.jpg") == 3);
     g_net.n = 0;
     g_net.fail = 4;
     g_net.fail_status = 0;
-    T(!r2_put_bytes(conf, "clipback/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT clipback/r/thumb.jpg") == 4);
+    T(!r2_put_bytes(conf, "rekodr/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT rekodr/r/thumb.jpg") == 4);
     g_net.n = 0;
     g_net.fail = 1;
     g_net.fail_status = 403;
-    T(!r2_put_bytes(conf, "clipback/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT clipback/r/thumb.jpg") == 1);
+    T(!r2_put_bytes(conf, "rekodr/r/thumb.jpg", "x", 1, "image/jpeg") && net_count("PUT rekodr/r/thumb.jpg") == 1);
     id = job(&slot);
     g_net.fail = 2;
     g_net.fail_status = 502;
@@ -2370,11 +2370,11 @@ static void test_share_cancel()
 
     // Done just before the cancel: the job hands over what to delete and ends as cancelled
     id = job(&slot);
-    T(r2_job_end(id, true, "https://x/1", "", "clipback/abc", ""));
-    T(r2_job(id).state == R2_DONE && !strcmp(r2_job(id).key, "clipback/abc"));
+    T(r2_job_end(id, true, "https://x/1", "", "rekodr/abc", ""));
+    T(r2_job(id).state == R2_DONE && !strcmp(r2_job(id).key, "rekodr/abc"));
     id = job(&slot);
     g_r2.cancel[slot] = 1;
-    T(!r2_job_end(id, true, "https://x/2", "", "clipback/def", "") && r2_job(id).state == R2_FAILED &&
+    T(!r2_job_end(id, true, "https://x/2", "", "rekodr/def", "") && r2_job(id).state == R2_FAILED &&
       !r2_job(id).key[0]);
 
     r2_net_fake = 0;
@@ -2419,7 +2419,7 @@ static void test_mcpack()
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     Path root = {};
-    swprintf(root.s, MAX_PATH, L"%sclipback-mcpack-%lu", tmp, GetCurrentProcessId());
+    swprintf(root.s, MAX_PATH, L"%srekodr-mcpack-%lu", tmp, GetCurrentProcessId());
     CreateDirectoryW(root.s, 0);
     Path prism = path_join(root, L"prism"), pgame = path_join(prism, L".minecraft"), pmods = path_join(pgame, L"mods");
     CreateDirectoryW(prism.s, 0);
@@ -2462,7 +2462,7 @@ static void test_mcpack()
                     "\"project\":\"1KVo5zza\",\"version\":\"vXyZ\"},\"mods\":[\"create\",\"jei\"]}}") ||
       !strcmp(body, "{\"mc\":{\"launcher\":\"prism\",\"mc\":\"1.20.1\",\"loader\":\"forge\",\"pack\":{\"platform\":\"modrinth\","
                     "\"project\":\"1KVo5zza\",\"version\":\"vXyZ\"},\"mods\":[\"jei\",\"create\"]}}"));
-    T(!strstr(body, "My Own") && !strstr(body, "clipback-mcpack"));
+    T(!strstr(body, "My Own") && !strstr(body, "rekodr-mcpack"));
     T(!mc_clues("javaw -jar notagame.jar --gameDir C:/x", body, sizeof body));
 
     // The service's answer: a pack its launcher named is that pack, with its art; plain Minecraft is not a pack
@@ -2599,7 +2599,7 @@ static void test_storeids()
     wide_to_utf8(tmp, root, sizeof root);
     for (char *c = root; *c; c++)
         if (*c == '\\') *c = '/';
-    snprintf(root + strlen(root), sizeof root - strlen(root), "clipback-stores-%lu", GetCurrentProcessId());
+    snprintf(root + strlen(root), sizeof root - strlen(root), "rekodr-stores-%lu", GetCurrentProcessId());
     snprintf(p, sizeof p, "%s/Lib/steamapps/common/Hollow Knight", root);
     make_dirs(p);
     snprintf(p, sizeof p, "%s/Lib/steamapps/appmanifest_367520.acf", root);
@@ -2610,7 +2610,7 @@ static void test_storeids()
     T(steam_app_for(p, "Hollow Knight") == 367520 && steam_app_for(p, "hollow knight") == 367520 && !steam_app_for(p, "Silksong"));
     T(exe_clues("hollow_knight.exe", p, "Hollow Knight", false, body, sizeof body) &&
       !strcmp(body, "{\"exe\":\"hollow_knight.exe\",\"folder\":\"Hollow Knight\",\"name\":\"Hollow Knight\",\"steam\":367520}"));
-    T(!strstr(body, "clipback-stores"));
+    T(!strstr(body, "rekodr-stores"));
 
     snprintf(p, sizeof p, "%s/GOG/Witcher 3/bin/x64", root);
     make_dirs(p);
@@ -2675,12 +2675,12 @@ static void test_storeids()
 
         // A clip given a game by hand: the program longest in front during it is voted for, and a browser
         // only counts the game
-        char focus[] = "100\tgame.exe\n200\tclipback.exe\n900\tfirefox.exe\n1000\tgame.exe\n";
+        char focus[] = "100\tgame.exe\n200\trekodr.exe\n900\tfirefox.exe\n1000\tgame.exe\n";
         char exe[64];
         T(focus_longest(focus, 150, 1020, exe, sizeof exe) && !strcmp(exe, "firefox.exe"));
-        char focus2[] = "100\tgame.exe\n200\tclipback.exe\n900\tfirefox.exe\n1000\tgame.exe\n";
+        char focus2[] = "100\tgame.exe\n200\trekodr.exe\n900\tfirefox.exe\n1000\tgame.exe\n";
         T(focus_longest(focus2, 0, 1500, exe, sizeof exe) && !strcmp(exe, "game.exe"));
-        char focus3[] = "100\tclipback.exe\n200\t\n";
+        char focus3[] = "100\trekodr.exe\n200\t\n";
         T(!focus_longest(focus3, 0, 300, exe, sizeof exe));
         T(is_browser("Chrome.exe") && !is_browser("game.exe"));
         {
@@ -2834,7 +2834,7 @@ static void test_edit_advanced()
     wchar_t dir[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
     Path file = {};
-    swprintf(file.s, MAX_PATH, L"%sclipback-test-adv-%u.edit.txt", dir, GetCurrentProcessId());
+    swprintf(file.s, MAX_PATH, L"%srekodr-test-adv-%u.edit.txt", dir, GetCurrentProcessId());
     edit_write(file, a);
     T(edit_is_advanced(file));
     static EditRecord r;
@@ -2986,11 +2986,11 @@ static void test_social_preview()
     T(a.ikey_count == 1 && a.ikeys[0].item == 2);
 
     // a session keeps its tracks in the bucket: a file in a year folder of a Sessions folder
-    T(path_is_session(L"D:\\Videos\\clipback\\Sessions\\2026\\Overwatch 2026-11-24.mp4"));
-    T(path_is_session(L"D:\\Videos\\clipback\\sessions\\2026\\a.mp4"));
-    T(!path_is_session(L"D:\\Videos\\clipback\\Clips\\2026\\Sessions.mp4"));
-    T(!path_is_session(L"D:\\Videos\\clipback\\Sessions\\a.mp4") && !path_is_session(L"D:\\Sessions\\20x6\\a.mp4"));
-    T(!path_is_session(L"D:\\Videos\\clipback\\Clips\\2026\\a.mp4") && !path_is_session(L"a.mp4"));
+    T(path_is_session(L"D:\\Videos\\Rekodr\\Sessions\\2026\\Overwatch 2026-11-24.mp4"));
+    T(path_is_session(L"D:\\Videos\\Rekodr\\sessions\\2026\\a.mp4"));
+    T(!path_is_session(L"D:\\Videos\\Rekodr\\Clips\\2026\\Sessions.mp4"));
+    T(!path_is_session(L"D:\\Videos\\Rekodr\\Sessions\\a.mp4") && !path_is_session(L"D:\\Sessions\\20x6\\a.mp4"));
+    T(!path_is_session(L"D:\\Videos\\Rekodr\\Clips\\2026\\a.mp4") && !path_is_session(L"a.mp4"));
 }
 
 static void test_edit_xml()
@@ -3000,8 +3000,8 @@ static void test_edit_xml()
     ed = blank;
     wchar_t dir[MAX_PATH];
     GetTempPathW(MAX_PATH, dir);
-    swprintf(ed.path.s, MAX_PATH, L"%sclipback test %u & co.mp4", dir, GetCurrentProcessId());
-    str_set(ed.item.name, "clipback test & co");
+    swprintf(ed.path.s, MAX_PATH, L"%srekodr test %u & co.mp4", dir, GetCurrentProcessId());
+    str_set(ed.item.name, "rekodr test & co");
     MediaInfo &m = ed.item.info;
     m.duration = 10;
     m.width = 1920;
@@ -3034,7 +3034,7 @@ static void test_edit_xml()
     DeleteFileW(xml.s);
     T(n > 0 && wcsstr(xml.s, L".xml"));
     T(xml_balanced(text));
-    T(strstr(text, "<name>clipback test &amp; co</name>"));
+    T(strstr(text, "<name>rekodr test &amp; co</name>"));
     T(strstr(text, "<timebase>60</timebase>"));
     T(strstr(text, "<duration>480</duration>"));                      // 8 s at 60 fps
     T(strstr(text, "<in>60</in><out>540</out>"));

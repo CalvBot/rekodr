@@ -1,6 +1,6 @@
 // Child processes (ffmpeg, ffprobe) and worker threads.
 //
-// Every child goes into one job object that kills it when clipback exits for any reason, so nothing keeps
+// Every child goes into one job object that kills it when Rekodr exits for any reason, so nothing keeps
 // recording unsupervised. Children start without a console window. Any of stdin, stdout and stderr can be a pipe;
 // the rest go to NUL. PROC_MERGE sends stderr down the stdout pipe, so one reader sees all output and can't
 // deadlock on the other pipe filling up.
@@ -117,7 +117,7 @@ static bool proc_start(const wchar_t *exe, const wchar_t *args, u32 flags, Proc 
     si.StartupInfo.hStdError = err_w;
     si.lpAttributeList = attrs;
     PROCESS_INFORMATION pi = {};
-    // Started suspended and put in the job before it runs, so it can't outlive clipback even briefly.
+    // Started suspended and put in the job before it runs, so it can't outlive Rekodr even briefly.
     BOOL ok = CreateProcessW(0, cmd, 0, 0, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
                              0, 0, &si.StartupInfo, &pi);
     DWORD error = GetLastError();
@@ -169,7 +169,7 @@ static void proc_kill(Proc *p)
     if (p->process) TerminateProcess(p->process, 1);
 }
 
-// Closes every handle. The child keeps running if it hasn't exited (the job still ends it when clipback exits).
+// Closes every handle. The child keeps running if it hasn't exited (the job still ends it when Rekodr exits).
 static void proc_close(Proc *p)
 {
     proc_close_stdin(p);
@@ -241,18 +241,18 @@ static i32 proc_run(const wchar_t *exe, const wchar_t *args, u32 timeout_ms, cha
 // ---------------------------------------------------------------------------------------------------------------
 // ffmpeg
 
-// Where clipback keeps the ffmpeg it fetches for itself (ffget.cpp): local_dir\ffmpeg. Worked out from the
+// Where Rekodr keeps the ffmpeg it fetches for itself (ffget.cpp): local_dir\ffmpeg. Worked out from the
 // environment, as paths_init does, so worker threads can call it without the app's paths.
 static Path ffget_dir()
 {
     Path p = {};
     wchar_t home[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
+    if (GetEnvironmentVariableW(L"REKODR_HOME", home, MAX_PATH) && home[0]) {
         swprintf(p.s, MAX_PATH, L"%s\\local\\ffmpeg", home);
     } else {
         wchar_t *local = 0;
         SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, &local);
-        swprintf(p.s, MAX_PATH, L"%s\\clipback\\ffmpeg", local ? local : L".");
+        swprintf(p.s, MAX_PATH, L"%s\\" APP_NAME L"\\ffmpeg", local ? local : L".");
         CoTaskMemFree(local);
     }
     return p;
@@ -260,7 +260,7 @@ static Path ffget_dir()
 
 static Path ffget_exe() { return path_join(ffget_dir(), L"ffmpeg-8.1.1-full_build-shared\\bin\\ffmpeg.exe"); }
 
-// Finds ffmpeg.exe: the configured path, then PATH, then winget's links folder, then the one clipback fetched.
+// Finds ffmpeg.exe: the configured path, then PATH, then winget's links folder, then the one Rekodr fetched.
 // ffprobe is expected next to it.
 static bool ffmpeg_find(const Path &configured, Path *out)
 {

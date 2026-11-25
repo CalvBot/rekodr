@@ -1010,8 +1010,8 @@ static void audio_tick_streams()
         if (pid == 0 || pid == own_pid) continue; // 0 is "system sounds"
         const AudioProc *p = procs_find(g_aw.procs, pid);
         if (!p || !p->exe.s[0]) continue;
-        // clipback's own processes never: its window plays clips back.
-        if (starts_with(p->exe.s, "clipback")) continue;
+        // Rekodr's own processes never: its window plays clips back.
+        if (starts_with(p->exe.s, "rekodr")) continue;
         u32 root = procs_root_of(g_aw.procs, pid);
         AudioWorker *running = 0;
         for (i32 k = 0; k < COUNT(g_aw.workers) && !running; k++) {

@@ -1,6 +1,6 @@
 @echo off
-rem Builds app\build\clipback.exe from the single translation unit clipback.cpp. `build debug` for a debug build,
-rem `build release` for an optimised build plus dist\clipback-<version>.exe and its update manifest (release.ps1).
+rem Builds app\build\rekodr.exe from the single translation unit rekodr.cpp. `build debug` for a debug build,
+rem `build release` for an optimised build plus dist\rekodr-<version>.exe and its update manifest (release.ps1).
 setlocal
 cd /d "%~dp0"
 if not exist build mkdir build
@@ -25,6 +25,6 @@ rem (a middle dot as C2 B7, say). Icon font glyphs (private use area, escapes st
 rem text, and are allowed.
 powershell -NoProfile -Command "$bad = 0; Get-ChildItem *.cpp,*.h,*.rc,*.bat | ForEach-Object { $n = 0; foreach ($l in [IO.File]::ReadAllLines($_.FullName, [Text.Encoding]::GetEncoding(28591))) { $n++; if ($l -match '[^\x00-\x7F]' -or $l -match '\\x([cd][0-9a-f]|e[0-9a-d]|f[0-4])') { Write-Host ('{0}({1}): error: non-ASCII text: {2}' -f $_.Name, $n, $l.Trim()); $bad++ } } }; exit [int]($bad -gt 0)" || exit /b 1
 
-rc /nologo /fo build\clipback.res clipback.rc || exit /b 1
-cl %FLAGS% clipback.cpp build\clipback.res /Fobuild\ /Fdbuild\ /Febuild\clipback.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS% || exit /b 1
+rc /nologo /fo build\rekodr.res rekodr.rc || exit /b 1
+cl %FLAGS% rekodr.cpp build\rekodr.res /Fobuild\ /Fdbuild\ /Febuild\rekodr.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS% || exit /b 1
 if "%1"=="release" powershell -NoProfile -ExecutionPolicy Bypass -File release.ps1 || exit /b 1

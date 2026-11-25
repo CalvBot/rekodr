@@ -1,4 +1,4 @@
-// Key art for the clipback keys: 144x144 SVGs, a dark card with a glow of the key's colour at the top and a
+// Key art for the Rekodr keys: 144x144 SVGs, a dark card with a glow of the key's colour at the top and a
 // coloured bar along the bottom. Stream Deck draws SVG with a basic renderer, so this sticks to shapes,
 // gradients, text and transforms (no filters, masks or CSS).
 

@@ -1,4 +1,4 @@
-// Basics shared by every part of clipback: integer types, fixed-size strings, the log and CHECK.
+// Basics shared by every part of rekodr: integer types, fixed-size strings, the log and CHECK.
 //
 // Code rules (see SPEC.md, "Code"): plain structs that are valid when zeroed, functions that work on them, no
 // class hierarchies or RAII wrappers, fixed arrays where the maximum is known.
@@ -17,13 +17,13 @@ typedef double   f64;
 #define COUNT(a) ((i32)(sizeof(a) / sizeof((a)[0])))
 
 // ---------------------------------------------------------------------------------------------------------------
-// Log: %LOCALAPPDATA%\clipback\clipback-native.log (see paths_init), one line per call, also to the debugger.
+// Log: %LOCALAPPDATA%\Rekodr\rekodr-native.log (see paths_init), one line per call, also to the debugger.
 
 static SRWLOCK g_log_lock;
 static wchar_t g_log_path[MAX_PATH];
 
 // Dev mode: a detailed log (every click, key, screen change, command and event) for finding what led up to a
-// problem. On with Options > General > Detailed log, `clipback.exe dev`, or CLIPBACK_DEV=1.
+// problem. On with Options > General > Detailed log, `rekodr.exe dev`, or REKODR_DEV=1.
 static volatile bool g_dev;
 #define DEV_LOG(...) do { if (g_dev) log_line(__VA_ARGS__); } while (0)
 
@@ -59,7 +59,7 @@ static void log_line(const char *fmt, ...)
 }
 
 // CHECK states what was expected and what was found. A failed CHECK logs where and why, then crashes so the
-// crash handler writes a minidump and restarts clipback (main.cpp).
+// crash handler writes a minidump and restarts Rekodr (main.cpp).
 #define CHECK(cond, ...)                                                                                          \
     do {                                                                                                          \
         if (!(cond)) {                                                                                            \
@@ -129,11 +129,11 @@ static u64 fnv64(const void *data, size_t n, u64 h = 14695981039346656037ull)
     return h;
 }
 
-// A short name for CLIPBACK_HOME, so a test copy's mutex, window class and pipe are its own. 0 = not a test copy.
+// A short name for REKODR_HOME, so a test copy's mutex, window class and pipe are its own. 0 = not a test copy.
 static u32 test_home_hash()
 {
     wchar_t home[MAX_PATH] = {};
-    if (!GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) || !home[0]) return 0;
+    if (!GetEnvironmentVariableW(L"REKODR_HOME", home, MAX_PATH) || !home[0]) return 0;
     u32 h = 2166136261u;
     for (wchar_t *c = home; *c; c++) h = (h ^ (u32)towlower(*c)) * 16777619u;
     return h ? h : 1;

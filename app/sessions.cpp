@@ -8,7 +8,7 @@
 //
 // On disk:
 //   <local_dir>\sessions.txt                     open sessions and ones still in the buffer, rewritten whole, so a
-//                                                restart of clipback carries on where it was
+//                                                restart of Rekodr carries on where it was
 //   <save_dir>\Data\<name>.session.txt           the record of a saved or hand-made session (SPEC.md, "Folders")
 // At start, sessions.txt is read and activity.tsv is replayed to add what the file doesn't know (it may be lost,
 // or out of date after a crash).
@@ -154,7 +154,7 @@ static void session_write_record(Session *s)
     char a[32], b[32];
     fmt_stamp(s->start_us, a, sizeof a);
     fmt_stamp(s->end_us, b, sizeof b);
-    fprintf(f, "# clipback session record. Its video, if saved, has the same name with .mp4 in Sessions.\n");
+    fprintf(f, "# Rekodr session record. Its video, if saved, has the same name with .mp4 in Sessions.\n");
     fprintf(f, "name = %s\nkind = %s\ngame = %s\n", s->name, s->custom ? "custom" : "game", s->exe);
     fprintf(f, "start = %s\nend = %s\nstart_us = %lld\nend_us = %lld\n", a, b, (long long)s->start_us,
             (long long)s->end_us);
@@ -349,14 +349,14 @@ static void sessions_write()
     char *text = (char *)malloc(cap);
     if (!text) return;
     i64 now = now_us();
-    len += snprintf(text + len, cap - len, "# clipback's open sessions and the ones still in the buffer. Rewritten by clipback.\n");
+    len += snprintf(text + len, cap - len, "# Rekodr's open sessions and the ones still in the buffer. Rewritten by Rekodr.\n");
     len += snprintf(text + len, cap - len, "written_us\t%lld\nnext_id\t%u\n", (long long)now, ss.next_id);
     len += snprintf(text + len, cap - len,
                     "# session  id  state  custom  start_us  end_us  exe  name  video  record  display_name  seen\n");
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         const Session &s = ss.items[i];
         if (s.state == SES_FREE) continue;
-        // A save in progress dies with clipback: it comes back as not saved.
+        // A save in progress dies with rekodr: it comes back as not saved.
         SessionState st = s.state == SES_SAVING ? SES_NOT_SAVED : s.state;
         len += snprintf(text + len, cap - len, "session\t%u\t%s\t%d\t%lld\t%lld\t%s\t%s\t%s\t%s\t%s\t%d\n", s.id,
                         STATE_NAMES[st], s.custom ? 1 : 0, (long long)s.start_us, (long long)s.end_us, s.exe, s.name,
@@ -404,7 +404,7 @@ static void sessions_replay(i64 alive_until)
     FILETIME created, x, k, u;
     GetProcessTimes(GetCurrentProcess(), &created, &x, &k, &u);
     i64 cutoff = filetime_to_us(created);
-    // Clipback (and the recorder with it) ran at least until the last video it wrote.
+    // Rekodr (and the recorder with it) ran at least until the last video it wrote.
     i64 video_end = 0, written = 0;
     if (buffer_video_newest_end(g_app.config.buffer_dir, &video_end, &written) && video_end < cutoff &&
         video_end > alive_until)
@@ -457,7 +457,7 @@ static void sessions_replay(i64 alive_until)
     i32 added = 0;
     for (i32 i = 0; i < n; i++) {
         SessionGuess &g = g_guess[i];
-        if (g.open && prev[0] && !strcmp(g.exe, prev)) g.end_us = alive_until; // still on when clipback stopped
+        if (g.open && prev[0] && !strcmp(g.exe, prev)) g.end_us = alive_until; // still on when Rekodr stopped
         bool still_open = g.open && now - g.end_us <= gap;
         if (!still_open && g.end_us - g.start_us < min) continue;
         Session *known = 0;
@@ -479,7 +479,7 @@ static void sessions_replay(i64 alive_until)
         sessions_game_name(g.exe, name);
         Session *s = session_new(g.exe, name, g.start_us, g.end_us);
         if (!s) break;
-        // One that ended while clipback wasn't watching isn't asked about now; it waits under unsaved sessions.
+        // One that ended while Rekodr wasn't watching isn't asked about now; it waits under unsaved sessions.
         if (!still_open) s->state = SES_NOT_SAVED;
         added++;
     }
@@ -490,7 +490,7 @@ static void sessions_load()
 {
     Sessions &ss = g_app.sessions;
     ss.loaded = true;
-    i64 alive_until = 0; // clipback was watching at least until then
+    i64 alive_until = 0; // Rekodr was watching at least until then
     i32 loaded = 0;
     FILE *f = _wfopen(path_join(g_app.paths.local_dir, L"sessions.txt").s, L"rb");
     if (f) {

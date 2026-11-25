@@ -32,7 +32,7 @@ static void options_apply(u32 what)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Start with Windows: a "clipback" value under HKCU\...\Run.
+// Start with Windows: a "Rekodr" value under HKCU\...\Run.
 
 static const wchar_t *RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
@@ -48,7 +48,7 @@ static bool startup_read(wchar_t *out, i32 cap)
 {
     DWORD bytes = (DWORD)(cap * sizeof(wchar_t));
     out[0] = 0;
-    return RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, L"clipback", RRF_RT_REG_SZ, 0, out, &bytes) == ERROR_SUCCESS;
+    return RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, L"rekodr", RRF_RT_REG_SZ, 0, out, &bytes) == ERROR_SUCCESS;
 }
 
 static void startup_set(bool on)
@@ -56,16 +56,16 @@ static void startup_set(bool on)
     wchar_t cmd[MAX_PATH + 8];
     startup_command(cmd, COUNT(cmd));
     if (is_test_copy()) {
-        log_line("start with Windows %s; a test copy leaves the Run key alone (it would %s HKCU\\%ls\\clipback%s%ls)",
+        log_line("start with Windows %s; a test copy leaves the Run key alone (it would %s HKCU\\%ls\\rekodr%s%ls)",
                  on ? "on" : "off", on ? "set" : "delete", RUN_KEY, on ? " = " : "", on ? cmd : L"");
         return;
     }
     HKEY key = 0;
     LSTATUS r = RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &key);
     if (r == ERROR_SUCCESS) {
-        if (on) r = RegSetValueExW(key, L"clipback", 0, REG_SZ, (const BYTE *)cmd, (DWORD)((wcslen(cmd) + 1) * sizeof(wchar_t)));
+        if (on) r = RegSetValueExW(key, L"rekodr", 0, REG_SZ, (const BYTE *)cmd, (DWORD)((wcslen(cmd) + 1) * sizeof(wchar_t)));
         else {
-            r = RegDeleteValueW(key, L"clipback");
+            r = RegDeleteValueW(key, L"rekodr");
             if (r == ERROR_FILE_NOT_FOUND) r = ERROR_SUCCESS; // already gone
         }
         RegCloseKey(key);
@@ -604,7 +604,7 @@ static void bytes_text(i64 bytes, char *out, i32 cap)
 
 static void ago_text(i64 us, char *out, i32 cap)
 {
-    if (!us) { snprintf(out, cap, "-"); return; } // -: not since clipback started
+    if (!us) { snprintf(out, cap, "-"); return; } // -: not since Rekodr started
     i64 s = (now_us() - us) / 1000000;
     if (s < 90) snprintf(out, cap, "just now");
     else if (s < 90 * 60) snprintf(out, cap, "%lld min ago", s / 60);
@@ -2261,7 +2261,7 @@ static void options_recording()
         options_apply(APPLY_RECORDER);
     }
     ImGui::EndDisabled();
-    // ffmpeg options of the player's own, added after clipback's; a typo shows as "Not recording" on Encoder
+    // ffmpeg options of the player's own, added after Rekodr's; a typo shows as "Not recording" on Encoder
     {
         f32 tw = fminf(dp(360), g_card.w * 0.5f);
         opt_row_begin("Custom encoder options", "ffmpeg options added after " APP_NAME "'s, such as -tune ll", tw);
@@ -2319,7 +2319,7 @@ static void options_recording()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Integrations: other programs that work with clipback. Stream Deck keys (streamdeck\ in the repo, talking over the
+// Integrations: other programs that work with Rekodr. Stream Deck keys (streamdeck\ in the repo, talking over the
 // pipe) and the video editors a clip opens in.
 
 static void open_url(const char *url); // setup.cpp
@@ -2332,7 +2332,7 @@ static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/clipback";
 static const char OPT_SUPPORT_URL[] = "";
 static const char OPT_SGDB_KEY_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
 
-static const wchar_t SD_PLUGIN[] = L"dev.calvbot.clipback.sdPlugin";
+static const wchar_t SD_PLUGIN[] = L"dev.calvbot.rekodr.sdPlugin";
 
 static bool path_is_file(const wchar_t *p)
 {
@@ -2349,7 +2349,7 @@ static bool streamdeck_exe(Path *out)
     return path_is_file(out->s);
 }
 
-// Where Stream Deck loads plugins from, and the clipback plugin in it.
+// Where Stream Deck loads plugins from, and the Rekodr plugin in it.
 static Path streamdeck_plugin_dest()
 {
     Path p = {};
@@ -2359,7 +2359,7 @@ static Path streamdeck_plugin_dest()
     return p;
 }
 
-// The plugin that comes with clipback: streamdeck\ next to the exe, or in the source tree (app\build\clipback.exe).
+// The plugin that comes with rekodr: streamdeck\ next to the exe, or in the source tree (app\build\rekodr.exe).
 static bool streamdeck_plugin_source(Path *out)
 {
     wchar_t exe[MAX_PATH];
@@ -2397,7 +2397,7 @@ static bool streamdeck_install(char *msg, i32 cap)
 {
     Path src, sd;
     if (!streamdeck_plugin_source(&src)) {
-        snprintf(msg, cap, "The plugin isn't next to clipback.exe");
+        snprintf(msg, cap, "The plugin isn't next to rekodr.exe");
         return false;
     }
     if (!streamdeck_exe(&sd)) {
@@ -3555,7 +3555,7 @@ static void options_sharing()
         }
         opt_row_end();
 
-        // The token: masked, kept by Windows; clipback makes the bucket and its keys from it
+        // The token: masked, kept by Windows; Rekodr makes the bucket and its keys from it
         {
             f32 field_w = fw - ImGui::GetFrameHeight() - dp(8);
             opt_row_begin("API token", 0, fw);
@@ -4417,7 +4417,7 @@ static void options_general()
         options_apply(0);
     }
     f32 bw = text_w(g_font, "Show the log") + dp(32);
-    opt_row_begin("Log and crash dumps", "clipback-native.log, and crash-*.dmp after a crash", bw);
+    opt_row_begin("Log and crash dumps", "rekodr-native.log, and crash-*.dmp after a crash", bw);
     if (kit_button("Show the log##showlog", KIT_SECONDARY, ImVec2(bw, 0))) {
         Path log = {};
         wcscpy_s(log.s, g_log_path);
@@ -4489,7 +4489,7 @@ static void options_general()
     opt_card_begin();
     f32 gh_w = text_w(g_font, "GitHub") + dp(32), sup_w = OPT_SUPPORT_URL[0] ? text_w(g_font, "Support") + dp(32) : 0;
     f32 bgap = ImGui::GetStyle().ItemSpacing.x;
-    opt_row_begin(APP_NAME " " CLIPBACK_VERSION, "Built " __DATE__, gh_w + (sup_w > 0 ? bgap + sup_w : 0));
+    opt_row_begin(APP_NAME " " REKODR_VERSION, "Built " __DATE__, gh_w + (sup_w > 0 ? bgap + sup_w : 0));
     if (sup_w > 0) { // a quiet Support beside GitHub
         if (kit_button("Support##support", KIT_GHOST, ImVec2(sup_w, 0))) open_url(OPT_SUPPORT_URL);
         ImGui::SameLine(0, bgap);
@@ -4503,7 +4503,7 @@ static void options_general()
         else update_stop();
         options_apply(0);
     }
-    // The licence button only for the build clipback fetched (ffget.cpp); one found on the PATH has its own.
+    // The licence button only for the build Rekodr fetched (ffget.cpp); one found on the PATH has its own.
     Path licence = path_join(ffget_dir(), L"ffmpeg-8.1.1-full_build-shared\\LICENSE");
     bool fetched = GetFileAttributesW(licence.s) != INVALID_FILE_ATTRIBUTES;
     f32 lic_w = text_w(g_font, "Licence") + dp(32);

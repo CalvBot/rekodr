@@ -4,7 +4,7 @@
 //
 // The manifest is text, one "key value" per line, with the signature last:
 //   version 0.3.0
-//   url https://github.com/CalvBot/clipback/releases/download/v0.3.0/clipback-0.3.0.exe
+//   url https://github.com/CalvBot/clipback/releases/download/v0.3.0/rekodr-0.3.0.exe
 //   size 3502080
 //   sha256 <64 hex digits>
 //   sig <128 hex digits>
@@ -12,8 +12,8 @@
 // built in (UPDATE_PUBLIC_KEY), so a manifest only counts if it was signed with the release key, and the exe only if
 // it matches the manifest's size and hash.
 //
-// For tests, a test copy (CLIPBACK_HOME) may set CLIPBACK_UPDATE_MANIFEST (an http or https URL) and
-// CLIPBACK_UPDATE_KEY (the public key, 128 hex digits, X then Y). `clipback.exe update-check` runs one check and
+// For tests, a test copy (REKODR_HOME) may set REKODR_UPDATE_MANIFEST (an http or https URL) and
+// REKODR_UPDATE_KEY (the public key, 128 hex digits, X then Y). `rekodr.exe update-check` runs one check and
 // download in the foreground, logs what happened and exits 0 when an update was made ready; `update-check apply`
 // also swaps it in (a test copy doesn't start the new exe, which would open its window).
 
@@ -98,7 +98,7 @@ static i64 update_get(const wchar_t *url, i64 max, char *body, FILE *file, BCRYP
     if (!WinHttpCrackUrl(url, 0, 0, &uc)) return update_fail("a bad address: %ls", url), -1;
     if (uc.nScheme != INTERNET_SCHEME_HTTPS && !is_test_copy()) return update_fail("not https: %ls", url), -1;
     i64 total = -1;
-    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, uc.nPort, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, 0, 0, 0,
                                               uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0) : 0;
@@ -157,10 +157,10 @@ static bool update_signed(const char *text, size_t signed_len, const char *sig_h
     u8 key[64];
     memcpy(key, UPDATE_PUBLIC_KEY, 64);
     wchar_t test_key[160];
-    if (update_test_copy_override(L"CLIPBACK_UPDATE_KEY", test_key, COUNT(test_key))) {
+    if (update_test_copy_override(L"REKODR_UPDATE_KEY", test_key, COUNT(test_key))) {
         char k[160];
         wide_to_utf8(test_key, k, sizeof k);
-        if (!update_unhex(k, key, 64)) return update_fail("CLIPBACK_UPDATE_KEY isn't 128 hex digits");
+        if (!update_unhex(k, key, 64)) return update_fail("REKODR_UPDATE_KEY isn't 128 hex digits");
     }
     u8 zero[64] = {}, sig[64], digest[32];
     if (!memcmp(key, zero, 64)) return update_fail("no release key is built in");
@@ -204,15 +204,15 @@ static bool update_parse(char *text, UpdateManifest *m)
 static bool update_check_once()
 {
     wchar_t url[600];
-    if (!update_test_copy_override(L"CLIPBACK_UPDATE_MANIFEST", url, COUNT(url))) wcscpy_s(url, UPDATE_MANIFEST_URL);
+    if (!update_test_copy_override(L"REKODR_UPDATE_MANIFEST", url, COUNT(url))) wcscpy_s(url, UPDATE_MANIFEST_URL);
     if (!url[0]) return false;
     InterlockedExchange(&g_update.state, UPDATE_CHECKING);
     static char text[8192];
     if (update_get(url, sizeof text, text, 0, 0) < 0) return false;
     UpdateManifest m;
     if (!update_parse(text, &m)) return false;
-    if (update_compare(m.version, CLIPBACK_VERSION) <= 0) {
-        log_line("update: %s is the newest (the manifest says %s)", CLIPBACK_VERSION, m.version);
+    if (update_compare(m.version, REKODR_VERSION) <= 0) {
+        log_line("update: %s is the newest (the manifest says %s)", REKODR_VERSION, m.version);
         InterlockedExchange(&g_update.state, UPDATE_IDLE);
         return false;
     }
@@ -229,7 +229,7 @@ static bool update_check_once()
         return false;
     }
     SHCreateDirectoryExW(0, dir.s, 0);
-    swprintf(exe.s, MAX_PATH, L"%s\\clipback-%hs.exe", dir.s, m.version);
+    swprintf(exe.s, MAX_PATH, L"%s\\rekodr-%hs.exe", dir.s, m.version);
     swprintf(part.s, MAX_PATH, L"%s.part", exe.s);
     log_line("update: %s is out, downloading it from %s", m.version, m.url);
     InterlockedExchange(&g_update.state, UPDATE_DOWNLOADING);
@@ -287,7 +287,7 @@ static void update_start()
         g_update.thread = g_update.wake = 0;
     }
     wchar_t test_url[600];
-    bool test = update_test_copy_override(L"CLIPBACK_UPDATE_MANIFEST", test_url, COUNT(test_url));
+    bool test = update_test_copy_override(L"REKODR_UPDATE_MANIFEST", test_url, COUNT(test_url));
     if (is_test_copy() ? !test : !UPDATE_MANIFEST_URL[0]) return; // a test copy checks only its own manifest
     InterlockedExchange(&g_update.stop, 0);
     g_update.wake = CreateEventW(0, FALSE, FALSE, 0);
@@ -322,7 +322,7 @@ static bool update_status(char *ver, i32 cap)
 }
 
 // Swaps the ready exe in for this one and starts it, then quits. The new copy waits for this one to go (it's told
-// the pid in CLIPBACK_AFTER_UPDATE), and deletes clipback.old.exe once it can (install_cleanup). The ffmpeg children
+// the pid in REKODR_AFTER_UPDATE), and deletes rekodr.old.exe once it can (install_cleanup). The ffmpeg children
 // are in this process's kill-on-close job, so recording stops for the few seconds until the new copy starts its own.
 static bool update_apply(bool start_new = true)
 {
@@ -331,15 +331,15 @@ static bool update_apply(bool start_new = true)
     GetModuleFileNameW(0, self, MAX_PATH);
     Path aside = {};
     wcscpy_s(aside.s, self);
-    if (wchar_t *slash = wcsrchr(aside.s, L'\\')) wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - aside.s), L"clipback.old.exe");
+    if (wchar_t *slash = wcsrchr(aside.s, L'\\')) wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - aside.s), L"rekodr.old.exe");
     if (!install_swap(g_update.exe.s, self, aside.s, true)) return update_fail("couldn't swap the new exe in");
-    log_line("update: %s swapped in for %s", g_update.version, CLIPBACK_VERSION);
+    log_line("update: %s swapped in for %s", g_update.version, REKODR_VERSION);
     if (!start_new) return true;
     wchar_t pid[16];
     swprintf(pid, COUNT(pid), L"%lu", GetCurrentProcessId());
-    SetEnvironmentVariableW(L"CLIPBACK_AFTER_UPDATE", pid);
+    SetEnvironmentVariableW(L"REKODR_AFTER_UPDATE", pid);
     bool started = install_start(self, g_app.ui.shown ? L"open" : L"");
-    SetEnvironmentVariableW(L"CLIPBACK_AFTER_UPDATE", 0);
+    SetEnvironmentVariableW(L"REKODR_AFTER_UPDATE", 0);
     if (!started) {
         MoveFileExW(aside.s, self, MOVEFILE_REPLACE_EXISTING); // the old one back; this copy carries on
         return update_fail("the new exe didn't start");
@@ -353,8 +353,8 @@ static bool update_apply(bool start_new = true)
 static void update_wait_for_old()
 {
     wchar_t pid[16] = {};
-    if (!GetEnvironmentVariableW(L"CLIPBACK_AFTER_UPDATE", pid, COUNT(pid)) || !pid[0]) return;
-    SetEnvironmentVariableW(L"CLIPBACK_AFTER_UPDATE", 0);
+    if (!GetEnvironmentVariableW(L"REKODR_AFTER_UPDATE", pid, COUNT(pid)) || !pid[0]) return;
+    SetEnvironmentVariableW(L"REKODR_AFTER_UPDATE", 0);
     HANDLE old = OpenProcess(SYNCHRONIZE, FALSE, wcstoul(pid, 0, 10));
     if (old) {
         WaitForSingleObject(old, 15000);
@@ -372,7 +372,7 @@ static Path update_beside(const wchar_t *name)
     return p;
 }
 
-// From main at start, in place of install_cleanup: a copy an update started keeps clipback.old.exe for its first
+// From main at start, in place of install_cleanup: a copy an update started keeps rekodr.old.exe for its first
 // minute, so update_rollback can put it back.
 static void update_cleanup()
 {
@@ -391,17 +391,17 @@ static bool update_rollback()
     if (!g_update_started_ms || GetTickCount64() - g_update_started_ms >= UPDATE_TRIAL_MS) return false;
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(0, self, MAX_PATH);
-    Path old = update_beside(L"clipback.old.exe"), bad = update_beside(L"clipback.bad.exe");
+    Path old = update_beside(L"rekodr.old.exe"), bad = update_beside(L"rekodr.bad.exe");
     if (GetFileAttributesW(old.s) == INVALID_FILE_ATTRIBUTES) return false;
     if (!install_swap(old.s, self, bad.s, true)) return false;
     MoveFileExW(bad.s, old.s, MOVEFILE_REPLACE_EXISTING); // the next start deletes it
     Path dir = path_join(g_app.paths.local_dir, L"update");
     SHCreateDirectoryExW(0, dir.s, 0);
     if (FILE *f = _wfopen(path_join(dir, L"skip.txt").s, L"w")) {
-        fprintf(f, "%s\n", CLIPBACK_VERSION);
+        fprintf(f, "%s\n", REKODR_VERSION);
         fclose(f);
     }
-    log_line("update: %s crashed in its first minute; the exe it replaced is back", CLIPBACK_VERSION);
+    log_line("update: %s crashed in its first minute; the exe it replaced is back", REKODR_VERSION);
     return true;
 }
 

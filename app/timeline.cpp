@@ -2330,7 +2330,7 @@ static void screen_timeline()
         ImGui::PopFont();
     }
 
-    // Video: footage as bars, gaps (lock screen, paused, clipback not running) empty. Zoomed in far enough, a frame
+    // Video: footage as bars, gaps (lock screen, paused, Rekodr not running) empty. Zoomed in far enough, a frame
     // every so often along it: each the keyframe at a step of the time grid, so a pan keeps the same frames.
     {
         f32 y = y_video + 1 * s, h = video_h - 2 * s;
@@ -2444,7 +2444,7 @@ static void screen_timeline()
         const AudioStreamInfo &info = b.streams[st];
         for (i32 j = 0; j < info.seg_count; j++) {
             const AudioSeg &seg = b.audio_segs[info.first_seg + j];
-            // An open segment is the one being written, or one left behind when clipback was killed: segments are
+            // An open segment is the one being written, or one left behind when Rekodr was killed: segments are
             // 10 s, so it can't reach past that (else a dead stream would seem to run up to now).
             i64 e = seg.open ? ImMin(now, seg.start_us + 12 * TL_SEC) : seg.end_us;
             if (e < c.start || seg.start_us > view_end) continue;

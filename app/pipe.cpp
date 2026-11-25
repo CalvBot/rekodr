@@ -1,10 +1,10 @@
-// The pipe: a local two-way connection for programs that drive clipback and show its state, such as the Stream
-// Deck plugin (streamdeck\). It is a named pipe, \\.\pipe\clipback, so nothing listens on a network port and only
+// The pipe: a local two-way connection for programs that drive Rekodr and show its state, such as the Stream
+// Deck plugin (streamdeck\). It is a named pipe, \\.\pipe\rekodr, so nothing listens on a network port and only
 // programs on this PC can reach it.
 //
-// A client sends commands, one per line, the same ones `clipback.exe <command>` takes ("save 30s", "toggle",
+// A client sends commands, one per line, the same ones `rekodr.exe <command>` takes ("save 30s", "toggle",
 // "open"), plus "hello <name>" to say what it is (Options > Integrations shows who is connected) and "save <from> <to>", an exact stretch in Unix seconds (with an optional fraction) that lifelog's voice
-// commands use. clipback sends lines of JSON:
+// commands use. Rekodr sends lines of JSON:
 //   {"type":"state","paused":false,"recording":true,"game":"Overwatch","oldest_us":...,"saving":0,"error":""}
 //       when a client connects and whenever any of it changes. oldest_us is the oldest footage in the buffer
 //       (0 = none), so a client can show how much the buffer holds.
@@ -23,7 +23,7 @@ struct PipeServer {
     SRWLOCK lock;        // clients and state
     HANDLE  clients[8];  // 0 = free
     char    names[8][32]; // what each client said it is ("streamdeck"); "" = it hasn't
-    HANDLE  stop;        // set when clipback quits
+    HANDLE  stop;        // set when Rekodr quits
     HANDLE  thread;      // the accepting thread
     HANDLE  write_done;  // for overlapped writes (one at a time, under the lock)
     wchar_t name[64];
@@ -181,7 +181,7 @@ static DWORD WINAPI pipe_accept_thread(void *)
                                     PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                                     PIPE_UNLIMITED_INSTANCES, 8192, 8192, 0, 0);
         if (h == INVALID_HANDLE_VALUE) {
-            log_line("pipe: couldn't create %ls (%lu); Stream Deck keys won't show clipback's state", g_pipe.name,
+            log_line("pipe: couldn't create %ls (%lu); Stream Deck keys won't show Rekodr's state", g_pipe.name,
                      GetLastError());
             break;
         }
@@ -235,14 +235,14 @@ static i32 pipe_clients(const char *name)
     return n;
 }
 
-// A test copy (CLIPBACK_HOME) has a pipe of its own, named after its home, so it never answers for the real one.
+// A test copy (REKODR_HOME) has a pipe of its own, named after its home, so it never answers for the real one.
 static void pipe_start()
 {
     InitializeSRWLock(&g_pipe.lock);
     if (u32 h = test_home_hash()) {
-        swprintf(g_pipe.name, COUNT(g_pipe.name), L"\\\\.\\pipe\\clipback-test-%08x", h);
+        swprintf(g_pipe.name, COUNT(g_pipe.name), L"\\\\.\\pipe\\rekodr-test-%08x", h);
     } else {
-        wcscpy_s(g_pipe.name, L"\\\\.\\pipe\\clipback");
+        wcscpy_s(g_pipe.name, L"\\\\.\\pipe\\rekodr");
     }
     g_pipe.stop = CreateEventW(0, TRUE, FALSE, 0);
     g_pipe.write_done = CreateEventW(0, TRUE, FALSE, 0);

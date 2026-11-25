@@ -1,5 +1,5 @@
 // Links: a clip shared as a plain https link to an MP4 that Discord plays in place. Where it goes:
-//   R2          the player's own Cloudflare R2 bucket, as clipback/<random folder>/clip.mp4, so a link names no
+//   R2          the player's own Cloudflare R2 bucket, as rekodr/<random folder>/clip.mp4, so a link names no
 //               player, game or date and can't be guessed. The link points at the bucket's public address (r2.dev
 //               or the player's own domain).
 //   uploaders   without a bucket, one of the player's own upload servers that's on (ShareX .sxcu files,
@@ -9,7 +9,7 @@
 //   preparing  save_link (save.cpp) makes an H.264 copy with the Mix only, played from the start while it loads
 //   uploading  the copy goes to the bucket over R2's S3 API (signed with AWS Signature V4), in parts when large,
 //              or to an uploader as its .sxcu says; the copy is deleted after
-//   cleanup    R2 only: while the bucket's clipback/ folder holds more than the player's limit (its real total,
+//   cleanup    R2 only: while the bucket's rekodr/ folder holds more than the player's limit (its real total,
 //              listed after each upload), the oldest clips that aren't pinned are deleted from it; their history
 //              entries stay, marked removed, and can be shared again under the same name
 //
@@ -59,9 +59,9 @@ struct R2Status {
 };
 
 struct R2Share {
-    char key[R2_KEY_MAX]; // R2: object name in the bucket, "clipback/<16 random letters and digits>/clip.mp4"
-                          // (with a preview page, the page is "clipback/<id>" and its picture
-                          // "clipback/<id>/thumb.jpg");
+    char key[R2_KEY_MAX]; // R2: object name in the bucket, "rekodr/<16 random letters and digits>/clip.mp4"
+                          // (with a preview page, the page is "rekodr/<id>" and its picture
+                          // "rekodr/<id>/thumb.jpg");
                           // a custom uploader: "<its name>/<16 random>"
     char url[512];    // the link as given out
     char title[256];
@@ -202,7 +202,7 @@ static struct {
     i64      access_until_us;
     f64      budget;       // main thread: the monthly budget in force (r2_apply_budget), once budget_known
     bool     budget_known;
-    i64      folder_bytes; // the bucket's clipback/ folder when last listed, 0 before
+    i64      folder_bytes; // the bucket's rekodr/ folder when last listed, 0 before
     struct {
         HANDLE        thread; // listens on CF_OAUTH_PORT for the browser
         volatile LONG cancel;
@@ -296,7 +296,7 @@ static void r2_fmt_reads(i64 n, char *out, i32 cap)
 }
 
 // Which shares to delete so the bucket fits `limit` once `incoming` more bytes are in it: the oldest that aren't
-// pinned, removed or at index `keep`. `incoming` also carries what's in the bucket's clipback/ folder that the
+// pinned, removed or at index `keep`. `incoming` also carries what's in the bucket's rekodr/ folder that the
 // history doesn't know of. Writes their indexes to out and returns how many, or -1 when the pinned shares, `keep`
 // and `incoming` alone are over the limit.
 static i32 r2_plan_cleanup(const R2Share *s, i32 n, i64 limit, i64 incoming, i32 keep, i32 *out, i32 cap)
@@ -360,12 +360,12 @@ static void r2_random(char *out, i32 n)
     out[n] = 0;
 }
 
-// A new clip's name in the bucket: clipback/<16 random>/clip.mp4.
+// A new clip's name in the bucket: rekodr/<16 random>/clip.mp4.
 static void r2_new_key(char out[R2_KEY_MAX])
 {
     char folder[17];
     r2_random(folder, 16);
-    snprintf(out, R2_KEY_MAX, "clipback/%s/clip.mp4", folder);
+    snprintf(out, R2_KEY_MAX, "rekodr/%s/clip.mp4", folder);
 }
 
 static void r2_make_url(const char *public_url, const char *key, i32 version, char *out, i32 cap)
@@ -378,10 +378,10 @@ static void r2_make_url(const char *public_url, const char *key, i32 version, ch
 
 // ---------------------------------------------------------------------------------------------------------------
 // Preview pages: a bucket link can be a small page that shows the clip, so chat apps show a card with its picture
-// and play it. The page is "clipback/<id>" (text/html) beside the clip's folder, its picture
+// and play it. The page is "rekodr/<id>" (text/html) beside the clip's folder, its picture
 // "<the file's folder>/thumb.jpg": a frame a third of the way in, at most 1280 wide.
 
-// The page's name for a share's key: "clipback/<id>/clip.mp4" -> "clipback/<id>".
+// The page's name for a share's key: "rekodr/<id>/clip.mp4" -> "rekodr/<id>".
 static void r2_page_key(const char *key, char out[R2_KEY_MAX])
 {
     const char *slash = strrchr(key, '/');
@@ -389,7 +389,7 @@ static void r2_page_key(const char *key, char out[R2_KEY_MAX])
     snprintf(out, R2_KEY_MAX, "%.*s", n, key);
 }
 
-// The picture beside a file in the bucket: "clipback/<id>/clip.mp4" -> "clipback/<id>/thumb.jpg".
+// The picture beside a file in the bucket: "rekodr/<id>/clip.mp4" -> "rekodr/<id>/thumb.jpg".
 static void r2_thumb_key(const char *key, char out[R2_KEY_MAX])
 {
     char dir[R2_KEY_MAX];
@@ -407,7 +407,7 @@ static i64 r2_social_bytes()
     return (i64)((mb < 8 ? 8 : mb > 250 ? 250 : mb) * 1000 * 1000);
 }
 
-// The small copy beside a file in the bucket: "clipback/<id>/clip.mp4" -> "clipback/<id>/social.mp4".
+// The small copy beside a file in the bucket: "rekodr/<id>/clip.mp4" -> "rekodr/<id>/social.mp4".
 static void r2_social_key(const char *key, char out[R2_KEY_MAX])
 {
     char dir[R2_KEY_MAX];
@@ -518,7 +518,7 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
 // The logo as a Discord emoji, at the start of the card's "via" line; it is in Calvin's own server.
 // TODO: a new id if it moves
-#define R2_LOGO_EMOJI "<:clipback:1574532567124803645>"
+#define R2_LOGO_EMOJI "<:rekodr:1574532567124803645>"
 
 struct EmbedInput {
     const char *title, *game;           // the clip's name and its game
@@ -550,7 +550,7 @@ struct EmbedStyle {
     bool icon;             // the game's emoji at the start of that line
 };
 static const EmbedStyle EMBED_STYLES[] = {
-    {"clipback", "Clipback", true, true},
+    {"rekodr", "Rekodr", true, true},
 };
 
 static i32 embed_style_count() { return COUNT(EMBED_STYLES); }
@@ -686,7 +686,7 @@ static i32 r2_card_json(const EmbedCard &card, const char *video, const char *im
     }
     if (card.via) {
         put(",{\"type\":10,\"content\":\"-# ");
-        text(R2_LOGO_EMOJI " [via " APP_DISPLAY "](", false);
+        text(R2_LOGO_EMOJI " [via " APP_NAME "](", false);
         text("<", false);
         put(R2_HOME_URL);
         text(">", false);
@@ -751,7 +751,7 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
 }
 
 // The page for a link: the game's art (else the clip's picture) in grey and blurred behind its name, the game line
-// (after the game's icon, else its emoji), the clip in Clipback's own player and its markers, then "via Clipback" (a
+// (after the game's icon, else its emoji), the clip in Rekodr's own player and its markers, then "via Rekodr" (a
 // link to the project), Download and Copy link. The head has the tags chat
 // apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and
 // Discord's own card (`card`) before them. A #t= in the address (seconds, or m:ss or h:mm:ss) starts the clip there,
@@ -770,7 +770,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
                 "<meta name=\"robots\" content=\"noindex\">\n<title>%T</title>\n"
                 "<meta property=\"og:type\" content=\"video.other\">\n<meta property=\"og:title\" content=\"%T\">\n"
-                "<meta property=\"og:site_name\" content=\"" APP_DISPLAY "\">\n<meta property=\"og:url\" content=\"%P\">\n",
+                "<meta property=\"og:site_name\" content=\"" APP_NAME "\">\n<meta property=\"og:url\" content=\"%P\">\n",
                 p, out, cap, &len);
     if (!paused && p.card && p.card[0] && len + (i32)strlen(p.card) + 80 < cap)
         len += snprintf(out + len, cap - len,
@@ -798,7 +798,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                     "<meta name=\"twitter:title\" content=\"%T\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
                     p, out, cap, &len);
     // The look: flat near-black, the game's art in grey and blurred behind a centred column; the name, the game
-    // line, the player with the markers as ticks on its timeline, then "via Clipback", Download (a white pill) and
+    // line, the player with the markers as ticks on its timeline, then "via Rekodr", Download (a white pill) and
     // Copy link. Onest is in the page itself, so it asks nothing of anyone else.
     r2_page_put("<style>@font-face{font-family:Onest;font-weight:400 700;font-display:swap;"
                 "src:url(data:font/woff2;base64,",
@@ -913,7 +913,7 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     char logo[160];
     if (r2_emoji_url(R2_LOGO_EMOJI, logo, sizeof logo) && len + 200 < cap)
         len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", logo);
-    r2_page_put("via <b>" APP_DISPLAY "</b></a><div class=\"acts\">", p, out, cap, &len);
+    r2_page_put("via <b>" APP_NAME "</b></a><div class=\"acts\">", p, out, cap, &len);
     if (!paused)
         r2_page_put("<a class=\"btn p\" href=\"%V\" download><svg viewBox=\"0 0 24 24\"><path d=\"M11 3h2v10l4-4 1.4 "
                     "1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg>Download</a>"
@@ -1020,16 +1020,16 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The API token and the sign-in's refresh token, in Windows' Credential Manager. A test copy (CLIPBACK_HOME) keeps
-// its own. The API token is the one pasted, or with a sign-in the one clipback made for the bucket. The bucket's S3
+// The API token and the sign-in's refresh token, in Windows' Credential Manager. A test copy (REKODR_HOME) keeps
+// its own. The API token is the one pasted, or with a sign-in the one Rekodr made for the bucket. The bucket's S3
 // keys come from it: the access key is the token's id, the secret the SHA-256 of the token (r2_token_secret).
 
 static void r2_cred_target(wchar_t *out, i32 cap, bool signin)
 {
     u32 h = test_home_hash();
     const wchar_t *what = signin ? L"r2-signin" : L"r2";
-    if (h) swprintf(out, cap, L"clipback-%08x/%ls", h, what);
-    else swprintf(out, cap, L"clipback/%ls", what);
+    if (h) swprintf(out, cap, L"rekodr-%08x/%ls", h, what);
+    else swprintf(out, cap, L"rekodr/%ls", what);
 }
 
 static bool r2_token_get(char *out, i32 cap, bool signin = false)
@@ -1064,7 +1064,7 @@ static void r2_token_store(const char *s, bool signin = false)
     cred.CredentialBlobSize = (DWORD)strlen(s);
     cred.CredentialBlob = (LPBYTE)s;
     cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
-    cred.UserName = (wchar_t *)L"clipback";
+    cred.UserName = (wchar_t *)L"rekodr";
     if (CredWriteW(&cred, 0)) cache = 1;
     else log_line("r2: couldn't store the %s (%d)", signin ? "sign-in" : "API token", (int)GetLastError());
 }
@@ -1310,7 +1310,7 @@ static u32 r2_send(const R2Conf &c, const char *method, const char *key, const c
     utf8_to_wide(hdrs, whdrs, COUNT(whdrs));
 
     u32 status = 0;
-    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, whost, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, wmethod, wpath, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
     if (req) {
@@ -1380,7 +1380,7 @@ static void r2_why(u32 status, const char *resp, const R2Conf &c, char *out, i32
 
 static bool r2_ok(u32 status) { return status >= 200 && status < 300; }
 
-// The total size of everything in the bucket's clipback/ folder (ListObjectsV2), -1 if it couldn't be listed.
+// The total size of everything in the bucket's rekodr/ folder (ListObjectsV2), -1 if it couldn't be listed.
 static i64 r2_folder_bytes(const R2Conf &c)
 {
     const i32 cap = 1 << 20;
@@ -1390,8 +1390,8 @@ static i64 r2_folder_bytes(const R2Conf &c)
     for (i32 page = 0; page < 1000 && total >= 0; page++) {
         char query[2200], enc[2048];
         r2_uri_encode(token, enc, sizeof enc);
-        if (token[0]) snprintf(query, sizeof query, "continuation-token=%s&list-type=2&prefix=clipback%%2F", enc);
-        else snprintf(query, sizeof query, "list-type=2&prefix=clipback%%2F");
+        if (token[0]) snprintf(query, sizeof query, "continuation-token=%s&list-type=2&prefix=rekodr%%2F", enc);
+        else snprintf(query, sizeof query, "list-type=2&prefix=rekodr%%2F");
         u32 status = r2_send(c, "GET", "", query, R2Body{}, 0, resp, cap);
         if (!r2_ok(status)) {
             log_line("r2: couldn't list the bucket (%u)", status);
@@ -1412,7 +1412,7 @@ static i64 r2_folder_bytes(const R2Conf &c)
     return total;
 }
 
-// What's in the bucket's clipback/ folder that the history doesn't count (under the lock): `folder` less the live
+// What's in the bucket's rekodr/ folder that the history doesn't count (under the lock): `folder` less the live
 // shares, 0 when the folder couldn't be listed.
 static i64 r2_untracked_locked(i64 folder)
 {
@@ -2359,7 +2359,7 @@ static i32 uploader_pairs(const char *text, i64 len, const char *key, char (*out
     return n;
 }
 
-// Reads an .sxcu file's text. False, with why, when clipback can't use it.
+// Reads an .sxcu file's text. False, with why, when Rekodr can't use it.
 static bool uploader_parse(const char *text, i64 len, Uploader *u, char *why, i32 cap)
 {
     *u = {};
@@ -2526,7 +2526,7 @@ static u32 up_send(const UpRequest &q, HANDLE f, i64 size, R2Progress *prog, cha
     wchar_t hdrs[2600];
     char rnd[25];
     r2_random(rnd, 24);
-    snprintf(boundary, sizeof boundary, "clipback%s", rnd);
+    snprintf(boundary, sizeof boundary, "rekodr%s", rnd);
     if (q.form_name && q.form_name[0]) {
         for (i32 i = 0; i < q.nfields; i++)
             len += snprintf(pre + len, sizeof pre - len,
@@ -2544,7 +2544,7 @@ static u32 up_send(const UpRequest &q, HANDLE f, i64 size, R2Progress *prog, cha
     utf8_to_wide(q.method, method, COUNT(method));
 
     u32 status = 0;
-    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, uc.nPort, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, method, path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
     if (req) {
@@ -2602,7 +2602,7 @@ static bool up_get(const char *url)
     if (!WinHttpCrackUrl(wurl, 0, 0, &uc) || uc.nScheme != INTERNET_SCHEME_HTTPS) return false;
     wcsncat(path, extra, COUNT(path) - wcslen(path) - 1);
     DWORD code = 0, len = sizeof code;
-    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, uc.nPort, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
     if (req) {
@@ -3016,7 +3016,7 @@ static i32 r2_parse_plays(const char *resp, const char *list, char (*keys)[R2_KE
     return n;
 }
 
-// The dashboard page that makes an API token with what clipback needs already picked.
+// The dashboard page that makes an API token with what Rekodr needs already picked.
 static const char *r2_token_link()
 {
     static char url[600];
@@ -3144,7 +3144,7 @@ static u32 r2_https(const wchar_t *host, const char *method, const char *path, c
     utf8_to_wide(headers, whdrs, COUNT(whdrs));
     DWORD blen = body ? (DWORD)strlen(body) : 0;
     u32 status = 0;
-    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, wmethod, wpath, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
     if (req) {
@@ -3227,9 +3227,9 @@ static void r2_run_probe(const R2Conf &c, bool fresh)
 {
     char key[17], body[64], resp[2048], why[256];
     r2_random(key, 16);
-    snprintf(body, sizeof body, "clipback %s", key);
+    snprintf(body, sizeof body, "rekodr %s", key);
     char name[64];
-    snprintf(name, sizeof name, "clipback/test-%s.txt", key);
+    snprintf(name, sizeof name, "rekodr/test-%s.txt", key);
     u32 status = 0;
     for (i32 tries = fresh ? 10 : 1; tries > 0 && !g_r2.stop; tries--) {
         status = r2_send(c, "PUT", name, "", R2Body{body, 0, 0, (i64)strlen(body)}, "text/plain", resp, sizeof resp);
@@ -3460,7 +3460,7 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
     return true;
 }
 
-// Revokes a sign-in: the bucket's token clipback made (`token_id`), then the refresh token.
+// Revokes a sign-in: the bucket's token Rekodr made (`token_id`), then the refresh token.
 static void r2_revoke(const char *refresh, const char *token_id)
 {
     char bearer[2048] = "";
@@ -3884,7 +3884,7 @@ static i32 r2_evict_preview(i64 limit, i64 incoming, u8 *goes, R2Share *out, i32
     return n;
 }
 
-// What the bucket's clipback/ folder holds that no link counts, from its last listing (0 before one).
+// What the bucket's rekodr/ folder holds that no link counts, from its last listing (0 before one).
 static i64 r2_untracked_bytes()
 {
     AcquireSRWLockShared(&g_r2.lock);
@@ -4482,7 +4482,7 @@ static void r2_sign_in()
 }
 
 // Forgets the setup: the settings it made, the tokens, and the usage read. A sign-in is revoked at Cloudflare,
-// with the bucket's token clipback made; a pasted token stays the player's.
+// with the bucket's token Rekodr made; a pasted token stays the player's.
 static void r2_forget(bool revoke)
 {
     r2_sign_in_cancel();

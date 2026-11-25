@@ -1,10 +1,10 @@
 // The games database: which exe is which game, its proper name, and where its icon and cover are.
 //
-// clipback fetches it itself; nothing is shipped with it. The list is Discord's public list of the games it can
+// Rekodr fetches it itself; nothing is shipped with it. The list is Discord's public list of the games it can
 // detect (about 25,000, each with its exe names, the folders they sit in and, for an exe many programs share, the
 // command line that tells them apart: javaw.exe is Minecraft only when it runs Minecraft's main class). Icons come
 // from Discord's image server and covers from Steam's when the game is on Steam. A game with neither, or one not in
-// the list at all, is looked up by name on clipback's art service (api.clipback.workers.dev, which asks SteamGridDB
+// the list at all, is looked up by name on Rekodr's art service (ART_SERVICE_HOST, which asks SteamGridDB
 // and IGDB; "art_service" in settings.txt names another, or none). The service is always asked first. If it
 // answers "not shared yet" (403), it only says which game an exe is, and the art comes from SteamGridDB with the
 // player's own key ("sgdb_key" in settings.txt), if they set one. All of it is kept under <local>\gamedb and the
@@ -127,7 +127,7 @@ static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *hea
     }
     char *mem = 0;
     i64 mem_len = 0, mem_cap = 0, file_len = 0;
-    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, post ? L"POST" : L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
     DWORD post_len = post ? (DWORD)strlen(post) : 0;
@@ -846,7 +846,7 @@ static bool is_browser(const char *exe)
 }
 
 // The program longest in front between from_us and to_us, from focus.tsv text ("us\texe" lines, oldest first).
-// clipback itself and "nothing in front" don't count. False if nothing was.
+// Rekodr itself and "nothing in front" don't count. False if nothing was.
 static bool focus_longest(char *text, i64 from_us, i64 to_us, char *exe, i32 cap)
 {
     struct Spent { char exe[64]; i64 us; } spent[32];
@@ -855,7 +855,7 @@ static bool focus_longest(char *text, i64 from_us, i64 to_us, char *exe, i32 cap
     char cur[64] = "";
     auto add = [&](i64 until) {
         i64 a = at > from_us ? at : from_us, b = until < to_us ? until : to_us;
-        if (!cur[0] || b <= a || !_stricmp(cur, "clipback.exe")) return;
+        if (!cur[0] || b <= a || !_stricmp(cur, "rekodr.exe")) return;
         i32 i = 0;
         while (i < n && strcmp(spent[i].exe, cur)) i++;
         if (i == n) {
@@ -996,7 +996,7 @@ static bool gamedb_name_app(AppInfo *a)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The art service: art for the games Discord's list has none for, from SteamGridDB and IGDB by way of clipback's
+// The art service: art for the games Discord's list has none for, from SteamGridDB and IGDB by way of Rekodr's
 // own Worker (clipback-api), which holds the keys. Two calls, both GET and signed:
 //   /v1/search?q=<name>  -> {"games":[{"id":"s5367951","name":"...","year":2017}, ...]}
 //   /v1/art/<id>         -> {"id":..,"grid":{"url":..,"thumb":..,"w":..,"h":..},"hero":..,"logo":..,"icon":..},
@@ -1024,7 +1024,7 @@ static bool hmac_sha256_hex(const char *key, const char *msg, char out[65])
     return ok;
 }
 
-// The x-clipback header for a path (with its query, as sent): "<unix seconds>.<hmac of "seconds\npath">", and
+// The signature header (ART_SERVICE_SIG_HEADER) for a path (with its query, as sent): "<unix seconds>.<hmac of "seconds\npath">", and
 // for a POST "seconds\npath\nbody".
 static void art_service_sign(const char *path, i64 seconds, char *out, i32 cap, const char *post = 0)
 {
@@ -1079,7 +1079,7 @@ static u32 art_service_get(const char *path, char **body, i64 *len, const char *
         GetSystemTimeAsFileTime(&now);
         i64 unix_seconds = (((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - 116444736000000000ll) / 10000000;
         art_service_sign(path, unix_seconds, sig, sizeof sig, post);
-        swprintf(header, COUNT(header), L"x-clipback: %hs\r\n%s", sig, post ? L"content-type: application/json\r\n" : L"");
+        swprintf(header, COUNT(header), ART_SERVICE_SIG_HEADER L": %hs\r\n%s", sig, post ? L"content-type: application/json\r\n" : L"");
         g_service_calls[(u32)(InterlockedIncrement(&g_service_call_n) - 1) % COUNT(g_service_calls)] = GetTickCount64();
         u32 status = http_get(host, wpath, header, 0, body, len, post);
         if (status != 429 || attempt || !wait_out || g_gamedb.stop) return status;
@@ -1340,7 +1340,7 @@ static bool art_service_find(const char *id, const char *name, GameArt kind, cha
         return false;
     }
     if (!have) {
-        // A game clipback only knows by its exe ("someapp.exe") is looked for without the ".exe"
+        // A game Rekodr only knows by its exe ("someapp.exe") is looked for without the ".exe"
         char q[128], path[512], sid[24] = "";
         snprintf(q, sizeof q, "%s", name);
         size_t ql = strlen(q);
@@ -1689,7 +1689,7 @@ static bool gamedb_fetch_art()
             later |= unasked;
         }
         // None to be had: an empty file says so, and it isn't asked for again for a week. Not when it only couldn't
-        // be asked (offline, or a server down or busy): then it is asked for again the next time clipback runs.
+        // be asked (offline, or a server down or busy): then it is asked for again the next time Rekodr runs.
         if (!ok && !later && !g_gamedb.stop) {
             FILE *f = _wfopen(file.s, L"wb");
             if (f) fclose(f);

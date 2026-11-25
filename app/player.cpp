@@ -184,7 +184,7 @@ static bool player_open(Player *p, const Path &path, f64 start, bool autoplay)
     return true;
 }
 
-// Which of the engine's streams are audio, in order. The MP4s clipback writes have the video first.
+// Which of the engine's streams are audio, in order. The MP4s Rekodr writes have the video first.
 static void player_find_audio(Player *p)
 {
     p->audio_count = 0;
@@ -205,7 +205,7 @@ static void player_find_audio(Player *p)
         for (DWORD i = 1; i < n && p->audio_count < MEDIA_MAX_TRACKS; i++) p->audio_stream[p->audio_count++] = (i32)i;
 }
 
-// Plays only audio track `track` on `e` (0 = the first, which is the Mix in clipback's files).
+// Plays only audio track `track` on `e` (0 = the first, which is the Mix in Rekodr's files).
 static void engine_pick_audio(IMFMediaEngine *e, const Player &p, i32 track)
 {
     IMFMediaEngineEx *ex = 0;

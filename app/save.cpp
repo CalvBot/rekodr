@@ -29,7 +29,7 @@ struct SaveSettings {
     Path    buffer_dir;
     Path    save_dir;
     Path    ffmpeg;   // empty = not found
-    Path    work_dir; // temp lists and graphs (under local_dir, so test copies keep to CLIPBACK_HOME)
+    Path    work_dir; // temp lists and graphs (under local_dir, so test copies keep to REKODR_HOME)
     Path    play_dir; // previews (Config::play_dir)
     char    name_template[128];
     char    codec[64];
@@ -893,7 +893,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     arg_pair(a, cap, "-metadata", "title=%s - %d %.3s %d %s", label, t.wDay, month_name(t.wMonth), t.wYear, hm);
     arg_pair(a, cap, "-metadata", "genre=%s", game);
     arg_pair(a, cap, "-metadata", "description=%s", names[0] ? names : GAME_DESKTOP);
-    arg_pair(a, cap, "-metadata", "comment=clipback; games=%s", exes);
+    arg_pair(a, cap, "-metadata", "comment=rekodr; games=%s", exes);
     arg_pair(a, cap, "-movflags", "+faststart");
     arg_pair(a, cap, "-f", "mp4");
     cmd_arg(a, cap, part_path.s);
@@ -1199,7 +1199,7 @@ static f64 fade_gain(const EditRecord &e, f64 dur, i32 i, f64 s)
     return g;
 }
 
-// Whether a file has the clipback layout: track 1 is a Mix of the tracks after it.
+// Whether a file has the Rekodr layout: track 1 is a Mix of the tracks after it.
 static bool edit_has_mix(const MediaInfo &m) { return m.track_count >= 2 && !strcmp(m.tracks[0], "Mix"); }
 
 // Eases (Ease in app.h): how far along (0..1) a value is, a fraction f of the way in time from one key to the next.
@@ -2504,7 +2504,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 } else arg_pair(a, cap, "-c:a", "copy");
             }
         } else {
-            // The rebuilt Mix first, then the original tracks as recorded (a clipback file's old Mix is dropped); a
+            // The rebuilt Mix first, then the original tracks as recorded (a Rekodr file's old Mix is dropped); a
             // sized link's all at its rate.
             i32 akbps = sized && rate.audio_kbps ? rate.audio_kbps : 0;
             arg_pair(a, cap, "-map", "[a]");

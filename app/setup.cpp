@@ -168,7 +168,7 @@ static f32 setup_page_head(ImDrawList *dl, f32 x0, f32 x1, f32 y, const char *ti
     return ImGui::GetCursorScreenPos().y + dp(20);
 }
 
-// Welcome: what clipback does, the clip key as key caps, and tooltips.
+// Welcome: what Rekodr does, the clip key as key caps, and tooltips.
 static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)
 {
     Config &c = g_app.config;
@@ -234,7 +234,7 @@ static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h
     opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, "Either way, F1 lists every key.", x1);
 }
 
-// Game detection: whether clipback's service is asked about the player's games (art_service), and told the names
+// Game detection: whether Rekodr's service is asked about the player's games (art_service), and told the names
 // the player gives (share_names). No turns both off at once, so nothing about a game goes to the service; games are
 // then named from Discord's game list and the names the player types.
 static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)

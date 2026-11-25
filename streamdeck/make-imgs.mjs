@@ -7,9 +7,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { C, card, saveKey, history, film, dot } from "./dev.calvbot.clipback.sdPlugin/render.mjs";
+import { C, card, saveKey, history, film, dot } from "./dev.calvbot.rekodr.sdPlugin/render.mjs";
 
-const dir = path.join(import.meta.dirname, "dev.calvbot.clipback.sdPlugin", "imgs");
+const dir = path.join(import.meta.dirname, "dev.calvbot.rekodr.sdPlugin", "imgs");
 fs.mkdirSync(dir, { recursive: true });
 const write = (name, svg) => fs.writeFileSync(path.join(dir, name + ".svg"), svg + "\n");
 const small = body => `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 144 144">${body}</svg>`;
@@ -23,7 +23,7 @@ write("open", small(`<g transform="translate(72 72) scale(2) translate(-72 -52)"
 write("category", small(dot("#ffffff", 72, 72).replace(`r="26"`, `r="50"`).replace(`r="15"`, `r="28"`).replace(`stroke-width="4"`, `stroke-width="9"`)));
 const EDGE = path.join(process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)", "Microsoft/Edge/Application/msedge.exe");
 const png = (name, svg, px) => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clipback-imgs-"));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rekodr-imgs-"));
     const page = path.join(tmp, "page.html");
     // the page draws the SVG on a canvas and puts the PNG's base64 in the DOM, which --dump-dom prints
     const src = "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
@@ -41,6 +41,6 @@ img.src = "${src}";
     if (!b64) throw new Error(`Edge drew no ${name}.png`);
     fs.writeFileSync(path.join(dir, name + ".png"), Buffer.from(b64, "base64"));
 };
-const plugin = card({ accent: C.red, glow: 0.5, label: "clipback", body: dot(C.red) });
+const plugin = card({ accent: C.red, glow: 0.5, label: "Rekodr", body: dot(C.red) });
 png("plugin", plugin, 256);
 png("plugin@2x", plugin, 512);

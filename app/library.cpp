@@ -167,7 +167,7 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
         else if (!strcmp(k, "TAG:genre")) snprintf(genre, sizeof genre, "%s", v);
         else if (!strcmp(k, "TAG:comment")) snprintf(comment, sizeof comment, "%s", v);
     }
-    if (starts_with(comment, "clipback") && genre[0]) snprintf(tagged, tagged_cap, "%s", genre);
+    if (starts_with(comment, "rekodr") && genre[0]) snprintf(tagged, tagged_cap, "%s", genre);
     return m->duration > 0;
 }
 
@@ -191,7 +191,7 @@ static void lib_publish(const LibItem *items, i32 n)
     event_post(e);
 }
 
-// Games given by hand, for files that carry no tag of their own (renamed ones, or videos clipback didn't make):
+// Games given by hand, for files that carry no tag of their own (renamed ones, or videos Rekodr didn't make):
 // <config_dir>\games.txt, a line each of "<key in hex> | <game> | <file name>". The key is the item's (its size and
 // time), so a rename keeps the game; the name is only there for people reading the file. Read at every scan, by
 // the scan's thread.
@@ -422,7 +422,7 @@ static bool lib_tags_save()
     return fclose(f) == 0;
 }
 
-// A file's game: the one given by hand, else its own tag, else what its name says, else for a video clipback didn't
+// A file's game: the one given by hand, else its own tag, else what its name says, else for a video Rekodr didn't
 // save the game its name starts with, when that is sure (game_guess).
 static bool game_guess(const char *name, bool (*known)(const char *, char *, i32), char *out, i32 cap);
 static bool game_known(const char *name, char *out, i32 cap);
@@ -1785,7 +1785,7 @@ static void game_from_name(const char *tmpl, const char *name, char *out, i32 ca
     lib_name_game(p, out, cap);
 }
 
-// The game in the name of a video clipback didn't save, when it is sure: the name starts with a game `known` knows
+// The game in the name of a video Rekodr didn't save, when it is sure: the name starts with a game `known` knows
 // and the rest is only numbers (a date and time) and words other recorders add, as in ShadowPlay's "Overwatch 2
 // 2024.01.15 - 20.14.03.02.DVR" or the Game Bar's "Minecraft 2024-01-15 20-14-03". The longest such start wins.
 // `known` puts a game's own name in its out and says whether it is one.
@@ -2996,7 +2996,7 @@ static bool ffget_status(char *out, i32 cap, f32 *progress); // ffget.cpp
 static void ffget_start(bool force);
 static bool ffget_failed();
 
-// While clipback fetches ffmpeg, or after that failed: a panel at the bottom, above the library's notes, with the
+// While Rekodr fetches ffmpeg, or after that failed: a panel at the bottom, above the library's notes, with the
 // line from ffget_status, a progress line while it downloads and Retry after a failure. The library and the
 // first-run setup draw it.
 static void ffget_bar()
@@ -4575,7 +4575,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     }
 }
 
-// The library player's volume: one for every file, kept while clipback runs.
+// The library player's volume: one for every file, kept while Rekodr runs.
 static f32 g_lib_volume = 1;
 static bool g_lib_muted;
 static u32 g_lib_volume_gen = 0xffffffff; // the player gen it was last given to

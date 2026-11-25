@@ -1,4 +1,4 @@
-// Fetching ffmpeg. When no ffmpeg is found (Options path, PATH, winget), clipback downloads one pinned build on its
+// Fetching ffmpeg. When no ffmpeg is found (Options path, PATH, winget), Rekodr downloads one pinned build on its
 // own: Gyan's 8.1.1 full shared build from its GitHub release. The zip is checked against its size and SHA-256
 // while it streams in, then unpacked with Windows' own tar.exe into ffget_dir() (local_dir\ffmpeg). ffmpeg_find
 // picks it up from there, so the recorder (which retries every 5 s) starts by itself once it lands.
@@ -53,7 +53,7 @@ static bool ffget_download(const Path &file)
         ffget_fail("SHA-256 isn't available");
         return false;
     }
-    HINTERNET session = WinHttpOpen(L"clipback", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
+    HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
     HINTERNET conn = session ? WinHttpConnect(session, FFGET_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
     HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", FFGET_PATH, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
     DWORD status = 0, len = sizeof status;

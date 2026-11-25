@@ -1,14 +1,14 @@
 // Startup, the single instance, commands and the main loop.
 //
-// `clipback.exe` with no arguments starts clipback (or opens the window of the copy already running).
-// `clipback.exe <command>` hands the command to the running copy as WM_COPYDATA and exits; Stream Deck keys use
-// this. With no running copy it starts clipback and runs the command there.
+// `rekodr.exe` with no arguments starts Rekodr (or opens the window of the copy already running).
+// `rekodr.exe <command>` hands the command to the running copy as WM_COPYDATA and exits; Stream Deck keys use
+// this. With no running copy it starts Rekodr and runs the command there.
 //
 // Commands: open | timeline | options | save <length> | pause | resume | toggle | folder | quit | dev [off]
 
 #define COPYDATA_COMMAND 0x4B424C43 // "CLBK"
 
-static const wchar_t *MSG_CLASS = L"clipback.msg";
+static const wchar_t *MSG_CLASS = L"rekodr.msg";
 
 #define TIMER_TICK 1 // once a second on the main thread, for anything that checks the clock
 
@@ -252,9 +252,9 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Crashes: a log line, a minidump, the stack, and then clipback starts itself again. (Windows' own restart,
+// Crashes: a log line, a minidump, the stack, and then Rekodr starts itself again. (Windows' own restart,
 // RegisterApplicationRestart, only acts on crashes that reach Windows Error Reporting; this handler ends the
-// process first.) The new copy is told the old one's pid in CLIPBACK_AFTER_CRASH and waits for it to be gone. A
+// process first.) The new copy is told the old one's pid in REKODR_AFTER_CRASH and waits for it to be gone. A
 // copy that was itself a restart and crashes within a minute is not restarted, so a crash at startup can't loop.
 // A copy an update started that crashes within a minute restarts as the version before it (update_rollback).
 
@@ -274,16 +274,16 @@ static void restart_after_crash()
     wchar_t exe[MAX_PATH], cmd[MAX_PATH + 16], pid[16];
     GetModuleFileNameW(0, exe, MAX_PATH);
     swprintf(pid, COUNT(pid), L"%lu", GetCurrentProcessId());
-    SetEnvironmentVariableW(L"CLIPBACK_AFTER_CRASH", pid);
+    SetEnvironmentVariableW(L"REKODR_AFTER_CRASH", pid);
     swprintf(cmd, COUNT(cmd), L"\"%s\"%s", exe, g_app.ui.shown ? L" open" : L""); // the window comes back if it was open
     STARTUPINFOW si = {sizeof si};
     PROCESS_INFORMATION pi = {};
     if (CreateProcessW(exe, cmd, 0, 0, FALSE, 0, 0, 0, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
-        log_line("restarting clipback (pid %lu)", pi.dwProcessId);
+        log_line("restarting Rekodr (pid %lu)", pi.dwProcessId);
     } else {
-        log_line("couldn't restart clipback (%lu)", GetLastError());
+        log_line("couldn't restart Rekodr (%lu)", GetLastError());
     }
 }
 
@@ -345,9 +345,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     // Started by a copy that crashed: wait until it has gone, so its mutex, hotkeys and tray icon are free.
     g_started_ms = GetTickCount64();
     wchar_t after[16] = {};
-    if (GetEnvironmentVariableW(L"CLIPBACK_AFTER_CRASH", after, COUNT(after)) && after[0]) {
+    if (GetEnvironmentVariableW(L"REKODR_AFTER_CRASH", after, COUNT(after)) && after[0]) {
         g_after_crash = true;
-        SetEnvironmentVariableW(L"CLIPBACK_AFTER_CRASH", 0);
+        SetEnvironmentVariableW(L"REKODR_AFTER_CRASH", 0);
         HANDLE old = OpenProcess(SYNCHRONIZE, FALSE, wcstoul(after, 0, 10));
         if (old) {
             WaitForSingleObject(old, 10000);
@@ -355,16 +355,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         }
     }
 
-    // One clipback per user (per CLIPBACK_HOME in development, so a test copy can run next to the real one)
-    wchar_t mutex_name[MAX_PATH + 32] = L"Local\\clipback.native";
+    // One Rekodr per user (per REKODR_HOME in development, so a test copy can run next to the real one)
+    wchar_t mutex_name[MAX_PATH + 32] = L"Local\\rekodr.native";
     if (u32 h = test_home_hash()) {
-        swprintf(mutex_name, COUNT(mutex_name), L"Local\\clipback.native.%08x", h);
+        swprintf(mutex_name, COUNT(mutex_name), L"Local\\rekodr.native.%08x", h);
         // Per home too, so a command (quit) from one test copy never reaches another test copy.
         static wchar_t dev_class[64];
-        swprintf(dev_class, COUNT(dev_class), L"clipback.msg.dev.%08x", h);
+        swprintf(dev_class, COUNT(dev_class), L"rekodr.msg.dev.%08x", h);
         MSG_CLASS = dev_class;
     }
-    // install and uninstall (install.cpp) run on their own, beside a clipback that's running
+    // install and uninstall (install.cpp) run on their own, beside a Rekodr that's running
     {
         i32 code = 0;
         if (install_command(command, MSG_CLASS, COPYDATA_COMMAND, &code)) return code;
@@ -403,7 +403,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     {
         wchar_t exe[MAX_PATH];
         GetModuleFileNameW(0, exe, MAX_PATH);
-        log_line("clipback (native) starting: %ls, built %s %s, pid %lu%s%s", exe, __DATE__, __TIME__,
+        log_line("Rekodr starting: %ls, built %s %s, pid %lu%s%s", exe, __DATE__, __TIME__,
                  GetCurrentProcessId(), g_dev ? ", detailed log on" : "", g_after_crash ? ", restarted after a crash" : "");
     }
     update_cleanup(); // the copy an install or update moved aside
@@ -418,10 +418,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     g_app.msg_hwnd = CreateWindowExW(0, MSG_CLASS, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, 0, inst, 0);
     CHECK(g_app.msg_hwnd, "the message window couldn't be created (%d)", (int)GetLastError());
 
-    if (!ui_init()) log_line("the window couldn't be created; clipback keeps recording without it");
+    if (!ui_init()) log_line("the window couldn't be created; Rekodr keeps recording without it");
     tray_init(g_app.msg_hwnd);
     SetTimer(g_app.msg_hwnd, TIMER_TICK, 1000, 0);
-    // Test copies (CLIPBACK_HOME) leave the hotkeys to the real clipback.
+    // Test copies (REKODR_HOME) leave the hotkeys to the real Rekodr.
     if (!test_home_hash()) hotkeys_apply(g_app.config, g_app.msg_hwnd);
     recorder_start();
     audio_start();
@@ -468,7 +468,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         }
     }
 
-    log_line("clipback (native) quitting");
+    log_line("Rekodr quitting");
     pipe_stop();
     sessions_stop();
     gamedb_stop();

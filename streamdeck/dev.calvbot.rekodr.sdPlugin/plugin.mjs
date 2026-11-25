@@ -1,9 +1,9 @@
-// clipback keys for Stream Deck: save the last so long, pause and resume recording, open the window.
+// Rekodr keys for Stream Deck: save the last so long, pause and resume recording, open the window.
 //
 // No dependencies: Stream Deck's bundled Node 24 has WebSocket built in, and this file speaks Stream Deck's
-// plugin protocol directly. It talks to clipback over its named pipe (app\pipe.cpp): commands go in as lines
-// ("save 30s"), and clipback sends its state and the result of each save back, so the keys show what happened.
-// While clipback isn't running, a key press starts it with the key's command.
+// plugin protocol directly. It talks to Rekodr over its named pipe (app\pipe.cpp): commands go in as lines
+// ("save 30s"), and Rekodr sends its state and the result of each save back, so the keys show what happened.
+// While Rekodr isn't running, a key press starts it with the key's command.
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -13,33 +13,33 @@ import { C, card, saveKey, tick, cross, film, track, sliders, dot, bars, ring } 
 const argv = process.argv.slice(2);
 const arg = k => argv[argv.indexOf(k) + 1];
 const PORT = arg("-port"), UUID = arg("-pluginUUID"), REGISTER = arg("-registerEvent");
-const PREFIX = "dev.calvbot.clipback.";
+const PREFIX = "dev.calvbot.rekodr.";
 
 // ---------- Stream Deck connection ----------
 const sd = new WebSocket(`ws://127.0.0.1:${PORT}`);
 const send = o => sd.readyState === 1 && sd.send(JSON.stringify(o));
-const log = msg => send({ event: "logMessage", payload: { message: "[clipback] " + msg } });
-sd.onopen = () => { send({ event: REGISTER, uuid: UUID }); clipback.connect(); };
+const log = msg => send({ event: "logMessage", payload: { message: "[rekodr] " + msg } });
+sd.onopen = () => { send({ event: REGISTER, uuid: UUID }); rekodr.connect(); };
 sd.onclose = () => process.exit(0);
 sd.onmessage = m => {
   try { onEvent(JSON.parse(m.data)); } catch (e) { log(e.stack); }
 };
 
-// ---------- clipback ----------
-// The exe to start when clipback isn't running: this plugin folder is a link into the clipback repo, so the
-// build is two folders up. CLIPBACK_EXE overrides it.
+// ---------- Rekodr ----------
+// The exe to start when Rekodr isn't running: this plugin folder is a link into the Rekodr repo, so the
+// build is two folders up. REKODR_EXE overrides it.
 function exePath() {
-  if (process.env.CLIPBACK_EXE) return process.env.CLIPBACK_EXE;
+  if (process.env.REKODR_EXE) return process.env.REKODR_EXE;
   let dir = import.meta.dirname;
   try { dir = fs.realpathSync(dir); } catch {}
-  return path.resolve(dir, "..", "..", "app", "build", "clipback.exe");
+  return path.resolve(dir, "..", "..", "app", "build", "rekodr.exe");
 }
 
-const clipback = {
+const rekodr = {
   pipe: null, connected: false, state: null, buffer: "", waiting: [], // waiting: Save keys whose save hasn't finished
   connect() {
     clearTimeout(this.retry);
-    const pipe = this.pipe = net.connect(String.raw`\\.\pipe\clipback`);
+    const pipe = this.pipe = net.connect(String.raw`\\.\pipe\rekodr`);
     pipe.setEncoding("utf8");
     pipe.on("connect", () => { this.connected = true; pipe.write("hello streamdeck\n"); renderAll(); });
     pipe.on("data", d => {
@@ -48,7 +48,7 @@ const clipback = {
       while ((nl = this.buffer.indexOf("\n")) >= 0) {
         const line = this.buffer.slice(0, nl);
         this.buffer = this.buffer.slice(nl + 1);
-        try { this.onMessage(JSON.parse(line)); } catch (e) { log("bad line from clipback: " + line); }
+        try { this.onMessage(JSON.parse(line)); } catch (e) { log("bad line from rekodr: " + line); }
       }
     });
     pipe.on("error", () => {}); // not running: "close" follows
@@ -70,11 +70,11 @@ const clipback = {
       this.waiting.shift()?.finished(m.ok);
     }
   },
-  // Sends a command to the running clipback, or starts clipback with it. Returns false if neither worked.
+  // Sends a command to the running Rekodr, or starts Rekodr with it. Returns false if neither worked.
   command(text) {
     if (this.connected) { this.pipe.write(text + "\n"); return true; }
     const exe = exePath();
-    if (!fs.existsSync(exe)) { log("clipback isn't running and " + exe + " doesn't exist"); return false; }
+    if (!fs.existsSync(exe)) { log("Rekodr isn't running and " + exe + " doesn't exist"); return false; }
     spawn(exe, text.split(" "), { detached: true, stdio: "ignore" }).unref();
     return true;
   },
@@ -82,7 +82,7 @@ const clipback = {
 
 // "23h", "45m", "now": how much footage the buffer holds.
 function bufferLength() {
-  const oldest = clipback.state?.oldest_us;
+  const oldest = rekodr.state?.oldest_us;
   if (!oldest) return "";
   const mins = Math.floor((Date.now() * 1000 - oldest) / 60e6);
   if (mins < 1) return "";
@@ -131,20 +131,20 @@ class Key {
   render() {}
 }
 
-// Save: the last `length` of the buffer ("30s", "2m", "1h") as a clip. The key shows SAVING until clipback says
+// Save: the last `length` of the buffer ("30s", "2m", "1h") as a clip. The key shows SAVING until Rekodr says
 // the file is written, then a tick (or a cross) for a moment.
 class Save extends Key {
   defaults() { return { length: "30s" }; }
   down() {
     const length = String(this.settings.length).trim() || "30s";
-    const running = clipback.connected;
-    if (!clipback.command("save " + length)) return this.alert();
-    if (!running) return; // clipback is starting with the command; there's no pipe yet to hear the result on
+    const running = rekodr.connected;
+    if (!rekodr.command("save " + length)) return this.alert();
+    if (!running) return; // Rekodr is starting with the command; there's no pipe yet to hear the result on
     clearTimeout(this.timer);
     this.phase = "saving";
-    clipback.waiting.push(this);
+    rekodr.waiting.push(this);
     this.timer = setTimeout(() => { // no answer: stop waiting
-      clipback.waiting = clipback.waiting.filter(k => k !== this);
+      rekodr.waiting = rekodr.waiting.filter(k => k !== this);
       this.finished(false);
     }, 10 * 60000);
     this.render();
@@ -161,18 +161,18 @@ class Save extends Key {
     if (this.phase === "saved") return this.image(card({ accent: C.green, glow: 0.4, label: "SAVED", body: tick(C.green) }));
     if (this.phase === "failed") return this.image(card({ accent: C.red, glow: 0.45, label: "FAILED", body: cross(C.red) }));
     if (this.phase === "saving") return this.image(saveKey(length, "SAVING", C.amber, 0.4));
-    if (!clipback.connected) return this.image(saveKey(length, "NOT RUNNING", C.dim, 0.15));
-    if (clipback.state?.paused) return this.image(saveKey(length, "PAUSED", C.amber));
+    if (!rekodr.connected) return this.image(saveKey(length, "NOT RUNNING", C.dim, 0.15));
+    if (rekodr.state?.paused) return this.image(saveKey(length, "PAUSED", C.amber));
     this.image(saveKey(length, "SAVE CLIP", C.red));
   }
 }
 
-// Record: shows whether clipback is recording and how much the buffer holds; a press pauses or resumes.
+// Record: shows whether Rekodr is recording and how much the buffer holds; a press pauses or resumes.
 class Record extends Key {
-  down() { if (!clipback.command(clipback.connected ? "toggle" : "resume")) this.alert(); }
+  down() { if (!rekodr.command(rekodr.connected ? "toggle" : "resume")) this.alert(); }
   render() {
-    const s = clipback.state;
-    if (!clipback.connected || !s) return this.image(card({ accent: C.dim, glow: 0.12, label: "NOT RUNNING", body: ring(C.dim) }));
+    const s = rekodr.state;
+    if (!rekodr.connected || !s) return this.image(card({ accent: C.dim, glow: 0.12, label: "NOT RUNNING", body: ring(C.dim) }));
     if (s.paused) return this.image(card({ accent: C.amber, label: "PAUSED", body: bars(C.amber) }));
     if (!s.recording) {
       return s.error
@@ -187,7 +187,7 @@ class Record extends Key {
   }
 }
 
-// Open: the clipback window on one of its screens.
+// Open: the Rekodr window on one of its screens.
 const SCREENS = {
   library: { command: "open", label: "CLIPS", icon: film },
   timeline: { command: "timeline", label: "TIMELINE", icon: track },
@@ -196,7 +196,7 @@ const SCREENS = {
 class Open extends Key {
   defaults() { return { screen: "library" }; }
   screen() { return SCREENS[String(this.settings.screen).trim().toLowerCase()] || SCREENS.library; }
-  down() { if (!clipback.command(this.screen().command)) this.alert(); }
+  down() { if (!rekodr.command(this.screen().command)) this.alert(); }
   render() {
     const s = this.screen();
     this.image(card({ accent: C.red, label: s.label, body: s.icon(C.red) }));

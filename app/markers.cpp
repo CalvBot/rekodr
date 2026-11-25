@@ -1,6 +1,6 @@
 // markers.cpp: moments marked in the buffer, each with an optional colour and note.
 //
-// The `mark` command makes one, from a hotkey, a Stream Deck key or `clipback.exe mark`:
+// The `mark` command makes one, from a hotkey, a Stream Deck key or `rekodr.exe mark`:
 //   mark                    a plain marker at this moment
 //   mark <note>             one with a note
 //   mark <colour> <note>    one with a colour (red, orange, yellow, green, blue, purple) and, if given, a note

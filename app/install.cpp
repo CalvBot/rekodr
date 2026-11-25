@@ -1,54 +1,54 @@
-// Installing and uninstalling, done by clipback.exe itself. It installs per user, with no admin rights:
-//   clipback-setup-<version>.exe (or clipback.exe install)
-//       asks once, quits a clipback that's running, copies this exe to %LOCALAPPDATA%\Programs\clipback, adds the
+// Installing and uninstalling, done by rekodr.exe itself. It installs per user, with no admin rights:
+//   rekodr-setup-<version>.exe (or rekodr.exe install)
+//       asks once, quits a Rekodr that's running, copies this exe to %LOCALAPPDATA%\Programs\Rekodr, adds the
 //       Start menu shortcut, the Run value (start with Windows) and the Apps entry, and starts the installed copy.
-//   clipback.exe uninstall (the Apps entry's uninstall command)
+//   rekodr.exe uninstall (the Apps entry's uninstall command)
 //       asks whether to delete the player's clips, sessions and settings too (they stay unless asked), quits
-//       clipback, and removes everything the install added. Deleted clips go to the Recycle Bin.
+//       Rekodr, and removes everything the install added. Deleted clips go to the Recycle Bin.
 //
-// CLIPBACK_INSTALL_DIR (for tests) puts the program folder and the Start menu under that folder, and writes the
+// REKODR_INSTALL_DIR (for tests) puts the program folder and the Start menu under that folder, and writes the
 // registry values into <it>\registry.ini instead of the registry, so nothing outside it changes. It needs
-// CLIPBACK_HOME too, so that the data it would delete and the clipback it quits are a test copy's.
+// REKODR_HOME too, so that the data it would delete and the Rekodr it quits are a test copy's.
 
 static const wchar_t INSTALL_RUN_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-static const wchar_t INSTALL_APPS_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\clipback";
+static const wchar_t INSTALL_APPS_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rekodr";
 
 struct InstallPlace {
-    bool test;     // CLIPBACK_INSTALL_DIR is set
+    bool test;     // REKODR_INSTALL_DIR is set
     Path root;     // the test folder
     Path dir;      // the program folder
-    Path exe;      // dir\clipback.exe
-    Path old_exe;  // dir\clipback.old.exe, the copy moved aside while it may still be running
-    Path shortcut; // the Start menu's clipback.lnk
+    Path exe;      // dir\rekodr.exe
+    Path old_exe;  // dir\rekodr.old.exe, the copy moved aside while it may still be running
+    Path shortcut; // the Start menu's rekodr.lnk
 };
 
 static InstallPlace install_place()
 {
     InstallPlace p = {};
-    p.test = GetEnvironmentVariableW(L"CLIPBACK_INSTALL_DIR", p.root.s, MAX_PATH) && p.root.s[0];
+    p.test = GetEnvironmentVariableW(L"REKODR_INSTALL_DIR", p.root.s, MAX_PATH) && p.root.s[0];
     wchar_t *programs = 0, *menu = 0;
     if (p.test) {
-        swprintf(p.dir.s, MAX_PATH, L"%s\\Programs\\clipback", p.root.s);
+        swprintf(p.dir.s, MAX_PATH, L"%s\\Programs\\" APP_NAME, p.root.s);
         swprintf(p.shortcut.s, MAX_PATH, L"%s\\Start Menu\\Programs\\" APP_NAME ".lnk", p.root.s);
     } else {
         SHGetKnownFolderPath(FOLDERID_UserProgramFiles, KF_FLAG_CREATE, 0, &programs);
         SHGetKnownFolderPath(FOLDERID_Programs, 0, 0, &menu);
-        swprintf(p.dir.s, MAX_PATH, L"%s\\clipback", programs ? programs : L".");
+        swprintf(p.dir.s, MAX_PATH, L"%s\\" APP_NAME, programs ? programs : L".");
         swprintf(p.shortcut.s, MAX_PATH, L"%s\\" APP_NAME ".lnk", menu ? menu : L".");
         CoTaskMemFree(programs);
         CoTaskMemFree(menu);
     }
-    p.exe = path_join(p.dir, L"clipback.exe");
-    p.old_exe = path_join(p.dir, L"clipback.old.exe");
+    p.exe = path_join(p.dir, L"rekodr.exe");
+    p.old_exe = path_join(p.dir, L"rekodr.old.exe");
     return p;
 }
 
-// A message box. A test install with CLIPBACK_INSTALL_ANSWER set (yes, no or cancel) shows none and gives that
+// A message box. A test install with REKODR_INSTALL_ANSWER set (yes, no or cancel) shows none and gives that
 // answer, so tests open no windows.
 static i32 install_ask(const InstallPlace &p, const wchar_t *text, const wchar_t *title, UINT flags)
 {
     wchar_t answer[16] = {};
-    if (p.test && GetEnvironmentVariableW(L"CLIPBACK_INSTALL_ANSWER", answer, COUNT(answer)) && answer[0]) {
+    if (p.test && GetEnvironmentVariableW(L"REKODR_INSTALL_ANSWER", answer, COUNT(answer)) && answer[0]) {
         char t[1024];
         wide_to_utf8(text, t, sizeof t);
         for (char *c = t; *c; c++)
@@ -113,7 +113,7 @@ static bool install_shortcut(const InstallPlace &p)
     return ok;
 }
 
-// Asks a running clipback (the one whose message window has this class) to quit, and waits up to 10 s for it to
+// Asks a running Rekodr (the one whose message window has this class) to quit, and waits up to 10 s for it to
 // go. False if it's still running.
 static bool install_quit_running(const wchar_t *msg_class, ULONG_PTR copydata_command)
 {
@@ -128,7 +128,7 @@ static bool install_quit_running(const wchar_t *msg_class, ULONG_PTR copydata_co
     SendMessageTimeoutW(other, WM_COPYDATA, 0, (LPARAM)&cd, SMTO_ABORTIFHUNG, 5000, &result);
     bool gone = !proc || WaitForSingleObject(proc, 10000) == WAIT_OBJECT_0;
     if (proc) CloseHandle(proc);
-    log_line("install: asked the running clipback (pid %lu) to quit: %s", pid, gone ? "it has" : "it's still running");
+    log_line("install: asked the running Rekodr (pid %lu) to quit: %s", pid, gone ? "it has" : "it's still running");
     return gone;
 }
 
@@ -177,14 +177,14 @@ static void install_cleanup()
 {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(0, exe, MAX_PATH);
-    if (wchar_t *slash = wcsrchr(exe, L'\\')) wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - exe), L"clipback.old.exe");
+    if (wchar_t *slash = wcsrchr(exe, L'\\')) wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - exe), L"rekodr.old.exe");
     if (DeleteFileW(exe)) log_line("install: deleted %ls", exe);
 }
 
 static bool install_is_test_safe(const InstallPlace &p)
 {
     if (!p.test || is_test_copy()) return true;
-    MessageBoxW(0, L"CLIPBACK_INSTALL_DIR is set without CLIPBACK_HOME. A test install needs both, so that it "
+    MessageBoxW(0, L"REKODR_INSTALL_DIR is set without REKODR_HOME. A test install needs both, so that it "
                    L"leaves the real " APP_NAME " and its files alone.", L"" APP_NAME, MB_ICONERROR);
     return false;
 }
@@ -203,9 +203,9 @@ static i32 install_run(const wchar_t *msg_class, ULONG_PTR copydata_command)
     swprintf(ask, COUNT(ask),
              L"Install " APP_NAME " %hs for you?\n\nIt goes in %s, gets a Start menu entry and starts when you sign in "
              L"(Options can turn that off).",
-             CLIPBACK_VERSION, p.dir.s);
+             REKODR_VERSION, p.dir.s);
     if (install_ask(p, ask, L"Install " APP_NAME, MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
-    log_line("install: clipback %s from %ls to %ls%s", CLIPBACK_VERSION, self, p.dir.s, p.test ? " (test)" : "");
+    log_line("install: Rekodr %s from %ls to %ls%s", REKODR_VERSION, self, p.dir.s, p.test ? " (test)" : "");
     if (!install_quit_running(msg_class, copydata_command)) {
         install_ask(p, L"" APP_NAME " is still running. Quit it from its tray icon and run the installer again.",
                     L"Install " APP_NAME, MB_ICONWARNING);
@@ -220,9 +220,9 @@ static i32 install_run(const wchar_t *msg_class, ULONG_PTR copydata_command)
     wchar_t run[MAX_PATH + 8], uninstall[MAX_PATH + 16];
     swprintf(run, COUNT(run), L"\"%s\"", p.exe.s);
     swprintf(uninstall, COUNT(uninstall), L"\"%s\" uninstall", p.exe.s);
-    ok &= install_reg_set(p, INSTALL_RUN_KEY, L"clipback", run);
+    ok &= install_reg_set(p, INSTALL_RUN_KEY, L"rekodr", run);
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayName", L"" APP_NAME);
-    ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayVersion", L"" CLIPBACK_VERSION);
+    ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayVersion", L"" REKODR_VERSION);
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"Publisher", L"CalvBot");
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayIcon", p.exe.s);
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"InstallLocation", p.dir.s);
@@ -301,7 +301,7 @@ static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_comman
         return 1;
     }
     DeleteFileW(p.shortcut.s);
-    install_reg_set(p, INSTALL_RUN_KEY, L"clipback", 0);
+    install_reg_set(p, INSTALL_RUN_KEY, L"rekodr", 0);
     install_reg_drop_apps(p);
     if (answer == IDYES) install_delete_data();
     // This exe may be the installed one, which can't delete itself while running: a hidden cmd does it once this
@@ -330,14 +330,14 @@ static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_comman
     return 0;
 }
 
-// The setup exe is clipback.exe named clipback-setup-<version>.exe
+// The setup exe is rekodr.exe named rekodr-setup-<version>.exe
 static bool install_is_setup_exe()
 {
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(0, self, MAX_PATH);
     const wchar_t *name = wcsrchr(self, L'\\');
     name = name ? name + 1 : self;
-    return !_wcsnicmp(name, L"clipback-setup", 14);
+    return !_wcsnicmp(name, L"rekodr-setup", 14);
 }
 
 // For main: runs "install" and "uninstall" (and the setup exe with no command). True if it was one of them, and

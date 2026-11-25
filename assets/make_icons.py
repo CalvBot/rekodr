@@ -1,13 +1,13 @@
-"""Draws clipback's icons: a white replay arrow around a red record dot, on a dark tile.
+"""Draws Rekodr's icons: a white replay arrow around a red record dot, on a dark tile.
 
     python assets/make_icons.py      (needs Pillow)
 
 Writes, next to this file:
-  clipback.ico          the app icon (exe, shortcuts, taskbar), 16–256 px
+  rekodr.ico          the app icon (exe, shortcuts, taskbar), 16–256 px
   tray-recording.ico    tray icon while recording, 16–48 px
   tray-paused.ico       tray icon while paused: grey arrow, pause sign instead of the dot
   favicon.png           64 px, the clips window's icon
-  clipback.png          256 px, for docs
+  rekodr.png          256 px, for docs
 Small sizes are drawn on their own (thicker strokes, no glow) rather than shrunk, so they stay crisp.
 """
 import math
@@ -80,9 +80,9 @@ def ico(path, sizes, paused=False):
 
 
 if __name__ == "__main__":
-    ico(HERE / "clipback.ico", [16, 20, 24, 32, 40, 48, 64, 128, 256])
+    ico(HERE / "rekodr.ico", [16, 20, 24, 32, 40, 48, 64, 128, 256])
     ico(HERE / "tray-recording.ico", [16, 20, 24, 32, 40, 48])
     ico(HERE / "tray-paused.ico", [16, 20, 24, 32, 40, 48], paused=True)
     draw(64).save(HERE / "favicon.png")
-    draw(256).save(HERE / "clipback.png")
+    draw(256).save(HERE / "rekodr.png")
     print("written to", HERE)

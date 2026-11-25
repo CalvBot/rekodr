@@ -1,5 +1,5 @@
 // What a store's install says about a game, for exes the games list doesn't know. The art service is sent only:
-// the exe's file name, the name of the game's own folder (never a path), the name clipback has for it, and the
+// the exe's file name, the name of the game's own folder (never a path), the name Rekodr has for it, and the
 // store id its launcher left by it:
 //   Steam   <library>\steamapps\appmanifest_<appid>.acf, whose "installdir" is the folder under steamapps\common
 //   GOG     goggame-<id>.info in the game's folder

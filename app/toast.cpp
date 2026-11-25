@@ -2,7 +2,7 @@
 // Popups): "Clip saved" when a save finishes while a game is in front ("Save failed" when it didn't), "Session
 // ended" when a session the game is set to Ask for has ended (sessions.cpp), and the marker window `mark ask` opens.
 // All are laid out alike, from the TOAST_* sizes: a tile beside a title over a line, then a row of buttons with the
-// main one last on the right. A test copy (CLIPBACK_HOME) puts them on the monitor furthest right.
+// main one last on the right. A test copy (REKODR_HOME) puts them on the monitor furthest right.
 //
 // Clip saved and Session ended never take the keyboard from the game, and a click anywhere else on them closes them.
 // Each goes after its own time (TOAST_LIFE_*): Session saved or ended 15 s, Clip saved 5 s, 10 s once a save or share
@@ -879,12 +879,12 @@ static bool toast_window(Toast &t)
         WNDCLASSW wc = {};
         wc.lpfnWndProc = toast_proc;
         wc.hInstance = inst;
-        wc.lpszClassName = L"clipback_toast";
+        wc.lpszClassName = L"rekodr_toast";
         RegisterClassW(&wc);
         registered = true;
     }
     DWORD ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | (toast_quiet(t) ? WS_EX_NOACTIVATE : 0);
-    t.hwnd = CreateWindowExW(ex, L"clipback_toast", L"" APP_NAME, WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, 0, 0, inst, 0);
+    t.hwnd = CreateWindowExW(ex, L"rekodr_toast", L"" APP_NAME, WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, 0, 0, inst, 0);
     if (!t.hwnd) return false;
     SetWindowLongPtrW(t.hwnd, GWLP_USERDATA, (LONG_PTR)&t);
     // Left out of every capture, ours included, so a toast over a game never ends up in a clip. Windows before
@@ -1144,7 +1144,7 @@ static ToastClip toast_clip_now()
     return toast_clip_for(g_app.config, g_app.audio.game.s);
 }
 
-// A save finished: Clip saved as toast_clip_now says (Session saved always whole), unless clipback's own window is
+// A save finished: Clip saved as toast_clip_now says (Session saved always whole), unless Rekodr's own window is
 // in front (it shows the save itself).
 static void toast_saved(SaveKind kind, const char *path, const char *game)
 {
@@ -1160,7 +1160,7 @@ static void toast_saved(SaveKind kind, const char *path, const char *game)
     toast_saved_show(kind, path, style == TOAST_CLIP_SMALL, game);
 }
 
-// A save failed: Save failed with the first line of the reason, no buttons, unless clipback's own window is in front
+// A save failed: Save failed with the first line of the reason, no buttons, unless Rekodr's own window is in front
 // (it shows the failure itself). Shares, previews and links say so where they were asked for.
 static void toast_save_failed(SaveKind kind, const char *why)
 {
