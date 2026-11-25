@@ -2364,6 +2364,7 @@ static void opt_rows_buffer()
     }
 }
 
+static bool g_opt_show_audio; // "show audio": Recording scrolled to its Audio
 static void options_recording()
 {
     Config &c = g_app.config;
@@ -2538,6 +2539,10 @@ static void options_recording()
     opt_row_value("Free on its drive", 0, free_text);
     opt_card_end();
 
+    if (g_opt_show_audio) { // "show audio": scrolled to here, once
+        ImGui::SetScrollHereY(0);
+        g_opt_show_audio = false;
+    }
     opt_section("AUDIO");
     opt_card_begin();
     if (opt_row_toggle("Default input", "Windows' recording device, on the Mic track", "##mic", &c.mic)) {
