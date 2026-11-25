@@ -396,6 +396,7 @@ static void setup_window()
     }
     ImGui::SetCursorScreenPos(ImVec2(x0, by + fh));
     ImGui::Dummy(ImVec2(0, dp(16)));
+    kit_scroll_fade_window();
     ImGui::EndChild();
     ffget_bar();
 }

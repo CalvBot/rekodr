@@ -3010,6 +3010,7 @@ static void screen_timeline()
                     if (m == tl.suggest_pick) scrolled_to = m;
                     ImGui::PopID();
                 }
+                kit_scroll_fade_window(COL_PANEL2);
                 ImGui::EndPopup();
             }
             ImGui::PopStyleVar();

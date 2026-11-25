@@ -2584,6 +2584,7 @@ static void lib_tags_dialog()
         bool on = lib_tag_has(g_tags_buf, names[i]);
         if (kit_chip(label, on)) lib_tag_set(g_tags_buf, sizeof g_tags_buf, names[i], !on);
     }
+    kit_scroll_fade_window(COL_PANEL2);
     ImGui::EndChild();
     ImGui::Dummy(ImVec2(1, kit_px(2)));
 
@@ -3662,6 +3663,7 @@ static void card_menu()
                 lib_folder_rename_start(i);
             }
         }
+        kit_scroll_fade_window(COL_PANEL2);
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
@@ -4269,6 +4271,7 @@ static void lib_sel_bar(ImVec2 at, f32 right, i32 n)
                 lib_folder_rename_start(i);
             }
         }
+        kit_scroll_fade_window(COL_PANEL2);
         ImGui::EndPopup();
     }
     lib_popup_style_pop();
@@ -5841,6 +5844,7 @@ static void screen_library()
             ImGui::EndPopup();
         }
         lib_popup_style_pop();
+        kit_scroll_fade_window();
         ImGui::EndChild();
         // The collapse button at the list's foot: in its bottom left corner, in the middle of the rail it collapses to,
         // so it's in the same place either way and only its arrow turns.
@@ -6102,6 +6106,7 @@ static void screen_library()
             lib_card(it, ImVec2(g0.x + c * (card_w + gap), g0.y + r * card_h - top), card_w, thumb_h, day_h, show_day);
         }
     }
+    kit_scroll_fade(g0, ImVec2(g0.x + full_w, g0.y + grid_h), lib.scroll, max_scroll - lib.scroll);
     ImGui::SetCursorScreenPos(g0); // the cards above and below the view don't count as this window's content
     ImGui::EndChild();
     dl = ImGui::GetWindowDrawList();

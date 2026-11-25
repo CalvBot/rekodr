@@ -3125,6 +3125,7 @@ static void screen_editor()
         ImGui::PopStyleVar(3);
         if (ed.tab == 0) ed_edit_tab(cw);
         else ed_share_tab(cw);
+        kit_scroll_fade_window(COL_PANEL);
         ImGui::EndChild();
     }
     kit_card_end();

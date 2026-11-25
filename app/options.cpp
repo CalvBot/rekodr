@@ -442,6 +442,7 @@ static bool opt_combo_item(const char *label, const char *note, bool selected, b
 
 static void opt_combo_end()
 {
+    kit_scroll_fade_window(COL_PANEL2);
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
     ImGui::EndCombo();
@@ -1164,6 +1165,7 @@ static void apps_add_popup(ImVec2 at, i32 rows)
         }
         ImGui::CloseCurrentPopup();
     }
+    kit_scroll_fade_window(COL_PANEL2);
     ImGui::EndPopup();
 }
 
@@ -4677,6 +4679,7 @@ static void screen_options()
     default: break;
     }
     scrolls = ImGui::GetScrollMaxY() > 0;
+    kit_scroll_fade_window();
     ImGui::EndChild();
     if (o.capture_slot) ui_wake(); // keep drawing while waiting for keys
 }

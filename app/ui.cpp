@@ -972,6 +972,38 @@ static void kit_card_end()
     ImGui::PopStyleColor();
 }
 
+// A fade into `bg` at the edges of a scrolling area (a to b on screen) that says there's more: at the bottom while
+// `below` px are still below, at the top while `above` px are above. Each comes in over its first KIT_FADE px of
+// scroll, so neither pops in, and an area that doesn't scroll has none. Draws on the current window's draw list
+// and adds no items, so clicks go through.
+static const f32 KIT_FADE = 44;
+static void kit_scroll_fade(ImVec2 a, ImVec2 b, f32 above, f32 below, u32 bg = COL_BG)
+{
+    f32 h = fminf(kit_px(KIT_FADE), (b.y - a.y) / 3);
+    if (h <= 0 || b.x <= a.x) return;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 top = fminf(1.f, above / h), bot = fminf(1.f, below / h);
+    ImU32 clear = col32(bg, 0);
+    if (top > 0) {
+        ImU32 c = col32(bg, top);
+        dl->AddRectFilledMultiColor(a, ImVec2(b.x, a.y + h), c, c, clear, clear);
+    }
+    if (bot > 0) {
+        ImU32 c = col32(bg, bot);
+        dl->AddRectFilledMultiColor(ImVec2(a.x, b.y - h), b, clear, clear, c, c);
+    }
+}
+
+// The same for the current window from its own scroll, across its clip rect (inside its padding, off its
+// scrollbar). Called just before EndChild, EndPopup or EndCombo, with the ground the window's items sit on.
+static void kit_scroll_fade_window(u32 bg = COL_BG)
+{
+    f32 most = ImGui::GetScrollMaxY(), y = ImGui::GetScrollY();
+    if (most <= 0) return;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    kit_scroll_fade(dl->GetClipRectMin(), dl->GetClipRectMax(), y, most - y, bg);
+}
+
 // Text helpers
 static void kit_heading(const char *text) // a card or section title
 {
@@ -1413,6 +1445,7 @@ static void help_window()
             ImGui::SetCursorPos(ImVec2(0, kit_px(8)));
             kit_dim("Nothing matches \"%s\"", q);
         }
+        kit_scroll_fade_window(COL_PANEL2);
         ImGui::EndChild();
         if (!ImGui::IsWindowAppearing()) g_help_jump = 0; // held for the second frame, once the rows' size is known
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) open = false;
