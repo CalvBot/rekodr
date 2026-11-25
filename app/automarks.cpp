@@ -178,7 +178,8 @@ static bool steam_root(Path *out)
     return true;
 }
 
-// The steamapps folder of the library an app is installed in, from Steam's libraryfolders.vdf.
+// The steamapps folder of the library an app is installed in, from Steam's libraryfolders.vdf. Any thread (the
+// main one and the achievements worker), so the file is read into a buffer of the call's own.
 static bool steam_app_library(u32 app, Path *out)
 {
     Path root;
@@ -187,10 +188,16 @@ static bool steam_app_library(u32 app, Path *out)
     swprintf(vdf, MAX_PATH, L"%s\\steamapps\\libraryfolders.vdf", root.s);
     FILE *f = _wfopen(vdf, L"rb");
     if (!f) return false;
-    static char text[256 * 1024];
-    size_t len = fread(text, 1, sizeof text - 1, f);
+    const size_t cap = 256 * 1024;
+    char *text = (char *)malloc(cap);
+    if (!text) {
+        fclose(f);
+        return false;
+    }
+    size_t len = fread(text, 1, cap - 1, f);
     fclose(f);
     text[len] = 0;
+    bool found = false;
     for (const char *p = text; (p = strstr(p, "\"path\"")) != 0;) {
         p = strchr(p + 6, '"');
         if (!p) break;
@@ -206,10 +213,12 @@ static bool steam_app_library(u32 app, Path *out)
         swprintf(manifest, MAX_PATH, L"%s\\steamapps\\appmanifest_%u.acf", wlib, app);
         if (GetFileAttributesW(manifest) != INVALID_FILE_ATTRIBUTES) {
             swprintf(out->s, COUNT(out->s), L"%s\\steamapps", wlib);
-            return true;
+            found = true;
+            break;
         }
     }
-    return false;
+    free(text);
+    return found;
 }
 
 // Where the cfg file goes. False if Counter-Strike 2 isn't installed.
@@ -290,8 +299,9 @@ static void am_cs2_client(SOCKET c)
     setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char *)&wait, sizeof wait);
     static char buf[128 * 1024];
     i32 used = 0, body_at = -1, body_len = 0;
+    u64 until = GetTickCount64() + 3000; // the whole request, however slowly it trickles in
     for (;;) {
-        if (used >= (i32)sizeof buf - 1) break;
+        if (used >= (i32)sizeof buf - 1 || GetTickCount64() > until) break;
         i32 got = recv(c, buf + used, (i32)sizeof buf - 1 - used, 0);
         if (got <= 0) break;
         used += got;
@@ -309,6 +319,7 @@ static void am_cs2_client(SOCKET c)
                 if (next) *next = '\r';
             }
             *end = '\r';
+            if (body_len > (i32)sizeof buf - 1 - body_at) break; // too big to read: not the game's
         }
         if (used - body_at >= body_len) break;
     }
@@ -441,10 +452,13 @@ static DWORD WINAPI am_thread(void *)
     return 0;
 }
 
-// The cfg file's token, from the file if there is one (so a game already running keeps reaching Rekodr), else a
-// new one.
+// The cfg file's token, from the file if there is one, else the one already in use (the switch turned off and on
+// again), else a new one: a game already running keeps reaching Rekodr with the token it read when it started.
+// g_am.token only changes when the token does (the worker compares with it).
 static void am_cs2_token(const Path &cfg)
 {
+    char tok[sizeof g_am.token] = {};
+    i32 k = 0;
     if (FILE *f = _wfopen(cfg.s, L"rb")) {
         char text[4096];
         size_t n = fread(text, 1, sizeof text - 1, f);
@@ -452,17 +466,18 @@ static void am_cs2_token(const Path &cfg)
         text[n] = 0;
         if (const char *t = strstr(text, "\"token\"")) {
             t = strchr(t + 7, '"');
-            if (t) {
-                i32 k = 0;
-                for (t++; *t && *t != '"' && k < (i32)sizeof g_am.token - 1; t++) g_am.token[k++] = *t;
-                g_am.token[k] = 0;
-                if (k >= 16) return;
-            }
+            if (t)
+                for (t++; *t && *t != '"' && k < (i32)sizeof tok - 1; t++) tok[k++] = *t;
         }
     }
-    u8 raw[16];
-    BCryptGenRandom(0, raw, sizeof raw, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-    for (i32 i = 0; i < 16; i++) snprintf(g_am.token + i * 2, 3, "%02x", raw[i]);
+    tok[k] = 0;
+    if (k < 16) {
+        if (strlen(g_am.token) >= 16) return;
+        u8 raw[16];
+        BCryptGenRandom(0, raw, sizeof raw, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        for (i32 i = 0; i < 16; i++) snprintf(tok + i * 2, 3, "%02x", raw[i]);
+    }
+    if (strcmp(tok, g_am.token)) memcpy(g_am.token, tok, sizeof tok);
 }
 
 // Writes or deletes the cfg file as the switch says. False if the game wasn't found.
@@ -526,9 +541,9 @@ static void automarks_stop()
     if (!g_am.thread) return;
     g_am.stop = true;
     SetEvent(g_am.wake);
-    WaitForSingleObject(g_am.thread, 5000);
+    // A worker still in a request after 5 s keeps its event: it waits on it again once the request ends
+    if (WaitForSingleObject(g_am.thread, 5000) == WAIT_OBJECT_0) CloseHandle(g_am.wake);
     CloseHandle(g_am.thread);
-    CloseHandle(g_am.wake);
     g_am.thread = 0;
 }
 
