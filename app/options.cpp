@@ -4367,24 +4367,49 @@ static void options_general()
     opt_card_begin();
     if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
     {
-        // What saves are named: the template, and under it what a save of the game in front would be called now
+        // What saves are named: the template, with what a save of the game in front would be called now under the
+        // name, and a line of chips under the field that add the game, the date or the time to its end (the last
+        // one puts the default back)
         f32 field_w = fmaxf(dp(220), fminf(dp(420), (g_card.w - 2 * dp(OPT_PAD)) * 0.55f));
         char example[256], sub[320];
         save_file_name(g_app.audio.game.s, "", now_us(), example, sizeof example);
-        snprintf(sub, sizeof sub, "{game} {YYYY} {YY} {MM} {DD} {hh} {mm} {ss}, as in %s", example);
+        snprintf(sub, sizeof sub, "As in %s", example);
         opt_row_begin("File names", sub, field_w);
         char text[sizeof c.name_template];
+        const char *picked = 0;
         if (opt_text("##names", c.name_template, field_w, 0, SAVE_NAME_DEFAULT, text, sizeof text)) {
             char *t = trim(text);
-            if (!*t) t = (char *)SAVE_NAME_DEFAULT;
-            if (strcmp(t, c.name_template)) {
-                str_set(c.name_template, t);
-                log_line("options: file names %s", c.name_template);
-                options_apply(0);
-                library_rescan(); // names are read with the template
+            picked = *t ? t : SAVE_NAME_DEFAULT;
+        }
+        opt_row_end();
+
+        static const char *const labels[] = {"Game", "Date", "Time", ICON_UNDO};
+        static const char *const adds[] = {"{game}", "{DD}-{MM}-{YYYY}", "{hh}-{mm}", 0};
+        f32 pad = kit_px(14), gap = dp(6), chips_w = 0;
+        for (i32 i = 0; i < COUNT(labels); i++) chips_w += text_w(g_font, labels[i]) + 2 * pad + (i ? gap : 0);
+        opt_row_begin(0, 0, field_w, dp(40), false);
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - chips_w, ImGui::GetCursorScreenPos().y));
+        for (i32 i = 0; i < COUNT(labels); i++) {
+            if (i) ImGui::SameLine(0, gap);
+            char id[48];
+            snprintf(id, sizeof id, "%s##namechip%d", labels[i], i);
+            if (!kit_chip(id, false, 0, text_w(g_font, labels[i]) + 2 * pad)) continue;
+            if (!adds[i]) picked = SAVE_NAME_DEFAULT;
+            else {
+                size_t n = strlen(c.name_template);
+                bool space = n && c.name_template[n - 1] != ' ';
+                snprintf(text, sizeof text, "%s%s%s", c.name_template, space ? " " : "", adds[i]);
+                picked = text;
             }
         }
         opt_row_end();
+
+        if (picked && strcmp(picked, c.name_template)) {
+            str_set(c.name_template, picked);
+            log_line("options: file names %s", c.name_template);
+            options_apply(0);
+            library_rescan(); // names are read with the template
+        }
     }
     if (opt_row_folder("Buffer folder", 0, "buffer", &c.buffer_dir)) options_apply(APPLY_RECORDER);
     if (opt_row_folder("Playback cache", "Where the Timeline builds what it plays; a fast drive starts sooner", "play",
