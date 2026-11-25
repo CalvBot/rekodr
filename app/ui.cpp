@@ -1510,17 +1510,27 @@ static void news_window()
     if (g_app.ui.news_open) ImGui::OpenPopup("What's new");
     static NewsLine lines[256];
     static i32 count;
-    if (g_app.ui.news_open) count = news_lines(g_app.ui.news_since ? g_app.config.seen_version : "", lines, COUNT(lines));
+    // The window fits its lines, measured the frame before (the first frame is drawn see-through to measure them), up
+    // to a height past which they scroll.
+    static f32 rows_h;
+    if (g_app.ui.news_open) {
+        count = news_lines(g_app.ui.news_since ? g_app.config.seen_version : "", lines, COUNT(lines));
+        rows_h = 0;
+    }
     g_app.ui.news_open = false;
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
-    f32 pad = kit_px(28), margin = kit_px(24);
-    f32 win_w = fminf(kit_px(560), vp->WorkSize.x - 2 * margin), win_h = fminf(vp->WorkSize.y - 2 * margin, kit_px(620));
+    f32 pad = kit_px(28), margin = kit_px(24), head_h = kit_px(46), pad_y = kit_px(24);
+    f32 max_h = fminf(vp->WorkSize.y - 2 * margin, kit_px(620));
+    f32 win_w = fminf(kit_px(560), vp->WorkSize.x - 2 * margin);
+    f32 win_h = rows_h > 0 ? fminf(max_h, 2 * pad_y + head_h + rows_h) : max_h;
+    bool measuring = rows_h <= 0;
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x / 2, vp->WorkPos.y + vp->WorkSize.y / 2), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(win_w, win_h));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, kit_px(24)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad_y));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kit_px(14));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, measuring ? 0.0f : ImGui::GetStyle().Alpha);
     bool open = true;
     if (ImGui::BeginPopupModal("What's new", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
         ImVec2 top = ImGui::GetCursorScreenPos();
@@ -1529,7 +1539,7 @@ static void news_window()
         ImGui::SetCursorScreenPos(ImVec2(top.x + inner_w - fh + kit_px(8), top.y - kit_px(6)));
         kit_next_tip("Close", "Esc");
         if (kit_icon_button(ICON_CLOSE, "##news_close")) open = false;
-        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + kit_px(46)));
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + head_h));
 
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::BeginChild("##news_rows", ImVec2(inner_w + pad - kit_px(6), 0), ImGuiChildFlags_None);
@@ -1554,6 +1564,7 @@ static void news_window()
             ImGui::SetCursorScreenPos(ImVec2(a.x, ImGui::GetCursorScreenPos().y + kit_px(6)));
         }
         if (!count) kit_dim("Nothing new in this version");
+        rows_h = fmaxf(ImGui::GetCursorPosY(), 1.0f);
         kit_scroll_fade_window(COL_PANEL2);
         ImGui::EndChild();
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) open = false;
@@ -1566,7 +1577,7 @@ static void news_window()
         }
         ImGui::EndPopup();
     }
-    ImGui::PopStyleVar(2);
+    ImGui::PopStyleVar(3);
 }
 
 static void help_window()
