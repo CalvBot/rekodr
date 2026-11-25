@@ -127,7 +127,7 @@ def draw(size, dot=WHITE, marks=WHITE, paused=False, flat=False):
     S = size * SS
     rich = size >= 32 and not flat
     shadow = rich and size >= 64
-    inset = S * 0.055 if shadow else 0
+    inset = S * 0.04 if shadow else 0
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     plate = mask(S, lambda d: d.polygon(squircle(S, inset), fill=255))
     if shadow:
@@ -152,7 +152,7 @@ def draw(size, dot=WHITE, marks=WHITE, paused=False, flat=False):
 
     box, circles, outlines = LOGO
     span = S - 2 * inset
-    k = span * (0.80 if size <= 24 else 0.58) / box
+    k = span * (0.84 if size <= 24 else 0.74) / box
     off = (S - box * k) / 2
     pts = lambda o: [(off + px * k, off + py * k) for px, py in o]
 
