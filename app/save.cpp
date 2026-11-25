@@ -3085,10 +3085,22 @@ static u32 save_social_copy(const Path &src, const MediaInfo &info, const EditRe
     return id;
 }
 
+static void toast_save_failed(SaveKind kind, const char *why); // toast.cpp
+
 // Saves the last `secs` seconds of the buffer as a clip in <save_dir>\Clips\<year>. A start before the oldest
-// footage is moved up to it, so the saved line says what the clip holds.
+// footage is moved up to it, so the saved line says what the clip holds. Refused, with the Failed sound, while
+// recording is paused or stopped by an error: the clip would only hold footage from before.
 static void save_last(i64 secs)
 {
+    const Recorder &rec = g_app.recorder;
+    if (rec.paused || (!rec.recording && rec.last_error.s[0])) {
+        const char *why = rec.paused ? "recording is paused" : "recording has stopped";
+        log_line("save: not saved, %s", why);
+        pipe_saved(SAVE_CLIP, false, why);
+        sound_event(SOUND_FAILED);
+        toast_save_failed(SAVE_CLIP, why);
+        return;
+    }
     i64 to = now_us(), from = to - secs * 1000000, oldest = g_app.recorder.oldest_us;
     bool trimmed = oldest && from < oldest && oldest < to;
     u32 id = save_range(trimmed ? oldest : from, to, SAVE_CLIP, "");
