@@ -234,8 +234,9 @@ static void hotkeys_clear(HWND hwnd)
     hotkey_input_set(0, 0, hwnd);
 }
 
-// Re-registers every hotkey from the config (call after Options changes them).
-static void hotkeys_apply(const Config &c, HWND hwnd)
+// Re-registers the hotkeys that work while `game` (lower case, "" for none) is played (hotkey_active): call after
+// Options changes them and when the game in front changes.
+static void hotkeys_apply(const Config &c, HWND hwnd, const char *game)
 {
     hotkeys_clear(hwnd);
     g_hotkeys_registered = c.hotkey_count;
@@ -243,6 +244,7 @@ static void hotkeys_apply(const Config &c, HWND hwnd)
     i32 n = 0;
     for (i32 i = 0; i < c.hotkey_count; i++) {
         HotkeyKeys k;
+        if (!hotkey_active(c, i, game)) continue;
         if (!hotkey_parse(c.hotkeys[i].keys.s, &k)) {
             log_line("hotkey %s: not a key combination", c.hotkeys[i].keys.s);
             continue;

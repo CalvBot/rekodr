@@ -949,12 +949,13 @@ static void audio_tick_streams()
     AudioWorker *mic = 0;
     for (i32 i = 0; i < COUNT(g_aw.workers); i++)
         if (g_aw.workers[i].used && g_aw.workers[i].kind == AUDIO_MIC && !g_aw.workers[i].path[0]) mic = &g_aw.workers[i];
-    if (mic && (!cfg.mic || mic->finished)) {
+    bool mic_on = mic_for(cfg, g_aw.game.s); // a game can have the Mic on or off over it
+    if (mic && (!mic_on || mic->finished)) {
         worker_stop_begin(mic);
         worker_join(mic);
         mic = 0;
     }
-    if (cfg.mic && !mic) worker_start(AUDIO_MIC, "mic", "", 0);
+    if (mic_on && !mic) worker_start(AUDIO_MIC, "mic", "", 0);
 
     // Other inputs turned on, while plugged in. One that is Windows' default is already on the Mic track, so it
     // waits until it no longer is.
@@ -963,7 +964,7 @@ static void audio_tick_streams()
     i32 live_count = cfg.input_count ? audio_list_inputs(live, COUNT(live), default_id, sizeof default_id) : 0;
     auto wanted = [&](const char *id) {
         const InputDevice *d = config_input(cfg.inputs, cfg.input_count, id);
-        if (!d || d->mode == INPUT_OFF || (cfg.mic && !_stricmp(id, default_id))) return (const InputDevice *)0;
+        if (!d || d->mode == INPUT_OFF || (mic_on && !_stricmp(id, default_id))) return (const InputDevice *)0;
         for (i32 i = 0; i < live_count; i++)
             if (!_stricmp(live[i].id, id)) return d;
         return (const InputDevice *)0;
@@ -1237,6 +1238,8 @@ static void audio_set_paused(bool paused)
     InterlockedExchange(&g_aw.paused, paused ? 1 : 0);
 }
 
+static void hotkeys_apply(const Config &c, HWND hwnd, const char *game); // hotkeys.cpp
+
 static void audio_on_event(const Event &e)
 {
     Audio &a = g_app.audio;
@@ -1289,6 +1292,8 @@ static void audio_on_event(const Event &e)
         for (i32 i = 0; e.text[0] && i < g_app.config.app_count; i++)
             if (!strcmp(g_app.config.apps[i].exe.s, e.text) && gamedb_name_app(&g_app.config.apps[i])) config_save(g_app.config, g_app.paths);
         recorder_settings_changed(); // a game can have its own recording settings
+        // And its own hotkeys, unless Options is taking a hotkey's keys (they're all off meanwhile)
+        if (!is_test_copy() && !g_app.options.capture_slot) hotkeys_apply(g_app.config, g_app.msg_hwnd, a.game.s);
         sessions_on_game(e.text);
         break;
     case AE_WINDOW:

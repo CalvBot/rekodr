@@ -103,6 +103,7 @@ struct AppInfo {
     AppCategory category;
     SessionMode session_mode; // games only
     ToastClip   toast_clip;   // games only: Clip saved over it, DEFAULT = Config.toast_clip
+    i8          mic;          // games only: the Mic track while it's played, 1 = on, -1 = off, 0 = Config.mic
     RecOverride rec;          // games only
     i64         last_heard_us;
     char        path[MAX_PATH]; // where its exe was last heard from (UTF-8), for folder rules; "" = not known
@@ -130,6 +131,8 @@ struct Hotkey {
     Str64 keys;   // "Alt+F7"
     Str64 action; // "save 30s" | "timeline" | "open" | "pause"
     Str64 hold;   // what holding the keys does instead, "save 3m"; "" = holding is the same as a tap
+    Str64 game;   // "" = every game and the desktop; a game's exe = only while it's played, where it wins over an
+                  // every-game hotkey on the same keys
 };
 
 // The service (clipback-api, its own repo): its host and the header its requests are signed in

@@ -315,6 +315,25 @@ static ToastClip toast_clip_for(const Config &c, const char *game_exe)
     return c.toast_clip == TOAST_CLIP_DEFAULT ? TOAST_CLIP_FULL : c.toast_clip;
 }
 
+// Whether the Mic track records while `game_exe` (lower case, "" for none) is played: its own choice, else Config.mic.
+static bool mic_for(const Config &c, const char *game_exe)
+{
+    for (i32 i = 0; game_exe && game_exe[0] && i < c.app_count; i++)
+        if (!strcmp(c.apps[i].exe.s, game_exe) && c.apps[i].mic) return c.apps[i].mic > 0;
+    return c.mic;
+}
+
+// Whether hotkey i works while `game_exe` (lower case, "" for none) is played: one for that game always does; one
+// for every game does unless that game has its own on the same keys; one for another game doesn't.
+static bool hotkey_active(const Config &c, i32 i, const char *game_exe)
+{
+    const Hotkey &h = c.hotkeys[i];
+    if (h.game.s[0]) return game_exe && !strcmp(h.game.s, game_exe);
+    for (i32 k = 0; game_exe && game_exe[0] && k < c.hotkey_count; k++)
+        if (k != i && !strcmp(c.hotkeys[k].game.s, game_exe) && !_stricmp(c.hotkeys[k].keys.s, h.keys.s)) return false;
+    return true;
+}
+
 // The buffer for a drive with free_gb free: a quarter of it, in steps of 10 GB, between 10 and 200 GB. The space
 // kept free is 50 GB, or a fifth of the free space on a small drive.
 static void buffer_for_free(f64 free_gb, f32 *buffer_gb, f32 *min_free_gb)
@@ -664,20 +683,21 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
-        // hotkey = Alt+F7 | save 30s | save 3m (held)
-        char *f[3] = {};
-        if (split_fields(value, f, 3) >= 2 && c->hotkey_count < COUNT(c->hotkeys)) {
+        // hotkey = Alt+F7 | save 30s | save 3m (held) | game.exe (only in it)
+        char *f[4] = {};
+        if (split_fields(value, f, 4) >= 2 && c->hotkey_count < COUNT(c->hotkeys)) {
             Hotkey *h = &c->hotkeys[c->hotkey_count++];
             *h = {};
             str_set(h->keys.s, f[0]);
             str_set(h->action.s, f[1]);
             if (f[2]) str_set(h->hold.s, f[2]);
+            if (f[3]) str_set(h->game.s, f[3]);
         }
     } else if (!strcmp(key, "app")) {
         // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset | height |
-        //       path | window | clip saved
-        char *f[13] = {};
-        i32 n = split_fields(value, f, 13);
+        //       path | window | clip saved | mic
+        char *f[14] = {};
+        i32 n = split_fields(value, f, 14);
         if (n >= 3) {
             AppInfo *a = config_app(c, f[0]);
             if (!a) return;
@@ -693,6 +713,7 @@ static void config_set(Config *c, const char *key, char *value)
             if (n >= 11) str_set(a->path, f[10]);
             if (n >= 12) a->rec.window = atoi(f[11]);
             if (n >= 13) a->toast_clip = toast_clip_parse(f[12]);
+            if (n >= 14) a->mic = (i8)(atoi(f[13]) > 0 ? 1 : atoi(f[13]) < 0 ? -1 : 0);
         }
     } else if (!strcmp(key, "input")) {
         // input = mono | Line (RODE AI-1) | {0.0.1.00000000}.{...}
@@ -884,22 +905,25 @@ static bool config_save(const Config &c, const Paths &paths)
             c.timeline_simple ? 1 : 0);
     fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\neditor_zoom_view = %d\n", c.editor_top, c.editor_side,
             c.editor_lane, c.editor_zoom_view);
-    fprintf(f, "\n# hotkey = keys | action | action when held\n");
+    fprintf(f, "\n# hotkey = keys | action | action when held | the one game it's for\n");
     if (!c.hotkey_count) fprintf(f, "hotkeys = none\n");
     for (i32 i = 0; i < c.hotkey_count; i++) {
         const Hotkey &h = c.hotkeys[i];
-        fprintf(f, "hotkey = %s | %s%s%s\n", h.keys.s, h.action.s, h.hold.s[0] ? " | " : "", h.hold.s);
+        fprintf(f, "hotkey = %s | %s", h.keys.s, h.action.s);
+        if (h.hold.s[0] || h.game.s[0]) fprintf(f, " | %s", h.hold.s);
+        if (h.game.s[0]) fprintf(f, " | %s", h.game.s);
+        fprintf(f, "\n");
     }
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
-               " | height | where it was last heard | capture window | clip saved\n"
-               "# (a game's own settings; 0 or empty = the default. capture window: 1 = yes, -1 = no. clip saved:"
-               " full, small or off)\n");
+               " | height | where it was last heard | capture window | clip saved | mic\n"
+               "# (a game's own settings; 0 or empty = the default. capture window and mic: 1 = yes, -1 = no."
+               " clip saved: full, small or off)\n");
     for (i32 i = 0; i < c.app_count; i++) {
         const AppInfo &a = c.apps[i];
-        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s | %d | %s | %d | %s\n", a.exe.s, a.name.s,
+        fprintf(f, "app = %s | %s | %s | %s | %g | %d | %s | %d | %s | %d | %s | %d | %s | %d\n", a.exe.s, a.name.s,
                 category_name(a.category), session_mode_name(a.session_mode), a.rec.bitrate_mbps, a.rec.fps,
                 a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path, a.rec.window,
-                toast_clip_name(a.toast_clip));
+                toast_clip_name(a.toast_clip), a.mic);
     }
     fprintf(f, "\n# input = mono | stereo, name | endpoint id (a recording device on a track of its own)\n");
     for (i32 i = 0; i < c.input_count; i++)

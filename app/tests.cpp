@@ -942,6 +942,27 @@ static void test_hotkeys()
     // The default hotkey isn't any other clip tool's
     config_defaults(&c, g_app.paths);
     T(c.hotkey_count == 1 && !strcmp(c.hotkeys[0].keys.s, "Alt+F6"));
+    // A game's own hotkey works only in it and wins there over an every-game one on the same keys
+    c.hotkey_count = 3;
+    str_set(c.hotkeys[1].keys.s, "alt+f6");
+    str_set(c.hotkeys[1].game.s, "game.exe");
+    str_set(c.hotkeys[2].keys.s, "Alt+F8");
+    str_set(c.hotkeys[2].game.s, "other.exe");
+    T(hotkey_active(c, 0, "") && hotkey_active(c, 0, "notepad.exe") && !hotkey_active(c, 0, "game.exe"));
+    T(hotkey_active(c, 1, "game.exe") && !hotkey_active(c, 1, "") && !hotkey_active(c, 1, "other.exe"));
+    T(hotkey_active(c, 2, "other.exe") && !hotkey_active(c, 2, "game.exe"));
+    T(hotkey_active(c, 0, "other.exe")); // other.exe's own is on different keys
+    // A game's own Mic choice wins over the default while it's played
+    c.mic = true;
+    c.app_count = 1;
+    str_set(c.apps[0].exe.s, "game.exe");
+    c.apps[0].mic = -1;
+    T(!mic_for(c, "game.exe") && mic_for(c, "") && mic_for(c, "other.exe"));
+    c.apps[0].mic = 0;
+    T(mic_for(c, "game.exe"));
+    c.mic = false;
+    c.apps[0].mic = 1;
+    T(mic_for(c, "game.exe") && !mic_for(c, ""));
 }
 
 // What's new: versions compare as numbers, and the notes after a version are its newer ones only
@@ -1064,6 +1085,16 @@ static void test_settings_round_trip()
         str_set(none.hotkeys[0].hold.s, "save 3m");
         T(config_save(none, paths) && config_load(&back, paths) && back.hotkey_count == 1 &&
           !strcmp(back.hotkeys[0].action.s, "save 30s") && !strcmp(back.hotkeys[0].hold.s, "save 3m"));
+        // A hotkey for one game comes back for it, with or without a hold action, and so does a game's Mic
+        str_set(none.hotkeys[0].game.s, "game.exe");
+        T(config_save(none, paths) && config_load(&back, paths) && !strcmp(back.hotkeys[0].game.s, "game.exe") &&
+          !strcmp(back.hotkeys[0].hold.s, "save 3m"));
+        none.hotkeys[0].hold = {};
+        none.apps[0].mic = -1;
+        none.apps[1].mic = 1;
+        T(config_save(none, paths) && config_load(&back, paths) && !strcmp(back.hotkeys[0].game.s, "game.exe") &&
+          !back.hotkeys[0].hold.s[0] && !strcmp(back.hotkeys[0].action.s, "save 30s"));
+        T(back.app_count == 2 && back.apps[0].mic == -1 && back.apps[1].mic == 1);
         // Other apps' folders: the ones saved come back in place of those found on the PC, and none stays none
         none = a;
         none.watch_count = 2;

@@ -467,7 +467,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     tray_init(g_app.msg_hwnd);
     SetTimer(g_app.msg_hwnd, TIMER_TICK, 1000, 0);
     // Test copies (REKODR_HOME) leave the hotkeys to the real Rekodr.
-    if (!test_home_hash()) hotkeys_apply(g_app.config, g_app.msg_hwnd);
+    if (!test_home_hash()) hotkeys_apply(g_app.config, g_app.msg_hwnd, g_app.audio.game.s);
     recorder_start();
     audio_start();
     ffget_start(); // no ffmpeg found: fetch the pinned build

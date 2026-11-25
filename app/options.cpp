@@ -27,7 +27,7 @@ static void options_apply(u32 what)
     config_save(g_app.config, g_app.paths);
     if (what & APPLY_RECORDER) recorder_settings_changed();
     if (what & APPLY_AUDIO) audio_config_changed();
-    if ((what & APPLY_HOTKEYS) && !is_test_copy()) hotkeys_apply(g_app.config, g_app.msg_hwnd);
+    if ((what & APPLY_HOTKEYS) && !is_test_copy()) hotkeys_apply(g_app.config, g_app.msg_hwnd, g_app.audio.game.s);
     ui_wake();
 }
 
@@ -1115,6 +1115,19 @@ static void game_settings_popup()
         }
     }
 
+    game_line("Mic", x);
+    {
+        static const char *const mnotes[] = {0, "on the Mic track while it's played", "no Mic track while it's played"};
+        snprintf(def, sizeof def, "Default - %s", c.mic ? "On" : "Off");
+        const char *mitems[] = {def, "On", "Off"};
+        i32 msel = a.mic > 0 ? 1 : a.mic < 0 ? 2 : 0;
+        if (opt_combo("##mic", mitems, mnotes, 3, &msel, cw)) {
+            a.mic = (i8)(msel == 1 ? 1 : msel == 2 ? -1 : 0);
+            log_line("options: %s mic: %s", a.exe.s, msel == 1 ? "on" : msel == 2 ? "off" : "default");
+            options_apply(APPLY_AUDIO);
+        }
+    }
+
     game_line("Sessions", x);
     i32 m = a.session_mode;
     if (opt_combo("##mode", SESSION_LABELS, 0, COUNT(SESSION_LABELS), &m, cw)) {
@@ -1175,6 +1188,10 @@ static void game_summary(const AppInfo &a, char *out, i32 cap)
     if (a.toast_clip == TOAST_CLIP_FULL) add("full popup");
     else if (a.toast_clip == TOAST_CLIP_SMALL) add("small popup");
     else if (a.toast_clip == TOAST_CLIP_OFF) add("no popup");
+    if (a.mic) add(a.mic > 0 ? "mic on" : "mic off");
+    i32 keys = 0;
+    for (i32 i = 0; i < g_app.config.hotkey_count; i++) keys += !strcmp(g_app.config.hotkeys[i].game.s, a.exe.s);
+    if (keys) { snprintf(t, sizeof t, "%d hotkey%s", keys, keys == 1 ? "" : "s"); add(t); }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1768,7 +1785,7 @@ static void options_apps()
 static const char *ACTION_LABELS[] = {"Save the last", "Open the window", "Open the timeline", "Recording on / off",
                                       "Stop recording", "Start recording"};
 static const char *ACTION_COMMANDS[] = {"save", "open", "timeline", "toggle", "pause", "resume"};
-static const char *LENGTH_UNITS[] = {"seconds", "minutes", "hours"};
+static const char *LENGTH_UNITS[] = {"sec", "min", "hr"};
 
 static i32 action_index(const char *action)
 {
@@ -1801,7 +1818,7 @@ static void set_save_action(Str64 *action, f64 amount, i32 unit)
 }
 
 // The hold length's units, and "Off" to make holding the same as a tap.
-static const char *HOLD_UNITS[] = {"seconds", "minutes", "hours", "Off"};
+static const char *HOLD_UNITS[] = {"sec", "min", "hr", "Off"};
 
 // The name hotkey_parse knows for an ImGui key, or 0.
 static const char *key_name(ImGuiKey k)
@@ -1934,7 +1951,7 @@ static void options_hotkeys()
     f32 add_w = dp(132);
     ImGui::AlignTextToFramePadding();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
-    kit_dim("Keys that work anywhere, even in a game");
+    kit_dim("Keys that work anywhere, even in a game. A hotkey can be for one game only");
     kit_align_right(add_w);
     if (kit_button(ICON_ADD "  Add hotkey", KIT_SECONDARY, ImVec2(add_w, 0), c.hotkey_count < COUNT(c.hotkeys) && !o.capture_slot)) {
         Hotkey *h = &c.hotkeys[c.hotkey_count++];
@@ -1949,16 +1966,23 @@ static void options_hotkeys()
     opt_card_begin();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
-    f32 keys_x = x0 - dp(6), keys_w = dp(230);
-    f32 act_x = keys_x + keys_w + dp(14), act_w = dp(170);
-    f32 amt_x = act_x + act_w + dp(10), amt_w = dp(64);
-    f32 unit_x = amt_x + amt_w + dp(6), unit_w = dp(108);
-    f32 hold_x = unit_x + unit_w + dp(16), hold_unit_x = hold_x + amt_w + dp(6);
-    f32 warn_x = hold_unit_x + unit_w + dp(16), del_x = x1 - fh + dp(6);
+    // The columns at their full widths, all narrower together on a narrow window, so a warning still has room
+    // before the remove button
+    f32 del_x = x1 - fh + dp(6), keys_x = x0 - dp(6);
+    f32 widths = dp(210 + 140 + 160 + 56 + 76 + 56 + 76), gaps = dp(12 + 12 + 10 + 6 + 14 + 6 + 14);
+    f32 s = fminf(1, fmaxf(0.7f, (del_x - dp(12) - keys_x - gaps - dp(160)) / widths));
+    f32 keys_w = floorf(dp(210) * s);
+    f32 game_x = keys_x + keys_w + dp(12), game_w = floorf(dp(140) * s);
+    f32 act_x = game_x + game_w + dp(12), act_w = floorf(dp(160) * s);
+    f32 amt_x = act_x + act_w + dp(10), amt_w = floorf(dp(56) * s);
+    f32 unit_x = amt_x + amt_w + dp(6), unit_w = floorf(dp(76) * s);
+    f32 hold_x = unit_x + unit_w + dp(14), hold_unit_x = hold_x + amt_w + dp(6);
+    f32 warn_x = hold_unit_x + unit_w + dp(14);
     f32 pad = ImGui::GetStyle().FramePadding.x;
 
     opt_row_begin(0, 0, 0, head_h);
     opt_caption(x0, "KEYS");
+    opt_caption(game_x + pad, "GAME");
     opt_caption(act_x + pad, "ACTION");
     opt_caption(amt_x + pad, "LENGTH");
     opt_caption(hold_x + pad, "HOLD");
@@ -1996,6 +2020,32 @@ static void options_hotkeys()
             else opt_text_at(dl, g_font, ImVec2(x0, floorf(cy + (fh - g_font->FontSize) / 2)), COL_DIM, "Set keys", keys_x + keys_w);
         }
         ImGui::EndDisabled();
+
+        // The game it's for: every game, or one, where it wins over an every-game hotkey on the same keys
+        ImGui::SetCursorScreenPos(ImVec2(game_x, cy));
+        char game_name[64] = "All games";
+        if (h->game.s[0]) audio_display_name(c, h->game.s, game_name, sizeof game_name);
+        if (opt_combo_begin("##game", game_name, game_w, dp(220), h->game.s[0] ? COL_TEXT : COL_DIM)) {
+            if (opt_combo_item("All games", 0, !h->game.s[0])) {
+                h->game = {};
+                log_line("options: hotkey %s is for every game", h->keys.s);
+                options_apply(APPLY_HOTKEYS);
+            }
+            for (i32 k = 0; k < c.app_count; k++) {
+                const AppInfo &a = c.apps[k];
+                if (app_category(c, a) != CAT_GAME) continue;
+                char name[64];
+                audio_display_name(c, a.exe.s, name, sizeof name);
+                ImGui::PushID(k);
+                if (opt_combo_item(name, 0, !strcmp(h->game.s, a.exe.s))) {
+                    h->game = a.exe;
+                    log_line("options: hotkey %s is for %s only", h->keys.s, a.exe.s);
+                    options_apply(APPLY_HOTKEYS);
+                }
+                ImGui::PopID();
+            }
+            opt_combo_end();
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(act_x, cy));
         i32 act = action_index(h->action.s);
@@ -2052,7 +2102,9 @@ static void options_hotkeys()
 
         HotkeyKeys parsed;
         bool same = false;
-        for (i32 k = 0; k < c.hotkey_count; k++) same |= k != i && h->keys.s[0] && !_stricmp(c.hotkeys[k].keys.s, h->keys.s);
+        for (i32 k = 0; k < c.hotkey_count; k++)
+            same |= k != i && h->keys.s[0] && !_stricmp(c.hotkeys[k].keys.s, h->keys.s) &&
+                    !strcmp(c.hotkeys[k].game.s, h->game.s); // one game's own keys may match an every-game one
         const char *warn = !capturing && !hotkey_parse(h->keys.s, &parsed) ? "Not a key combination"
                            : same ? "Same keys as another hotkey" : 0;
         if (warn) opt_text_at(dl, g_font, ImVec2(warn_x, opt_row_text_y(g_font)), COL_WARN, warn, del_x - dp(8));
