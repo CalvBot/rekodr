@@ -981,6 +981,56 @@ static void test_news()
     T(news_parse(notes, (i32)strlen(notes), "", l, 2) == 2);
 }
 
+// The quality warning: what's too much for the encoder, the monitor or the disk, and what keeps up
+static void test_quality()
+{
+    Config c = {};
+    str_set(c.codec.s, "h264");
+    str_set(c.preset.s, "p4");
+    c.height = 1080;
+    c.fps = 60;
+    c.bitrate_mbps = 50;
+    c.desktop_bitrate_mbps = 10;
+    QualityHw hw = {1440, 144, 16, VENDOR_NVENC, false};
+    QualityWarn w;
+    quality_check(c, hw, &w);
+    for (i32 i = 0; i < Q_COUNT; i++) T(!w.why[i][0]); // a usual setup on a GPU: nothing
+    // A 4K monitor at 120 on the GPU: too much; 1440p keeps up at 120, 60 fps at 4K
+    c.height = 0;
+    c.fps = 120;
+    hw.mon_h = 2160;
+    quality_check(c, hw, &w);
+    T(strstr(w.why[Q_RES], "1440p keeps up") && strstr(w.why[Q_FPS], "60 fps keeps up") && !w.why[Q_ENCODER][0]);
+    // Above the monitor's refresh: said once, and checked at the refresh
+    c.height = 1080;
+    c.fps = 240;
+    quality_check(c, hw, &w);
+    T(strstr(w.why[Q_FPS], "144 Hz") && !w.why[Q_RES][0]);
+    // The CPU with 6 threads at 1080p60: names the CPU and the encoder row
+    c.fps = 60;
+    hw.vendor = VENDOR_CPU;
+    hw.threads = 6;
+    quality_check(c, hw, &w);
+    T(strstr(w.why[Q_RES], "the CPU") && strstr(w.why[Q_RES], "720p keeps up") && w.why[Q_ENCODER][0]);
+    // A slow preset at 4K60 on the GPU: the preset is named
+    hw = {2160, 60, 16, VENDOR_NVENC, false};
+    c.height = 0;
+    str_set(c.preset.s, "p7");
+    quality_check(c, hw, &w);
+    T(strstr(w.why[Q_PRESET], "P5") && w.why[Q_RES][0]);
+    // A hard disk: only the bitrate over its limit
+    str_set(c.preset.s, "p4");
+    c.bitrate_mbps = 200;
+    hw.hdd = true;
+    quality_check(c, hw, &w);
+    T(w.why[Q_BITRATE][0] && !w.why[Q_DESKTOP_BITRATE][0] && !w.why[Q_RES][0]);
+    // Unknown encoder: no pixel-rate guess
+    hw = {2160, 240, 2, -1, false};
+    c.fps = 240;
+    quality_check(c, hw, &w);
+    T(!w.why[Q_RES][0] && !w.why[Q_FPS][0]);
+}
+
 // What is saved comes back the same.
 static void test_settings_round_trip()
 {
@@ -3789,6 +3839,7 @@ int main()
     test_settings_round_trip();
     test_watch_scan();
     test_news();
+    test_quality();
     test_pieces();
     test_edit_volumes();
     test_edit_xml();

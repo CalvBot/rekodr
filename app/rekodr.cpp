@@ -5,6 +5,7 @@
 #define NOMINMAX
 #define UNICODE
 #include <windows.h>
+#include <winioctl.h>
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
 #include <shellapi.h>
@@ -89,6 +90,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "diag.cpp"
 #include "backup.cpp"
 #include "telemetry.cpp"
+#include "quality.cpp"
 #include "ui.cpp"
 #include "markers.cpp"
 #include "automarks.cpp"

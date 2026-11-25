@@ -292,10 +292,22 @@ static void opt_section(const char *text)
 // (unless `line` is false: the empty rows that keep a paged list's size).
 struct OptRow { f32 x0, x1, y, h; };
 static OptRow g_row;
+static const char *g_row_warn; // opt_warn: the next row's dim line, in amber
+
+// The next row's dim line is this reason, in amber with a warning mark (a setting more than this PC keeps up
+// with). Only for rows that have a dim line, so the row keeps its height. "" or 0 = none.
+static void opt_warn(const char *why) { g_row_warn = why && why[0] ? why : 0; }
 
 static void opt_row_begin(const char *name, const char *sub, f32 control_w, f32 h = 0, bool line = true)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
+    const char *warn = sub ? g_row_warn : 0;
+    g_row_warn = 0;
+    char warn_line[128];
+    if (warn) {
+        snprintf(warn_line, sizeof warn_line, ICON_WARNING "  %s", warn);
+        sub = warn_line;
+    }
     g_row.x0 = g_card.a.x + dp(OPT_PAD);
     g_row.x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
     g_row.y = ImGui::GetCursorScreenPos().y;
@@ -306,7 +318,7 @@ static void opt_row_begin(const char *name, const char *sub, f32 control_w, f32 
         f32 nh = g_font->FontSize, sh = g_font_small->FontSize, gap = dp(3);
         f32 ty = floorf(g_row.y + (g_row.h - nh - (sub ? gap + sh : 0)) / 2);
         opt_text_at(dl, g_font, ImVec2(nx, ty), COL_TEXT, name, max_x);
-        if (sub) opt_text_at(dl, g_font_small, ImVec2(nx, ty + nh + gap), COL_DIM, sub, max_x);
+        if (sub) opt_text_at(dl, g_font_small, ImVec2(nx, ty + nh + gap), warn ? COL_WARN : COL_DIM, sub, max_x);
     }
     ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - control_w, g_row.y + floorf((g_row.h - ImGui::GetFrameHeight()) / 2)));
 }
@@ -2208,10 +2220,35 @@ static void opt_inputs(Config &c)
 }
 
 // Monitor, resolution and frame rate: Options > Recording and the first-run setup.
+// What quality_check says of the settings now. The buffer's disk is asked again only when its drive changes.
+static const QualityWarn &opt_quality()
+{
+    static QualityWarn w;
+    static wchar_t drive;
+    static bool hdd;
+    const Config &c = g_app.config;
+    const OptionsUi &o = g_app.options;
+    if (drive != c.buffer_dir.s[0]) {
+        drive = c.buffer_dir.s[0];
+        hdd = quality_drive_hdd(c.buffer_dir.s);
+    }
+    QualityHw hw = {};
+    if (c.output_idx >= 0 && c.output_idx < o.monitor_count) {
+        hw.mon_h = o.monitors[c.output_idx].height;
+        hw.mon_hz = o.monitors[c.output_idx].hz;
+    }
+    hw.threads = (i32)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    hw.vendor = options_vendor();
+    hw.hdd = hdd;
+    quality_check(c, hw, &w);
+    return w;
+}
+
 static void opt_rows_video(f32 wide)
 {
     OptionsUi &o = g_app.options;
     Config &c = g_app.config;
+    const QualityWarn &q = opt_quality();
     char preview[160], note[64];
     snprintf(preview, sizeof preview, "%d. not connected", c.output_idx + 1);
     if (c.output_idx >= 0 && c.output_idx < o.monitor_count) {
@@ -2248,12 +2285,14 @@ static void opt_rows_video(f32 wide)
         char buf[COUNT(RES_HEIGHTS)][48];
         res_items(items, notes, buf, 0);
         i32 sel = res_index(c.height);
+        opt_warn(q.why[Q_RES]);
         if (opt_row_combo("Resolution", "Never above the monitor's", "##res", items, notes, COUNT(items), &sel, wide)) {
             c.height = sel ? RES_HEIGHTS[sel - 1] : 0;
             log_line("options: resolution %d (0 = native)", c.height);
             options_apply(APPLY_RECORDER);
         }
     }
+    opt_warn(q.why[Q_FPS]);
     if (opt_row_i32("Frame rate", "Never above the monitor's refresh rate", "##fps", &c.fps, 1, 240, "fps")) {
         log_line("options: %d fps", c.fps);
         options_apply(APPLY_RECORDER);
@@ -2336,13 +2375,16 @@ static void options_recording()
     }
     opt_card_end();
 
+    const QualityWarn &q = opt_quality();
     opt_section("BITRATE");
     opt_card_begin();
+    opt_warn(q.why[Q_BITRATE]);
     if (opt_row_f32("While playing a game", "A game can have its own: Recording settings in its menu under Apps", "##bitrate",
                     &c.bitrate_mbps, 1, 300, "Mbps")) {
         log_line("options: game bitrate %g Mbps", c.bitrate_mbps);
         options_apply(APPLY_RECORDER);
     }
+    opt_warn(q.why[Q_DESKTOP_BITRATE]);
     if (opt_row_f32("On the desktop", "While no game is being played", "##desktop", &c.desktop_bitrate_mbps, 1, 300, "Mbps")) {
         log_line("options: desktop bitrate %g Mbps", c.desktop_bitrate_mbps);
         options_apply(APPLY_RECORDER);
@@ -2388,6 +2430,7 @@ static void options_recording()
     else if (rec.recording) snprintf(status, sizeof status, "Recording with %s", rec.encoder_used.s);
     else if (rec.last_error.s[0]) snprintf(status, sizeof status, "Not recording: %s", rec.last_error.s);
     else snprintf(status, sizeof status, "Starting");
+    opt_warn(q.why[Q_ENCODER]);
     if (opt_row_combo("Encoder", status, "##encoder", items, notes, VENDOR_COUNT + 1, &enc, wide, no_vendor, enc_preview)) {
         str_set(c.encoder.s, enc == 0 ? "auto" : VENDOR_KEYS[enc - 1]);
         log_line("options: encoder %s", c.encoder.s);
@@ -2398,6 +2441,7 @@ static void options_recording()
     static const char *vendor_notes[VENDOR_COUNT] = {"Speed against quality", "AMF has three speeds; P1 to P7 spread over them",
                                                      "Quick Sync's veryfast to veryslow", "CPU: fast presets only"};
     i32 preset = preset_step(c.preset.s);
+    opt_warn(q.why[Q_PRESET]);
     if (opt_row_combo("Preset", vendor >= 0 ? vendor_notes[vendor] : vendor_notes[0], "##preset", PRESET_LABELS, PRESET_NOTES,
                       COUNT(PRESET_LABELS), &preset, wide)) {
         str_set(c.preset.s, PRESET_KEYS[preset]);
