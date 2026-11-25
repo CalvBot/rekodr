@@ -803,16 +803,43 @@ static void test_sessions_seen()
 
 static void test_hotkeys()
 {
-    u32 mods = 0, vk = 0;
-    T(hotkey_parse("Alt+F7", &mods, &vk) && mods == (MOD_NOREPEAT | MOD_ALT) && vk == VK_F7);
-    T(hotkey_parse("ctrl + shift + s", &mods, &vk) && mods == (MOD_NOREPEAT | MOD_CONTROL | MOD_SHIFT) && vk == 'S');
-    T(hotkey_parse("Win+Num5", &mods, &vk) && vk == VK_NUMPAD5);
-    T(hotkey_parse("F24", &mods, &vk) && vk == VK_F24);
-    T(!hotkey_parse("F25", &mods, &vk));
-    T(!hotkey_parse("Ctrl", &mods, &vk));     // no key
-    T(!hotkey_parse("Ctrl+A+B", &mods, &vk)); // two keys
-    T(!hotkey_parse("Alt+Nope", &mods, &vk));
-    T(!hotkey_parse("", &mods, &vk));
+    HotkeyKeys k;
+    T(hotkey_parse("Alt+F7", &k) && k.mods == (MOD_NOREPEAT | MOD_ALT) && k.vk == VK_F7 && !k.pad);
+    T(hotkey_parse("ctrl + shift + s", &k) && k.mods == (MOD_NOREPEAT | MOD_CONTROL | MOD_SHIFT) && k.vk == 'S');
+    T(hotkey_parse("Win+Num5", &k) && k.vk == VK_NUMPAD5);
+    T(hotkey_parse("F24", &k) && k.vk == VK_F24);
+    T(!hotkey_parse("F25", &k));
+    T(!hotkey_parse("Ctrl", &k));     // no key
+    T(!hotkey_parse("Ctrl+A+B", &k)); // two keys
+    T(!hotkey_parse("Alt+Nope", &k));
+    T(!hotkey_parse("", &k));
+
+    // Mouse buttons, with modifiers like a key
+    T(hotkey_parse("Mouse4", &k) && k.vk == VK_XBUTTON1 && k.mods == MOD_NOREPEAT && hotkey_is_mouse(k));
+    T(hotkey_parse("Ctrl+Mouse5", &k) && k.vk == VK_XBUTTON2 && k.mods == (MOD_NOREPEAT | MOD_CONTROL));
+    T(hotkey_parse("MouseMiddle", &k) && k.vk == VK_MBUTTON);
+    T(!hotkey_parse("Mouse4+A", &k));
+    T(hotkey_parse("Alt+F7", &k) && !hotkey_is_mouse(k));
+
+    // Controller buttons, alone or held together, never with keys
+    T(hotkey_parse("PadA", &k) && k.pad == XINPUT_GAMEPAD_A && !k.vk && !hotkey_is_mouse(k));
+    T(hotkey_parse("PadLB+PadRT", &k) && k.pad == (XINPUT_GAMEPAD_LEFT_SHOULDER | PAD_RT));
+    T(!hotkey_parse("Ctrl+PadA", &k));
+    T(!hotkey_parse("PadA+F7", &k));
+    T(!hotkey_parse("PadZ", &k));
+    char name[64];
+    hotkey_pad_name(XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_BACK | PAD_LT, name, sizeof name);
+    T(!strcmp(name, "PadA+PadLT+PadBack") && hotkey_parse(name, &k) &&
+      k.pad == (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_BACK | PAD_LT));
+
+    // A controller hotkey fires once, when its last button goes down
+    u32 lb = XINPUT_GAMEPAD_LEFT_SHOULDER, a = XINPUT_GAMEPAD_A, mask = lb | a;
+    T(!hotkey_pad_fired(0, lb, mask));
+    T(hotkey_pad_fired(lb, lb | a, mask));
+    T(hotkey_pad_fired(0, lb | a | XINPUT_GAMEPAD_B, mask)); // other buttons held too
+    T(!hotkey_pad_fired(lb | a, lb | a, mask));               // held: once
+    T(!hotkey_pad_fired(lb | a, lb, mask));
+    T(!hotkey_pad_fired(0, a, 0));
 }
 
 // What is saved comes back the same.

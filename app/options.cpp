@@ -1765,12 +1765,6 @@ static const char *key_name(ImGuiKey k)
     }
 }
 
-static void hotkeys_unregister_all()
-{
-    for (i32 i = 0; i < g_hotkeys_registered; i++) UnregisterHotKey(g_app.msg_hwnd, i + 1);
-    g_hotkeys_registered = 0;
-}
-
 static void hotkey_remove(i32 i)
 {
     Config &c = g_app.config;
@@ -1780,13 +1774,20 @@ static void hotkey_remove(i32 i)
     c.hotkey_count--;
 }
 
+// Controller buttons while a hotkey's keys are being set: the buttons held so far (counted once every button was
+// up), set as the keys when they're all let go.
+static u32 g_capture_pad;
+static bool g_capture_pad_up;
+
 static void capture_start(i32 i, bool added)
 {
     OptionsUi &o = g_app.options;
     o.capture_slot = i + 1;
     o.capture_added = added;
-    // Our own hotkeys would swallow the keys being pressed (RegisterHotKey takes them before the window does).
-    if (!is_test_copy()) hotkeys_unregister_all();
+    g_capture_pad = 0;
+    g_capture_pad_up = false;
+    // Our own hotkeys would fire on the keys being pressed (RegisterHotKey takes them before the window does).
+    if (!is_test_copy()) hotkeys_clear(g_app.msg_hwnd);
     // Nothing keeps the keyboard focus, so Enter or Space set the hotkey rather than press a button.
     ImGui::SetWindowFocus(0);
 }
@@ -1800,32 +1801,57 @@ static void capture_end(bool cancelled)
     options_apply(APPLY_HOTKEYS);
 }
 
-// While a hotkey's keys are being set: the first key pressed with whatever modifiers are held.
+static void capture_set(const char *keys)
+{
+    Hotkey *h = &g_app.config.hotkeys[g_app.options.capture_slot - 1];
+    str_set(h->keys.s, keys);
+    log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
+    capture_end(false);
+}
+
+// While a hotkey's keys are being set: the first key or mouse side or middle button pressed with whatever modifiers
+// are held, or controller buttons held together.
 static void capture_keys()
 {
     OptionsUi &o = g_app.options;
     if (!o.capture_slot) return;
     ImGuiIO &io = ImGui::GetIO();
+    bool any_mod = io.KeyCtrl || io.KeyAlt || io.KeySuper || io.KeyShift;
+    char mods[32];
+    snprintf(mods, sizeof mods, "%s%s%s%s", io.KeyCtrl ? "Ctrl+" : "", io.KeyAlt ? "Alt+" : "",
+             io.KeyShift ? "Shift+" : "", io.KeySuper ? "Win+" : "");
+    char keys[64];
+    HotkeyKeys parsed;
     for (i32 k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++) {
         if (!ImGui::IsKeyPressed((ImGuiKey)k, false)) continue;
         const char *name = key_name((ImGuiKey)k);
         if (!name) continue; // modifiers, mouse buttons, keys hotkey_parse doesn't know
-        bool any_mod = io.KeyCtrl || io.KeyAlt || io.KeyShift || io.KeySuper;
         if (k == ImGuiKey_Escape && !any_mod) {
             capture_end(true);
             return;
         }
-        char keys[64];
-        snprintf(keys, sizeof keys, "%s%s%s%s%s", io.KeyCtrl ? "Ctrl+" : "", io.KeyAlt ? "Alt+" : "",
-                 io.KeyShift ? "Shift+" : "", io.KeySuper ? "Win+" : "", name);
-        u32 mods, vk;
-        if (!hotkey_parse(keys, &mods, &vk)) continue;
-        Hotkey *h = &g_app.config.hotkeys[o.capture_slot - 1];
-        str_set(h->keys.s, keys);
-        log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
-        capture_end(false);
+        snprintf(keys, sizeof keys, "%s%s", mods, name);
+        if (!hotkey_parse(keys, &parsed)) continue;
+        capture_set(keys);
         return;
     }
+    static const char *const MOUSE[] = {"MouseMiddle", "Mouse4", "Mouse5"}; // ImGui's mouse buttons 2, 3 and 4
+    for (i32 b = 0; b < 3; b++)
+        if (ImGui::IsMouseClicked(2 + b)) {
+            snprintf(keys, sizeof keys, "%s%s", mods, MOUSE[b]);
+            capture_set(keys);
+            return;
+        }
+    // Controller: buttons already held when this began count only once they've all been let go
+    u32 pad = hotkey_pads_now();
+    if (!g_capture_pad_up) {
+        g_capture_pad_up = pad == 0;
+        return;
+    }
+    g_capture_pad |= pad;
+    if (pad || !g_capture_pad) return;
+    hotkey_pad_name(g_capture_pad, keys, sizeof keys);
+    capture_set(keys);
 }
 
 static void options_hotkeys()
@@ -1929,10 +1955,10 @@ static void options_hotkeys()
             }
         }
 
-        u32 mods, vk;
+        HotkeyKeys parsed;
         bool same = false;
         for (i32 k = 0; k < c.hotkey_count; k++) same |= k != i && h->keys.s[0] && !_stricmp(c.hotkeys[k].keys.s, h->keys.s);
-        const char *warn = !capturing && !hotkey_parse(h->keys.s, &mods, &vk) ? "Not a key combination"
+        const char *warn = !capturing && !hotkey_parse(h->keys.s, &parsed) ? "Not a key combination"
                            : same ? "Same keys as another hotkey" : 0;
         if (warn) opt_text_at(dl, g_font, ImVec2(warn_x, opt_row_text_y(g_font)), COL_WARN, warn, del_x - dp(8));
 
@@ -4317,6 +4343,15 @@ static void options_general()
     if (opt_row_folder("Playback cache", "Where the Timeline builds what it plays; a fast drive starts sooner", "play",
                        &c.play_dir))
         options_apply(0);
+    {
+        char held[32], sub[160];
+        bytes_text((i64)g_lib_folder_bytes, held, sizeof held);
+        snprintf(sub, sizeof sub, "The Library warns past this. They hold %s now; nothing is deleted. 0 = never", held);
+        if (opt_row_f32("Warn when clips pass", sub, "##folderwarn", &c.folder_warn_gb, 0, 100000, "GB")) {
+            log_line("options: warn past %g GB of clips", c.folder_warn_gb);
+            options_apply(0);
+        }
+    }
     if (opt_row_f32("Keep share copies for", "Share's small copies go this long after they were last shared. Clips stay", "##share", &c.share_keep_days, 0.1, 365, "days")) {
         log_line("options: share copies kept %g days", c.share_keep_days);
         options_apply(0);

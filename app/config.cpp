@@ -80,6 +80,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->session_gap_min = 5;
     c->session_min_length_min = 15;
     c->share_keep_days = 7;
+    c->folder_warn_gb = 500;
     c->share_max_mb = 20;
     c->social_copy_mb = 150;
     c->share_min_quality = 67;
@@ -474,6 +475,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "session_gap_min")) real(&c->session_gap_min);
     else if (!strcmp(key, "session_min_length_min")) real(&c->session_min_length_min);
     else if (!strcmp(key, "share_keep_days")) real(&c->share_keep_days);
+    else if (!strcmp(key, "folder_warn_gb")) real(&c->folder_warn_gb);
     else if (!strcmp(key, "wave_keep_days")) real(&c->wave_keep_days);
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
@@ -665,6 +667,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,
             c.session_min_length_min, c.share_keep_days);
     fprintf(f, "wave_keep_days = %g\n", c.wave_keep_days);
+    fprintf(f, "folder_warn_gb = %g\n", c.folder_warn_gb);
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("share_names", c.share_names);
     boolean("send_stats", c.send_stats);

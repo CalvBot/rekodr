@@ -180,6 +180,8 @@ struct Config {
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
                            // by its id ("classic")
+    f32 folder_warn_gb;  // the Library warns once its clips and sessions hold more than this; 0 = never. Nothing
+                         // is deleted (500)
     f32 share_keep_days; // share copies older than this are cleared from %TEMP%\Rekodr\share (7)
     f32 wave_keep_days;  // audio previews (waveforms) not opened for this long are deleted, 0 = kept (30)
 

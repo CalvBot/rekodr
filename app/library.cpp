@@ -1535,6 +1535,10 @@ static void library_window_shown(bool shown)
     lib_free_textures();
 }
 
+// What the clips and sessions hold together, originals and their rendered copies, as of the last scan
+static u64 g_lib_folder_bytes;
+static void bytes_text(i64 bytes, char *out, i32 cap); // options.cpp
+
 static void library_on_event(const Event &e)
 {
     Library &lib = g_app.library;
@@ -1543,6 +1547,8 @@ static void library_on_event(const Event &e)
         AcquireSRWLockShared(&g_lib.lock);
         lib.item_count = g_lib.item_count;
         memcpy(lib.items, g_lib.items, lib.item_count * sizeof lib.items[0]);
+        g_lib_folder_bytes = 0;
+        for (i32 i = 0; i < lib.item_count; i++) g_lib_folder_bytes += lib.items[i].size + lib.items[i].render_size;
         bool running = g_lib.scan_running || g_lib.scan_queued;
         ReleaseSRWLockShared(&g_lib.lock);
         lib.scanned = true;
@@ -6172,8 +6178,32 @@ static void screen_library()
              span, lib.scanning ? ", looking for more" : "");
     f32 ty = floorf(f0.y + (fh - ImGui::GetFontSize()) / 2);
     dl->AddText(ImVec2(f0.x, ty), col32(COL_DIM), count);
-    f32 msg_x = f0.x + kit_px(320);
-    text_clipped(dl, ImVec2(msg_x, ty), f0.x + full_w - msg_x, col32(lib.message_error ? 0xff8a92 : COL_DIM), lib.message);
+    f32 msg_x = f0.x + kit_px(320), msg_end = f0.x + full_w;
+    // At the right end, once the clips and sessions pass Options' size: an amber warning with how much they hold.
+    // A click opens Options at that setting. Nothing is ever deleted for it.
+    f32 warn_gb = g_app.config.folder_warn_gb;
+    if (warn_gb > 0 && (f64)g_lib_folder_bytes > (f64)warn_gb * 1e9) {
+        char held[32], warn[96];
+        bytes_text((i64)g_lib_folder_bytes, held, sizeof held);
+        snprintf(warn, sizeof warn, "%s of clips, over %g GB", held, warn_gb);
+        f32 gsz = g_font_icon->FontSize;
+        ImVec2 gs = g_font_icon->CalcTextSizeA(gsz, FLT_MAX, 0, ICON_WARNING);
+        f32 ww = gs.x + kit_px(6) + ImGui::CalcTextSize(warn).x, wx = f0.x + full_w - ww;
+        ImVec2 w0(wx, f0.y), w1(f0.x + full_w, f0.y + fh);
+        ImGui::SetCursorScreenPos(w0);
+        if (ImGui::InvisibleButton("##folderwarn", ImVec2(ww, fh))) {
+            dev_click("library", "folder warning");
+            g_app.options.tab = OPT_GENERAL;
+            ui_show(SCREEN_OPTIONS);
+        }
+        bool hot = ImGui::IsItemHovered();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        kit_tip_rect(w0, w1, "Change the warning in Options");
+        dl->AddText(g_font_icon, gsz, ImVec2(wx, floorf(f0.y + (fh - gs.y) / 2)), col32(COL_WARN), ICON_WARNING);
+        dl->AddText(ImVec2(wx + gs.x + kit_px(6), ty), col32(hot ? COL_WHITE : COL_WARN), warn);
+        msg_end = wx - kit_px(16);
+    }
+    text_clipped(dl, ImVec2(msg_x, ty), msg_end - msg_x, col32(lib.message_error ? 0xff8a92 : COL_DIM), lib.message);
     ImGui::SetCursorScreenPos(ImVec2(f0.x, f0.y + fh));
     ImGui::EndChild();
 }
