@@ -424,12 +424,6 @@ static ShareJob *share_new_job()
     return pick;
 }
 
-// The done sound (the Chime, assets/complete.wav) when Share has put a file or link on the clipboard.
-static void share_chime()
-{
-    if (g_app.config.share_sound) saved_sound_play(SAVED_SOUND_CHIME, Path{});
-}
-
 // Ends a job: the result goes on the clipboard, with the done sound, and is kept for next time.
 static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
 {
@@ -439,6 +433,7 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
     if (!ok) {
         str_set(j.v.error, error);
         log_line("share %u: failed: %s", j.v.id, error);
+        sound_event(SOUND_FAILED);
         return;
     }
     if (j.v.kind == SHARE_LINK) {
@@ -450,7 +445,7 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
         utf8_to_wide(what, w, MAX_PATH);
         if (!clipboard_copy_file(w)) str_set(j.v.error, "The clipboard was busy: copy it again");
     }
-    if (!j.v.error[0]) share_chime();
+    sound_event(j.v.error[0] ? SOUND_FAILED : SOUND_SHARE_READY);
     if (!j.v.reused) share_made_add(j.hash, j.lib_key, j.source, what);
     else if (j.v.kind != SHARE_LINK) telemetry_shared(); // a made file is counted as its save ends
     log_line("share %u: %s %s", j.v.id, j.v.reused ? "gave again" : "made", what);

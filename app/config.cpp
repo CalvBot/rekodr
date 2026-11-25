@@ -62,7 +62,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->popup_monitor = POPUP_RECORDED;
     c->popup_monitor_game = POPUP_AS_NORMAL;
     c->toast_clip = TOAST_CLIP_FULL;
-    c->saved_sound = SAVED_SOUND_CHIME;
+    for (i32 i = 0; i < SOUND_EVENT_COUNT; i++) c->sounds[i] = {true, (u8)i};
     c->buffer_gb = 100;
     c->min_free_gb = 50;
     c->fps = 60;
@@ -99,7 +99,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->tooltips = true;
     c->share_names = true; // "Help name games" and "Send usage stats": on, the setup asks
     c->send_stats = true;
-    c->share_sound = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
     wchar_t time_format[80] = L"";
@@ -167,13 +166,32 @@ static ToastClip toast_clip_parse(const char *s)
                                  : TOAST_CLIP_DEFAULT;
 }
 
-static const char *const SAVED_SOUND_NAMES[SAVED_SOUND_COUNT] = {"off", "chime", "high", "low", "echo", "soft", "own"};
+// A sound's name in settings.txt: its library key, or "own".
+static const char *sound_key(u8 sound) { return sound < SOUND_COUNT ? SOUND_LIBRARY[sound].key : "own"; }
 
-static SavedSound saved_sound_parse(const char *s)
+// "sound_<event> = on|off <sound>" and "sound_<event>_file = <path>". False when `key` isn't one of them.
+static bool sound_setting(Config *c, const char *key, const char *value)
 {
-    for (i32 i = 0; i < SAVED_SOUND_COUNT; i++)
-        if (!strcmp(s, SAVED_SOUND_NAMES[i])) return (SavedSound)i;
-    return SAVED_SOUND_CHIME;
+    if (strncmp(key, "sound_", 6)) return false;
+    key += 6;
+    for (i32 e = 0; e < SOUND_EVENT_COUNT; e++) {
+        size_t n = strlen(SOUND_EVENTS[e].key);
+        if (strncmp(key, SOUND_EVENTS[e].key, n)) continue;
+        SoundPick &p = c->sounds[e];
+        if (!strcmp(key + n, "_file")) {
+            utf8_to_wide(value, p.own.s, MAX_PATH);
+            return true;
+        }
+        if (key[n]) continue;
+        p.on = strncmp(value, "off", 3) != 0;
+        const char *name = strchr(value, ' ');
+        name = name ? name + 1 : "";
+        if (!strcmp(name, "own")) p.sound = SOUND_OWN;
+        for (i32 i = 0; i < SOUND_COUNT; i++)
+            if (!strcmp(name, SOUND_LIBRARY[i].key)) p.sound = (u8)i;
+        return true;
+    }
+    return false;
 }
 
 // Finds an app by exe (lower case), adding it if it's new and there's room. Returns 0 only when the table is full.
@@ -466,8 +484,7 @@ static void config_set(Config *c, const char *key, char *value)
         c->toast_clip = toast_clip_parse(value);
         if (c->toast_clip == TOAST_CLIP_DEFAULT) c->toast_clip = TOAST_CLIP_FULL;
     }
-    else if (!strcmp(key, "saved_sound")) c->saved_sound = saved_sound_parse(value);
-    else if (!strcmp(key, "saved_sound_file")) path(&c->saved_sound_file);
+    else if (sound_setting(c, key, value)) {}
     else if (!strcmp(key, "fps")) c->fps = atoi(value);
     else if (!strcmp(key, "height")) c->height = atoi(value);
     else if (!strcmp(key, "codec")) str_set(c->codec.s, value);
@@ -493,7 +510,6 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
-    else if (!strcmp(key, "share_sound")) boolean(&c->share_sound);
     else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
     else if (!strcmp(key, "flat_look")) boolean(&c->flat_look);
@@ -685,7 +701,6 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("share_names", c.share_names);
     boolean("send_stats", c.send_stats);
-    boolean("share_sound", c.share_sound);
     boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);
     boolean("flat_look", c.flat_look);
@@ -712,8 +727,15 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "popup_monitor_game = %d\npopup_corner_game = %s\n", c.popup_monitor_game,
             corner_name(c.popup_corner_game));
     fprintf(f, "toast_clip = %s\n", toast_clip_name(c.toast_clip));
-    fprintf(f, "saved_sound = %s\n", SAVED_SOUND_NAMES[c.saved_sound]);
-    path("saved_sound_file", c.saved_sound_file);
+    for (i32 e = 0; e < SOUND_EVENT_COUNT; e++) {
+        const SoundPick &p = c.sounds[e];
+        fprintf(f, "sound_%s = %s %s\n", SOUND_EVENTS[e].key, p.on ? "on" : "off", sound_key(p.sound));
+        if (p.own.s[0]) {
+            char k[64];
+            snprintf(k, sizeof k, "sound_%s_file", SOUND_EVENTS[e].key);
+            path(k, p.own);
+        }
+    }
     boolean("voice_mono", c.voice_mono);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %06x\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);

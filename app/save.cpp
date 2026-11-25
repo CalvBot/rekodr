@@ -3076,21 +3076,6 @@ static void saved_check()
     }
 }
 
-// Plays a save sound (Options' preview too): a built-in one from the exe's resources (RCDATA 40 + which - CHIME), or
-// the player's own .wav. Nothing when it's off or the file can't be played.
-static void saved_sound_play(SavedSound which, const Path &own)
-{
-    if (which == SAVED_SOUND_OWN) {
-        if (own.s[0]) PlaySoundW(own.s, 0, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
-        return;
-    }
-    if (which < SAVED_SOUND_CHIME || which > SAVED_SOUND_SOFT) return;
-    HRSRC res = FindResourceW(0, MAKEINTRESOURCEW(40 + which - SAVED_SOUND_CHIME), MAKEINTRESOURCEW(10)); // RT_RCDATA
-    HGLOBAL mem = res ? LoadResource(0, res) : 0;
-    void *wav = mem ? LockResource(mem) : 0;
-    if (wav) PlaySoundW((LPCWSTR)wav, 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-}
-
 static void toast_saved(SaveKind kind, const char *path, const char *game); // toast.cpp
 static void toast_save_failed(SaveKind kind, const char *why);
 static void render_on_save(u32 id, i64 what, const char *text); // render.cpp
@@ -3123,8 +3108,8 @@ static void save_on_event(const Event &e)
         log_line("save %u: saved %s", id, e.text);
         saved_add(v->kind, v->from_us, v->to_us, e.text);
         pipe_saved(v->kind, true, e.text, v);
-        if (v->kind != SAVE_PREVIEW && v->kind != SAVE_LINK)
-            saved_sound_play(g_app.config.saved_sound, g_app.config.saved_sound_file);
+        if (v->kind == SAVE_SESSION) sound_event(SOUND_SESSION_SAVED);
+        else if (v->kind != SAVE_PREVIEW && v->kind != SAVE_LINK) sound_event(SOUND_CLIP_SAVED);
         toast_saved(v->kind, e.text, v->game);
         break;
     case SAVE_EV_FAILED:
@@ -3133,6 +3118,7 @@ static void save_on_event(const Event &e)
         g_app.saving.jobs_running--;
         log_line("save %u: failed: %s", id, e.text);
         pipe_saved(v->kind, false, e.text, v);
+        if (v->kind != SAVE_PREVIEW && v->kind != SAVE_LINK) sound_event(SOUND_FAILED);
         toast_save_failed(v->kind, e.text);
         break;
     case SAVE_EV_CANCELLED:

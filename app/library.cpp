@@ -2993,9 +2993,12 @@ static void lib_uploads_poll()
             R2Job j = r2_job(u.id);
             if (j.state == R2_DONE) {
                 ImGui::SetClipboardText(j.url);
-                share_chime();
+                sound_event(SOUND_SHARE_READY);
                 lib_note(false, "Link copied: %s", u.name);
-            } else if (j.state == R2_FAILED) lib_note(true, "Couldn't share %s: %s", u.name, j.error);
+            } else if (j.state == R2_FAILED) {
+                sound_event(SOUND_FAILED);
+                lib_note(true, "Couldn't share %s: %s", u.name, j.error);
+            }
             else {
                 i++;
                 continue;

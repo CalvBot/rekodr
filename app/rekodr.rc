@@ -13,13 +13,30 @@
 30 RCDATA "fonts/Onest-Regular.ttf"
 31 RCDATA "fonts/Onest-SemiBold.ttf"
 32 RCDATA "fonts/Onest-Bold.ttf"
-// The save and share sounds (save.cpp saved_sound_play): complete.wav and versions of it made with ffmpeg
-// (higher, lower, with an echo, softer).
-40 RCDATA "../assets/complete.wav"
-41 RCDATA "../assets/complete-high.wav"
-42 RCDATA "../assets/complete-low.wav"
-43 RCDATA "../assets/complete-echo.wav"
-44 RCDATA "../assets/complete-soft.wav"
+
+// The sound library (app.h SOUND_LIBRARY, in the same order from SOUND_RES): each event's own sound, then the others
+// to pick from. All are made from chime.wav with ffmpeg.
+40 RCDATA "../assets/sounds/clip-saved.wav"
+41 RCDATA "../assets/sounds/share-ready.wav"
+42 RCDATA "../assets/sounds/marker.wav"
+43 RCDATA "../assets/sounds/recording-on.wav"
+44 RCDATA "../assets/sounds/recording-off.wav"
+45 RCDATA "../assets/sounds/session-saved.wav"
+46 RCDATA "../assets/sounds/failed.wav"
+47 RCDATA "../assets/sounds/chime.wav"
+48 RCDATA "../assets/sounds/high.wav"
+49 RCDATA "../assets/sounds/low.wav"
+50 RCDATA "../assets/sounds/echo.wav"
+51 RCDATA "../assets/sounds/soft.wav"
+52 RCDATA "../assets/sounds/tick.wav"
+53 RCDATA "../assets/sounds/arpeggio.wav"
+54 RCDATA "../assets/sounds/chord.wav"
+55 RCDATA "../assets/sounds/double.wav"
+56 RCDATA "../assets/sounds/reverse.wav"
+57 RCDATA "../assets/sounds/shimmer.wav"
+58 RCDATA "../assets/sounds/retro.wav"
+59 RCDATA "../assets/sounds/flutter.wav"
+60 RCDATA "../assets/sounds/deep.wav"
 
 #include "version.h"
 

@@ -19,17 +19,47 @@ enum SessionMode : u8 {
     SESSION_NEVER,  // not detected
 };
 
-// The sound when a clip or session saves: off, one of the built-in ones (assets/complete*.wav, all made from
-// complete.wav) or the player's own .wav (Config.saved_sound_file).
-enum SavedSound : u8 {
-    SAVED_SOUND_OFF,
-    SAVED_SOUND_CHIME, // complete.wav itself, RCDATA 40; the next ones are 41 and up
-    SAVED_SOUND_HIGH,
-    SAVED_SOUND_LOW,
-    SAVED_SOUND_ECHO,
-    SAVED_SOUND_SOFT,
-    SAVED_SOUND_OWN,
-    SAVED_SOUND_COUNT,
+// Sounds: each event Rekodr has a sound for plays one from the sound library (assets/sounds, RCDATA SOUND_RES +
+// its index) or the player's own .wav, when its switch is on. The first SOUND_EVENT_COUNT sounds of the library are
+// the events' own, in the same order; the rest are there to pick from.
+enum SoundEvent : u8 {
+    SOUND_CLIP_SAVED,
+    SOUND_SHARE_READY,   // a shared file or link is on the clipboard
+    SOUND_MARKER,
+    SOUND_RECORDING_ON,  // recording resumed
+    SOUND_RECORDING_OFF, // recording paused
+    SOUND_SESSION_SAVED,
+    SOUND_FAILED,        // a save or share failed
+    SOUND_EVENT_COUNT,
+};
+
+struct SoundInfo {
+    const char *key;   // the file name in assets/sounds, and the name in settings.txt
+    const char *label;
+};
+
+static const i32 SOUND_RES = 40;
+static const SoundInfo SOUND_LIBRARY[] = {
+    {"clip-saved", "Clip saved"}, {"share-ready", "Share ready"}, {"marker", "Marker"},
+    {"recording-on", "Recording on"}, {"recording-off", "Recording off"}, {"session-saved", "Session saved"},
+    {"failed", "Failed"}, {"chime", "Chime"}, {"high", "High"}, {"low", "Low"}, {"echo", "Echo"}, {"soft", "Soft"},
+    {"tick", "Tick"}, {"arpeggio", "Arpeggio"}, {"chord", "Chord"}, {"double", "Double"}, {"reverse", "Reverse"},
+    {"shimmer", "Shimmer"}, {"retro", "Retro"}, {"flutter", "Flutter"}, {"deep", "Deep"},
+};
+static const i32 SOUND_COUNT = (i32)(sizeof SOUND_LIBRARY / sizeof SOUND_LIBRARY[0]);
+static const u8 SOUND_OWN = 0xff; // SoundPick.sound: the player's own file
+
+// The events' names in settings.txt ("sound_<key>") and in Options.
+static const SoundInfo SOUND_EVENTS[SOUND_EVENT_COUNT] = {
+    {"clip_saved", "Clip saved"}, {"share_ready", "Share ready"}, {"marker", "Marker"},
+    {"recording_on", "Recording on"}, {"recording_off", "Recording off"}, {"session_saved", "Session saved"},
+    {"failed", "Failed"},
+};
+
+struct SoundPick {
+    bool on;
+    u8   sound; // an index in SOUND_LIBRARY, or SOUND_OWN
+    Path own;   // SOUND_OWN's .wav
 };
 
 // How "Clip saved" shows over a game: the whole popup, the small one (no buttons, gone sooner) or none (the clip is
@@ -133,8 +163,7 @@ struct Config {
     i32   popup_monitor_game; // and while a game is in front: an output index, POPUP_RECORDED or POPUP_AS_NORMAL
     PopupCorner popup_corner_game; // unless popup_monitor_game is POPUP_AS_NORMAL
     ToastClip toast_clip; // Clip saved over a game, unless the game has its own (FULL, SMALL or OFF)
-    SavedSound saved_sound; // the sound when a clip or session saves (CHIME)
-    Path  saved_sound_file; // SAVED_SOUND_OWN's .wav
+    SoundPick sounds[SOUND_EVENT_COUNT]; // what each event plays (sounds.cpp)
     i32   fps;        // never above the monitor's refresh rate
     i32   height;     // output height (1080...); 0 = the monitor's own. Never above the monitor's
     Str64 codec;      // "h264" | "hevc" | "av1"
@@ -166,7 +195,6 @@ struct Config {
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
     bool share_names;    // "Help name games": naming a game the art service wasn't sure of tells it (gamedb_confirm)
-    bool share_sound;    // the done sound when Share puts a file or link on the clipboard (on)
     bool send_stats;     // a daily usage report to the service (telemetry.cpp); on unless the player says no
     bool auto_update;    // fetch and verify new versions (update.cpp); the top bar then offers the restart
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only

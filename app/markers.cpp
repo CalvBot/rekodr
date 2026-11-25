@@ -174,6 +174,7 @@ static void toast_marker(i64 t_us); // toast.cpp
 static void marker_command(const char *arg)
 {
     i64 t = now_us();
+    sound_event(SOUND_MARKER);
     if (!strcmp(arg, "ask")) {
         toast_marker(markers_add(t, 0, ""));
         log_line("marker: asking for a colour and a note");

@@ -862,39 +862,70 @@ static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
     return changed;
 }
 
-// The sound when a clip saves: Off (a muted speaker), the built-in ones and the player's own .wav (a folder). A click
-// on a sound picks it and plays it; the folder always asks for a file, then plays it. With the own file picked, the
-// row's second line is its name.
+// Sounds: a row per event, right to left: its switch, a folder chip for the player's own .wav, the sound picked from
+// the library (each event's own marked "default"), and play. Picking a sound or a file plays it. A row that is off
+// keeps its controls where they are, dimmed.
 static bool pick_file(const Path &start, Path *out, const wchar_t *kind, const wchar_t *spec); // below
-static const char *const SAVED_SOUND_CHIPS[SAVED_SOUND_COUNT] = {ICON_MUTE, "Chime", "High", "Low", "Echo", "Soft",
-                                                                 ICON_FOLDER};
-static void opt_saved_sound_row(Config &c)
+static void opt_sounds_card(Config &c)
 {
-    f32 pad = kit_px(14), gap = dp(6), w = 0;
-    for (i32 i = 0; i < SAVED_SOUND_COUNT; i++) w += text_w(g_font, SAVED_SOUND_CHIPS[i]) + 2 * pad + (i ? gap : 0);
-    char sub[MAX_PATH * 3] = "Plays when a clip saves";
-    if (c.saved_sound == SAVED_SOUND_OWN) {
-        const wchar_t *name = wcsrchr(c.saved_sound_file.s, L'\\');
-        wide_to_utf8(name ? name + 1 : c.saved_sound_file.s, sub, sizeof sub);
-    }
-    opt_row_begin("Clip saved sound", sub, w);
-    for (i32 i = 0; i < SAVED_SOUND_COUNT; i++) {
-        if (i) ImGui::SameLine(0, gap);
-        char label[48];
-        snprintf(label, sizeof label, "%s##savedsound%d", SAVED_SOUND_CHIPS[i], i);
-        if (!kit_chip(label, c.saved_sound == i, 0, text_w(g_font, SAVED_SOUND_CHIPS[i]) + 2 * pad)) continue;
-        SavedSound pick = (SavedSound)i;
-        if (pick == SAVED_SOUND_OWN) {
-            Path file;
-            if (!pick_file(c.saved_sound_file, &file, L"Sounds", L"*.wav")) continue;
-            c.saved_sound_file = file;
+    opt_section("SOUNDS");
+    opt_card_begin();
+    const char *names[SOUND_COUNT];
+    for (i32 i = 0; i < SOUND_COUNT; i++) names[i] = SOUND_LIBRARY[i].label;
+    f32 h = ImGui::GetFrameHeight(), gap = dp(8), combo_w = dp(180), toggle_w = dp(36);
+    f32 popup_w = opt_combo_popup_w(names, 0, SOUND_COUNT) + dp(32) + text_w(g_font, "default");
+    for (i32 e = 0; e < SOUND_EVENT_COUNT; e++) {
+        SoundPick &p = c.sounds[e];
+        bool changed = false, play = false;
+        ImGui::PushID(e);
+        opt_row_begin(SOUND_EVENTS[e].label, 0, h + gap + combo_w + gap + h + gap + toggle_w);
+        f32 x = ImGui::GetCursorScreenPos().x, y = ImGui::GetCursorScreenPos().y;
+        if (!p.on) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+
+        if (kit_icon_button(ICON_PLAY, "##play")) play = true;
+
+        ImGui::SetCursorScreenPos(ImVec2(x + h + gap, y));
+        char own_name[MAX_PATH * 3] = "Own sound";
+        if (p.own.s[0]) {
+            const wchar_t *slash = wcsrchr(p.own.s, L'\\');
+            wide_to_utf8(slash ? slash + 1 : p.own.s, own_name, sizeof own_name);
         }
-        c.saved_sound = pick;
-        saved_sound_play(pick, c.saved_sound_file);
-        log_line("options: clip saved sound: %s", SAVED_SOUND_NAMES[pick]);
-        options_apply(0);
+        const char *shown = p.sound == SOUND_OWN ? own_name : p.sound < SOUND_COUNT ? names[p.sound] : "";
+        if (opt_combo_begin("##sound", shown, combo_w, popup_w)) {
+            for (i32 i = 0; i < SOUND_COUNT; i++)
+                if (opt_combo_item(names[i], i == e ? "default" : 0, p.sound == i) && p.sound != i) {
+                    p.sound = (u8)i;
+                    changed = play = true;
+                }
+            opt_combo_end();
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(x + h + gap + combo_w + gap, y));
+        if (kit_icon_button(ICON_FOLDER, "##own", KIT_GHOST, true, p.sound == SOUND_OWN)) {
+            Path file;
+            if (pick_file(p.own, &file, L"Sounds", L"*.wav")) {
+                p.own = file;
+                p.sound = SOUND_OWN;
+                changed = play = true;
+            }
+        }
+
+        if (!p.on) ImGui::PopStyleVar();
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - toggle_w, y));
+        if (kit_toggle("##on", &p.on)) {
+            changed = true;
+            play = p.on;
+        }
+        opt_row_end();
+        ImGui::PopID();
+
+        if (play) sound_play_pick(p.sound, p.own);
+        if (changed) {
+            log_line("options: %s sound %s %s", SOUND_EVENTS[e].key, p.on ? "on" : "off", sound_key(p.sound));
+            options_apply(0);
+        }
     }
-    opt_row_end();
+    opt_card_end();
 }
 
 // A line of the game popup: the name on the left, the cursor at x for the control.
@@ -3546,11 +3577,6 @@ static void options_sharing()
 
     opt_quality_table();
     opt_min_quality_row();
-    if (opt_row_toggle("Sound when copied", "Plays when a shared file or link is on the clipboard", "##sharesound",
-                       &c.share_sound)) {
-        log_line("options: share sound %s", c.share_sound ? "on" : "off");
-        options_apply(0);
-    }
 
     opt_uploader_rows();
 
@@ -4346,8 +4372,8 @@ static void options_general()
         options_apply(0);
     }
     opt_row_end();
-    opt_saved_sound_row(c);
     opt_card_end();
+    opt_sounds_card(c);
 
     opt_section("SESSIONS");
     opt_card_begin();

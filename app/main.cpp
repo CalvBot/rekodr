@@ -68,6 +68,7 @@ static void run_command(const char *text)
         else log_line("session: \"%s\" isn't a range (try session <from> <to> in Unix seconds)", arg);
     } else if (!strcmp(cmd, "pause") || !strcmp(cmd, "resume") || !strcmp(cmd, "toggle")) {
         bool pause = !strcmp(cmd, "pause") ? true : !strcmp(cmd, "resume") ? false : !g_app.recorder.paused;
+        if (pause != g_app.recorder.paused) sound_event(pause ? SOUND_RECORDING_OFF : SOUND_RECORDING_ON);
         recorder_set_paused(pause);
         audio_set_paused(pause);
         tray_update(g_app.msg_hwnd, false);
