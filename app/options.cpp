@@ -4005,6 +4005,7 @@ static void options_integrations()
             c.ach_rarer = rarer_v[r];
             log_line("options: achievement clips for under %d%%", c.ach_rarer);
             options_apply(0);
+            achievements_apply();
         }
         opt_row_end();
         static const char *secs[] = {"15 s", "30 s", "60 s"};

@@ -175,6 +175,7 @@ struct AchClip {
 static struct {
     HANDLE thread, wake;
     volatile bool stop, on;
+    volatile i32 rarer; // Config.ach_rarer, copied by achievements_apply for the worker
     SRWLOCK lock;       // clips
     AchClip clips[16];  // found, waiting for their end to be recorded
     i32 clip_count;
@@ -231,7 +232,7 @@ static void ach_found(const Path &dir, u32 app, const AchUnlock &u)
         if (http_get(L"api.steampowered.com", path, L"", 0, &body, &blen) == 200 && body) pct = ach_percent(body, blen, api);
         free(body);
     }
-    i32 rarer = g_app.config.ach_rarer;
+    i32 rarer = g_ach.rarer;
     bool rare = pct < 0 || rarer >= 100 || pct < rarer;
     char game[128];
     ach_game_name(app, game, sizeof game);
@@ -270,11 +271,11 @@ static void ach_scan(const Path &dir)
             f = &g_ach.files[g_ach.file_count++];
             *f = {app, account, 0, 0};
         }
-        f->mtime = mtime;
         wchar_t path[MAX_PATH];
         swprintf(path, MAX_PATH, L"%s\\%s", dir.s, fd.cFileName);
         i64 len = 0;
-        if (!ach_read(path, data, sizeof data, &len)) continue;
+        if (!ach_read(path, data, sizeof data, &len)) continue; // Steam has it open: read on the next look
+        f->mtime = mtime;
         AchUnlock found[16];
         i64 newest = 0;
         i32 n = ach_unlocks(data, len, f->newest, found, COUNT(found), &newest);
@@ -310,6 +311,7 @@ static DWORD WINAPI ach_thread(void *)
 static void achievements_apply()
 {
     g_ach.on = g_app.config.ach_clips;
+    g_ach.rarer = g_app.config.ach_rarer;
     if (g_ach.on && !g_ach.thread) {
         InitializeSRWLock(&g_ach.lock);
         g_ach.wake = CreateEventW(0, FALSE, FALSE, 0);
@@ -343,8 +345,8 @@ static void achievements_stop()
     if (!g_ach.thread) return;
     g_ach.stop = true;
     SetEvent(g_ach.wake);
-    WaitForSingleObject(g_ach.thread, 5000);
+    // A worker still in a web request after 5 s keeps its event: it waits on it again once the request ends
+    if (WaitForSingleObject(g_ach.thread, 5000) == WAIT_OBJECT_0) CloseHandle(g_ach.wake);
     CloseHandle(g_ach.thread);
-    CloseHandle(g_ach.wake);
     g_ach.thread = 0;
 }
