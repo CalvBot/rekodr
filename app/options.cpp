@@ -4713,6 +4713,8 @@ static void opt_watch_rows(Config &c)
     }
 }
 
+static bool g_opt_show_folders; // "show folders": General scrolled to its Folders
+
 static void options_general()
 {
     Config &c = g_app.config;
@@ -4763,6 +4765,10 @@ static void options_general()
     }
     opt_card_end();
 
+    if (g_opt_show_folders) { // "show folders": scrolled to here, once
+        ImGui::SetScrollHereY(0);
+        g_opt_show_folders = false;
+    }
     opt_section("FOLDERS");
     opt_card_begin();
     if (opt_row_folder("Save folder", "Clips and sessions, in a folder per year", "save", &c.save_dir)) options_apply(0);
