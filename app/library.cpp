@@ -5856,7 +5856,7 @@ static void screen_library()
             lib.scroll = lib.scroll_to = 0;
             lib_refilter();
         }
-        ImGui::SetCursorScreenPos(ImVec2(s0.x + side_w, s0.y));
+        ImGui::SetCursorScreenPos(ImVec2(s0.x + side_w - kit_px(14), s0.y)); // the clips start 16 px past the list's rows
     }
 
     // Everything else, the player too, right of the list in the screen's usual padding (the Library's screen has
