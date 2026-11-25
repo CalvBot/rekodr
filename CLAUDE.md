@@ -1,6 +1,6 @@
-# clipback: rules for anyone working on it
+# Rekodr: rules for anyone working on it
 
-clipback is not released. One PC runs it. Write for the program as it is going to be, not for what it was.
+Rekodr is not released. One PC runs it. Write for the program as it is going to be, not for what it was.
 
 ## No backwards compatibility
 - Never keep an old format, setting, file layout or API field working "for older versions". There are none.
@@ -12,8 +12,8 @@ clipback is not released. One PC runs it. Write for the program as it is going t
 - No history ("used to", "no longer", "the Rust version did", "X agreed on <date>") and no plans or stages.
   History goes in commit messages. A plain `TODO:` is fine.
 - READMEs are short: what the program is and how it works. No action plans, no lists that restate settings.
-- clipback and its service link to each other: https://github.com/CalvBot/clipback and
-  https://github.com/CalvBot/clipback-api.
+- Rekodr and its service link to each other: https://github.com/CalvBot/rekodr and
+  https://github.com/CalvBot/rekodr-api.
 
-## The service (clipback-api)
+## The service (rekodr-api)
 - Its address tells nothing to someone without the app: every unsigned request, the front page too, is an empty 404.

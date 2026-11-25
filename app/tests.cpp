@@ -1854,7 +1854,7 @@ static void test_r2()
     T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
     // Download (the white pill), Copy link, and "via Rekodr" linking to the project; no game line without one
     T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" download>"));
-    T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/clipback\"><img src=\"https://cdn.discordapp.com/"
+    T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/rekodr\"><img src=\"https://cdn.discordapp.com/"
                    "emojis/1574532567124803645.webp\" alt=\"\">via <b>Rekodr</b></a>"));
     T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
     // the accent: the default, or the one picked

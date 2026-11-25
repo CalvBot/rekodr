@@ -4,7 +4,7 @@
 //
 // The manifest is text, one "key value" per line, with the signature last:
 //   version 0.3.0
-//   url https://github.com/CalvBot/clipback/releases/download/v0.3.0/rekodr-0.3.0.exe
+//   url https://github.com/CalvBot/rekodr/releases/download/v0.3.0/rekodr-0.3.0.exe
 //   size 3502080
 //   sha256 <64 hex digits>
 //   sig <128 hex digits>

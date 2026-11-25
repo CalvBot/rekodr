@@ -75,7 +75,7 @@ the installable `streamdeck\build\dev.calvbot.rekodr.streamDeckPlugin`. The plug
   Rekodr didn't make). A line each of `<key> | <game> | <file name>`.
 - Games list and art: `%LOCALAPPDATA%\Rekodr\gamedb`. Rekodr fetches these itself so games get their proper
   names and icons: from Discord's public list of games, Steam's images, and Rekodr's own service,
-  [clipback-api](https://github.com/CalvBot/clipback-api), which names games the list doesn't know and finds their
+  [rekodr-api](https://github.com/CalvBot/rekodr-api), which names games the list doesn't know and finds their
   art. Options > General turns it off.
 - Log: `%LOCALAPPDATA%\Rekodr\rekodr-native.log`. Crash and hang dumps (`crash-*.dmp`, `hang-*.dmp`) are
   written next to it.

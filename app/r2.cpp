@@ -514,7 +514,7 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 // Discord's card for a link (a component embed): one Container with the title in bold, a line with the game, the
 // video (or the picture when nothing small enough plays), and a small grey "via" link. Other apps read the page's Open Graph tags instead.
 
-#define R2_HOME_URL "https://github.com/CalvBot/clipback"
+#define R2_HOME_URL "https://github.com/CalvBot/rekodr"
 enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
 // The logo as a Discord emoji, at the start of the card's "via" line; it is in Calvin's own server.
 // TODO: a new id if it moves

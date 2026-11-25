@@ -2325,8 +2325,8 @@ static void options_recording()
 static void open_url(const char *url); // setup.cpp
 static void update_start(); // update.cpp
 static void update_stop();  // update.cpp
-static const char OPT_API_REPO_URL[] = "https://github.com/CalvBot/clipback-api"; // the art service's code
-static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/clipback";
+static const char OPT_API_REPO_URL[] = "https://github.com/CalvBot/rekodr-api"; // the art service's code
+static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/rekodr";
 // Where Support goes (a donation page). The button is hidden while it's empty.
 // TODO: the Ko-fi (or similar) page once there is one.
 static const char OPT_SUPPORT_URL[] = "";

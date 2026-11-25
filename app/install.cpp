@@ -227,7 +227,7 @@ static i32 install_run(const wchar_t *msg_class, ULONG_PTR copydata_command)
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"DisplayIcon", p.exe.s);
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"InstallLocation", p.dir.s);
     ok &= install_reg_set(p, INSTALL_APPS_KEY, L"UninstallString", uninstall);
-    ok &= install_reg_set(p, INSTALL_APPS_KEY, L"URLInfoAbout", L"https://github.com/CalvBot/clipback");
+    ok &= install_reg_set(p, INSTALL_APPS_KEY, L"URLInfoAbout", L"https://github.com/CalvBot/rekodr");
     ok &= install_reg_dword(p, INSTALL_APPS_KEY, L"NoModify", 1);
     ok &= install_reg_dword(p, INSTALL_APPS_KEY, L"NoRepair", 1);
     WIN32_FILE_ATTRIBUTE_DATA fa = {};
