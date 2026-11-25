@@ -204,6 +204,7 @@ static struct {
     f64      budget;       // the monthly budget in force (r2_cleanup_now), once budget_known
     f32      space_gb;     // the same for the space setting (Config::r2_space_gb)
     bool     budget_known;
+    bool     cleanup_waiting; // a cleanup found the space unknown (r2_may_clear_locked): it runs after the next usage
     i64      folder_bytes; // the bucket's rekodr/ folder when last listed, 0 before
     struct {
         HANDLE        thread; // listens on CF_OAUTH_PORT for the browser
@@ -249,6 +250,10 @@ static i64 r2_others_locked()
     i64 n = g_r2.fetched.account_bytes - g_r2.fetched.bytes;
     return n > 0 ? n : 0;
 }
+
+// Whether links may be removed to fit the cap: only when the space is the player's own or the account's total is
+// known, never for the 2 GB that stands in while it isn't.
+static bool r2_may_clear(f32 space_gb, i64 others) { return space_gb >= 0 || others >= 0; }
 
 // Room kept for a preview page and its picture while a link's room is made; the entry counts what they really take.
 static const i64 R2_PAGE_ROOM = 1 << 20;
@@ -1172,6 +1177,12 @@ static i64 r2_cap_locked()
         g_r2.budget_known = true;
     }
     return r2_cap_for(g_r2.budget, g_r2.space_gb, r2_others_locked());
+}
+
+static bool r2_may_clear_locked()
+{
+    r2_cap_locked(); // loads the settings in force
+    return r2_may_clear(g_r2.space_gb, r2_others_locked());
 }
 
 static i64 r2_cap_now()
@@ -2123,12 +2134,17 @@ static void r2_run_upload(const R2Task &t)
     r2_load_locked();
     i32 reuse = t.key[0] ? r2_find_locked(t.key) : -1;
     i64 cap = r2_cap_locked();
+    bool may_clear = r2_may_clear_locked();
     i32 clear = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, cap,
                                                 incoming + r2_untracked_locked(folder), reuse, plan, COUNT(plan));
     if (folder < 0) str_set(err, "Couldn't read how full the bucket is: try again");
     else if (clear < 0)
         str_set(err, incoming > cap ? "The clip is bigger than your limit: raise it in Options"
                                     : "Pinned clips fill your limit: unpin some or raise it");
+    else if (clear > 0 && !may_clear) {
+        str_set(err, "Couldn't read the account's space yet: try again soon, or set Space for Rekodr in Options");
+        clear = 0;
+    }
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (!err[0] && clear > 0 && !r2_remove_planned(t.conf, plan, clear))
         str_set(err, "Couldn't make room in the bucket: try again");
@@ -2242,8 +2258,9 @@ static void r2_run_upload(const R2Task &t)
     }
     str_set(url, g_r2.shares[at].url);
     // The page or picture came out bigger than their room: the oldest others go now.
-    i32 n = folder < 0 ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, r2_cap_locked(), r2_untracked_locked(folder),
-                                             at, plan, COUNT(plan));
+    i32 n = folder < 0 || !r2_may_clear_locked()
+                ? 0 : r2_plan_cleanup(g_r2.shares, g_r2.count, r2_cap_locked(), r2_untracked_locked(folder), at, plan,
+                                      COUNT(plan));
     r2_save_locked();
     ReleaseSRWLockExclusive(&g_r2.lock);
     if (!r2_job_end(job, true, url, "", key)) {
@@ -2253,10 +2270,19 @@ static void r2_run_upload(const R2Task &t)
     if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
-// After a new budget or space: the oldest unpinned links go until the bucket, at its real size, fits the cap.
+// After a new budget or space: the oldest unpinned links go until the bucket, at its real size, fits the cap. While
+// the space isn't known nothing goes; the cleanup waits for the next usage answer (r2_event).
 static void r2_run_cleanup(const R2Task &t)
 {
     static i32 plan[R2_MAX_SHARES];
+    AcquireSRWLockExclusive(&g_r2.lock);
+    bool may_clear = r2_may_clear_locked();
+    g_r2.cleanup_waiting = !may_clear;
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (!may_clear) {
+        log_line("r2: the account's space isn't known yet: cleanup waits for its usage");
+        return;
+    }
     i64 folder = r2_folder_bytes(t.conf);
     if (folder < 0) {
         log_line("r2: couldn't read how full the bucket is to fit the new budget");
@@ -3992,6 +4018,16 @@ static i64 r2_untracked_bytes()
     return n;
 }
 
+static void r2_queue_cleanup()
+{
+    if (!r2_ready()) return;
+    static R2Task t;
+    t = {};
+    t.kind = R2_T_CLEANUP;
+    if (r2_conf(&t.conf)) r2_queue(t);
+    SecureZeroMemory(&t, sizeof t);
+}
+
 // Options' Save, after writing r2_budget or r2_space_gb: the new cap is in force from now, and the oldest unpinned
 // links are cleared on the worker until the bucket fits it.
 static void r2_cleanup_now()
@@ -4001,12 +4037,7 @@ static void r2_cleanup_now()
     g_r2.space_gb = g_app.config.r2_space_gb;
     g_r2.budget_known = true;
     ReleaseSRWLockExclusive(&g_r2.lock);
-    if (!r2_ready()) return;
-    static R2Task t;
-    t = {};
-    t.kind = R2_T_CLEANUP;
-    if (r2_conf(&t.conf)) r2_queue(t);
-    SecureZeroMemory(&t, sizeof t);
+    r2_queue_cleanup();
 }
 
 // The accent changed: the bucket's preview pages are written again in it on the worker (r2_run_repage). One run
@@ -4411,6 +4442,11 @@ static void r2_on_event(const Event &e)
     }
     if (e.a == R2_EV_USAGE) {
         r2_auto_pause();
+        AcquireSRWLockExclusive(&g_r2.lock);
+        bool run = g_r2.cleanup_waiting && r2_may_clear_locked();
+        if (run) g_r2.cleanup_waiting = false;
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        if (run) r2_queue_cleanup();
         return;
     }
     if (e.a != R2_EV_PROBED) return; // the rest only wake the UI

@@ -2197,6 +2197,27 @@ static void test_r2()
         g_r2.fetched.account_bytes = 4005;
         g_r2.usage_us = 0; // not asked yet
         T(r2_cap_now() == 2 * R2_GB);
+        // Links are removed only for a space that's the player's or comes from a known total, never the 2 GB stand-in
+        T(!r2_may_clear(-1, -1) && r2_may_clear(3, -1) && r2_may_clear(-1, 0) && r2_may_clear(-1, 5 * R2_GB));
+        AcquireSRWLockExclusive(&g_r2.lock);
+        T(!r2_may_clear_locked());
+        g_r2.usage_us = 1;
+        T(r2_may_clear_locked());
+        g_r2.usage_us = 0;
+        g_r2.space_gb = 3;
+        T(r2_may_clear_locked());
+        g_r2.space_gb = -1;
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        // A cleanup while the space isn't known lists nothing, removes nothing and waits for the usage
+        {
+            i32 keep_count = g_r2.count;
+            g_r2.cleanup_waiting = false;
+            R2Task ct = {};
+            ct.kind = R2_T_CLEANUP;
+            r2_run_cleanup(ct);
+            T(g_r2.cleanup_waiting && g_r2.count == keep_count);
+            g_r2.cleanup_waiting = false;
+        }
         g_r2.fetched = keep_f;
         g_r2.usage_us = keep_us;
         g_r2.budget = keep_budget;
@@ -2287,6 +2308,7 @@ static struct {
     u32         job;
     i32         fail;      // this many requests from now answer fail_status
     u32         fail_status;
+    const char *list;      // the bucket listing's answer, 0 = an empty bucket
 } g_net;
 
 static u32 net_fake(const char *method, const char *where, const char *query, R2Progress *, char *resp, i32 cap,
@@ -2309,7 +2331,8 @@ static u32 net_fake(const char *method, const char *where, const char *query, R2
     if (!strcmp(method, "POST") && !strcmp(query, "uploads=")) body = "<UploadId>u1</UploadId>";
     else if (!strcmp(method, "POST") && strstr(where, "up.example"))
         body = "{\"url\":\"https://up.example/f/1.mp4\",\"del\":\"https://up.example/del/1\"}";
-    else if (!strcmp(method, "GET") && strstr(query, "list-type")) body = "<ListBucketResult></ListBucketResult>";
+    else if (!strcmp(method, "GET") && strstr(query, "list-type"))
+        body = g_net.list ? g_net.list : "<ListBucketResult></ListBucketResult>";
     if (cap) snprintf(resp, cap, "%s", body);
     if (etag_cap) snprintf(etag, etag_cap, "\"e\"");
     return 200;
@@ -2449,6 +2472,45 @@ static void test_share_cancel()
     g_r2.cancel[slot] = 1;
     T(!r2_job_end(id, true, "https://x/2", "", "rekodr/def", "") && r2_job(id).state == R2_FAILED &&
       !r2_job(id).key[0]);
+
+    // Cleanup over a 3 GB link: with the space unknown and none saved nothing is listed or removed; a saved space
+    // or a known total clears it as before
+    auto old_link = [&]() {
+        g_r2.count = 1;
+        g_r2.shares[0] = {};
+        str_set(g_r2.shares[0].key, "rekodr/old/clip.mp4");
+        g_r2.shares[0].host = HOST_R2;
+        g_r2.shares[0].bytes = 3 * R2_GB;
+        g_r2.shares[0].uploaded_us = 1;
+        g_net = {};
+        g_net.list = "<ListBucketResult><Contents><Key>rekodr/old/clip.mp4</Key><Size>3000000000</Size></Contents>"
+                     "</ListBucketResult>";
+    };
+    R2Fetched keep_fetched = g_r2.fetched;
+    i64 keep_usage = g_r2.usage_us;
+    R2Task ct = {};
+    ct.kind = R2_T_CLEANUP;
+    ct.conf = conf;
+    old_link();
+    g_r2.space_gb = -1;
+    g_r2.usage_us = 0;
+    r2_run_cleanup(ct);
+    T(g_net.n == 0 && !g_r2.shares[0].removed && g_r2.cleanup_waiting);
+    old_link();
+    g_r2.space_gb = 1;
+    r2_run_cleanup(ct);
+    T(net_count("DELETE rekodr/old/clip.mp4") == 1 && g_r2.shares[0].removed && !g_r2.cleanup_waiting);
+    old_link();
+    g_r2.space_gb = -1;
+    g_r2.usage_us = 1;
+    g_r2.fetched = {};
+    g_r2.fetched.bytes = 3 * R2_GB;
+    g_r2.fetched.account_bytes = 11 * R2_GB; // 8 GB in other buckets: 1.5 GB for Rekodr
+    r2_run_cleanup(ct);
+    T(net_count("DELETE rekodr/old/clip.mp4") == 1 && g_r2.shares[0].removed);
+    g_r2.fetched = keep_fetched;
+    g_r2.usage_us = keep_usage;
+    g_r2.count = 0;
 
     r2_net_fake = 0;
     DeleteFileW(sxcu.s);
