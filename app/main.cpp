@@ -11,6 +11,7 @@
 static const wchar_t *MSG_CLASS = L"rekodr.msg";
 
 #define TIMER_TICK 1 // once a second on the main thread, for anything that checks the clock
+#define TIMER_HOLD 2 // while a hotkey with a hold action is down: tap or hold
 
 // Run on the main thread for every command, whatever it came from.
 static void run_command(const char *text)
@@ -173,6 +174,42 @@ static void run_command(const char *text)
     pipe_publish();
 }
 
+static void hotkey_run(const char *action)
+{
+    run_command(!strcmp(action, "timeline") ? "quick" : action); // from a game: quick save
+}
+
+// The hotkey whose keys are down, while it's not yet known whether it's a tap or a hold.
+static struct { i32 index = -1; u64 since; HotkeyKeys keys; } g_hotkey_hold;
+
+static void hotkey_pressed(HWND hwnd, i32 i)
+{
+    const Hotkey &h = g_app.config.hotkeys[i];
+    if (g_hotkey_hold.index >= 0) return; // still telling the last press apart
+    if (!h.hold.s[0] || !hotkey_parse(h.keys.s, &g_hotkey_hold.keys)) {
+        hotkey_run(h.action.s);
+        return;
+    }
+    g_hotkey_hold.index = i;
+    g_hotkey_hold.since = GetTickCount64();
+    SetTimer(hwnd, TIMER_HOLD, 15, 0);
+}
+
+static void hotkey_hold_tick(HWND hwnd)
+{
+    i32 i = g_hotkey_hold.index;
+    HoldVerdict v = i < 0 || i >= g_app.config.hotkey_count
+                        ? HOLD_TAP
+                        : hotkey_hold_verdict(hotkey_down(g_hotkey_hold.keys), GetTickCount64() - g_hotkey_hold.since);
+    if (v == HOLD_WAIT) return;
+    KillTimer(hwnd, TIMER_HOLD);
+    g_hotkey_hold.index = -1;
+    if (i < 0 || i >= g_app.config.hotkey_count) return;
+    const Hotkey &h = g_app.config.hotkeys[i];
+    log_line("hotkey %s %s", h.keys.s, v == HOLD_HELD ? "held" : "tapped");
+    hotkey_run(v == HOLD_HELD ? h.hold.s : h.action.s);
+}
+
 static void handle_event(const Event &e)
 {
     static const char *const kinds[] = {"none", "command", "log", "recorder", "audio", "save", "library", "timeline", "gamedb", "r2"};
@@ -211,6 +248,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             share_prep_tick();
             pipe_publish();
         }
+        if (wp == TIMER_HOLD) hotkey_hold_tick(hwnd);
         return 0;
     case WM_APP_EVENT: {
         Event e;
@@ -228,10 +266,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_HOTKEY: {
         i32 i = (i32)wp - 1;
         DEV_LOG("hotkey %d", i);
-        if (i >= 0 && i < g_app.config.hotkey_count) {
-            const char *action = g_app.config.hotkeys[i].action.s;
-            run_command(!strcmp(action, "timeline") ? "quick" : action); // from a game: quick save
-        }
+        if (i >= 0 && i < g_app.config.hotkey_count) hotkey_pressed(hwnd, i);
         return 0;
     }
     case WM_APP_TRAY:

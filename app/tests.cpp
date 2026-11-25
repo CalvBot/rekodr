@@ -840,6 +840,13 @@ static void test_hotkeys()
     T(!hotkey_pad_fired(lb | a, lb | a, mask));               // held: once
     T(!hotkey_pad_fired(lb | a, lb, mask));
     T(!hotkey_pad_fired(0, a, 0));
+
+    // Tap or hold: let go first and it's a tap; still down at HOTKEY_HOLD_MS and it's a hold
+    T(hotkey_hold_verdict(true, 0) == HOLD_WAIT);
+    T(hotkey_hold_verdict(true, HOTKEY_HOLD_MS - 1) == HOLD_WAIT);
+    T(hotkey_hold_verdict(false, 100) == HOLD_TAP);
+    T(hotkey_hold_verdict(true, HOTKEY_HOLD_MS) == HOLD_HELD);
+    T(hotkey_hold_verdict(false, HOTKEY_HOLD_MS + 500) == HOLD_TAP); // released before the check saw it held
 }
 
 // What is saved comes back the same.
@@ -940,6 +947,13 @@ static void test_settings_round_trip()
         none.hotkey_count = 0;
         T(config_save(none, paths) && config_load(&back, paths) && back.hotkey_count == 0);
         T(config_save(a, paths) && config_load(&back, paths) && back.hotkey_count == 1); // and one comes back as one
+        T(!back.hotkeys[0].hold.s[0]);
+        // A hold action comes back with its hotkey
+        none = a;
+        str_set(none.hotkeys[0].hold.s, "save 3m");
+        T(config_save(none, paths) && config_load(&back, paths) && back.hotkey_count == 1 &&
+          !strcmp(back.hotkeys[0].action.s, "save 30s") && !strcmp(back.hotkeys[0].hold.s, "save 3m"));
+        T(config_save(a, paths));
     }
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
     T(b.popup_corner == CORNER_TL && b.popup_monitor_game == 1 && b.popup_corner_game == CORNER_BL);

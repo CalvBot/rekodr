@@ -129,6 +129,7 @@ struct InputDevice {
 struct Hotkey {
     Str64 keys;   // "Alt+F7"
     Str64 action; // "save 30s" | "timeline" | "open" | "pause"
+    Str64 hold;   // what holding the keys does instead, "save 3m"; "" = holding is the same as a tap
 };
 
 // The service (clipback-api, its own repo): its host and the header its requests are signed in

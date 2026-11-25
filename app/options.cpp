@@ -1795,10 +1795,13 @@ static void save_length(const char *action, f64 *amount, i32 *unit)
     *unit = *end == 'm' ? 1 : *end == 'h' ? 2 : 0;
 }
 
-static void set_save_action(Hotkey *h, f64 amount, i32 unit)
+static void set_save_action(Str64 *action, f64 amount, i32 unit)
 {
-    snprintf(h->action.s, sizeof h->action.s, "save %g%c", amount, "smh"[unit]);
+    snprintf(action->s, sizeof action->s, "save %g%c", amount, "smh"[unit]);
 }
+
+// The hold length's units, and "Off" to make holding the same as a tap.
+static const char *HOLD_UNITS[] = {"seconds", "minutes", "hours", "Off"};
 
 // The name hotkey_parse knows for an ImGui key, or 0.
 static const char *key_name(ImGuiKey k)
@@ -1950,13 +1953,15 @@ static void options_hotkeys()
     f32 act_x = keys_x + keys_w + dp(14), act_w = dp(170);
     f32 amt_x = act_x + act_w + dp(10), amt_w = dp(64);
     f32 unit_x = amt_x + amt_w + dp(6), unit_w = dp(108);
-    f32 warn_x = unit_x + unit_w + dp(16), del_x = x1 - fh + dp(6);
+    f32 hold_x = unit_x + unit_w + dp(16), hold_unit_x = hold_x + amt_w + dp(6);
+    f32 warn_x = hold_unit_x + unit_w + dp(16), del_x = x1 - fh + dp(6);
     f32 pad = ImGui::GetStyle().FramePadding.x;
 
     opt_row_begin(0, 0, 0, head_h);
     opt_caption(x0, "KEYS");
     opt_caption(act_x + pad, "ACTION");
     opt_caption(amt_x + pad, "LENGTH");
+    opt_caption(hold_x + pad, "HOLD");
     opt_row_end();
     for (i32 r = 0; r < rows; r++) {
         i32 i = o.hotkeys_page * rows + r;
@@ -1997,6 +2002,7 @@ static void options_hotkeys()
         if (opt_combo("##action", ACTION_LABELS, 0, COUNT(ACTION_LABELS), &act, act_w, 0, act < 0 ? h->action.s : 0)) {
             if (act == 0) str_set(h->action.s, "save 30s");
             else str_set(h->action.s, ACTION_COMMANDS[act]);
+            h->hold = {}; // only a save has a hold length
             log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
             options_apply(APPLY_HOTKEYS);
         }
@@ -2009,15 +2015,38 @@ static void options_hotkeys()
         if (save) {
             ImGui::SetCursorScreenPos(ImVec2(amt_x, cy));
             if (opt_number("##amount", &amount, 0.1, 100000, amt_w)) {
-                set_save_action(h, amount, unit);
+                set_save_action(&h->action, amount, unit);
                 log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
                 options_apply(APPLY_HOTKEYS);
             }
             ImGui::SetCursorScreenPos(ImVec2(unit_x, cy));
             if (opt_combo("##unit", LENGTH_UNITS, 0, COUNT(LENGTH_UNITS), &unit, unit_w)) {
-                set_save_action(h, amount, unit);
+                set_save_action(&h->action, amount, unit);
                 log_line("options: hotkey %s does %s", h->keys.s, h->action.s);
                 options_apply(APPLY_HOTKEYS);
+            }
+
+            // Holding the keys: a second length, or a quiet button in the same place to add one
+            ImGui::SetCursorScreenPos(ImVec2(hold_x, cy));
+            if (!h->hold.s[0]) {
+                if (kit_button(ICON_ADD "  Hold", hot ? KIT_SECONDARY : KIT_GHOST, ImVec2(hold_unit_x + unit_w - hold_x, 0))) {
+                    str_set(h->hold.s, "save 3m");
+                    log_line("options: hotkey %s held does %s", h->keys.s, h->hold.s);
+                    options_apply(APPLY_HOTKEYS);
+                }
+            } else {
+                f64 hold_amount;
+                i32 hold_unit;
+                save_length(h->hold.s, &hold_amount, &hold_unit);
+                bool changed = opt_number("##holdamount", &hold_amount, 0.1, 100000, amt_w);
+                ImGui::SetCursorScreenPos(ImVec2(hold_unit_x, cy));
+                changed |= opt_combo("##holdunit", HOLD_UNITS, 0, COUNT(HOLD_UNITS), &hold_unit, unit_w);
+                if (changed) {
+                    if (hold_unit == COUNT(HOLD_UNITS) - 1) h->hold = {};
+                    else set_save_action(&h->hold, hold_amount, hold_unit);
+                    log_line("options: hotkey %s held does %s", h->keys.s, h->hold.s[0] ? h->hold.s : "the same");
+                    options_apply(APPLY_HOTKEYS);
+                }
             }
         }
 

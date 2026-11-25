@@ -548,12 +548,14 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
-        // hotkey = Alt+F7 | save 30s
-        char *f[2];
-        if (split_fields(value, f, 2) == 2 && c->hotkey_count < COUNT(c->hotkeys)) {
+        // hotkey = Alt+F7 | save 30s | save 3m (held)
+        char *f[3] = {};
+        if (split_fields(value, f, 3) >= 2 && c->hotkey_count < COUNT(c->hotkeys)) {
             Hotkey *h = &c->hotkeys[c->hotkey_count++];
+            *h = {};
             str_set(h->keys.s, f[0]);
             str_set(h->action.s, f[1]);
+            if (f[2]) str_set(h->hold.s, f[2]);
         }
     } else if (!strcmp(key, "app")) {
         // app = overwatch.exe | Overwatch | game | ask | bitrate | fps | rate control | quality | preset | height |
@@ -751,9 +753,12 @@ static bool config_save(const Config &c, const Paths &paths)
             c.timeline_simple ? 1 : 0);
     fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\neditor_zoom_view = %d\n", c.editor_top, c.editor_side,
             c.editor_lane, c.editor_zoom_view);
-    fprintf(f, "\n# hotkey = keys | action\n");
+    fprintf(f, "\n# hotkey = keys | action | action when held\n");
     if (!c.hotkey_count) fprintf(f, "hotkeys = none\n");
-    for (i32 i = 0; i < c.hotkey_count; i++) fprintf(f, "hotkey = %s | %s\n", c.hotkeys[i].keys.s, c.hotkeys[i].action.s);
+    for (i32 i = 0; i < c.hotkey_count; i++) {
+        const Hotkey &h = c.hotkeys[i];
+        fprintf(f, "hotkey = %s | %s%s%s\n", h.keys.s, h.action.s, h.hold.s[0] ? " | " : "", h.hold.s);
+    }
     fprintf(f, "\n# app = exe | name | category | session mode | bitrate (Mbps) | fps | rate control | quality | preset"
                " | height | where it was last heard | capture window | clip saved\n"
                "# (a game's own settings; 0 or empty = the default. capture window: 1 = yes, -1 = no. clip saved:"

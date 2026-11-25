@@ -1562,7 +1562,11 @@ static void help_window()
             o[n++] = ']';
             o[n] = 0;
             hotkeys[hk].keys = o;
-            hotkeys[hk].what = g_app.config.hotkeys[hk].action.s;
+            static char what[COUNT(g_app.config.hotkeys)][160];
+            const Hotkey &h = g_app.config.hotkeys[hk];
+            if (h.hold.s[0]) snprintf(what[hk], sizeof what[hk], "%s, held: %s", h.action.s, h.hold.s);
+            else str_set(what[hk], h.action.s);
+            hotkeys[hk].what = what[hk];
         }
 
         // Title, the search and close

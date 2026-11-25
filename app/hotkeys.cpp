@@ -118,6 +118,23 @@ static u32 hotkey_pads_now()
     return b;
 }
 
+// Whether a hotkey's keys are held right now: its key or mouse button (modifiers aside), or all its controller
+// buttons.
+static bool hotkey_down(const HotkeyKeys &k)
+{
+    if (k.pad) return (hotkey_pads_now() & k.pad) == k.pad;
+    return (GetAsyncKeyState((int)k.vk) & 0x8000) != 0;
+}
+
+// Tap or hold: a hotkey with a hold action waits after its press. Let go first and it's a tap; still held after
+// HOTKEY_HOLD_MS and it's a hold, which acts then without waiting for the release.
+static const u64 HOTKEY_HOLD_MS = 400;
+enum HoldVerdict { HOLD_WAIT, HOLD_TAP, HOLD_HELD };
+static HoldVerdict hotkey_hold_verdict(bool down, u64 held_ms)
+{
+    return !down ? HOLD_TAP : held_ms >= HOTKEY_HOLD_MS ? HOLD_HELD : HOLD_WAIT;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The input thread: the mouse hook and the controller reads.
 
