@@ -3035,7 +3035,7 @@ static void ffget_bar()
     ImGui::PopStyleVar(2);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 b(a.x + w, a.y + h);
-    dl->AddRectFilled(a, b, col32(COL_PANEL2), r);
+    kit_frost(dl, a, b, r);
     dl->AddRect(a, b, col32(COL_LINE), r, 0, kit_px(1));
     const char *icon = failed ? ICON_WARNING : ICON_VIDEO;
     f32 fs = g_font_icon->FontSize;
@@ -3102,7 +3102,7 @@ static void lib_note_draw()
     f32 w = kit_px(420), h = kit_px(44), r = kit_px(10);
     ImVec2 a(floorf(vp->Pos.x + (vp->Size.x - w) / 2), floorf(vp->Pos.y + vp->Size.y - h - kit_px(56)));
     ImVec2 b(a.x + w, a.y + h);
-    dl->AddRectFilled(a, b, col32(COL_PANEL2), r);
+    kit_frost(dl, a, b, r);
     dl->AddRect(a, b, col32(COL_LINE), r, 0, kit_px(1));
     f32 fs = g_font_icon->FontSize;
     ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, icon);

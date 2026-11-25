@@ -556,6 +556,175 @@ enum KitKind { KIT_SECONDARY, KIT_PRIMARY, KIT_GHOST, KIT_DANGER, KIT_ACCENT, KI
 
 static f32 kit_px(f32 v) { return v * g_dpi_scale; }
 
+// Frosted glass for a panel over the screen (the Library's notes): kit_frost blurs what is already drawn under
+// a..b and lays it in as the panel's ground, with the panel's grey over it at KIT_FROST_TINT so text stays readable.
+// While ImGui draws, a callback copies that part of the back buffer (with a margin, so the edges blur too) and blurs
+// it in two Gaussian passes, across then down; the next draw is that picture, rounded. Flat look, or no shaders,
+// gives the plain panel.
+static const f32 KIT_FROST_TINT = 0.6f, KIT_FROST_MARGIN = 24;
+struct KitFrost {
+    ID3D11Texture2D          *tex[2];
+    ID3D11ShaderResourceView *srv[2];
+    ID3D11RenderTargetView   *rtv[2];
+    i32                       w, h;
+    ID3D11VertexShader       *vs;
+    ID3D11PixelShader        *ps;
+    ID3D11Buffer             *cb;
+    ID3D11SamplerState       *sampler;
+    bool                      failed;
+};
+static KitFrost g_frost;
+struct KitFrostCut {
+    i32 x, y, w, h; // the part of the back buffer copied, margin and all
+    f32 spread;     // pixels between taps: the blur's width follows the UI's scale
+};
+
+static bool kit_frost_ready()
+{
+    KitFrost &f = g_frost;
+    if (f.ps) return true;
+    if (f.failed || !g_gpu.device) return false;
+    // One triangle over the target; the pixel shader samples texture0 along `step`, clamped to the copied part
+    static const char *const vs_src =
+        "float4 main(uint id : SV_VertexID) : SV_POSITION {\n"
+        "  return float4(id == 1 ? 3.0 : -1.0, id == 2 ? -3.0 : 1.0, 0, 1);\n"
+        "}\n";
+    static const char *const ps_src =
+        "cbuffer C : register(b0) { float2 step; float2 texel; float2 hi; float2 pad; };\n"
+        "sampler sampler0;\n"
+        "Texture2D texture0;\n"
+        "float4 main(float4 pos : SV_POSITION) : SV_Target {\n"
+        "  float2 uv = pos.xy * texel;\n"
+        "  float4 sum = 0; float total = 0;\n"
+        "  [unroll] for (int i = -12; i <= 12; i++) {\n"
+        "    float w = exp(-i * i / 32.0);\n"
+        "    sum += w * texture0.SampleLevel(sampler0, clamp(uv + step * i, texel * 0.5, hi), 0);\n"
+        "    total += w;\n"
+        "  }\n"
+        "  return float4(sum.rgb / total, 1);\n"
+        "}\n";
+    ID3DBlob *vb = 0, *pb = 0, *err = 0;
+    HRESULT hr = D3DCompile(vs_src, strlen(vs_src), 0, 0, 0, "main", "vs_4_0", 0, 0, &vb, &err);
+    if (err) log_line("frost: vertex shader: %s", (const char *)err->GetBufferPointer()), err->Release(), err = 0;
+    if (SUCCEEDED(hr)) hr = D3DCompile(ps_src, strlen(ps_src), 0, 0, 0, "main", "ps_4_0", 0, 0, &pb, &err);
+    if (err) log_line("frost: pixel shader: %s", (const char *)err->GetBufferPointer()), err->Release();
+    if (SUCCEEDED(hr)) hr = g_gpu.device->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), 0, &f.vs);
+    if (SUCCEEDED(hr)) hr = g_gpu.device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), 0, &f.ps);
+    if (vb) vb->Release();
+    if (pb) pb->Release();
+    D3D11_BUFFER_DESC d = {};
+    d.ByteWidth = 32;
+    d.Usage = D3D11_USAGE_DYNAMIC;
+    d.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (SUCCEEDED(hr)) hr = g_gpu.device->CreateBuffer(&d, 0, &f.cb);
+    D3D11_SAMPLER_DESC s = {};
+    s.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    s.AddressU = s.AddressV = s.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    s.MaxLOD = D3D11_FLOAT32_MAX;
+    if (SUCCEEDED(hr)) hr = g_gpu.device->CreateSamplerState(&s, &f.sampler);
+    if (FAILED(hr)) {
+        log_line("frost: no blur, plain panels (0x%08lx)", (unsigned long)hr);
+        if (f.ps) f.ps->Release(), f.ps = 0;
+        f.failed = true;
+        return false;
+    }
+    return true;
+}
+
+// The two textures, at least w x h: the copy, blurred across into the second, then down back into the first
+static bool kit_frost_size(i32 w, i32 h)
+{
+    KitFrost &f = g_frost;
+    if (f.tex[0] && f.w >= w && f.h >= h) return true;
+    for (i32 i = 0; i < 2; i++) {
+        if (f.srv[i]) f.srv[i]->Release(), f.srv[i] = 0;
+        if (f.rtv[i]) f.rtv[i]->Release(), f.rtv[i] = 0;
+        if (f.tex[i]) f.tex[i]->Release(), f.tex[i] = 0;
+    }
+    f.w = w > f.w ? w : f.w;
+    f.h = h > f.h ? h : f.h;
+    D3D11_TEXTURE2D_DESC d = {};
+    d.Width = f.w;
+    d.Height = f.h;
+    d.MipLevels = d.ArraySize = 1;
+    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM; // the swap chain's
+    d.SampleDesc.Count = 1;
+    d.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    for (i32 i = 0; i < 2; i++) {
+        if (FAILED(g_gpu.device->CreateTexture2D(&d, 0, &f.tex[i])) ||
+            FAILED(g_gpu.device->CreateShaderResourceView(f.tex[i], 0, &f.srv[i])) ||
+            FAILED(g_gpu.device->CreateRenderTargetView(f.tex[i], 0, &f.rtv[i]))) {
+            log_line("frost: no textures %dx%d", f.w, f.h);
+            f.failed = true;
+            return false;
+        }
+    }
+    return true;
+}
+
+// Runs while ImGui draws: copies the cut out of the back buffer and blurs it in g_frost.tex[0]. ImGui's own state
+// comes back with the ImDrawCallback_ResetRenderState after it; the render target is put back here.
+static void kit_frost_blur(const ImDrawList *, const ImDrawCmd *cmd)
+{
+    KitFrost &f = g_frost;
+    KitFrostCut c;
+    memcpy(&c, cmd->UserCallbackData, sizeof c);
+    ID3D11DeviceContext *ctx = g_gpu.context;
+    ID3D11Resource *back = 0;
+    g_gpu.target->GetResource(&back);
+    D3D11_BOX box = {(UINT)c.x, (UINT)c.y, 0, (UINT)(c.x + c.w), (UINT)(c.y + c.h), 1};
+    ctx->CopySubresourceRegion(f.tex[0], 0, 0, 0, 0, back, 0, &box);
+    back->Release();
+    D3D11_VIEWPORT vp = {0, 0, (f32)c.w, (f32)c.h, 0, 1};
+    D3D11_RECT all = {0, 0, c.w, c.h};
+    ctx->RSSetViewports(1, &vp);
+    ctx->RSSetScissorRects(1, &all);
+    ctx->IASetInputLayout(0);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(f.vs, 0, 0);
+    ctx->PSSetShader(f.ps, 0, 0);
+    ctx->PSSetSamplers(0, 1, &f.sampler);
+    ctx->PSSetConstantBuffers(0, 1, &f.cb);
+    ctx->OMSetBlendState(0, 0, 0xffffffff);
+    f32 tx = 1.f / f.w, ty = 1.f / f.h;
+    ID3D11ShaderResourceView *none = 0;
+    for (i32 pass = 0; pass < 2; pass++) {
+        f32 k[8] = {pass ? 0 : c.spread * tx, pass ? c.spread * ty : 0, tx, ty, (c.w - 0.5f) * tx, (c.h - 0.5f) * ty, 0, 0};
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ctx->Map(f.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            memcpy(m.pData, k, sizeof k);
+            ctx->Unmap(f.cb, 0);
+        }
+        ctx->PSSetShaderResources(0, 1, &none);
+        ctx->OMSetRenderTargets(1, &f.rtv[1 - pass], 0);
+        ctx->PSSetShaderResources(0, 1, &f.srv[pass]);
+        ctx->Draw(3, 0);
+    }
+    ctx->PSSetShaderResources(0, 1, &none);
+    ctx->OMSetRenderTargets(1, &g_gpu.target, 0);
+}
+
+// A panel from a to b with corners of r: frosted glass over what is under it, or the plain panel.
+static void kit_frost(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 r)
+{
+    ImVec2 o = ImGui::GetMainViewport()->Pos; // the back buffer's 0,0
+    f32 m = kit_px(KIT_FROST_MARGIN);
+    i32 x0 = (i32)fmaxf(a.x - o.x - m, 0), y0 = (i32)fmaxf(a.y - o.y - m, 0);
+    i32 x1 = (i32)fminf(b.x - o.x + m, (f32)g_gpu.width), y1 = (i32)fminf(b.y - o.y + m, (f32)g_gpu.height);
+    if (!g_glass || !g_gpu.target || x1 <= x0 || y1 <= y0 || !kit_frost_ready() || !kit_frost_size(x1 - x0, y1 - y0)) {
+        dl->AddRectFilled(a, b, ImGui::GetColorU32(rgb(COL_PANEL2)), r);
+        return;
+    }
+    KitFrostCut c = {x0, y0, x1 - x0, y1 - y0, fmaxf(g_dpi_scale, 1)};
+    dl->AddCallback(kit_frost_blur, &c, sizeof c);
+    dl->AddCallback(ImDrawCallback_ResetRenderState, 0);
+    f32 u0 = (a.x - o.x - x0) / g_frost.w, v0 = (a.y - o.y - y0) / g_frost.h;
+    f32 u1 = u0 + (b.x - a.x) / g_frost.w, v1 = v0 + (b.y - a.y) / g_frost.h;
+    dl->AddImageRounded((ImTextureID)(intptr_t)g_frost.srv[0], a, b, ImVec2(u0, v0), ImVec2(u1, v1), IM_COL32_WHITE, r);
+    dl->AddRectFilled(a, b, ImGui::GetColorU32(rgb(COL_PANEL2, KIT_FROST_TINT)), r);
+}
+
 static const char *const SCREEN_NAMES[] = {"library", "timeline", "editor", "options"};
 static const char *screen_name(Screen s) { return (u32)s < COUNT(SCREEN_NAMES) ? SCREEN_NAMES[s] : "?"; }
 
