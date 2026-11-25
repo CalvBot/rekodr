@@ -3974,55 +3974,48 @@ static bool opt_row_folder(const char *name, const char *sub, const char *id, Pa
     return changed;
 }
 
-// The accent row's height and its hue ring's size, at 100%.
-static const f32 OPT_ACCENT_H = 184, OPT_WHEEL = 164;
-
-// The accent colour, a hue alone (accent_lock): a ring of the hues, and left of it the colour in a box as hex (what's
-// typed is taken as its hue) and a button back to the default, which stays put and is only greyed while the default
-// is in use. The app takes the colour as it changes; it is saved when the mouse lets go.
+// The accent colour, a hue alone (accent_lock): a bar of the hues across the control column, then the colour in a box
+// as hex (what's typed is taken as its hue) and a button back to the default, which stays put and is only greyed
+// while the default is in use. The app takes the colour as it changes; it is saved when the mouse lets go.
 static void opt_accent_row()
 {
     Config &c = g_app.config;
-    f32 fh = ImGui::GetFrameHeight(), d = dp(OPT_WHEEL), box_w = dp(112), gap = dp(8);
-    f32 bars = fh;
-    opt_row_begin("Accent colour", 0, d + gap + fh + gap + box_w, dp(OPT_ACCENT_H));
+    f32 fh = ImGui::GetFrameHeight(), box_w = dp(112), gap = dp(8), cw = opt_wide_w();
+    opt_row_begin("Accent colour", 0, cw);
     static bool unsaved;
     bool changed = false;
+    f32 y = opt_row_frame_y(), x0 = g_row.x1 - cw, bx = g_row.x1 - fh - gap - box_w, bar_w = bx - gap * 2 - x0;
 
-    // The ring: every hue at the accent's lightness (accent_at_step), teal at the top; a press or drag anywhere in
-    // its square picks the hue under the mouse's angle. The colour fills the middle.
+    // The bar: every hue at the accent's lightness (accent_at_step), teal at the left end; a press or drag on it picks
+    // the hue under the mouse
     static u32 hues[ACCENT_HUES];
     if (!hues[0])
         for (i32 k = 0; k < ACCENT_HUES; k++) hues[k] = accent_at_step(k);
-    f32 wx = g_row.x1 - d - bars / 2, wy = g_row.y + floorf((g_row.h - d) / 2);
-    ImVec2 rc(wx + d / 2, wy + d / 2);
-    f32 r_out = d / 2, thick = dp(18), r_mid = r_out - thick / 2, step = 2 * IM_PI / (f32)ACCENT_HUES;
-    ImGui::SetCursorScreenPos(ImVec2(wx, wy));
-    ImGui::InvisibleButton("##accentring", ImVec2(d, d));
+    f32 th = dp(10), r = th / 2, knob_r = dp(9), gx0 = x0 + knob_r, gx1 = x0 + bar_w - knob_r, cy = y + fh / 2;
+    ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    ImGui::InvisibleButton("##accentbar", ImVec2(bar_w, fh));
     if (ImGui::IsItemActive()) {
-        ImVec2 m = ImGui::GetIO().MousePos;
-        f32 a = atan2f(m.y - rc.y, m.x - rc.x) + IM_PI / 2; // 0 at the top, clockwise
-        i32 k = (i32)floorf(a / step + 0.5f);
-        u32 v = hues[((k % ACCENT_HUES) + ACCENT_HUES) % ACCENT_HUES];
-        if (v != c.accent) {
-            c.accent = v;
+        f32 t = (ImGui::GetIO().MousePos.x - gx0) / (gx1 - gx0);
+        i32 k = (i32)floorf(fminf(fmaxf(t, 0), 1) * (ACCENT_HUES - 1) + 0.5f);
+        if (hues[k] != c.accent) {
+            c.accent = hues[k];
             changed = true;
         }
     }
-    ImDrawList *rdl = ImGui::GetWindowDrawList();
-    for (i32 k = 0; k < ACCENT_HUES; k++) {
-        f32 a = k * step - IM_PI / 2;
-        rdl->PathArcTo(rc, r_mid, a - step * 0.6f, a + step * 0.6f, 4);
-        rdl->PathStroke(col32(hues[k]), 0, thick);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddCircleFilled(ImVec2(gx0, cy), r, col32(hues[0]), 16);
+    dl->AddCircleFilled(ImVec2(gx1, cy), r, col32(hues[ACCENT_HUES - 1]), 16);
+    for (i32 k = 0; k < ACCENT_HUES - 1; k++) {
+        f32 xa = floorf(gx0 + (gx1 - gx0) * k / (ACCENT_HUES - 1)), xb = floorf(gx0 + (gx1 - gx0) * (k + 1) / (ACCENT_HUES - 1));
+        u32 ca = col32(hues[k]), cb = col32(hues[k + 1]);
+        dl->AddRectFilledMultiColor(ImVec2(xa, cy - r), ImVec2(xb + 1, cy + r), ca, cb, cb, ca);
     }
-    f32 ka = accent_step(c.accent) * step - IM_PI / 2;
-    ImVec2 knob(rc.x + cosf(ka) * r_mid, rc.y + sinf(ka) * r_mid);
-    rdl->AddCircleFilled(knob, thick / 2 + dp(2), col32(c.accent), 24);
-    rdl->AddCircle(knob, thick / 2 + dp(2), col32(0xffffff), 24, dp(2));
-    rdl->AddCircleFilled(rc, r_out - thick - dp(14), col32(c.accent), 64);
+    ImVec2 knob(gx0 + (gx1 - gx0) * accent_step(c.accent) / (f32)(ACCENT_HUES - 1), cy);
+    dl->AddCircleFilled(knob, knob_r, col32(c.accent), 24);
+    dl->AddCircle(knob, knob_r, col32(0xffffff), 24, dp(2));
 
     // The box: a dot of the colour, then its hex; what's typed applies once it is six digits
-    f32 y = opt_row_frame_y(), bx = g_row.x1 - d - gap - fh - gap - box_w, dot = dp(7);
+    f32 dot = dp(7);
     static char typed[8];
     static bool editing;
     if (!editing) snprintf(typed, sizeof typed, "%06x", c.accent);
@@ -4033,7 +4026,6 @@ static void opt_accent_row()
                                       ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_AutoSelectAll);
     editing = ImGui::IsItemActive(); // left half-typed, it shows the colour in use again
     ImGui::PopStyleVar();
-    ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 dc(bx + dp(10) + dot, y + fh / 2);
     dl->AddCircleFilled(dc, dot, col32(c.accent));
     dl->AddCircle(dc, dot, col32(0xffffff, 0.15f), 0, dp(1));
