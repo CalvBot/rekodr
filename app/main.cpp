@@ -151,6 +151,7 @@ static void run_command(const char *text)
             g_game_pick_show = true;
         }
         else if (!strcmp(arg, "help")) { g_app.ui.help_open = true; g_app.ui.help_close = false; }
+        else if (!strcmp(arg, "news")) g_app.ui.news_open = g_app.ui.news_since = true; // What's new since seen_version
         else if (!strcmp(arg, "setup")) { // the first-run setup
             ui_show(SCREEN_LIBRARY);
             g_app.ui.setup_open = true;
@@ -163,7 +164,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, apps, recording, hotkeys, general, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, apps, recording, hotkeys, general, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {
