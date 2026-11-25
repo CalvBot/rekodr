@@ -555,6 +555,13 @@ static void test_watch_scan()
         T(!wcscmp(lib_file_path(save, g_lib.items[sp]).s, path_join(game, L"sp.mp4").s));
         T(!wcscmp(lib_file_path(save, g_lib.items[obs]).s, path_join(watch, L"obs.mkv").s));
         T(!strcmp(g_lib.items[sp].info.game, "Some Game") && g_lib.items[sp].kind == LIB_CLIPS);
+        // another app's clips keep their edits apart: from a Rekodr clip of the same name, and from each other
+        LibItem own = {}, other = g_lib.items[sp];
+        str_set(own.name, "sp");
+        other.dir = g_lib.items[obs].dir;
+        Path e_own = lib_edit_path(own), e_sp = lib_edit_path(g_lib.items[sp]), e_other = lib_edit_path(other);
+        T(wcscmp(e_own.s, e_sp.s) && wcscmp(e_sp.s, e_other.s) && wcscmp(e_own.s, e_other.s));
+        T(wcsstr(e_sp.s, L"\\sp.") && !wcscmp(e_sp.s + wcslen(e_sp.s) - 9, L".edit.txt"));
     }
     g_lib.item_count = 0;
     { // the watch thread sees a file added in a watched folder, then closes its watches at the end

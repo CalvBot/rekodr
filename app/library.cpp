@@ -1061,13 +1061,23 @@ static void library_rescan()
 static Path lib_item_path(const LibItem &it) { return lib_file_path(g_app.config.save_dir, it); }
 static Path lib_playable_path(const LibItem &it) { return lib_playable_file(g_app.config.save_dir, it); }
 
-// Where an item's edit is kept: <save_dir>\Data\<name>.edit.txt
+// Where an item's edit is kept: <save_dir>\Data\<name>.edit.txt, or <name>.<hash>.edit.txt for another app's clip,
+// the hash of its full path in lower case, so two of those with one name, or one with the name of a Rekodr clip,
+// each have their own.
 static Path lib_edit_path(const LibItem &it)
 {
     Path p = {};
     wchar_t name[256];
     utf8_to_wide(it.name, name, COUNT(name));
-    swprintf(p.s, MAX_PATH, L"%s\\%s.edit.txt", save_data_dir(g_app.config.save_dir).s, name);
+    Path data = save_data_dir(g_app.config.save_dir);
+    if (!it.dir) {
+        swprintf(p.s, MAX_PATH, L"%s\\%s.edit.txt", data.s, name);
+        return p;
+    }
+    Path file = lib_item_path(it);
+    for (wchar_t *c = file.s; *c; c++) *c = towlower(*c);
+    u64 h = fnv64(file.s, wcslen(file.s) * sizeof(wchar_t));
+    swprintf(p.s, MAX_PATH, L"%s\\%s.%016llx.edit.txt", data.s, name, (unsigned long long)h);
     return p;
 }
 
