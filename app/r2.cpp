@@ -84,6 +84,7 @@ struct R2Share {
     i32  social_w, social_h; // the small copy's size
     f32  seconds;     // how long the clip plays, for the page's title
     f32  preview;     // the small copy is the clip's first this many seconds (save_social_copy), 0 = all of it
+    i64  expires_us;  // R2: when the link ends and cleanup deletes it from the bucket, pinned or not; 0 = never
     char marks[1024]; // the clip's markers for its page: "<seconds> <note>" each, split by R2_MARK_SEP (r2_probe_marks)
     // Not kept in the history:
     bool moving;      // a pause or resume is running
@@ -161,6 +162,7 @@ struct R2Task {
     i32        social_h; // upload: the small copy's height bound, 0 none needed, -1 none made
     f32        seconds; // upload: how long the clip plays
     f32        preview; // upload: the small copy is the clip's first this many seconds, 0 = all of it
+    i32        days;    // upload: how long the link lasts (share_link_days), 0 = forever
 };
 
 // One link job's own data (main thread, except `info`, which the probe fills under the lock).
@@ -179,6 +181,7 @@ struct R2Work {
     Path       full;       // while the small copy is made: the copy, made already
     i32        social_h;   // the small copy's height (r2_social_height)
     f64        preview;    // the small copy's preview length (save_social_copy), 0 = the whole clip
+    i32        days;       // how long the link lasts (share_link_days), 0 = forever
 };
 
 static struct {
@@ -276,11 +279,14 @@ static const char *r2_refuses(bool keys, bool capped)
 // In the bucket now: an R2 share that cleanup hasn't removed.
 static bool r2_in_bucket(const R2Share &s) { return s.host == HOST_R2 && !s.removed; }
 
-// The link still plays: not removed or paused. Rekodr can't see what an uploader keeps, so an uploader link counts
-// as playing only for share_keep_days after it went up.
+// Whether an R2 link has reached its end (expires_us) at `now`.
+static bool r2_expired(const R2Share &s, i64 now) { return s.host == HOST_R2 && s.expires_us && now >= s.expires_us; }
+
+// The link still plays: not removed, paused or expired. Rekodr can't see what an uploader keeps, so an uploader link
+// counts as playing only for share_keep_days after it went up.
 static bool r2_share_live(const R2Share &s, i64 now)
 {
-    if (s.removed || s.paused) return false;
+    if (s.removed || s.paused || r2_expired(s, now)) return false;
     return s.host == HOST_R2 || now - s.uploaded_us < (i64)(g_app.config.share_keep_days * 86400.0 * 1e6);
 }
 static bool r2_share_live(const R2Share &s) { return r2_share_live(s, now_us()); }
@@ -355,6 +361,18 @@ static i32 r2_plan_cleanup(const R2Share *s, i32 n, i64 limit, i64 incoming, i32
     }
     return count;
 }
+
+// Which links in the bucket have expired at `now`: their indexes into out, how many returned.
+static i32 r2_plan_expired(const R2Share *s, i32 n, i64 now, i32 *out, i32 cap)
+{
+    i32 count = 0;
+    for (i32 i = 0; i < n && count < cap; i++)
+        if (r2_in_bucket(s[i]) && r2_expired(s[i], now)) out[count++] = i;
+    return count;
+}
+
+// The end of a link that lasts `days` from `from_us`: 0 (never) for 0 days.
+static i64 r2_expiry(i64 from_us, i32 days) { return days > 0 ? from_us + days * 86400ll * 1000000 : 0; }
 
 // The bucket's links as the Space bar shows them, oldest first, into `out`, with goes[i] = 1 for those
 // r2_plan_cleanup clears to fit `limit` with `incoming` more bytes and what the folder holds that the history
@@ -1692,8 +1710,8 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
         r2_tsv_field(f, s[i].path, false);
-        fprintf(f, "%d\t%d\t%d\t%.3f\t%.3f\t", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds,
-                s[i].preview);
+        fprintf(f, "%d\t%d\t%d\t%.3f\t%.3f\t%lld\t", (int)s[i].social, s[i].social_w, s[i].social_h, s[i].seconds,
+                s[i].preview, s[i].expires_us);
         r2_tsv_field(f, s[i].marks, true);
     }
     bool ok = fclose(f) == 0;
@@ -1708,16 +1726,16 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
     for (char *line = text; line && *line && n < max;) {
         char *next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char *f[23] = {};
+        char *f[24] = {};
         i32 count = 0;
-        for (char *p = line; count < 23;) {
+        for (char *p = line; count < 24;) {
             f[count++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
             *tab = 0;
             p = tab + 1;
         }
-        if (count == 23 && strlen(f[0]) < R2_KEY_MAX && strlen(f[9]) < R2_KEY_MAX &&
+        if (count == 24 && strlen(f[0]) < R2_KEY_MAX && strlen(f[9]) < R2_KEY_MAX &&
             atoi(f[7]) >= 0 && atoi(f[7]) < HOST_COUNT) {
             R2Share &s = out[n++];
             s = {};
@@ -1745,9 +1763,11 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.social_h = atoi(f[19]);
             s.seconds = (f32)atof(f[20]);
             s.preview = (f32)atof(f[21]);
-            char *cr = strchr(f[22], '\r');
+            s.expires_us = _atoi64(f[22]);
+            if (s.expires_us < 0) s.expires_us = 0;
+            char *cr = strchr(f[23], '\r');
             if (cr) *cr = 0;
-            str_set(s.marks, f[22]);
+            str_set(s.marks, f[23]);
             if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0))) s.social = 0;
             s.plays_today = s.plays_month = s.plays_24h = -1;
         }
@@ -2123,8 +2143,8 @@ static bool r2_delete_share(const R2Conf &c, const char *key, const char *at, bo
 }
 
 // Clears the shares at `plan` (indexes, under the lock when it was made) from the bucket, keeping their entries so
-// they can be shared again. Returns whether all of them went.
-static bool r2_remove_planned(const R2Conf &c, const i32 *plan, i32 n)
+// they can be shared again. `why` is for the log. Returns whether all of them went.
+static bool r2_remove_planned(const R2Conf &c, const i32 *plan, i32 n, const char *why = "to stay under the limit")
 {
     static char gone[R2_MAX_SHARES][R2_KEY_MAX];
     static char gone_at[R2_MAX_SHARES][R2_KEY_MAX]; // where each is in the bucket
@@ -2152,7 +2172,7 @@ static bool r2_remove_planned(const R2Conf &c, const i32 *plan, i32 n)
         }
         r2_save_locked();
         ReleaseSRWLockExclusive(&g_r2.lock);
-        log_line("r2: removed %s to stay under the limit", gone[i]);
+        log_line("r2: removed %s %s", gone[i], why);
     }
     if (n > 0) r2_post(R2_EV_HISTORY, 0);
     return all;
@@ -2292,6 +2312,7 @@ static void r2_run_upload(const R2Task &t)
     }
     s.seconds = t.seconds;
     s.preview = s.social == 1 ? t.preview : 0;
+    s.expires_us = r2_expiry(s.uploaded_us, t.days);
     str_set(s.marks, marks);
     R2Share page = s;
     if (page_w) {
@@ -2327,11 +2348,17 @@ static void r2_run_upload(const R2Task &t)
     if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
-// After a new budget or space: the oldest unpinned links go until the bucket, at its real size, fits the cap. While
-// the space isn't known nothing goes; the cleanup waits for the next usage answer (r2_event).
+// Expired links go from the bucket. Then, after a new budget or space, the oldest unpinned links go until the
+// bucket, at its real size, fits the cap. While the space isn't known none go for it; that part waits for the next
+// usage answer (r2_event).
 static void r2_run_cleanup(const R2Task &t)
 {
     static i32 plan[R2_MAX_SHARES];
+    AcquireSRWLockExclusive(&g_r2.lock);
+    r2_load_locked();
+    i32 expired = r2_plan_expired(g_r2.shares, g_r2.count, now_us(), plan, COUNT(plan));
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (expired > 0) r2_remove_planned(t.conf, plan, expired, "as it expired");
     AcquireSRWLockExclusive(&g_r2.lock);
     bool may_clear = r2_may_clear_locked();
     g_r2.cleanup_waiting = !may_clear;
@@ -4232,15 +4259,17 @@ static bool r2_share_on(const R2Share &s, const char *hosts)
 // uploader dropped gets a new link. `hosts` is where Share decided it goes, with the copy made for `aim` bytes and
 // at most `limit` (save_link); with hosts and no aim (the pipe's "link bucket ...") the copy is made for that host,
 // with no hosts Share's rule decides, once the file is probed. A link on the library card `lib_key` already made on
-// that host (any host when none is named) is given again. Follow the job with r2_job(id); EV_R2 says when it moves
-// on. Returns the job id, 0 if every job slot is busy.
+// that host (any host when none is named) is given again. A bucket link lasts `days` (share_link_days when < 0);
+// one given again with `days` named lasts that long from now. Follow the job with r2_job(id); EV_R2 says when it
+// moves on. Returns the job id, 0 if every job slot is busy.
 static u32 r2_share_file(const wchar_t *path, const char *title, const char *game, u64 lib_key,
                          const MediaInfo *info = 0, const EditRecord *edit = 0, const char *hosts = 0, i64 aim = 0,
-                         i64 limit = 0)
+                         i64 limit = 0, i32 days = -1)
 {
     i32 slot = r2_new_job();
     if (slot < 0) return 0;
     R2Work &w = g_r2.work[slot];
+    w.days = days < 0 ? g_app.config.share_link_days : days;
     if (lib_key && !edit) {
         AcquireSRWLockExclusive(&g_r2.lock);
         r2_load_locked();
@@ -4248,8 +4277,15 @@ static u32 r2_share_file(const wchar_t *path, const char *title, const char *gam
         for (i32 i = g_r2.count - 1; i >= 0 && found < 0; i--)
             if (g_r2.shares[i].lib_key == lib_key && r2_share_on(g_r2.shares[i], hosts)) found = i;
         char url[512] = "", resume[R2_KEY_MAX] = "";
-        if (found >= 0 && r2_share_live(g_r2.shares[found])) str_set(url, g_r2.shares[found].url);
-        else if (found >= 0 && g_r2.shares[found].paused && !g_r2.shares[found].removed) {
+        if (found >= 0 && r2_share_live(g_r2.shares[found])) {
+            str_set(url, g_r2.shares[found].url);
+            R2Share &s = g_r2.shares[found];
+            if (days >= 0 && s.host == HOST_R2) {
+                s.expires_us = r2_expiry(now_us(), days);
+                r2_save_locked();
+            }
+        } else if (found >= 0 && g_r2.shares[found].paused && !g_r2.shares[found].removed &&
+                   !r2_expired(g_r2.shares[found], now_us())) {
             str_set(url, g_r2.shares[found].url); // a paused one is brought back
             str_set(resume, g_r2.shares[found].key);
         } else if (found >= 0) str_set(w.reuse, g_r2.shares[found].key);
@@ -4443,6 +4479,7 @@ static void r2_on_save_event(const Event &e)
     }
     r2_conf(&t.conf);
     t.kind = to_r2 ? R2_T_UPLOAD : R2_T_UPLOADER;
+    t.days = w.days;
     str_set(t.replace, w.reuse);
     AcquireSRWLockShared(&g_r2.lock);
     i32 old = w.reuse[0] ? r2_find_locked(w.reuse) : -1;
@@ -4582,22 +4619,29 @@ static void r2_auto_pause()
 
 // Every second from the main loop: keeps the hourly read of the analytics going while no page asks for it, so the
 // read limits work with the window closed. Two minutes after start and then every 6 hours, the bucket is listed
-// (the cleanup task) so links whose file went from it outside Rekodr stop counting as live.
+// (the cleanup task) so links whose file went from it outside Rekodr stop counting as live. A link that has expired
+// starts the cleanup within the minute, then not again for 10 minutes if it's still there (its delete failed).
 static void r2_tick()
 {
-    static i64 next, next_check;
+    static i64 next, next_check, next_expiry;
     i64 now = now_us();
     if (!next_check) next_check = now + 120ll * 1000000;
     if (now < next) return;
     next = now + 60ll * 1000000;
     if (!r2_ready()) return;
     r2_usage();
+    static i32 plan[R2_MAX_SHARES];
     AcquireSRWLockShared(&g_r2.lock);
     bool sized = g_r2.usage_us != 0; // the cleanup's cap needs the account's usage
+    bool expired = g_r2.loaded && r2_plan_expired(g_r2.shares, g_r2.count, now, plan, COUNT(plan)) > 0;
     ReleaseSRWLockShared(&g_r2.lock);
     if (sized && now >= next_check) {
         next_check = now + 6 * 3600ll * 1000000;
+        next_expiry = now + 600ll * 1000000;
         r2_cleanup_now();
+    } else if (expired && now >= next_expiry) {
+        next_expiry = now + 600ll * 1000000;
+        r2_queue_cleanup();
     }
 }
 

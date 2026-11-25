@@ -178,6 +178,8 @@ struct Config {
                            // 60 fps (SHARE_KBPS_DEFAULT), used while share_kbps_custom is on
     bool share_kbps_custom; // Share uses share_kbps, else SHARE_KBPS_DEFAULT ("Use recommended", off)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
+    i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), 7 or 1; the Share menu can
+                          // pick another for one link
     u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
                            // by its id ("classic")
     f32 folder_warn_gb;  // the Library warns once its clips and sessions hold more than this; 0 = never. Nothing

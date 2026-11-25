@@ -3550,6 +3550,17 @@ static void options_sharing()
                              g_space_draft >= 0 ? g_space_draft : c.r2_space_gb, r2_others_now()),
                   g_budget_draft >= 0 || g_space_draft >= 0);
     opt_reads_row();
+    {
+        static const char *const lives[] = {"Forever", "1 week", "1 day"};
+        static const i32 days[] = {0, 7, 1};
+        i32 life = c.share_link_days == 7 ? 1 : c.share_link_days == 1 ? 2 : 0;
+        if (opt_row_combo("Links last", "Then they're deleted from the bucket. The Share menu can pick another",
+                          "##linklife", lives, 0, 3, &life, dp(200))) {
+            c.share_link_days = days[life];
+            log_line("options: bucket links last %s", lives[life]);
+            options_apply(0);
+        }
+    }
 
     // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made
     // by hand. Each link has a slot as wide as its longer wording, so neither moves when the other is clicked.

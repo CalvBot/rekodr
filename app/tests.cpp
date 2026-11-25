@@ -1665,6 +1665,29 @@ static void test_r2()
     n = r2_plan_cleanup(s, 4, 8 * R2_GB, 6 * R2_GB, -1, plan, 4); // pinned 2 + 6: all three others go
     T(n == 3 && plan[0] == 0 && plan[1] == 2 && plan[2] == 3);
 
+    // Expiry: a bucket link past its end goes, pinned or not; one with no end, a removed one or an uploader's stays
+    {
+        static R2Share e[4];
+        for (i32 i = 0; i < 4; i++) {
+            e[i] = {};
+            e[i].host = HOST_R2;
+        }
+        i64 day = 86400ll * 1000000, t0 = 1700000000000000;
+        e[0].expires_us = r2_expiry(t0, 1);
+        e[0].pinned = true;
+        e[1].expires_us = r2_expiry(t0, 7);
+        e[2].expires_us = r2_expiry(t0, 1);
+        e[2].removed = true;
+        e[3].expires_us = r2_expiry(t0, 1);
+        e[3].host = HOST_CUSTOM;
+        T(r2_expiry(t0, 0) == 0 && e[0].expires_us == t0 + day && e[1].expires_us == t0 + 7 * day);
+        T(r2_plan_expired(e, 4, t0 + day - 1, plan, 4) == 0 && r2_share_live(e[0], t0 + day - 1));
+        n = r2_plan_expired(e, 4, t0 + day, plan, 4);
+        T(n == 1 && plan[0] == 0 && !r2_share_live(e[0], t0 + day) && r2_share_live(e[1], t0 + day));
+        n = r2_plan_expired(e, 4, t0 + 8 * day, plan, 4);
+        T(n == 2 && plan[0] == 0 && plan[1] == 1);
+    }
+
     // The Space bar: the bucket's links oldest first, an uploader's left out, and which go for a limit
     {
         static R2Share shown[4];
@@ -1822,6 +1845,7 @@ static void test_r2()
     w[0].social_h = 720;
     w[0].seconds = 125.5f;
     w[0].preview = 60;
+    w[0].expires_us = 1700604800000000;
     snprintf(w[0].marks, sizeof w[0].marks, "12.400 First kill%c17.000 Ace", R2_MARK_SEP);
     w[1].social = -1;
     T(r2_history_write(file, w, 2));
@@ -1838,6 +1862,7 @@ static void test_r2()
     T(r[0].social == 1 && r[0].social_w == 1280 && r[0].social_h == 720 && r[0].seconds == 125.5f);
     T(r[0].preview == 60 && !strcmp(r[0].marks, w[0].marks) && !r[1].marks[0]);
     T(r[1].social == -1 && !r[1].social_w);
+    T(r[0].expires_us == w[0].expires_us && !r[1].expires_us);
     DeleteFileW(file.s);
 
     // Preview pages: the page beside the clip's folder, the picture in it, at most 1280 wide and even

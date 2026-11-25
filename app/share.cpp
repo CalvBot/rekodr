@@ -512,6 +512,10 @@ static bool share_ready_link(u64 lib_key, u64 source, char *url, i32 cap)
     return false;
 }
 
+// How long the next bucket link lasts, as the Share menu picked it (share_link_days' values), -1 = the setting. The
+// next share_start takes it and sets it back.
+static i32 g_share_link_days = -1;
+
 // Starts a Share. A clip with a ready link (share_ready_link) gets that link on the clipboard at once, whatever the
 // kind, unless a host is picked.
 static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
@@ -519,6 +523,8 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
 {
     if (host && !host[0]) host = 0;
     if (host) kind = SHARE_LINK;
+    i32 days = g_share_link_days;
+    g_share_link_days = -1;
     ShareJob *jp = share_new_job();
     if (!jp) return 0;
     ShareJob &j = *jp;
@@ -566,7 +572,7 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
     }
     str_set(j.v.verb, link ? "Compressing for upload" : j.squeezed ? "Compressing" : "Exporting");
     if (link) {
-        j.r2 = r2_share_file(path, j.name, game, lib_key, &m, edit, a.hosts, a.aim, a.limit);
+        j.r2 = r2_share_file(path, j.name, game, lib_key, &m, edit, a.hosts, a.aim, a.limit, days);
         if (!j.r2) {
             share_end(j, false, "", "Too many links are under way: try again in a moment");
             return j.v.id;

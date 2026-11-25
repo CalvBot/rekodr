@@ -3474,14 +3474,43 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         y = b.y + gap;
     }
 
-    // Link to
+    // Link to, with how long a bucket link lasts on the right (the next share only; the setting is the default)
     {
-        ImGui::PushFont(g_font_small);
-        dl->AddText(ImVec2(o.x + kit_px(4), y + kit_px(4)), col32(COL_DIM), "LINK TO");
-        ImGui::PopFont();
-        y += sfs + kit_px(8);
         static ShareHostChoice c[24];
         i32 n = share_host_choices(m, edit, c, COUNT(c));
+        bool bucket = false;
+        for (i32 i = 0; i < n; i++) bucket |= c[i].host == HOST_R2;
+        if (ImGui::IsWindowAppearing()) g_share_link_days = -1;
+        ImGui::PushFont(g_font_small);
+        f32 ph = bucket ? sfs + kit_px(8) : sfs + kit_px(4);
+        dl->AddText(ImVec2(o.x + kit_px(4), floorf(y + (ph - sfs) / 2) + (bucket ? 0 : kit_px(2))), col32(COL_DIM), "LINK TO");
+        if (bucket) {
+            static const char *names[] = {"Forever", "1 week", "1 day"};
+            static const i32 days[] = {0, 7, 1};
+            i32 cur = g_share_link_days >= 0 ? g_share_link_days : g_app.config.share_link_days;
+            f32 x = o.x + W, padx = kit_px(8);
+            for (i32 i = 0; i < 3; i++) {
+                f32 w = ImGui::CalcTextSize(names[i]).x + 2 * padx;
+                x -= w;
+                ImVec2 a(x, y), b(x + w, y + ph);
+                ImGui::SetCursorScreenPos(a);
+                ImGui::PushID(names[i]);
+                bool clicked = ImGui::InvisibleButton("##life", ImVec2(w, ph));
+                ImGui::PopID();
+                bool hot = ImGui::IsItemHovered(), on = cur == days[i];
+                if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                if (clicked) {
+                    g_share_link_days = days[i];
+                    dev_click("chip", names[i]);
+                }
+                dl->AddRectFilled(a, b, col32(COL_WHITE, on ? 1 : hot ? 0.14f : 0.06f), ph / 2);
+                dl->AddText(ImVec2(a.x + padx, floorf(a.y + (ph - sfs) / 2)), col32(on ? COL_BG : COL_DIM), names[i]);
+                x -= kit_px(4);
+            }
+            kit_tip_rect(ImVec2(x, y), ImVec2(o.x + W, y + ph), "How long a link to your bucket lasts");
+        }
+        ImGui::PopFont();
+        y += ph + kit_px(4);
         f32 h = kit_px(32), pad = kit_px(8), tile = kit_px(16), bar_w = kit_px(96), bar_h = kit_px(3);
         if (!n) {
             ImGui::SetCursorScreenPos(ImVec2(o.x, y));
