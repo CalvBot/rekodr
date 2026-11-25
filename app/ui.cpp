@@ -1765,7 +1765,7 @@ static void ui_frame()
             ImGui::PushStyleColor(k, v);
         }
     top_bar(kit_px(46));
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y - kit_px(8));
     // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail. The
     // Library pads itself, right of the list it docks to the window's left edge.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
