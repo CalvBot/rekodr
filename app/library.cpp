@@ -1391,9 +1391,17 @@ static void lib_folder_put(const LibItem &it, i32 i, bool in)
 }
 
 // The view's game chips and the cards that match the date range, the chip and the search, in the chosen order.
+// Which clips show by where they're from: all, Rekodr's own, or other apps' (LibItem.dir). The pill that picks it
+// is there while the view holds any of other apps' (g_lib_others).
+enum { LIB_FROM_ALL, LIB_FROM_OURS, LIB_FROM_OTHERS, LIB_FROM_COUNT };
+static i32 g_lib_from, g_lib_others;
+
 static void lib_refilter()
 {
     Library &lib = g_app.library;
+    g_lib_others = 0;
+    for (i32 i = 0; i < lib.item_count; i++) g_lib_others += lib.items[i].kind == lib.view && lib.items[i].dir;
+    if (!g_lib_others) g_lib_from = LIB_FROM_ALL;
     lib.game_count = 0;
     lib.view_count = 0;
     lib.range_count = 0;
@@ -1427,6 +1435,7 @@ static void lib_refilter()
         }
         // The list on the left picks by folder or by game, whichever it shows.
         if (by_folder ? in_folder >= 0 && !(fm >> in_folder & 1) : lib.game[0] && strcmp(lib.game, g)) continue;
+        if (g_lib_from != LIB_FROM_ALL && (it.dir != 0) != (g_lib_from == LIB_FROM_OTHERS)) continue;
         if (!lib_name_matches(it.name, lib.search) && !lib_matches(g, lib.search) && !lib_matches(lib_comment(it.key), lib.search) &&
             !lib_tags_match(lib_tags(it.key), lib.search))
             continue;
@@ -6178,8 +6187,8 @@ static void screen_library()
     lib_calendar();
 
     // The order, then the search, which takes what the row has left between a narrowest and a widest
-    ImVec2 sort_at(range_at.x + drop_w + hgap, h0.y);
-    f32 search_w = full_w - (sort_at.x - h0.x) - drop_w - kit_px(12);
+    ImVec2 sort_at(range_at.x + drop_w + hgap, h0.y), from_at(sort_at.x + drop_w + hgap, h0.y);
+    f32 search_w = full_w - ((g_lib_others ? from_at.x : sort_at.x) - h0.x) - drop_w - kit_px(12);
     search_w = search_w < kit_px(100) ? kit_px(100) : search_w > kit_px(240) ? kit_px(240) : search_w;
     ImGui::SetCursorScreenPos(sort_at);
     if (lib_pill("##sort", sorts[lib.sort], drop_w, false)) ImGui::OpenPopup("sort");
@@ -6201,6 +6210,31 @@ static void screen_library()
                 lib_refilter();
             }
         ImGui::EndPopup();
+    }
+    // Where the clips are from, while other apps' are among them
+    if (g_lib_others) {
+        static const char *const froms[LIB_FROM_COUNT] = {"All apps", APP_NAME, "Other apps"};
+        ImGui::SetCursorScreenPos(from_at);
+        if (lib_pill("##from", froms[g_lib_from], drop_w, g_lib_from != LIB_FROM_ALL)) ImGui::OpenPopup("from");
+        step = g_lib_from;
+        if (kit_wheel_step(&step, LIB_FROM_COUNT)) {
+            g_lib_from = step;
+            lib.scroll = lib.scroll_to = 0;
+            lib_refilter();
+        }
+        ImGui::SetNextWindowPos(ImVec2(from_at.x, from_at.y + fh + kit_px(6)));
+        lib_popup_style_push(8);
+        bool from_open = ImGui::BeginPopup("from");
+        lib_popup_style_pop();
+        if (from_open) {
+            for (i32 i = 0; i < LIB_FROM_COUNT; i++)
+                if (lib_menu_item(g_lib_from == i ? ICON_CHECK : "", froms[i], false, kit_px(132)) && g_lib_from != i) {
+                    g_lib_from = i;
+                    lib.scroll = lib.scroll_to = 0;
+                    lib_refilter();
+                }
+            ImGui::EndPopup();
+        }
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w, h0.y));
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) && !ImGui::IsPopupOpen("game")) ImGui::SetKeyboardFocusHere();
