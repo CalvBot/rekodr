@@ -5,9 +5,11 @@
 // A client sends commands, one per line, the same ones `rekodr.exe <command>` takes ("save 30s", "toggle",
 // "open"), plus "hello <name>" to say what it is (Options > Integrations shows who is connected) and "save <from> <to>", an exact stretch in Unix seconds (with an optional fraction) that lifelog's voice
 // commands use. Rekodr sends lines of JSON:
-//   {"type":"state","paused":false,"recording":true,"game":"Overwatch","oldest_us":...,"saving":0,"error":""}
+//   {"type":"state","paused":false,"recording":true,"game":"Overwatch","oldest_us":...,"saving":0,"error":"",
+//    "strain":false,"backup":"ok","accent":"#00897b"}
 //       when a client connects and whenever any of it changes. oldest_us is the oldest footage in the buffer
-//       (0 = none), so a client can show how much the buffer holds.
+//       (0 = none), so a client can show how much the buffer holds; accent is the app's accent colour, for keys
+//       drawn to match.
 //   {"type":"saved","ok":true,"kind":"clip","file":"C:\\...\\Overwatch 2026-11-16 21-04-10.mp4",
 //    "from_us":...,"to_us":...,"trimmed":false}
 //   {"type":"saved","ok":false,"kind":"clip","error":"..."}
@@ -88,9 +90,10 @@ static void pipe_publish()
     json_escape(r.last_error.s, error, sizeof error);
     snprintf(line, sizeof line,
              "{\"type\":\"state\",\"paused\":%s,\"recording\":%s,\"game\":\"%s\",\"oldest_us\":%lld,\"saving\":%d,"
-             "\"error\":\"%s\",\"strain\":%s,\"backup\":\"%s\"}\n",
+             "\"error\":\"%s\",\"strain\":%s,\"backup\":\"%s\",\"accent\":\"#%06x\"}\n",
              r.paused ? "true" : "false", r.recording ? "true" : "false", game, r.oldest_us,
-             g_app.saving.jobs_running, error, r.strain.s[0] && r.recording ? "true" : "false", backup_state_name());
+             g_app.saving.jobs_running, error, r.strain.s[0] && r.recording ? "true" : "false", backup_state_name(),
+             g_app.config.accent & 0xffffff);
     AcquireSRWLockExclusive(&g_pipe.lock);
     bool changed = strcmp(line, g_pipe.state) != 0;
     if (changed) {

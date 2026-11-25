@@ -2,8 +2,10 @@
 // coloured bar along the bottom. Stream Deck draws SVG with a basic renderer, so this sticks to shapes,
 // gradients, text and transforms (no filters, masks or CSS).
 
+// accent is the app's default; the keys use the player's own from the pipe's state line once Rekodr has sent it.
+// Red is for recording and failures whatever the accent, as in the app.
 export const C = {
-  bg: "#121419", text: "#e8eaee", dim: "#6b7280",
+  bg: "#121419", text: "#e8eaee", dim: "#6b7280", accent: "#00897b",
   red: "#ff4b5c", amber: "#ffb938", green: "#4ade80", grey: "#9aa3b2",
 };
 

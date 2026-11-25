@@ -36,7 +36,8 @@ function exePath() {
 }
 
 const rekodr = {
-  pipe: null, connected: false, state: null, buffer: "", waiting: [], // waiting: Save keys whose save hasn't finished
+  // waiting: Save keys whose save hasn't finished. accent: the app's accent colour, kept while Rekodr is away
+  pipe: null, connected: false, state: null, buffer: "", waiting: [], accent: C.accent,
   connect() {
     clearTimeout(this.retry);
     const pipe = this.pipe = net.connect(String.raw`\\.\pipe\rekodr`);
@@ -64,7 +65,11 @@ const rekodr = {
     });
   },
   onMessage(m) {
-    if (m.type === "state") { this.state = m; renderAll(); }
+    if (m.type === "state") {
+      this.state = m;
+      if (/^#[0-9a-f]{6}$/i.test(m.accent)) this.accent = m.accent;
+      renderAll();
+    }
     else if (m.type === "saved" && m.kind === "clip") {
       if (!m.ok) log("save failed: " + m.error);
       this.waiting.shift()?.finished(m.ok);
@@ -163,7 +168,7 @@ class Save extends Key {
     if (this.phase === "saving") return this.image(saveKey(length, "SAVING", C.amber, 0.4));
     if (!rekodr.connected) return this.image(saveKey(length, "NOT RUNNING", C.dim, 0.15));
     if (rekodr.state?.paused) return this.image(saveKey(length, "PAUSED", C.amber));
-    this.image(saveKey(length, "SAVE CLIP", C.red));
+    this.image(saveKey(length, "SAVE CLIP", rekodr.accent));
   }
 }
 
@@ -183,7 +188,7 @@ class Record extends Key {
     if (s.strain) return this.image(card({ accent: C.amber, label: "SLOW PC", body: dot(C.red) }));
     if (s.backup === "failed") return this.image(card({ accent: C.amber, label: "BACKUP FAILED", body: dot(C.red) }));
     const held = bufferLength();
-    this.image(card({ accent: C.red, label: held ? "REC  " + held : "REC", body: dot(C.red) }));
+    this.image(card({ accent: rekodr.accent, label: held ? "REC  " + held : "REC", body: dot(C.red) }));
   }
 }
 
@@ -199,7 +204,7 @@ class Open extends Key {
   down() { if (!rekodr.command(this.screen().command)) this.alert(); }
   render() {
     const s = this.screen();
-    this.image(card({ accent: C.red, label: s.label, body: s.icon(C.red) }));
+    this.image(card({ accent: rekodr.accent, label: s.label, body: s.icon(rekodr.accent) }));
   }
 }
 
