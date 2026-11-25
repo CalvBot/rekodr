@@ -18,9 +18,10 @@ struct Gpu {
 static Gpu g_gpu;
 
 // Colours. One dark theme, flat: a near-black ground (the top bar is the same colour), raised surfaces for cards and
-// fields, white for what is selected (a tab, a chip, the primary button), and the player's accent (teal unless
-// Options picks another colour) only for the selected clip, progress, slider fills, switches that are on, the saved
-// check and focus. Recording, deleting and failures stay red whatever the accent. Blue is for zoom keys.
+// fields, white for what is selected (a chip, the primary button), and the player's accent (teal unless Options
+// picks another colour) only for the selected clip, the current screen's tab line, progress, slider fills, switches
+// that are on, the saved check and focus. Recording, deleting and failures stay red whatever the accent. Blue is for
+// zoom keys.
 static ImVec4 rgb(u32 c, f32 a = 1) { return ImVec4(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a); }
 static const u32 COL_BG = 0x0a0a0a,      // the window and the top bar
                  COL_PANEL = 0x161616,   // cards, the timeline
@@ -1415,7 +1416,7 @@ static void help_window()
     g_app.ui.help_open = g_app.ui.help_close = false;
 }
 
-// A tab in the top bar: an icon and a label, a white pill with black text when it's the current screen.
+// A tab in the top bar: an icon and a label, underlined in the accent when it's the current screen.
 static bool top_tab(const char *icon, const char *label, bool active, f32 h)
 {
     ImGui::PushFont(g_font_bold);
@@ -1427,9 +1428,13 @@ static bool top_tab(const char *icon, const char *label, bool active, f32 h)
     if (clicked) dev_click("tab", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
+    // The selected tab in white with a line of the accent under its icon and label; the others dim, brighter under
+    // the mouse
     f32 ph = fminf(kit_px(34), h), py = floorf(a.y + (h - ph) / 2);
-    if (active) dl->AddRectFilled(ImVec2(a.x, py), ImVec2(a.x + w, py + ph), col32(COL_WHITE), ph / 2);
-    u32 ink = col32(active ? COL_BG : hot ? COL_TEXT : COL_DIM);
+    if (active)
+        dl->AddRectFilled(ImVec2(a.x + padx, py + ph - kit_px(3)), ImVec2(a.x + w - padx, py + ph), col32(COL_ACCENT),
+                          kit_px(1.5f));
+    u32 ink = col32(active ? COL_WHITE : hot ? COL_TEXT : COL_DIM);
     dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(a.x + padx, floorf(a.y + (h - g_font_icon->FontSize) / 2)), ink, icon);
     dl->AddText(ImVec2(a.x + padx + slot, floorf(a.y + (h - ts.y) / 2)), ink, label);
     ImGui::PopFont();
