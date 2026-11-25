@@ -5787,7 +5787,7 @@ static void screen_library()
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight(), switch_w = kit_px(2 * 104 + 4); // both switches are switch_w by fh
     // The list down the left, docked to the window's left edge from the top bar to the bottom: on the same ground as
-    // the top bar, set apart by a hairline on its inner edge. A Games / Folders switch level with the Clips and
+    // the top bar, with no line between it and the clips. A Games / Folders switch level with the Clips and
     // Sessions one and coloured like it, then all of them and each game in this view with how many it has, most
     // recent first, or this view's folders. It scrolls on its own (the wheel, no bar) when there are more than fit.
     // The button at its foot, level with the footer, collapses it to a rail of icons, which stay where they were.
@@ -5797,7 +5797,6 @@ static void screen_library()
         f32 side_w = collapsed ? icon_end + kit_px(14) : switch_w + kit_px(12), side_h = ImGui::GetContentRegionAvail().y;
         f32 pad_y = kit_px(LIB_PAD_Y);
         ImVec2 s0 = ImGui::GetCursorScreenPos();
-        dl->AddRectFilled(ImVec2(s0.x + side_w - kit_px(1), s0.y), ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_LINE));
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + pad_y));
         f32 foot = fh + kit_px(6);
         ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - 2 * pad_y - foot), 0,
