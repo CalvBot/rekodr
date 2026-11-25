@@ -2986,7 +2986,7 @@ static void r2_usage_query(const char *account, const char *bucket, const char *
              "{\"query\":\"query($accountTag:string!,$bucketName:string,$startDate:Time,$endDate:Time,$dayStart:Time,"
              "$since:Time,$get:string){viewer{accounts(filter:{accountTag:$accountTag}){"
              "storage:r2StorageAdaptiveGroups(limit:1,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
-             "bucketName:$bucketName},orderBy:[datetime_DESC]){max{payloadSize metadataSize}} "
+             "bucketName:$bucketName},orderBy:[datetime_DESC]){max{payloadSize metadataSize} dimensions{datetime}} "
              "ops:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
              "bucketName:$bucketName}){sum{requests} dimensions{actionType}} "
              "month:r2OperationsAdaptiveGroups(limit:10000,filter:{datetime_geq:$startDate,datetime_leq:$endDate,"
@@ -3611,17 +3611,27 @@ static void r2_run_usage(const R2Task &t)
         g_r2.gen++;
         ReleaseSRWLockExclusive(&g_r2.lock);
         r2_post(R2_EV_USAGE, 0);
-    } else log_line("r2: couldn't read the bucket's usage (%u)", s);
+    } else {
+        char msg[200] = "";
+        if (s) r2_cf_error(resp, msg, sizeof msg);
+        if (!msg[0]) json_path(resp, (i64)strlen(resp), "errors[0].message", msg, sizeof msg);
+        log_line("r2: couldn't read the bucket's usage (%u): %s", s, msg);
+    }
 
+    // The account's name, asked once a run: a bucket's own token may not be allowed to read it
+    static bool name_asked;
     AcquireSRWLockShared(&g_r2.lock);
     bool named = g_r2.status.who[0] != 0;
     ReleaseSRWLockShared(&g_r2.lock);
     char path[96], name[128];
     snprintf(path, sizeof path, "/accounts/%s", t.conf.account);
-    if (!named && r2_ok(r2_cf("GET", path, bearer, 0, resp, sizeof resp)) &&
-        json_path(resp, (i64)strlen(resp), "result.name", name, sizeof name)) {
-        r2_set_who(name);
-        r2_post(R2_EV_STATUS, 0);
+    if (!named && !name_asked) {
+        name_asked = true;
+        if (r2_ok(r2_cf("GET", path, bearer, 0, resp, sizeof resp)) &&
+            json_path(resp, (i64)strlen(resp), "result.name", name, sizeof name)) {
+            r2_set_who(name);
+            r2_post(R2_EV_STATUS, 0);
+        }
     }
     SecureZeroMemory(bearer, sizeof bearer);
 }

@@ -2162,6 +2162,8 @@ static void test_r2()
       strstr(q, "account:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$startDate,datetime_leq:$endDate})"));
     T(strstr(q, "\"accountTag\":\"acc1\"") && strstr(q, "\"bucketName\":\"rekodr\"") &&
       strstr(q, "r2OperationsAdaptiveGroups") && strstr(q, "\"startDate\":\"2026-11-01T00:00:00Z\""));
+    // Cloudflare orders only by a field the query asks for
+    T(strstr(q, "orderBy:[datetime_DESC]){max{payloadSize metadataSize} dimensions{datetime}}"));
 
     // Plays per file
     const char *pl = "{\"data\":{\"viewer\":{\"accounts\":[{\"month\":[{\"sum\":{\"requests\":12},\"dimensions\":"
