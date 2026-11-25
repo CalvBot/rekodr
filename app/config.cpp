@@ -48,12 +48,12 @@ static void config_defaults(Config *c, const Paths &paths)
     *c = {};
     wchar_t home[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"CLIPBACK_HOME", home, MAX_PATH) && home[0]) {
-        swprintf(c->save_dir.s, MAX_PATH, L"%s\\Clips", home);
+        swprintf(c->save_dir.s, MAX_PATH, L"%s\\" APP_NAME, home);
         swprintf(c->buffer_dir.s, MAX_PATH, L"%s\\buffer", home);
     } else {
         wchar_t *videos = 0;
         SHGetKnownFolderPath(FOLDERID_Videos, 0, 0, &videos);
-        swprintf(c->save_dir.s, MAX_PATH, L"%s\\Clips", videos ? videos : L".");
+        swprintf(c->save_dir.s, MAX_PATH, L"%s\\" APP_NAME, videos ? videos : L".");
         CoTaskMemFree(videos);
         c->buffer_dir = path_join(paths.local_dir, L"buffer");
     }

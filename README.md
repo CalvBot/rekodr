@@ -70,7 +70,7 @@ the installable `streamdeck\build\dev.calvbot.clipback.streamDeckPlugin`. The pl
 
 ## Files
 - Settings: `%APPDATA%\clipback\settings.txt`. Options writes it; there is no need to edit it by hand.
-- Clips: `<Videos>\Clips\<year>\` unless changed in Options.
+- Clips: `<Videos>\clipback\Clips\<year>\` unless changed in Options.
 - Games given by hand: `%APPDATA%\clipback\games.txt`, for clips that don't carry a game of their own (renamed files, or videos
   clipback didn't make). A line each of `<key> | <game> | <file name>`.
 - Games list and art: `%LOCALAPPDATA%\clipback\gamedb`. clipback fetches these itself so games get their proper

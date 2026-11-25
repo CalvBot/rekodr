@@ -253,30 +253,29 @@ static void install_recycle(const wchar_t *dir)
     log_line("install: %ls to the Recycle Bin%s", dir, r ? " failed" : "");
 }
 
-// The player's own files: clips and sessions (each year's Clips, Sessions and Data, not anything else they keep in
-// that folder), the buffer, the settings and the local folder.
+// The player's own files: clips and sessions (the year folders of Clips and Sessions, and Data, not anything else
+// they keep in the save folder), the buffer, the settings and the local folder.
 static void install_delete_data()
 {
     static Paths paths;
     paths_init(&paths);
     static Config c;
     if (!config_load(&c, paths)) config_defaults(&c, paths);
-    WIN32_FIND_DATAW fd;
-    Path pattern = path_join(c.save_dir, L"*");
-    HANDLE f = FindFirstFileW(pattern.s, &fd);
-    if (f != INVALID_HANDLE_VALUE) {
+    for (i32 top = 0; top < 2; top++) {
+        Path dir = path_join(c.save_dir, top ? L"Sessions" : L"Clips");
+        WIN32_FIND_DATAW fd;
+        HANDLE f = FindFirstFileW(path_join(dir, L"*").s, &fd);
+        if (f == INVALID_HANDLE_VALUE) continue;
         do {
             bool year = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcslen(fd.cFileName) == 4 &&
                         iswdigit(fd.cFileName[0]) && iswdigit(fd.cFileName[1]) && iswdigit(fd.cFileName[2]) &&
                         iswdigit(fd.cFileName[3]);
-            if (!year) continue;
-            Path y = path_join(c.save_dir, fd.cFileName);
-            static const wchar_t *const parts[] = {L"Clips", L"Sessions", L"Data"};
-            for (const wchar_t *part : parts) install_recycle(path_join(y, part).s);
-            RemoveDirectoryW(y.s); // only if nothing else is in it
+            if (year) install_recycle(path_join(dir, fd.cFileName).s);
         } while (FindNextFileW(f, &fd));
         FindClose(f);
+        RemoveDirectoryW(dir.s); // only if nothing else is in it
     }
+    install_recycle(save_data_dir(c.save_dir).s);
     RemoveDirectoryW(c.save_dir.s);
     install_recycle(c.buffer_dir.s);
     install_recycle(paths.config_dir.s);

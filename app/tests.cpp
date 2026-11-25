@@ -506,12 +506,14 @@ static void test_backup()
         CloseHandle(h);
     };
     auto has = [](const Path &p) { return GetFileAttributesW(p.s) != INVALID_FILE_ATTRIBUTES; };
-    Path ses = path_join(path_join(from, L"2026"), L"Sessions"), clips = path_join(path_join(from, L"2026"), L"Clips");
-    Path bses = path_join(path_join(to, L"2026"), L"Sessions"), bclips = path_join(path_join(to, L"2026"), L"Clips");
+    Path ses = save_sessions_dir(from, 2026), clips = save_clips_dir(from, 2026);
+    Path bses = save_sessions_dir(to, 2026), bclips = save_clips_dir(to, 2026);
     put(ses, L"a.mp4", "a", 3600);
     put(ses, L"fresh.mp4", "f", 10); // still being written, maybe
     put(ses, L"b.mp4.part", "p", 3600);
     put(clips, L"c.mp4", "c", 3600);
+    put(save_source_dir(from, 2026), L"d.mp4", "d", 3600);
+    put(save_data_dir(from), L"a.session.txt", "r", 3600);
     put(bses, L"old.mp4", "o", 3600); // only at the backup: stays
 
     g_backup.from = from;
@@ -521,14 +523,16 @@ static void test_backup()
     g_backup.error[0] = 0;
     InitializeCriticalSection(&g_backup.lock);
     backup_thread(0);
-    T(g_backup.state == BACKUP_DONE && g_backup.done == 1 && g_backup.total == 1);
+    T(g_backup.state == BACKUP_DONE && g_backup.done == 2 && g_backup.total == 2);
     T(has(path_join(bses, L"a.mp4")) && !has(path_join(bses, L"fresh.mp4")) && !has(path_join(bses, L"b.mp4.part")));
+    T(has(path_join(save_data_dir(to), L"a.session.txt")));
     T(!has(path_join(bclips, L"c.mp4")) && has(path_join(bses, L"old.mp4")));
 
     g_backup.clips = true;
     g_backup.done = g_backup.total = 0;
     backup_thread(0);
-    T(g_backup.done == 1 && has(path_join(bclips, L"c.mp4"))); // a.mp4 is there already
+    T(g_backup.done == 2 && has(path_join(bclips, L"c.mp4"))); // a.mp4 is there already
+    T(has(path_join(save_source_dir(to, 2026), L"d.mp4")));
 
     put(ses, L"a.mp4", "a2", 600); // changed since
     g_backup.done = g_backup.total = 0;
@@ -976,7 +980,7 @@ static void test_render()
     Path keep = g_app.config.save_dir;
     swprintf(g_app.config.save_dir.s, MAX_PATH, L"%sclipback-test-render-%u", temp, GetCurrentProcessId());
     Path root = g_app.config.save_dir;
-    Path clips = path_join(path_join(root, L"2026"), L"Clips"), data = path_join(path_join(root, L"2026"), L"Data");
+    Path clips = path_join(path_join(root, L"Clips"), L"2026"), data = path_join(root, L"Data");
     Path source = path_join(clips, L"Source");
     LibItem it = {};
     str_set(it.name, "Clip 1");
@@ -1009,7 +1013,7 @@ static void test_render()
     };
     char got[64];
     Path clip = path_join(clips, L"Clip 1.mp4"), orig = path_join(source, L"Clip 1.mp4");
-    Path made = path_join(render_dir(2026), L"Clip 1.mp4");
+    Path made = path_join(render_dir(), L"Clip 1.mp4");
     put(clip, "original");
     put(made, "render 1");
     T(render_swap(it, made));
@@ -1047,9 +1051,9 @@ static void test_render()
     DeleteFileW(lib_edit_path(it).s);
     RemoveDirectoryW(source.s);
     RemoveDirectoryW(clips.s);
-    RemoveDirectoryW(render_dir(2026).s);
+    RemoveDirectoryW(render_dir().s);
     RemoveDirectoryW(data.s);
-    RemoveDirectoryW(path_join(root, L"2026").s);
+    RemoveDirectoryW(path_join(root, L"Clips").s);
     T(RemoveDirectoryW(root.s));
     g_app.config.save_dir = keep;
 }
@@ -2981,11 +2985,12 @@ static void test_social_preview()
     T(a.item_count == 2 && a.items[1].to == 80 && a.items[1].fade_out == 0 && adv_len(a) == 60);
     T(a.ikey_count == 1 && a.ikeys[0].item == 2);
 
-    // a session keeps its tracks in the bucket: a file in a Sessions folder
-    T(path_is_session(L"D:\\Videos\\Clips\\2026\\Sessions\\Overwatch 2026-11-24.mp4"));
-    T(path_is_session(L"D:\\Videos\\Clips\\2026\\sessions\\a.mp4"));
-    T(!path_is_session(L"D:\\Videos\\Clips\\2026\\Clips\\Sessions.mp4"));
-    T(!path_is_session(L"D:\\Videos\\Clips\\2026\\Clips\\a.mp4") && !path_is_session(L"a.mp4"));
+    // a session keeps its tracks in the bucket: a file in a year folder of a Sessions folder
+    T(path_is_session(L"D:\\Videos\\clipback\\Sessions\\2026\\Overwatch 2026-11-24.mp4"));
+    T(path_is_session(L"D:\\Videos\\clipback\\sessions\\2026\\a.mp4"));
+    T(!path_is_session(L"D:\\Videos\\clipback\\Clips\\2026\\Sessions.mp4"));
+    T(!path_is_session(L"D:\\Videos\\clipback\\Sessions\\a.mp4") && !path_is_session(L"D:\\Sessions\\20x6\\a.mp4"));
+    T(!path_is_session(L"D:\\Videos\\clipback\\Clips\\2026\\a.mp4") && !path_is_session(L"a.mp4"));
 }
 
 static void test_edit_xml()

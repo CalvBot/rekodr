@@ -1,4 +1,4 @@
-// Library: the saved clips and sessions, found under <save_dir>\<year>\{Clips,Sessions}, and the player.
+// Library: the saved clips and sessions, found under <save_dir>\{Clips,Sessions}\<year>, and the player.
 //
 // Two worker threads do the slow parts: the scan (listing the folders, ffprobe for files not seen before) and the
 // thumbnails (ffmpeg makes a strip of 24 frames per file, cached under local_dir\thumbs, decoded with WIC), and the
@@ -440,19 +440,20 @@ static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
     return false;
 }
 
-// A card's original file: <year>\Clips or Sessions\<name>, or Clips\Source\<name> when it's rendered.
+// A card's original file: Clips\<year>\<name> or Sessions\<year>\<name>, or Clips\<year>\Source\<name> when it's
+// rendered.
 static Path lib_file_path(const Path &save_dir, const LibItem &it)
 {
-    Path p = {};
-    wchar_t name[256], ext[8];
+    wchar_t name[256], ext[8], file[272];
     utf8_to_wide(it.name, name, COUNT(name));
     utf8_to_wide(it.ext, ext, COUNT(ext));
-    swprintf(p.s, MAX_PATH, L"%s\\%d\\%s\\%s%s", save_dir.s, it.year,
-             it.kind ? L"Sessions" : it.rendered ? L"Clips\\Source" : L"Clips", name, ext);
-    return p;
+    swprintf(file, COUNT(file), L"%s%s", name, ext);
+    return path_join(it.kind ? save_sessions_dir(save_dir, it.year)
+                     : it.rendered ? save_source_dir(save_dir, it.year) : save_clips_dir(save_dir, it.year), file);
 }
 
-// The file that plays anywhere: <year>\Clips or Sessions\<name>, the rendered edit for a rendered clip.
+// The file that plays anywhere: Clips\<year>\<name> or Sessions\<year>\<name>, the rendered edit for a rendered
+// clip.
 static Path lib_playable_file(const Path &save_dir, const LibItem &it)
 {
     LibItem plain = it;
@@ -525,19 +526,20 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
     memset(seen, 0, sizeof seen);
     lib_overrides_load();
     lib_names_load();
-    WIN32_FIND_DATAW fd;
-    HANDLE years = FindFirstFileW(path_join(save_dir, L"*").s, &fd);
-    if (years != INVALID_HANDLE_VALUE) {
+    // The year folders of Clips, then of Sessions
+    for (i32 top = 0; top < 2; top++) {
+        WIN32_FIND_DATAW fd;
+        HANDLE years = FindFirstFileW(path_join(path_join(save_dir, top ? L"Sessions" : L"Clips"), L"*").s, &fd);
+        if (years == INVALID_HANDLE_VALUE) continue;
         do {
             if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || wcslen(fd.cFileName) != 4 || !iswdigit(fd.cFileName[0]))
                 continue;
             i16 year = (i16)_wtoi(fd.cFileName);
-            Path ydir = path_join(save_dir, fd.cFileName);
-            // 0: Clips, 1: Sessions, 2: Clips\Source, for originals whose render isn't in Clips (render.cpp puts
-            // them back or renders them again)
-            for (i32 kind = 0; kind < 3; kind++) {
-                Path dir = path_join(ydir, kind == 1 ? L"Sessions" : kind == 2 ? L"Clips\\Source" : L"Clips");
-                Path source = path_join(ydir, L"Clips\\Source");
+            Path clips = save_clips_dir(save_dir, year), source = save_source_dir(save_dir, year);
+            // 0: Clips, 1: Sessions, 2: Clips\<year>\Source, for originals whose render isn't in Clips (render.cpp
+            // puts them back or renders them again)
+            for (i32 kind = top ? 1 : 0; kind < 3; kind += top ? 3 : 2) {
+                Path dir = kind == 1 ? save_sessions_dir(save_dir, year) : kind == 2 ? source : clips;
                 WIN32_FIND_DATAW f;
                 HANDLE h = FindFirstFileW(path_join(dir, L"*").s, &f);
                 if (h == INVALID_HANDLE_VALUE) continue;
@@ -550,7 +552,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
                     WIN32_FILE_ATTRIBUTE_DATA orig = {};
                     bool rendered = kind == 0 && GetFileAttributesExW(path_join(source, f.cFileName).s,
                                                                       GetFileExInfoStandard, &orig);
-                    if (kind == 2 && file_exists(path_join(path_join(ydir, L"Clips"), f.cFileName).s)) continue;
+                    if (kind == 2 && file_exists(path_join(clips, f.cFileName).s)) continue;
                     if (n == LIB_MAX_ITEMS) break;
                     LibItem *it = &items[n++];
                     *it = {};
@@ -882,17 +884,17 @@ static void library_rescan()
 static Path lib_item_path(const LibItem &it) { return lib_file_path(g_app.config.save_dir, it); }
 static Path lib_playable_path(const LibItem &it) { return lib_playable_file(g_app.config.save_dir, it); }
 
-// Where an item's edit is kept: <save_dir>\<year>\Data\<name>.edit.txt
+// Where an item's edit is kept: <save_dir>\Data\<name>.edit.txt
 static Path lib_edit_path(const LibItem &it)
 {
     Path p = {};
     wchar_t name[256];
     utf8_to_wide(it.name, name, COUNT(name));
-    swprintf(p.s, MAX_PATH, L"%s\\%d\\Data\\%s.edit.txt", g_app.config.save_dir.s, it.year, name);
+    swprintf(p.s, MAX_PATH, L"%s\\%s.edit.txt", save_data_dir(g_app.config.save_dir).s, name);
     return p;
 }
 
-// Where a rendered clip notes what its render was made from: <save_dir>\<year>\Data\<name>.render.txt
+// Where a rendered clip notes what its render was made from: <save_dir>\Data\<name>.render.txt
 static Path lib_render_note_path(const LibItem &it)
 {
     Path p = lib_edit_path(it);

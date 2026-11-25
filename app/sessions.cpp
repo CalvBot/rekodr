@@ -9,7 +9,7 @@
 // On disk:
 //   <local_dir>\sessions.txt                     open sessions and ones still in the buffer, rewritten whole, so a
 //                                                restart of clipback carries on where it was
-//   <save_dir>\<year>\Data\<name>.session.txt    the record of a saved or hand-made session (SPEC.md, "Folders")
+//   <save_dir>\Data\<name>.session.txt           the record of a saved or hand-made session (SPEC.md, "Folders")
 // At start, sessions.txt is read and activity.tsv is replayed to add what the file doesn't know (it may be lost,
 // or out of date after a crash).
 
@@ -122,16 +122,13 @@ static void fmt_stamp(i64 us, char *out, i32 cap)
 // The Data record: name, game or custom, the real start and end, and which part has footage (SPEC.md, "Folders").
 // Named after the video once there is one, else after the name and start the way a session video would be.
 
-static void session_write_record(Session *s, i32 video_year)
+static void session_write_record(Session *s)
 {
     i64 oldest = g_app.recorder.oldest_us;
     i64 foot_from = s->start_us, foot_to = s->end_us;
     if (oldest && foot_from < oldest) foot_from = oldest;
     if (foot_to <= foot_from) foot_from = foot_to = 0; // none of it is in the buffer: only declared
 
-    // The year is the year the footage starts in.
-    SYSTEMTIME t = local_time(foot_from ? foot_from : s->start_us);
-    i32 year = video_year ? video_year : t.wYear;
     char stem[320];
     if (s->video[0]) {
         str_set(stem, s->video);
@@ -141,7 +138,7 @@ static void session_write_record(Session *s, i32 video_year)
         save_name_expand(g_app.config.name_template, s->name, s->start_us, stem, sizeof stem);
     }
     char rel[256];
-    snprintf(rel, sizeof rel, "%d\\Data\\%s.session.txt", year, stem);
+    snprintf(rel, sizeof rel, "Data\\%s.session.txt", stem);
 
     wchar_t wrel[256];
     utf8_to_wide(rel, wrel, COUNT(wrel));
@@ -213,15 +210,7 @@ static void sessions_check_saves()
             s->state = SES_SAVED;
             const char *base = strrchr(v->path, '\\');
             str_set(s->video, base ? base + 1 : v->path);
-            // The year folder the save chose: <save_dir>\<year>\Sessions\<file>
-            i32 year = 0;
-            const char *sessions_dir = base && base - v->path > 9 ? base - 9 : 0;
-            if (sessions_dir && !strncmp(sessions_dir, "\\Sessions", 9)) {
-                const char *y = sessions_dir;
-                while (y > v->path && y[-1] != '\\') y--;
-                year = atoi(y);
-            }
-            session_write_record(s, year);
+            session_write_record(s);
             log_line("session %u (%s): saved", s->id, s->name);
             // Its display name goes with the file, keyed as the Library keys it (its size and time).
             wchar_t wp[MAX_PATH];
@@ -711,7 +700,7 @@ static u32 sessions_add_manual(i64 from_us, i64 to_us, const char *name)
     Session *s = session_new(game ? game->exe.s : "", shown, from_us, to_us);
     if (!s) return 0;
     s->state = SES_NOT_SAVED;
-    session_write_record(s, 0);
+    session_write_record(s);
     char a[32], b[32];
     fmt_stamp(from_us, a, sizeof a);
     fmt_stamp(to_us, b, sizeof b);
@@ -748,7 +737,7 @@ static void sessions_change(u32 id, i64 from_us, i64 to_us, const char *name)
         }
     }
     if (s->state == SES_OPEN) s->state = SES_NOT_SAVED; // set by hand, it no longer follows the game
-    if (s->record[0] || s->custom) session_write_record(s, 0);
+    if (s->record[0] || s->custom) session_write_record(s);
     g_app.sessions.dirty = true;
     ui_wake();
 }

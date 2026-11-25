@@ -77,8 +77,7 @@ static void run_command(const char *text)
     } else if (!strcmp(cmd, "folder")) {
         SYSTEMTIME t;
         GetLocalTime(&t);
-        Path dir = {};
-        swprintf(dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, t.wYear);
+        Path dir = save_clips_dir(g_app.config.save_dir, t.wYear);
         if (GetFileAttributesW(dir.s) == INVALID_FILE_ATTRIBUTES) dir = g_app.config.save_dir;
         ShellExecuteW(0, L"open", dir.s, 0, 0, SW_SHOWNORMAL);
     } else if (!strcmp(cmd, "dev")) { // the detailed log on (`dev`) or off (`dev off`), kept in the settings

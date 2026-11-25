@@ -98,7 +98,7 @@ static const char GAME_DESKTOP[] = "Desktop";
 static const char GAME_NOT_OURS[] = "Other";
 
 struct Config {
-    Path save_dir;     // <Videos>\Clips, holding 2026\Clips, 2026\Sessions, 2026\Data
+    Path save_dir;     // <Videos>\clipback, holding Clips, Sessions and Data (save_clips_dir and the rest)
     Path buffer_dir;   // the rolling buffer
     Path play_dir;     // the Timeline's Play files (preview-*.mp4); the local folder unless moved to a faster drive
     bool backup_on;    // copy sessions to backup_dir (backup.cpp)
@@ -166,7 +166,7 @@ struct Config {
                              // comma separated, used without R2; "" = none
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
-    bool render_edits;   // an edited clip's file in Clips is its edit rendered, the original in Clips\Source (on)
+    bool render_edits;   // an edited clip's file in Clips is its edit rendered, the original in Source (on)
     f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)
     f32 social_copy_mb;  // the biggest video chat cards play from a link (MB), made about 5% under it (150)
     i32 share_min_quality; // Lower quality to fit: a copy may go down to this percent of the recommended bitrate
@@ -210,6 +210,17 @@ struct Config {
     FolderRule folders[32];
     i32        folder_count;
 };
+
+// The save folder: <save_dir>\Clips\<year> (with Source\ in it for rendered clips' originals),
+// <save_dir>\Sessions\<year>, and <save_dir>\Data for edits, render notes, session records and Rendering.
+// The year is the year the footage starts in.
+static inline Path save_clips_dir(const Path &root, i32 year)
+{ Path p; swprintf(p.s, MAX_PATH, L"%s\\Clips\\%d", root.s, year); return p; }
+static inline Path save_source_dir(const Path &root, i32 year)
+{ Path p; swprintf(p.s, MAX_PATH, L"%s\\Clips\\%d\\Source", root.s, year); return p; }
+static inline Path save_sessions_dir(const Path &root, i32 year)
+{ Path p; swprintf(p.s, MAX_PATH, L"%s\\Sessions\\%d", root.s, year); return p; }
+static inline Path save_data_dir(const Path &root) { return path_join(root, L"Data"); }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Live state
@@ -346,13 +357,13 @@ struct BufferIdx {
 // save.cpp: turning ranges of the buffer into files (clips, sessions; later Keep and Share), one ffmpeg at a time
 // on a worker thread. `jobs` is what the UI shows; the worker reports into it through EV_SAVE events.
 enum SaveKind : u8 {
-    SAVE_CLIP,    // a range of the buffer into <year>\Clips
-    SAVE_SESSION, // a range of the buffer into <year>\Sessions
-    SAVE_KEEP,    // the editor's Keep: an edit of a saved file, at full quality, into <year>\Clips
+    SAVE_CLIP,    // a range of the buffer into Clips\<year>
+    SAVE_SESSION, // a range of the buffer into Sessions\<year>
+    SAVE_KEEP,    // the editor's Keep: an edit of a saved file, at full quality, into Clips\<year>
     SAVE_SHARE,   // the editor's Share: a small copy with one stereo mix, into the share folder
     SAVE_PREVIEW, // a stretch of the buffer into the local folder, for the timeline's Play; not a saved file
     SAVE_LINK,    // a copy for a link: H.264 with the Mix only, played from the start while it loads, into the link folder
-    SAVE_RENDER,  // an edited clip's playable copy, made as Keep makes it, into <year>\Data\Rendering (render.cpp)
+    SAVE_RENDER,  // an edited clip's playable copy, made as Keep makes it, into Data\Rendering (render.cpp)
 };
 
 enum SaveState : u8 { SAVE_QUEUED, SAVE_RUNNING, SAVE_DONE, SAVE_FAILED, SAVE_CANCELLED };
@@ -433,7 +444,7 @@ struct ItemKey {
     u8  ease;
 };
 
-// An edit never changes the original: it's this small record, kept in <year>\Data\<video name>.edit.txt.
+// An edit never changes the original: it's this small record, kept in Data\<video name>.edit.txt.
 // A Simple edit is the pieces, keys and volumes; an Advanced one is the items and their keys, with muted[] per audio
 // track and the rest empty.
 struct EditRecord {
@@ -466,7 +477,7 @@ enum { ED_COLOR = EDIT_MASTER + 2, ED_LANES = ED_COLOR + EDIT_COLORS };
 // A Keep, Share or Link job: everything the save worker needs, copied with the request.
 struct EditJob {
     Path       src;       // the original
-    Path       out_dir;   // <year>\Clips for Keep, the share folder for Share, the link folder for Link
+    Path       out_dir;   // Clips\<year> for Keep, the share folder for Share, the link folder for Link
     char       stem[256]; // the output's name without ".mp4" (made unique if taken)
     MediaInfo  info;
     EditRecord edit;
@@ -656,14 +667,14 @@ enum { LIB_MAX_ITEMS = 4096, LIB_MAX_GAMES = 128, LIB_THUMBS = 160, LIB_MAX_FOLD
 struct LibItem {
     char      name[256]; // file name without the extension (UTF-8)
     char      ext[8];    // ".mp4"
-    i16       year;      // the year folder it's in
+    i16       year;      // the year folder it's in (Clips\<year> or Sessions\<year>)
     LibView   kind;      // in Clips or Sessions
     bool      probed;    // `info` is known
     u64       size;
     i64       mtime_us;
     i64       when_us;   // when it's from: the time in its name (by the template in Options), else mtime_us
     u64       key;       // thumbnail cache key; changes when the file does, not when it's renamed
-    bool      rendered;    // a clip whose original is in Clips\Source, its edit rendered in Clips (render.cpp);
+    bool      rendered;    // a clip whose original is in Clips\<year>\Source, its edit rendered in Clips (render.cpp);
                            // name, size, times, key and info are the original's
     u64       render_size; // the rendered copy's size, 0 = there's none in Clips yet
     MediaInfo info;
@@ -927,7 +938,7 @@ struct Session {
     i64          start_us, end_us; // the real start and end; while open, end is when the game was last seen
     u32          job;              // the save job while SAVING
     char         video[256];       // the saved file's name once SAVED
-    char         record[256];      // its record under save_dir, "2026\Data\<name>.session.txt"; empty = none
+    char         record[256];      // its record under save_dir, "Data\<name>.session.txt"; empty = none
     char         display_name[128]; // typed by hand; shown as its title, the name and times kept under it
     bool         seen;             // its row was drawn on the Sessions page, or Review was pressed on its toast
                                    // (session_seen); until then it counts as new (sessions_unseen_count)

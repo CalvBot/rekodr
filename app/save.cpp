@@ -731,14 +731,14 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     clean_name(label);
     if (!label[0]) str_set(label, game);
 
-    // <save_dir>\<year>\Clips\<name>.mp4 or ...\Sessions\<name>.mp4, the name from the template in Options with the
-    // label as {game}. The year is the year the footage starts in.
+    // <save_dir>\Clips\<year>\<name>.mp4 or <save_dir>\Sessions\<year>\<name>.mp4, the name from the template in
+    // Options with the label as {game}. The year is the year the footage starts in.
     // A preview goes in the playback cache as preview-<id>.mp4.
     SYSTEMTIME t = local_time(clip_start);
     bool session = req.kind == SAVE_SESSION, preview = req.kind == SAVE_PREVIEW;
     Path dir = {};
     if (preview) dir = w->cfg.play_dir;
-    else swprintf(dir.s, MAX_PATH, L"%s\\%d\\%s", w->cfg.save_dir.s, t.wYear, session ? L"Sessions" : L"Clips");
+    else dir = session ? save_sessions_dir(w->cfg.save_dir, t.wYear) : save_clips_dir(w->cfg.save_dir, t.wYear);
     int made = SHCreateDirectoryExW(0, dir.s, 0);
     if (made != ERROR_SUCCESS && made != ERROR_ALREADY_EXISTS && made != ERROR_FILE_EXISTS) {
         char d[MAX_PATH * 3];
@@ -936,7 +936,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
 // ---------------------------------------------------------------------------------------------------------------
 // Keep and Share: an edit of a saved file.
 //
-// Keep is the edit at full quality into <year>\Clips, every track kept. With one piece the video is stream-copied when
+// Keep is the edit at full quality into Clips\<year>, every track kept. With one piece the video is stream-copied when
 // there's no zoom or colour (cut at the keyframe before the start), else re-encoded at a constant quality; the audio is
 // copied as it is when no volume was touched, else the Mix is rebuilt from the edited tracks and the separate tracks
 // are copied as recorded. With several pieces everything is re-encoded, each stream cut into the pieces and joined,
@@ -2655,8 +2655,8 @@ static bool save_job_held(u32 id)
 
 static void save_cancel(u32 id);
 
-// Queues a save of the wall-clock range [from_us, to_us]: a clip into <year>\Clips, or a session into
-// <year>\Sessions. An empty `name` names it after the game played most. Returns the job id, or 0 if it couldn't be
+// Queues a save of the wall-clock range [from_us, to_us]: a clip into Clips\<year>, or a session into
+// Sessions\<year>. An empty `name` names it after the game played most. Returns the job id, or 0 if it couldn't be
 // queued (no free slot).
 static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, const EditJob *edit)
 {
@@ -2773,12 +2773,14 @@ static u32 save_link(const Path &src, const MediaInfo &info, const EditRecord &e
     return save_queue(SAVE_LINK, 0, 0, j.stem, &j);
 }
 
-// Whether `path` is a session: a file in a Sessions folder (<year>\Sessions).
+// Whether `path` is a session: a file in a year folder of a Sessions folder (Sessions\<year>).
 static bool path_is_session(const wchar_t *path)
 {
     const wchar_t *name = wcsrchr(path, L'\\');
-    if (!name || name - path < 9) return false;
-    return !_wcsnicmp(name - 9, L"\\Sessions", 9);
+    if (!name || name - path < 14 || name[-5] != L'\\') return false;
+    for (int i = 1; i <= 4; i++)
+        if (name[-i] < L'0' || name[-i] > L'9') return false;
+    return !_wcsnicmp(name - 14, L"\\Sessions", 9);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2890,7 +2892,7 @@ static u32 save_social_copy(const Path &src, const MediaInfo &info, const EditRe
     return id;
 }
 
-// Saves the last `secs` seconds of the buffer as a clip in <save_dir>\<year>\Clips. A start before the oldest
+// Saves the last `secs` seconds of the buffer as a clip in <save_dir>\Clips\<year>. A start before the oldest
 // footage is moved up to it, so the saved line says what the clip holds.
 static void save_last(i64 secs)
 {

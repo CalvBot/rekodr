@@ -1,13 +1,13 @@
-// Playable copies of edited clips, so <year>\Clips always holds something that plays anywhere as it was meant.
+// Playable copies of edited clips, so Clips\<year> always holds something that plays anywhere as it was meant.
 //
-// An unedited clip stays as it is. An edited clip's <year>\Clips\<name>.mp4 is its edit rendered as Keep makes it
+// An unedited clip stays as it is. An edited clip's Clips\<year>\<name>.mp4 is its edit rendered as Keep makes it
 // (save.cpp: at the recording's quality, every track kept with the Mix rebuilt, a single trim stream-copied), and
-// the untouched original is <year>\Clips\Source\<name>.mp4. The library lists the clip by its original
+// the untouched original is Clips\<year>\Source\<name>.mp4. The library lists the clip by its original
 // (LibItem.rendered): its edit, pictures, records and the editor all keep to that file.
 //
-// A render is made on the save worker at low priority into <year>\Data\Rendering, then swapped in with ReplaceFile,
+// A render is made on the save worker at low priority into Data\Rendering, then swapped in with ReplaceFile,
 // which puts the render in Clips and moves the original into Source in one step on the same drive: Clips never
-// lacks the file, and a render that fails changes nothing. <year>\Data\<name>.render.txt notes the edit it was made
+// lacks the file, and a render that fails changes nothing. Data\<name>.render.txt notes the edit it was made
 // from. One render runs at a time, only with no other save waiting and no game being played: a save or a game
 // stops it, and it's made again later. An edit is rendered once the editor is off the clip; while the editor is on
 // a clip already rendered, 30 s after its last change, and a first render finished meanwhile waits to be swapped in
@@ -134,12 +134,8 @@ static bool render_edit_stamp(const LibItem &it, i64 *mtime_us, u64 *hash)
     return true;
 }
 
-static Path render_dir(i32 year)
-{
-    Path p = {};
-    swprintf(p.s, MAX_PATH, L"%s\\%d\\Data\\Rendering", g_app.config.save_dir.s, year);
-    return p;
-}
+// Where a render is made before it's swapped in: <save_dir>\Data\Rendering
+static Path render_dir() { return path_join(save_data_dir(g_app.config.save_dir), L"Rendering"); }
 
 // Puts a clip's original back in Clips over its render. True when it went (or there was nothing to put back).
 static bool render_restore(const LibItem &it)
@@ -199,7 +195,7 @@ static bool render_start(const LibItem &it, const EditRecord &rec, i64 edit_mtim
     static EditJob j;
     j = {};
     j.src = lib_item_path(it);
-    j.out_dir = render_dir(it.year);
+    j.out_dir = render_dir();
     j.info = it.info;
     j.edit = rec;
     str_set(j.stem, it.name);
@@ -253,26 +249,17 @@ static void render_on_save(u32 id, i64 what, const char *text)
     g_render.next_ms = 0; // the next clip, if any
 }
 
-// Clears what a render left in each Data\Rendering when the app stopped in the middle.
+// Clears what a render left in Data\Rendering when the app stopped in the middle.
 static void render_clean_leftovers()
 {
-    WIN32_FIND_DATAW fd;
-    HANDLE years = FindFirstFileW(path_join(g_app.config.save_dir, L"*").s, &fd);
-    if (years == INVALID_HANDLE_VALUE) return;
-    do {
-        bool year = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcslen(fd.cFileName) == 4 &&
-                    iswdigit(fd.cFileName[0]);
-        if (!year) continue;
-        Path dir = render_dir(_wtoi(fd.cFileName));
-        WIN32_FIND_DATAW f;
-        HANDLE h = FindFirstFileW(path_join(dir, L"*").s, &f);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        do
-            if (!(f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) DeleteFileW(path_join(dir, f.cFileName).s);
-        while (FindNextFileW(h, &f));
-        FindClose(h);
-    } while (FindNextFileW(years, &fd));
-    FindClose(years);
+    Path dir = render_dir();
+    WIN32_FIND_DATAW f;
+    HANDLE h = FindFirstFileW(path_join(dir, L"*").s, &f);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do
+        if (!(f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) DeleteFileW(path_join(dir, f.cFileName).s);
+    while (FindNextFileW(h, &f));
+    FindClose(h);
 }
 
 // Once a second on the main thread: stops a render when a game is played, swaps in a finished one, and every

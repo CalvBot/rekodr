@@ -1,6 +1,6 @@
 // Editor: trim, zoom and colour keyframes and track volumes for one saved clip or session, then Keep or Share.
 //
-// An edit never touches the original. It's a small text file, <year>\Data\<name>.edit.txt, written whenever a
+// An edit never touches the original. It's a small text file, Data\<name>.edit.txt, written whenever a
 // change settles (a slider let go, a key pressed), so it's there next time the file is opened. Keep and Share go
 // through the save queue (save.cpp, edit_run); a finished Share is put on the clipboard as a file.
 //
@@ -760,7 +760,7 @@ static void ed_start(bool small_keep = false)
     j.src = ed.path;
     j.info = ed_share_info();
     j.edit = ed.edit;
-    swprintf(j.out_dir.s, MAX_PATH, L"%s\\%d\\Clips", g_app.config.save_dir.s, ed.item.year);
+    j.out_dir = save_clips_dir(g_app.config.save_dir, ed.item.year);
     // Kept beside clips that may hold the original: its own name, or the original's with " edit" (" small")
     if (ed.out_name[0] && strcmp(ed.out_name, ed.item.name)) snprintf(j.stem, sizeof j.stem, "%s", ed.out_name);
     else snprintf(j.stem, sizeof j.stem, "%s %s", ed.item.name, small_keep ? "small" : "edit");

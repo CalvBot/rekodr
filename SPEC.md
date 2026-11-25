@@ -28,7 +28,7 @@ Keep a whole session from start to finish.
     session will stay in the buffer before it's gone, and it can still be saved from there.
   - Per game: *Ask* (default), *Always save* or *Never*.
 - **Save** copies the buffer into one MP4 with every audio track. The video isn't re-encoded, so the only cost is
-  the disk copy. It goes to `<year>\Sessions\Overwatch 2026-11-15 19-02.mp4` (see Folders) and runs as a
+  the disk copy. It goes to `Sessions\<year>\Overwatch 2026-11-15 19-02.mp4` (see Folders) and runs as a
   background job with progress. Buffer segments being copied are not deleted until the copy is done.
 - **Sessions longer than the buffer** (24 h by default) can only keep what's still in the buffer. The session's
   record still holds its real start and end, which can be set by hand, so the library shows how long it really
@@ -36,11 +36,11 @@ Keep a whole session from start to finish.
 
 ### 2. Clips from the buffer
 - **Quick save:** a hotkey, Stream Deck key or tray item saves the last *N* (30 s, 2 min, 1 h, any length) into
-  `<year>\Clips\`. The video is stream-copied, so a save takes seconds.
+  `Clips\<year>\`. The video is stream-copied, so a save takes seconds.
 - **Timeline:** a hotkey, Stream Deck key (`clipback timeline`) or tray item opens the window on the buffer timeline:
   - It shows the last hour, and zooms out to the whole buffer.
   - **Rows:** thumbnails, a band per game played, and one row per audio stream showing when each app made sound.
-  - Drag to select a range and play to check it. **Save** writes it to `<year>\Clips` with every audio track.
+  - Drag to select a range and play to check it. **Save** writes it to `Clips\<year>` with every audio track.
     **Share** saves it the same way, then shares the clip like the editor's Share; its arrow picks the host for a link.
     **Edit** opens the range in the editor without saving first. **Session** makes it a session (pick a game or
     type a name).
@@ -94,7 +94,7 @@ Keep a whole session from start to finish.
   and crossfades light. The preview shows the fades; a crossfade previews as a cut. Keep, Share and Link render
   them, and the XML has them as transitions.
 - **Two ways out of the editor:**
-  - **Keep:** writes the edited result as a new clip in `<year>\Clips` at original quality. A single trim is stream-copied
+  - **Keep:** writes the edited result as a new clip in `Clips\<year>` at original quality. A single trim is stream-copied
     where possible. Cuts or a zoom force a re-encode, done at the recording's quality. Every track is kept, and the Mix
     track is rebuilt from the volumes. Sessions are cut into clips this way.
   - **Share:** the same in the library (a clip as its saved edit has it) and the editor. Share never changes the
@@ -145,9 +145,9 @@ Keep a whole session from start to finish.
   Esc clears it. While any is selected, a click on a card ticks it, and a bar in place of the filters changes their
   game, moves them to a folder or out of the open one, or deletes them. Dragging a selected card takes them all to a
   folder. The selection belongs to Clips or Sessions and clears when the view or a filter changes.
-- **Playable copies:** with *Render edits* on (`render_edits`, default on), `<year>\Clips` always holds what plays
+- **Playable copies:** with *Render edits* on (`render_edits`, default on), `Clips\<year>` always holds what plays
   anywhere as it was meant. An unedited clip stays as it is. An edited clip's `Clips\<name>.mp4` is its edit
-  rendered as Keep makes it, and the untouched original is `Clips\Source\<name>.mp4`; the library lists the clip
+  rendered as Keep makes it, and the untouched original is `Clips\<year>\Source\<name>.mp4`; the library lists the clip
   once, and its edit, pictures and records keep to the original. A render runs once the edit has settled (the
   editor off the clip; for a clip already rendered, also 30 s after the edit's last change), one at a time at low
   priority, never while a game is played or another save waits: those stop it and it's made again later. It's made
@@ -160,26 +160,26 @@ Keep a whole session from start to finish.
 
 ## Folders
 
-Everything clipback saves goes under one folder (setting, default `<Videos>\Clips`), with a folder per year:
+Everything clipback saves goes under one folder (setting, default `<Videos>\clipback`), videos in a folder per year:
 
 ```
-<Videos>\Clips\2026\Clips\<Game> 2026-11-15 21-04-10.mp4    clips (quick saves, timeline saves, Keep)
-<Videos>\Clips\2026\Clips\Source\                          edited clips' originals (Playable copies)
-<Videos>\Clips\2026\Sessions\<Name> 2026-11-15 19-02.mp4    sessions
-<Videos>\Clips\2026\Data\                                   everything that isn't video, for that year
-<buffer>\                                                   the rolling buffer (format below)
-%APPDATA%\clipback\config                                   settings
-%LOCALAPPDATA%\clipback\                                    log, thumbnail cache
-%TEMP%\clipback\share\                                      share copies
+<Videos>\clipback\Clips\2026\<Game> 2026-11-15 21-04-10.mp4    clips (quick saves, timeline saves, Keep)
+<Videos>\clipback\Clips\2026\Source\                          edited clips' originals (Playable copies)
+<Videos>\clipback\Sessions\2026\<Name> 2026-11-15 19-02.mp4    sessions
+<Videos>\clipback\Data\                                       everything that isn't video
+<buffer>\                                                      the rolling buffer (format below)
+%APPDATA%\clipback\config                                      settings
+%LOCALAPPDATA%\clipback\                                       log, thumbnail cache
+%TEMP%\clipback\share\                                         share copies
 ```
 
-`Data` holds one small text file per clip or session, named after the video:
+`Data` holds one small text file per clip or session, named after the video, for every year:
 - **Edit records:** pieces, zoom keyframes, track volumes.
 - **Render notes:** which edit a clip's playable copy was made from. `Data\Rendering` holds a render being made.
 - **Session records:** name, whether it's a game or custom, the real start and end, and which part has footage.
   This includes sessions not saved yet, so a session can be defined before, or without, saving its video.
 
-Moving a year folder keeps its videos and their records together. The year is the year the footage starts in.
+The year is the year the footage starts in.
 
 Clips are named after the game played most in them, or `Desktop`. Sessions are named after the session. Files are tagged in the MP4:
 - **Genre:** the game (Explorer can group by it).
