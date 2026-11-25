@@ -5540,19 +5540,21 @@ static bool lib_unsaved_row(f32 full_w)
     return true;
 }
 
-// The Games / Folders switch at the top of the list on the left (lib_switch). Collapsed, it's one icon (what the
-// list shows) where the rows' icons are; a click shows the other. True when it's flipped.
+// The Games / Folders switch at the top of the list on the left (lib_switch), the same size as the Clips / Sessions
+// one. Collapsed, it's one icon (what the list shows) where the rows' icons are; a click shows the other. True when
+// it's flipped.
 static bool lib_side_toggle(f32 w, bool collapsed)
 {
     bool folders = g_app.config.side_folders, flip = false;
-    f32 h = kit_px(30), is = kit_px(20);
+    f32 h = ImGui::GetFrameHeight(), is = kit_px(20);
     ImVec2 a = ImGui::GetCursorScreenPos();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     if (collapsed) {
         flip = ImGui::InvisibleButton("##sidemode", ImVec2(w, h));
         bool hot = ImGui::IsItemHovered();
         kit_tip(folders ? "Show the games" : "Show the folders");
-        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? COL_HOVER : COL_PANEL2), kit_px(7));
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? COL_HOVER : COL_PANEL2),
+                          ImGui::GetStyle().FrameRounding);
         const char *ic = folders ? ICON_FOLDER : ICON_GAME;
         ImGui::PushFont(g_font_icon);
         ImVec2 gs = ImGui::CalcTextSize(ic);
@@ -5755,7 +5757,7 @@ static void screen_library()
         lib_refilter();
     }
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 fh = ImGui::GetFrameHeight(), view_w = kit_px(104);
+    f32 fh = ImGui::GetFrameHeight(), switch_w = kit_px(2 * 104 + 4); // both switches are switch_w by fh
     // The list down the left, docked to the window's left edge from the top bar to the bottom: on the same ground as
     // the top bar, set apart by a hairline on its inner edge. A Games / Folders switch level with the Clips and
     // Sessions one and coloured like it, then all of them and each game in this view with how many it has, most
@@ -5764,7 +5766,7 @@ static void screen_library()
     if (!lib.player.open) {
         bool &collapsed = g_app.config.games_collapsed;
         f32 icon_end = kit_px(6 + 8 + 20); // a row's icon ends this far in from the list's left
-        f32 side_w = collapsed ? icon_end + kit_px(14) : 2 * view_w + kit_px(4), side_h = ImGui::GetContentRegionAvail().y;
+        f32 side_w = collapsed ? icon_end + kit_px(14) : switch_w + kit_px(12), side_h = ImGui::GetContentRegionAvail().y;
         f32 pad_y = kit_px(LIB_PAD_Y);
         ImVec2 s0 = ImGui::GetCursorScreenPos();
         dl->AddRectFilled(ImVec2(s0.x + side_w - kit_px(1), s0.y), ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_LINE));
@@ -5861,7 +5863,7 @@ static void screen_library()
     static const char *const sorts[SORT_COUNT] = {"Newest", "Oldest", "Longest", "Biggest", "Game"};
     f32 hgap = kit_px(8), drop_w = kit_px(112);
     ImGui::SetCursorScreenPos(h0);
-    bool flip_view = lib_switch("##view", views, 2 * view_w + kit_px(4), fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER,
+    bool flip_view = lib_switch("##view", views, switch_w, fh, lib.view == LIB_SESSIONS, COL_PANEL2, COL_HOVER,
                                 COL_OFF);
     kit_tip(lib.view == LIB_SESSIONS ? "Show clips" : "Show sessions");
     if (flip_view) lib_set_view(lib.view == LIB_SESSIONS ? LIB_CLIPS : LIB_SESSIONS);
@@ -5882,7 +5884,7 @@ static void screen_library()
 
     // The date range; Custom opens the calendar
     i32 step;
-    ImVec2 range_at(h0.x + 2 * view_w + kit_px(4) + kit_px(16), h0.y);
+    ImVec2 range_at(h0.x + switch_w + kit_px(16), h0.y);
     if (sel_n > 0) lib_sel_bar(range_at, h0.x + full_w, sel_n);
     else {
     ImGui::SetCursorScreenPos(range_at);
