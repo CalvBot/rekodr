@@ -623,6 +623,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
     else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
+    else if (!strcmp(key, "seen_version")) str_set(c->seen_version, value);
     else if (!strcmp(key, "flat_look")) boolean(&c->flat_look);
     else if (!strcmp(key, "setup_done")) boolean(&c->setup_done);
     else if (!strcmp(key, "sgdb_key")) str_set(c->sgdb_key, value);
@@ -834,6 +835,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("send_stats", c.send_stats);
     boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);
+    fprintf(f, "seen_version = %s\n", c.seen_version);
     boolean("flat_look", c.flat_look);
     boolean("setup_done", c.setup_done);
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);

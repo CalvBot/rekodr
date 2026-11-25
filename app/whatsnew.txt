@@ -1,0 +1,12 @@
+What's new in each version, built into the exe and shown by ui.cpp news_window.
+Newest version first: a "# <version>" line, then one line per change. ASCII only.
+Lines above the first version line are not shown.
+
+# 0.2.0
+Clips from OBS, ShadowPlay, Game Bar and Discord show in the Library
+Kills, deaths and wins in Counter-Strike 2 and League of Legends become markers
+A rare Steam achievement saves a clip
+One clip key, two lengths: tap it or hold it
+Mouse side buttons and controller buttons can be clip keys
+A sound for each event, picked from a library of sounds
+Links can expire after a day or a week, and show how often they were opened

@@ -915,6 +915,22 @@ static void test_hotkeys()
     T(c.hotkey_count == 1 && !strcmp(c.hotkeys[0].keys.s, "Alt+F6"));
 }
 
+// What's new: versions compare as numbers, and the notes after a version are its newer ones only
+static void test_news()
+{
+    T(version_cmp("0.2.0", "0.2.0") == 0 && version_cmp("0.2", "0.2.0") == 0);
+    T(version_cmp("0.10.0", "0.9.9") > 0 && version_cmp("0.2.0", "0.2.1") < 0 && version_cmp("1.0", "0.99.99") > 0);
+    static const char notes[] = "About the file\r\n\r\n# 0.3.0\r\nThree a  \r\n\r\nThree b\r\n#0.2.1\nTwo\n# 0.1.0\nOne";
+    NewsLine l[8];
+    i32 n = news_parse(notes, (i32)strlen(notes), "", l, 8);
+    T(n == 4 && !strcmp(l[0].ver, "0.3.0") && l[0].len == 7 && !memcmp(l[0].text, "Three a", 7));
+    T(!strcmp(l[2].ver, "0.2.1") && l[2].len == 3 && !strcmp(l[3].ver, "0.1.0") && l[3].len == 3);
+    n = news_parse(notes, (i32)strlen(notes), "0.2.0", l, 8);
+    T(n == 3 && !strcmp(l[2].ver, "0.2.1"));
+    T(news_parse(notes, (i32)strlen(notes), "0.3.0", l, 8) == 0);
+    T(news_parse(notes, (i32)strlen(notes), "", l, 2) == 2);
+}
+
 // What is saved comes back the same.
 static void test_settings_round_trip()
 {
@@ -1033,6 +1049,9 @@ static void test_settings_round_trip()
         T(config_save(none, paths) && config_load(&back, paths) && !wcscmp(back.discord_dir.s, L"D:\\Discord clips"));
         none.discord_dir = {};
         T(config_save(none, paths) && config_load(&back, paths) && !back.discord_dir.s[0]);
+        // The version whose notes were seen comes back
+        str_set(none.seen_version, "0.3.1");
+        T(config_save(none, paths) && config_load(&back, paths) && !strcmp(back.seen_version, "0.3.1"));
         T(config_save(a, paths));
     }
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
@@ -3708,6 +3727,7 @@ int main()
     test_popup_place();
     test_settings_round_trip();
     test_watch_scan();
+    test_news();
     test_pieces();
     test_edit_volumes();
     test_edit_xml();

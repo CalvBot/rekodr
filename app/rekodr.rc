@@ -38,6 +38,9 @@
 59 RCDATA "../assets/sounds/flutter.wav"
 60 RCDATA "../assets/sounds/deep.wav"
 
+// The release notes What's new shows (ui.cpp news_window).
+70 RCDATA "whatsnew.txt"
+
 #include "version.h"
 
 1 VERSIONINFO

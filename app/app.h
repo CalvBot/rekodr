@@ -247,6 +247,7 @@ struct Config {
     bool tooltips;     // hovering a control shows what it does and its key (asked in the first-run setup)
     bool flat_look;    // plain flat surfaces: no art texture, grain or see-through panels (off)
     bool setup_done;   // the first-run setup was finished or skipped; false only on a first start
+    char seen_version[16]; // the newest version whose What's new the player has seen (Help > What's new)
     bool dev_log;      // the detailed log (dev mode, see base.h)
 
     // Look
@@ -302,6 +303,8 @@ struct Ui {
     Screen screen;
     bool   help_open;
     bool   help_close; // a command asked for the help to close
+    bool   news_open;  // open What's new: every version's notes, or only those after seen_version (news_since)
+    bool   news_since;
     bool   setup_open; // the first-run setup (setup.cpp) covers the window
     i32    frames_left; // frames still to draw after the last input or change (ImGui settles over a few)
     bool   animating;   // something moves on its own (playback, progress): keep drawing

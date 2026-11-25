@@ -17,6 +17,9 @@ $version = [regex]::Match((Get-Content "$PSScriptRoot\version.h" -Raw), 'REKODR_
 if (-not $version) { throw "version.h has no REKODR_VERSION" }
 $built = (Get-Item "$Build\rekodr.exe").VersionInfo.ProductVersion
 if ($built -notlike "$version*") { throw "$Build\rekodr.exe says $built, version.h says $version" }
+if (-not (Select-String -Path "$PSScriptRoot\whatsnew.txt" -Pattern "^# $([regex]::Escape($version))\s*$" -Quiet)) {
+    throw "whatsnew.txt has no '# $version' notes"
+}
 
 New-Item -ItemType Directory -Force $Dist | Out-Null
 $exe = Join-Path $Dist "rekodr-$version.exe"

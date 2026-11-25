@@ -437,6 +437,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         g_app.config.setup_done = false;
         config_save(g_app.config, g_app.paths);
     }
+    // The top bar offers What's new for versions after seen_version. A first start, or going back to an older
+    // version, has nothing new to show.
+    if (!g_app.config.seen_version[0] || version_cmp(REKODR_VERSION, g_app.config.seen_version) < 0) {
+        str_set(g_app.config.seen_version, REKODR_VERSION);
+        config_save(g_app.config, g_app.paths);
+    }
     g_app.ui.setup_open = !g_app.config.setup_done;
     g_dev = g_app.config.dev_log || dev_env();
     {

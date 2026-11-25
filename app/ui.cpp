@@ -1436,6 +1436,138 @@ static void help_section(const char *title, const HelpRow *rows, i32 count, f32 
     ImGui::Dummy(ImVec2(w, kit_px(12)));
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// What's new: the release notes (whatsnew.txt, built in as RCDATA 70).
+
+// Compares versions "a.b.c" part by part as numbers ("0.10" is after "0.9"): <0, 0 or >0.
+static i32 version_cmp(const char *a, const char *b)
+{
+    while (*a || *b) {
+        i32 x = atoi(a), y = atoi(b);
+        if (x != y) return x < y ? -1 : 1;
+        a += strcspn(a, ".");
+        b += strcspn(b, ".");
+        if (*a) a++;
+        if (*b) b++;
+    }
+    return 0;
+}
+
+struct NewsLine { char ver[16]; const char *text; i32 len; };
+
+// The notes text s (n bytes) as lines, for the versions after `after` ("" = all), in the file's order. Each line
+// points into s. Returns the count.
+static i32 news_parse(const char *s, i32 n, const char *after, NewsLine *out, i32 max)
+{
+    char ver[16] = "";
+    bool take = false;
+    i32 count = 0;
+    for (const char *end = s + n, *e; s < end; s = e + 1) {
+        e = s;
+        while (e < end && *e != '\n') e++;
+        const char *t = e;
+        while (t > s && (t[-1] == '\r' || t[-1] == ' ')) t--;
+        if (s == t) continue;
+        if (*s == '#') {
+            const char *v = s + 1;
+            while (v < t && *v == ' ') v++;
+            i32 l = (i32)(t - v) < 15 ? (i32)(t - v) : 15;
+            memcpy(ver, v, l);
+            ver[l] = 0;
+            take = !*after || version_cmp(ver, after) > 0;
+        } else if (take && count < max) {
+            str_set(out[count].ver, ver);
+            out[count].text = s;
+            out[count++].len = (i32)(t - s);
+        }
+    }
+    return count;
+}
+
+// The built-in notes' lines after `after`.
+static i32 news_lines(const char *after, NewsLine *out, i32 max)
+{
+    i32 size;
+    const char *s = (const char *)ui_font_resource(70, &size);
+    return s ? news_parse(s, size, after, out, max) : 0;
+}
+
+// Has this version notes the player hasn't seen? Then the top bar offers them.
+static bool news_unseen()
+{
+    static i32 known = -1; // seen_version only changes to this version, so once false stays false
+    if (known) {
+        NewsLine l[1];
+        known = version_cmp(REKODR_VERSION, g_app.config.seen_version) > 0 && news_lines(g_app.config.seen_version, l, 1);
+    }
+    return known;
+}
+
+// The notes, newest version first, under a small label per version. Closing it marks this version seen.
+static void news_window()
+{
+    if (g_app.ui.news_open) ImGui::OpenPopup("What's new");
+    static NewsLine lines[256];
+    static i32 count;
+    if (g_app.ui.news_open) count = news_lines(g_app.ui.news_since ? g_app.config.seen_version : "", lines, COUNT(lines));
+    g_app.ui.news_open = false;
+
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    f32 pad = kit_px(28), margin = kit_px(24);
+    f32 win_w = fminf(kit_px(560), vp->WorkSize.x - 2 * margin), win_h = fminf(vp->WorkSize.y - 2 * margin, kit_px(620));
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x / 2, vp->WorkPos.y + vp->WorkSize.y / 2), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(win_w, win_h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, kit_px(24)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kit_px(14));
+    bool open = true;
+    if (ImGui::BeginPopupModal("What's new", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+        ImVec2 top = ImGui::GetCursorScreenPos();
+        f32 inner_w = win_w - 2 * pad, fh = ImGui::GetFrameHeight();
+        kit_heading("What's new");
+        ImGui::SetCursorScreenPos(ImVec2(top.x + inner_w - fh + kit_px(8), top.y - kit_px(6)));
+        kit_next_tip("Close", "Esc");
+        if (kit_icon_button(ICON_CLOSE, "##news_close")) open = false;
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + kit_px(46)));
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::BeginChild("##news_rows", ImVec2(inner_w + pad - kit_px(6), 0), ImGuiChildFlags_None);
+        ImGui::PopStyleVar();
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        f32 dot_w = kit_px(18);
+        for (i32 i = 0; i < count; i++) {
+            if (!i || strcmp(lines[i].ver, lines[i - 1].ver)) {
+                if (i) ImGui::Dummy(ImVec2(0, kit_px(12)));
+                char label[32];
+                snprintf(label, sizeof label, APP_NAME " %s", lines[i].ver);
+                kit_label(label);
+                ImGui::Dummy(ImVec2(0, kit_px(2)));
+            }
+            ImVec2 a = ImGui::GetCursorScreenPos();
+            f32 lh = ImGui::GetTextLineHeight();
+            dl->AddCircleFilled(ImVec2(a.x + kit_px(4), a.y + lh / 2), kit_px(2.5f), col32(COL_ACCENT));
+            ImGui::SetCursorScreenPos(ImVec2(a.x + dot_w, a.y));
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inner_w - dot_w);
+            ImGui::TextUnformatted(lines[i].text, lines[i].text + lines[i].len);
+            ImGui::PopTextWrapPos();
+            ImGui::SetCursorScreenPos(ImVec2(a.x, ImGui::GetCursorScreenPos().y + kit_px(6)));
+        }
+        if (!count) kit_dim("Nothing new in this version");
+        kit_scroll_fade_window(COL_PANEL2);
+        ImGui::EndChild();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) open = false;
+        if (!open) {
+            ImGui::CloseCurrentPopup();
+            if (strcmp(g_app.config.seen_version, REKODR_VERSION)) {
+                str_set(g_app.config.seen_version, REKODR_VERSION);
+                config_save(g_app.config, g_app.paths);
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar(2);
+}
+
 static void help_window()
 {
     if (g_app.ui.help_open) ImGui::OpenPopup("Help");
@@ -1602,7 +1734,15 @@ static void help_window()
         ImVec2 top = ImGui::GetCursorScreenPos();
         f32 inner_w = win_w - 2 * pad, fh = ImGui::GetFrameHeight(), search_w = fminf(kit_px(240), inner_w / 2);
         kit_heading("Keyboard and mouse");
-        ImGui::SetCursorScreenPos(ImVec2(top.x + inner_w - kit_px(8) - fh - kit_px(8) - search_w, top.y - kit_px(6)));
+        f32 search_x = top.x + inner_w - kit_px(8) - fh - kit_px(8) - search_w;
+        ImGui::SetCursorScreenPos(ImVec2(search_x - kit_px(8) - fh, top.y - kit_px(6)));
+        kit_next_tip("What's new");
+        if (kit_icon_button(ICON_STAR, "##help_news")) {
+            open = false;
+            g_app.ui.news_open = true;
+            g_app.ui.news_since = false;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(search_x, top.y - kit_px(6)));
         if (ImGui::IsWindowAppearing()) q[0] = 0;
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F)) ImGui::SetKeyboardFocusHere();
         kit_search("##help_search", q, sizeof q, "Search", search_w);
@@ -1777,6 +1917,23 @@ static void top_bar(f32 h)
         kit_tip(rec.strain.s);
         dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WARN, hot ? 0.32f : 0.2f), ch / 2);
         dl->AddText(ImVec2(cx + kit_px(10), floorf(cy + (ch - ls.y) / 2)), col32(COL_WARN), label);
+    }
+
+    // After an update, until opened: a quiet chip with what this version brought.
+    if (news_unseen()) {
+        char label[64];
+        snprintf(label, sizeof label, ICON_STAR "  What's new in %s", REKODR_VERSION);
+        ImVec2 ls = ImGui::CalcTextSize(label);
+        f32 cw = ls.x + kit_px(24), cx = chip_r - cw;
+        chip_r = cx - kit_px(8);
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        if (ImGui::InvisibleButton("##news", ImVec2(cw, ch))) {
+            dev_click("top bar", "what's new chip");
+            g_app.ui.news_open = g_app.ui.news_since = true;
+        }
+        bool hot = ImGui::IsItemHovered();
+        dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + cw, cy + ch), col32(COL_WHITE, hot ? 0.14f : 0.08f), ch / 2);
+        dl->AddText(ImVec2(cx + kit_px(12), floorf(cy + (ch - ls.y) / 2)), col32(hot ? COL_TEXT : COL_DIM), label);
     }
 
     // A verified update waiting: a quiet chip whose click restarts into it. Restarting stops recording for a few
@@ -2128,6 +2285,7 @@ static void ui_frame()
         ui_art_texture(vp->WorkPos, ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y));
         setup_window();
         help_window();
+        news_window();
         ImGui::End();
         goto rendered;
     }
@@ -2160,6 +2318,7 @@ static void ui_frame()
     library_hover_end_frame(); // the Library cards' preview stops once no card has the mouse
     ImGui::EndChild();
     help_window();
+    news_window();
     if (g_glass) ImGui::PopStyleColor(COUNT(glass_cols));
     g_glass = false;
     ImGui::End();
