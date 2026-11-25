@@ -502,6 +502,24 @@ static void test_watch_scan()
         T(!wcscmp(path_join(root, L"OBS").s, L"D:\\OBS") && !wcscmp(path_join(dir, L"OBS").s, L"D:\\Videos\\OBS"));
     }
     T(display_hz(59) == 60 && display_hz(119) == 120 && display_hz(144) == 144 && display_hz(60) == 60);
+    { // an own sound: 12 s of 8 kHz 8-bit mono, cut to its first 10 s
+        static u8 wav[44 + 96000];
+        u32 v;
+        memcpy(wav, "RIFF", 4), v = sizeof wav - 8, memcpy(wav + 4, &v, 4), memcpy(wav + 8, "WAVEfmt ", 8);
+        v = 16, memcpy(wav + 16, &v, 4);
+        u16 fmt[2] = {1, 1};
+        memcpy(wav + 20, fmt, 4);
+        v = 8000, memcpy(wav + 24, &v, 4), memcpy(wav + 28, &v, 4);
+        fmt[0] = 1, fmt[1] = 8;
+        memcpy(wav + 32, fmt, 4), memcpy(wav + 36, "data", 4);
+        v = 96000, memcpy(wav + 40, &v, 4);
+        u32 len = 0, data, riff;
+        f64 secs = 0;
+        T(sound_wav_cut(wav, sizeof wav, &len, &secs) && secs == 12.0 && len == 44 + 80000);
+        memcpy(&data, wav + 40, 4), memcpy(&riff, wav + 4, 4);
+        T(data == 80000 && riff == len - 8);
+        T(!sound_wav_cut(wav + 1, 40, &len, &secs));
+    }
 
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);

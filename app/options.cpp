@@ -876,7 +876,8 @@ static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
 
 // Sounds: a row per event, right to left: its switch, a folder chip for the player's own .wav, the sound picked from
 // the library (each event's own marked "default"), and play. Picking a sound or a file plays it. A row that is off
-// keeps its controls where they are, dimmed.
+// keeps its controls where they are, dimmed. A file that can't be an own sound is refused, its reason beside the
+// event's name until another sound is picked.
 static bool pick_file(const Path &start, Path *out, const wchar_t *kind, const wchar_t *spec); // below
 static void opt_sounds_card(Config &c)
 {
@@ -886,11 +887,20 @@ static void opt_sounds_card(Config &c)
     for (i32 i = 0; i < SOUND_COUNT; i++) names[i] = SOUND_LIBRARY[i].label;
     f32 h = ImGui::GetFrameHeight(), gap = dp(8), combo_w = dp(180), toggle_w = dp(36);
     f32 popup_w = opt_combo_popup_w(names, 0, SOUND_COUNT) + dp(32) + text_w(g_font, "default");
+    f32 control_w = h + gap + combo_w + gap + h + gap + toggle_w;
+    static char refused[SOUND_EVENT_COUNT][96];
     for (i32 e = 0; e < SOUND_EVENT_COUNT; e++) {
         SoundPick &p = c.sounds[e];
         bool changed = false, play = false;
         ImGui::PushID(e);
-        opt_row_begin(SOUND_EVENTS[e].label, 0, h + gap + combo_w + gap + h + gap + toggle_w);
+        opt_row_begin(SOUND_EVENTS[e].label, 0, control_w);
+        if (refused[e][0]) {
+            char line[128];
+            snprintf(line, sizeof line, ICON_WARNING "  %s", refused[e]);
+            opt_text_at(ImGui::GetWindowDrawList(), g_font_small,
+                        ImVec2(g_row.x0 + text_w(g_font, SOUND_EVENTS[e].label) + dp(12), opt_row_text_y(g_font_small)),
+                        COL_WARN, line, g_row.x1 - control_w - dp(20));
+        }
         f32 x = ImGui::GetCursorScreenPos().x, y = ImGui::GetCursorScreenPos().y;
         if (!p.on) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
 
@@ -908,6 +918,7 @@ static void opt_sounds_card(Config &c)
                 if (opt_combo_item(names[i], i == e ? "default" : 0, p.sound == i) && p.sound != i) {
                     p.sound = (u8)i;
                     changed = play = true;
+                    refused[e][0] = 0;
                 }
             opt_combo_end();
         }
@@ -916,9 +927,14 @@ static void opt_sounds_card(Config &c)
         if (kit_icon_button(ICON_FOLDER, "##own", KIT_GHOST, true, p.sound == SOUND_OWN)) {
             Path file;
             if (pick_file(p.own, &file, L"Sounds", L"*.wav")) {
-                p.own = file;
-                p.sound = SOUND_OWN;
-                changed = play = true;
+                if (sound_own_check(file, refused[e], sizeof refused[e])) {
+                    p.own = file;
+                    p.sound = SOUND_OWN;
+                    changed = play = true;
+                    refused[e][0] = 0;
+                } else {
+                    log_line("options: %s own sound refused: %s", SOUND_EVENTS[e].key, refused[e]);
+                }
             }
         }
 
