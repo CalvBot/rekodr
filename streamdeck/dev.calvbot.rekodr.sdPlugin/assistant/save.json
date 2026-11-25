@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Save clip settings",
+  "type": "object",
+  "properties": {
+    "length": {
+      "description": "How much of the replay buffer to save: a number and a unit, s, m or h, such as 30s, 2m or 1h.",
+      "type": "string",
+      "pattern": "^[0-9]+[smh]$",
+      "default": "30s"
+    }
+  },
+  "required": ["length"],
+  "additionalProperties": false
+}

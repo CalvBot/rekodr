@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Open Rekodr settings",
+  "type": "object",
+  "properties": {
+    "screen": {
+      "description": "The screen the window opens on: library (the clips), timeline or options.",
+      "type": "string",
+      "enum": ["library", "timeline", "options"],
+      "default": "library"
+    }
+  },
+  "required": ["screen"],
+  "additionalProperties": false
+}

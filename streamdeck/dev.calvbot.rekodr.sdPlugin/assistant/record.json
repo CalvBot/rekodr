@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Recording settings",
+  "description": "The Recording action has no settings.",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}

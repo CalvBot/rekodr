@@ -113,7 +113,49 @@ function onEvent(e) {
     case "willDisappear": if (k) { k.gone = true; keys.delete(e.context); } break;
     case "didReceiveSettings": if (k) { k.settings = { ...k.defaults(), ...e.payload.settings }; k.render(); } break;
     case "keyDown": k?.down(); break;
+    case "getConfigurationContext": configurationContext(e); break;
+    case "invokeMethod": invokeMethod(e); break;
   }
+}
+
+// ---------- Stream Deck's assistant ----------
+// Stream Deck's AI assistant asks how to set up a key (getConfigurationContext) and can call the methods
+// listed there (invokeMethod). The settings schemas are the manifest's assistant/*.json files.
+const METHODS = {
+  get_rekodr_status: {
+    description: "Reports whether Rekodr is running, recording or paused, and how much footage its replay buffer holds.",
+    outputSchema: {
+      type: "object",
+      properties: {
+        running: { type: "boolean" }, recording: { type: "boolean" }, paused: { type: "boolean" },
+        buffer: { type: "string", description: "Footage held, such as 45m or 3h; empty when under a minute" },
+      },
+    },
+    handler: () => ({
+      running: rekodr.connected, recording: !!rekodr.state?.recording, paused: !!rekodr.state?.paused,
+      buffer: bufferLength(),
+    }),
+  },
+};
+
+function configurationContext(e) {
+  const name = e.action?.slice(PREFIX.length);
+  let settingsSchema;
+  try { settingsSchema = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "assistant", name + ".json"), "utf8")); }
+  catch { return send({ event: "didReceiveConfigurationContext", id: e.id, payload: { error: { code: -32602, message: "Unknown action." } } }); }
+  const methods = Object.entries(METHODS).map(([n, m]) => ({ name: n, description: m.description, outputSchema: m.outputSchema }));
+  send({ event: "didReceiveConfigurationContext", id: e.id, payload: { result: { status: "configure", settingsSchema, methods } } });
+}
+
+async function invokeMethod(e) {
+  const m = METHODS[e.payload?.name];
+  let payload;
+  if (!m) payload = { error: { code: -32601, message: "Unknown method." } };
+  else {
+    try { payload = { result: await m.handler(e.payload.arguments || {}) }; }
+    catch (err) { payload = { error: { code: -32603, message: String(err?.message || err) } }; }
+  }
+  send({ event: "didInvokeMethod", id: e.id, payload });
 }
 
 class Key {

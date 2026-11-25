@@ -14,11 +14,11 @@
   "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
   "UUID": "dev.calvbot.rekodr",
   "Actions": [
-    { "UUID": "dev.calvbot.rekodr.save", "Name": "Save clip", "Tooltip": "Save the last 30 seconds, 2 minutes, an hour: any length",
+    { "UUID": "dev.calvbot.rekodr.save", "SettingsSchema": "assistant/save.json", "Description": "assistant/save.md", "Name": "Save clip", "Tooltip": "Save the last 30 seconds, 2 minutes, an hour: any length",
       "Icon": "imgs/save", "States": [{ "Image": "imgs/save-key", "ShowTitle": false }], "Controllers": ["Keypad"] },
-    { "UUID": "dev.calvbot.rekodr.record", "Name": "Recording", "Tooltip": "Shows whether Rekodr is recording; press to pause or resume",
+    { "UUID": "dev.calvbot.rekodr.record", "SettingsSchema": "assistant/record.json", "Description": "assistant/record.md", "Name": "Recording", "Tooltip": "Shows whether Rekodr is recording; press to pause or resume",
       "Icon": "imgs/record", "States": [{ "Image": "imgs/record-key", "ShowTitle": false }], "Controllers": ["Keypad"] },
-    { "UUID": "dev.calvbot.rekodr.open", "Name": "Open Rekodr", "Tooltip": "Open the window on the clips, the timeline or the options",
+    { "UUID": "dev.calvbot.rekodr.open", "SettingsSchema": "assistant/open.json", "Description": "assistant/open.md", "Name": "Open Rekodr", "Tooltip": "Open the window on the clips, the timeline or the options",
       "Icon": "imgs/open", "States": [{ "Image": "imgs/open-key", "ShowTitle": false }], "Controllers": ["Keypad"] }
   ]
 }
