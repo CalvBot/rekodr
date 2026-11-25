@@ -32,19 +32,9 @@ app\build\rekodr.exe open   # opens the window (of the running copy, if there is
 The whole program is one translation unit, `app\rekodr.cpp`, which includes every other file in `app\`.
 
 ## Commands
-`rekodr.exe <command>` hands the command to the running copy, so Stream Deck keys and scripts can use it:
-
-| Command | What it does |
-|---|---|
-| `open`, `timeline`, `options` | Opens the window on that screen |
-| `save 30s` | Saves the last 30 seconds (`2m`, `1h` and so on) |
-| `save <from> <to>` | Saves an exact stretch, given in Unix seconds (lifelog's voice commands use this) |
-| `pause`, `resume`, `toggle` | Pauses or resumes recording |
-| `mark`, `mark <note>`, `mark blue <note>` | Marks this moment in the buffer, with a note and a colour if given (red, orange, yellow, green, blue, purple) |
-| `mark ask` | Marks this moment and opens a small window to give it a colour and a note |
-| `folder` | Opens this year's clips folder |
-| `dev`, `dev off` | Turns the detailed log on or off |
-| `quit` | Stops Rekodr |
+`rekodr.exe <command>` hands the command to the running copy (`save 30s`, `mark`, `toggle`, `quit`), and
+programs on this PC can send the same commands over a named pipe. [SCRIPTING.md](SCRIPTING.md) lists them and
+describes the pipe.
 
 The default hotkey is Alt+F6, which saves the last 30 seconds. Hotkeys are set in Options.
 
