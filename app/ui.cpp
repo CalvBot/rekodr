@@ -1070,17 +1070,33 @@ static bool kit_segmented(const char *id, const char *const *labels, i32 n, i32 
     return changed;
 }
 
-// A soft drop shadow under the rounded rect [a, b]: rings just outside it, fading out and reaching a little further
-// below than above. Nothing is drawn inside the rect, so it may go before or after the shape, and a see-through
-// shape isn't darkened. `strength` 1 is the controls' (subtle); popups use more.
-static void kit_shadow(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 rounding, f32 strength = 1)
+// A soft drop shadow under the rounded rect [a, b]: rings just outside it, `size` px wide at the sides and fading
+// out, reaching `size * below` px down and half as far up. Nothing is drawn inside the rect, so it may go before or
+// after the shape, and a see-through shape isn't darkened. Popups use strength 1.6; the controls lift (kit_lift).
+static void kit_shadow(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 rounding, f32 strength = 1, f32 size = 7,
+                       f32 below = 1.5f)
 {
-    i32 n = (i32)ceilf(kit_px(7));
+    i32 n = (i32)ceilf(kit_px(size));
     for (i32 i = 0; i < n; i++) {
         f32 e = i + 1.f, t = 1 - (f32)i / n;
-        ImVec2 p(a.x - e + 0.5f, a.y - e * 0.5f + 0.5f), q(b.x + e - 0.5f, b.y + e * 1.5f - 0.5f);
+        ImVec2 p(a.x - e + 0.5f, a.y - e * 0.5f + 0.5f), q(b.x + e - 0.5f, b.y + e * below - 0.5f);
         dl->AddRect(p, q, col32(0x000000, 0.16f * strength * t * t), rounding + e, 0, 1.5f);
     }
+}
+
+// A control raised off what's behind it: a shadow half the popups' strength, wider and further down than theirs
+// (before the control's fill), and a 1 px lighter line along its rounded top edge (`edge`, after the fill). The
+// ground is usually game art, where the shadow shows; on the black window the edge does.
+static void kit_lift(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 rounding, bool edge)
+{
+    if (!edge) {
+        kit_shadow(dl, a, b, rounding, 0.8f, 10, 2.2f);
+        return;
+    }
+    f32 r = ImMin(rounding, (b.y - a.y) / 2), y = a.y + 0.5f;
+    dl->PathArcTo(ImVec2(a.x + r, y + r), r, IM_PI * 1.25f, IM_PI * 1.5f);
+    dl->PathArcTo(ImVec2(b.x - r, y + r), r, IM_PI * 1.5f, IM_PI * 1.75f);
+    dl->PathStroke(col32(COL_WHITE, 0.14f), 0, kit_px(1));
 }
 
 // Every open popup and menu gets a shadow (kit_shadow) on what's under it. Once a frame, after the frame's windows
