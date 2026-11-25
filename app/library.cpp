@@ -4427,16 +4427,30 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         if (render_progress(it.key) >= 0) ui_wake(); // waiting, it changes only with the look every 10 s
     }
     // Top right, where nothing else goes: an amber pause mark while the clip's link is paused, which its Share
-    // button doesn't show. What Share gives at once is on the button itself (share_ready_kind).
+    // button doesn't show. What Share gives at once is on the button itself (share_ready_kind). Under the mouse, a
+    // pencil left of it renames the clip right there on the card.
+    f32 mark_r = kit_px(11);
+    ImVec2 pen_c(t1.x - kit_px(8) - mark_r, t0.y + kit_px(8) + mark_r);
     {
         ClipShareState cs = lib_clip_state(it);
         if (cs.link && cs.link_paused && !cs.link_ready) {
-            f32 r = kit_px(11), msz = kit_px(12);
-            ImVec2 c(t1.x - kit_px(8) - r, t0.y + kit_px(8) + r);
-            dl->AddCircleFilled(c, r, IM_COL32(0, 0, 0, 170));
+            f32 msz = kit_px(12);
+            dl->AddCircleFilled(pen_c, mark_r, IM_COL32(0, 0, 0, 170));
             ImVec2 gs = g_font_icon->CalcTextSizeA(msz, FLT_MAX, 0, ICON_PAUSE);
-            dl->AddText(g_font_icon, msz, ImVec2(floorf(c.x - gs.x / 2), floorf(c.y - gs.y / 2)), col32(COL_WARN), ICON_PAUSE);
+            dl->AddText(g_font_icon, msz, ImVec2(floorf(pen_c.x - gs.x / 2), floorf(pen_c.y - gs.y / 2)), col32(COL_WARN), ICON_PAUSE);
+            pen_c.x -= 2 * mark_r + kit_px(6);
         }
+    }
+    bool pen = over && !picking && !renaming;
+    ImVec2 pen0(pen_c.x - mark_r, pen_c.y - mark_r), pen1(pen_c.x + mark_r, pen_c.y + mark_r);
+    if (pen) {
+        bool hot = ImGui::IsMouseHoveringRect(pen0, pen1);
+        kit_tip_rect(pen0, pen1, "Rename");
+        dl->AddCircleFilled(pen_c, mark_r, IM_COL32(10, 10, 10, hot ? 235 : 170));
+        f32 msz = kit_px(12);
+        ImVec2 gs = g_font_icon->CalcTextSizeA(msz, FLT_MAX, 0, ICON_RENAME);
+        dl->AddText(g_font_icon, msz, ImVec2(floorf(pen_c.x - gs.x / 2), floorf(pen_c.y - gs.y / 2)),
+                    IM_COL32(255, 255, 255, hot ? 255 : 210), ICON_RENAME);
     }
     // Selected: an accent ring just outside the picture, and the name in the accent. The tick box: filled with a tick when selected, else a ring, which
     // out of select mode shows only faintly while the card is under the mouse, and in full under the mouse itself.
@@ -4589,7 +4603,11 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         ImVec2 c = io.MouseClickedPos[0];
         bool on_box = c.x >= b0.x - kit_px(4) && c.x < b1.x + kit_px(4) && c.y >= b0.y - kit_px(4) && c.y < b1.y + kit_px(4);
         bool on_pick = pick && c.x >= p0.x && c.x < p1.x && c.y >= p0.y - kit_px(2) && c.y < p1.y + kit_px(2);
-        if (on_pick) {
+        bool on_pen = pen && c.x >= pen0.x && c.x < pen1.x && c.y >= pen0.y && c.y < pen1.y;
+        if (on_pen) {
+            dev_click("library", "card rename");
+            lib_rename_start(it);
+        } else if (on_pick) {
             lib.target = it;
             g_card_pick_game = true;
         } else if (!lib_card_click(it.key, io.KeyShift, io.KeyCtrl, on_box)) library_play(it);
