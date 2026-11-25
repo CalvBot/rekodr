@@ -227,6 +227,8 @@ struct Config {
     bool share_kbps_custom; // Share uses share_kbps, else SHARE_KBPS_DEFAULT ("Use recommended", off)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     bool share_copy_on_close; // when a game closes, its clips' share copies are made while nothing else runs (off)
+    bool auto_marks_cs2;  // Counter-Strike 2's kills, deaths and won rounds are marked (automarks.cpp; off)
+    bool auto_marks_lol;  // League of Legends' kills, deaths and wins are marked (off)
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), 7 or 1; the Share menu can
                           // pick another for one link
     u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
@@ -1115,3 +1117,9 @@ static const MarkerColour MARKER_COLOURS[] = {
 };
 
 static i32 markers_in(i64 from, i64 to, Marker *out, i32 cap); // the ones in [from, to], oldest first; any thread
+
+// Markers from games (automarks.cpp)
+enum AmCs2State { AM_CS2_OFF, AM_CS2_LISTENING, AM_CS2_NOT_FOUND, AM_CS2_PORT_BUSY };
+static void automarks_apply();
+static AmCs2State automarks_cs2_state();
+static void automarks_uninstall();

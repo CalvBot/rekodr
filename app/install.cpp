@@ -303,6 +303,7 @@ static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_comman
     DeleteFileW(p.shortcut.s);
     install_reg_set(p, INSTALL_RUN_KEY, L"rekodr", 0);
     install_reg_drop_apps(p);
+    automarks_uninstall(); // the file put in Counter-Strike 2's folder
     if (answer == IDYES) install_delete_data();
     // This exe may be the installed one, which can't delete itself while running: a hidden cmd does it once this
     // process has gone.

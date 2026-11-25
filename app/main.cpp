@@ -467,6 +467,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     if (g_app.config.auto_update) update_start();
     gamedb_start(g_app.config.game_lookup);
     pipe_start();
+    automarks_apply();
     if (g_app.ui.setup_open) ui_show(SCREEN_LIBRARY);
     if (command[0]) run_command(command);
 
@@ -508,6 +509,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     log_line("Rekodr quitting");
     pipe_stop();
+    automarks_stop();
     sessions_stop();
     gamedb_stop();
     r2_stop();

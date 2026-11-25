@@ -171,6 +171,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_link_page = true;
     c->share_link_days = 0;
     c->share_copy_on_close = false;
+    c->auto_marks_cs2 = false;
+    c->auto_marks_lol = false;
     str_set(c->r2_bucket, "rekodr");
     c->r2_read_cap = 10000000;  // R2's free Class B requests a month
     c->r2_space_gb = -1;
@@ -630,6 +632,8 @@ static void config_set(Config *c, const char *key, char *value)
     }
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
     else if (!strcmp(key, "share_copy_on_close")) boolean(&c->share_copy_on_close);
+    else if (!strcmp(key, "auto_marks_cs2")) boolean(&c->auto_marks_cs2);
+    else if (!strcmp(key, "auto_marks_lol")) boolean(&c->auto_marks_lol);
     else if (!strcmp(key, "share_link_days")) { i32 d = atoi(value); c->share_link_days = d == 1 || d == 7 ? d : 0; }
     else if (!strcmp(key, "embed_style")) { i32 i = embed_style_find(value); c->embed_style = (u8)(i < 0 ? 0 : i); }
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
@@ -823,6 +827,8 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_kbps_custom", c.share_kbps_custom);
     boolean("share_link_page", c.share_link_page);
     boolean("share_copy_on_close", c.share_copy_on_close);
+    boolean("auto_marks_cs2", c.auto_marks_cs2);
+    boolean("auto_marks_lol", c.auto_marks_lol);
     fprintf(f, "share_link_days = %d\n", c.share_link_days);
     fprintf(f, "embed_style = %s\n", embed_style_id(c.embed_style));
     boolean("render_edits", c.render_edits);

@@ -2906,6 +2906,66 @@ static void put_text(const char *utf8, const char *text)
 }
 
 // Markers: what follows `mark`, their line in markers.tsv, and the list kept in time order
+// A Counter-Strike 2 state as the game sends it, cut down to what cs2_marks reads.
+static i32 cs2_feed(Cs2Seen *s, const char *watched, const char *map_phase, const char *round_phase, const char *win,
+                    i32 kills, i32 deaths, i32 round_kills, i32 ct, i32 t, AutoMark *out)
+{
+    char body[2048];
+    snprintf(body, sizeof body,
+             "{\"provider\":{\"name\":\"Counter-Strike 2\",\"appid\":730,\"steamid\":\"7656\"},"
+             "\"map\":{\"name\":\"de_dust2\",\"phase\":\"%s\",\"team_ct\":{\"score\":%d},\"team_t\":{\"score\":%d}},"
+             "\"round\":{\"phase\":\"%s\"%s%s%s},"
+             "\"player\":{\"steamid\":\"%s\",\"team\":\"CT\",\"state\":{\"health\":100,\"round_kills\":%d},"
+             "\"match_stats\":{\"kills\":%d,\"assists\":0,\"deaths\":%d}},"
+             "\"auth\":{\"token\":\"x\"}}",
+             map_phase, ct, t, round_phase, win[0] ? ",\"win_team\":\"" : "", win, win[0] ? "\"" : "", watched,
+             round_kills, kills, deaths);
+    return cs2_marks(s, body, (i64)strlen(body), out, 8);
+}
+
+static void test_automarks()
+{
+    AutoMark m[16];
+    Cs2Seen s = {};
+    T(cs2_feed(&s, "7656", "live", "live", "", 3, 1, 0, 0, 0, m) == 0); // the first state only says where it is
+    T(cs2_feed(&s, "7656", "live", "live", "", 4, 1, 1, 0, 0, m) == 1 && m[0].colour == 4 && !strcmp(m[0].note, "Kill"));
+    T(cs2_feed(&s, "7656", "live", "live", "", 5, 1, 2, 0, 0, m) == 1 && !strcmp(m[0].note, "Double kill"));
+    T(cs2_feed(&s, "7656", "live", "live", "", 5, 2, 2, 0, 0, m) == 1 && m[0].colour == 1 && !strcmp(m[0].note, "Death"));
+    T(cs2_feed(&s, "7657", "live", "live", "", 9, 0, 3, 0, 0, m) == 0); // watching a teammate: nothing
+    T(cs2_feed(&s, "7656", "live", "over", "CT", 5, 2, 2, 1, 0, m) == 1 && m[0].colour == 3 && !strcmp(m[0].note, "Round won"));
+    T(cs2_feed(&s, "7656", "live", "over", "CT", 5, 2, 2, 1, 0, m) == 0); // the same round again
+    T(cs2_feed(&s, "7656", "live", "live", "", 5, 2, 0, 1, 0, m) == 0);
+    T(cs2_feed(&s, "7656", "live", "over", "T", 5, 2, 0, 1, 1, m) == 0); // the other team's round
+    T(cs2_feed(&s, "7656", "gameover", "over", "CT", 5, 2, 0, 13, 9, m) == 1 && !strcmp(m[0].note, "Match won"));
+    Cs2Seen w = {};
+    T(cs2_feed(&w, "7656", "warmup", "live", "", 0, 0, 0, 0, 0, m) == 0);
+    T(cs2_feed(&w, "7656", "warmup", "live", "", 2, 1, 2, 0, 0, m) == 0); // warmup kills don't count
+    T(cs2_marks(&w, "{\"provider\":{\"steamid\":\"7656\"}}", 33, m, 8) == 0 && !w.have); // in the menus
+
+    LolSeen l = {};
+    str_set(l.me, "Calv#EUW");
+    const char *start = "{\"Events\":[{\"EventID\":0,\"EventName\":\"GameStart\",\"EventTime\":0.02}]}";
+    T(lol_marks(&l, start, (i64)strlen(start), m, 16) == 0 && l.have && l.last_id == 0);
+    const char *more =
+        "{\"Events\":[{\"EventID\":0,\"EventName\":\"GameStart\",\"EventTime\":0.02},"
+        "{\"EventID\":1,\"EventName\":\"ChampionKill\",\"EventTime\":300.1,\"VictimName\":\"Other\",\"KillerName\":\"Calv\",\"Assisters\":[\"A\",\"B\"]},"
+        "{\"EventID\":2,\"EventName\":\"ChampionKill\",\"EventTime\":302.5,\"VictimName\":\"Third\",\"KillerName\":\"calv\",\"Assisters\":[]},"
+        "{\"EventID\":3,\"EventName\":\"Multikill\",\"EventTime\":302.5,\"KillerName\":\"Calv\",\"KillStreak\":2},"
+        "{\"EventID\":4,\"EventName\":\"ChampionKill\",\"EventTime\":400,\"VictimName\":\"Calv#EUW\",\"KillerName\":\"Other\",\"Assisters\":[]},"
+        "{\"EventID\":5,\"EventName\":\"ChampionKill\",\"EventTime\":401,\"VictimName\":\"Calvin\",\"KillerName\":\"Other\",\"Assisters\":[]}]}";
+    i32 n = lol_marks(&l, more, (i64)strlen(more), m, 16);
+    T(n == 4 && !strcmp(m[0].note, "Kill") && !m[1].amend && m[2].amend && !strcmp(m[2].note, "Double kill") &&
+      m[3].colour == 1 && !strcmp(m[3].note, "Death"));
+    T(lol_marks(&l, more, (i64)strlen(more), m, 16) == 0 && l.last_id == 5); // nothing new
+    const char *end = "{\"Events\":[{\"EventID\":6,\"EventName\":\"GameEnd\",\"EventTime\":1500,\"Result\":\"Win\"}]}";
+    T(lol_marks(&l, end, (i64)strlen(end), m, 16) == 1 && m[0].colour == 3 && !strcmp(m[0].note, "Win"));
+    T(lol_marks(&l, start, (i64)strlen(start), m, 16) == 0 && l.last_id == 0); // a new match
+
+    char cfg[2048];
+    cs2_cfg_text("abc123", cfg, sizeof cfg);
+    T(strstr(cfg, "\"uri\"       \"http://127.0.0.1:29771/\"") && strstr(cfg, "\"token\" \"abc123\"") && strstr(cfg, "\"player_match_stats\" \"1\""));
+}
+
 static void test_markers()
 {
     u8 colour;
@@ -3582,6 +3642,7 @@ int main()
     test_share_ready();
     test_storeids();
     test_markers();
+    test_automarks();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

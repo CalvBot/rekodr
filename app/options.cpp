@@ -3858,6 +3858,27 @@ static void options_integrations()
     opt_row_end();
     opt_card_end();
 
+    opt_section("MARKERS FROM GAMES");
+    opt_card_begin();
+    {
+        AmCs2State st = automarks_cs2_state();
+        const char *sub = !c.auto_marks_cs2 ? "Kills, deaths and won rounds on the timeline"
+                          : st == AM_CS2_NOT_FOUND ? "Not installed on this PC"
+                          : st == AM_CS2_PORT_BUSY ? "Another program is using its port"
+                          : "Kills, deaths and won rounds on the timeline (from its next start)";
+        if (opt_row_toggle("Counter-Strike 2", sub, "##amcs2", &c.auto_marks_cs2)) {
+            log_line("options: Counter-Strike 2 markers %s", c.auto_marks_cs2 ? "on" : "off");
+            options_apply(0);
+            automarks_apply();
+        }
+        if (opt_row_toggle("League of Legends", "Kills, deaths and wins on the timeline", "##amlol", &c.auto_marks_lol)) {
+            log_line("options: League of Legends markers %s", c.auto_marks_lol ? "on" : "off");
+            options_apply(0);
+            automarks_apply();
+        }
+    }
+    opt_card_end();
+
     opt_section("VIDEO EDITORS");
     opt_card_begin();
     static const char *ed_names[2] = {"Premiere Pro", "DaVinci Resolve"};
