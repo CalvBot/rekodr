@@ -5792,6 +5792,7 @@ static void screen_library()
         f32 side_w = collapsed ? icon_end + kit_px(14) : switch_w + kit_px(12), side_h = ImGui::GetContentRegionAvail().y;
         f32 pad_y = kit_px(LIB_PAD_Y);
         ImVec2 s0 = ImGui::GetCursorScreenPos();
+        s0.x += kit_px(8); // the list, its foot button and the clips after it sit this far in from the window's edge
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + pad_y));
         f32 foot = fh + kit_px(6);
         ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - 2 * pad_y - foot), 0,
