@@ -166,6 +166,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_SERVER    "\xEE\xA5\xA8" // E968 network server
 #define ICON_UPLOAD    "\xEE\xA2\x98" // E898
 #define ICON_OPEN      "\xEE\xA2\xA7" // E8A7 open in new window
+#define ICON_VIEW      "\xEE\xA2\x90" // E890 eye
 #define ICON_FILE      "\xEE\xA2\xA5" // E8A5 page
 
 static const char *g_help_jump; // a section's title: Help opens scrolled to it (Options' info icons)

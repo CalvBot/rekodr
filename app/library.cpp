@@ -3429,7 +3429,20 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         if (!strncmp(url, "https://", 8)) url += 8;
         else if (!strncmp(url, "http://", 7)) url += 7;
         f32 bx = b.x - kit_px(4) - icons * isz - (icons - 1) * igap, tx = a.x + pad + 2 * dr + kit_px(8);
-        text_clipped(dl, ImVec2(tx, floorf(a.y + (h - line_h) / 2)), bx - kit_px(8) - tx, col32(COL_TEXT), url);
+        f32 ux = bx; // where the address ends: before the views, when they're known
+        if (r2 && s.views_month >= 0) {
+            char n[24];
+            snprintf(n, sizeof n, "%lld", s.views_month);
+            ImGui::PushFont(g_font_small);
+            f32 nw = ImGui::CalcTextSize(n).x, es = floorf(sfs * 1.1f);
+            ImVec2 ns = g_font_icon->CalcTextSizeA(es, FLT_MAX, 0, ICON_VIEW);
+            ux = bx - kit_px(6) - nw - kit_px(4) - ns.x;
+            dl->AddText(g_font_icon, es, ImVec2(ux, floorf(a.y + (h - ns.y) / 2)), col32(COL_DIM), ICON_VIEW);
+            dl->AddText(ImVec2(ux + ns.x + kit_px(4), floorf(a.y + (h - sfs) / 2)), col32(COL_DIM), n);
+            ImGui::PopFont();
+            kit_tip_rect(ImVec2(ux, a.y), ImVec2(bx - kit_px(6), b.y), "Times the link was opened this month");
+        }
+        text_clipped(dl, ImVec2(tx, floorf(a.y + (h - line_h) / 2)), ux - kit_px(8) - tx, col32(COL_TEXT), url);
         f32 by = floorf(a.y + (h - isz) / 2);
         ImGui::SetCursorScreenPos(ImVec2(bx, by));
         if (share_menu_icon(ICON_COPY, "##smcopy", COL_TEXT, isz)) {

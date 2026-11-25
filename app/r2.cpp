@@ -90,6 +90,7 @@ struct R2Share {
     bool moving;      // a pause or resume is running
     i64  plays_today, plays_month, plays_24h; // GET requests for the file (local day, this month, the last 24
                                               // hours), -1 until fetched
+    i64  views_month; // GET requests for the link's page this month: one per visit; -1 until fetched or with no page
 };
 
 struct R2Usage {
@@ -1769,7 +1770,7 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             if (cr) *cr = 0;
             str_set(s.marks, f[23]);
             if (s.social < -1 || s.social > 1 || (s.social == 1 && (s.social_w <= 0 || s.social_h <= 0))) s.social = 0;
-            s.plays_today = s.plays_month = s.plays_24h = -1;
+            s.plays_today = s.plays_month = s.plays_24h = s.views_month = -1;
         }
         line = next;
     }
@@ -3767,6 +3768,7 @@ static void r2_run_usage(const R2Task &t)
         for (i32 i = 0; i < g_r2.count; i++) {
             R2Share &sh = g_r2.shares[i];
             sh.plays_today = sh.plays_month = sh.plays_24h = sh.host == HOST_R2 ? 0 : -1;
+            sh.views_month = sh.host == HOST_R2 && sh.page_w ? 0 : -1;
         }
         static const char *lists[] = {"month", "today", "day"};
         for (i32 pass = 0; pass < 3; pass++) {
@@ -3776,6 +3778,9 @@ static void r2_run_usage(const R2Task &t)
                 if (k < 0) continue;
                 R2Share &sh = g_r2.shares[k];
                 (pass == 0 ? sh.plays_month : pass == 1 ? sh.plays_today : sh.plays_24h) += counts[i];
+                char page[R2_KEY_MAX];
+                if (pass == 0 && sh.views_month >= 0 && (r2_page_key(sh.key, page), !strcmp(page, keys[i])))
+                    sh.views_month += counts[i];
             }
         }
         g_r2.gen++;
