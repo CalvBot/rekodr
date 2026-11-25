@@ -1690,7 +1690,8 @@ static void top_bar(f32 h)
     ImVec2 o = ImGui::GetCursorScreenPos();
     f32 w = ImGui::GetContentRegionAvail().x;
 
-    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(UI_GUTTER), o.y));
+    // The first tab's icon lines up with the icons of the Library's games list
+    ImGui::SetCursorScreenPos(ImVec2(o.x + kit_px(UI_GUTTER - 14), o.y));
     Screen s = g_app.ui.screen;
     if (top_tab(ICON_LIBRARY, "Library", s == SCREEN_LIBRARY || s == SCREEN_EDITOR, h)) g_app.ui.screen = SCREEN_LIBRARY;
     ImGui::SameLine(0, kit_px(4));
