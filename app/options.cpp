@@ -2523,7 +2523,6 @@ static void options_recording()
         log_line("options: voices %s", c.voice_mono ? "mono" : "stereo");
         options_apply(0);
     }
-    opt_row_begin("ffmpeg.exe", 0, wide);
     if (opt_row_toggle("Clean the mic", "Fans, hiss and hum taken out when a clip saves", "##micclean", &c.mic_clean)) {
         log_line("options: mic cleaning %s", c.mic_clean ? "on" : "off");
         options_apply(0);
@@ -2534,6 +2533,7 @@ static void options_recording()
         options_apply(0);
     }
     ImGui::EndDisabled();
+    opt_row_begin("ffmpeg.exe", 0, wide);
     char ff[MAX_PATH * 3], text[MAX_PATH * 3];
     wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
     if (opt_text("##ffmpeg", ff, wide, 0, "Found by itself", text, sizeof text)) {
