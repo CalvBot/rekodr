@@ -1,9 +1,10 @@
 // Playable copies of edited clips, so Clips\<year> always holds something that plays anywhere as it was meant.
 //
-// An unedited clip stays as it is. An edited clip's Clips\<year>\<name>.mp4 is its edit rendered as Keep makes it
-// (save.cpp: at the recording's quality, every track kept with the Mix rebuilt, a single trim stream-copied), and
-// the untouched original is Clips\<year>\Source\<name>.mp4. The library lists the clip by its original
-// (LibItem.rendered): its edit, pictures, records and the editor all keep to that file.
+// An unedited clip stays as it is, and so does another app's video (LibItem.dir), edited or not. An edited clip's
+// Clips\<year>\<name>.mp4 is its edit rendered as Keep makes it (save.cpp: at the recording's quality, every track
+// kept with the Mix rebuilt, a single trim stream-copied), and the untouched original is
+// Clips\<year>\Source\<name>.mp4. The library lists the clip by its original (LibItem.rendered): its edit,
+// pictures, records and the editor all keep to that file.
 //
 // A render is made on the save worker at low priority into Data\Rendering, then swapped in with ReplaceFile,
 // which puts the render in Clips and moves the original into Source in one step on the same drive: Clips never
@@ -302,7 +303,7 @@ static void render_tick()
     r.waiting_count = 0;
     for (i32 i = 0; i < lib.item_count; i++) { // newest first, the first that may be rendered is
         const LibItem &it = lib.items[i];
-        if (it.kind != LIB_CLIPS || _stricmp(it.ext, ".mp4") || !it.probed) continue;
+        if (it.kind != LIB_CLIPS || it.dir || _stricmp(it.ext, ".mp4") || !it.probed) continue; // not another app's
         i64 mtime = 0;
         bool has_edit = render_edit_stamp(it, &mtime, 0);
         RenderNote note = {};

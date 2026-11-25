@@ -4363,6 +4363,85 @@ static void opt_copies_row()
     opt_row_end();
 }
 
+// Other apps' clips: the folders whose videos show in the library too (Config.watch_dirs). Each folder another
+// recorder on the PC saves to (watch_found) has a row of its own with a switch, whether it's shown or not; one added
+// by hand has a row while it's shown, with a button that takes it off. Each row opens its folder too.
+static void opt_watch_rows(Config &c)
+{
+    static Path found[WATCH_MAX];
+    static const char *from[WATCH_MAX];
+    static i32 found_count, read_frame;
+    i32 frame = ImGui::GetFrameCount();
+    if (!read_frame || frame - read_frame > 1) found_count = watch_found(found, from, WATCH_MAX); // on coming into view
+    read_frame = frame;
+
+    f32 fh = ImGui::GetFrameHeight(), gap = dp(8), toggle_w = kit_px(36);
+    bool changed = false;
+    opt_row_begin("Other apps' clips", "Videos in these folders and the ones right under them show in the library", fh);
+    kit_next_tip("Add a folder");
+    Path picked = {};
+    if (kit_icon_button(ICON_ADD, "##watchadd", KIT_SECONDARY, c.watch_count < WATCH_MAX) &&
+        pick_folder(c.save_dir, &picked)) {
+        watch_tidy(picked.s);
+        bool have = false;
+        for (i32 i = 0; i < c.watch_count; i++) have |= !_wcsicmp(c.watch_dirs[i].s, picked.s);
+        if (!have) {
+            c.watch_dirs[c.watch_count++] = picked;
+            changed = true;
+        }
+    }
+    opt_row_end();
+
+    auto shown_at = [&](const Path &p) {
+        for (i32 i = 0; i < c.watch_count; i++)
+            if (!_wcsicmp(c.watch_dirs[i].s, p.s)) return i;
+        return -1;
+    };
+    auto row = [&](const char *name, const Path &p, i32 id) {
+        char sub[MAX_PATH * 3];
+        wide_to_utf8(p.s, sub, sizeof sub);
+        ImGui::PushID(id);
+        opt_row_begin(name, sub, fh + gap + toggle_w);
+        f32 y = opt_row_frame_y();
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - toggle_w - gap - fh, y));
+        kit_next_tip("Open the folder");
+        if (kit_icon_button(ICON_FOLDER, "##open", KIT_GHOST)) opt_open_dir(p);
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - toggle_w, y));
+    };
+    for (i32 f = 0; f < found_count; f++) {
+        i32 at = shown_at(found[f]);
+        row(from[f], found[f], f);
+        bool on = at >= 0;
+        if (kit_toggle("##on", &on)) {
+            if (!on) c.watch_dirs[at] = c.watch_dirs[--c.watch_count];
+            else if (c.watch_count < WATCH_MAX) c.watch_dirs[c.watch_count++] = found[f];
+            changed = true;
+        }
+        opt_row_end();
+        ImGui::PopID();
+    }
+    for (i32 i = 0; i < c.watch_count; i++) {
+        bool is_found = false;
+        for (i32 f = 0; f < found_count; f++) is_found |= !_wcsicmp(found[f].s, c.watch_dirs[i].s);
+        if (is_found) continue;
+        row("Folder", c.watch_dirs[i], WATCH_MAX + i);
+        ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, opt_row_frame_y()));
+        kit_next_tip("Stop showing it");
+        if (kit_icon_button(ICON_CLOSE, "##off", KIT_GHOST)) {
+            memmove(c.watch_dirs + i, c.watch_dirs + i + 1, (c.watch_count - i - 1) * sizeof c.watch_dirs[0]);
+            c.watch_count--;
+            changed = true;
+        }
+        opt_row_end();
+        ImGui::PopID();
+    }
+    if (changed) {
+        log_line("options: %d other apps' folders", c.watch_count);
+        options_apply(0);
+        library_rescan();
+    }
+}
+
 static void options_general()
 {
     Config &c = g_app.config;
@@ -4465,6 +4544,7 @@ static void options_general()
     if (opt_row_folder("Playback cache", "Where the Timeline builds what it plays; a fast drive starts sooner", "play",
                        &c.play_dir))
         options_apply(0);
+    opt_watch_rows(c);
     {
         char held[32], sub[160];
         bytes_text((i64)g_lib_folder_bytes, held, sizeof held);

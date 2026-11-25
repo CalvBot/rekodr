@@ -143,6 +143,8 @@ static const char SAVE_NAME_DEFAULT[] = "{game} {hh}-{mm} {DD}-{MM}-{YYYY}";
 static const char GAME_DESKTOP[] = "Desktop";
 static const char GAME_NOT_OURS[] = "Other";
 
+enum { WATCH_MAX = 8 }; // other apps' folders the library shows (Config.watch_dirs)
+
 struct Config {
     Path save_dir;     // <Videos>\Rekodr, holding Clips, Sessions and Data (save_clips_dir and the rest)
     Path buffer_dir;   // the rolling buffer
@@ -156,6 +158,8 @@ struct Config {
     f32  buffer_gb;    // or this much (100)
     f32  min_free_gb;  // delete the oldest footage early rather than go below this much free space (50)
     Path ffmpeg;       // empty = find it
+    Path watch_dirs[WATCH_MAX]; // other apps' folders (OBS, ShadowPlay...) whose videos show in the library too;
+    i32  watch_count;           // by default the ones found on the PC (watch_found)
 
     // Video
     i32   output_idx; // DXGI output index on the capture GPU
@@ -733,6 +737,8 @@ struct LibItem {
     bool      rendered;    // a clip whose original is in Clips\<year>\Source, its edit rendered in Clips (render.cpp);
                            // name, size, times, key and info are the original's
     u64       render_size; // the rendered copy's size, 0 = there's none in Clips yet
+    u8        dir;         // 0 = in the save folder; else in another app's folder, g_lib_dirs[dir - 1] (year is
+                           // then only the year of its time)
     MediaInfo info;
     char      display_name[128]; // typed by hand (names.txt); shown in place of its file name
 };

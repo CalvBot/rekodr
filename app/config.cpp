@@ -43,6 +43,86 @@ static void paths_init(Paths *p)
 static i32 embed_style_find(const char *id);
 static const char *embed_style_id(i32 style);
 
+// A folder as typed in another app's settings, made plain: backslashes, none at the end, no spaces around it
+static void watch_tidy(wchar_t *p)
+{
+    for (wchar_t *s = p; *s; s++)
+        if (*s == L'/') *s = L'\\';
+    size_t n = wcslen(p);
+    while (n && (p[n - 1] == L' ' || p[n - 1] == L'\\')) p[--n] = 0;
+    if (n == 2 && p[1] == L':') wcscat(p, L"\\"); // a drive's root keeps its slash
+}
+
+// Adds folder `p` to `out` (with `from`, the app that saves there) unless it's there already or isn't a folder
+static void watch_found_add(Path *out, const char **from, i32 *n, i32 max, const wchar_t *p, const char *app)
+{
+    Path d = {};
+    wcsncpy_s(d.s, p, _TRUNCATE);
+    watch_tidy(d.s);
+    DWORD a = GetFileAttributesW(d.s);
+    if (!d.s[0] || a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY) || *n == max) return;
+    for (i32 i = 0; i < *n; i++)
+        if (!_wcsicmp(out[i].s, d.s)) return;
+    out[*n] = d;
+    if (from) from[*n] = app;
+    (*n)++;
+}
+
+// The folders other recorders on this PC save to, which exist: OBS's recording folders (each profile's basic.ini),
+// ShadowPlay's (the NVIDIA app's registry value) and Game Bar's Captures. Returns how many; `from` gets each one's
+// app name.
+static i32 watch_found(Path *out, const char **from, i32 max)
+{
+    i32 n = 0;
+    wchar_t appdata[MAX_PATH];
+    if (GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH)) {
+        Path profiles = {};
+        swprintf(profiles.s, MAX_PATH, L"%s\\obs-studio\\basic\\profiles", appdata);
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(path_join(profiles, L"*").s, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+                FILE *f = _wfopen(path_join(path_join(profiles, fd.cFileName), L"basic.ini").s, L"rb");
+                if (!f) continue;
+                char line[1024];
+                while (fgets(line, sizeof line, f)) {
+                    char *v = 0;
+                    if (!strncmp(line, "FilePath=", 9)) v = line + 9;
+                    else if (!strncmp(line, "RecFilePath=", 12)) v = line + 12;
+                    else if (!strncmp(line, "FFFilePath=", 11)) v = line + 11;
+                    if (!v) continue;
+                    // OBS writes a backslash as two; the line ends with its newline
+                    char *w = v;
+                    for (char *r = v; *r && *r != '\r' && *r != '\n'; r++) {
+                        if (*r == '\\' && r[1] == '\\') r++;
+                        *w++ = *r;
+                    }
+                    *w = 0;
+                    wchar_t p[MAX_PATH];
+                    utf8_to_wide(v, p, MAX_PATH); // watch_tidy drops spaces at the end
+                    watch_found_add(out, from, &n, max, p, "OBS");
+                }
+                fclose(f);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    wchar_t sp[MAX_PATH] = {};
+    DWORD bytes = sizeof sp - sizeof sp[0];
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\NVIDIA Corporation\\Global\\ShadowPlay\\NVSPCAPS", L"DefaultPathW",
+                     RRF_RT_REG_BINARY, 0, sp, &bytes) == ERROR_SUCCESS)
+        watch_found_add(out, from, &n, max, sp, "ShadowPlay");
+    wchar_t *videos = 0;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Videos, 0, 0, &videos))) {
+        Path cap = {};
+        swprintf(cap.s, MAX_PATH, L"%s\\Captures", videos);
+        watch_found_add(out, from, &n, max, cap.s, "Game Bar");
+    }
+    CoTaskMemFree(videos);
+    return n;
+}
+
 static void config_defaults(Config *c, const Paths &paths)
 {
     *c = {};
@@ -58,6 +138,7 @@ static void config_defaults(Config *c, const Paths &paths)
         c->buffer_dir = path_join(paths.local_dir, L"buffer");
     }
     c->play_dir = paths.local_dir;
+    c->watch_count = watch_found(c->watch_dirs, 0, WATCH_MAX);
     c->buffer_hours = 24;
     c->popup_monitor = POPUP_RECORDED;
     c->popup_monitor_game = POPUP_AS_NORMAL;
@@ -448,6 +529,13 @@ static void config_set(Config *c, const char *key, char *value)
     if (!strcmp(key, "save_dir")) path(&c->save_dir);
     else if (!strcmp(key, "buffer_dir")) path(&c->buffer_dir);
     else if (!strcmp(key, "play_dir")) path(&c->play_dir);
+    else if (!strcmp(key, "watch")) {
+        if (c->watch_count < WATCH_MAX) {
+            path(&c->watch_dirs[c->watch_count]);
+            watch_tidy(c->watch_dirs[c->watch_count].s);
+            if (c->watch_dirs[c->watch_count].s[0]) c->watch_count++;
+        }
+    }
     else if (!strcmp(key, "backup_on")) boolean(&c->backup_on);
     else if (!strcmp(key, "backup_dir")) path(&c->backup_dir);
     else if (!strcmp(key, "backup_clips")) boolean(&c->backup_clips);
@@ -637,7 +725,7 @@ static bool config_load(Config *c, const Paths &paths)
         c->desktop_bitrate_mbps = c->bitrate_mbps;
         return false;
     }
-    bool hotkeys_seen = false;
+    bool hotkeys_seen = false, watch_seen = false;
     char line[1024];
     while (fgets(line, sizeof line, f)) {
         char *s = trim(line);
@@ -653,6 +741,12 @@ static bool config_load(Config *c, const Paths &paths)
             hotkeys_seen = true;
         }
         if (none) continue;
+        // Likewise the file's other folders replace the ones found on the PC; "watch = none" is none
+        if (!strcmp(key, "watch") && !watch_seen) {
+            c->watch_count = 0;
+            watch_seen = true;
+        }
+        if (!strcmp(key, "watch") && !strcmp(value, "none")) continue;
         config_set(c, key, value);
     }
     fclose(f);
@@ -687,6 +781,8 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "buffer_hours = %g\nbuffer_gb = %g\n", c.buffer_hours, c.buffer_gb);
     fprintf(f, "min_free_gb = %g\n", c.min_free_gb);
     path("ffmpeg", c.ffmpeg);
+    if (!c.watch_count) fprintf(f, "watch = none\n");
+    for (i32 i = 0; i < c.watch_count; i++) path("watch", c.watch_dirs[i]);
     fprintf(f, "\noutput_idx = %d\nfps = %d\nheight = %d\ncodec = %s\nencoder = %s\nbitrate_mbps = %g\n"
                "desktop_bitrate_mbps = %g\n",
             c.output_idx, c.fps, c.height, c.codec.s, c.encoder.s, c.bitrate_mbps, c.desktop_bitrate_mbps);

@@ -484,6 +484,56 @@ static void test_erase()
     T(SHFileOperationW(&op) == 0);
 }
 
+// Other apps' folders: a watched folder's videos and those a folder down are listed, the game named by that folder,
+// and Rekodr's own save folder inside it isn't listed twice.
+static void test_watch_scan()
+{
+    wchar_t t1[MAX_PATH] = L"C:/Videos/OBS/ ", t2[MAX_PATH] = L"D:\\";
+    watch_tidy(t1);
+    watch_tidy(t2);
+    T(!wcscmp(t1, L"C:\\Videos\\OBS") && !wcscmp(t2, L"D:\\"));
+    T(path_within(L"C:\\Videos\\Rekodr\\Clips", L"C:\\Videos") && path_within(L"C:\\Videos", L"C:\\Videos\\"));
+    T(!path_within(L"C:\\Videos2", L"C:\\Videos") && !path_within(L"C:\\Videos", L"C:\\Videos\\Rekodr"));
+
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path root = {};
+    swprintf(root.s, MAX_PATH, L"%srekodr-test-watch-%u", temp, GetCurrentProcessId());
+    Path watch = path_join(root, L"Videos"), save = path_join(watch, L"Rekodr"), game = path_join(watch, L"Some Game");
+    auto put = [](const Path &dir, const wchar_t *name) {
+        SHCreateDirectoryExW(0, dir.s, 0);
+        FILE *f = _wfopen(path_join(dir, name).s, L"wb");
+        if (f) { fputs("x", f); fclose(f); }
+    };
+    put(save_clips_dir(save, 2026), L"ours.mp4");
+    put(watch, L"obs.mkv");
+    put(watch, L"notes.txt");
+    put(game, L"sp.mp4");
+    lib_scan(save, path_join(root, L"cache"), Path{}, SAVE_NAME_DEFAULT, path_join(root, L"buffer"), &watch, 1);
+    i32 n = g_lib.item_count, ours = 0, obs = -1, sp = -1;
+    for (i32 i = 0; i < n; i++) {
+        const LibItem &it = g_lib.items[i];
+        if (!strcmp(it.name, "ours")) ours += !it.dir;
+        if (!strcmp(it.name, "obs")) obs = i;
+        if (!strcmp(it.name, "sp")) sp = i;
+    }
+    T(n == 3 && ours == 1 && obs >= 0 && sp >= 0);
+    if (obs >= 0 && sp >= 0) {
+        T(!wcscmp(lib_file_path(save, g_lib.items[sp]).s, path_join(game, L"sp.mp4").s));
+        T(!wcscmp(lib_file_path(save, g_lib.items[obs]).s, path_join(watch, L"obs.mkv").s));
+        T(!strcmp(g_lib.items[sp].info.game, "Some Game") && g_lib.items[sp].kind == LIB_CLIPS);
+    }
+    g_lib.item_count = 0;
+
+    SHFILEOPSTRUCTW op = {};
+    wchar_t dbl[MAX_PATH + 2] = {};
+    wcscpy_s(dbl, MAX_PATH, root.s);
+    op.wFunc = FO_DELETE;
+    op.pFrom = dbl;
+    op.fFlags = FOF_NO_UI;
+    SHFileOperationW(&op);
+}
+
 static void test_backup()
 {
     wchar_t temp[MAX_PATH];
@@ -969,6 +1019,15 @@ static void test_settings_round_trip()
         str_set(none.hotkeys[0].hold.s, "save 3m");
         T(config_save(none, paths) && config_load(&back, paths) && back.hotkey_count == 1 &&
           !strcmp(back.hotkeys[0].action.s, "save 30s") && !strcmp(back.hotkeys[0].hold.s, "save 3m"));
+        // Other apps' folders: the ones saved come back in place of those found on the PC, and none stays none
+        none = a;
+        none.watch_count = 2;
+        wcscpy_s(none.watch_dirs[0].s, L"D:\\Videos\\NVIDIA");
+        wcscpy_s(none.watch_dirs[1].s, L"E:\\");
+        T(config_save(none, paths) && config_load(&back, paths) && back.watch_count == 2 &&
+          !wcscmp(back.watch_dirs[0].s, L"D:\\Videos\\NVIDIA") && !wcscmp(back.watch_dirs[1].s, L"E:\\"));
+        none.watch_count = 0;
+        T(config_save(none, paths) && config_load(&back, paths) && back.watch_count == 0);
         T(config_save(a, paths));
     }
     T(b.app_count == 2 && b.toast_clip == TOAST_CLIP_SMALL);
@@ -3505,6 +3564,7 @@ int main()
     test_toast_clip();
     test_popup_place();
     test_settings_round_trip();
+    test_watch_scan();
     test_pieces();
     test_edit_volumes();
     test_edit_xml();

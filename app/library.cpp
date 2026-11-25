@@ -42,6 +42,8 @@ struct LibShared {
     i32                task_count;
     bool               scan_running, scan_queued;
     Path               save_dir, cache_dir, ffmpeg; // copied with every scan request
+    Path               buffer_dir, watch[WATCH_MAX];
+    i32                watch_count;
     char               name_template[128];
     LibItem            items[LIB_MAX_ITEMS];        // the newest scan's published list
     i32                item_count;
@@ -426,6 +428,35 @@ static bool lib_tags_save()
 // save the game its name starts with, when that is sure (game_guess).
 static bool game_guess(const char *name, bool (*known)(const char *, char *, i32), char *out, i32 cap);
 static bool game_known(const char *name, char *out, i32 cap);
+// The folders of other apps' videos the scans have found (Config.watch_dirs and a folder down from each, as ShadowPlay
+// keeps a folder per game): LibItem.dir is an index into it, plus one. Only ever added to, by the scan's thread, so
+// an item's folder stays put for the run; `live` says the newest scan went through it. `game` is the name of a
+// folder below a watched one, which names its videos' game when nothing else does.
+struct LibDir {
+    Path path;
+    char game[64];
+    bool live;
+};
+static LibDir        g_lib_dirs[255];
+static volatile LONG g_lib_dir_count;
+
+// Folder `path`'s place in g_lib_dirs, plus one; 0 when it's full
+static u8 lib_dir_add(const Path &path, const char *game)
+{
+    i32 n = (i32)g_lib_dir_count;
+    for (i32 i = 0; i < n; i++)
+        if (!_wcsicmp(g_lib_dirs[i].path.s, path.s)) {
+            g_lib_dirs[i].live = true;
+            return (u8)(i + 1);
+        }
+    if (n == COUNT(g_lib_dirs)) return 0;
+    g_lib_dirs[n].path = path;
+    str_set(g_lib_dirs[n].game, game);
+    g_lib_dirs[n].live = true;
+    InterlockedIncrement(&g_lib_dir_count);
+    return (u8)(n + 1);
+}
+
 static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
 {
     for (i32 i = 0; i < g_game_override_count; i++) {
@@ -435,19 +466,21 @@ static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
     }
     if (tagged[0]) str_set(it->info.game, tagged);
     else game_from_name(tmpl, it->name, it->info.game, sizeof it->info.game);
+    if (!tagged[0] && it->dir && g_lib_dirs[it->dir - 1].game[0]) str_set(it->info.game, g_lib_dirs[it->dir - 1].game);
     char guess[64];
     if (!strcmp(it->info.game, GAME_NOT_OURS) && game_guess(it->name, game_known, guess, sizeof guess)) str_set(it->info.game, guess);
     return false;
 }
 
 // A card's original file: Clips\<year>\<name> or Sessions\<year>\<name>, or Clips\<year>\Source\<name> when it's
-// rendered.
+// rendered; one of another app's is in its folder.
 static Path lib_file_path(const Path &save_dir, const LibItem &it)
 {
     wchar_t name[256], ext[8], file[272];
     utf8_to_wide(it.name, name, COUNT(name));
     utf8_to_wide(it.ext, ext, COUNT(ext));
     swprintf(file, COUNT(file), L"%s%s", name, ext);
+    if (it.dir) return path_join(g_lib_dirs[it.dir - 1].path, file);
     return path_join(it.kind ? save_sessions_dir(save_dir, it.year)
                      : it.rendered ? save_source_dir(save_dir, it.year) : save_clips_dir(save_dir, it.year), file);
 }
@@ -518,7 +551,88 @@ static u64 lib_key_unique(u64 *seen, u64 key, const char *name)
     }
 }
 
-static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg, const char *tmpl)
+// Whether `dir` is `top` or inside it
+static bool path_within(const wchar_t *dir, const wchar_t *top)
+{
+    size_t n = wcslen(top);
+    while (n && top[n - 1] == L'\\') n--;
+    return n && !_wcsnicmp(dir, top, n) && (!dir[n] || dir[n] == L'\\');
+}
+
+// Another app's videos: those in each watched folder and in the folders right under it, other than Rekodr's own
+// (the save and buffer folders, which can sit in Videos with them) and another watched folder. Each is added to
+// `items` as a clip of the year of its time.
+static void lib_scan_watched(const Path &save_dir, const Path &buffer_dir, const Path *watch, i32 watch_count,
+                             const Path &cache, LibItem *items, i32 *n, u64 *seen, const char *tmpl, i32 *by_hand)
+{
+    for (i32 i = 0; i < (i32)g_lib_dir_count; i++) g_lib_dirs[i].live = false;
+    for (i32 w = 0; w < watch_count; w++) {
+        const Path &top = watch[w];
+        bool again = false;
+        for (i32 k = 0; k < w; k++) again |= !_wcsicmp(watch[k].s, top.s);
+        if (again || path_within(top.s, save_dir.s) || path_within(top.s, buffer_dir.s)) continue;
+        Path dirs[65];
+        char games[65][64] = {};
+        i32 dir_count = 1;
+        dirs[0] = top;
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(path_join(top, L"*").s, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' ||
+                (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) || dir_count == COUNT(dirs))
+                continue;
+            Path sub = path_join(top, fd.cFileName);
+            bool skip = path_within(save_dir.s, sub.s) || path_within(sub.s, save_dir.s) ||
+                        path_within(buffer_dir.s, sub.s);
+            for (i32 k = 0; k < watch_count && !skip; k++) skip = k != w && !_wcsicmp(watch[k].s, sub.s);
+            if (skip) continue;
+            dirs[dir_count] = sub;
+            wide_to_utf8(fd.cFileName, games[dir_count], sizeof games[0]);
+            dir_count++;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+
+        for (i32 d = 0; d < dir_count; d++) {
+            u8 dir = d ? 0 : lib_dir_add(top, ""); // the watched one even while it's empty, for lib_watch_poll
+            WIN32_FIND_DATAW f;
+            HANDLE fh = FindFirstFileW(path_join(dirs[d], L"*").s, &f);
+            if (fh == INVALID_HANDLE_VALUE) continue;
+            do {
+                if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                wchar_t *dot = wcsrchr(f.cFileName, L'.');
+                if (!dot || (_wcsicmp(dot, L".mp4") && _wcsicmp(dot, L".mkv") && _wcsicmp(dot, L".mov"))) continue;
+                if (*n == LIB_MAX_ITEMS) break;
+                if (!dir && !(dir = lib_dir_add(dirs[d], games[d]))) break;
+                LibItem *it = &items[(*n)++];
+                *it = {};
+                wide_to_utf8(dot, it->ext, sizeof it->ext);
+                *dot = 0;
+                wide_to_utf8(f.cFileName, it->name, sizeof it->name);
+                it->dir = dir;
+                it->kind = LIB_CLIPS;
+                it->size = ((u64)f.nFileSizeHigh << 32) | f.nFileSizeLow;
+                it->mtime_us = filetime_us(f.ftLastWriteTime);
+                FILETIME local;
+                SYSTEMTIME st;
+                FileTimeToLocalFileTime(&f.ftLastWriteTime, &local);
+                FileTimeToSystemTime(&local, &st);
+                it->year = (i16)st.wYear;
+                it->when_us = lib_name_us(tmpl, it->name, it->mtime_us);
+                u64 k = fnv64(&it->size, sizeof it->size);
+                it->key = lib_key_unique(seen, fnv64(&it->mtime_us, sizeof it->mtime_us, k), it->name);
+                char tagged[64];
+                it->probed = lib_cache_read(cache, it->key, &it->info, tagged, sizeof tagged);
+                *by_hand += lib_set_game(it, it->probed ? tagged : "", tmpl);
+                lib_set_display_name(it);
+            } while (FindNextFileW(fh, &f));
+            FindClose(fh);
+        }
+    }
+}
+
+static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg, const char *tmpl,
+                     const Path &buffer_dir, const Path *watch, i32 watch_count)
 {
     LibItem *items = g_scan_items;
     i32 n = 0, by_hand = 0;
@@ -582,6 +696,7 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
         } while (FindNextFileW(years, &fd));
         FindClose(years);
     }
+    lib_scan_watched(save_dir, buffer_dir, watch, watch_count, cache, items, &n, seen, tmpl, &by_hand);
     qsort(items, n, sizeof items[0], lib_item_newer);
     lib_publish(items, n);
     if (g_game_override_count) DEV_LOG("library: games.txt names %d files, %d of them here", g_game_override_count, by_hand);
@@ -800,7 +915,10 @@ static DWORD WINAPI lib_thread(void *)
         LibTask t = g_lib.tasks[pick];
         g_lib.task_count--;
         memmove(g_lib.tasks + pick, g_lib.tasks + pick + 1, (g_lib.task_count - pick) * sizeof g_lib.tasks[0]);
-        Path save_dir = g_lib.save_dir, cache = g_lib.cache_dir, ffmpeg = g_lib.ffmpeg;
+        Path save_dir = g_lib.save_dir, cache = g_lib.cache_dir, ffmpeg = g_lib.ffmpeg, buffer_dir = g_lib.buffer_dir;
+        Path watch[WATCH_MAX];
+        i32 watch_count = g_lib.watch_count;
+        memcpy(watch, g_lib.watch, sizeof watch);
         char tmpl[sizeof g_lib.name_template];
         str_set(tmpl, g_lib.name_template);
         if (t.kind == LT_SCAN) {
@@ -811,7 +929,7 @@ static DWORD WINAPI lib_thread(void *)
 
         if (t.kind == LT_SCAN) {
             u64 started = GetTickCount64();
-            lib_scan(save_dir, cache, ffmpeg, tmpl);
+            lib_scan(save_dir, cache, ffmpeg, tmpl, buffer_dir, watch, watch_count);
             AcquireSRWLockExclusive(&g_lib.lock);
             g_lib.scan_running = false;
             ReleaseSRWLockExclusive(&g_lib.lock);
@@ -865,6 +983,9 @@ static void library_rescan()
     AcquireSRWLockExclusive(&g_lib.lock);
     bool queued = g_lib.scan_queued;
     g_lib.save_dir = g_app.config.save_dir;
+    g_lib.buffer_dir = g_app.config.buffer_dir;
+    g_lib.watch_count = g_app.config.watch_count;
+    memcpy(g_lib.watch, g_app.config.watch_dirs, sizeof g_lib.watch);
     str_set(g_lib.name_template, g_app.config.name_template);
     g_lib.cache_dir = cache;
     g_lib.ffmpeg = ffmpeg;
@@ -1548,7 +1669,8 @@ static void library_on_event(const Event &e)
         lib.item_count = g_lib.item_count;
         memcpy(lib.items, g_lib.items, lib.item_count * sizeof lib.items[0]);
         g_lib_folder_bytes = 0;
-        for (i32 i = 0; i < lib.item_count; i++) g_lib_folder_bytes += lib.items[i].size + lib.items[i].render_size;
+        for (i32 i = 0; i < lib.item_count; i++)
+            if (!lib.items[i].dir) g_lib_folder_bytes += lib.items[i].size + lib.items[i].render_size;
         bool running = g_lib.scan_running || g_lib.scan_queued;
         ReleaseSRWLockShared(&g_lib.lock);
         lib.scanned = true;
@@ -5857,10 +5979,35 @@ static void lib_folder_list(f32 w, bool collapsed)
 
 enum { LIB_PAD_Y = 16 }; // the screen's padding above and below, which the list on the left keeps too
 
+// Another app's folders the newest scan went through, looked at every 2 s while the library shows: a file or folder
+// added, renamed or deleted there scans again, so an OBS or ShadowPlay save shows up. A file still being written
+// shows with what it holds so far, and in full the next scan.
+static void lib_watch_poll()
+{
+    static HANDLE change[COUNT(g_lib_dirs)];
+    static u64 last;
+    u64 now = GetTickCount64();
+    if (now - last < 2000) return;
+    last = now;
+    bool fire = false;
+    for (i32 i = 0; i < (i32)g_lib_dir_count; i++) {
+        if (!change[i]) {
+            change[i] = FindFirstChangeNotificationW(g_lib_dirs[i].path.s, FALSE,
+                                                     FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME);
+            continue;
+        }
+        if (change[i] == INVALID_HANDLE_VALUE || WaitForSingleObject(change[i], 0) != WAIT_OBJECT_0) continue;
+        FindNextChangeNotification(change[i]);
+        fire |= g_lib_dirs[i].live;
+    }
+    if (fire) library_rescan(); // queued behind one that's running
+}
+
 static void screen_library()
 {
     Library &lib = g_app.library;
     if (!lib.scanned && !lib.scanning) library_rescan();
+    lib_watch_poll();
     if (!lib.folders_loaded) {
         lib_folders_load();
         lib_refilter();
