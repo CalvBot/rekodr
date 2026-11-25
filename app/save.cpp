@@ -2906,9 +2906,10 @@ static void save_last(i64 secs)
     log_line("save %u: last %lld s queued", id, secs);
 }
 
-// Saves the wall-clock stretch [from_us, to_us] as a clip: "save <from> <to>" from the pipe or the command line.
-// An end in the future is cut to now, and a start before the oldest footage is moved up to it (trimmed).
-static void save_exact(i64 from_us, i64 to_us)
+// Saves the wall-clock stretch [from_us, to_us] as a clip: "save <from> <to>" from the pipe or the command line,
+// and achievement clips (`name` for its {game}; "" = the game played most). An end in the future is cut to now,
+// and a start before the oldest footage is moved up to it (trimmed).
+static void save_exact(i64 from_us, i64 to_us, const char *name = "")
 {
     i64 now = now_us(), oldest = g_app.recorder.oldest_us;
     if (to_us > now) {
@@ -2922,7 +2923,7 @@ static void save_exact(i64 from_us, i64 to_us)
     }
     bool trimmed = oldest && from_us < oldest;
     if (trimmed) from_us = oldest;
-    u32 id = save_range(from_us, to_us, SAVE_CLIP, "");
+    u32 id = save_range(from_us, to_us, SAVE_CLIP, name);
     if (!id) {
         pipe_saved(SAVE_CLIP, false, "the clip couldn't be queued");
         return;

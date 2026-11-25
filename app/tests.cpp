@@ -2971,6 +2971,84 @@ static void test_automarks()
     T(strstr(cfg, "\"uri\"       \"http://127.0.0.1:29771/\"") && strstr(cfg, "\"token\" \"abc123\"") && strstr(cfg, "\"player_match_stats\" \"1\""));
 }
 
+// Binary KeyValues, as Steam writes them, for the achievement tests.
+struct KvOut {
+    u8 b[4096];
+    i32 n;
+    void tag(u8 t, const char *name) { b[n++] = t; size_t l = strlen(name) + 1; memcpy(b + n, name, l); n += (i32)l; }
+    void open(const char *name) { tag(0, name); }
+    void close() { b[n++] = 8; }
+    void num(const char *name, i32 v) { tag(2, name); memcpy(b + n, &v, 4); n += 4; }
+    void str(const char *name, const char *v) { tag(1, name); size_t l = strlen(v) + 1; memcpy(b + n, v, l); n += (i32)l; }
+};
+
+static void test_achievements()
+{
+    static KvOut u;
+    u = {};
+    u.open("cache");
+    u.num("crc", 5);
+    u.open("67");
+    u.num("data", 7);
+    u.open("AchievementTimes");
+    u.num("0", 1688115185);
+    u.num("1", 1700000000);
+    u.num("2", 1600000000);
+    u.close();
+    u.close();
+    u.open("93");
+    u.open("AchievementTimes");
+    u.num("4", 1700000100);
+    u.close();
+    u.close();
+    u.close();
+    u.close();
+    AchUnlock found[16];
+    i64 newest = 0;
+    T(ach_unlocks(u.b, u.n, 0, found, 16, &newest) == 4 && newest == 1700000100);
+    i32 n = ach_unlocks(u.b, u.n, 1690000000, found, 16, &newest);
+    T(n == 2 && found[0].stat == 67 && found[0].bit == 1 && found[0].time == 1700000000 && found[1].stat == 93 && found[1].bit == 4);
+    T(ach_unlocks(u.b, u.n, 1700000100, found, 16, &newest) == 0);
+    T(ach_unlocks(u.b, 7, 0, found, 16, &newest) == 0); // cut short
+
+    static KvOut s;
+    s = {};
+    s.open("252490");
+    s.open("stats");
+    s.open("67");
+    s.str("type", "ACHIEVEMENTS");
+    s.open("bits");
+    s.open("0");
+    s.str("name", "PLACE_CAMPFIRE");
+    s.open("display");
+    s.open("name");
+    s.str("english", "Place Camp Fire");
+    s.str("token", "NEW_ACHIEVEMENT_67_0_NAME");
+    s.close();
+    s.close();
+    s.close();
+    s.open("1");
+    s.str("name", "CRAFT_CAMPFIRE");
+    s.open("display");
+    s.str("name", "Craft Camp Fire");
+    s.close();
+    s.close();
+    s.close();
+    s.close();
+    s.close();
+    s.close();
+    char api[128], shown[128];
+    T(ach_names(s.b, s.n, 67, 0, api, sizeof api, shown, sizeof shown) && !strcmp(api, "PLACE_CAMPFIRE") && !strcmp(shown, "Place Camp Fire"));
+    T(ach_names(s.b, s.n, 67, 1, api, sizeof api, shown, sizeof shown) && !strcmp(api, "CRAFT_CAMPFIRE") && !strcmp(shown, "Craft Camp Fire"));
+    T(!ach_names(s.b, s.n, 67, 2, api, sizeof api, shown, sizeof shown));
+
+    const char *pct = "{\"achievementpercentages\":{\"achievements\":[{\"name\":\"PLACE_CAMPFIRE\",\"percent\":\"73.5\"},"
+                      "{\"name\":\"CRAFT_CAMPFIRE\",\"percent\":0.8}]}}";
+    T(fabsf(ach_percent(pct, (i64)strlen(pct), "PLACE_CAMPFIRE") - 73.5f) < 0.01f);
+    T(fabsf(ach_percent(pct, (i64)strlen(pct), "CRAFT_CAMPFIRE") - 0.8f) < 0.01f);
+    T(ach_percent(pct, (i64)strlen(pct), "NOPE") < 0);
+}
+
 static void test_markers()
 {
     u8 colour;
@@ -3648,6 +3726,7 @@ int main()
     test_storeids();
     test_markers();
     test_automarks();
+    test_achievements();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

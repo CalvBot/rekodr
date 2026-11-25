@@ -3879,6 +3879,43 @@ static void options_integrations()
     }
     opt_card_end();
 
+    opt_section("STEAM ACHIEVEMENTS");
+    opt_card_begin();
+    if (opt_row_toggle("Clip rare achievements", "A clip of the moment Steam gives you a rare one", "##achclips", &c.ach_clips)) {
+        log_line("options: achievement clips %s", c.ach_clips ? "on" : "off");
+        options_apply(0);
+        achievements_apply();
+    }
+    {
+        ImGui::BeginDisabled(!c.ach_clips);
+        static const char *rarer[] = {"1%", "5%", "10%", "Any"};
+        static const i32 rarer_v[] = {1, 5, 10, 100};
+        i32 r = 1;
+        for (i32 i = 0; i < 4; i++)
+            if (c.ach_rarer == rarer_v[i]) r = i;
+        opt_row_begin("Rarer than", "Of players who have it", 4 * dp(64) + 3 * kit_px(6));
+        if (kit_segmented("##achrarer", rarer, 4, &r, dp(64))) {
+            c.ach_rarer = rarer_v[r];
+            log_line("options: achievement clips for under %d%%", c.ach_rarer);
+            options_apply(0);
+        }
+        opt_row_end();
+        static const char *secs[] = {"15 s", "30 s", "60 s"};
+        static const i32 secs_v[] = {15, 30, 60};
+        i32 s = 1;
+        for (i32 i = 0; i < 3; i++)
+            if (c.ach_secs == secs_v[i]) s = i;
+        opt_row_begin("Clip length", 0, 3 * dp(64) + 2 * kit_px(6));
+        if (kit_segmented("##achsecs", secs, 3, &s, dp(64))) {
+            c.ach_secs = secs_v[s];
+            log_line("options: achievement clips %d s", c.ach_secs);
+            options_apply(0);
+        }
+        opt_row_end();
+        ImGui::EndDisabled();
+    }
+    opt_card_end();
+
     opt_section("VIDEO EDITORS");
     opt_card_begin();
     static const char *ed_names[2] = {"Premiere Pro", "DaVinci Resolve"};
