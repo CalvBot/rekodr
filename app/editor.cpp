@@ -2196,6 +2196,12 @@ static bool ed_export_xml(Path *out)
     bool master_keys = e.vol_count[EDIT_MASTER] > 0;
 
     *out = ed.path;
+    if (ed.item.dir) { // another app's clip: its folder is left alone, the XML goes in Rekodr's Data folder
+        Path data = save_data_dir(g_app.config.save_dir);
+        CreateDirectoryW(data.s, 0);
+        const wchar_t *base = wcsrchr(ed.path.s, L'\\');
+        *out = path_join(data, base ? base + 1 : ed.path.s);
+    }
     wchar_t *dot = wcsrchr(out->s, L'.');
     if (!dot || dot < wcsrchr(out->s, L'\\')) return false;
     wcscpy_s(dot, MAX_PATH - (dot - out->s), L".xml");

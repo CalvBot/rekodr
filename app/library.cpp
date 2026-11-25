@@ -4036,10 +4036,12 @@ static bool lib_rename_apply()
     return false;
 }
 
-// Starts editing a card's name where it's shown.
+// Starts editing a card's name where it's shown. Another app's clip keeps its file name: renaming it gives it a
+// display name instead.
 static void lib_rename_start(const LibItem &it, bool display_name)
 {
     Library &lib = g_app.library;
+    display_name |= it.dir != 0;
     lib.target = it;
     lib.rename_display_name = display_name;
     str_set(lib.rename_buf, display_name ? it.display_name : it.name);
