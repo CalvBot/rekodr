@@ -89,6 +89,7 @@ static void config_defaults(Config *c, const Paths &paths)
     memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);
     c->share_link_page = true;
     c->share_link_days = 0;
+    c->share_copy_on_close = false;
     str_set(c->r2_bucket, "rekodr");
     c->r2_read_cap = 10000000;  // R2's free Class B requests a month
     c->r2_space_gb = -1;
@@ -540,6 +541,7 @@ static void config_set(Config *c, const char *key, char *value)
                     c->share_kbps[i][fps == 60] = atoi(value);
     }
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
+    else if (!strcmp(key, "share_copy_on_close")) boolean(&c->share_copy_on_close);
     else if (!strcmp(key, "share_link_days")) { i32 d = atoi(value); c->share_link_days = d == 1 || d == 7 ? d : 0; }
     else if (!strcmp(key, "embed_style")) { i32 i = embed_style_find(value); c->embed_style = (u8)(i < 0 ? 0 : i); }
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
@@ -722,6 +724,7 @@ static bool config_save(const Config &c, const Paths &paths)
                 SHARE_KBPS_HEIGHTS[i], c.share_kbps[i][1]);
     boolean("share_kbps_custom", c.share_kbps_custom);
     boolean("share_link_page", c.share_link_page);
+    boolean("share_copy_on_close", c.share_copy_on_close);
     fprintf(f, "share_link_days = %d\n", c.share_link_days);
     fprintf(f, "embed_style = %s\n", embed_style_id(c.embed_style));
     boolean("render_edits", c.render_edits);

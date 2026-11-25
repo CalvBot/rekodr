@@ -3575,6 +3575,11 @@ static void options_sharing()
 
     opt_quality_table();
     opt_min_quality_row();
+    if (opt_row_toggle("Copies when a game closes", "Make each clip's share copy after the game, so Share is instant",
+                       "##sharecopyclose", &c.share_copy_on_close)) {
+        log_line("options: share copies at game close %s", c.share_copy_on_close ? "on" : "off");
+        options_apply(0);
+    }
 
     opt_uploader_rows();
 

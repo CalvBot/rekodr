@@ -399,6 +399,7 @@ struct ShareJob {
     u64  source;    // share_source_hash
     bool squeezed;  // the file or link copy is squeezed
     bool cancelled; // share_cancel ended it; `save` is followed until it stops, and its file deleted
+    bool quiet;     // made ahead (share_prep_tick): kept for the next Share, not put on the clipboard
     char name[200];
 };
 static struct {
@@ -434,6 +435,12 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
         str_set(j.v.error, error);
         log_line("share %u: failed: %s", j.v.id, error);
         sound_event(SOUND_FAILED);
+        return;
+    }
+    if (j.quiet) {
+        str_set(j.v.path, what);
+        share_made_add(j.hash, j.lib_key, j.source, what);
+        log_line("share %u: made ahead %s", j.v.id, what);
         return;
     }
     if (j.v.kind == SHARE_LINK) {
@@ -510,7 +517,7 @@ static i32 g_share_link_days = -1;
 // Starts a Share. A clip with a ready link (share_ready_link) gets that link on the clipboard at once, whatever the
 // kind, unless a host is picked.
 static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
-                       const char *name, const char *game, u64 lib_key, const char *host)
+                       const char *name, const char *game, u64 lib_key, const char *host, bool quiet)
 {
     if (host && !host[0]) host = 0;
     if (host) kind = SHARE_LINK;
@@ -525,9 +532,10 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
     j.v.state = SHARE_MAKING;
     str_set(j.name, name && name[0] ? name : "clip");
     j.lib_key = lib_key;
+    j.quiet = quiet;
     j.source = share_source_hash(path, edit);
     char ready[512];
-    if (!host && share_ready_link(lib_key, j.source, ready, sizeof ready)) {
+    if (!host && !quiet && share_ready_link(lib_key, j.source, ready, sizeof ready)) {
         j.v.kind = SHARE_LINK;
         j.v.reused = true;
         share_end(j, true, ready, "");
@@ -614,6 +622,103 @@ static void share_cancel(u32 id)
         share_end(j, false, "", "Cancelled");
     }
     share_poll();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Copies made at game close (share_copy_on_close)
+//
+// When the game in front closes, the clips saved while it was in front get the file Share would make for them
+// (share_aims: as is or squeezed to the max size), made one at a time as quiet jobs while no game is played and no
+// save runs, so a later Share gives it at once. A game coming back stops the copy under way; it's made again later.
+
+static Path lib_item_path(const LibItem &it);                 // library.cpp
+static bool lib_item_edit(const LibItem &it, EditRecord *rec); // library.cpp
+
+static const i64 SHARE_PREP_SETTLE_US = 30ll * 1000000; // after a game closes, for its last clips to be saved
+
+static struct {
+    char game[64];        // the game in front as last seen ("" = none)
+    i64  since_us;        // when it came to the front
+    i64  from_us, to_us;  // a closed game's time in front whose clips are still to be found (0 = none)
+    u64  keys[256];       // clips waiting for their copy (library keys), oldest first
+    i32  count;
+    u32  job;             // the quiet Share under way
+    u64  job_key;
+} g_prep;
+
+// Whether a clip written at `mtime_us` belongs to a game's time in front, [from, to]: a clip saved just before the
+// game closed is written up to SHARE_PREP_SETTLE_US later.
+static bool share_prep_in(i64 mtime_us, i64 from_us, i64 to_us)
+{
+    return mtime_us >= from_us && mtime_us <= to_us + SHARE_PREP_SETTLE_US;
+}
+
+static void share_prep_push(u64 key)
+{
+    for (i32 i = 0; i < g_prep.count; i++)
+        if (g_prep.keys[i] == key) return;
+    if (g_prep.count < COUNT(g_prep.keys)) g_prep.keys[g_prep.count++] = key;
+}
+
+// Once a second on the main thread.
+static void share_prep_tick()
+{
+    i64 now = now_us();
+    bool on = g_app.config.share_copy_on_close;
+    const char *game = g_app.audio.game.s;
+    if (strcmp(game, g_prep.game)) {
+        if (g_prep.game[0] && on) {
+            if (!g_prep.from_us) g_prep.from_us = g_prep.since_us;
+            g_prep.to_us = now;
+            log_line("share: %s closed; its clips get share copies", g_prep.game);
+        }
+        str_set(g_prep.game, game);
+        g_prep.since_us = now;
+    }
+    if (!on) {
+        g_prep.from_us = g_prep.to_us = 0;
+        g_prep.count = 0;
+    }
+    bool busy = game[0] || g_app.saving.jobs_running > 0;
+    if (g_prep.job) {
+        ShareJobView v = share_job(g_prep.job);
+        if (v.id && v.state < SHARE_DONE) {
+            if (game[0] || !on) {
+                log_line("share: %s; the copy ahead stops", on ? "a game is being played" : "copies at game close off");
+                share_cancel(g_prep.job);
+                if (on) share_prep_push(g_prep.job_key);
+                g_prep.job = 0;
+            }
+            return;
+        }
+        g_prep.job = 0;
+    }
+    const Library &lib = g_app.library;
+    if (g_prep.from_us && !game[0] && now - g_prep.to_us >= SHARE_PREP_SETTLE_US && !busy && !lib.scanning) {
+        for (i32 i = lib.item_count - 1; i >= 0; i--) { // newest first: the oldest is queued first
+            const LibItem &it = lib.items[i];
+            if (it.kind == LIB_CLIPS && share_prep_in(it.mtime_us, g_prep.from_us, g_prep.to_us)) share_prep_push(it.key);
+        }
+        g_prep.from_us = g_prep.to_us = 0;
+    }
+    while (g_prep.count > 0 && !busy && !lib.scanning) {
+        u64 key = g_prep.keys[0];
+        memmove(g_prep.keys, g_prep.keys + 1, --g_prep.count * sizeof g_prep.keys[0]);
+        const LibItem *it = 0;
+        for (i32 i = 0; i < lib.item_count && !it; i++)
+            if (lib.items[i].key == key) it = &lib.items[i];
+        if (!it || !it->probed || _stricmp(it->ext, ".mp4")) continue; // deleted, or can't be shared
+        static EditRecord rec;
+        bool edited = lib_item_edit(*it, &rec);
+        Path path = lib_item_path(*it);
+        ShareAims a = share_aims(false, path.s, it->info, edited ? &rec : 0);
+        char made[MAX_PATH * 3];
+        if (!a.d.file_ok || share_made_find(a.hash, made, sizeof made)) continue; // too big, or made already
+        const char *name = it->display_name[0] ? it->display_name : it->name;
+        g_prep.job = share_start(SHARE_AS_IS, path.s, it->info, edited ? &rec : 0, name, it->info.game, key, 0, true);
+        g_prep.job_key = key;
+        break;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

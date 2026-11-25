@@ -208,6 +208,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             r2_tick();
             telemetry_tick();
             render_tick();
+            share_prep_tick();
             pipe_publish();
         }
         return 0;

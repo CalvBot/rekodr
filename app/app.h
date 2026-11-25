@@ -221,6 +221,7 @@ struct Config {
                            // 60 fps (SHARE_KBPS_DEFAULT), used while share_kbps_custom is on
     bool share_kbps_custom; // Share uses share_kbps, else SHARE_KBPS_DEFAULT ("Use recommended", off)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
+    bool share_copy_on_close; // when a game closes, its clips' share copies are made while nothing else runs (off)
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), 7 or 1; the Share menu can
                           // pick another for one link
     u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
@@ -606,10 +607,11 @@ struct ShareJobView {
 // Starts Share for the file at `path`. `edit` 0 shares the whole file; the editor passes its own record. `name` is
 // what the file or link is called, `lib_key` the library card (0 = none). `host` (a ShareHostChoice's name) makes
 // a link on that host, squeezed to it as the rule says, or fails with why it can't; 0 lets Share's rule pick.
-// A link made before on the same host for the same clip and edit is given again. Returns the job, 0 when it
-// couldn't start (share_job(0).error doesn't exist: the caller says "busy, try again").
+// A link made before on the same host for the same clip and edit is given again. `quiet` makes the file and keeps
+// it for the next Share without putting it on the clipboard. Returns the job, 0 when it couldn't start
+// (share_job(0).error doesn't exist: the caller says "busy, try again").
 static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
-                       const char *name, const char *game, u64 lib_key, const char *host = 0);
+                       const char *name, const char *game, u64 lib_key, const char *host = 0, bool quiet = false);
 static ShareJobView share_job(u32 id);
 static void share_cancel(u32 id);
 

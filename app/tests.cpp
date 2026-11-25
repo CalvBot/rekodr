@@ -1157,6 +1157,13 @@ static void test_share()
 
     // One click: a file as is under the max, squeezed to it when 67% of it fits, a link further over
     ShareHosts bucket = {true, ""}, none = {};
+    // Copies at game close: clips written while the game was in front, or just after it closed
+    {
+        i64 from = 1000000000, to = from + 3600ll * 1000000;
+        T(share_prep_in(from, from, to) && share_prep_in(to + SHARE_PREP_SETTLE_US, from, to));
+        T(!share_prep_in(from - 1, from, to) && !share_prep_in(to + SHARE_PREP_SETTLE_US + 1, from, to));
+    }
+
     ShareDecision d = share_decide_for(15 * mb, 20, 0.67, bucket);
     T(d.kind == SHARE_AS_IS && d.file_ok && !d.file_squeezed && d.file_bytes == 15 * mb && !strcmp(d.why, "15 MB, as is"));
     d = share_decide_for(25 * mb, 20, 0.67, bucket);
