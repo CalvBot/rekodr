@@ -12,6 +12,11 @@ import { C, card, saveKey, history, film, dot } from "./dev.calvbot.rekodr.sdPlu
 const dir = path.join(import.meta.dirname, "dev.calvbot.rekodr.sdPlugin", "imgs");
 fs.mkdirSync(dir, { recursive: true });
 const write = (name, svg) => fs.writeFileSync(path.join(dir, name + ".svg"), svg + "\n");
+// The logo (assets\rekodr-logo.svg): its shapes in one colour, at x, y and size px square
+const LOGO = fs.readFileSync(path.join(import.meta.dirname, "..", "assets", "rekodr-logo.svg"), "utf8");
+const LOGO_BOX = +/viewBox="0 0 ([\d.]+)/.exec(LOGO)[1];
+const LOGO_SHAPES = [...LOGO.matchAll(/<(?:circle|path)\b[^>]*\/>/g)].map(m => m[0].replace(/\s*style="[^"]*"/, "")).join("");
+const logo = (fill, x, y, size) => `<g transform="translate(${x} ${y}) scale(${size / LOGO_BOX})" fill="${fill}">${LOGO_SHAPES}</g>`;
 const small = body => `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 144 144">${body}</svg>`;
 
 write("save-key", saveKey("30s", "SAVE CLIP", C.accent));
@@ -20,7 +25,7 @@ write("open-key", card({ accent: C.accent, label: "CLIPS", body: film(C.accent) 
 write("save", small(history("#ffffff", 72, 72, 44).replace(/stroke-width="3.2"/, `stroke-width="10"`)));
 write("record", small(dot("#ffffff", 72, 72).replace(`r="26"`, `r="50"`).replace(`r="15"`, `r="28"`).replace(`stroke-width="4"`, `stroke-width="9"`)));
 write("open", small(`<g transform="translate(72 72) scale(2) translate(-72 -52)">${film("#ffffff")}</g>`));
-write("category", small(dot("#ffffff", 72, 72).replace(`r="26"`, `r="50"`).replace(`r="15"`, `r="28"`).replace(`stroke-width="4"`, `stroke-width="9"`)));
+write("category", small(logo("#ffffff", 17, 17, 110)));
 const EDGE = path.join(process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)", "Microsoft/Edge/Application/msedge.exe");
 const png = (name, svg, px) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rekodr-imgs-"));
@@ -41,6 +46,7 @@ img.src = "${src}";
     if (!b64) throw new Error(`Edge drew no ${name}.png`);
     fs.writeFileSync(path.join(dir, name + ".png"), Buffer.from(b64, "base64"));
 };
-const plugin = card({ accent: C.red, glow: 0.5, label: "Rekodr", body: dot(C.red) });
+const plugin = `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">` +
+    `<rect width="144" height="144" rx="32" fill="${C.bg}"/>${logo("#ffffff", 24, 24, 96)}</svg>`;
 png("plugin", plugin, 256);
 png("plugin@2x", plugin, 512);
