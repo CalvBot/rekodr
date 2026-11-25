@@ -29,7 +29,10 @@ enum RecEvent : i64 {
     REC_ERROR,        // text: what's wrong; empty when healthy again
     REC_BUFFER,       // b: oldest buffered video (us, 0 = none); text: "<buffer bytes> <free bytes>"
     REC_STRAIN,       // text: the encoder can't keep up, with a tip; empty when it can again
+    REC_PACE,         // text: a 10 s window while a game is played, "wall_ms|video_ms|frames|drops" (quality.cpp)
 };
+
+static void quality_pace(u64 tick, const char *text);
 
 static i32 codec_index(const char *codec)
 {
@@ -579,6 +582,7 @@ struct StderrReader {
     char   last[512];
     volatile i64 segment_tick; // GetTickCount64 when ffmpeg last opened a segment (the stall watchdog reads it)
     volatile i64 frames, dups; // -progress totals: frames written, and how many of them were repeats
+    volatile i64 drops;        // -progress drop_frames: frames ffmpeg dropped
     volatile i64 out_us;       // -progress out_time_us: how much video has been written
     volatile i64 progress_tick; // GetTickCount64 of the last -progress line: ffmpeg is still running its loop
 };
@@ -627,6 +631,7 @@ static DWORD WINAPI stderr_thread(void *arg)
             r->progress_tick = (i64)GetTickCount64();
             if (starts_with(line, "frame=")) r->frames = _atoi64(line + 6);
             else if (starts_with(line, "dup_frames=")) r->dups = _atoi64(line + 11);
+            else if (starts_with(line, "drop_frames=")) r->drops = _atoi64(line + 12);
             else if (starts_with(line, "out_time_us=")) r->out_us = _atoi64(line + 12);
             continue;
         }
@@ -793,14 +798,14 @@ static DWORD WINAPI recorder_thread(void *)
         g_reader.run_dir = run_dir;
         g_reader.log = path_join(s.local_dir, L"ffmpeg-video.log");
         g_reader.segment_tick = 0;
-        g_reader.frames = g_reader.dups = g_reader.progress_tick = g_reader.out_us = 0;
+        g_reader.frames = g_reader.dups = g_reader.drops = g_reader.progress_tick = g_reader.out_us = 0;
         HANDLE reader = thread_start(stderr_thread, &g_reader);
 
         u64 started = GetTickCount64();
         bool announced = false;
         bool frozen = false, idle = false, renewed = false;
         u64 window_tick = started;
-        i64 window_frames = 0, window_dups = 0, window_out = 0;
+        i64 window_frames = 0, window_dups = 0, window_drops = 0, window_out = 0;
         // Strain: while a game is played, video should be written as fast as time passes. Three 10 s windows
         // in a row under 92% of real time means the encoder is behind; three good ones clear it.
         i32 slow_windows = 0, good_windows = 0;
@@ -856,10 +861,18 @@ static DWORD WINAPI recorder_thread(void *)
             // output side fills in repeats). A new capture picks it up again.
             u64 tick = GetTickCount64();
             if (tick - window_tick >= 10000) {
-                i64 f = g_reader.frames, d = g_reader.dups, o = g_reader.out_us;
+                i64 f = g_reader.frames, d = g_reader.dups, dr = g_reader.drops, o = g_reader.out_us;
                 bool same = f > window_frames && f - window_frames <= d - window_dups;
                 f64 pace = window_out && o > window_out ? (f64)(o - window_out) / ((f64)(tick - window_tick) * 1000) : 0;
+                if (announced && now.s.game && pace > 0) {
+                    // The window for the quality warning (quality.cpp)
+                    char window[96];
+                    snprintf(window, sizeof window, "%lld|%lld|%lld|%lld", (long long)(tick - window_tick),
+                             (long long)((o - window_out) / 1000), (long long)(f - window_frames), (long long)(dr - window_drops));
+                    rec_post(REC_PACE, 0, window);
+                }
                 window_out = o;
+                window_drops = dr;
                 if (announced && now.s.game && pace > 0) {
                     if (pace < 0.92) { slow_windows++; good_windows = 0; }
                     else { good_windows++; slow_windows = 0; }
@@ -1396,6 +1409,7 @@ static void recorder_on_event(const Event &e)
         break;
     case REC_ERROR: str_set(r.last_error.s, e.text); break;
     case REC_STRAIN: str_set(r.strain.s, e.text); break;
+    case REC_PACE: quality_pace(GetTickCount64(), e.text); break;
     case REC_BUFFER:
         r.oldest_us = e.b;
         sscanf_s(e.text, "%lld %lld", &r.buffer_bytes, &r.free_bytes);

@@ -1,5 +1,6 @@
 // quality.cpp: which recording settings are more than this PC keeps up with, and why, for the amber lines in
-// Options > Recording. Nothing is blocked; the player decides.
+// Options > Recording: frames the recorder actually lost while games were played, and estimates from the
+// hardware. Nothing is blocked; the player decides.
 //
 // The limits are rough rates, in pixels a second (height * 16/9 * height * fps):
 // - the CPU encoder (x264 at its fast presets) does about 12 million per logical processor, a third of that for
@@ -14,7 +15,44 @@ struct QualityHw {
     i32  threads;       // logical processors
     i32  vendor;        // the encoder that records (Vendor), -1 = not known yet
     bool hdd;           // the buffer is on a spinning disk
+    i32  lost_pct;      // frames lost in the last 10 minutes of play (quality_lost), -1 = not enough measured
 };
+
+// What the recorder measured while a game was played, one 10 s window each (recorder.cpp REC_PACE), kept for the
+// last 10 minutes. A frame is lost when ffmpeg drops it or when the video falls behind real time.
+struct QualityPace { u64 tick; i64 wall_ms, video_ms, frames, drops; };
+static QualityPace g_pace[64];
+static i32 g_pace_count, g_pace_next;
+static const u64 QUALITY_SPAN_MS = 10 * 60 * 1000;
+static const i32 QUALITY_LOST_PCT = 3; // shown from this many percent lost
+
+// A window from the recorder: "wall_ms|video_ms|frames|drops".
+static void quality_pace(u64 tick, const char *text)
+{
+    QualityPace p = {tick};
+    if (sscanf(text, "%lld|%lld|%lld|%lld", &p.wall_ms, &p.video_ms, &p.frames, &p.drops) != 4 || p.wall_ms <= 0) return;
+    g_pace[g_pace_next] = p;
+    g_pace_next = (g_pace_next + 1) % COUNT(g_pace);
+    if (g_pace_count < COUNT(g_pace)) g_pace_count++;
+}
+
+// The percent of frames lost over the last 10 minutes of play, -1 below a minute of it.
+static i32 quality_lost(u64 now)
+{
+    i64 wall = 0, video = 0, frames = 0, drops = 0;
+    for (i32 i = 0; i < g_pace_count; i++) {
+        const QualityPace &p = g_pace[i];
+        if (now - p.tick > QUALITY_SPAN_MS) continue;
+        wall += p.wall_ms;
+        video += p.video_ms;
+        frames += p.frames;
+        drops += p.drops;
+    }
+    if (wall < 60000) return -1;
+    f64 behind = video < wall ? 1 - (f64)video / wall : 0;
+    f64 dropped = frames + drops > 0 ? (f64)drops / (frames + drops) : 0;
+    return (i32)(fmax(behind, dropped) * 100 + 0.5);
+}
 
 struct QualityWarn { char why[Q_COUNT][96]; };
 
@@ -63,6 +101,10 @@ static void quality_check(const Config &c, const QualityHw &hw, QualityWarn *w)
         else if (preset_step(c.preset.s) >= 5 && quality_px(h, fps) <= quality_px(2160, 60))
             snprintf(w->why[Q_PRESET], sizeof w->why[Q_PRESET], "Slow at %dp %d fps: P5 or faster keeps up", h, fps);
     }
+
+    // What happened on this PC wins over the estimate
+    if (hw.lost_pct >= QUALITY_LOST_PCT)
+        snprintf(w->why[Q_FPS], sizeof w->why[Q_FPS], "Lost %d%% of frames in the last 10 min of play", hw.lost_pct);
 
     if (hw.hdd) {
         if (c.bitrate_mbps > QUALITY_HDD_MBPS)

@@ -1025,10 +1025,33 @@ static void test_quality()
     quality_check(c, hw, &w);
     T(w.why[Q_BITRATE][0] && !w.why[Q_DESKTOP_BITRATE][0] && !w.why[Q_RES][0]);
     // Unknown encoder: no pixel-rate guess
-    hw = {2160, 240, 2, -1, false};
+    hw = {2160, 240, 2, -1, false, -1};
     c.fps = 240;
     quality_check(c, hw, &w);
     T(!w.why[Q_RES][0] && !w.why[Q_FPS][0]);
+
+    // Measured: under a minute of play says nothing; then lag or drops, whichever lost more, from the last 10 min
+    g_pace_count = g_pace_next = 0;
+    u64 t = 100000000;
+    quality_pace(t, "10000|9900|594|0");
+    T(quality_lost(t) == -1);
+    for (i32 i = 1; i < 6; i++) quality_pace(t + i * 10000, "10000|9900|594|0");
+    T(quality_lost(t + 50000) == 1);
+    quality_pace(t + 60000, "10000|10000|500|100"); // 100 dropped: 2.4% of all frames, more than the lag
+    T(quality_lost(t + 60000) == 2);
+    T(quality_lost(t + 60000 + QUALITY_SPAN_MS) == -1); // all older than 10 min
+    quality_pace(t, "bad");
+    T(g_pace_count == 7);
+    for (i32 i = 0; i < 100; i++) quality_pace(t + i * 10000, "10000|9000|540|0"); // the ring keeps the newest
+    T(g_pace_count == COUNT(g_pace) && quality_lost(t + 990000) == 10);
+    hw.lost_pct = 10;
+    c.fps = 60;
+    quality_check(c, hw, &w);
+    T(!strcmp(w.why[Q_FPS], "Lost 10% of frames in the last 10 min of play"));
+    hw.lost_pct = 2;
+    quality_check(c, hw, &w);
+    T(!w.why[Q_FPS][0]);
+    g_pace_count = g_pace_next = 0;
 }
 
 // The Mic is cleaned before the Mix takes it; Mic (raw) is the Mic as recorded, on its own, in no Mix, and left out

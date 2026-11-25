@@ -2240,6 +2240,7 @@ static const QualityWarn &opt_quality()
     hw.threads = (i32)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
     hw.vendor = options_vendor();
     hw.hdd = hdd;
+    hw.lost_pct = quality_lost(GetTickCount64());
     quality_check(c, hw, &w);
     return w;
 }
