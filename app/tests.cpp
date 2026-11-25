@@ -494,6 +494,13 @@ static void test_watch_scan()
     T(!wcscmp(t1, L"C:\\Videos\\OBS") && !wcscmp(t2, L"D:\\"));
     T(path_within(L"C:\\Videos\\Rekodr\\Clips", L"C:\\Videos") && path_within(L"C:\\Videos", L"C:\\Videos\\"));
     T(!path_within(L"C:\\Videos2", L"C:\\Videos") && !path_within(L"C:\\Videos", L"C:\\Videos\\Rekodr"));
+    {
+        // A drive's root gets no second separator, so a folder in it compares equal to the same folder typed out
+        Path root = {}, dir = {};
+        wcscpy_s(root.s, L"D:\\");
+        wcscpy_s(dir.s, L"D:\\Videos");
+        T(!wcscmp(path_join(root, L"OBS").s, L"D:\\OBS") && !wcscmp(path_join(dir, L"OBS").s, L"D:\\Videos\\OBS"));
+    }
 
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);

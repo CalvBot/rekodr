@@ -361,6 +361,8 @@ static i32 backup_places(BackupPlace *out, i32 cap)
         }
     }
     DWORD letters = GetLogicalDrives();
+    DWORD old_mode = 0;
+    SetThreadErrorMode(SEM_FAILCRITICALERRORS, &old_mode); // an empty card reader fails quietly, no "no disk" box
     for (i32 d = 0; d < 26 && !drive; d++) {
         if (!(letters & (1u << d))) continue;
         wchar_t root[4] = {(wchar_t)('A' + d), ':', '\\', 0};
@@ -372,6 +374,7 @@ static i32 backup_places(BackupPlace *out, i32 cap)
             drive = true;
         }
     }
+    SetThreadErrorMode(old_mode, 0);
     if (drive) {
         wchar_t mine[MAX_PATH];
         swprintf(mine, MAX_PATH, L"%s%sMy Drive", dir, dir[wcslen(dir) - 1] == '\\' ? L"" : L"\\");

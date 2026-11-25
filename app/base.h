@@ -103,10 +103,13 @@ static void wide_to_utf8(const wchar_t *src, char *dst, int dst_count)
     if (n == 0) dst[0] = 0;
 }
 
+// dir\name; a dir that already ends in a separator (a drive's root, "D:\") gets no second one.
 static Path path_join(const Path &dir, const wchar_t *name)
 {
     Path p = {};
-    swprintf(p.s, MAX_PATH, L"%s\\%s", dir.s, name);
+    size_t n = wcslen(dir.s);
+    bool sep = n && (dir.s[n - 1] == L'\\' || dir.s[n - 1] == L'/');
+    swprintf(p.s, MAX_PATH, sep ? L"%s%s" : L"%s\\%s", dir.s, name);
     return p;
 }
 
