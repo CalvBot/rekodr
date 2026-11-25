@@ -3797,6 +3797,148 @@ static void test_edit_advanced()
     ed.edit = ed.drag_from = {};
 }
 
+// The webcam in an Advanced edit: its items, where they put it, the file they're kept in, and the graph that lays
+// them over the picture; and how the library finds a clip's webcam
+static void test_cam_layer()
+{
+    static MediaInfo m;
+    m = {};
+    m.duration = 10, m.width = 1920, m.height = 1080, m.fps = 30, m.track_count = 3;
+    str_set(m.tracks[0], "Mix"), str_set(m.tracks[1], "Mic"), str_set(m.tracks[2], "Game");
+    m.channels[0] = 2, m.channels[1] = 1, m.channels[2] = 2;
+    m.cam_w = 1280, m.cam_h = 720;
+
+    // Simple 1-4 then 6-9 with a 1 s crossfade and a fade in: a cam item per piece, linked with its picture, in the
+    // bottom right corner a quarter of the picture wide, 38 px (2% of the width) in from both edges
+    static EditRecord s, a, b;
+    s = {};
+    s.pieces[0] = {1, 4};
+    s.pieces[1] = {6, 9, TRANS_CROSS, 1.0f};
+    s.piece_count = 2;
+    s.fade_in = 0.5f;
+    a = s;
+    edit_to_advanced(&a, m);
+    T(a.item_count == 8);
+    i32 pic[EDIT_MAX_ITEMS], cam[EDIT_MAX_ITEMS];
+    T(track_items(a, 0, pic) == 2 && track_items(a, EDIT_CAM_TRACK, cam) == 2);
+    const EditItem &c0 = a.items[cam[0]], &c1 = a.items[cam[1]];
+    T(c0.link == a.items[pic[0]].link && c1.link == a.items[pic[1]].link);
+    T(near(c1.start, 3) && near(c1.from, 6) && near(c1.to, 9) && near(c0.fade_in, 0.5) && c1.cross == 0);
+    T(near(c0.cam_w, CAM_DEFAULT_W) && cam_corner_of(c0, 1920, 1080, 1280, 720) == CAM_BOTTOM_RIGHT);
+    CamRect r = cam_rect(c0, 1920, 1080, 1280, 720);
+    T(r.w == 480 && r.h == 270 && r.x == 1402 && r.y == 772 && 1920 - r.x - r.w == 38 && 1080 - r.y - r.h == 38);
+    // No webcam, no cam items
+    m.cam_w = m.cam_h = 0;
+    b = s;
+    edit_to_advanced(&b, m);
+    T(b.item_count == 6 && track_items(b, EDIT_CAM_TRACK, cam) == 0);
+    m.cam_w = 1280, m.cam_h = 720;
+    track_items(a, EDIT_CAM_TRACK, cam);
+
+    // The layer maths: corners, held inside the picture, the cam's own shape, the least and most width
+    EditItem it = c0;
+    cam_corner(&it, CAM_TOP_LEFT, 1920, 1080, 1280, 720);
+    r = cam_rect(it, 1920, 1080, 1280, 720);
+    T(r.x == 38 && r.y == 38 && cam_corner_of(it, 1920, 1080, 1280, 720) == CAM_TOP_LEFT);
+    cam_place(&it, 0.5, 0.5, 0.25, 1920, 1080, 1280, 720);
+    r = cam_rect(it, 1920, 1080, 1280, 720);
+    T(r.x == 720 && r.y == 405 && cam_corner_of(it, 1920, 1080, 1280, 720) == -1);
+    cam_place(&it, 1.2, -0.5, 0.25, 1920, 1080, 1280, 720);
+    r = cam_rect(it, 1920, 1080, 1280, 720);
+    T(r.x + r.w == 1920 && r.y == 0 && near(it.cam_x, 0.875) && near(it.cam_y, 0.125));
+    r = cam_rect(it, 1920, 1080, 640, 480); // 4:3: as wide, taller
+    T(r.w == 480 && r.h == 360 && r.x + r.w == 1920 && r.y == 0);
+    cam_place(&it, 0.5, 0.5, 1, 1920, 1080, 720, 1280); // a phone held upright: as tall as the picture, no more
+    r = cam_rect(it, 1920, 1080, 720, 1280);
+    T(r.h == 1080 && r.w == 608 && r.y == 0 && near(it.cam_w, 0.31640625));
+    cam_place(&it, 0.5, 0.5, 0.01, 1920, 1080, 1280, 720);
+    T(near(it.cam_w, CAM_MIN_W));
+    it.cam_x = 2, it.cam_y = 2, it.cam_w = 0.5f; // out of place on disk: the render still keeps it inside
+    r = cam_rect(it, 1280, 720, 1280, 720);
+    T(r.w == 640 && r.h == 360 && r.x == 640 && r.y == 360);
+
+    // Back to Simple loses a moved webcam, so it asks; one left where it was put goes back as it was
+    T(edit_round_trips(a, m));
+    b = a;
+    cam_corner(&b.items[cam[1]], CAM_TOP_LEFT, 1920, 1080, 1280, 720);
+    T(!edit_round_trips(b, m));
+    b = a;
+    b.items[cam[0]].cam_w = 0.4f;
+    T(!edit_round_trips(b, m) && !adv_same(a, b, m));
+    b = a;
+    edit_to_simple(&b, m);
+    T(b.piece_count == 2 && !b.item_count);
+
+    // The record on disk keeps the webcam's place
+    wchar_t dir[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    Path file = {};
+    swprintf(file.s, MAX_PATH, L"%srekodr-test-cam-%u.edit.txt", dir, GetCurrentProcessId());
+    b = a;
+    cam_place(&b.items[cam[1]], 0.3, 0.4, 0.33, 1920, 1080, 1280, 720);
+    edit_write(file, b);
+    static EditRecord rd;
+    edit_read(file, &rd);
+    DeleteFileW(file.s);
+    i32 rc[EDIT_MAX_ITEMS];
+    T(rd.item_count == 8 && track_items(rd, EDIT_CAM_TRACK, rc) == 2 && adv_same(rd, b, m));
+    T(fabs(rd.items[rc[1]].cam_x - 0.3) < 1e-4 && fabs(rd.items[rc[1]].cam_w - 0.33) < 1e-4);
+
+    // The graph: each cam item cut from the webcam stream, sized, faded by its alpha, moved to its start and laid over
+    // the picture in turn; the picture's format last
+    static EditJob j;
+    j = {};
+    j.info = m;
+    j.edit = a;
+    SaveWork *w = &g_save_work;
+    w->graph_len = 0, w->graph_full = false, w->graph[0] = 0;
+    i32 streams[MEDIA_MAX_TRACKS + 1];
+    adv_graph(w, j, 0.5, "", "yuv420p", false, streams);
+    T(strstr(w->graph, "[0:v:1]split=2[cm0][cm1];") != 0);
+    T(strstr(w->graph, "[cm0]trim=start=0.5000:end=3.5000,setpts=PTS-STARTPTS,fps=30.0000,scale=480:270,setsar=1,"
+                       "format=yuva420p,fade=t=in:st=0:d=0.5000:alpha=1,settb=AVTB,setpts=PTS+0.0000/TB[cq0];") != 0);
+    T(strstr(w->graph, "[cm1]trim=start=5.5000:end=8.5000,") != 0 && strstr(w->graph, "setpts=PTS+3.0000/TB[cq1];") != 0);
+    T(strstr(w->graph, "[cq0]overlay=x=1402:y=772:eof_action=pass:repeatlast=0[cv0];") != 0);
+    T(strstr(w->graph, "[cv0][cq1]overlay=x=1402:y=772:eof_action=pass:repeatlast=0[cv1];") != 0);
+    T(strstr(w->graph, "[cv1]format=yuv420p[v];") != 0);
+    // A clip without a webcam: the picture alone
+    j.info.cam_w = j.info.cam_h = 0;
+    w->graph_len = 0, w->graph[0] = 0;
+    adv_graph(w, j, 0.5, "", "yuv420p", false, streams);
+    T(strstr(w->graph, "[0:v:1]") == 0 && strstr(w->graph, "overlay") == 0);
+
+    // The library: the picture is the first video stream that isn't the webcam, and the webcam's size is kept
+    static char out[2048];
+    snprintf(out, sizeof out, "%s",
+             "[STREAM]\ncodec_type=audio\nchannels=2\nTAG:title=Mix\n[/STREAM]\n"
+             "[STREAM]\ncodec_type=video\nwidth=1920\nheight=1080\navg_frame_rate=60/1\nTAG:handler_name=VideoHandler\n[/STREAM]\n"
+             "[STREAM]\ncodec_type=video\nwidth=1280\nheight=720\navg_frame_rate=30/1\nTAG:title=Webcam\n"
+             "TAG:handler_name=Webcam\n[/STREAM]\n"
+             "[FORMAT]\nduration=12.500\nTAG:genre=Overwatch\nTAG:comment=rekodr 1.0\n[/FORMAT]\n");
+    MediaInfo pm;
+    char tagged[64];
+    T(lib_probe_parse(out, &pm, tagged, sizeof tagged));
+    T(pm.width == 1920 && pm.height == 1080 && near(pm.fps, 60) && pm.cam_w == 1280 && pm.cam_h == 720);
+    T(pm.track_count == 1 && near(pm.duration, 12.5) && !strcmp(tagged, "Overwatch"));
+    snprintf(out, sizeof out, "%s",
+             "[STREAM]\ncodec_type=video\nwidth=2560\nheight=1440\navg_frame_rate=30/1\n[/STREAM]\n"
+             "[FORMAT]\nduration=5\n[/FORMAT]\n");
+    T(lib_probe_parse(out, &pm, tagged, sizeof tagged) && pm.width == 2560 && pm.cam_w == 0 && !tagged[0]);
+    // And the probe cache keeps it; a cache file without it is probed again
+    Path cache = {};
+    swprintf(cache.s, MAX_PATH, L"%srekodr-test-cam-cache-%u", dir, GetCurrentProcessId());
+    CreateDirectoryW(cache.s, 0);
+    MediaInfo cm;
+    lib_cache_write(cache, 7, m, "Overwatch");
+    T(lib_cache_read(cache, 7, &cm, tagged, sizeof tagged) && cm.cam_w == 1280 && cm.cam_h == 720 && cm.width == 1920);
+    Path cf = lib_cache_file(cache, 7, L".txt");
+    FILE *f = _wfopen(cf.s, L"wb");
+    if (f) fputs("duration = 5.000\nwidth = 1920\nheight = 1080\nfps = 30.000\ntagged = \n", f), fclose(f);
+    T(!lib_cache_read(cache, 7, &cm, tagged, sizeof tagged));
+    DeleteFileW(cf.s);
+    RemoveDirectoryW(cache.s);
+}
+
 // The social copy: whole when it fits, else a preview as long as the budget allows; the edit cut to its first part
 static void test_social_preview()
 {
@@ -4028,6 +4170,7 @@ int main()
     test_edit_xml();
     test_social_preview();
     test_edit_advanced();
+    test_cam_layer();
     test_lanes();
     test_share();
     test_render();

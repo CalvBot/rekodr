@@ -460,6 +460,7 @@ struct MediaInfo {
     char tracks[MEDIA_MAX_TRACKS][32]; // their titles: "Mix", "Mic", "sam (chat)", "Overwatch (game)" ...
     u8   channels[MEDIA_MAX_TRACKS];   // and channel counts: 1 for a mono Mic or chat, 2 for the rest
     char game[64];                     // what it's of: the tagged game, GAME_DESKTOP or GAME_NOT_OURS
+    i32  cam_w, cam_h;                 // the webcam stream's size (CAM_STREAM_TITLE); 0 when there's none
 };
 
 // How a keyframed value moves away from a key and into the next (as in Compress for Discord): Smooth and EaseOut
@@ -495,10 +496,10 @@ struct EditPiece {
 };
 
 // Advanced edits: items, each a span of the video placed on a track of the sequence. Track 0 is the picture, 1 + t the
-// file's audio track t (a Rekodr file's Mix has none: it's rebuilt). Items on one track never overlap; time with no
-// item plays as black or silence.
+// file's audio track t (a Rekodr file's Mix has none: it's rebuilt), EDIT_CAM_TRACK the webcam, laid over the
+// picture. Items on one track never overlap; time with no item plays as black or silence (or no webcam).
 enum EditMode : u8 { EDIT_SIMPLE, EDIT_ADVANCED };
-enum { EDIT_MAX_ITEMS = 128, EDIT_MAX_ITEM_KEYS = 512 };
+enum { EDIT_MAX_ITEMS = 128, EDIT_MAX_ITEM_KEYS = 512, EDIT_CAM_TRACK = MEDIA_MAX_TRACKS + 1 };
 
 struct EditItem {
     f64 start;             // on the sequence, seconds
@@ -508,6 +509,8 @@ struct EditItem {
     u16 id;                // its own number, which its keys name (never 0)
     u16 link;              // items with the same link (not 0) move, trim and split together
     u8  track;
+    f32 cam_x, cam_y;      // on EDIT_CAM_TRACK: the webcam's centre and width, as parts of the picture's width and
+    f32 cam_w;             // height
 };
 
 // What an item's key sets: the zoom (v, centred on x y), a colour value (COLOR_* after IKEY_COLOR) or the volume.
@@ -714,7 +717,7 @@ enum { PLAYER_MAX_TRACK_ENGINES = 8 };
 struct Player {
     bool              open;
     Path              path;
-    u8                id;  // which player (0 library, 1 editor, 2 timeline, 3 card preview): media events carry it
+    u8                id;  // which player (0 library, 1 editor, 2 timeline, 3 card preview, 4 the editor's webcam): media events carry it
     u32               gen; // bumped on every open, so events from a closed file are dropped
     IMFMediaEngine   *engine;
     IMFMediaEngineEx *engine_ex;
@@ -924,6 +927,16 @@ struct Editor {                 // editor.cpp: trim, zoom, track volumes, Keep a
     bool       adv_ask_simple;  // asking before going back to Simple loses something
     i32        adv_key;         // the selected item key (an index into edit.ikeys), -1 none
     i32        adv_drag_key;    // the key being dragged, as an index into drag_from.ikeys
+    // The webcam layer (adv_editor.cpp): the clip's webcam stream copied to a file of its own, shown by its own engine
+    Player     cam;
+    struct CamCopy *cam_copy;
+    i32        adv_citem;       // the item the webcam's engine is on, as adv_vitem
+    f64        cam_synced;      // ImGui time the webcam's engine was last moved
+    f32        cam_k[4];        // the kept frame on screen as last drawn (x0 y0 x1 y1), which the webcam is placed in
+    bool       cam_hot;         // the mouse is on the webcam in the picture, or dragging it
+    u8         cam_drag;        // 0 none, 1 moving the webcam, 2 sizing it
+    f32        cam_drag_mx, cam_drag_my; // where the drag began
+    f64        cam_drag_x, cam_drag_y, cam_drag_w; // the webcam's place then
 };
 // timeline.cpp: the buffer and a range to save. Times are wall-clock us; 0 = not set.
 // A stretch of the buffer built for the Timeline's Play. Its file is the video segments end to end from file_start, so

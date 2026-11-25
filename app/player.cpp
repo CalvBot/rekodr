@@ -72,7 +72,7 @@ struct PlayerNotify : IMFMediaEngineNotify {
 };
 
 // [player id: 0 library, 1 editor, 2 timeline, 3 card preview][0 = video, 1.. = track engines]
-static PlayerNotify g_player_notify[4][1 + PLAYER_MAX_TRACK_ENGINES];
+static PlayerNotify g_player_notify[5][1 + PLAYER_MAX_TRACK_ENGINES];
 
 static u32 player_tag(const Player &p, i32 slot) { return (p.id & 15) | ((u32)slot << 4) | ((p.gen & 0xffffff) << 8); }
 
@@ -101,7 +101,7 @@ static bool mf_init()
 
 static IMFMediaEngine *player_engine(Player *p, i32 slot, bool audio_only)
 {
-    PlayerNotify *n = &g_player_notify[p->id < 4 ? p->id : 0][slot];
+    PlayerNotify *n = &g_player_notify[p->id < 5 ? p->id : 0][slot];
     n->tag = player_tag(*p, slot);
     IMFAttributes *attr = 0;
     MFCreateAttributes(&attr, 3);
@@ -344,7 +344,8 @@ static void player_on_media(const Event &e)
     Player *p = id == 0   ? &g_app.library.player
                 : id == 1 ? &g_app.editor.player
                 : id == 2 ? &g_app.timeline.player
-                          : &g_app.library.hover;
+                : id == 3 ? &g_app.library.hover
+                          : &g_app.editor.cam;
     if (!p->open || ((tag >> 8) & 0xffffff) != (p->gen & 0xffffff)) return;
 
     if (slot > 0) { // a track engine

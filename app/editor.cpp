@@ -23,6 +23,7 @@ static void adv_seek(f64 u);
 static void adv_toggle();
 static void adv_apply_volumes();
 static void adv_resync();
+static void adv_cam_close();
 
 static bool edit_is_default(const EditRecord &e)
 {
@@ -60,16 +61,20 @@ static void edit_read(const Path &file, EditRecord *e)
         if (!strcmp(k, "mode")) {
             e->mode = !strcmp(v, "advanced") ? EDIT_ADVANCED : EDIT_SIMPLE;
         } else if (!strcmp(k, "item") && e->item_count < EDIT_MAX_ITEMS) {
-            // id track start from to link, then fade in, fade out and crossfade
+            // id track start from to link, then fade in, fade out and crossfade, then the webcam's x y and width
             EditItem it = {};
             i32 id = 0, track = 0, link = 0;
-            if (sscanf_s(v, "%d %d %lf %lf %lf %d %f %f %f", &id, &track, &it.start, &it.from, &it.to, &link,
-                         &it.fade_in, &it.fade_out, &it.cross) < 6 ||
-                id <= 0 || id > 65535 || track < 0 || track > MEDIA_MAX_TRACKS || link < 0 || link > 65535 ||
+            if (sscanf_s(v, "%d %d %lf %lf %lf %d %f %f %f %f %f %f", &id, &track, &it.start, &it.from, &it.to, &link,
+                         &it.fade_in, &it.fade_out, &it.cross, &it.cam_x, &it.cam_y, &it.cam_w) < 6 ||
+                id <= 0 || id > 65535 || track < 0 || track > EDIT_CAM_TRACK || link < 0 || link > 65535 ||
                 it.to <= it.from)
                 continue;
             it.id = (u16)id, it.track = (u8)track, it.link = (u16)link;
             it.fade_in = ImMax(it.fade_in, 0.f), it.fade_out = ImMax(it.fade_out, 0.f), it.cross = ImMax(it.cross, 0.f);
+            if (it.track == EDIT_CAM_TRACK) {
+                it.cam_w = ImClamp(it.cam_w, CAM_MIN_W, 1.f);
+                it.cam_x = ImClamp(it.cam_x, 0.f, 1.f), it.cam_y = ImClamp(it.cam_y, 0.f, 1.f);
+            } else it.cam_x = it.cam_y = it.cam_w = 0;
             e->items[e->item_count++] = it;
         } else if (!strcmp(k, "ikey")) {
             // item, then z time zoom x y ease, or b, c, s or v (a colour or the volume) time value ease
@@ -174,14 +179,15 @@ static void edit_write(const Path &file, const EditRecord &e)
     if (e.mode == EDIT_ADVANCED) {
         fprintf(f, "mode = advanced\n"
                    "# Rekodr edit, Advanced: items (id track start from to link, then fade in, fade out and crossfade\n"
-                   "# from the item before, seconds; track 0 the picture, 1 + n audio track n; start on the sequence,\n"
+                   "# from the item before, seconds, then the webcam's centre x y and width as parts of the picture;\n"
+                   "# track 0 the picture, 1 + n audio track n, 33 the webcam; start on the sequence,\n"
                    "# from and to in the video), item keys (item z time zoom x y ease, or item b, c, s or v for\n"
                    "# brightness, contrast, saturation or volume, then time value ease; times in the video),\n"
                    "# muted tracks (volume = track 1 1); eases 0 linear 1 smooth 2 in 3 out 4 hold\n");
         for (i32 i = 0; i < e.item_count; i++) {
             const EditItem &it = e.items[i];
-            fprintf(f, "item = %d %d %.3f %.3f %.3f %d %.3f %.3f %.3f\n", it.id, it.track, it.start, it.from, it.to,
-                    it.link, it.fade_in, it.fade_out, it.cross);
+            fprintf(f, "item = %d %d %.3f %.3f %.3f %d %.3f %.3f %.3f %.4f %.4f %.4f\n", it.id, it.track, it.start, it.from,
+                    it.to, it.link, it.fade_in, it.fade_out, it.cross, it.cam_x, it.cam_y, it.cam_w);
         }
         for (i32 k = 0; k < e.ikey_count; k++) {
             const ItemKey &q = e.ikeys[k];
@@ -617,6 +623,7 @@ static void editor_open(const LibItem &item)
     Editor &ed = g_app.editor;
     ed_save_record();
     player_close(&ed.player);
+    adv_cam_close();
     ed.open = true;
     ed.pending[0] = 0;
     ed.item = item;
@@ -700,6 +707,7 @@ static void editor_close()
     Editor &ed = g_app.editor;
     ed_save_record();
     player_close(&ed.player);
+    adv_cam_close();
     wave_close(&ed.wave);
     ed.open = false;
 }
@@ -2909,7 +2917,9 @@ static void screen_editor()
     if (adv_on()) {
         player_update(&p);
         adv_update();
+        adv_cam_update();
     } else {
+        if (!ed.cam.paused) player_pause(&ed.cam);
         p.loop_from = joined ? ed_s(0) : ed_in();
         p.stop_at = joined ? 0 : ed_out();
         player_update(&p);
@@ -2990,6 +3000,7 @@ static void screen_editor()
     bool footage_view = cfg.editor_zoom_view == 1;
     ImVec2 pos(h0.x, body_y), pos1(pos.x + main_w, pos.y + video_h), a, b;
     dl->AddRectFilled(pos, pos1, IM_COL32(0, 0, 0, 255), kit_px(10));
+    if (adv_on()) adv_cam_drag(); // before the picture, so a press on the webcam is the webcam's
     if (footage_view) {
         ImVec2 m(main_w * 0.1f, video_h * 0.1f);
         player_fit(p, ImVec2(pos.x + m.x, pos.y + m.y), ImVec2(main_w - 2 * m.x, video_h - 2 * m.y), &a, &b);
@@ -3046,6 +3057,7 @@ static void screen_editor()
     }
     dl->PushClipRect(pos, pos1, true);
     ed_draw_picture(p, f0, f1);
+    if (adv_on()) adv_cam_draw(k0, k1);
     ImU32 shade = IM_COL32(0, 0, 0, 150);
     ImVec2 c0(f0.x > pos.x ? f0.x : pos.x, f0.y > pos.y ? f0.y : pos.y);
     ImVec2 c1(f1.x < pos1.x ? f1.x : pos1.x, f1.y < pos1.y ? f1.y : pos1.y);

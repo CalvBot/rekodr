@@ -1633,7 +1633,7 @@ static void adv_settle(EditRecord *e, f64 dur)
         if (it.start < 0) it.start = 0;
         if (it.to - it.from < PIECE_LEAST - 0.0005) item_remove(e, i);
     }
-    for (i32 tr = 0; tr <= MEDIA_MAX_TRACKS; tr++) {
+    for (i32 tr = 0; tr <= EDIT_CAM_TRACK; tr++) {
         i32 idx[EDIT_MAX_ITEMS], n = track_items(*e, tr, idx);
         u16 gone[EDIT_MAX_ITEMS];
         i32 ng = 0;
@@ -1654,7 +1654,8 @@ static void adv_settle(EditRecord *e, f64 dur)
 
 // An item's transitions as they play: each fade held to half the item; a crossfade (which plays half its length
 // past the cut on each side) held to both items and to the footage there, and only where the item before ends
-// where this one starts. It takes the place of the fades at its cut. Anything under TRANS_LEAST is none.
+// where this one starts. It takes the place of the fades at its cut. Anything under TRANS_LEAST is none. The
+// webcam's items only cut.
 struct ItemFades {
     f64 in, out, cross; // cross: from the item before
 };
@@ -1667,7 +1668,7 @@ static void track_fades(const EditRecord &e, f64 dur, const i32 *idx, i32 n, Ite
         out[k].in = ImMin((f64)it.fade_in, len / 2);
         out[k].out = ImMin((f64)it.fade_out, len / 2);
         out[k].cross = 0;
-        if (k && it.cross > 0) {
+        if (k && it.cross > 0 && it.track != EDIT_CAM_TRACK) {
             const EditItem &p = e.items[idx[k - 1]];
             if (fabs(item_end(p) - it.start) < 0.001) {
                 f64 l = ImMin((f64)it.cross, ImMin(p.to - p.from, len));
@@ -1711,6 +1712,75 @@ static i32 item_at(const EditRecord &e, i32 track, f64 u)
             best = i;
     }
     return best;
+}
+
+// The webcam over the picture. A cam item's width is a part of the picture's width; its height follows from the
+// cam's own shape (cw x ch) and is never more than the picture's; the whole cam stays inside the picture.
+static const f32 CAM_MIN_W = 0.08f, CAM_DEFAULT_W = 0.25f, CAM_MARGIN = 0.02f;
+enum { CAM_TOP_LEFT, CAM_TOP_RIGHT, CAM_BOTTOM_LEFT, CAM_BOTTOM_RIGHT, CAM_CORNERS };
+
+// A cam's size as parts of a fw x fh picture, from the width asked for.
+static void cam_size(f64 want_w, f64 fw, f64 fh, i32 cw, i32 ch, f64 *w, f64 *h)
+{
+    f64 pa = fw > 0 && fh > 0 ? fw / fh : 16.0 / 9, ca = cw > 0 && ch > 0 ? (f64)cw / ch : 16.0 / 9;
+    *w = ImClamp(want_w, (f64)CAM_MIN_W, 1.0);
+    *h = *w * pa / ca;
+    if (*h > 1) *h = 1, *w = ca / pa;
+}
+
+// Puts a cam item's centre at (x, y) and its width at w, held so the whole cam is inside the picture.
+static void cam_place(EditItem *it, f64 x, f64 y, f64 w, i32 fw, i32 fh, i32 cw, i32 ch)
+{
+    f64 sw, sh;
+    cam_size(w, fw, fh, cw, ch, &sw, &sh);
+    it->cam_w = (f32)sw;
+    it->cam_x = (f32)ImClamp(x, sw / 2, 1 - sw / 2);
+    it->cam_y = (f32)ImClamp(y, sh / 2, 1 - sh / 2);
+}
+
+// Where a cam item puts the cam in corner c (CAM_*), CAM_MARGIN of the picture's width in from both edges.
+static void cam_corner_at(const EditItem &it, i32 c, i32 fw, i32 fh, i32 cw, i32 ch, f64 *x, f64 *y)
+{
+    f64 sw, sh, mx = CAM_MARGIN, my = fh > 0 ? CAM_MARGIN * fw / fh : CAM_MARGIN;
+    cam_size(it.cam_w, fw, fh, cw, ch, &sw, &sh);
+    *x = c & 1 ? 1 - mx - sw / 2 : mx + sw / 2;
+    *y = c & 2 ? 1 - my - sh / 2 : my + sh / 2;
+}
+
+static void cam_corner(EditItem *it, i32 c, i32 fw, i32 fh, i32 cw, i32 ch)
+{
+    f64 x, y;
+    cam_corner_at(*it, c, fw, fh, cw, ch, &x, &y);
+    cam_place(it, x, y, it->cam_w, fw, fh, cw, ch);
+}
+
+// The corner a cam item is in (as cam_corner puts it), -1 for none.
+static i32 cam_corner_of(const EditItem &it, i32 fw, i32 fh, i32 cw, i32 ch)
+{
+    for (i32 c = 0; c < CAM_CORNERS; c++) {
+        f64 x, y;
+        cam_corner_at(it, c, fw, fh, cw, ch, &x, &y);
+        if (fabs(it.cam_x - x) < 0.002 && fabs(it.cam_y - y) < 0.002) return c;
+    }
+    return -1;
+}
+
+// A cam item's place in a fw x fh picture, in pixels: even sizes for the encoder, inside the picture.
+struct CamRect {
+    i32 x, y, w, h;
+};
+
+static CamRect cam_rect(const EditItem &it, i32 fw, i32 fh, i32 cw, i32 ch)
+{
+    CamRect r = {};
+    if (fw < 2 || fh < 2) return r;
+    f64 sw, sh;
+    cam_size(it.cam_w, fw, fh, cw, ch, &sw, &sh);
+    r.w = ImMin(ImMax(2, (i32)(sw * fw + 0.5) & ~1), fw & ~1);
+    r.h = ImMin(ImMax(2, (i32)(sh * fh + 0.5) & ~1), fh & ~1);
+    r.x = ImClamp((i32)floor(it.cam_x * fw - r.w / 2.0 + 0.5), 0, fw - r.w);
+    r.y = ImClamp((i32)floor(it.cam_y * fh - r.h / 2.0 + 0.5), 0, fh - r.h);
+    return r;
 }
 
 // Keys for an item over [a, b] of the video from a curve with keys at kt[0..n) (eases ke) and values val(t, v, x,
@@ -1760,9 +1830,10 @@ static void span_keys(EditRecord *e, u16 id, u8 what, f64 a, f64 b, const f64 *k
     }
 }
 
-// Simple to Advanced: each piece becomes a linked set of items, the picture and every audio track, end to end. The
-// keys are split at the cuts, and each track's volume times the whole mix's goes into its items' volume keys (held
-// to 0..2); the whole mix muted mutes every track.
+// Simple to Advanced: each piece becomes a linked set of items, the picture, every audio track and the webcam (in the
+// bottom right corner, with the picture's fades), end to end. The keys are split at the cuts, and each track's
+// volume times the whole mix's goes into its items' volume keys (held to 0..2); the whole mix muted mutes every
+// track.
 static void edit_to_advanced(EditRecord *e, const MediaInfo &m)
 {
     if (e->mode == EDIT_ADVANCED) return;
@@ -1822,6 +1893,20 @@ static void edit_to_advanced(EditRecord *e, const MediaInfo &m)
                     *v = g > 2 ? 2 : g, *x = *y = 0;
                 });
             }
+        }
+        if (m.cam_w > 0 && a.item_count < EDIT_MAX_ITEMS) {
+            EditItem it = {};
+            it.start = at;
+            it.from = pc[i].from;
+            it.to = pc[i].to;
+            it.fade_in = (f32)fin;
+            it.fade_out = (f32)fout;
+            it.id = id++;
+            it.link = (u16)(i + 1);
+            it.track = EDIT_CAM_TRACK;
+            it.cam_w = CAM_DEFAULT_W;
+            cam_corner(&it, CAM_BOTTOM_RIGHT, m.width, m.height, m.cam_w, m.cam_h);
+            a.items[a.item_count++] = it;
         }
         at += pc[i].to - pc[i].from;
     }
@@ -1891,7 +1976,7 @@ static void edit_to_simple(EditRecord *e, const MediaInfo &m)
 }
 
 // Whether two Advanced edits play the same: the same items on each track (place, span and transitions as they
-// play), linked the same way, and the same zoom, colour and volume through each.
+// play), linked the same way, the webcam in the same place, and the same zoom, colour and volume through each.
 static bool adv_same(const EditRecord &a, const EditRecord &b, const MediaInfo &m)
 {
     if (a.item_count != b.item_count) return false;
@@ -1900,7 +1985,7 @@ static bool adv_same(const EditRecord &a, const EditRecord &b, const MediaInfo &
     memset(ab, 0, sizeof ab);
     for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++)
         if (a.muted[t] != b.muted[t]) return false;
-    for (i32 tr = 0; tr <= MEDIA_MAX_TRACKS; tr++) {
+    for (i32 tr = 0; tr <= EDIT_CAM_TRACK; tr++) {
         i32 ia[EDIT_MAX_ITEMS], ib[EDIT_MAX_ITEMS];
         i32 n = track_items(a, tr, ia);
         if (track_items(b, tr, ib) != n) return false;
@@ -1917,6 +2002,11 @@ static bool adv_same(const EditRecord &a, const EditRecord &b, const MediaInfo &
             if (x.link) {
                 if (!ab[x.link]) ab[x.link] = y.link;
                 else if (ab[x.link] != y.link) return false;
+            }
+            if (tr == EDIT_CAM_TRACK) {
+                if (fabs(x.cam_x - y.cam_x) > 0.001 || fabs(x.cam_y - y.cam_y) > 0.001 || fabs(x.cam_w - y.cam_w) > 0.001)
+                    return false;
+                continue;
             }
             // The curves, at both edits' keys and at even steps through the item
             for (i32 what = 0; what < IKEY_KINDS; what++) {
@@ -2135,8 +2225,34 @@ static bool edit_audio_graph(SaveWork *w, const EditJob &j, f64 start)
 // An Advanced edit's graph, for input cut from `from` seconds. Each track's items are cut out of the input (with half
 // of any crossfade past each end), zoomed and coloured or set to their volume, faded, and joined with black or
 // silence between them and up to the sequence's end. The picture then goes through `post` (filters, each ending in a
-// comma) into [v]. The sound is written as [o<s>]: the mix of the unmuted tracks first, then for Keep (`tracks`)
+// comma) into [v], with the webcam's items laid over it first when the file has a webcam (cam_graph). The sound is
+// written as [o<s>]: the mix of the unmuted tracks first, then for Keep (`tracks`)
 // every track as edited; streams[s] is -1 for the mix, else the file's track. Returns how many.
+// The webcam's items over the picture `v` (a label, changed to the result's): each cut from the file's webcam stream
+// read from `from`, sized and placed as the item says, faded by its alpha, and laid over from its start until it
+// ends. Nothing without a webcam.
+static void cam_graph(SaveWork *w, const EditRecord &e, const MediaInfo &m, f64 from, f64 fps, char (&v)[24])
+{
+    i32 idx[EDIT_MAX_ITEMS], n = m.cam_w > 0 ? track_items(e, EDIT_CAM_TRACK, idx) : 0;
+    if (!n) return;
+    ItemFades fd[EDIT_MAX_ITEMS];
+    track_fades(e, m.duration, idx, n, fd);
+    graph_add(w, "[0:v:1]split=%d", n);
+    for (i32 k = 0; k < n; k++) graph_add(w, "[cm%d]", k);
+    graph_add(w, ";\n");
+    for (i32 k = 0; k < n; k++) {
+        const EditItem &it = e.items[idx[k]];
+        CamRect r = cam_rect(it, m.width, m.height, m.cam_w, m.cam_h);
+        graph_add(w, "[cm%d]trim=start=%.4f:end=%.4f,setpts=PTS-STARTPTS,fps=%.4f,scale=%d:%d,setsar=1,format=yuva420p", k,
+                  it.from - from, it.to - from, fps, r.w, r.h);
+        if (fd[k].in > 0) graph_add(w, ",fade=t=in:st=0:d=%.4f:alpha=1", fd[k].in);
+        if (fd[k].out > 0) graph_add(w, ",fade=t=out:st=%.4f:d=%.4f:alpha=1", it.to - it.from - fd[k].out, fd[k].out);
+        graph_add(w, ",settb=AVTB,setpts=PTS+%.4f/TB[cq%d];\n", it.start, k);
+        graph_add(w, "%s[cq%d]overlay=x=%d:y=%d:eof_action=pass:repeatlast=0[cv%d];\n", v, k, r.x, r.y, k);
+        snprintf(v, sizeof v, "[cv%d]", k);
+    }
+}
+
 static i32 adv_graph(SaveWork *w, const EditJob &j, f64 from, const char *post, const char *vfmt, bool tracks,
                      i32 *streams)
 {
@@ -2226,6 +2342,7 @@ static i32 adv_graph(SaveWork *w, const EditJob &j, f64 from, const char *post, 
     };
     char v[24];
     track(0, "[0:v]", v);
+    cam_graph(w, e, m, from, fps, v);
     graph_add(w, "%s%sformat=%s[v];\n", v, post, vfmt);
     if (m.track_count <= 0) return 0;
     // The tracks: in the mix when unmuted and with something on them, and each written alone for Keep
@@ -2465,7 +2582,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     }
     if (adv) {
         from = m.duration, to = 0;
-        for (i32 t = 0; t <= MEDIA_MAX_TRACKS; t++) {
+        for (i32 t = 0; t <= EDIT_CAM_TRACK; t++) {
             i32 idx[EDIT_MAX_ITEMS], n = track_items(j.edit, t, idx);
             ItemFades fd[EDIT_MAX_ITEMS];
             track_fades(j.edit, m.duration, idx, n, fd);

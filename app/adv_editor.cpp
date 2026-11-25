@@ -9,7 +9,7 @@ enum AdvDrag : u8 { ADV_DRAG_NONE, ADV_DRAG_SEEK, ADV_DRAG_MOVE, ADV_DRAG_TRIM_I
 static void adv_resync()
 {
     Editor &ed = g_app.editor;
-    ed.adv_vitem = -2;
+    ed.adv_vitem = ed.adv_citem = -2;
     for (i32 i = 0; i < PLAYER_MAX_TRACK_ENGINES; i++) ed.adv_titem[i] = -2;
 }
 
@@ -436,6 +436,239 @@ static f64 adv_next_stop(f64 at, i32 dir)
 // its items. Items are selected with a click (with what's linked to them; Alt for the one alone, Ctrl or Shift to
 // add), moved by their body and trimmed by their edges, linked ones together (Shift catches the playhead and other
 // items' edges). The ruler and empty rows move the playhead; a right click opens an item's menu.
+// The webcam layer. Its stream is copied out of the clip into a file of its own (play_dir\cam-<key>.mp4) for an
+// engine of its own, which plays the cam item under the playhead as the picture's engine plays the picture's. The
+// copy's thread and the editor each hold a reference, and whichever lets go last frees it; the file is deleted by the
+// thread when the editor let go while it was copying, else by the editor.
+enum : LONG { CAM_COPYING, CAM_COPIED, CAM_COPY_FAILED, CAM_COPY_DROPPED };
+struct CamCopy {
+    volatile LONG refs, state;
+    Path src, dst, ffmpeg;
+};
+
+static void cam_copy_release(CamCopy *c)
+{
+    if (!c || InterlockedDecrement(&c->refs)) return;
+    HeapFree(GetProcessHeap(), 0, c);
+}
+
+static DWORD WINAPI cam_copy_thread(void *arg)
+{
+    CamCopy *c = (CamCopy *)arg;
+    wchar_t args[2048];
+    args[0] = 0;
+    static const char *const head[] = {"-v", "error", "-y", "-i"};
+    static const char *const mid[] = {"-map", "0:v:1", "-c", "copy", "-an", "-sn", "-dn"};
+    arg_list(args, COUNT(args), head, COUNT(head));
+    cmd_arg(args, COUNT(args), c->src.s);
+    arg_list(args, COUNT(args), mid, COUNT(mid));
+    cmd_arg(args, COUNT(args), c->dst.s);
+    bool ok = proc_run(c->ffmpeg.s, args, 30 * 60 * 1000, 0, 0) == 0;
+    LONG was = InterlockedCompareExchange(&c->state, ok ? CAM_COPIED : CAM_COPY_FAILED, CAM_COPYING);
+    if (!ok || was == CAM_COPY_DROPPED) DeleteFileW(c->dst.s);
+    ui_wake();
+    cam_copy_release(c);
+    return 0;
+}
+
+// The copy, started the first time Advanced shows a clip with a webcam.
+static void adv_cam_start()
+{
+    Editor &ed = g_app.editor;
+    if (ed.cam_copy || ed.item.info.cam_w <= 0) return;
+    CamCopy *c = (CamCopy *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *c);
+    if (!c) return;
+    ed.cam_copy = c;
+    c->refs = 1;
+    if (!ffmpeg_find(g_app.config.ffmpeg, &c->ffmpeg)) {
+        c->state = CAM_COPY_FAILED;
+        return;
+    }
+    c->src = ed.path;
+    SHCreateDirectoryExW(0, g_app.config.play_dir.s, 0);
+    wchar_t name[64];
+    swprintf(name, COUNT(name), L"cam-%016llx.mp4", (unsigned long long)ed.item.key);
+    c->dst = path_join(g_app.config.play_dir, name);
+    c->refs = 2;
+    HANDLE th = thread_start(cam_copy_thread, c);
+    if (!th) {
+        c->refs = 1;
+        c->state = CAM_COPY_FAILED;
+        return;
+    }
+    CloseHandle(th);
+}
+
+// Lets go of the webcam's engine and its copy (the editor closing, or opening another file).
+static void adv_cam_close()
+{
+    Editor &ed = g_app.editor;
+    player_close(&ed.cam);
+    CamCopy *c = ed.cam_copy;
+    if (!c) return;
+    ed.cam_copy = 0;
+    if (InterlockedCompareExchange(&c->state, CAM_COPY_DROPPED, CAM_COPYING) == CAM_COPIED) DeleteFileW(c->dst.s);
+    cam_copy_release(c);
+}
+
+// Each frame in Advanced: the webcam's engine on the cam item under the playhead, playing with the picture
+static void adv_cam_update()
+{
+    Editor &ed = g_app.editor;
+    Player &c = ed.cam;
+    const EditRecord &e = ed.edit;
+    if (ed.item.info.cam_w <= 0) return;
+    adv_cam_start();
+    if (!c.open) {
+        if (ed.cam_copy && ed.cam_copy->state == CAM_COPIED) {
+            c.id = 4;
+            if (player_open(&c, ed.cam_copy->dst, 0, false)) c.engine->SetMuted(TRUE);
+            ed.adv_citem = -2;
+        }
+        return;
+    }
+    player_update(&c);
+    if (!c.loaded) return;
+    f64 u = ed.adv_u, now = ImGui::GetTime();
+    i32 k = item_at(e, EDIT_CAM_TRACK, u);
+    if (k >= 0) {
+        f64 s = adv_src(e.items[k], u);
+        bool moved = k != ed.adv_citem;
+        bool carries = moved && ed.adv_citem >= 0 && ed.adv_playing && fabs(c.pos - s) < 0.08;
+        // Playing, it's moved back once it has settled and drifted; held, it shows the frame at the playhead
+        bool off = ed.adv_playing ? !c.seeking && !c.has_seek && now - ed.cam_synced > 1.0 && fabs(c.pos - s) > 0.15
+                                  : fabs(c.pos - s) > 0.005;
+        if ((moved && !carries) || (!moved && off)) {
+            player_seek(&c, s);
+            ed.cam_synced = now;
+        }
+        f32 rate = ed.player.rate > 0 ? ed.player.rate : 1;
+        if (c.rate != rate) player_set_rate(&c, rate);
+        if (ed.adv_playing && c.paused && !c.seeking && !c.has_seek) player_play(&c);
+        if (!ed.adv_playing && !c.paused) player_pause(&c);
+    } else if (!c.paused) {
+        player_pause(&c);
+    }
+    ed.adv_citem = k;
+}
+
+// The cam items the webcam's place is set on: with the one at the playhead (k) selected, the selected cam items; else
+// every cam item
+static i32 adv_cam_targets(i32 k, i32 *out)
+{
+    const EditRecord &e = g_app.editor.edit;
+    if (k < 0 || !adv_selected(e.items[k].id)) return track_items(e, EDIT_CAM_TRACK, out);
+    i32 n = 0;
+    for (i32 i = 0; i < e.item_count; i++)
+        if (e.items[i].track == EDIT_CAM_TRACK && adv_selected(e.items[i].id)) out[n++] = i;
+    return n;
+}
+
+// Where a cam item puts the webcam on screen, in the kept frame as last drawn
+static void adv_cam_screen(const EditItem &it, ImVec2 *a, ImVec2 *b)
+{
+    Editor &ed = g_app.editor;
+    const MediaInfo &m = ed.item.info;
+    CamRect r = cam_rect(it, m.width, m.height, m.cam_w, m.cam_h);
+    f32 sx = (ed.cam_k[2] - ed.cam_k[0]) / m.width, sy = (ed.cam_k[3] - ed.cam_k[1]) / m.height;
+    *a = ImVec2(ed.cam_k[0] + r.x * sx, ed.cam_k[1] + r.y * sy);
+    *b = ImVec2(a->x + r.w * sx, a->y + r.h * sy);
+}
+
+// The webcam's place set on its targets
+static void adv_cam_set(i32 k, f64 x, f64 y, f64 w)
+{
+    Editor &ed = g_app.editor;
+    const MediaInfo &m = ed.item.info;
+    i32 idx[EDIT_MAX_ITEMS], n = adv_cam_targets(k, idx);
+    for (i32 q = 0; q < n; q++) cam_place(&ed.edit.items[idx[q]], x, y, w, m.width, m.height, m.cam_w, m.cam_h);
+    ed.dirty = true;
+}
+
+// The webcam in the picture: its body moves it, the corner toward the picture's middle sizes it with the far corner
+// kept where it is. Submitted before the picture, so a press on the webcam isn't the picture's, at the place it was
+// drawn last frame.
+static void adv_cam_drag()
+{
+    Editor &ed = g_app.editor;
+    EditRecord &e = ed.edit;
+    const MediaInfo &m = ed.item.info;
+    ImGuiIO &io = ImGui::GetIO();
+    ed.cam_hot = false;
+    bool shown = m.cam_w > 0 && m.width > 0 && m.height > 0 && ed.cam_k[2] > ed.cam_k[0] && ed.cam_k[3] > ed.cam_k[1];
+    i32 k = shown ? item_at(e, EDIT_CAM_TRACK, ed.adv_u) : -1;
+    if (k < 0) {
+        ed.cam_drag = 0;
+        return;
+    }
+    const EditItem &it = e.items[k];
+    ImVec2 a, b;
+    adv_cam_screen(it, &a, &b);
+    ImGui::SetCursorScreenPos(a);
+    ImGui::InvisibleButton("##cam", ImVec2(b.x - a.x > 1 ? b.x - a.x : 1, b.y - a.y > 1 ? b.y - a.y : 1));
+    f32 grip = kit_px(14), mx = io.MousePos.x, my = io.MousePos.y;
+    ImVec2 g(it.cam_x < 0.5f ? b.x : a.x, it.cam_y < 0.5f ? b.y : a.y);
+    bool on_grip = fabsf(mx - g.x) <= grip && fabsf(my - g.y) <= grip;
+    if (ImGui::IsItemActivated()) {
+        ed.cam_drag = on_grip ? 2 : 1;
+        ed.cam_drag_mx = mx, ed.cam_drag_my = my;
+        ed.cam_drag_x = it.cam_x, ed.cam_drag_y = it.cam_y, ed.cam_drag_w = it.cam_w;
+    }
+    if (ImGui::IsItemActive() && ed.cam_drag) {
+        f64 dx = (mx - ed.cam_drag_mx) / (ed.cam_k[2] - ed.cam_k[0]), dy = (my - ed.cam_drag_my) / (ed.cam_k[3] - ed.cam_k[1]);
+        f64 x = ed.cam_drag_x + dx, y = ed.cam_drag_y + dy, w = ed.cam_drag_w;
+        if (ed.cam_drag == 2) {
+            f64 gx = ed.cam_drag_x < 0.5 ? 1 : -1, gy = ed.cam_drag_y < 0.5 ? 1 : -1, w0, h0, h1;
+            cam_size(ed.cam_drag_w, m.width, m.height, m.cam_w, m.cam_h, &w0, &h0);
+            cam_size(ed.cam_drag_w + gx * dx, m.width, m.height, m.cam_w, m.cam_h, &w, &h1);
+            x = ed.cam_drag_x + gx * (w - w0) / 2, y = ed.cam_drag_y + gy * (h1 - h0) / 2;
+        }
+        adv_cam_set(k, x, y, w);
+    } else if (ImGui::IsItemDeactivated()) {
+        ed.cam_drag = 0;
+    }
+    ed.cam_hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+    if (ed.cam_hot) {
+        bool nwse = (it.cam_x < 0.5f) == (it.cam_y < 0.5f);
+        ImGui::SetMouseCursor(ed.cam_drag == 2 || (!ed.cam_drag && on_grip)
+                                  ? (nwse ? ImGuiMouseCursor_ResizeNWSE : ImGuiMouseCursor_ResizeNESW)
+                                  : ImGuiMouseCursor_ResizeAll);
+    }
+}
+
+// The webcam over the kept frame (k0..k1), faded as its item is at the playhead; an outline and the sizing grip while
+// the mouse is on it
+static void adv_cam_draw(ImVec2 k0, ImVec2 k1)
+{
+    Editor &ed = g_app.editor;
+    const EditRecord &e = ed.edit;
+    const MediaInfo &m = ed.item.info;
+    ed.cam_k[0] = k0.x, ed.cam_k[1] = k0.y, ed.cam_k[2] = k1.x, ed.cam_k[3] = k1.y;
+    i32 k = m.cam_w > 0 && m.width > 0 && m.height > 0 ? item_at(e, EDIT_CAM_TRACK, ed.adv_u) : -1;
+    if (k < 0) return;
+    const EditItem &it = e.items[k];
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a, b;
+    adv_cam_screen(it, &a, &b);
+    f64 gain = item_fade_gain(e, ed_duration(), k, adv_src(it, ed.adv_u));
+    u32 alpha = (u32)(ImClamp(gain, 0.0, 1.0) * 255 + 0.5);
+    const Player &c = ed.cam;
+    if (c.srv && c.frame_ready && c.loaded) {
+        dl->AddImage((ImTextureID)(intptr_t)c.srv, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, alpha));
+    } else { // still being copied out, or it couldn't be
+        dl->AddRectFilled(a, b, IM_COL32(48, 44, 60, alpha * 3 / 4));
+        ImVec2 ts = ImGui::CalcTextSize("Webcam");
+        if (ts.x < b.x - a.x)
+            dl->AddText(ImVec2(floorf((a.x + b.x - ts.x) / 2), floorf((a.y + b.y - ts.y) / 2)), col32(COL_DIM), "Webcam");
+    }
+    if (ed.cam_hot) {
+        dl->AddRect(a, b, col32(COL_ACCENT), 0, 0, kit_px(2));
+        f32 s = kit_px(5);
+        ImVec2 g(it.cam_x < 0.5f ? b.x : a.x, it.cam_y < 0.5f ? b.y : a.y);
+        dl->AddRectFilled(ImVec2(g.x - s, g.y - s), ImVec2(g.x + s, g.y + s), col32(COL_ACCENT));
+    }
+}
+
 static void adv_timeline(ImVec2 o, f32 w, f32 h)
 {
     Editor &ed = g_app.editor;
@@ -469,14 +702,14 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
     bool over = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h), false);
 
     i32 tracks[MEDIA_MAX_TRACKS];
-    i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
+    i32 nt = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS), nc = ed.item.info.cam_w > 0 ? 1 : 0;
     f32 bar_y = o.y, ruler_y = bar_y + bar_h + kit_px(6), video_y = ruler_y + ruler_h;
     f32 zoom_y = video_y + video_h + gap, color_y = zoom_y + lane_h + gap;
-    f32 area0 = color_y + lane_h + gap, content = nt * (lane_h + gap), area1 = o.y + h;
+    f32 area0 = color_y + lane_h + gap, content = (nc + nt) * (lane_h + gap), area1 = o.y + h;
     if (area1 > area0 + content) area1 = area0 + content;
     if (area1 < area0) area1 = area0;
     f32 max_scroll = content - (area1 - area0) > 0 ? content - (area1 - area0) : 0;
-    f32 rows_y1 = nt ? area1 : color_y + lane_h;
+    f32 rows_y1 = nc + nt ? area1 : color_y + lane_h;
 
     // The wheel pans; with Alt it zooms around the mouse, with Alt and Shift around the playhead; Shift alone sets the
     // rows' height; over the track names it scrolls them. The middle button pans.
@@ -555,13 +788,14 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
     from = ed.view_from;
     span = ed.view_span;
 
-    // Where each row is: track 0 the picture, 1 + t sound track t (row 1 + k for the k-th of `tracks`).
+    // Where each row is: row 0 the picture (track 0), then the webcam's when there is one (nc rows, EDIT_CAM_TRACK),
+    // then one for each of `tracks` (sound track t is track 1 + t).
     auto row_y = [&](i32 r, f32 *y0, f32 *y1) {
         if (!r) *y0 = video_y, *y1 = video_y + video_h;
         else *y0 = area0 + (r - 1) * (lane_h + gap) - ed.lane_scroll, *y1 = *y0 + lane_h;
     };
-    auto row_track = [&](i32 r) { return r ? 1 + tracks[r - 1] : 0; };
-    i32 nrows = 1 + nt;
+    auto row_track = [&](i32 r) { return !r ? 0 : r <= nc ? (i32)EDIT_CAM_TRACK : 1 + tracks[r - 1 - nc]; };
+    i32 nrows = 1 + nc + nt;
     // The row under y, -1 for none (the ruler or below)
     auto row_at = [&](f32 y) {
         for (i32 r = 0; r < nrows; r++) {
@@ -598,7 +832,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         } else if (q.what == IKEY_VOLUME) {
             i32 r = 0;
             for (i32 k = 0; k < nt; k++)
-                if (1 + tracks[k] == it.track) r = k + 1;
+                if (1 + tracks[k] == it.track) r = k + 1 + nc;
             if (!r) return false;
             row_y(r, y0, y1);
             if (*y1 <= area0 || *y0 >= area1) return false;
@@ -681,7 +915,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
             add_i = item_under(0, mx);
             add_what = lane ? IKEY_COLOR + ed.color_pick : IKEY_ZOOM, add_l = lane ? 1 : 0;
             ay0 = lane ? color_y : zoom_y, ay1 = ay0 + lane_h;
-        } else if (hit < 0 && dbl && hover_row > 0 && hover_item >= 0) {
+        } else if (hit < 0 && dbl && hover_row > nc && hover_item >= 0) {
             add_i = hover_item, add_what = IKEY_VOLUME;
             row_y(hover_row, &ay0, &ay1);
         }
@@ -846,11 +1080,11 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         f32 y0, y1;
         row_y(r, &y0, &y1);
         if (r && (y1 <= area0 || y0 >= area1)) continue;
-        i32 track = row_track(r), t = r ? tracks[r - 1] : -1;
+        i32 track = row_track(r), t = r > nc ? tracks[r - 1 - nc] : -1;
         if (r) ImGui::PushClipRect(ImVec2(o.x, area0), ImVec2(bx1, area1), true);
         bool muted = t >= 0 && e.muted[t];
-        const char *name = t >= 0 ? ed.item.info.tracks[t] : "Picture";
-        u32 kind_rgb = t >= 0 ? KIND_LOOK[ed_track_kind(name, t)].rgb : 0x6aa7ff;
+        const char *name = t >= 0 ? ed.item.info.tracks[t] : r ? "Webcam" : "Picture";
+        u32 kind_rgb = t >= 0 ? KIND_LOOK[ed_track_kind(name, t)].rgb : r ? 0xb48cff : 0x6aa7ff;
         dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(bx0 - gap, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersLeft);
         dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), col32(COL_PANEL), round, ImDrawFlags_RoundCornersRight);
         dl->AddRectFilled(ImVec2(o.x, y0), ImVec2(o.x + kit_px(3), y1), ed_rgba(kind_rgb, muted ? 70 : 220), round,
@@ -887,7 +1121,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         i32 idx[EDIT_MAX_ITEMS], n = track_items(e, track, idx);
         ItemFades fd[EDIT_MAX_ITEMS];
         track_fades(e, dur, idx, n, fd);
-        i32 wave_c = r - 1;
+        i32 wave_c = r - 1 - nc;
         for (i32 k = 0; k < n; k++) {
             const EditItem &it = e.items[idx[k]];
             f32 x0 = xu(it.start), x1 = xu(item_end(it));
@@ -908,7 +1142,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
                     f32 u0 = (f32)fr / lib.strip_frames, u1 = (f32)(fr + 1) / lib.strip_frames;
                     dl->AddImage((ImTextureID)(intptr_t)lib.strip, ImVec2(x, a.y), ImVec2(x + tile, b.y), ImVec2(u0, 0), ImVec2(u1, 1));
                 }
-            } else if (r && ed.wave) {
+            } else if (t >= 0 && ed.wave) {
                 f32 step = floorf(kit_px(2)) > 1 ? floorf(kit_px(2)) : 1, reach = b.y - a.y - kit_px(2);
                 for (f32 x = cx0; x < cx1; x += step) {
                     f64 s0 = adv_src(it, u_of(x)), s1 = adv_src(it, u_of(x + step));
@@ -923,7 +1157,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
                     if (hh >= 0.5f) dl->AddRectFilled(ImVec2(x, b.y - hh), ImVec2(x + step, b.y), ed_rgba(kind_rgb, muted ? 40 : 150));
                 }
             }
-            if (r) { // the volume, as the render moves it
+            if (t >= 0) { // the volume, as the render moves it
                 static ImVec2 vpts[2048];
                 i32 np = 0;
                 for (f32 x = cx0; np < COUNT(vpts); x += kit_px(3)) {
@@ -1144,6 +1378,41 @@ static void adv_edit_panel(f32 w)
         ImGui::PopID();
     }
     ImGui::Dummy(ImVec2(1, kit_px(8)));
+
+    // The webcam: its size and corner, on the cam items adv_cam_targets picks
+    const MediaInfo &m = ed.item.info;
+    if (m.cam_w > 0) {
+        ed_caption("WEBCAM");
+        i32 k = item_at(e, EDIT_CAM_TRACK, u), idx[EDIT_MAX_ITEMS], n = adv_cam_targets(k, idx);
+        bool on = n > 0;
+        const EditItem *f = !on ? 0 : k >= 0 ? &e.items[k] : &e.items[idx[0]];
+        i32 corner = f ? cam_corner_of(*f, m.width, m.height, m.cam_w, m.cam_h) : -1;
+        name_text("Size", on);
+        f32 v = f ? f->cam_w : CAM_DEFAULT_W;
+        bool set = lib_slider("##cam_size", &v, CAM_MIN_W, 1.f, w - cname_w - val_w, fh, -1e9f, on);
+        if (on && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) v = CAM_DEFAULT_W, set = true;
+        if (on && set) { // a webcam in a corner stays in it
+            adv_cam_set(k, f->cam_x, f->cam_y, v);
+            for (i32 q = 0; q < n && corner >= 0; q++) cam_corner(&e.items[idx[q]], corner, m.width, m.height, m.cam_w, m.cam_h);
+        }
+        ImGui::SameLine(0, 0);
+        char st[16];
+        snprintf(st, sizeof st, "%.0f%%", v * 100);
+        value_text(st, on);
+        static const char *const top[] = {"Top left", "Top right"}, *const bottom[] = {"Bottom left", "Bottom right"};
+        i32 tv = corner == CAM_TOP_LEFT ? 0 : corner == CAM_TOP_RIGHT ? 1 : -1;
+        i32 bv = corner == CAM_BOTTOM_LEFT ? 0 : corner == CAM_BOTTOM_RIGHT ? 1 : -1;
+        f32 half = (w - kit_px(6)) / 2;
+        i32 to = -1;
+        if (kit_segmented("##cam_top", top, 2, &tv, half)) to = tv ? CAM_TOP_RIGHT : CAM_TOP_LEFT;
+        if (kit_segmented("##cam_bottom", bottom, 2, &bv, half)) to = bv ? CAM_BOTTOM_RIGHT : CAM_BOTTOM_LEFT;
+        if (on && to >= 0) {
+            for (i32 q = 0; q < n; q++) cam_corner(&e.items[idx[q]], to, m.width, m.height, m.cam_w, m.cam_h);
+            ed.dirty = true;
+        }
+        kit_dim(!on ? "No webcam in the edit" : "Drag the webcam in the picture to move it");
+        ImGui::Dummy(ImVec2(1, kit_px(8)));
+    }
 
     // Transitions of the selected items (or those under the playhead): each takes the first one's value, and a change
     // goes to all of them

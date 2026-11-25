@@ -76,7 +76,7 @@ static bool lib_cache_read(const Path &cache, u64 key, MediaInfo *m, char *tagge
     *m = {};
     tagged[0] = 0;
     char line[512];
-    bool ok = false, bad = false;
+    bool ok = false, bad = false, cam = false;
     while (fgets(line, sizeof line, f)) {
         char *eq = strchr(line, '=');
         if (!eq) continue;
@@ -93,10 +93,11 @@ static bool lib_cache_read(const Path &cache, u64 key, MediaInfo *m, char *tagge
             m->channels[m->track_count] = (u8)ch;
             str_set(m->tracks[m->track_count++], title + (*title == ' '));
         }
+        else if (!strcmp(k, "cam")) cam = sscanf_s(v, "%d %d", &m->cam_w, &m->cam_h) == 2;
         else if (!strcmp(k, "duration")) { m->duration = atof(v); ok = true; }
     }
     fclose(f);
-    return ok && !bad && m->duration > 0;
+    return ok && cam && !bad && m->duration > 0;
 }
 
 static void lib_cache_write(const Path &cache, u64 key, const MediaInfo &m, const char *tagged)
@@ -107,6 +108,7 @@ static void lib_cache_write(const Path &cache, u64 key, const MediaInfo &m, cons
     fprintf(f, "duration = %.3f\nwidth = %d\nheight = %d\nfps = %.3f\ntagged = %s\n", m.duration, m.width, m.height,
             m.fps, tagged);
     for (i32 t = 0; t < m.track_count; t++) fprintf(f, "track = %d %s\n", m.channels[t], m.tracks[t]);
+    fprintf(f, "cam = %d %d\n", m.cam_w, m.cam_h);
     fclose(f);
     MoveFileExW(tmp.s, final_path.s, MOVEFILE_REPLACE_EXISTING);
 }
@@ -119,7 +121,9 @@ static f64 parse_rate(const char *s)
     return b > 0 ? a / b : 0;
 }
 
-// ffprobe's view of a file: length, size, frame rate, the audio track titles and our tags.
+static bool lib_probe_parse(char *out, MediaInfo *m, char *tagged, i32 tagged_cap);
+
+// ffprobe's view of a file: length, size, frame rate, the audio track titles, the webcam's size and our tags.
 static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char *tagged, i32 tagged_cap)
 {
     static thread_local char out[65536];
@@ -135,10 +139,19 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
     *m = {};
     tagged[0] = 0;
     if (code != 0) return false;
+    return lib_probe_parse(out, m, tagged, tagged_cap);
+}
+
+// Reads ffprobe's output (lib_probe; `out` is cut up): the picture is the first video stream that isn't the webcam.
+static bool lib_probe_parse(char *out, MediaInfo *m, char *tagged, i32 tagged_cap)
+{
+    *m = {};
+    tagged[0] = 0;
     char genre[64] = {}, comment[128] = {};
     bool in_audio = false, in_video = false, have_video = false;
     char title[64] = {}, handler[64] = {};
-    i32 channels = 2;
+    i32 channels = 2, vw = 0, vh = 0;
+    f64 rate = 0;
     auto end_stream = [&]() {
         if (in_audio && m->track_count < MEDIA_MAX_TRACKS) {
             char *t = m->tracks[m->track_count];
@@ -147,9 +160,17 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
             else snprintf(t, 32, "Track %d", m->track_count + 1);
             m->channels[m->track_count++] = (u8)channels;
         }
+        if (in_video) {
+            if (!strcmp(title, CAM_STREAM_TITLE) || !strcmp(handler, CAM_STREAM_TITLE)) {
+                if (!m->cam_w) m->cam_w = vw, m->cam_h = vh;
+            } else if (!have_video) {
+                m->width = vw, m->height = vh, m->fps = rate;
+                have_video = true;
+            }
+        }
         in_audio = in_video = false;
         title[0] = handler[0] = 0;
-        channels = 2;
+        channels = 2, vw = vh = 0, rate = 0;
     };
     char *ctx = 0;
     for (char *line = strtok_s(out, "\r\n", &ctx); line; line = strtok_s(0, "\r\n", &ctx)) {
@@ -159,9 +180,9 @@ static bool lib_probe(const Path &ffprobe, const Path &file, MediaInfo *m, char 
         *eq = 0;
         const char *k = line, *v = eq + 1;
         if (!strcmp(k, "codec_type")) { in_audio = !strcmp(v, "audio"); in_video = !strcmp(v, "video"); }
-        else if (!strcmp(k, "width") && in_video && !have_video) m->width = atoi(v);
-        else if (!strcmp(k, "height") && in_video && !have_video) m->height = atoi(v);
-        else if (!strcmp(k, "avg_frame_rate") && in_video && !have_video) { m->fps = parse_rate(v); have_video = true; }
+        else if (!strcmp(k, "width")) vw = atoi(v);
+        else if (!strcmp(k, "height")) vh = atoi(v);
+        else if (!strcmp(k, "avg_frame_rate")) rate = parse_rate(v);
         else if (!strcmp(k, "channels")) channels = atoi(v) >= 1 && atoi(v) <= 8 ? atoi(v) : 2;
         else if (!strcmp(k, "TAG:title")) snprintf(title, sizeof title, "%s", v);
         else if (!strcmp(k, "TAG:handler_name")) snprintf(handler, sizeof handler, "%s", v);
@@ -1728,6 +1749,7 @@ static void library_window_shown(bool shown)
     library_close_player();
     player_close(&g_app.library.hover);
     player_close(&g_app.editor.player); // the editor opens it again when it's next shown
+    player_close(&g_app.editor.cam);
     lib_free_textures();
 }
 
