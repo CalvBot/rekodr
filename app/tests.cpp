@@ -1857,11 +1857,12 @@ static void test_r2()
     T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/rekodr\"><img src=\"https://cdn.discordapp.com/"
                    "emojis/1574532567124803645.webp\" alt=\"\">via <b>Rekodr</b></a>"));
     T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
-    // the accent: the default, or the one picked
-    T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)"));
+    // the accent, in the CSS and as the theme colour: the default, or the one picked
+    T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)") &&
+      strstr(html, "<meta name=\"theme-color\" content=\"#00897b\">"));
     pp.accent = 0xffe066;
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "--accent:#ffe066;") && !strstr(html, "#00897b"));
+    T(hn > 0 && strstr(html, "--accent:#ffe066;") && strstr(html, "content=\"#ffe066\"") && !strstr(html, "#00897b"));
     pp.accent = 0;
     // #t= starts the clip there; no preview, no markers
     T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "var CB={pv:0.000,m:[]};"));

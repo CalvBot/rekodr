@@ -3860,6 +3860,7 @@ static void opt_accent_row()
         unsaved = false;
         log_line("options: accent %06x", c.accent);
         options_apply(0);
+        r2_repage_all(); // the links' pages take it too
     }
 }
 

@@ -136,7 +136,7 @@ struct R2Conf {
 };
 
 enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_UPLOADER, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
-                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS, R2_T_CLEANUP };
+                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS, R2_T_CLEANUP, R2_T_REPAGE };
 
 struct R2Task {
     R2TaskKind kind;
@@ -213,6 +213,7 @@ static struct {
     i32     task_count;
     HANDLE  thread, wake;
     volatile LONG stop;
+    volatile LONG repage_queued; // an R2_T_REPAGE is waiting (r2_repage_all)
 } g_r2;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -772,6 +773,10 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                 "<meta property=\"og:type\" content=\"video.other\">\n<meta property=\"og:title\" content=\"%T\">\n"
                 "<meta property=\"og:site_name\" content=\"" APP_NAME "\">\n<meta property=\"og:url\" content=\"%P\">\n",
                 p, out, cap, &len);
+    // The accent as the theme colour: the edge of a link card that isn't Discord's own, and the browser's bar
+    if (len + 48 < cap)
+        len += snprintf(out + len, cap - len, "<meta name=\"theme-color\" content=\"#%06x\">\n",
+                        p.accent ? p.accent & 0xffffff : ACCENT_DEFAULT);
     if (!paused && p.card && p.card[0] && len + (i32)strlen(p.card) + 80 < cap)
         len += snprintf(out + len, cap - len,
                         "<script id=\"discord:component-embed\" type=\"application/json\">%s</script>\n", p.card);
@@ -3733,6 +3738,29 @@ static void r2_run_move(const R2Task &t)
     r2_post(R2_EV_HISTORY, 0);
 }
 
+// Writes every preview page in the bucket again, in the accent as it is now: playing, or paused without the clip.
+static void r2_run_repage(const R2Task &t)
+{
+    InterlockedExchange(&g_r2.repage_queued, 0); // a change from here on queues another run
+    i32 done = 0, failed = 0;
+    for (i32 i = 0; !g_r2.stop; i++) {
+        R2Share s = {};
+        AcquireSRWLockShared(&g_r2.lock);
+        bool more = i < g_r2.count;
+        bool go = more && r2_in_bucket(g_r2.shares[i]) && g_r2.shares[i].page_w && !g_r2.shares[i].moving;
+        if (go) s = g_r2.shares[i];
+        ReleaseSRWLockShared(&g_r2.lock);
+        if (!more) break;
+        if (!go) continue;
+        if (r2_put_page(t.conf, s, s.paused != 0)) done++;
+        else {
+            failed++;
+            log_line("r2: couldn't rewrite the page of %s", s.key);
+        }
+    }
+    log_line("r2: %d page(s) rewritten in the accent %06x, %d failed", done, g_app.config.accent & 0xffffff, failed);
+}
+
 // The loopback listener: waits for the browser to come back from Cloudflare's sign-in page, answers it with a
 // page that says it can be closed, and queues the sign-in task with the code.
 static DWORD WINAPI r2_signin_thread(void *)
@@ -3850,6 +3878,7 @@ static DWORD WINAPI r2_thread(void *)
         case R2_T_RESUME: r2_run_move(t); break;
         case R2_T_DOMAINS: r2_run_domains(t); break;
         case R2_T_CLEANUP: r2_run_cleanup(t); break;
+        case R2_T_REPAGE: r2_run_repage(t); break;
         }
         SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
         SecureZeroMemory(t.token, sizeof t.token);
@@ -3904,6 +3933,18 @@ static void r2_cleanup_now()
     t = {};
     t.kind = R2_T_CLEANUP;
     if (r2_conf(&t.conf)) r2_queue(t);
+    SecureZeroMemory(&t, sizeof t);
+}
+
+// The accent changed: the bucket's preview pages are written again in it on the worker (r2_run_repage). One run
+// waits at a time, and it reads the accent as it goes.
+static void r2_repage_all()
+{
+    if (!r2_ready() || InterlockedCompareExchange(&g_r2.repage_queued, 1, 0)) return;
+    static R2Task t;
+    t = {};
+    t.kind = R2_T_REPAGE;
+    if (!r2_conf(&t.conf) || !r2_queue(t)) InterlockedExchange(&g_r2.repage_queued, 0);
     SecureZeroMemory(&t, sizeof t);
 }
 
