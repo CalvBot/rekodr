@@ -1962,7 +1962,7 @@ static void test_r2()
     T(strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}") != 0);
     T(strstr(cj, "{\"type\":12,\"items\":[{\"media\":{\"url\":\"https://x.dev/rekodr/abc/social.mp4?v=2\"}}]}") != 0);
     T(strstr(cj, "\"-# \\u003c:rekodr:1574532567124803645\\u003e [via Rekodr](\\u003chttps://github.com/CalvBot/"
-                 "clipback\\u003e)\"}]}}") != 0);
+                 "rekodr\\u003e)\"}]}}") != 0);
     T(!strstr(cj, "thumb.jpg") && !strstr(cj, "\"type\":9"));
     card.player = false; // nothing small enough: the picture
     cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "", "", "", cj, sizeof cj);
