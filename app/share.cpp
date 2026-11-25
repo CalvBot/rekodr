@@ -191,13 +191,15 @@ static i32 share_host_choices(const MediaInfo &m, const EditRecord *edit, ShareH
 
 // ---------------------------------------------------------------------------------------------------------------
 // Made files and links, for giving the same one again and for deleting with their clip:
-// <local_dir>\made-shares.tsv, a line per Share, "<hash>\t<library key>\t<made, us>\t<file path or link>". Lines
-// older than share_keep_days are dropped. Kept in memory once read.
+// <local_dir>\made-shares.tsv, a line per Share, "<hash>\t<library key>\t<made, us>\t<source>\t<file path or link>",
+// where source is share_source_hash. Files older than share_keep_days are dropped, and links once r2_url_state
+// says they're gone. Kept in memory once read.
 
 struct ShareMade {
     u64  hash;
     u64  lib_key;
     i64  made_us;
+    u64  source; // share_source_hash: the clip and edit it was made from, whatever the size or host
     char what[MAX_PATH * 3];
 };
 static struct {
@@ -211,9 +213,8 @@ static Path share_made_path() { return path_join(g_app.paths.local_dir, L"made-s
 
 static bool share_is_link(const char *what) { return starts_with(what, "http"); }
 
-// What a Share makes depends on: the file (its path, size and time), the edit, file or link, and the size or host.
-static u64 share_hash(const wchar_t *path, const EditRecord *edit, bool link, i64 aim, i64 limit, LinkHost host,
-                      const char *uploader)
+// The clip as it is now: the file (its path, size and time) and the edit.
+static u64 share_source_hash(const wchar_t *path, const EditRecord *edit)
 {
     u64 h = fnv64(path, wcslen(path) * sizeof(wchar_t));
     WIN32_FILE_ATTRIBUTE_DATA fa = {};
@@ -223,7 +224,14 @@ static u64 share_hash(const wchar_t *path, const EditRecord *edit, bool link, i6
         h = fnv64(&fa.ftLastWriteTime, sizeof fa.ftLastWriteTime, h);
     }
     static const EditRecord none = {};
-    h = fnv64(edit ? edit : &none, sizeof(EditRecord), h);
+    return fnv64(edit ? edit : &none, sizeof(EditRecord), h);
+}
+
+// What a Share makes depends on: the clip as it is (share_source_hash), file or link, and the size or host.
+static u64 share_hash(const wchar_t *path, const EditRecord *edit, bool link, i64 aim, i64 limit, LinkHost host,
+                      const char *uploader)
+{
+    u64 h = share_source_hash(path, edit);
     i64 v[] = {link, aim, limit, link ? host : 0};
     h = fnv64(v, sizeof v, h);
     if (link && host == HOST_CUSTOM) h = fnv64(uploader, strlen(uploader), h);
@@ -238,7 +246,7 @@ static void share_made_save()
     if (!f) return;
     for (i32 i = 0; i < g_made.count; i++) {
         const ShareMade &m = g_made.items[i];
-        fprintf(f, "%016llx\t%016llx\t%lld\t%s\n", m.hash, m.lib_key, m.made_us, m.what);
+        fprintf(f, "%016llx\t%016llx\t%lld\t%016llx\t%s\n", m.hash, m.lib_key, m.made_us, m.source, m.what);
     }
     fclose(f);
     MoveFileExW(tmp.s, p.s, MOVEFILE_REPLACE_EXISTING);
@@ -251,7 +259,7 @@ static void share_made_drop(i32 i)
     g_made.gen++;
 }
 
-// Reads the list once, and drops what's past share_keep_days.
+// Reads the list once, and drops files past share_keep_days and links that are gone.
 static void share_made_load()
 {
     if (!g_made.loaded) {
@@ -261,28 +269,33 @@ static void share_made_load()
         while (f && fgets(line, sizeof line, f)) {
             line[strcspn(line, "\r\n")] = 0;
             char *a = strchr(line, '\t'), *b = a ? strchr(a + 1, '\t') : 0, *c = b ? strchr(b + 1, '\t') : 0;
-            if (!c || !c[1]) continue;
+            char *e = c ? strchr(c + 1, '\t') : 0;
+            if (!e || !e[1]) continue;
             if (g_made.count == COUNT(g_made.items)) share_made_drop(0);
             ShareMade &m = g_made.items[g_made.count++];
             m.hash = _strtoui64(line, 0, 16);
             m.lib_key = _strtoui64(a + 1, 0, 16);
             m.made_us = _atoi64(b + 1);
-            str_set(m.what, c + 1);
+            m.source = _strtoui64(c + 1, 0, 16);
+            str_set(m.what, e + 1);
         }
         if (f) fclose(f);
         g_made.gen++;
     }
     i64 oldest = now_us() - (i64)(g_app.config.share_keep_days * 86400.0 * 1e6);
     bool dropped = false;
-    for (i32 i = g_made.count - 1; i >= 0; i--)
-        if (g_made.items[i].made_us < oldest) share_made_drop(i), dropped = true;
+    for (i32 i = g_made.count - 1; i >= 0; i--) {
+        const ShareMade &m = g_made.items[i];
+        if (share_is_link(m.what) ? r2_url_state(m.what) == R2_URL_GONE : m.made_us < oldest)
+            share_made_drop(i), dropped = true;
+    }
     if (dropped) share_made_save();
 }
 
 // Whether what was made is still there: the file kept, the link still playing.
 static bool share_made_there(const char *what)
 {
-    if (share_is_link(what)) return r2_url_live(what);
+    if (share_is_link(what)) return r2_url_state(what) == R2_URL_LIVE;
     wchar_t p[MAX_PATH];
     utf8_to_wide(what, p, MAX_PATH);
     return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES;
@@ -317,7 +330,7 @@ static bool share_made_find(u64 hash, char *out, i32 cap)
     return false;
 }
 
-static void share_made_add(u64 hash, u64 lib_key, const char *what)
+static void share_made_add(u64 hash, u64 lib_key, u64 source, const char *what)
 {
     share_made_load();
     if (g_made.count == COUNT(g_made.items)) share_made_drop(0);
@@ -326,6 +339,7 @@ static void share_made_add(u64 hash, u64 lib_key, const char *what)
     m.hash = hash;
     m.lib_key = lib_key;
     m.made_us = now_us();
+    m.source = source;
     str_set(m.what, what);
     g_made.gen++;
     share_made_save();
@@ -382,6 +396,7 @@ struct ShareJob {
     u32  save;      // the save making a file
     u32  r2;        // the r2 job making a link
     u64  hash, lib_key;
+    u64  source;    // share_source_hash
     bool squeezed;  // the file or link copy is squeezed
     bool cancelled; // share_cancel ended it; `save` is followed until it stops, and its file deleted
     char name[200];
@@ -440,7 +455,7 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
         if (!clipboard_copy_file(w)) str_set(j.v.error, "The clipboard was busy: copy it again");
     }
     if (!j.v.error[0]) share_chime();
-    if (!j.v.reused) share_made_add(j.hash, j.lib_key, what);
+    if (!j.v.reused) share_made_add(j.hash, j.lib_key, j.source, what);
     else if (j.v.kind != SHARE_LINK) telemetry_shared(); // a made file is counted as its save ends
     log_line("share %u: %s %s", j.v.id, j.v.reused ? "gave again" : "made", what);
 }
@@ -482,6 +497,23 @@ static void share_poll()
     }
 }
 
+// The clip's newest link that plays and was made from the clip as it is now, at any size or host.
+static bool share_ready_link(u64 lib_key, u64 source, char *url, i32 cap)
+{
+    if (!lib_key) return false;
+    share_made_load();
+    for (i32 i = g_made.count - 1; i >= 0; i--) {
+        const ShareMade &m = g_made.items[i];
+        if (m.lib_key != lib_key || m.source != source || !share_is_link(m.what) || !share_made_there(m.what))
+            continue;
+        snprintf(url, cap, "%s", m.what);
+        return true;
+    }
+    return false;
+}
+
+// Starts a Share. A clip with a ready link (share_ready_link) gets that link on the clipboard at once, whatever the
+// kind, unless a host is picked.
 static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,
                        const char *name, const char *game, u64 lib_key, const char *host)
 {
@@ -495,6 +527,15 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
     j.v.kind = kind == SHARE_LINK ? SHARE_LINK : SHARE_AS_IS;
     j.v.state = SHARE_MAKING;
     str_set(j.name, name && name[0] ? name : "clip");
+    j.lib_key = lib_key;
+    j.source = share_source_hash(path, edit);
+    char ready[512];
+    if (!host && share_ready_link(lib_key, j.source, ready, sizeof ready)) {
+        j.v.kind = SHARE_LINK;
+        j.v.reused = true;
+        share_end(j, true, ready, "");
+        return j.v.id;
+    }
     ShareDecision d = host ? share_decide_host(m, edit, host) : share_decide(m, edit);
     bool link = kind == SHARE_LINK;
     if (link && !d.link_ok) {
@@ -517,7 +558,6 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
     j.squeezed = a.squeezed;
     if (!link && j.squeezed) j.v.kind = SHARE_SQUEEZED;
     j.hash = a.hash;
-    j.lib_key = lib_key;
     char made[MAX_PATH * 3];
     if (share_made_find(j.hash, made, sizeof made)) {
         j.v.reused = true;
@@ -582,8 +622,8 @@ static void share_cancel(u32 id)
 // ---------------------------------------------------------------------------------------------------------------
 // Per clip (by library key)
 
-// The clip's newest link that hasn't been removed (it may be paused). Its whole history entry, for the
-// menu's link row: r2_pause, r2_resume and r2_delete take its key.
+// The clip's newest link that plays or is paused; links removed or past their time are left out. Its whole
+// history entry, for the menu's link row: r2_pause, r2_resume and r2_delete take its key.
 static bool share_clip_link(u64 lib_key, R2Share *out)
 {
     static R2Share list[R2_MAX_SHARES];
@@ -595,7 +635,7 @@ static bool share_clip_link(u64 lib_key, R2Share *out)
     }
     for (i32 i = 0; i < count && lib_key; i++) {
         const R2Share &s = list[i];
-        if (s.lib_key != lib_key || s.removed) continue;
+        if (s.lib_key != lib_key || !(r2_share_live(s) || (s.paused && !s.removed))) continue;
         if (out) *out = s;
         return true;
     }
@@ -626,6 +666,8 @@ static ClipShareState share_clip_state(u64 lib_key, const wchar_t *path, const M
     u64 hash = share_aims(false, path, m, edit).hash;
     for (i32 i = g_made.count - 1; i >= 0 && !st.file; i--)
         if (g_made.items[i].hash == hash && share_made_there(g_made.items[i].what)) st.file = true;
+    char url[512];
+    st.link_ready = share_ready_link(lib_key, share_source_hash(path, edit), url, sizeof url);
     R2Share l;
     if (share_clip_link(lib_key, &l)) {
         st.link = true;

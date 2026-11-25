@@ -276,11 +276,14 @@ static const char *r2_refuses(bool keys, bool capped)
 // In the bucket now: an R2 share that cleanup hasn't removed.
 static bool r2_in_bucket(const R2Share &s) { return s.host == HOST_R2 && !s.removed; }
 
-// The link still plays: not removed or paused.
-static bool r2_share_live(const R2Share &s)
+// The link still plays: not removed or paused. Rekodr can't see what an uploader keeps, so an uploader link counts
+// as playing only for share_keep_days after it went up.
+static bool r2_share_live(const R2Share &s, i64 now)
 {
-    return !s.removed && !s.paused;
+    if (s.removed || s.paused) return false;
+    return s.host == HOST_R2 || now - s.uploaded_us < (i64)(g_app.config.share_keep_days * 86400.0 * 1e6);
 }
+static bool r2_share_live(const R2Share &s) { return r2_share_live(s, now_us()); }
 
 // Where the share's file is in the bucket: its own name, or the hidden one while paused.
 static const char *r2_object_key(const R2Share &s) { return s.paused ? s.hidden : s.key; }
@@ -1436,13 +1439,47 @@ static void r2_why(u32 status, const char *resp, const R2Conf &c, char *out, i32
 
 static bool r2_ok(u32 status) { return status >= 200 && status < 300; }
 
-// The total size of everything in the bucket's rekodr/ folder (ListObjectsV2), -1 if it couldn't be listed.
+static void r2_load_locked();
+static void r2_save_locked();
+static void r2_post(R2EventKind kind, i64 b);
+
+static int r2_cmp_u64(const void *x, const void *y)
+{
+    u64 a = *(const u64 *)x, b = *(const u64 *)y;
+    return a < b ? -1 : a > b;
+}
+
+// Marks removed each share the bucket should hold but a full listing didn't have: deleted outside Rekodr (the
+// dashboard, a lifecycle rule, another bucket picked). `listed` is the fnv64 of every listed key, sorted. Shares put
+// up after the listing began (`listed_from`) are left alone. Returns how many were marked.
+static i32 r2_mark_missing(R2Share *shares, i32 count, const u64 *listed, i32 n, i64 listed_from)
+{
+    i32 marked = 0;
+    for (i32 i = 0; i < count; i++) {
+        R2Share &s = shares[i];
+        if (!r2_in_bucket(s) || s.moving || s.uploaded_us >= listed_from) continue;
+        const char *k = r2_object_key(s);
+        u64 h = fnv64(k, strlen(k));
+        if (bsearch(&h, listed, n, sizeof h, r2_cmp_u64)) continue;
+        s.removed = true;
+        s.paused = 0;
+        s.hidden[0] = 0;
+        marked++;
+    }
+    return marked;
+}
+
+// The total size of everything in the bucket's rekodr/ folder (ListObjectsV2), -1 if it couldn't be listed. A full
+// listing also marks removed the links whose file isn't there any more (r2_mark_missing).
 static i64 r2_folder_bytes(const R2Conf &c)
 {
     const i32 cap = 1 << 20;
     char *resp = (char *)malloc(cap);
     char token[1024] = "";
-    i64 total = 0;
+    i64 total = 0, from = now_us();
+    i32 nkeys = 0, kcap = 4096;
+    u64 *keys = (u64 *)malloc(kcap * sizeof(u64));
+    bool full = false;
     for (i32 page = 0; page < 1000 && total >= 0; page++) {
         char query[2200], enc[2048];
         r2_uri_encode(token, enc, sizeof enc);
@@ -1455,16 +1492,36 @@ static i64 r2_folder_bytes(const R2Conf &c)
             break;
         }
         for (const char *p = strstr(resp, "<Size>"); p; p = strstr(p + 6, "<Size>")) total += _atoi64(p + 6);
-        if (!strstr(resp, "<IsTruncated>true</IsTruncated>") ||
-            !r2_xml(resp, "NextContinuationToken", token, sizeof token))
+        for (const char *p = strstr(resp, "<Key>"); p; p = strstr(p + 5, "<Key>")) {
+            const char *e = strstr(p + 5, "</Key>");
+            if (!e) break;
+            if (nkeys == kcap) keys = (u64 *)realloc(keys, (kcap *= 2) * sizeof(u64));
+            keys[nkeys++] = fnv64(p + 5, e - (p + 5));
+        }
+        if (!strstr(resp, "<IsTruncated>true</IsTruncated>")) {
+            full = true;
             break;
+        }
+        if (!r2_xml(resp, "NextContinuationToken", token, sizeof token)) break;
     }
     free(resp);
     if (total >= 0) {
+        if (full) qsort(keys, nkeys, sizeof(u64), r2_cmp_u64);
         AcquireSRWLockExclusive(&g_r2.lock);
         g_r2.folder_bytes = total;
+        i32 gone = 0;
+        if (full) {
+            r2_load_locked();
+            gone = r2_mark_missing(g_r2.shares, g_r2.count, keys, nkeys, from);
+            if (gone) r2_save_locked();
+        }
         ReleaseSRWLockExclusive(&g_r2.lock);
+        if (gone) {
+            log_line("r2: %d link%s gone from the bucket, marked removed", gone, gone > 1 ? "s" : "");
+            r2_post(R2_EV_HISTORY, 0);
+        }
     }
+    free(keys);
     return total;
 }
 
@@ -4311,16 +4368,22 @@ static void r2_cancel(u32 id)
     }
 }
 
-// Whether a link made here still plays (not removed or paused).
-static bool r2_url_live(const char *url)
+// Whether a link made here plays (r2_share_live), is paused, or is gone: removed, past its uploader's time, or not
+// a link Rekodr knows.
+enum R2UrlState : u8 { R2_URL_GONE, R2_URL_LIVE, R2_URL_PAUSED };
+static R2UrlState r2_url_state(const char *url)
 {
-    bool live = false;
+    R2UrlState st = R2_URL_GONE;
+    i64 now = now_us();
     AcquireSRWLockExclusive(&g_r2.lock);
     r2_load_locked();
-    for (i32 i = 0; i < g_r2.count; i++)
-        if (!strcmp(g_r2.shares[i].url, url)) live = r2_share_live(g_r2.shares[i]);
+    for (i32 i = 0; i < g_r2.count; i++) {
+        const R2Share &s = g_r2.shares[i];
+        if (strcmp(s.url, url)) continue;
+        st = r2_share_live(s, now) ? R2_URL_LIVE : s.paused && !s.removed ? R2_URL_PAUSED : R2_URL_GONE;
+    }
     ReleaseSRWLockExclusive(&g_r2.lock);
-    return live;
+    return st;
 }
 
 static bool r2_holds_save(u32 id)
@@ -4518,14 +4581,24 @@ static void r2_auto_pause()
 }
 
 // Every second from the main loop: keeps the hourly read of the analytics going while no page asks for it, so the
-// read limits work with the window closed.
+// read limits work with the window closed. Two minutes after start and then every 6 hours, the bucket is listed
+// (the cleanup task) so links whose file went from it outside Rekodr stop counting as live.
 static void r2_tick()
 {
-    static i64 next;
+    static i64 next, next_check;
     i64 now = now_us();
+    if (!next_check) next_check = now + 120ll * 1000000;
     if (now < next) return;
     next = now + 60ll * 1000000;
-    if (r2_ready()) r2_usage();
+    if (!r2_ready()) return;
+    r2_usage();
+    AcquireSRWLockShared(&g_r2.lock);
+    bool sized = g_r2.usage_us != 0; // the cleanup's cap needs the account's usage
+    ReleaseSRWLockShared(&g_r2.lock);
+    if (sized && now >= next_check) {
+        next_check = now + 6 * 3600ll * 1000000;
+        r2_cleanup_now();
+    }
 }
 
 static void r2_status_set_now(R2SetupState state, const char *text)

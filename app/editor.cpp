@@ -2731,9 +2731,12 @@ static void ed_share_tab(f32 w)
         else if (js.done) str_set(label, js.line);
         else str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
         ImVec2 share_at = ImGui::GetCursorScreenPos();
+        ClipShareState cs = share_clip_state(ed.item.key, ed.path.s, ed_share_info(), &ed.edit);
         i32 sb = kit_split_button(label, "##edshare", js.running ? KIT_SECONDARY : KIT_PRIMARY, ImVec2(bw, 0),
-                                  js.running || (!sharing && can), true, -1,
-                                  js.running ? "Cancel the share" : "Share. Right-click for more options", "More share options");
+                                  js.running || (!sharing && (can || cs.link_ready)), true, -1,
+                                  js.running ? "Cancel the share" : share_ready_tip(cs), "More share options");
+        if (!js.running && !js.done && !sharing)
+            share_ready_dot(ImGui::GetWindowDrawList(), share_at, ImVec2(share_at.x + bw - fh, share_at.y + fh), cs, true);
         if (js.running) {
             share_cancel_ring(ImGui::GetWindowDrawList(), ImVec2(floorf(share_at.x + (bw - fh) / 2), floorf(share_at.y + fh / 2)),
                               kit_px(8), js.progress, COL_TEXT);

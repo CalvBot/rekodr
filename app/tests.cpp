@@ -2346,6 +2346,108 @@ static i32 net_count(const char *prefix)
 }
 
 // Cancelling a link: the upload stops and nothing it made is left, on this PC or on the host.
+// Which links count as ready to share: one that plays for the clip as it is. A link cleanup removed, one gone from
+// the bucket, an uploader's past its time, or one made before the clip changed is not.
+static void test_share_ready()
+{
+    Config &cf = g_app.config;
+    f32 keep_days = cf.share_keep_days;
+    cf.share_keep_days = 7;
+    i64 now = now_us(), day = 86400ll * 1000000;
+
+    // Live: an R2 link plays until removed or paused; an uploader's only for share_keep_days
+    R2Share s = {};
+    s.host = HOST_R2;
+    s.uploaded_us = now - 30 * day;
+    T(r2_share_live(s, now));
+    s.removed = true;
+    T(!r2_share_live(s, now));
+    s.removed = false;
+    s.paused = 1;
+    T(!r2_share_live(s, now));
+    s.paused = 0;
+    s.host = HOST_CUSTOM;
+    T(!r2_share_live(s, now));
+    s.uploaded_us = now - day;
+    T(r2_share_live(s, now));
+
+    // A full listing: a link whose file isn't there is marked removed; one listed, one moving, one put up after
+    // the listing began and an uploader's are left alone. A paused link is looked for under its hidden name.
+    static R2Share sh[6];
+    memset(sh, 0, sizeof sh);
+    for (i32 i = 0; i < COUNT(sh); i++) {
+        sh[i].host = HOST_R2;
+        snprintf(sh[i].key, sizeof sh[i].key, "rekodr/k%d/clip.mp4", i);
+        sh[i].uploaded_us = now - day;
+    }
+    sh[2].moving = true;
+    sh[3].uploaded_us = now + 1;
+    sh[4].host = HOST_CUSTOM;
+    sh[5].paused = 1;
+    str_set(sh[5].hidden, "rekodr/hidden5/clip.mp4");
+    u64 listed[] = {fnv64(sh[0].key, strlen(sh[0].key)), fnv64(sh[5].key, strlen(sh[5].key))};
+    qsort(listed, COUNT(listed), sizeof listed[0], r2_cmp_u64);
+    T(r2_mark_missing(sh, COUNT(sh), listed, COUNT(listed), now) == 2);
+    T(!sh[0].removed && sh[1].removed && !sh[2].removed && !sh[3].removed && !sh[4].removed);
+    T(sh[5].removed && !sh[5].paused && !sh[5].hidden[0]); // its hidden name wasn't listed
+
+    // Through the made list and the history
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Paths keep_paths = g_app.paths;
+    swprintf(g_app.paths.local_dir.s, MAX_PATH, L"%srekodr-tests-ready-%lu", temp, GetCurrentProcessId());
+    CreateDirectoryW(g_app.paths.local_dir.s, 0);
+    static R2Share keep_shares[R2_MAX_SHARES];
+    memcpy(keep_shares, g_r2.shares, sizeof keep_shares);
+    i32 keep_count = g_r2.count;
+    bool keep_loaded = g_r2.loaded;
+    g_r2.loaded = true;
+    g_r2.count = 3;
+    R2Share *h = g_r2.shares;
+    memset(h, 0, 3 * sizeof *h);
+    const char *a = "https://clips.example/a", *b = "https://clips.example/b", *c = "https://up.example/c";
+    h[0].host = HOST_R2, h[0].lib_key = 5, h[0].uploaded_us = now - 30 * day, str_set(h[0].url, a);
+    h[1].host = HOST_R2, h[1].lib_key = 6, h[1].uploaded_us = now, h[1].removed = true, str_set(h[1].url, b);
+    h[2].host = HOST_CUSTOM, h[2].lib_key = 7, h[2].uploaded_us = now - 30 * day, str_set(h[2].url, c);
+    u64 src = 0x1234;
+    g_made = {};
+    g_made.loaded = true;
+    auto made = [&](u64 lib_key, i64 at, const char *what) {
+        ShareMade &m = g_made.items[g_made.count++];
+        m = {};
+        m.hash = g_made.count;
+        m.lib_key = lib_key;
+        m.made_us = at;
+        m.source = src;
+        str_set(m.what, what);
+    };
+    made(5, now - 30 * day, a); // old, but the link plays: kept
+    made(6, now, b);            // removed by cleanup: dropped
+    made(7, now - 30 * day, c); // an uploader's, past its time: dropped
+    share_made_load();
+    T(g_made.count == 1 && !strcmp(g_made.items[0].what, a));
+    char url[512];
+    T(share_ready_link(5, src, url, sizeof url) && !strcmp(url, a));
+    T(!share_ready_link(5, src + 1, url, sizeof url)); // the clip changed since
+    T(!share_ready_link(0, src, url, sizeof url));     // not a library clip
+    T(!share_ready_link(6, src, url, sizeof url));
+    h[0].paused = 1;
+    T(!share_ready_link(5, src, url, sizeof url) && r2_url_state(a) == R2_URL_PAUSED);
+    h[0].paused = 0;
+    h[0].removed = true; // cleanup took it
+    T(!share_ready_link(5, src, url, sizeof url) && r2_url_state(a) == R2_URL_GONE);
+    T(r2_url_state("https://clips.example/unknown") == R2_URL_GONE);
+
+    g_made = {};
+    memcpy(g_r2.shares, keep_shares, sizeof keep_shares);
+    g_r2.count = keep_count;
+    g_r2.loaded = keep_loaded;
+    DeleteFileW(path_join(g_app.paths.local_dir, L"made-shares.tsv").s);
+    RemoveDirectoryW(g_app.paths.local_dir.s);
+    g_app.paths = keep_paths;
+    cf.share_keep_days = keep_days;
+}
+
 static void test_share_cancel()
 {
     wchar_t temp[MAX_PATH];
@@ -3320,6 +3422,7 @@ int main()
     test_mcpack();
     test_r2();
     test_share_cancel();
+    test_share_ready();
     test_storeids();
     test_markers();
     printf("%d checks, %d failed\n", g_checked, g_failed);

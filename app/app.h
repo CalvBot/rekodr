@@ -567,17 +567,19 @@ static ShareJobView share_job(u32 id);
 static void share_cancel(u32 id);
 
 // Per library clip. Every share file and link copy is made for the clip as edited, with one sound track; a new
-// edit or new settings make the next Share a new one. A made file is given again for share_keep_days.
+// edit or new settings make the next Share a new one. A made file is given again for share_keep_days, a link while
+// it plays; a link that plays for the clip as it is goes on the clipboard at once, whatever the settings.
 struct ClipShareState {
     bool     file;        // a share file for the clip's edit and the settings as they are, still on disk
-    bool     link;        // a link not removed (any host)
+    bool     link;        // a link that plays or is paused (share_clip_link)
+    bool     link_ready;  // a link that plays, made from the clip as it is now: Share copies it at once
     u8       link_paused; // 0 plays, else as R2Share.paused
     LinkHost host;        // the link's host
 };
 // Cheap enough for every card each frame.
 static ClipShareState share_clip_state(u64 lib_key, const wchar_t *path, const MediaInfo &m, const EditRecord *edit);
 struct R2Share;
-// The clip's newest link not removed, for its menu row (r2_pause, r2_resume, r2_delete take its key).
+// The clip's newest link that plays or is paused, for its menu row (r2_pause, r2_resume, r2_delete take its key).
 static bool share_clip_link(u64 lib_key, R2Share *out);
 // Deleting a clip: how many of its share files and links go with it, and in `cant` the links that stay up ("1
 // uploader link can't be removed and stays up"; "" for none). share_clip_delete deletes them; the clip is the caller's.
