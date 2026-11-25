@@ -14,6 +14,7 @@
 //                        list.csv         "v_00000.mkv,0.000000,2.000000" per finished segment (ffmpeg writes it)
 //                        anchor.txt       wall-clock us of the run's first frame, no line ending
 //   <buffer>\audio\<stream>\a_00000.mka   audio.cpp's, with list.csv and meta.json ("start_us": us)
+//   <buffer>\cam\<run>\v_00000.mkv        webcam.cpp's, as the video's
 //   <buffer>\activity.tsv, focus.tsv     "us<TAB>exe" lines; the pruner drops the old ones
 
 #define SEGMENT_SECS 2
@@ -969,7 +970,8 @@ enum { PRUNE_MAX_DIRS = 8192, PRUNE_MAX_FILES = 1 << 18, PRUNE_MAX_LIST = 1 << 1
 
 struct PruneDir {
     wchar_t name[128];
-    bool    video;
+    bool    video;    // v_*.mkv with anchor.txt: the screen's, or the webcam's (cam)
+    bool    cam;
     bool    current;  // the run being written
     i64     idle_us;  // when list.csv (or the folder) last changed
     i32     media;    // media files in it
@@ -1100,7 +1102,7 @@ static i64 dir_origin(const Path &dir, bool video)
     return us;
 }
 
-static void scan_dir(const Path &parent, const WIN32_FIND_DATAW &fd, bool video, const wchar_t *current_run)
+static void scan_dir(const Path &parent, const WIN32_FIND_DATAW &fd, bool video, const wchar_t *current_run, bool cam)
 {
     if (g_prune.dir_count == PRUNE_MAX_DIRS || wcslen(fd.cFileName) >= COUNT(g_prune.dirs[0].name)) {
         if (!g_prune.warned_full) log_line("prune: too many buffer folders; some are left for the next pass");
@@ -1112,6 +1114,7 @@ static void scan_dir(const Path &parent, const WIN32_FIND_DATAW &fd, bool video,
     *d = {};
     wcscpy_s(d->name, fd.cFileName);
     d->video = video;
+    d->cam = cam;
     d->current = video && current_run[0] && !wcscmp(fd.cFileName, current_run);
     d->idle_us = filetime_us(fd.ftLastWriteTime);
 
@@ -1153,7 +1156,7 @@ static void scan_dir(const Path &parent, const WIN32_FIND_DATAW &fd, bool video,
     FindClose(h);
 }
 
-static void scan_tree(const Path &root, bool video, const wchar_t *current_run)
+static void scan_tree(const Path &root, bool video, const wchar_t *current_run, bool cam = false)
 {
     Path pattern = path_join(root, L"*");
     WIN32_FIND_DATAW fd;
@@ -1163,14 +1166,14 @@ static void scan_tree(const Path &root, bool video, const wchar_t *current_run)
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
             continue;
         if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
-        scan_dir(root, fd, video, current_run);
+        scan_dir(root, fd, video, current_run, cam);
     } while (FindNextFileW(h, &fd));
     FindClose(h);
 }
 
 static Path prune_dir_path(const RecSettings &s, const PruneDir &d)
 {
-    Path parent = path_join(s.buffer_dir, d.video ? L"video" : L"audio");
+    Path parent = path_join(s.buffer_dir, d.cam ? L"cam" : d.video ? L"video" : L"audio");
     return path_join(parent, d.name);
 }
 
@@ -1230,6 +1233,9 @@ static void prune_pass()
     g_prune.file_count = 0;
     scan_tree(path_join(s.buffer_dir, L"video"), true, current_run);
     scan_tree(path_join(s.buffer_dir, L"audio"), false, current_run);
+    wchar_t cam_run[64];
+    webcam_run(cam_run, COUNT(cam_run));
+    scan_tree(path_join(s.buffer_dir, L"cam"), true, cam_run, true);
     qsort(g_prune.files, g_prune.file_count, sizeof(PruneFile), file_cmp);
 
     i64 now = now_us();
@@ -1301,7 +1307,8 @@ static void prune_pass()
         const PruneFile &f = g_prune.files[i];
         if (f.size < 0) continue;
         bytes += f.size;
-        if (f.listed && g_prune.dirs[f.dir].video && (!oldest || f.start_us < oldest)) oldest = f.start_us;
+        if (f.listed && g_prune.dirs[f.dir].video && !g_prune.dirs[f.dir].cam && (!oldest || f.start_us < oldest))
+            oldest = f.start_us;
     }
     if (g_prune.passes++ % 120 == 0) { // at start, then hourly
         prune_activity(s, oldest ? oldest : cutoff, L"activity.tsv");

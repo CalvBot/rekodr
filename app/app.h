@@ -225,6 +225,8 @@ struct Config {
     char link_uploaders[256]; // the player's uploaders that are on (.sxcu files in <config_dir>\uploaders, by name),
                              // comma separated, used without R2; "" = none
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
+    bool cam_on;          // the webcam is recorded into the buffer while the screen is (webcam.cpp; off)
+    Str256 cam_device;    // its DirectShow name; "" = the first camera found
     bool mic_clean;       // saves take steady noise (fans, hiss, hum) out of the Mic track (on)
     bool mic_raw;         // with mic_clean, saves keep the Mic as recorded too, on a "Mic (raw)" track that no Mix
                           // takes (off)
@@ -1142,3 +1144,11 @@ static void automarks_apply();
 static AmCs2State automarks_cs2_state();
 static void automarks_uninstall();
 static void achievements_apply(); // achievements.cpp
+
+// Webcam (webcam.cpp)
+static void webcam_run(wchar_t *out, i32 cap); // the run folder being written, "" when none
+static bool webcam_devices(char (*out)[128], i32 cap, i32 *n);
+static void webcam_list_again();
+static bool webcam_recording();
+static void webcam_error(char *out, i32 cap);
+static ID3D11ShaderResourceView *webcam_picture();

@@ -247,6 +247,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             render_tick();
             share_prep_tick();
             achievements_tick();
+            webcam_tick();
             pipe_publish();
         }
         if (wp == TIMER_HOLD) hotkey_hold_tick(hwnd);
@@ -476,6 +477,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     pipe_start();
     automarks_apply();
     achievements_apply();
+    webcam_start();
     if (g_app.ui.setup_open) ui_show(SCREEN_LIBRARY);
     if (command[0]) run_command(command);
 
@@ -519,6 +521,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     pipe_stop();
     automarks_stop();
     achievements_stop();
+    webcam_stop();
     sessions_stop();
     gamedb_stop();
     r2_stop();

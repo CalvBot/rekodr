@@ -5,6 +5,7 @@
 // - Sound: saves join a stream's segments end to end, so none is deleted. Every segment that overlaps the stretch
 //   is written again by ffmpeg with the stretch silent, exactly at its edges, and the stream's peaks.bin is zeroed
 //   there.
+// - The webcam's video (buffer\cam) goes as the screen's does.
 // - An unsaved session's poster made from a deleted segment is deleted too (thumbs\posters).
 // Footage still being written (the newest video segment, a stream's open sound segment) is done once ffmpeg has
 // finished it: the stretch is gone over every second until 15 s after its end. Each pass that changed something
@@ -120,6 +121,21 @@ static bool erase_pass(const EraseJob &j, BufferIdx *b, EraseDone *done, i32 *do
     }
     // The newest video segment isn't listed until it's finished, so it's not in the index yet
     if (b->video_written_us && now_us() - b->video_written_us < 10 * 1000000LL && b->newest_us < j.to_us) *open = true;
+
+    // The webcam's segments the same way (not counted in *videos)
+    static BufferIdx cam; // the erase thread's
+    buffer_read_cam(j.buffer_dir, &cam);
+    Path cam_dir = path_join(j.buffer_dir, L"cam");
+    for (i32 i = 0; i < cam.seg_count; i++) {
+        const VideoSeg &v = cam.segs[i];
+        if (v.end_us <= j.from_us || v.start_us >= j.to_us) continue;
+        wchar_t run[64], name[32];
+        utf8_to_wide(cam.runs[v.run].name, run, COUNT(run));
+        utf8_to_wide(v.name, name, COUNT(name));
+        if (DeleteFileW(path_join(path_join(cam_dir, run), name).s)) changed = true;
+        else log_line("erase: couldn't delete cam %s\\%s (%d)", cam.runs[v.run].name, v.name, (int)GetLastError());
+    }
+    if (cam.video_written_us && now_us() - cam.video_written_us < 10 * 1000000LL && cam.newest_us < j.to_us) *open = true;
 
     for (i32 s = 0; s < b->stream_count; s++) {
         const AudioStreamInfo &st = b->streams[s];

@@ -2544,6 +2544,61 @@ static void options_recording()
     }
     opt_row_end();
     opt_card_end();
+
+    opt_section("WEBCAM");
+    opt_card_begin();
+    {
+        // The camera list is read when this section comes into view
+        static i32 seen_frame;
+        i32 frame_now = ImGui::GetFrameCount();
+        if (!seen_frame || frame_now - seen_frame > 1) webcam_list_again();
+        seen_frame = frame_now;
+        char err[256];
+        webcam_error(err, sizeof err);
+        if (opt_row_toggle("Record the webcam", err[0] ? err : "In clips as a picture of its own, for the Advanced editor",
+                           "##camon", &c.cam_on)) {
+            log_line("options: webcam %s", c.cam_on ? "on" : "off");
+            options_apply(0);
+        }
+        static char devs[16][128];
+        i32 n = 0;
+        bool known = webcam_devices(devs, 16, &n);
+        const char *cams[17];
+        i32 count = 0, sel = 0;
+        for (i32 i = 0; i < n; i++) cams[count++] = devs[i];
+        for (i32 i = 0; i < count; i++)
+            if (!strcmp(cams[i], c.cam_device.s)) sel = i;
+        if (c.cam_device.s[0] && (!count || strcmp(cams[sel], c.cam_device.s))) { // picked, and not plugged in now
+            sel = count;
+            cams[count++] = c.cam_device.s;
+        }
+        if (!count) {
+            opt_row_value("Camera", 0, known ? "None found" : "Looking...", COL_DIM);
+        } else if (opt_row_combo("Camera", 0, "##camdev", cams, 0, count, &sel, wide)) {
+            str_set(c.cam_device.s, cams[sel]);
+            log_line("options: webcam %s", c.cam_device.s);
+            options_apply(0);
+        }
+        // The picture: the camera is open for it only while this row is on screen
+        if (count) {
+            f32 pw = dp(256), ph = dp(144);
+            opt_row_begin("Preview", 0, pw, ph + dp(24));
+            ImVec2 a = ImGui::GetCursorScreenPos();
+            a.y = g_row.y + dp(12);
+            ImVec2 z(a.x + pw, a.y + ph);
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            ID3D11ShaderResourceView *pic = ImGui::IsRectVisible(a, z) ? webcam_picture() : 0;
+            if (pic) dl->AddImageRounded((ImTextureID)pic, a, z, ImVec2(0, 0), ImVec2(1, 1), col32(COL_WHITE), dp(8));
+            else {
+                dl->AddRectFilled(a, z, col32(COL_WHITE, 0.05f), dp(8));
+                const char *t = "Opening the camera";
+                ImVec2 ts = ImGui::CalcTextSize(t);
+                dl->AddText(ImVec2(floorf(a.x + (pw - ts.x) / 2), floorf(a.y + (ph - ts.y) / 2)), col32(COL_DIM), t);
+            }
+            opt_row_end();
+        }
+    }
+    opt_card_end();
 }
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -141,6 +141,7 @@ static f32 g_dpi_scale = 1;
 #define ICON_KEYBOARD "\xEE\x9D\xA5" // E765
 #define ICON_LINK     "\xEE\x9C\x9B" // E71B
 #define ICON_VIDEO    "\xEE\x9C\x94" // E714
+#define ICON_WEBCAM   "\xEE\xA2\xB8" // E8B8
 #define ICON_WARNING  "\xEE\x9E\xBA" // E7BA
 #define ICON_NOW      "\xEE\xA2\x93" // E893 skip to end
 #define ICON_APPS     "\xEE\x9C\x9D" // E71D all apps
@@ -1900,6 +1901,21 @@ static void top_bar(f32 h)
 
     // Chips left of the status, right to left
     f32 chip_r = dc.x - kit_px(16), ch = kit_px(26), cy = floorf(o.y + (h - ch) / 2);
+
+    // While the webcam is recorded: its icon by the status, so it's never a surprise. A click opens its setting.
+    if (!rec.paused && webcam_recording()) {
+        ImVec2 is = ImGui::CalcTextSize(ICON_WEBCAM);
+        f32 ix = chip_r - is.x, iy = floorf(o.y + (h - is.y) / 2);
+        ImGui::SetCursorScreenPos(ImVec2(ix, iy));
+        if (ImGui::InvisibleButton("##camicon", is)) {
+            dev_click("top bar", "webcam icon");
+            g_app.ui.screen = SCREEN_OPTIONS;
+            g_app.options.tab = OPT_RECORDING;
+        }
+        kit_tip("The webcam is being recorded");
+        dl->AddText(ImVec2(ix, iy), col32(ImGui::IsItemHovered() ? COL_TEXT : COL_DIM), ICON_WEBCAM);
+        chip_r = ix - kit_px(12);
+    }
 
     // While the PC can't keep up: a chip that opens Options > Recording, the full line as its tip.
     if (rec.strain.s[0] && rec.recording && !rec.paused) {

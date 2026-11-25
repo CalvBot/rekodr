@@ -95,6 +95,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "markers.cpp"
 #include "automarks.cpp"
 #include "achievements.cpp"
+#include "webcam.cpp"
 #include "toast.cpp"
 #include "ffget.cpp"
 #include "install.cpp"

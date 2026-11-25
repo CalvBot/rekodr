@@ -542,6 +542,35 @@ static void test_watch_scan()
     SHFileOperationW(&op);
 }
 
+static void test_webcam()
+{
+    const char *list =
+        "[in#0 @ 0000026dd2097140] \"Pixel 10 Pro XL (Windows Virtual Camera)\" (video)\r\n"
+        "[in#0 @ 0000026dd2097140]   Alternative name \"@device_pnp_\\\\?\\swd#vcamdevapi#92de\"\r\n"
+        "I2026-11-26 03:30:47.009207 (20168) [INFO] [VCAMDS] ffmpeg.exe\r\n"
+        "[in#0 @ 0000026dd2097140] \"Iriun Webcam\" (video)\n"
+        "[in#0 @ 0000026dd2097140] \"Line (RODE AI-1)\" (audio)\n"
+        "[in#0 @ 0000026dd2097140] \"OBS Virtual Camera\" (video)";
+    static char devs[CAM_MAX_DEVICES][CAM_NAME];
+    T(cam_parse_devices(list, devs, CAM_MAX_DEVICES) == 3 && !strcmp(devs[0], "Pixel 10 Pro XL (Windows Virtual Camera)") &&
+      !strcmp(devs[1], "Iriun Webcam") && !strcmp(devs[2], "OBS Virtual Camera"));
+    T(cam_parse_devices(list, devs, 1) == 1);
+    T(cam_parse_devices("Error opening input file dummy.", devs, CAM_MAX_DEVICES) == 0);
+
+    static Args a;
+    char s[8192];
+    cam_args(&a, "Iriun Webcam", true, VENDOR_NVENC);
+    wide_to_utf8(a.s, s, sizeof s);
+    T(strstr(s, "-f dshow") && strstr(s, "\"video=Iriun Webcam\"") && strstr(s, "print(RTCTIME)") && strstr(s, "h264_nvenc") &&
+      strstr(s, "-g 60") && strstr(s, "-segment_time 2") && strstr(s, "-f rawvideo pipe:1") && !strcmp(s + strlen(s) - 13, "-segment_list"));
+    cam_args(&a, "Iriun Webcam", false, VENDOR_CPU);
+    wide_to_utf8(a.s, s, sizeof s);
+    T(strstr(s, "scale=256:144") && strstr(s, "pipe:1") && !strstr(s, "segment") && !strstr(s, "libx264") && !strstr(s, "RTCTIME"));
+    cam_args(&a, "Cam", true, VENDOR_CPU);
+    wide_to_utf8(a.s, s, sizeof s);
+    T(strstr(s, "libx264") && strstr(s, "-sc_threshold 0"));
+}
+
 static void test_backup_places()
 {
     const char *info = "{\"personal\": {\"path\": \"C:\\\\Users\\\\me\\\\Dropbox\", \"host\": 1, \"is_team\": false},"
@@ -3919,6 +3948,7 @@ int main()
     test_telemetry();
     test_backup();
     test_backup_places();
+    test_webcam();
     test_buffer_many();
     test_erase();
     test_save_names();

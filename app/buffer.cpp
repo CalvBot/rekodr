@@ -515,6 +515,18 @@ static bool buffer_read(const Path &buffer_dir, BufferIdx *b, const BufferIdx *p
     return true;
 }
 
+// Fills `b` with the webcam's footage (<buffer>\cam, in the video's format): runs and segments only.
+static void buffer_read_cam(const Path &buffer_dir, BufferIdx *b)
+{
+    idx_clear(b);
+    BufferScratch scratch = {}, *s = &scratch;
+    read_video(path_join(buffer_dir, L"cam"), b, s);
+    free(s->files);
+    free(s->lines);
+    free(s->dirs);
+    free(s->seen);
+}
+
 // Lets go of an index's arrays, leaving it empty.
 static void buffer_idx_free(BufferIdx *b)
 {

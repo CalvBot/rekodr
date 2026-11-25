@@ -683,6 +683,8 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
     else if (!strcmp(key, "mic_clean")) boolean(&c->mic_clean);
+    else if (!strcmp(key, "cam_on")) boolean(&c->cam_on);
+    else if (!strcmp(key, "cam_device")) str_set(c->cam_device.s, value);
     else if (!strcmp(key, "mic_raw")) boolean(&c->mic_raw);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
@@ -901,6 +903,8 @@ static bool config_save(const Config &c, const Paths &paths)
     }
     boolean("voice_mono", c.voice_mono);
     boolean("mic_clean", c.mic_clean);
+    boolean("cam_on", c.cam_on);
+    fprintf(f, "cam_device = %s\n", c.cam_device.s);
     boolean("mic_raw", c.mic_raw);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %06x\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);
