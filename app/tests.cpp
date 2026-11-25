@@ -501,6 +501,7 @@ static void test_watch_scan()
         wcscpy_s(dir.s, L"D:\\Videos");
         T(!wcscmp(path_join(root, L"OBS").s, L"D:\\OBS") && !wcscmp(path_join(dir, L"OBS").s, L"D:\\Videos\\OBS"));
     }
+    T(display_hz(59) == 60 && display_hz(119) == 120 && display_hz(144) == 144 && display_hz(60) == 60);
 
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);

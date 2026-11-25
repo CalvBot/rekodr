@@ -85,6 +85,9 @@ static void capture_filter_scaled(i32 vendor, i32 w, i32 h, char *out, i32 cap)
     }
 }
 
+// A monitor's refresh rate as Windows reports it, in whole Hz: 59.94 Hz reports as 59, so it counts as 60.
+static i32 display_hz(DWORD reported) { return reported > 1 && (reported + 1) % 10 == 0 ? (i32)reported + 1 : (i32)reported; }
+
 // A monitor's size in pixels, refresh rate and HMONITOR (gfxcapture's hmonitor), by its index on the first GPU (as
 // ddagrab's output_idx counts). False if it isn't there.
 static bool monitor_mode(i32 idx, i32 *w, i32 *h, i32 *hz, u64 *hmon)
@@ -104,8 +107,7 @@ static bool monitor_mode(i32 idx, i32 *w, i32 *h, i32 *hz, u64 *hmon)
             *h = d.DesktopCoordinates.bottom - d.DesktopCoordinates.top;
             DEVMODEW mode = {};
             mode.dmSize = sizeof mode;
-            if (EnumDisplaySettingsW(d.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) *hz = (i32)mode.dmDisplayFrequency;
-            if (*hz > 1 && (*hz + 1) % 10 == 0) (*hz)++; // 59.94 Hz reports as 59: count it as 60
+            if (EnumDisplaySettingsW(d.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) *hz = display_hz(mode.dmDisplayFrequency);
             out->Release();
         }
         adapter->Release();

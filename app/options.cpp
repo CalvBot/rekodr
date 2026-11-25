@@ -108,7 +108,7 @@ static void options_list_monitors()
             m->primary = d.DesktopCoordinates.left == 0 && d.DesktopCoordinates.top == 0;
             DEVMODEW mode = {};
             mode.dmSize = sizeof mode;
-            if (EnumDisplaySettingsW(d.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) m->hz = (i32)mode.dmDisplayFrequency;
+            if (EnumDisplaySettingsW(d.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) m->hz = display_hz(mode.dmDisplayFrequency);
             wide_to_utf8(d.DeviceName[0] == '\\' ? d.DeviceName + 4 : d.DeviceName, m->name, sizeof m->name);
             for (UINT32 k = 0; k < np; k++) {
                 DISPLAYCONFIG_SOURCE_DEVICE_NAME src = {};
