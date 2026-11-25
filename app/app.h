@@ -19,6 +19,19 @@ enum SessionMode : u8 {
     SESSION_NEVER,  // not detected
 };
 
+// The sound when a clip or session saves: off, one of the built-in ones (assets/complete*.wav, all made from
+// complete.wav) or the player's own .wav (Config.saved_sound_file).
+enum SavedSound : u8 {
+    SAVED_SOUND_OFF,
+    SAVED_SOUND_CHIME, // complete.wav itself, RCDATA 40; the next ones are 41 and up
+    SAVED_SOUND_HIGH,
+    SAVED_SOUND_LOW,
+    SAVED_SOUND_ECHO,
+    SAVED_SOUND_SOFT,
+    SAVED_SOUND_OWN,
+    SAVED_SOUND_COUNT,
+};
+
 // How "Clip saved" shows over a game: the whole popup, the small one (no buttons, gone sooner) or none (the clip is
 // saved all the same). DEFAULT is a game's "same as all games" (Config.toast_clip); toast_clip_for picks.
 // The corner of its monitor the toasts go in; the next one up stacks away from that edge.
@@ -120,6 +133,8 @@ struct Config {
     i32   popup_monitor_game; // and while a game is in front: an output index, POPUP_RECORDED or POPUP_AS_NORMAL
     PopupCorner popup_corner_game; // unless popup_monitor_game is POPUP_AS_NORMAL
     ToastClip toast_clip; // Clip saved over a game, unless the game has its own (FULL, SMALL or OFF)
+    SavedSound saved_sound; // the sound when a clip or session saves (CHIME)
+    Path  saved_sound_file; // SAVED_SOUND_OWN's .wav
     i32   fps;        // never above the monitor's refresh rate
     i32   height;     // output height (1080...); 0 = the monitor's own. Never above the monitor's
     Str64 codec;      // "h264" | "hevc" | "av1"

@@ -424,14 +424,10 @@ static ShareJob *share_new_job()
     return pick;
 }
 
-// The done sound (assets/complete.wav, RCDATA 40) when Share has put a file or link on the clipboard.
+// The done sound (the Chime, assets/complete.wav) when Share has put a file or link on the clipboard.
 static void share_chime()
 {
-    if (!g_app.config.share_sound) return;
-    HRSRC res = FindResourceW(0, MAKEINTRESOURCEW(40), MAKEINTRESOURCEW(10)); // RT_RCDATA
-    HGLOBAL mem = res ? LoadResource(0, res) : 0;
-    void *wav = mem ? LockResource(mem) : 0;
-    if (wav) PlaySoundW((LPCWSTR)wav, 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    if (g_app.config.share_sound) saved_sound_play(SAVED_SOUND_CHIME, Path{});
 }
 
 // Ends a job: the result goes on the clipboard, with the done sound, and is kept for next time.

@@ -13,7 +13,13 @@
 30 RCDATA "fonts/Onest-Regular.ttf"
 31 RCDATA "fonts/Onest-SemiBold.ttf"
 32 RCDATA "fonts/Onest-Bold.ttf"
+// The save and share sounds (save.cpp saved_sound_play): complete.wav and versions of it made with ffmpeg
+// (higher, lower, with an echo, softer).
 40 RCDATA "../assets/complete.wav"
+41 RCDATA "../assets/complete-high.wav"
+42 RCDATA "../assets/complete-low.wav"
+43 RCDATA "../assets/complete-echo.wav"
+44 RCDATA "../assets/complete-soft.wav"
 
 #include "version.h"
 

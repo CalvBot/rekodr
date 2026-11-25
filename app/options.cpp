@@ -862,6 +862,41 @@ static bool toast_clip_chips(const char *id, i32 first, ToastClip *v)
     return changed;
 }
 
+// The sound when a clip saves: Off (a muted speaker), the built-in ones and the player's own .wav (a folder). A click
+// on a sound picks it and plays it; the folder always asks for a file, then plays it. With the own file picked, the
+// row's second line is its name.
+static bool pick_file(const Path &start, Path *out, const wchar_t *kind, const wchar_t *spec); // below
+static const char *const SAVED_SOUND_CHIPS[SAVED_SOUND_COUNT] = {ICON_MUTE, "Chime", "High", "Low", "Echo", "Soft",
+                                                                 ICON_FOLDER};
+static void opt_saved_sound_row(Config &c)
+{
+    f32 pad = kit_px(14), gap = dp(6), w = 0;
+    for (i32 i = 0; i < SAVED_SOUND_COUNT; i++) w += text_w(g_font, SAVED_SOUND_CHIPS[i]) + 2 * pad + (i ? gap : 0);
+    char sub[MAX_PATH * 3] = "Plays when a clip saves";
+    if (c.saved_sound == SAVED_SOUND_OWN) {
+        const wchar_t *name = wcsrchr(c.saved_sound_file.s, L'\\');
+        wide_to_utf8(name ? name + 1 : c.saved_sound_file.s, sub, sizeof sub);
+    }
+    opt_row_begin("Clip saved sound", sub, w);
+    for (i32 i = 0; i < SAVED_SOUND_COUNT; i++) {
+        if (i) ImGui::SameLine(0, gap);
+        char label[48];
+        snprintf(label, sizeof label, "%s##savedsound%d", SAVED_SOUND_CHIPS[i], i);
+        if (!kit_chip(label, c.saved_sound == i, 0, text_w(g_font, SAVED_SOUND_CHIPS[i]) + 2 * pad)) continue;
+        SavedSound pick = (SavedSound)i;
+        if (pick == SAVED_SOUND_OWN) {
+            Path file;
+            if (!pick_file(c.saved_sound_file, &file, L"Sounds", L"*.wav")) continue;
+            c.saved_sound_file = file;
+        }
+        c.saved_sound = pick;
+        saved_sound_play(pick, c.saved_sound_file);
+        log_line("options: clip saved sound: %s", SAVED_SOUND_NAMES[pick]);
+        options_apply(0);
+    }
+    opt_row_end();
+}
+
 // A line of the game popup: the name on the left, the cursor at x for the control.
 static void game_line(const char *name, f32 x)
 {
@@ -4311,6 +4346,7 @@ static void options_general()
         options_apply(0);
     }
     opt_row_end();
+    opt_saved_sound_row(c);
     opt_card_end();
 
     opt_section("SESSIONS");

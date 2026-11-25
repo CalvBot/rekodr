@@ -62,6 +62,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->popup_monitor = POPUP_RECORDED;
     c->popup_monitor_game = POPUP_AS_NORMAL;
     c->toast_clip = TOAST_CLIP_FULL;
+    c->saved_sound = SAVED_SOUND_CHIME;
     c->buffer_gb = 100;
     c->min_free_gb = 50;
     c->fps = 60;
@@ -164,6 +165,15 @@ static ToastClip toast_clip_parse(const char *s)
            : !strcmp(s, "small") ? TOAST_CLIP_SMALL
            : !strcmp(s, "off")   ? TOAST_CLIP_OFF
                                  : TOAST_CLIP_DEFAULT;
+}
+
+static const char *const SAVED_SOUND_NAMES[SAVED_SOUND_COUNT] = {"off", "chime", "high", "low", "echo", "soft", "own"};
+
+static SavedSound saved_sound_parse(const char *s)
+{
+    for (i32 i = 0; i < SAVED_SOUND_COUNT; i++)
+        if (!strcmp(s, SAVED_SOUND_NAMES[i])) return (SavedSound)i;
+    return SAVED_SOUND_CHIME;
 }
 
 // Finds an app by exe (lower case), adding it if it's new and there's room. Returns 0 only when the table is full.
@@ -456,6 +466,8 @@ static void config_set(Config *c, const char *key, char *value)
         c->toast_clip = toast_clip_parse(value);
         if (c->toast_clip == TOAST_CLIP_DEFAULT) c->toast_clip = TOAST_CLIP_FULL;
     }
+    else if (!strcmp(key, "saved_sound")) c->saved_sound = saved_sound_parse(value);
+    else if (!strcmp(key, "saved_sound_file")) path(&c->saved_sound_file);
     else if (!strcmp(key, "fps")) c->fps = atoi(value);
     else if (!strcmp(key, "height")) c->height = atoi(value);
     else if (!strcmp(key, "codec")) str_set(c->codec.s, value);
@@ -700,6 +712,8 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "popup_monitor_game = %d\npopup_corner_game = %s\n", c.popup_monitor_game,
             corner_name(c.popup_corner_game));
     fprintf(f, "toast_clip = %s\n", toast_clip_name(c.toast_clip));
+    fprintf(f, "saved_sound = %s\n", SAVED_SOUND_NAMES[c.saved_sound]);
+    path("saved_sound_file", c.saved_sound_file);
     boolean("voice_mono", c.voice_mono);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %06x\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);
