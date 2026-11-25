@@ -201,6 +201,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->send_stats = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
+    c->mic_clean = true;
     wchar_t time_format[80] = L"";
     c->clock_24h = !GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_STIMEFORMAT, time_format, 80) ||
                    wcschr(time_format, L'H') != 0; // "HH:mm:ss" is 24-hour, "h:mm:ss tt" 12-hour
@@ -681,6 +682,8 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "embed_style")) { i32 i = embed_style_find(value); c->embed_style = (u8)(i < 0 ? 0 : i); }
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
+    else if (!strcmp(key, "mic_clean")) boolean(&c->mic_clean);
+    else if (!strcmp(key, "mic_raw")) boolean(&c->mic_raw);
     else if (!strcmp(key, "dev_log")) boolean(&c->dev_log);
     else if (!strcmp(key, "hotkey")) {
         // hotkey = Alt+F7 | save 30s | save 3m (held) | game.exe (only in it)
@@ -897,6 +900,8 @@ static bool config_save(const Config &c, const Paths &paths)
         }
     }
     boolean("voice_mono", c.voice_mono);
+    boolean("mic_clean", c.mic_clean);
+    boolean("mic_raw", c.mic_raw);
     boolean("dev_log", c.dev_log);
     fprintf(f, "accent = %06x\ncard_width = %d\ngames_collapsed = %d\n", c.accent, c.card_width, c.games_collapsed ? 1 : 0);
     fprintf(f, "unsaved_collapsed = %d\nside_folders = %d\n", c.unsaved_collapsed ? 1 : 0, c.side_folders ? 1 : 0);

@@ -1031,6 +1031,70 @@ static void test_quality()
     T(!w.why[Q_RES][0] && !w.why[Q_FPS][0]);
 }
 
+// The Mic is cleaned before the Mix takes it; Mic (raw) is the Mic as recorded, on its own, in no Mix, and left out
+// of the editor's tracks.
+static void test_mic_clean()
+{
+    static AudioStreamInfo st[2];
+    static AudioSeg segs[2];
+    st[0] = {}, st[1] = {};
+    st[0].mic = true, str_set(st[0].exe, "mic"), st[0].first_seg = 0, st[0].seg_count = 1;
+    str_set(st[1].exe, "game.exe"), st[1].first_seg = 1, st[1].seg_count = 1;
+    segs[0] = {}, segs[1] = {};
+    segs[0].end_us = segs[1].end_us = 10000000;
+    SaveWork *w = &g_save_work;
+    w->buf = {};
+    w->buf.streams = st, w->buf.stream_count = 2;
+    w->buf.audio_segs = segs, w->buf.audio_seg_count = 2;
+    w->cfg = {};
+    w->cfg.voice_mono = true;
+    w->stream_count = 2;
+    for (i32 i = 0; i < 2; i++) w->streams[i] = i, w->stream_segs[i][0] = 0, w->stream_segs[i][1] = 1;
+    w->pieces[0] = {0, 10000000, 0};
+    w->piece_count = 1;
+    w->game_count = 0;
+
+    w->cfg.mic_clean = true, w->cfg.mic_raw = true;
+    make_tracks(w);
+    T(w->track_count == 3 && !strcmp(w->tracks[1].title, MIC_RAW_TITLE) && w->tracks[1].raw && w->tracks[1].mono);
+    T(w->stream_track[0] == 0 && w->stream_track[1] == 2);
+    make_graph(w, 10000000, false);
+    T(strstr(w->graph, "[u0]asplit=2[v0][r0];\n[v0]highpass=f=80,afftdn=") != 0);
+    T(strstr(w->graph, "[r0]pan=mono|c0=0.5*c0+0.5*c1[o1]") != 0);
+    T(strstr(w->graph, "[m0][m2]amix=inputs=2:") != 0 && strstr(w->graph, "[m1]") == 0);
+    make_graph(w, 10000000, true); // a preview: the Mix only, nothing left unused
+    T(strstr(w->graph, "[r0]") == 0 && strstr(w->graph, "[u0]highpass") != 0 && strstr(w->graph, "[m0][m2]amix") != 0);
+
+    w->cfg.mic_raw = false;
+    make_tracks(w);
+    T(w->track_count == 2 && w->stream_track[1] == 1);
+    make_graph(w, 10000000, false);
+    T(strstr(w->graph, "[u0]highpass=f=80,afftdn=") != 0 && strstr(w->graph, "[r0]") == 0);
+
+    w->cfg.mic_clean = false, w->cfg.mic_raw = true; // a raw track only beside a cleaned one
+    make_tracks(w);
+    T(w->track_count == 2);
+    make_graph(w, 10000000, false);
+    T(strstr(w->graph, "afftdn") == 0 && strstr(w->graph, "[u0]") == 0);
+
+    w->cfg.mic_clean = true; // no Mic heard: nothing to clean, no raw track
+    st[0].mic = false, str_set(st[0].exe, "app.exe");
+    make_tracks(w);
+    T(w->track_count == 3 && !w->tracks[1].raw);
+    make_graph(w, 10000000, false);
+    T(strstr(w->graph, "afftdn") == 0);
+    w->buf = {};
+
+    static MediaInfo m;
+    m = {};
+    m.track_count = 4;
+    str_set(m.tracks[0], "Mix"), str_set(m.tracks[1], "Mic"), str_set(m.tracks[2], MIC_RAW_TITLE);
+    str_set(m.tracks[3], "Game (game)");
+    i32 tracks[MEDIA_MAX_TRACKS];
+    T(ed_tracks(m, tracks, MEDIA_MAX_TRACKS) == 2 && tracks[0] == 1 && tracks[1] == 3);
+    T(track_is_spare(m, 2) && !track_is_spare(m, 1));
+}
+
 // What is saved comes back the same.
 static void test_settings_round_trip()
 {
@@ -3833,6 +3897,7 @@ int main()
     test_folder_rules();
     test_fields();
     test_hotkeys();
+    test_mic_clean();
     test_sessions_seen();
     test_toast_clip();
     test_popup_place();

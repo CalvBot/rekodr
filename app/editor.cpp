@@ -8,11 +8,12 @@
 // mutes and volumes are heard as they're set (up to 100%: the engine can't go louder).
 
 // The tracks that can be edited: in Rekodr's files the first track is a Mix of the others, so it's left out
-// (Keep and Share rebuild it).
+// (Keep and Share rebuild it), and so is Mic (raw), which Keep writes as it is.
 static i32 ed_tracks(const MediaInfo &m, i32 *out, i32 cap)
 {
     i32 n = 0;
-    for (i32 t = edit_has_mix(m) ? 1 : 0; t < m.track_count && t < MEDIA_MAX_TRACKS && n < cap; t++) out[n++] = t;
+    for (i32 t = edit_has_mix(m) ? 1 : 0; t < m.track_count && t < MEDIA_MAX_TRACKS && n < cap; t++)
+        if (!track_is_spare(m, t)) out[n++] = t;
     return n;
 }
 

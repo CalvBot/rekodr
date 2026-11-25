@@ -2523,6 +2523,16 @@ static void options_recording()
         options_apply(0);
     }
     opt_row_begin("ffmpeg.exe", 0, wide);
+    if (opt_row_toggle("Clean the mic", "Fans, hiss and hum taken out when a clip saves", "##micclean", &c.mic_clean)) {
+        log_line("options: mic cleaning %s", c.mic_clean ? "on" : "off");
+        options_apply(0);
+    }
+    ImGui::BeginDisabled(!c.mic_clean);
+    if (opt_row_toggle("Keep a raw track", "The mic as recorded too, beside the cleaned one", "##micraw", &c.mic_raw)) {
+        log_line("options: raw mic track %s", c.mic_raw ? "on" : "off");
+        options_apply(0);
+    }
+    ImGui::EndDisabled();
     char ff[MAX_PATH * 3], text[MAX_PATH * 3];
     wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
     if (opt_text("##ffmpeg", ff, wide, 0, "Found by itself", text, sizeof text)) {

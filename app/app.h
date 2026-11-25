@@ -127,6 +127,9 @@ struct InputDevice {
     InputMode mode;
 };
 
+// The title of a save's Mic track as recorded, beside the cleaned Mic (Config.mic_raw).
+static const char MIC_RAW_TITLE[] = "Mic (raw)";
+
 struct Hotkey {
     Str64 keys;   // "Alt+F7"
     Str64 action; // "save 30s" | "timeline" | "open" | "pause"
@@ -222,6 +225,9 @@ struct Config {
     char link_uploaders[256]; // the player's uploaders that are on (.sxcu files in <config_dir>\uploaders, by name),
                              // comma separated, used without R2; "" = none
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
+    bool mic_clean;       // saves take steady noise (fans, hiss, hum) out of the Mic track (on)
+    bool mic_raw;         // with mic_clean, saves keep the Mic as recorded too, on a "Mic (raw)" track that no Mix
+                          // takes (off)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     bool render_edits;   // an edited clip's file in Clips is its edit rendered, the original in Source (on)
     f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)

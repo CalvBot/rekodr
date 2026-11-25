@@ -35,6 +35,7 @@ struct SaveSettings {
     char    codec[64];
     u8      vendor; // the H.264 encoder Keep and Share use when they re-encode (Vendor)
     bool    voice_mono;
+    bool    mic_clean, mic_raw;
     InputDevice inputs[16];
     i32     input_count;
     AppInfo apps[512];
@@ -83,6 +84,7 @@ struct Track {
     bool chat;    // a Chat app (each Discord person is an exe of their own)
     bool mono;    // kept in mono (Options: voices in mono, or the input's own setting)
     bool game;
+    bool raw;     // the Mic as recorded, beside the cleaned one (Config.mic_raw): no streams of its own, in no Mix
     i32  rank;    // position in time played (most first); INT32_MAX for apps
 };
 
@@ -348,15 +350,27 @@ static bool track_before(const Track &a, const Track &b)
     return a.rank < b.rank;
 }
 
-// Mic (Windows' default input), then one track per other input, then per app: chat apps and people (in order of
-// first sound), games (the one played most first), then the rest in order of first sound. Every stream of one
-// device or exe goes on its track.
+// Mic (Windows' default input) and, when it's cleaned and heard, Mic (raw); then one track per other input, then per
+// app: chat apps and people (in order of first sound), games (the one played most first), then the rest in order of
+// first sound. Every stream of one device or exe goes on its track.
 static void make_tracks(SaveWork *w)
 {
     w->track_count = 1;
     w->tracks[0] = {};
     str_set(w->tracks[0].title, "Mic");
     w->tracks[0].mono = w->cfg.voice_mono;
+    bool heard = false;
+    for (i32 i = 0; i < w->stream_count; i++) {
+        const AudioStreamInfo &st = w->buf.streams[w->streams[i]];
+        heard |= st.mic && !st.path[0];
+    }
+    if (heard && w->cfg.mic_clean && w->cfg.mic_raw) {
+        Track *raw = &w->tracks[w->track_count++];
+        *raw = w->tracks[0];
+        str_set(raw->title, MIC_RAW_TITLE);
+        raw->raw = true;
+    }
+    i32 first = w->track_count; // the first track an input or app may take
     for (i32 i = 0; i < w->stream_count; i++) {
         const AudioStreamInfo &st = w->buf.streams[w->streams[i]];
         w->stream_track[i] = -1;
@@ -364,7 +378,7 @@ static void make_tracks(SaveWork *w)
         AppCategory cat = st.mic ? CAT_NONE : save_category(w->cfg, st.exe, st.path);
         if (cat == CAT_IGNORED) continue;
         const char *key = st.mic ? st.path : st.exe;
-        i32 t = 1;
+        i32 t = first;
         while (t < w->track_count && (w->tracks[t].input != st.mic || strcmp(w->tracks[t].exe, key))) t++;
         if (t == w->track_count) {
             if (t == COUNT(w->tracks)) continue;
@@ -393,11 +407,11 @@ static void make_tracks(SaveWork *w)
     // Insertion sort (stable) of the app tracks, remembering where each one went.
     i32 order[COUNT(w->tracks)]; // order[new] = old
     for (i32 t = 0; t < w->track_count; t++) order[t] = t;
-    for (i32 i = 2; i < w->track_count; i++) {
+    for (i32 i = first + 1; i < w->track_count; i++) {
         Track tr = w->tracks[i];
         i32 old = order[i];
         i32 j = i;
-        for (; j > 1 && track_before(tr, w->tracks[j - 1]); j--) {
+        for (; j > first && track_before(tr, w->tracks[j - 1]); j--) {
             w->tracks[j] = w->tracks[j - 1];
             order[j] = order[j - 1];
         }
@@ -420,8 +434,13 @@ static void make_tracks(SaveWork *w)
     }
 }
 
+// The Mic's cleaning (Config.mic_clean): rumble below a voice cut, then the steady noise floor (fans, hiss, hum),
+// which afftdn learns as it goes, taken down by 12 dB. Speech and short sounds are left as they are.
+static const char MIC_CLEAN[] = "highpass=f=80,afftdn=nr=12:nf=-45:tn=1";
+
 // The filter graph for the audio tracks. Input 0 is the video; stream i is input i + 1. A stream's concat input
 // starts at its first remaining segment, and each stretch of it is trimmed and delayed to its place in the file.
+// The Mic is cleaned before anything takes it, and Mic (raw) is the Mic before that.
 // `mix_only` (a preview): the Mix and nothing else, so no track is written on its own.
 static void make_graph(SaveWork *w, i64 total_us, bool mix_only)
 {
@@ -464,30 +483,44 @@ static void make_graph(SaveWork *w, i64 total_us, bool mix_only)
                       a, b, w->parts[j].delay * 48000 / 1000000, i, j);
         }
     }
+    bool raw = w->track_count > 1 && w->tracks[1].raw && !mix_only;
     for (i32 t = 0; t < w->track_count; t++) {
+        if (w->tracks[t].raw) { // the Mic as it was, on its own: [r0] from below
+            if (!raw) continue;
+            if (w->tracks[t].mono) graph_add(w, "[r0]pan=mono|c0=0.5*c0+0.5*c1[o%d];\n", t);
+            else graph_add(w, "[r0]anull[o%d];\n", t);
+            continue;
+        }
         i32 inputs = 0;
         for (i32 i = 0; i < w->stream_count; i++)
             if (w->stream_track[i] == t) inputs += w->stream_parts[i];
+        bool clean = t == 0 && inputs && w->cfg.mic_clean;
+        char lab[16];
+        snprintf(lab, sizeof lab, "%s%d", clean ? "u" : "t", t);
         if (inputs == 0) {
-            graph_add(w, "anullsrc=r=48000:cl=stereo,atrim=duration=%s[t%d];\n", total, t);
+            graph_add(w, "anullsrc=r=48000:cl=stereo,atrim=duration=%s[%s];\n", total, lab);
         } else {
             for (i32 i = 0; i < w->stream_count; i++)
                 if (w->stream_track[i] == t)
                     for (i32 j = 0; j < w->stream_parts[i]; j++) graph_add(w, "[p%d_%d]", i, j);
             if (inputs > 1) graph_add(w, "amix=inputs=%d:normalize=0:dropout_transition=0,", inputs);
-            graph_add(w, "apad=whole_dur=%s,atrim=duration=%s[t%d];\n", total, total, t);
+            graph_add(w, "apad=whole_dur=%s,atrim=duration=%s[%s];\n", total, total, lab);
         }
+        if (clean && raw) graph_add(w, "[u0]asplit=2[v0][r0];\n[v0]%s[t0];\n", MIC_CLEAN);
+        else if (clean) graph_add(w, "[u0]%s[t0];\n", MIC_CLEAN);
         // The Mix takes the track as it is; a mono track is only its own copy, both channels averaged.
         if (mix_only) graph_add(w, "[t%d]anull[m%d];\n", t, t);
         else if (w->tracks[t].mono)
             graph_add(w, "[t%d]asplit=2[c%d][m%d];\n[c%d]pan=mono|c0=0.5*c0+0.5*c1[o%d];\n", t, t, t, t, t);
         else graph_add(w, "[t%d]asplit=2[o%d][m%d];\n", t, t, t);
     }
-    for (i32 t = 0; t < w->track_count; t++) graph_add(w, "[m%d]", t);
+    i32 mixed = 0;
+    for (i32 t = 0; t < w->track_count; t++)
+        if (!w->tracks[t].raw) graph_add(w, "[m%d]", t), mixed++;
     graph_add(w,
               "amix=inputs=%d:normalize=0:dropout_transition=0,alimiter=limit=0.98:level=0:latency=1,"
               "atrim=duration=%s[mix]",
-              w->track_count, total);
+              mixed, total);
 }
 
 // One concat-list line. A single quote in the path is closed, escaped and reopened, as the concat demuxer wants.
@@ -1201,6 +1234,9 @@ static f64 fade_gain(const EditRecord &e, f64 dur, i32 i, f64 s)
 
 // Whether a file has the Rekodr layout: track 1 is a Mix of the tracks after it.
 static bool edit_has_mix(const MediaInfo &m) { return m.track_count >= 2 && !strcmp(m.tracks[0], "Mix"); }
+
+// Whether track t of a Rekodr file is Mic (raw): kept for other editors, never in a Mix or the editor's tracks.
+static bool track_is_spare(const MediaInfo &m, i32 t) { return edit_has_mix(m) && !strcmp(m.tracks[t], MIC_RAW_TITLE); }
 
 // Eases (Ease in app.h): how far along (0..1) a value is, a fraction f of the way in time from one key to the next.
 static bool ease_slow_leaving(u8 e) { return e == EASE_SMOOTH || e == EASE_OUT; }
@@ -1926,7 +1962,7 @@ static bool edit_audio_graph(SaveWork *w, const EditJob &j, f64 start)
     }
     i32 first = edit_has_mix(m) ? 1 : 0, n = 0;
     for (i32 t = first; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
-        if (j.edit.muted[t]) continue;
+        if (j.edit.muted[t] || track_is_spare(m, t)) continue;
         graph_add(w, "[0:a:%d]", t);
         vol_filter(w, j.edit, t, start);
         graph_add(w, ",aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[s%d];\n", n);
@@ -2047,7 +2083,7 @@ static i32 adv_graph(SaveWork *w, const EditJob &j, f64 from, const char *post, 
     streams[0] = -1;
     for (i32 t = first; t < m.track_count && t < MEDIA_MAX_TRACKS; t++) {
         i32 idx[EDIT_MAX_ITEMS];
-        bool in_mix = !e.muted[t] && track_items(e, t + 1, idx) > 0;
+        bool in_mix = !e.muted[t] && !track_is_spare(m, t) && track_items(e, t + 1, idx) > 0;
         if (!in_mix && !tracks) continue;
         char src[24];
         snprintf(src, sizeof src, "[0:a:%d]", t);
@@ -2713,6 +2749,8 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     str_set(s->name_template, c.name_template);
     str_set(s->codec, c.codec.s);
     s->voice_mono = c.voice_mono;
+    s->mic_clean = c.mic_clean;
+    s->mic_raw = c.mic_raw;
     memcpy(s->inputs, c.inputs, sizeof s->inputs);
     s->input_count = c.input_count;
     // H.264 for edits: the encoder forced in Options if it's set, else the first whose test encode worked.
