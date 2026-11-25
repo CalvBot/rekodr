@@ -357,9 +357,10 @@ struct ArtLook {
     f32 blur;       // Gaussian sigma, in texels
     f32 opacity;    // of the art over the ground, at its right edge (art_fade)
     f32 fade_end;   // how far in from the right edge, as a share of the width, the art has faded out to the ground
+    f32 toast_fade_end; // the same on the toasts
     f32 grain;      // of the grain over the art
 };
-static constexpr ArtLook g_art_look = {192, 1.2f, 0.26f, 0.5f, 0.025f};
+static constexpr ArtLook g_art_look = {192, 1.2f, 0.26f, 0.5f, 1.0f, 0.025f};
 // The tallest kept is 5/8 of the width; a taller picture is cut to its middle.
 enum { ART_W_MAX = 192, ART_H_MAX = ART_W_MAX * 5 / 8 };
 static_assert(g_art_look.w <= ART_W_MAX);

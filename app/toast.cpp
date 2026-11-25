@@ -23,8 +23,8 @@
 // layered window drawn with its own alpha. Save failed is the full toast without its buttons. Popups in games picks
 // another monitor for every toast while a game is in front.
 // Clip saved, Session saved and Session ended have the game's grey art behind them, the window's own (game_art_grey):
-// filling the toast and cut to fit, strongest at the right and faded out towards the left, as the window's. With no
-// art, or Flat look, they have the plain panel.
+// filling the toast and cut to fit, strongest at the right and faded out across the toast (art_fade, over
+// g_art_look.toast_fade_end of its width). With no art, or Flat look, they have the plain panel.
 
 enum ToastKind { TOAST_SAVED, TOAST_MARKER, TOAST_SESSION };
 // The parts a click lands on: the buttons counted from the right, Dismiss at the left, then the marker's colours
@@ -328,8 +328,8 @@ static void toast_set_pill(Toast &t, bool pill)
 }
 
 // The game's art behind the toast into `big` (SS times the toast's size), over the panel, faded across it as the
-// window's is (art_fade): strongest at the right, none at the left. It fills the toast, cut to fit, and is smoothed
-// between its texels.
+// window's is (art_fade, over g_art_look.toast_fade_end): strongest at the right, none at the left. It fills the
+// toast, cut to fit, and is smoothed between its texels.
 static void toast_draw_art(Toast &t, HDC big, RECT r, i32 SS)
 {
     i32 w = r.right, h = r.bottom, aw = t.art_w, ah = t.art_h;
@@ -347,7 +347,7 @@ static void toast_draw_art(Toast &t, HDC big, RECT r, i32 SS)
         for (i32 x = 0; x < w; x++) {
             f32 fx = ((1 - su) / 2 + su * (x + 0.5f) / w) * aw - 0.5f;
             i32 x0 = art_clamp((i32)floorf(fx), 0, aw - 1), x1 = art_clamp(x0 + 1, 0, aw - 1);
-            f32 dx = fx - floorf(fx), a = art_fade((x + 0.5f) / w);
+            f32 dx = fx - floorf(fx), a = art_fade((x + 0.5f) / w, g_art_look.toast_fade_end);
             const u8 *g = t.art;
             f32 v = (g[y0 * aw + x0] * (1 - dx) + g[y0 * aw + x1] * dx) * (1 - dy) +
                     (g[y1 * aw + x0] * (1 - dx) + g[y1 * aw + x1] * dx) * dy;

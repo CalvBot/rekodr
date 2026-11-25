@@ -1624,11 +1624,12 @@ static bool ui_reduced_motion()
 }
 
 // The art's opacity over the ground at x across a picture (0 its left edge, 1 its right): g_art_look.opacity at the
-// right edge, eased (smoothstep) out to none g_art_look.fade_end of the width in from it, and none left of that, so
-// the tabs and the list on the left stay on the plain ground. The window and the toasts both fade their art by it.
-static f32 art_fade(f32 x)
+// right edge, eased (smoothstep) out to none `span` of the width in from it, and none left of that, so the tabs and
+// the list on the left stay on the plain ground. `span` is a share of the width: g_art_look.fade_end for the window,
+// and the toasts pass their own (g_art_look.toast_fade_end).
+static f32 art_fade(f32 x, f32 span = g_art_look.fade_end)
 {
-    f32 k = (1 - x) / g_art_look.fade_end;
+    f32 k = (1 - x) / span;
     if (k >= 1) return 0;
     if (k < 0) k = 0;
     return g_art_look.opacity * (1 - k * k * (3 - 2 * k));
