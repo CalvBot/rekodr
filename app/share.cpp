@@ -717,6 +717,7 @@ static void share_prep_tick()
         const char *name = it->display_name[0] ? it->display_name : it->name;
         g_prep.job = share_start(SHARE_AS_IS, path.s, it->info, edited ? &rec : 0, name, it->info.game, key, 0, true);
         g_prep.job_key = key;
+        if (!g_prep.job) share_prep_push(key); // every share slot busy: tried again next tick
         break;
     }
 }
