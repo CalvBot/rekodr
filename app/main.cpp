@@ -519,6 +519,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
 
     log_line("Rekodr quitting");
     pipe_stop();
+    library_stop();
     automarks_stop();
     achievements_stop();
     webcam_stop();

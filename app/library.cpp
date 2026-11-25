@@ -457,6 +457,57 @@ static u8 lib_dir_add(const Path &path, const char *game)
     return (u8)(n + 1);
 }
 
+// The change watch on g_lib_dirs, on a thread of its own, as opening one on a network path can take seconds. After
+// each scan (`sync`) it closes the watches of folders the scan didn't go through and opens those missing, which
+// retries any that failed; every 2 s it looks at those it holds and sets `fired` when one saw a file or folder
+// added, renamed or deleted. lib_watch_poll reads `fired` while the library shows.
+struct LibWatch {
+    HANDLE        thread, wake;
+    volatile LONG sync, fired, quit;
+};
+static LibWatch g_lib_watch;
+
+static DWORD WINAPI lib_watch_thread(void *)
+{
+    static HANDLE change[COUNT(g_lib_dirs)];
+    while (!g_lib_watch.quit) {
+        bool sync = InterlockedExchange(&g_lib_watch.sync, 0) != 0;
+        i32 n = (i32)g_lib_dir_count;
+        for (i32 i = 0; i < n && !g_lib_watch.quit; i++) {
+            HANDLE &h = change[i];
+            if (sync && !g_lib_dirs[i].live && h) {
+                FindCloseChangeNotification(h);
+                h = 0;
+            } else if (sync && g_lib_dirs[i].live && !h) {
+                h = FindFirstChangeNotificationW(g_lib_dirs[i].path.s, FALSE,
+                                                 FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME);
+                if (h == INVALID_HANDLE_VALUE) h = 0;
+            } else if (h && WaitForSingleObject(h, 0) == WAIT_OBJECT_0) {
+                InterlockedExchange(&g_lib_watch.fired, 1);
+                if (!FindNextChangeNotification(h)) { // the folder went: opened again after the scan this sets off
+                    FindCloseChangeNotification(h);
+                    h = 0;
+                }
+            }
+        }
+        WaitForSingleObject(g_lib_watch.wake, 2000);
+    }
+    for (HANDLE &h : change)
+        if (h) FindCloseChangeNotification(h), h = 0;
+    return 0;
+}
+
+// Ends the watch thread and closes its watches. At quit.
+static void library_stop()
+{
+    if (!g_lib_watch.thread) return;
+    InterlockedExchange(&g_lib_watch.quit, 1);
+    SetEvent(g_lib_watch.wake);
+    WaitForSingleObject(g_lib_watch.thread, 3000); // one stuck opening a network folder is left to the exit
+    CloseHandle(g_lib_watch.thread);
+    g_lib_watch.thread = 0;
+}
+
 static bool lib_set_game(LibItem *it, const char *tagged, const char *tmpl)
 {
     for (i32 i = 0; i < g_game_override_count; i++) {
@@ -933,6 +984,8 @@ static DWORD WINAPI lib_thread(void *)
             AcquireSRWLockExclusive(&g_lib.lock);
             g_lib.scan_running = false;
             ReleaseSRWLockExclusive(&g_lib.lock);
+            InterlockedExchange(&g_lib_watch.sync, 1);
+            SetEvent(g_lib_watch.wake);
             Event e = {};
             e.kind = EV_LIBRARY;
             e.a = LIB_EV_SCANNED; // once more, so the main thread sees the scan has ended
@@ -952,6 +1005,8 @@ static void lib_init()
     InitializeSRWLock(&g_lib.lock);
     InitializeConditionVariable(&g_lib.wake);
     for (i32 i = 0; i < COUNT(g_lib.threads); i++) g_lib.threads[i] = thread_start(lib_thread, 0);
+    g_lib_watch.wake = CreateEventW(0, FALSE, FALSE, 0);
+    g_lib_watch.thread = thread_start(lib_watch_thread, 0);
 }
 
 static void lib_push(const LibTask &t, bool front)
@@ -5991,28 +6046,12 @@ static void lib_folder_list(f32 w, bool collapsed)
 
 enum { LIB_PAD_Y = 16 }; // the screen's padding above and below, which the list on the left keeps too
 
-// Another app's folders the newest scan went through, looked at every 2 s while the library shows: a file or folder
-// added, renamed or deleted there scans again, so an OBS or ShadowPlay save shows up. A file still being written
-// shows with what it holds so far, and in full the next scan.
+// While the library shows, a file or folder added, renamed or deleted in another app's folder (lib_watch_thread)
+// scans again, so an OBS or ShadowPlay save shows up. A file still being written shows with what it holds so far,
+// and in full the next scan.
 static void lib_watch_poll()
 {
-    static HANDLE change[COUNT(g_lib_dirs)];
-    static u64 last;
-    u64 now = GetTickCount64();
-    if (now - last < 2000) return;
-    last = now;
-    bool fire = false;
-    for (i32 i = 0; i < (i32)g_lib_dir_count; i++) {
-        if (!change[i]) {
-            change[i] = FindFirstChangeNotificationW(g_lib_dirs[i].path.s, FALSE,
-                                                     FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME);
-            continue;
-        }
-        if (change[i] == INVALID_HANDLE_VALUE || WaitForSingleObject(change[i], 0) != WAIT_OBJECT_0) continue;
-        FindNextChangeNotification(change[i]);
-        fire |= g_lib_dirs[i].live;
-    }
-    if (fire) library_rescan(); // queued behind one that's running
+    if (InterlockedExchange(&g_lib_watch.fired, 0)) library_rescan(); // queued behind one that's running
 }
 
 static void screen_library()

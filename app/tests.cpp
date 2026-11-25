@@ -557,6 +557,26 @@ static void test_watch_scan()
         T(!strcmp(g_lib.items[sp].info.game, "Some Game") && g_lib.items[sp].kind == LIB_CLIPS);
     }
     g_lib.item_count = 0;
+    { // the watch thread sees a file added in a watched folder, then closes its watches at the end
+        if (!g_lib_watch.wake) g_lib_watch.wake = CreateEventW(0, FALSE, FALSE, 0);
+        if (!g_lib_watch.thread) g_lib_watch.thread = thread_start(lib_watch_thread, 0);
+        InterlockedExchange(&g_lib_watch.fired, 0);
+        InterlockedExchange(&g_lib_watch.sync, 1);
+        SetEvent(g_lib_watch.wake);
+        bool fired = false;
+        for (i32 i = 0; i < 40 && !fired; i++) {
+            wchar_t name[32];
+            swprintf(name, COUNT(name), L"new%d.mp4", i);
+            put(empty, name);
+            SetEvent(g_lib_watch.wake);
+            Sleep(50);
+            fired = InterlockedExchange(&g_lib_watch.fired, 0) != 0;
+        }
+        T(fired);
+        library_stop();
+        T(!g_lib_watch.thread);
+        g_lib_watch.quit = 0;
+    }
 
     SHFILEOPSTRUCTW op = {};
     wchar_t dbl[MAX_PATH + 2] = {};
