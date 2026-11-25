@@ -497,8 +497,15 @@ static bool ui_init()
     i32 x = work.left + (work.right - work.left - w) / 2, y = work.top + (work.bottom - work.top - h) / 2;
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"" APP_NAME, WS_OVERLAPPEDWINDOW, x, y, w, h, 0, 0, inst, 0);
     if (!hwnd) return false;
+    // Windows' title bar in the app's own colours, so it reads as part of the window even with "Show accent colour on
+    // title bars" on
     BOOL dark = TRUE;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
+    auto colorref = [](u32 c) { return (COLORREF)RGB((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff); };
+    COLORREF caption = colorref(COL_BG), caption_text = colorref(COL_DIM), edge = colorref(COL_LINE);
+    DwmSetWindowAttribute(hwnd, 35 /* DWMWA_CAPTION_COLOR */, &caption, sizeof caption);
+    DwmSetWindowAttribute(hwnd, 36 /* DWMWA_TEXT_COLOR */, &caption_text, sizeof caption_text);
+    DwmSetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &edge, sizeof edge);
     g_app.ui.hwnd = hwnd;
 
     if (!gpu_init(hwnd)) return false;

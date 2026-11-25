@@ -5550,7 +5550,7 @@ static bool lib_side_toggle(f32 w, bool collapsed)
         flip = ImGui::InvisibleButton("##sidemode", ImVec2(w, h));
         bool hot = ImGui::IsItemHovered();
         kit_tip(folders ? "Show the games" : "Show the folders");
-        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? COL_PANEL2 : COL_BG), kit_px(7));
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? COL_HOVER : COL_PANEL2), kit_px(7));
         const char *ic = folders ? ICON_FOLDER : ICON_GAME;
         ImGui::PushFont(g_font_icon);
         ImVec2 gs = ImGui::CalcTextSize(ic);
@@ -5558,7 +5558,7 @@ static bool lib_side_toggle(f32 w, bool collapsed)
         ImGui::PopFont();
     } else {
         static const char *const sides[] = {ICON_GAME "  Games", ICON_FOLDER "  Folders"};
-        flip = lib_switch("##sidemode", sides, w, h, folders, COL_BG, 0x151515, COL_HOVER);
+        flip = lib_switch("##sidemode", sides, w, h, folders, COL_PANEL2, COL_HOVER, COL_OFF);
         kit_tip(folders ? "Show games" : "Show folders");
     }
     ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + kit_px(6)));
@@ -5754,18 +5754,17 @@ static void screen_library()
     }
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight(), view_w = kit_px(104);
-    // The list down the left, docked to the window's left edge from the top bar to the bottom: a flat panel with a
-    // hairline on its inner edge. A Games / Folders switch level with the Clips and Sessions one, then all of them
-    // and each game in this view with how many it has, most recent first, or this view's folders. It scrolls on its
-    // own (the wheel, no bar) when there are more than fit. The button at its foot, level with the footer, collapses
-    // it to a rail of icons, which stay where they were.
+    // The list down the left, docked to the window's left edge from the top bar to the bottom: on the same ground as
+    // the top bar, set apart by a hairline on its inner edge. A Games / Folders switch level with the Clips and
+    // Sessions one and coloured like it, then all of them and each game in this view with how many it has, most
+    // recent first, or this view's folders. It scrolls on its own (the wheel, no bar) when there are more than fit.
+    // The button at its foot, level with the footer, collapses it to a rail of icons, which stay where they were.
     if (!lib.player.open) {
         bool &collapsed = g_app.config.games_collapsed;
         f32 icon_end = kit_px(6 + 8 + 20); // a row's icon ends this far in from the list's left
         f32 side_w = collapsed ? icon_end + kit_px(14) : 2 * view_w + kit_px(4), side_h = ImGui::GetContentRegionAvail().y;
         f32 pad_y = kit_px(LIB_PAD_Y);
         ImVec2 s0 = ImGui::GetCursorScreenPos();
-        dl->AddRectFilled(s0, ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_PANEL));
         dl->AddRectFilled(ImVec2(s0.x + side_w - kit_px(1), s0.y), ImVec2(s0.x + side_w, s0.y + side_h), col32(COL_LINE));
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + pad_y));
         f32 foot = fh + kit_px(6);
