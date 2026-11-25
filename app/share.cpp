@@ -434,7 +434,7 @@ static void share_end(ShareJob &j, bool ok, const char *what, const char *error)
     if (!ok) {
         str_set(j.v.error, error);
         log_line("share %u: failed: %s", j.v.id, error);
-        sound_event(SOUND_FAILED);
+        if (!j.quiet && !j.cancelled) sound_event(SOUND_FAILED);
         return;
     }
     if (j.quiet) {
@@ -589,6 +589,7 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
         if (!e.stem[0]) str_set(e.stem, "clip");
         e.aim_bytes = a.aim;
         e.limit_bytes = a.limit;
+        e.quiet = true;
         j.save = save_edit(SAVE_SHARE, e);
         if (!j.save) {
             share_end(j, false, "", "Too many saves are waiting: try again in a moment");

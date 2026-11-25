@@ -2721,6 +2721,7 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     v->state = SAVE_QUEUED;
     v->from_us = from_us;
     v->to_us = to_us;
+    v->quiet = edit && edit->quiet;
     str_set(v->name, name);
     sv.jobs_running++;
 
@@ -3147,6 +3148,7 @@ static void save_on_event(const Event &e)
         log_line("save %u: saved %s", id, e.text);
         saved_add(v->kind, v->from_us, v->to_us, e.text);
         pipe_saved(v->kind, true, e.text, v);
+        if (v->quiet) break;
         if (v->kind == SAVE_SESSION) sound_event(SOUND_SESSION_SAVED);
         else if (v->kind != SAVE_PREVIEW && v->kind != SAVE_LINK) sound_event(SOUND_CLIP_SAVED);
         toast_saved(v->kind, e.text, v->game);
@@ -3157,6 +3159,7 @@ static void save_on_event(const Event &e)
         g_app.saving.jobs_running--;
         log_line("save %u: failed: %s", id, e.text);
         pipe_saved(v->kind, false, e.text, v);
+        if (v->quiet) break;
         if (v->kind != SAVE_PREVIEW && v->kind != SAVE_LINK) sound_event(SOUND_FAILED);
         toast_save_failed(v->kind, e.text);
         break;

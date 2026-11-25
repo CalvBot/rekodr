@@ -564,6 +564,7 @@ struct EditJob {
     i32        max_h;     // Link: the picture made at most this tall and 1920 wide (link_fit_size), 0 = as it is
     f32        end_card;  // seconds of "Continues on the page" after the picture (save_social_copy's preview), 0 = none
     bool       tracks;    // Link: every sound track kept as Keep keeps them, nothing made louder (a shared session)
+    bool       quiet;     // no sound or popup when it ends: Share's own copies, whose sound share.cpp plays
 };
 
 // The rows of Share's bitrate table (share_kbps) and what they start at: YouTube's recommended SDR upload
@@ -668,6 +669,7 @@ struct SaveJobView {
     SaveState state;
     i64       from_us, to_us;
     bool      trimmed;   // from_us was moved later because the buffer didn't reach back that far
+    bool      quiet;     // EditJob.quiet: ends with no sound or popup
     f32       progress;  // 0..1 while running
     char      name[256]; // the name asked for; empty = named after the game played most
     char      path[512]; // the output file once known (UTF-8)
