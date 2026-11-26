@@ -2048,28 +2048,30 @@ static void test_gamedb()
         T(!strcmp(conv, "{\"games\":[{\"id\":\"s5\",\"name\":\"Say \\\"Hi\\\"\",\"year\":2017},{\"id\":\"s6\",\"name\":\"B\",\"year\":0}]}"));
         T(art_search_list(conv, (i64)strlen(conv), names, years, 8) == 2 && !strcmp(names[0], "Say \"Hi\"") && years[0] == 2017);
         T(!sgdb_games("{\"success\":false}", 17, conv, sizeof conv));
-        char pic[1100];
+        char pic[512];
         const char grids[] = "{\"success\":true,\"data\":[{\"id\":1,\"url\":\"https://cdn2.steamgriddb.com/a.png\",\"thumb\":\"https://cdn2.steamgriddb.com/t.png\"},{\"url\":\"https://x\"}]}";
-        sgdb_first(grids, sizeof grids - 1, pic, sizeof pic);
-        T(!strcmp(pic, "{\"url\":\"https://cdn2.steamgriddb.com/a.png\",\"thumb\":\"https://cdn2.steamgriddb.com/t.png\"}"));
-        sgdb_first("{\"success\":true,\"data\":[]}", 26, pic, sizeof pic);
-        T(!strcmp(pic, "null"));
-        sgdb_first(0, 0, pic, sizeof pic);
-        T(!strcmp(pic, "null"));
-        T(has_text("abc", 2, "ab") && !has_text("abc", 2, "bc"));
-        // only a plain no is kept as "none": no answer, a busy or broken server, or a refusal is asked again later
-        T(http_later(0) && http_later(429) && http_later(503) && http_later(403) && http_later(404));
-        T(!http_later(200) && !http_later(400));
+        sgdb_first_url(grids, sizeof grids - 1, "url", pic, sizeof pic);
+        T(!strcmp(pic, "https://cdn2.steamgriddb.com/a.png"));
+        sgdb_first_url(grids, sizeof grids - 1, "thumb", pic, sizeof pic);
+        T(!strcmp(pic, "https://cdn2.steamgriddb.com/t.png"));
+        sgdb_first_url("{\"success\":true,\"data\":[]}", 26, "url", pic, sizeof pic);
+        T(!pic[0]);
+        sgdb_first_url(0, 0, "url", pic, sizeof pic);
+        T(!pic[0]);
     }
     // Its art: the icon for an icon; the hero for a cover, else the grid; nothing that isn't https
-    static const char art[] = "{\"id\":\"s2\",\"grid\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"thumb\":\"t\",\"w\":920,\"h\":430},"
-                              "\"hero\":null,\"logo\":{\"url\":\"https://x/l.png\"},\"icon\":{\"thumb\":\"http://x/i.png\"}}";
-    char url[512];
-    T(art_pick_url(art, sizeof art - 1, ART_COVER, url, sizeof url) && !strcmp(url, "https://cdn2.steamgriddb.com/grid/g.png"));
+    static const char art[] = "{\"key\":\"s2\",\"art\":{\"icon\":{\"url\":\"http://x/i.png\",\"from\":\"sgdb\"},"
+                              "\"grid\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"w\":920,\"h\":430,\"from\":\"sgdb\"},\"hero\":null}}";
+    char url[512], from[16];
+    T(art_pick_url(art, sizeof art - 1, ART_COVER, url, sizeof url, from, sizeof from) &&
+      !strcmp(url, "https://cdn2.steamgriddb.com/grid/g.png") && !strcmp(from, "sgdb"));
     T(!art_pick_url(art, sizeof art - 1, ART_ICON, url, sizeof url));
-    static const char art2[] = "{\"grid\":{\"url\":\"https://a/g.png\"},\"hero\":{\"url\":\"https://a/h.png\",\"w\":1920},\"icon\":{\"url\":\"https://a/i.ico\",\"thumb\":\"https://a/i.png\"}}";
+    static const char art2[] = "{\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"hero\":{\"url\":\"https://a/h.png\",\"w\":1920},"
+                               "\"icon\":{\"url\":\"https://a/i.png\",\"from\":\"discord\"}}}";
     T(art_pick_url(art2, sizeof art2 - 1, ART_COVER, url, sizeof url) && !strcmp(url, "https://a/h.png"));
-    T(art_pick_url(art2, sizeof art2 - 1, ART_ICON, url, sizeof url) && !strcmp(url, "https://a/i.png"));
+    T(art_pick_url(art2, sizeof art2 - 1, ART_ICON, url, sizeof url, from, sizeof from) && !strcmp(url, "https://a/i.png") &&
+      !strcmp(from, "discord"));
+    T(!art_pick_url("{}", 2, ART_COVER, url, sizeof url));
     gamedb_free(g_gamedb.index);
     g_gamedb.index = 0;
     DeleteFileW(json.s);
@@ -3273,17 +3275,15 @@ static void test_mcpack()
     T(!strstr(body, "My Own") && !strstr(body, "rekodr-mcpack"));
     T(!mc_clues("javaw -jar notagame.jar --gameDir C:/x", body, sizeof body));
 
-    // The service's answer: a pack its launcher named is that pack, with its art; plain Minecraft is not a pack
-    static const char answer[] = "{\"game\":{\"id\":\"s5\",\"name\":\"Minecraft\"},\"pack\":{\"platform\":\"modrinth\",\"project\":\"1KVo5zza\","
-                                 "\"name\":\"Fabulously Optimized\",\"version\":\"5.0\"},\"matched_by\":\"launcher_record\",\"confidence\":0.95,"
-                                 "\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"icon\":null}}";
-    const char *art;
-    i64 art_len;
-    char name[128];
-    T(pack_from_answer(answer, sizeof answer - 1, name, sizeof name, &art, &art_len) && !strcmp(name, "Fabulously Optimized") &&
-      art && art_len == 46 && !strncmp(art, "{\"grid\"", 7) && art[art_len - 1] == '}');
-    static const char plain[] = "{\"game\":{\"id\":\"s5\",\"name\":\"Minecraft\"},\"matched_by\":\"store_id\",\"art\":{}}";
-    T(!pack_from_answer(plain, sizeof plain - 1, name, sizeof name, &art, &art_len) && !name[0]);
+    // The service's answer for a pack its launcher named: the pack, keyed by its platform's project
+    static const char answer[] = "{\"game\":{\"key\":\"p:modrinth:1KVo5zza\",\"name\":\"Fabulously Optimized\"},\"matched_by\":\"mc_pack\","
+                                 "\"confidence\":0.95,\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"icon\":null,\"hero\":null},\"v\":\"3\"}";
+    LookAnswer ans;
+    T(lookup_parse(answer, sizeof answer - 1, &ans) && !strcmp(ans.name, "Fabulously Optimized") &&
+      !strcmp(ans.key, "p:modrinth:1KVo5zza") && !strcmp(ans.how, "mc_pack"));
+    char kf[48];
+    key_file_id(ans.key, kf, sizeof kf);
+    T(!strcmp(kf, "p_modrinth_1KVo5zza"));
 
     // A POST is signed with its body (worked out with Python's hmac)
     char sig[128];
@@ -3581,8 +3581,9 @@ static void test_storeids()
     put_text(p, "\"AppState\"\n{\n\t\"installdir\"\t\t\"Hollow\"\n}\n");
     snprintf(p, sizeof p, "%s/Lib/steamapps/common/Hollow Knight/hollow_knight.exe", root);
     T(steam_app_for(p, "Hollow Knight") == 367520 && steam_app_for(p, "hollow knight") == 367520 && !steam_app_for(p, "Silksong"));
-    T(exe_clues("hollow_knight.exe", p, "Hollow Knight", false, body, sizeof body) &&
-      !strcmp(body, "{\"exe\":\"hollow_knight.exe\",\"folder\":\"Hollow Knight\",\"name\":\"Hollow Knight\",\"steam\":367520}"));
+    T(exe_clues("hollow_knight.exe", p, "Hollow Knight", false, 0, body, sizeof body) &&
+      !strcmp(body, "{\"exe\":\"hollow_knight.exe\",\"folder\":\"Hollow Knight\",\"dirs\":[\"steamapps\",\"common\",\"Hollow Knight\"],"
+                    "\"name\":\"Hollow Knight\",\"steam\":367520}"));
     T(!strstr(body, "rekodr-stores"));
 
     snprintf(p, sizeof p, "%s/GOG/Witcher 3/bin/x64", root);
@@ -3591,31 +3592,44 @@ static void test_storeids()
     put_text(p, "{}");
     snprintf(p, sizeof p, "%s/GOG/Witcher 3/bin/x64/witcher3.exe", root);
     T(gog_game_for(p) == 1207664643ull);
-    T(exe_clues("witcher3.exe", p, "", false, body, sizeof body) &&
-      !strcmp(body, "{\"exe\":\"witcher3.exe\",\"folder\":\"Witcher 3\",\"gog\":\"1207664643\"}"));
+    T(exe_clues("witcher3.exe", p, "", false, ",\"args_has\":[]", body, sizeof body) &&
+      !strcmp(body, "{\"exe\":\"witcher3.exe\",\"folder\":\"Witcher 3\",\"dirs\":[\"Witcher 3\",\"bin\",\"x64\"],"
+                    "\"gog\":\"1207664643\",\"args_has\":[]}"));
 
     // Not a game and not from a store: not asked about. Sorted as a Game: asked about with what there is.
     snprintf(p, sizeof p, "%s/Tools/Thing/thing.exe", root);
-    T(!exe_clues("thing.exe", p, "Thing", false, body, sizeof body));
-    T(exe_clues("thing.exe", p, "Thing", true, body, sizeof body) && !strcmp(body, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"name\":\"Thing\"}"));
+    T(!exe_clues("thing.exe", p, "Thing", false, 0, body, sizeof body));
+    T(exe_clues("thing.exe", p, "Thing", true, 0, body, sizeof body) &&
+      !strncmp(body, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"dirs\":[", 38) &&
+      strstr(body, "\"Tools\",\"Thing\"],\"name\":\"Thing\"}"));
+    // Folders that could name the player are never among them
+    {
+        char dirs[512];
+        T(exe_dirs("C:\\Users\\someone\\Desktop\\Games\\Thing\\thing.exe", dirs, sizeof dirs) &&
+          !strcmp(dirs, "[\"Games\",\"Thing\"]"));
+        T(!exe_dirs("C:\\thing.exe", dirs, sizeof dirs));
+    }
 
-    // The answer: a store id or the exe table is sure; a name only when it was the game's exactly
-    char name[128];
-    bool sure;
-    const char *art;
+    // A lookup's answer: the game's name and key, how it was matched, and for a shared exe what to look for
+    LookAnswer ans;
+    static const char by_id[] = "{\"game\":{\"key\":\"d356875221482618880\",\"name\":\"Hollow Knight\"},\"matched_by\":\"store_id\","
+                                "\"confidence\":0.99,\"art\":{\"icon\":null,\"grid\":null,\"hero\":null},\"v\":\"7\"}";
+    T(lookup_parse(by_id, sizeof by_id - 1, &ans) && !strcmp(ans.name, "Hollow Knight") && !strcmp(ans.key, "d356875221482618880") &&
+      !strcmp(ans.how, "store_id") && ans.confidence > 0.98f && !ans.ask_args[0]);
+    const char *art_at;
     i64 art_len;
-    static const char by_id[] = "{\"game\":{\"id\":\"s1\",\"name\":\"Hollow Knight\",\"year\":2017},\"matched_by\":\"store_id\",\"confidence\":0.99,\"art\":{\"grid\":null}}";
-    T(exe_from_answer(by_id, sizeof by_id - 1, name, sizeof name, &sure, &art, &art_len) && sure && !strcmp(name, "Hollow Knight") &&
-      art_len == 13);
-    static const char by_name[] = "{\"game\":{\"id\":\"s2\",\"name\":\"Thing\"},\"matched_by\":\"name_search\",\"confidence\":0.9,\"art\":{}}";
-    T(exe_from_answer(by_name, sizeof by_name - 1, name, sizeof name, &sure, &art, &art_len) && !sure && !strcmp(name, "Thing"));
-    static const char close_by[] = "{\"game\":{\"id\":\"s3\",\"name\":\"Thing 2\"},\"matched_by\":\"name_search\",\"confidence\":0.6,\"art\":{}}";
-    T(!exe_from_answer(close_by, sizeof close_by - 1, name, sizeof name, &sure, &art, &art_len) && !name[0]);
+    T(answer_art(by_id, sizeof by_id - 1, &art_at, &art_len) && art_len == 37 && art_at[0] == '{');
+    static const char shared_exe[] = "{\"game\":null,\"ask_args\":[\"-game garrysmod\",\"-game cstrike\"],\"v\":\"7\"}";
+    T(lookup_parse(shared_exe, sizeof shared_exe - 1, &ans) && !ans.name[0] && !strcmp(ans.ask_args, "-game garrysmod\n-game cstrike"));
+    char has[256];
+    args_has_json(ans.ask_args, "hl2.exe -GAME garrysmod -windowed", has, sizeof has);
+    T(!strcmp(has, "[\"-game garrysmod\"]"));
     static const char none[] = "{\"game\":null,\"matched_by\":\"none\",\"confidence\":0,\"art\":{}}";
-    T(!exe_from_answer(none, sizeof none - 1, name, sizeof name, &sure, &art, &art_len));
+    T(lookup_parse(none, sizeof none - 1, &ans) && !ans.name[0] && !strcmp(ans.how, "none"));
+    T(!lookup_parse("{\"error\":1}", 11, &ans));
 
-    // "Help name games": a Game the service couldn't place is told what it was named; nothing
-    // is sent without the player's say-so, or for a game a store id decides
+    // "Help name games": a game named by hand is told to the service, what it was shown as and what it is now;
+    // nothing is sent without the player's say-so, or when the name didn't change
     {
         static Config saved;
         saved = g_app.config;
@@ -3628,23 +3642,28 @@ static void test_storeids()
         str_set(app.exe.s, "thing.exe");
         snprintf(app.path, sizeof app.path, "%s/Tools/Thing/thing.exe", root);
         app.category = CAT_GAME;
-        auto confirms = [](const char **body) {
+        HANDLE wake = g_gamedb.wake;
+        g_gamedb.wake = 0;
+        auto renames = [](const char **body) {
             i32 n = 0;
-            for (auto &q : g_gamedb.asks)
-                if (q.kind == ASK_CONFIRM && q.body) { n++; *body = q.body; }
+            for (auto &q : g_gamedb.looks)
+                if (q.rename && q.body) { n++; *body = q.body; }
             return n;
         };
         const char *sent = 0;
         g_app.config.share_names = false;
-        gamedb_confirm(app, "Thing");
-        T(confirms(&sent) == 0);
+        gamedb_rename(app, "thing", "Thing");
+        T(renames(&sent) == 0);
         g_app.config.share_names = true;
-        gamedb_confirm(app, "Thing");
-        T(confirms(&sent) == 1 && !strcmp(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"name\":\"Thing\"}"));
-        snprintf(app.path, sizeof app.path, "%s/Lib/steamapps/common/Hollow Knight/hollow_knight.exe", root);
-        str_set(app.exe.s, "hollow_knight.exe");
-        gamedb_confirm(app, "Hollow Knight");
-        T(confirms(&sent) == 1);
+        gamedb_rename(app, "Thing", "Thing");
+        T(renames(&sent) == 0);
+        gamedb_rename(app, "thing", "Thing");
+        T(renames(&sent) == 1 && strstr(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"dirs\":[") &&
+          strstr(sent, "],\"from\":\"thing\",\"to\":\"Thing\"}"));
+        // with the clues its lookup sent, when there was one
+        last_look_put("thing.exe", "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"args_has\":[\"-x\"]}");
+        gamedb_rename(app, "thing", "Thing 2");
+        T(renames(&sent) == 2 && !strcmp(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"args_has\":[\"-x\"],\"from\":\"thing\",\"to\":\"Thing 2\"}"));
 
         // A clip given a game by hand: the program longest in front during it is voted for, and a browser
         // only counts the game
@@ -3675,19 +3694,20 @@ static void test_storeids()
             FILE *ff = _wfopen(path_join(g_app.config.buffer_dir, L"focus.tsv").s, L"wb");
             fputs("500\tdiscord.exe\n1500\tchrome.exe\n4800\tdiscord.exe\n", ff);
             fclose(ff);
-            gamedb_clip_game(it, "Chess");
-            T(confirms(&sent) == 2 && !strcmp(sent, "{\"exe\":\"chrome.exe\",\"name\":\"Chess\"}"));
+            gamedb_clip_game(it, "", "Chess");
+            T(renames(&sent) == 3 && !strcmp(sent, "{\"exe\":\"chrome.exe\",\"from\":\"\",\"to\":\"Chess\"}"));
             str_set(it.name, "Not saved here");
-            gamedb_clip_game(it, "Chess");
-            T(confirms(&sent) == 2);
+            gamedb_clip_game(it, "", "Chess");
+            T(renames(&sent) == 3);
             g_app.saving = keep;
             g_app.config.buffer_dir = buffer;
             g_app.config.save_dir = save_dir;
         }
-        for (auto &q : g_gamedb.asks) {
+        for (auto &q : g_gamedb.looks) {
             free(q.body);
             q = {};
         }
+        g_gamedb.wake = wake;
         g_gamedb.online = online;
         str_set(g_gamedb.service, service);
         g_app.config = saved;

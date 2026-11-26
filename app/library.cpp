@@ -2603,8 +2603,10 @@ static bool lib_game_picker(const char *id, LibItem &it)
     if (!r || !strcmp(r->name, it.info.game) || !library_set_game(it, r->name)) return false;
     bool known = game_pick_known(*r);
     game_pick_filed(*r);
+    char was[sizeof it.info.game];
+    str_set(was, it.info.game);
     str_set(it.info.game, r->name);
-    if (known) gamedb_clip_game(it, r->name);
+    if (known) gamedb_clip_game(it, was, r->name);
     return true;
 }
 
@@ -4398,8 +4400,10 @@ static void lib_sel_set_game(const GamePickRow &r)
     log_line("library: %d %s are now %s", m, lib_noun(m), game);
     game_pick_filed(r);
     for (i32 i = 0; i < m && i < COUNT(items); i++) {
+        char was[sizeof items[i].info.game];
+        str_set(was, items[i].info.game);
         str_set(items[i].info.game, game);
-        if (known) gamedb_clip_game(items[i], game);
+        if (known) gamedb_clip_game(items[i], was, game);
     }
     lib_message(false, "%d %s filed under %s", m, lib_noun(m), game);
 }

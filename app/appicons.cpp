@@ -721,6 +721,31 @@ static void gamedb_on_event(const Event &e)
             g_app.options.order_dirty = true;
         }
     }
+    if (e.a == GAMEDB_ART && e.b) { // the game called e.text has new art: its old pictures go
+        auto drop = [](ID3D11ShaderResourceView *&srv) {
+            if (srv) srv->Release();
+            srv = 0;
+        };
+        for (i32 i = 0; i < g_db_icon_count; i++)
+            if (str_eq(g_db_icons[i].exe, e.text)) {
+                drop(g_db_icons[i].srv);
+                g_db_icons[i].tried = false;
+            }
+        for (i32 i = 0; i < g_db_cover_count; i++)
+            if (str_eq(g_db_covers[i].exe, e.text)) {
+                drop(g_db_covers[i].srv);
+                drop(g_db_covers[i].blur);
+                g_db_covers[i].tried = false;
+            }
+        AcquireSRWLockExclusive(&g_art_worker.lock);
+        for (i32 i = 0; i < g_art_count; i++)
+            if (str_eq(g_art[i].name, e.text) && (g_art[i].state == ART_DONE || g_art[i].state == ART_NEW)) {
+                drop(g_art[i].srv);
+                g_art[i].state = ART_NEW;
+                g_art_worker.dirty = true;
+            }
+        ReleaseSRWLockExclusive(&g_art_worker.lock);
+    }
     for (i32 i = 0; i < g_db_icon_count; i++)
         if (!g_db_icons[i].srv && (g_db_icons[i].waiting || e.a == GAMEDB_LOADED)) g_db_icons[i].tried = false;
     for (i32 i = 0; i < g_db_cover_count; i++)

@@ -1,10 +1,10 @@
-// What a store's install says about a game, for exes the games list doesn't know. The art service is sent only:
-// the exe's file name, the name of the game's own folder (never a path), the name Rekodr has for it, and the
-// store id its launcher left by it:
+// What a store's install says about a game. The service is sent only: the exe's file name, the name of the game's
+// own folder and of up to three folders it sits in (never a path, and never a profile's folder or one above it),
+// the exe's File description, and the store id its launcher left by it:
 //   Steam   <library>\steamapps\appmanifest_<appid>.acf, whose "installdir" is the folder under steamapps\common
 //   GOG     goggame-<id>.info in the game's folder
-// Only a game is asked about: one sorted as a Game, or one a store installed. No launcher's account files are
-// ever opened.
+// Only a game is asked about: one sorted as a Game, one Discord's list knows, or one a store installed. No
+// launcher's account files are ever opened.
 
 // Whether the folder low[s..e) (lower case, in a path with backslashes) could name the player rather than a game:
 // a profile folder (x:\users\<name>), one Windows makes in a profile (Desktop, Downloads, OneDrive - <company>...),
@@ -123,11 +123,43 @@ static u64 gog_game_for(const char *path)
     return 0;
 }
 
-// The art service's clues for an exe: {"exe","folder","name","steam","gog"}. False if it isn't to be asked about:
-// not a game (game false, and no store installed it), or no folder to go by.
-static bool exe_clues(const char *exe, const char *path, const char *name, bool game, char *out, i32 cap)
+// The names of up to three folders an exe sits in, nearest last, as a JSON array: ["Games","Hollow Knight"].
+// None that could name the player (personal_folder), nor any above one. False if there are none.
+static bool exe_dirs(const char *path, char *out, i32 cap)
 {
-    char folder[MAX_PATH];
+    char low[MAX_PATH * 3];
+    i32 n = 0;
+    for (; path[n] && n < (i32)sizeof low - 1; n++) low[n] = (char)tolower((u8)(path[n] == '/' ? '\\' : path[n]));
+    low[n] = 0;
+    i32 from[3], to[3], count = 0, end = n;
+    while (end > 0 && low[end - 1] != '\\') end--; // past the exe's own name
+    while (count < 3 && end > 0) {
+        i32 e = end - 1, s = e; // the folder is low[s..e)
+        while (s > 0 && low[s - 1] != '\\') s--;
+        if (e <= s || low[e - 1] == ':' || personal_folder(low, s, e)) break;
+        from[count] = s;
+        to[count++] = e;
+        end = s;
+    }
+    if (!count) return false;
+    i32 w = snprintf(out, cap, "[");
+    for (i32 i = count - 1; i >= 0; i--) {
+        char one[MAX_PATH];
+        snprintf(one, sizeof one, "%.*s", to[i] - from[i], path + from[i]);
+        if (i != count - 1 && w < cap - 1) out[w++] = ',';
+        mc_put(out, cap, &w, one);
+    }
+    snprintf(out + w, cap - w, "]");
+    return w < cap - 2;
+}
+
+// The service's clues for an exe: {"exe","folder","dirs","name","steam","gog"}, then `more` (more fields, each
+// with its comma first). False if it isn't to be asked about: not a game (game false, and no store installed it),
+// or no folder to go by.
+static bool exe_clues(const char *exe, const char *path, const char *name, bool game, const char *more, char *out,
+                      i32 cap)
+{
+    char folder[MAX_PATH], dirs[MAX_PATH * 3];
     bool in_steam;
     if (!game_folder(path, folder, sizeof folder, &in_steam)) return false;
     u32 steam = in_steam ? steam_app_for(path, folder) : 0;
@@ -137,12 +169,13 @@ static bool exe_clues(const char *exe, const char *path, const char *name, bool 
     mc_put(out, cap, &n, exe);
     n += snprintf(out + n, cap - n, ",\"folder\":");
     mc_put(out, cap, &n, folder);
+    if (exe_dirs(path, dirs, sizeof dirs)) n += snprintf(out + n, cap - n, ",\"dirs\":%s", dirs);
     if (name && name[0]) {
         n += snprintf(out + n, cap - n, ",\"name\":");
         mc_put(out, cap, &n, name);
     }
     if (steam) n += snprintf(out + n, cap - n, ",\"steam\":%u", steam);
     if (gog) n += snprintf(out + n, cap - n, ",\"gog\":\"%llu\"", (unsigned long long)gog);
-    n += snprintf(out + n, cap - n, "}");
+    if (n < cap) n += snprintf(out + n, cap - n, "%s}", more ? more : "");
     return n > 0 && n < cap - 1;
 }

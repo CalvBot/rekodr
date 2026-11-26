@@ -1421,9 +1421,11 @@ static void apps_rename_popup()
         char name[64];
         str_set(name, o.edit);
         for (char *p = name; *p; p++) if (*p == '|') *p = ' '; // | separates fields in settings.txt
+        char was[64];
+        str_set(was, a.name.s[0] ? a.name.s : hint);
         str_set(a.name.s, trim(name));
         log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
-        if (a.name.s[0]) gamedb_confirm(a, a.name.s);
+        if (a.name.s[0] && app_category(g_app.config, a) == CAT_GAME) gamedb_rename(a, was, a.name.s);
         sessions_game_renamed(a.exe.s);
         options_apply(APPLY_AUDIO);
         ImGui::CloseCurrentPopup();
@@ -5155,7 +5157,7 @@ static void options_general()
 
     opt_section("PRIVACY");
     opt_card_begin();
-    if (opt_row_toggle("Look up games online", "Names, icons and art from Discord, Steam, SteamGridDB and IGDB. Applies from the next start",
+    if (opt_row_toggle("Look up games online", "Names, icons and art for your games. Applies from the next start",
                        "##lookup", &c.game_lookup)) {
         log_line("options: look up games %s", c.game_lookup ? "on" : "off");
         options_apply(0);
@@ -5173,7 +5175,7 @@ static void options_general()
     opt_card_begin();
     ImGui::BeginDisabled(!c.game_lookup);
     bool service = c.art_service.s[0] != 0;
-    if (opt_row_toggle("Art from " APP_NAME "'s service", "Art Discord and Steam don't have, from SteamGridDB and IGDB. Sends game names and store ids only",
+    if (opt_row_toggle("Art from " APP_NAME "'s service", "Names and art from Discord, SteamGridDB and IGDB. Sends the exe's name, its folders' names and store ids",
                        "##artservice", &service)) {
         str_set(c.art_service.s, service ? ART_SERVICE_HOST : "");
         gamedb_set_service(c.art_service.s);
@@ -5181,7 +5183,7 @@ static void options_general()
         options_apply(0);
     }
     ImGui::BeginDisabled(!service);
-    if (opt_row_toggle("Help name games", "When you name a game " APP_NAME " couldn't place, that name helps name it for other players",
+    if (opt_row_toggle("Help name games", "When you name a game by hand, that name helps name it for other players",
                        "##sharenames", &c.share_names)) {
         log_line("options: help name games %s", c.share_names ? "on" : "off");
         options_apply(0);
@@ -5192,7 +5194,7 @@ static void options_general()
     opt_row_end();
     ImGui::EndDisabled();
     f32 key_w = fminf(dp(300), ImGui::GetContentRegionAvail().x * 0.45f);
-    opt_row_begin("Your own SteamGridDB key", "Optional, for art the service doesn't hand out yet. Stays in settings.txt", key_w);
+    opt_row_begin("Your own SteamGridDB key", "Used while the service is off. Stays in settings.txt", key_w);
     char key[sizeof c.sgdb_key];
     if (opt_text("##sgdbkey", c.sgdb_key, key_w, ImGuiInputTextFlags_Password, "Paste it here", key, sizeof key)) {
         str_set(c.sgdb_key, trim(key));

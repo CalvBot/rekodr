@@ -18,7 +18,8 @@ Rekodr is in beta: things may change between versions.
 - **Auto markers.** Kills and other moments in Counter-Strike 2 and League of Legends are marked as they happen.
 - **Free.** Every feature, for everyone.
 
-Game names and art come from Discord's public list of games, Steam's images and Rekodr's own service, rekodr-api.
+Game names and art come from Rekodr's own service, rekodr-api. With it turned off, names come from Discord's public list of
+games and art from SteamGridDB with your own key.
 
 ## Install
 Run `rekodr-setup.exe`. It installs for your Windows account only, with no admin prompt, and starts with

@@ -1,4 +1,4 @@
-// Usage stats and feedback, both to Rekodr's service (clipback-api) as signed POSTs, like /v1/resolve.
+// Usage stats and feedback, both to Rekodr's service (clipback-api) as signed POSTs, like /v1/lookup.
 //   /v1/stats     once a day at most, only while "Send usage stats" is on: the version, Windows build, encoder, fps
 //                 and height, and how many clips, saves, shares, links and slow-PC warnings since the last report
 //                 that went through. The counts are kept in <local_dir>\stats.txt so they outlive a restart.

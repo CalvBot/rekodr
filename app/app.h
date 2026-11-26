@@ -208,7 +208,7 @@ struct Config {
 
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
-    bool share_names;    // "Help name games": naming a game the art service wasn't sure of tells it (gamedb_confirm)
+    bool share_names;    // "Help name games": naming a game by hand tells the art service (gamedb_rename)
     bool send_stats;     // a daily usage report to the service (telemetry.cpp); on unless the player says no
     bool auto_update;    // fetch and verify new versions (update.cpp); the top bar then offers the restart
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only
