@@ -184,8 +184,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_link_page = true;
     c->share_link_days = 0;
     c->share_copy_on_close = false;
-    c->auto_marks_cs2 = false;
-    c->auto_marks_lol = false;
+    c->auto_marks_cs2 = 0;
+    c->auto_marks_lol = 0;
     c->ach_clips = false;
     c->ach_rarer = 5;
     c->ach_secs = 30;
@@ -557,6 +557,30 @@ static i32 accent_step(u32 c)
 // Colour c as an accent: the nearest hue, at teal's lightness and chroma
 static u32 accent_lock(u32 c) { return accent_at_step(accent_step(c)); }
 
+// Auto-marker events as words: "kill,multi,death"; "" = none. Words a game doesn't have are dropped by `only`.
+static u32 am_events_parse(const char *s, u32 only)
+{
+    u32 bits = 0;
+    while (*s) {
+        while (*s == ',' || *s == ' ') s++;
+        size_t len = strcspn(s, ", ");
+        for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++)
+            if (len && strlen(AM_EVENT_WORDS[i]) == len && !strncmp(s, AM_EVENT_WORDS[i], len)) bits |= 1u << i;
+        s += len;
+    }
+    return bits & only;
+}
+
+static void am_events_text(u32 bits, char *out, size_t cap)
+{
+    out[0] = 0;
+    for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++)
+        if (bits & (1u << i)) {
+            size_t n = strlen(out);
+            snprintf(out + n, cap - n, "%s%s", n ? "," : "", AM_EVENT_WORDS[i]);
+        }
+}
+
 static void config_set(Config *c, const char *key, char *value)
 {
     wchar_t wide[MAX_PATH];
@@ -673,8 +697,8 @@ static void config_set(Config *c, const char *key, char *value)
     }
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
     else if (!strcmp(key, "share_copy_on_close")) boolean(&c->share_copy_on_close);
-    else if (!strcmp(key, "auto_marks_cs2")) boolean(&c->auto_marks_cs2);
-    else if (!strcmp(key, "auto_marks_lol")) boolean(&c->auto_marks_lol);
+    else if (!strcmp(key, "auto_marks_cs2")) c->auto_marks_cs2 = am_events_parse(value, AM_CS2_EVENTS);
+    else if (!strcmp(key, "auto_marks_lol")) c->auto_marks_lol = am_events_parse(value, AM_LOL_EVENTS);
     else if (!strcmp(key, "ach_clips")) boolean(&c->ach_clips);
     else if (!strcmp(key, "ach_rarer")) { i32 r = atoi(value); c->ach_rarer = r == 1 || r == 10 || r == 100 ? r : 5; }
     else if (!strcmp(key, "ach_secs")) { i32 s = atoi(value); c->ach_secs = s == 15 || s == 60 ? s : 30; }
@@ -879,8 +903,13 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_kbps_custom", c.share_kbps_custom);
     boolean("share_link_page", c.share_link_page);
     boolean("share_copy_on_close", c.share_copy_on_close);
-    boolean("auto_marks_cs2", c.auto_marks_cs2);
-    boolean("auto_marks_lol", c.auto_marks_lol);
+    {
+        char ev[96];
+        am_events_text(c.auto_marks_cs2, ev, sizeof ev);
+        fprintf(f, "auto_marks_cs2 = %s\n", ev);
+        am_events_text(c.auto_marks_lol, ev, sizeof ev);
+        fprintf(f, "auto_marks_lol = %s\n", ev);
+    }
     boolean("ach_clips", c.ach_clips);
     fprintf(f, "ach_rarer = %d\n", c.ach_rarer);
     fprintf(f, "ach_secs = %d\n", c.ach_secs);

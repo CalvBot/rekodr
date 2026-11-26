@@ -3987,6 +3987,62 @@ static void options_sharing()
     opt_card_end();
 }
 
+// One game's card in Auto markers: its art across the top with its name, a status line and its switch, and the
+// events it can mark as chips below. The switch turns all of them on or off, a chip one. True when `events` changed.
+struct AmChoice { u32 bit; const char *label; };
+
+static bool opt_automarks_card(const char *game, const char *status, u32 status_col, u32 *events, u32 all,
+                               const AmChoice *choices, i32 n)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 w = ImGui::GetContentRegionAvail().x, art_h = dp(104), pad = dp(16), round = dp(10), fh = ImGui::GetFrameHeight();
+    f32 h = art_h + pad + fh + pad;
+    ImVec2 b(a.x + w, a.y + art_h);
+    bool on = *events != 0, changed = false;
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_PANEL), round);
+    i32 tw = 0, th = 0;
+    ID3D11ShaderResourceView *art = game_db_cover(game, &tw, &th);
+    if (art && tw > 0 && th > 0) {
+        f32 want = w / art_h, have = (f32)tw / th, u = 0, v = 0; // the middle, cut to the card's shape
+        if (have > want) u = (1 - want / have) / 2;
+        else v = (1 - have / want) / 2;
+        dl->AddImageRounded((ImTextureID)art, a, b, ImVec2(u, v), ImVec2(1 - u, 1 - v), col32(COL_WHITE, on ? 1 : 0.4f),
+                            round, ImDrawFlags_RoundCornersTop);
+    } else dl->AddRectFilled(a, b, col32(COL_PANEL2), round, ImDrawFlags_RoundCornersTop);
+    // A shade from the left edge under the name: the art's own rounded shape, its alpha falling off to the right
+    i32 from = dl->VtxBuffer.Size;
+    dl->AddRectFilled(a, b, col32(0x000000), round, ImDrawFlags_RoundCornersTop);
+    for (i32 i = from; i < dl->VtxBuffer.Size; i++) {
+        ImDrawVert &vx = dl->VtxBuffer[i];
+        f32 k = fminf(fmaxf((vx.pos.x - a.x) / (w * 0.65f), 0), 1);
+        u32 alpha = (vx.col >> IM_COL32_A_SHIFT) & 0xff;
+        vx.col = IM_COL32(0, 0, 0, (i32)(alpha * 0.8f * (1 - k)));
+    }
+    f32 name_y = b.y - pad - g_font_big->FontSize - dp(2) - g_font_small->FontSize;
+    opt_text_at(dl, g_font_big, ImVec2(a.x + pad, name_y), COL_WHITE, game, b.x - pad - dp(60));
+    if (status) opt_text_at(dl, g_font_small, ImVec2(a.x + pad, name_y + g_font_big->FontSize + dp(2)), status_col, status, b.x - pad);
+
+    ImGui::PushID(game);
+    ImGui::SetCursorScreenPos(ImVec2(b.x - pad - kit_px(36), a.y + dp(10)));
+    if (kit_toggle("##on", &on)) {
+        *events = on ? all : 0;
+        changed = true;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(a.x + pad, b.y + pad));
+    for (i32 i = 0; i < n; i++) {
+        if (i) ImGui::SameLine(0, kit_px(6));
+        if (kit_chip(choices[i].label, (*events & choices[i].bit) != 0)) {
+            *events ^= choices[i].bit;
+            changed = true;
+        }
+    }
+    ImGui::PopID();
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h));
+    ImGui::Dummy(ImVec2(w, dp(12) - ImGui::GetStyle().ItemSpacing.y));
+    return changed;
+}
+
 static void options_integrations()
 {
     Config &c = g_app.config;
@@ -4051,26 +4107,32 @@ static void options_integrations()
     opt_row_end();
     opt_card_end();
 
-    opt_section("MARKERS FROM GAMES");
-    opt_card_begin();
+    opt_section("AUTO MARKERS");
     {
+        static const AmChoice cs2[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
+                                       {AM_ROUND, "Round wins"}, {AM_WIN, "Match wins"}};
+        static const AmChoice lol[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
+                                       {AM_OBJECTIVE, "Objectives"}, {AM_WIN, "Wins"}};
         AmCs2State st = automarks_cs2_state();
-        const char *sub = !c.auto_marks_cs2 ? "Kills, deaths and won rounds on the timeline"
+        const char *sub = !c.auto_marks_cs2 ? 0
                           : st == AM_CS2_NOT_FOUND ? "Not installed on this PC"
                           : st == AM_CS2_PORT_BUSY ? "Another program is using its port"
-                          : "Kills, deaths and won rounds on the timeline (from its next start)";
-        if (opt_row_toggle("Counter-Strike 2", sub, "##amcs2", &c.auto_marks_cs2)) {
-            log_line("options: Counter-Strike 2 markers %s", c.auto_marks_cs2 ? "on" : "off");
-            options_apply(0);
-            automarks_apply();
+                          : "From the game's next start";
+        bool bad = c.auto_marks_cs2 && (st == AM_CS2_NOT_FOUND || st == AM_CS2_PORT_BUSY);
+        bool changed = false;
+        if (opt_automarks_card("Counter-Strike 2", sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_cs2, AM_CS2_EVENTS, cs2, COUNT(cs2))) {
+            log_line("options: Counter-Strike 2 markers 0x%x", c.auto_marks_cs2);
+            changed = true;
         }
-        if (opt_row_toggle("League of Legends", "Kills, deaths and wins on the timeline", "##amlol", &c.auto_marks_lol)) {
-            log_line("options: League of Legends markers %s", c.auto_marks_lol ? "on" : "off");
+        if (opt_automarks_card("League of Legends", 0, COL_DIM, &c.auto_marks_lol, AM_LOL_EVENTS, lol, COUNT(lol))) {
+            log_line("options: League of Legends markers 0x%x", c.auto_marks_lol);
+            changed = true;
+        }
+        if (changed) {
             options_apply(0);
             automarks_apply();
         }
     }
-    opt_card_end();
 
     opt_section("STEAM ACHIEVEMENTS");
     opt_card_begin();

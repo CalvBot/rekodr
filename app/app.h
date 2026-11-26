@@ -241,8 +241,8 @@ struct Config {
     bool share_kbps_custom; // Share uses share_kbps, else SHARE_KBPS_DEFAULT ("Use recommended", off)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     bool share_copy_on_close; // when a game closes, its clips' share copies are made while nothing else runs (off)
-    bool auto_marks_cs2;  // Counter-Strike 2's kills, deaths and won rounds are marked (automarks.cpp; off)
-    bool auto_marks_lol;  // League of Legends' kills, deaths and wins are marked (off)
+    u32  auto_marks_cs2;  // AmEvent bits: what Counter-Strike 2 marks on the timeline (automarks.cpp; 0 = off)
+    u32  auto_marks_lol;  // AmEvent bits: what League of Legends marks (0 = off)
     bool ach_clips;       // a Steam achievement rarer than ach_rarer gets a clip (achievements.cpp; off)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
     i32  ach_secs;        // an achievement clip's length: 15, 30 (default) or 60 s
@@ -1179,6 +1179,13 @@ static i32 markers_in(i64 from, i64 to, Marker *out, i32 cap); // the ones in [f
 
 // Markers from games (automarks.cpp)
 enum AmCs2State { AM_CS2_OFF, AM_CS2_LISTENING, AM_CS2_NOT_FOUND, AM_CS2_PORT_BUSY };
+// What a game marks: bits of Config.auto_marks_cs2 / auto_marks_lol, saved as the words of AM_EVENT_WORDS (bit i).
+// AM_WIN is a won match in Counter-Strike 2; AM_OBJECTIVE is a dragon, Herald, Baron, turret or inhibitor the player
+// took in League.
+enum AmEvent : u32 { AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32 };
+static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective"};
+static const u32 AM_CS2_EVENTS = AM_KILL | AM_MULTI | AM_DEATH | AM_ROUND | AM_WIN;
+static const u32 AM_LOL_EVENTS = AM_KILL | AM_MULTI | AM_DEATH | AM_OBJECTIVE | AM_WIN;
 static void automarks_apply();
 static AmCs2State automarks_cs2_state();
 static void automarks_uninstall();

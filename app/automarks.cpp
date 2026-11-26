@@ -1,5 +1,5 @@
-// Markers from games: kills, deaths and wins put on the timeline by the games' own official local feeds, each
-// behind a switch in Options > Integrations (off by default).
+// Markers from games: kills, deaths, wins and objectives put on the timeline by the games' own official local feeds.
+// Options > Integrations > Auto markers picks, per game, which of them (AmEvent bits; none by default).
 //
 //   Counter-Strike 2   Game State Integration. Turning it on writes gamestate_integration_rekodr.cfg into the
 //                      game's cfg folder (found through Steam's libraries); the game reads it when it starts and
@@ -8,7 +8,8 @@
 //   League of Legends  The Live Client Data API, https://127.0.0.1:2999, which the game serves while a match runs.
 //                      Its event list is read once a second.
 //
-// Only what the player did counts: kills and deaths of the player themself, rounds and matches their team won.
+// Only what the player did counts: kills, deaths and objectives of the player themself, rounds and matches their
+// team won.
 // Markers go in at the moment Rekodr hears of them. Everything runs on one worker thread.
 
 static const u16 AM_CS2_PORT = 29771;
@@ -55,8 +56,10 @@ static const char *am_kill_note(i32 in_a_row, bool league)
     }
 }
 
-// The markers a state brings. A state about another player (the one being watched after a death) changes nothing.
-static i32 cs2_marks(Cs2Seen *s, const char *body, i64 len, AutoMark *out, i32 cap)
+// The markers a state brings, of the AmEvent bits in `events`. A kill that is the second or later of its round is a
+// multi-kill: with AM_MULTI it is marked as one (Double kill, Ace), with only AM_KILL as a plain Kill. A state about
+// another player (the one being watched after a death) changes nothing.
+static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
 {
     char me[32], player[32], map[64], v[32];
     if (!j_get(body, len, "map.name", map, sizeof map)) {
@@ -79,17 +82,18 @@ static i32 cs2_marks(Cs2Seen *s, const char *body, i64 len, AutoMark *out, i32 c
     if (s->have && !strcmp(s->map, map) && strcmp(phase, "warmup")) {
         if (kills > s->kills) {
             i32 in_round = j_get(body, len, "player.state.round_kills", v, sizeof v) ? atoi(v) : 1;
-            am_push(out, cap, &n, 4, am_kill_note(in_round, false));
+            bool multi = in_round >= 2 && (events & AM_MULTI);
+            if (multi || (events & AM_KILL)) am_push(out, cap, &n, 4, am_kill_note(multi ? in_round : 1, false));
         }
-        if (deaths > s->deaths) am_push(out, cap, &n, 1, "Death");
+        if (deaths > s->deaths && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
         bool match_won = false;
         if (!strcmp(phase, "gameover") && strcmp(s->phase, "gameover") && team[0]) {
             i32 ct = j_get(body, len, "map.team_ct.score", v, sizeof v) ? atoi(v) : 0;
             i32 t = j_get(body, len, "map.team_t.score", v, sizeof v) ? atoi(v) : 0;
             match_won = !strcmp(team, "CT") ? ct > t : t > ct;
-            if (match_won) am_push(out, cap, &n, 3, "Match won");
+            if (match_won && (events & AM_WIN)) am_push(out, cap, &n, 3, "Match won");
         }
-        if (!match_won && !strcmp(round, "over") && strcmp(s->round, "over") && team[0] && !strcmp(win, team))
+        if (!(match_won && (events & AM_WIN)) && (events & AM_ROUND) && !strcmp(round, "over") && strcmp(s->round, "over") && team[0] && !strcmp(win, team))
             am_push(out, cap, &n, 3, "Round won");
     }
     s->have = true;
@@ -119,8 +123,10 @@ static bool lol_is_me(const char *name, const char *me)
     return hash && strlen(name) == (size_t)(hash - me) && !_strnicmp(name, me, hash - me);
 }
 
-// The markers /liveclientdata/eventdata brings. The first list of a match only says where it is up to.
-static i32 lol_marks(LolSeen *s, const char *body, i64 len, AutoMark *out, i32 cap)
+// The markers /liveclientdata/eventdata brings, of the AmEvent bits in `events`. The first list of a match only says
+// where it is up to. A multi-kill renames the kill marker before it (Double kill); without AM_KILL it is a marker of
+// its own.
+static i32 lol_marks(LolSeen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
 {
     Json j = {body, body + len};
     if (!j_find(&j, "Events") || !j_eat(&j, '[')) return 0;
@@ -145,16 +151,24 @@ static i32 lol_marks(LolSeen *s, const char *body, i64 len, AutoMark *out, i32 c
             if (e.id <= s->last_id) continue;
             char name[32] = "", who[128] = "", v[32] = "";
             j_get(e.p, e.len, "EventName", name, sizeof name);
+            bool mine = j_get(e.p, e.len, "KillerName", who, sizeof who) && lol_is_me(who, s->me);
             if (!strcmp(name, "ChampionKill")) {
-                if (j_get(e.p, e.len, "KillerName", who, sizeof who) && lol_is_me(who, s->me)) am_push(out, cap, &n, 4, "Kill");
-                if (j_get(e.p, e.len, "VictimName", who, sizeof who) && lol_is_me(who, s->me)) am_push(out, cap, &n, 1, "Death");
+                if (mine && (events & AM_KILL)) am_push(out, cap, &n, 4, "Kill");
+                if ((events & AM_DEATH) && j_get(e.p, e.len, "VictimName", who, sizeof who) && lol_is_me(who, s->me))
+                    am_push(out, cap, &n, 1, "Death");
             } else if (!strcmp(name, "Multikill")) {
-                if (j_get(e.p, e.len, "KillerName", who, sizeof who) && lol_is_me(who, s->me)) {
+                if (mine && (events & AM_MULTI)) {
                     i32 streak = j_get(e.p, e.len, "KillStreak", v, sizeof v) ? atoi(v) : 2;
-                    am_push(out, cap, &n, 4, am_kill_note(streak, true), true);
+                    am_push(out, cap, &n, 4, am_kill_note(streak, true), (events & AM_KILL) != 0);
                 }
             } else if (!strcmp(name, "GameEnd")) {
-                if (j_get(e.p, e.len, "Result", v, sizeof v) && !strcmp(v, "Win")) am_push(out, cap, &n, 3, "Win");
+                if ((events & AM_WIN) && j_get(e.p, e.len, "Result", v, sizeof v) && !strcmp(v, "Win")) am_push(out, cap, &n, 3, "Win");
+            } else if (mine && (events & AM_OBJECTIVE)) {
+                static const char *const objectives[][2] = {{"DragonKill", "Dragon"}, {"HeraldKill", "Rift Herald"},
+                                                            {"BaronKill", "Baron"}, {"TurretKilled", "Turret"},
+                                                            {"InhibKilled", "Inhibitor"}};
+                for (i32 o = 0; o < COUNT(objectives); o++)
+                    if (!strcmp(name, objectives[o][0])) am_push(out, cap, &n, 5, objectives[o][1]);
             }
         }
     }
@@ -270,6 +284,7 @@ static struct {
     HANDLE wake;              // set to stop or to look at the switches again
     volatile bool stop;
     volatile bool cs2_on, lol_on;
+    volatile u32 cs2_events, lol_events; // AmEvent bits, from the config
     volatile LONG cs2_state;  // AmCs2State (app.h), for Options
     bool cs2_applied;         // cs2_on as automarks_apply last left the cfg file
     char token[40];           // the cfg file's token
@@ -331,7 +346,7 @@ static void am_cs2_client(SOCKET c)
     char token[64];
     if (!j_get(body, body_len, "auth.token", token, sizeof token) || strcmp(token, g_am.token)) return;
     AutoMark marks[8];
-    i32 n = cs2_marks(&g_am.cs2, body, body_len, marks, COUNT(marks));
+    i32 n = cs2_marks(&g_am.cs2, g_am.cs2_events, body, body_len, marks, COUNT(marks));
     am_put(marks, n, &g_am.cs2_kill, "Counter-Strike 2");
 }
 
@@ -385,7 +400,7 @@ static void am_lol_poll(HINTERNET session)
         return;
     }
     AutoMark marks[16];
-    i32 n = lol_marks(&g_am.lol, buf, len, marks, COUNT(marks));
+    i32 n = lol_marks(&g_am.lol, g_am.lol_events, buf, len, marks, COUNT(marks));
     am_put(marks, n, &g_am.lol_kill, "League of Legends");
 }
 
@@ -517,16 +532,19 @@ static bool am_cs2_cfg(bool on)
 static void automarks_apply()
 {
     const Config &c = g_app.config;
-    if (c.auto_marks_cs2 != g_am.cs2_applied || (c.auto_marks_cs2 && !g_am.token[0])) {
-        bool found = am_cs2_cfg(c.auto_marks_cs2);
-        g_am.cs2_applied = c.auto_marks_cs2;
-        if (c.auto_marks_cs2 && !found) {
+    bool cs2 = c.auto_marks_cs2 != 0;
+    if (cs2 != g_am.cs2_applied || (cs2 && !g_am.token[0])) {
+        bool found = am_cs2_cfg(cs2);
+        g_am.cs2_applied = cs2;
+        if (cs2 && !found) {
             InterlockedExchange(&g_am.cs2_state, AM_CS2_NOT_FOUND);
             log_line("markers: Counter-Strike 2 isn't installed");
-        } else if (!c.auto_marks_cs2) InterlockedExchange(&g_am.cs2_state, AM_CS2_OFF);
+        } else if (!cs2) InterlockedExchange(&g_am.cs2_state, AM_CS2_OFF);
     }
-    g_am.cs2_on = c.auto_marks_cs2 && g_am.token[0];
-    g_am.lol_on = c.auto_marks_lol;
+    g_am.cs2_events = c.auto_marks_cs2;
+    g_am.lol_events = c.auto_marks_lol;
+    g_am.cs2_on = cs2 && g_am.token[0];
+    g_am.lol_on = c.auto_marks_lol != 0;
     if ((g_am.cs2_on || g_am.lol_on) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);
         g_am.thread = CreateThread(0, 0, am_thread, 0, 0, 0);
