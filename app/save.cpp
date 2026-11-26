@@ -280,28 +280,14 @@ static void make_pieces(SaveWork *w, i32 first, i32 end)
 // A chapter of a saved file: a marker, or (in a session) where a game starts
 struct Chapter { i64 t_us; char title[256]; }; // t_us is wall clock
 
-// Where a wall-clock moment lands in the saved file; -1 when it falls in a recording gap
-static i64 file_time(const Piece *pieces, i32 piece_count, i64 t_us)
-{
-    for (i32 k = 0; k < piece_count; k++)
-        if (t_us >= pieces[k].start_us && t_us < pieces[k].end_us) return pieces[k].offset_us + t_us - pieces[k].start_us;
-    return -1;
-}
-
 // The clip's layers, [from, to) of the buffer's, written beside its edit as Data\<video's name>.layers.txt with
-// its pieces. None is written when no layer has anything in it.
+// its pieces. It is written even with no layers: the pieces place markers that come after the save (layers_mark_add).
 static void save_layers(const SaveWork *w, i64 from, i64 to, const Path &video)
 {
     static LayerSet set;
     layers_slice(from, to, &set);
-    if (set.count) {
-        wchar_t stem[MAX_PATH];
-        const wchar_t *name = wcsrchr(video.s, L'\\');
-        wcscpy_s(stem, name ? name + 1 : video.s);
-        wchar_t *dot = wcsrchr(stem, L'.');
-        if (dot) *dot = 0;
-        if (!layers_write(layers_clip_path(w->cfg.save_dir, stem), set, w->pieces, w->piece_count)) log_line("save %u: couldn't write its layers", w->req.id);
-    }
+    if (!layers_write(layers_video_path(w->cfg.save_dir, video), set, w->pieces, w->piece_count))
+        log_line("save %u: couldn't write its layers", w->req.id);
     layer_set_free(&set);
 }
 
@@ -2565,6 +2551,27 @@ static const f32 END_CARD_S = 1.5f;
 enum { LOUD_LUFS = -14 };
 static const f64 LOUD_PEAK = -1.5;
 
+// Where each stretch of the source lands in the output: an Advanced edit's main track items, else the pieces end to
+// end. How many.
+static i32 edit_spans(const EditJob &j, const EditPiece *pc, i32 np, LayerSpan *spans)
+{
+    i32 n = 0;
+    if (j.edit.mode == EDIT_ADVANCED) {
+        i32 idx[EDIT_MAX_ITEMS], count = track_items(j.edit, 0, idx);
+        for (i32 k = 0; k < count; k++) {
+            const EditItem &it = j.edit.items[idx[k]];
+            spans[n++] = {it.from, it.to, it.start};
+        }
+    } else {
+        f64 at = 0;
+        for (i32 i = 0; i < np; i++) {
+            spans[n++] = {pc[i].from, pc[i].to, at};
+            at += pc[i].to - pc[i].from;
+        }
+    }
+    return n;
+}
+
 // The layers an edit switches on, for drawing into its render: the clip's own (a Rekodr clip in the save folder), and
 // where each stretch of the source plays (the pieces in turn, or the picture's items). False when there are none.
 static bool edit_layers(const SaveWork *w, const EditJob &j, const EditPiece *pc, i32 np, LayerSet *set,
@@ -2581,20 +2588,64 @@ static bool edit_layers(const SaveWork *w, const EditJob &j, const EditPiece *pc
     wchar_t *dot = wcsrchr(stem, L'.');
     if (dot) *dot = 0;
     if (!layers_read(layers_clip_path(w->cfg.save_dir, stem), set)) return false;
-    if (j.edit.mode == EDIT_ADVANCED) {
-        i32 idx[EDIT_MAX_ITEMS], n = track_items(j.edit, 0, idx);
-        for (i32 k = 0; k < n; k++) {
-            const EditItem &it = j.edit.items[idx[k]];
-            spans[(*n_spans)++] = {it.from, it.to, it.start};
-        }
-    } else {
-        f64 at = 0;
-        for (i32 i = 0; i < np; i++) {
-            spans[(*n_spans)++] = {pc[i].from, pc[i].to, at};
-            at += pc[i].to - pc[i].from;
+    *n_spans = edit_spans(j, pc, np, spans);
+    return true;
+}
+
+// The output's chapters as ffmetadata at `file`: the source's (the markers it was saved with, and in a session where
+// each game starts) and the markers that came after it was saved (its layers file), each where it lands in the
+// output; ones cut out go. How many were written; 0 = none.
+static i32 edit_chapters(const SaveWork *w, const EditJob &j, const LayerSpan *spans, i32 n_spans, f64 dur,
+                         const Path &file)
+{
+    static Chapter ch[256];
+    i32 n = 0;
+    char lead[256] = "";
+    static char text[65536];
+    static wchar_t args[2048];
+    args[0] = 0;
+    static const char *const head[] = {"-v", "error", "-show_chapters", "-of", "default"};
+    arg_list(args, COUNT(args), head, COUNT(head));
+    cmd_arg(args, COUNT(args), j.src.s);
+    if (w->cfg.ffmpeg.s[0] && proc_run(ffprobe_for(w->cfg.ffmpeg).s, args, 20000, text, sizeof text) == 0) {
+        f64 start = -1;
+        char *ctx = 0;
+        for (char *line = strtok_s(text, "\r\n", &ctx); line; line = strtok_s(0, "\r\n", &ctx)) {
+            if (!strncmp(line, "start_time=", 11)) start = atof(line + 11);
+            else if (!strncmp(line, "TAG:title=", 10) && start >= 0) {
+                if (start < 0.0005) str_set(lead, line + 10); // the lead-in before the first marker
+                else if (n < COUNT(ch)) ch[n].t_us = (i64)llround(start * 1e6), str_set(ch[n++].title, line + 10);
+                start = -1;
+            } else if (!strcmp(line, "[/CHAPTER]")) start = -1;
         }
     }
-    return true;
+    size_t root = wcslen(w->cfg.save_dir.s);
+    if (root && !_wcsnicmp(j.src.s, w->cfg.save_dir.s, root) && j.src.s[root] == L'\\') {
+        static Marker late[256];
+        i32 nl = layers_marks_read(layers_video_path(w->cfg.save_dir, j.src), late, COUNT(late));
+        for (i32 i = 0; i < nl && n < COUNT(ch); i++)
+            ch[n].t_us = late[i].t_us, str_set(ch[n++].title, late[i].note[0] ? late[i].note : "Marker");
+    }
+    i32 kept = 0;
+    for (i32 i = 0; i < n; i++) {
+        f64 t = ch[i].t_us / 1e6;
+        for (i32 k = 0; k < n_spans; k++) {
+            if (t < spans[k].from || t >= spans[k].to) continue;
+            ch[kept] = ch[i];
+            ch[kept++].t_us = (i64)llround((spans[k].at + t - spans[k].from) * 1e6);
+            break;
+        }
+    }
+    if (!kept) return 0;
+    i64 total = (i64)llround(dur * 1e6);
+    Piece whole = {0, total, 0};
+    static char meta[1 << 17];
+    i32 written = chapters_text(&whole, 1, total, ch, kept, lead[0] ? lead : "Start", meta, sizeof meta);
+    FILE *f = written ? _wfopen(file.s, L"wb") : 0;
+    if (!f) return 0;
+    fwrite(meta, 1, strlen(meta), f);
+    fclose(f);
+    return written;
 }
 
 // A path as a filter's quoted option: forward slashes, the drive's colon escaped. False for one that can't be quoted.
@@ -2721,6 +2772,10 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     Path work = work_file(w->cfg.work_dir, L"edit-%d", (i32)req.id);
     SHCreateDirectoryExW(0, work.s, 0);
     Path graph = path_join(work, L"graph.txt"), ass = path_join(work, L"layers.ass");
+    // Every marker goes into the output's chapters, from chapters.txt in the work folder
+    Path chapters = path_join(work, L"chapters.txt");
+    static LayerSpan chapter_spans[EDIT_MAX_ITEMS + EDIT_MAX_PIECES];
+    i32 chapter_count = edit_chapters(w, j, chapter_spans, edit_spans(j, pc, np, chapter_spans), dur, chapters);
     char ass_arg[MAX_PATH * 3] = {};
     if (lay) {
         FILE *f = filter_path(ass, ass_arg, sizeof ass_arg) ? _wfopen(ass.s, L"wb") : 0;
@@ -2728,6 +2783,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         layer_set_free(&lays);
         if (!f) {
             snprintf(out, out_cap, "couldn't write the layers for the picture");
+            DeleteFileW(chapters.s);
             RemoveDirectoryW(work.s);
             return SAVE_EV_FAILED;
         }
@@ -2828,6 +2884,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         if (w->graph_full) {
             snprintf(out, out_cap, "the zoom or colour has too many keyframes");
             DeleteFileW(ass.s);
+            DeleteFileW(chapters.s);
             RemoveDirectoryW(work.s);
             return SAVE_EV_FAILED;
         }
@@ -2836,6 +2893,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             if (!f) {
                 snprintf(out, out_cap, "couldn't write the edit's work files");
                 DeleteFileW(ass.s);
+                DeleteFileW(chapters.s);
                 RemoveDirectoryW(work.s);
                 return SAVE_EV_FAILED;
             }
@@ -2852,6 +2910,10 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         if (seq) arg_pair(a, cap, "-t", "%.3f", span); // the input's end; the output is the joined pieces
         cmd_arg8(a, cap, "-i");
         cmd_arg(a, cap, j.src.s);
+        if (chapter_count) {
+            cmd_arg8(a, cap, "-i");
+            cmd_arg(a, cap, chapters.s);
+        }
         if (!seq) arg_pair(a, cap, "-t", "%.3f", span);
         if (w->graph_len) {
             cmd_arg8(a, cap, "-/filter_complex");
@@ -2931,8 +2993,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             arg_pair(a, cap, "-metadata:s:a:0", "handler_name=Mix");
             arg_pair(a, cap, "-disposition:a:0", "default");
         }
-        // Keep with one piece carries the original's chapters; Share, Link and cuts have none
-        if (share || link || cuts) arg_pair(a, cap, "-map_chapters", "-1");
+        arg_pair(a, cap, "-map_chapters", chapter_count ? "1" : "-1");
         arg_pair(a, cap, "-movflags", "+faststart");
         arg_pair(a, cap, "-f", "mp4");
         cmd_arg(a, cap, part_path.s);
@@ -2992,6 +3053,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     }
     DeleteFileW(graph.s);
     DeleteFileW(ass.s);
+    DeleteFileW(chapters.s);
     RemoveDirectoryW(work.s);
     return result;
 }

@@ -2047,6 +2047,22 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
 }
 
+// Whether a page's marker list has one titled `note` within a tenth of a second of `at`
+static bool r2_marks_have(const char *marks, f64 at, const char *note)
+{
+    for (const char *p = marks; *p;) {
+        const char *end = strchr(p, '\x1f');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        char *after = 0;
+        f64 t = strtod(p, &after);
+        if (after && *after == ' ' && fabs(t - at) < 0.1 && strlen(note) == len - (size_t)(after + 1 - p) &&
+            !strncmp(after + 1, note, len - (size_t)(after + 1 - p)))
+            return true;
+        p += len + (end ? 1 : 0);
+    }
+    return false;
+}
+
 // The clip's markers, from its chapters (save.cpp writes one per marker, and in a session one where each game
 // starts): "<seconds> <title>" each, split by R2_MARK_SEP. A chapter at the very start is left out: it is only the
 // lead-in. "" when there are none or ffprobe can't.
@@ -2075,6 +2091,20 @@ static void r2_probe_marks(const Path &file, const Path &ffmpeg, char *out, i32 
             if (len + n < cap) len += snprintf(out + len, cap - len, "%s%s", len ? "\x1f" : "", one);
             start = -1;
         } else if (!strcmp(line, "[/CHAPTER]")) start = -1;
+    }
+    // The markers that came after a Rekodr video was saved (its layers file), unless a render has them already
+    const Path &save_dir = g_app.config.save_dir;
+    size_t root = wcslen(save_dir.s);
+    if (!root || _wcsnicmp(file.s, save_dir.s, root) || file.s[root] != L'\\') return;
+    static thread_local Marker late[256];
+    i32 nl = layers_marks_read(layers_video_path(save_dir, file), late, COUNT(late));
+    for (i32 i = 0; i < nl; i++) {
+        char one[300];
+        snprintf(one, sizeof one, "%.3f %s", late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker");
+        if (late[i].t_us < 50000 || r2_marks_have(out, late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker"))
+            continue;
+        i32 n = (i32)strlen(one) + (len ? 1 : 0);
+        if (len + n < cap) len += snprintf(out + len, cap - len, "%s%s", len ? "\x1f" : "", one);
     }
 }
 

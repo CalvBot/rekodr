@@ -4461,10 +4461,24 @@ static void test_layers()
         T(k->s[3].t_us == 22 * S + S / 10);
         T(!strcmp(h->label, "Heart rate") && !strcmp(h->unit, "bpm") && h->lo == 50 && h->hi == 190);
     }
-    // Nothing in a slice (before the first sample), no file
+    // Nothing in a slice (before the first sample): the file still has the pieces, for markers that come later
     swprintf(video.s, MAX_PATH, L"%s\\Clips\\2026\\Empty clip.mp4", save_dir.s);
     save_layers(w, T0 - 100 * S, T0 - 80 * S, video);
-    T(GetFileAttributesW(path_join(data, L"Empty clip.layers.txt").s) == INVALID_FILE_ATTRIBUTES);
+    Path late_file = layers_video_path(save_dir, video);
+    static LayerSet none;
+    T(!wcscmp(late_file.s, path_join(data, L"Empty clip.layers.txt").s) && !layers_read(late_file, &none) && GetFileAttributesW(late_file.s) != INVALID_FILE_ATTRIBUTES);
+    layer_set_free(&none);
+    // Late markers: in video time, oldest first; one in the gap between pieces, or a second of the same, isn't added
+    T(layers_mark_add(late_file, T0 + 40 * S, 4, "Kill") && layers_mark_add(late_file, T0 + 10 * S, 1, "Death"));
+    T(!layers_mark_add(late_file, T0 + 25 * S, 4, "Gap") && !layers_mark_add(late_file, T0 + 60 * S, 4, "After"));
+    T(!layers_mark_add(late_file, T0 + 40 * S, 4, "Kill"));
+    Marker late[8];
+    T(layers_marks_read(late_file, late, 8) == 2);
+    T(late[0].t_us == 2 * S && late[0].colour == 1 && !strcmp(late[0].note, "Death"));
+    T(late[1].t_us == 22 * S && late[1].colour == 4 && !strcmp(late[1].note, "Kill"));
+    T(!layers_read(late_file, &none));
+    layer_set_free(&none);
+    T(layers_marks_read(path_join(data, L"No such clip.layers.txt"), late, 8) == 0);
     w->piece_count = 0;
 
     // An edit's switches: kept on disk, kept through Advanced and back

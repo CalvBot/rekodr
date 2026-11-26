@@ -158,6 +158,23 @@ static void markers_set(i64 t_us, u8 colour, const char *note)
     ReleaseSRWLockExclusive(&g_markers.lock);
 }
 
+// A marker made after its moment (from a game's replay, read once the match is over): on the timeline, and in the
+// layers file of each clip or session saved over it, since the save's chapters are already written. Main thread.
+static void markers_add_late(i64 t_us, u8 colour, const char *note)
+{
+    markers_add(t_us, colour, note);
+    Saving &sv = g_app.saving;
+    saved_load();
+    for (i32 i = 0; i < sv.saved_count; i++) {
+        const SavedRange &r = sv.saved[i];
+        if (t_us < r.from_us || t_us >= r.to_us) continue;
+        Path video = {};
+        utf8_to_wide(r.path, video.s, COUNT(video.s));
+        if (layers_mark_add(layers_video_path(g_app.config.save_dir, video), t_us, colour, note))
+            log_line("markers: \"%s\" added to %s", note, r.path);
+    }
+}
+
 // The markers in [from, to], oldest first, for the timeline and for a save's chapters. Any thread.
 static i32 markers_in(i64 from, i64 to, Marker *out, i32 cap)
 {

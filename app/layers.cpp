@@ -416,6 +416,14 @@ struct Piece {
     i64 offset_us;        // where it starts in the saved file
 };
 
+// Where a wall-clock moment lands in the saved file; -1 when it falls in a recording gap
+static i64 file_time(const Piece *pieces, i32 piece_count, i64 t_us)
+{
+    for (i32 k = 0; k < piece_count; k++)
+        if (t_us >= pieces[k].start_us && t_us < pieces[k].end_us) return pieces[k].offset_us + t_us - pieces[k].start_us;
+    return -1;
+}
+
 // Where a wall-clock moment lands in the saved file, one in a gap where the file carries on after it (the end for
 // one after the last piece)
 static i64 file_time_held(const Piece *pieces, i32 piece_count, i64 t_us)
@@ -458,6 +466,17 @@ static Path layers_clip_path(const Path &save_dir, const wchar_t *stem)
     Path p = {};
     swprintf(p.s, MAX_PATH, L"%s\\%s.layers.txt", save_data_dir(save_dir).s, stem);
     return p;
+}
+
+// The layers file of a saved video, by its path
+static Path layers_video_path(const Path &save_dir, const Path &video)
+{
+    wchar_t stem[MAX_PATH];
+    const wchar_t *name = wcsrchr(video.s, L'\\');
+    wcscpy_s(stem, name ? name + 1 : video.s);
+    wchar_t *dot = wcsrchr(stem, L'.');
+    if (dot) *dot = 0;
+    return layers_clip_path(save_dir, stem);
 }
 
 static bool layers_write(const Path &file, const LayerSet &set, const Piece *pieces, i32 piece_count)
@@ -556,6 +575,81 @@ static bool layers_read(const Path &file, LayerSet *set)
     fclose(f);
     layers_to_file_time(set, pieces, piece_count);
     return set->count > 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Markers that came after the save (from a game's replay, once the match is over) are kept in the same file as
+// "mark = time colour note", the time on the wall clock and the colour an index into MARKER_COLOURS. The markers made
+// before the save are the video's chapters.
+
+static void marker_note_set(char (&note)[256], const char *text); // markers.cpp
+
+// A layers file's pieces and late markers, the markers still on the wall clock. False when it can't be read.
+static bool layers_file_marks(const Path &file, Piece *pieces, i32 piece_cap, i32 *piece_count, Marker *marks,
+                              i32 mark_cap, i32 *mark_count)
+{
+    *piece_count = *mark_count = 0;
+    FILE *f = _wfopen(file.s, L"rb");
+    if (!f) return false;
+    static thread_local char line[LAYER_TEXT_MAX + 128];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        long long a = 0, z = 0, at = 0;
+        i32 colour = 0, used = 0;
+        if (!strncmp(line, "piece = ", 8)) {
+            if (sscanf_s(line + 8, "%lld %lld %lld", &a, &z, &at) == 3 && z > a && at >= 0 && *piece_count < piece_cap)
+                pieces[(*piece_count)++] = {a, z, at};
+        } else if (!strncmp(line, "mark = ", 7) && *mark_count < mark_cap) {
+            if (sscanf_s(line + 7, "%lld %d %n", &a, &colour, &used) < 2 || !used || a <= 0) continue;
+            Marker &m = marks[(*mark_count)++];
+            m = {};
+            m.t_us = a;
+            m.colour = colour > 0 && colour < (i32)COUNT(MARKER_COLOURS) ? (u8)colour : 0;
+            marker_note_set(m.note, line + 7 + used);
+        }
+    }
+    fclose(f);
+    return true;
+}
+
+// Adds a marker to a saved video's layers file, when its moment is in the video and it isn't there already. True
+// when it was added.
+static bool layers_mark_add(const Path &file, i64 t_us, u8 colour, const char *note)
+{
+    static thread_local Piece pieces[512];
+    static thread_local Marker marks[256];
+    i32 np, nm;
+    if (!layers_file_marks(file, pieces, COUNT(pieces), &np, marks, COUNT(marks), &nm)) return false;
+    if (file_time(pieces, np, t_us) < 0 || nm == COUNT(marks)) return false;
+    Marker m = {};
+    marker_note_set(m.note, note);
+    for (i32 i = 0; i < nm; i++)
+        if (marks[i].t_us == t_us && !strcmp(marks[i].note, m.note)) return false;
+    FILE *f = _wfopen(file.s, L"ab");
+    if (!f) return false;
+    fprintf(f, "mark = %lld %d %s\n", (long long)t_us, colour < COUNT(MARKER_COLOURS) ? colour : 0, m.note);
+    fclose(f);
+    return true;
+}
+
+// A saved video's late markers, in the video's time, oldest first. How many.
+static i32 layers_marks_read(const Path &file, Marker *out, i32 cap)
+{
+    static thread_local Piece pieces[512];
+    i32 np, n, kept = 0;
+    if (!layers_file_marks(file, pieces, COUNT(pieces), &np, out, cap, &n)) return 0;
+    for (i32 i = 0; i < n; i++) {
+        i64 t = file_time(pieces, np, out[i].t_us);
+        if (t < 0) continue;
+        out[kept] = out[i];
+        out[kept++].t_us = t;
+    }
+    for (i32 i = 1; i < kept; i++) // oldest first
+        for (i32 j = i; j > 0 && out[j - 1].t_us > out[j].t_us; j--) {
+            Marker m = out[j];
+            out[j] = out[j - 1], out[j - 1] = m;
+        }
+    return kept;
 }
 
 // The layers there are, without their samples, in the order registered. Any thread.
