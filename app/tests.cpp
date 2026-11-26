@@ -3663,7 +3663,10 @@ static void test_storeids()
     static const char by_id[] = "{\"game\":{\"key\":\"d356875221482618880\",\"name\":\"Hollow Knight\"},\"matched_by\":\"store_id\","
                                 "\"confidence\":0.99,\"art\":{\"icon\":null,\"grid\":null,\"hero\":null},\"v\":\"7\"}";
     T(lookup_parse(by_id, sizeof by_id - 1, &ans) && !strcmp(ans.name, "Hollow Knight") && !strcmp(ans.key, "d356875221482618880") &&
-      !strcmp(ans.how, "store_id") && ans.confidence > 0.98f && !ans.ask_args[0]);
+      !strcmp(ans.how, "store_id") && ans.confidence > 0.98f && !ans.ask_args[0] && !ans.software);
+    static const char software[] = "{\"game\":{\"key\":\"s1\",\"name\":\"Wallpaper Engine\"},\"matched_by\":\"store_id\","
+                                   "\"confidence\":0.99,\"art\":{},\"steam_type\":\"software\",\"v\":\"7\"}";
+    T(lookup_parse(software, sizeof software - 1, &ans) && ans.software);
     const char *art_at;
     i64 art_len;
     T(answer_art(by_id, sizeof by_id - 1, &art_at, &art_len) && art_len == 37 && art_at[0] == '{');
@@ -3776,6 +3779,78 @@ static void test_storeids()
         utf8_to_wide(p, w.s, MAX_PATH);
         RemoveDirectoryW(w.s);
     }
+}
+
+static void test_store_folders()
+{
+    // Steam's libraryfolders.vdf: each library's path, unescaped
+    static const char vdf[] = "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"C:\\\\Program Files (x86)\\\\Steam\"\n"
+                              "\t\t\"apps\"\n\t\t{\n\t\t\t\"228980\"\t\t\"0\"\n\t\t}\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"E:\\\\SteamLibrary\"\n\t}\n}\n";
+    char libs[4][MAX_PATH * 2];
+    T(steam_libraries(vdf, libs, 4) == 2 && !strcmp(libs[0], "C:\\Program Files (x86)\\Steam") && !strcmp(libs[1], "E:\\SteamLibrary"));
+    T(steam_libraries(vdf, libs, 1) == 1);
+    T(steam_libraries("", libs, 4) == 0);
+    char v[64];
+    T(vdf_value("\"AppState\"\n{\n\t\"appid\"\t\t\"431960\"\n\t\"installdir\"\t\t\"wallpaper_engine\"\n}", "installdir", v, sizeof v) &&
+      !strcmp(v, "wallpaper_engine"));
+    T(!vdf_value("\"AppState\" { }", "installdir", v, sizeof v));
+
+    // A drive's .GamingRoot: "RGBX", a count, then UTF-16 names
+    static const u8 root1[] = {'R', 'G', 'B', 'X', 1, 0, 0, 0, 'X', 0, 'b', 0, 'o', 0, 'x', 0, 'G', 0, 'a', 0, 'm', 0, 'e', 0, 's', 0, 0, 0};
+    char names[4][MAX_PATH * 2];
+    T(gaming_root_folders(root1, sizeof root1, names, 4) == 1 && !strcmp(names[0], "XboxGames"));
+    static const u8 root2[] = {'R', 'G', 'B', 'X', 2, 0, 0, 0, 'A', 0, 0, 0, 'B', 0, '\\', 0, 'C', 0, 0, 0};
+    T(gaming_root_folders(root2, sizeof root2, names, 4) == 2 && !strcmp(names[0], "A") && !strcmp(names[1], "B\\C"));
+    T(gaming_root_folders(root1, 6, names, 4) == 0);
+    static const u8 cut[] = {'R', 'G', 'B', 'X', 9, 0, 0, 0, 'X', 0};
+    T(gaming_root_folders(cut, sizeof cut, names, 4) == 1 && !strcmp(names[0], "X")); // a file cut short ends where it ends
+    static const u8 other[] = {'N', 'O', 'P', 'E', 1, 0, 0, 0, 'X', 0, 0, 0};
+    T(gaming_root_folders(other, sizeof other, names, 4) == 0);
+
+    // An Epic manifest: a game's InstallLocation, never Unreal Engine's
+    char at[MAX_PATH * 2];
+    T(epic_item_folder("{\"AppCategories\": [\"public\", \"games\", \"applications\"], \"InstallLocation\": \"D:\\\\Epic\\\\Fortnite\"}", at,
+                       sizeof at) && !strcmp(at, "D:\\Epic\\Fortnite"));
+    T(!epic_item_folder("{\"AppCategories\": [\"engines/ue5\", \"engines\"], \"InstallLocation\": \"C:\\\\UE_5.6\"}", at, sizeof at));
+    T(!epic_item_folder("{\"AppCategories\": [\"plugins\"], \"Note\": \"games\", \"InstallLocation\": \"C:\\\\X\"}", at, sizeof at));
+    T(!epic_item_folder("{\"InstallLocation\": \"C:\\\\X\"}", at, sizeof at));
+
+    // Found folders become rules once: a rule the player removed or changed stays that way
+    static Config c;
+    c = {};
+    static StoreFolder found[3];
+    i32 n = 0;
+    store_folder_add(found, &n, 3, "E:/SteamLibrary/steamapps/common/", CAT_GAME);
+    store_folder_add(found, &n, 3, "E:\\SteamLibrary\\steamapps\\common\\wallpaper_engine", CAT_APP);
+    store_folder_add(found, &n, 3, "C:\\XboxGames", CAT_GAME);
+    T(n == 3 && !strcmp(found[0].path, "E:\\SteamLibrary\\steamapps\\common"));
+    T(store_folders_merge(&c, found, n) && c.folder_count == 3 && c.store_seen_count == 3);
+    T(app_category_in(c.apps, c.app_count, c.folders, c.folder_count, "wallpaper64.exe",
+                      "E:\\SteamLibrary\\steamapps\\common\\wallpaper_engine\\wallpaper64.exe") == CAT_APP);
+    T(app_category_in(c.apps, c.app_count, c.folders, c.folder_count, "cs2.exe",
+                      "E:\\SteamLibrary\\steamapps\\common\\Counter-Strike Global Offensive\\game\\bin\\win64\\cs2.exe") == CAT_GAME);
+    T(!store_folders_merge(&c, found, n)); // the next start: nothing new
+    c.folders[2].category = CAT_IGNORED;    // the player changes one
+    memmove(&c.folders[0], &c.folders[1], 2 * sizeof c.folders[0]); // and removes another
+    c.folder_count = 2;
+    T(!store_folders_merge(&c, found, n) && c.folder_count == 2 && c.folders[1].category == CAT_IGNORED);
+    // a rule the player made before the store folder was found is left as it is
+    static Config d;
+    d = {};
+    d.folder_count = 1;
+    str_set(d.folders[0].path, "c:\\xboxgames");
+    d.folders[0].category = CAT_APP;
+    T(store_folders_merge(&d, &found[2], 1) && d.folder_count == 1 && d.folders[0].category == CAT_APP && d.store_seen_count == 1);
+    // the seen list is saved and read back
+    char line[] = "E:\\SteamLibrary\\steamapps\\common";
+    config_set(&d, "store_folder", line);
+    T(d.store_seen_count == 2 && !store_folders_merge(&d, found, 1) && d.folder_count == 1);
+    // with the rules full, a folder waits for room instead of being taken as seen
+    d.folder_count = FOLDER_MAX;
+    T(!store_folders_merge(&d, &found[1], 1) && d.store_seen_count == 2);
+
+    // Every built-in exception is a Steam app with an id and a name
+    for (const SteamNotGame &s : STEAM_NOT_GAMES) T(s.id && s.name[0]);
 }
 
 // True when every <tag> in the text is closed in order (self-closing and <? ... ?> / <! ... > tags aside)
@@ -4579,6 +4654,7 @@ int main()
     test_share_cancel();
     test_share_ready();
     test_storeids();
+    test_store_folders();
     test_markers();
     test_automarks();
     test_achievements();

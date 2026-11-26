@@ -5084,6 +5084,11 @@ static void options_general()
         log_line("options: help name games %s", c.share_names ? "on" : "off");
         options_apply(0);
     }
+    if (opt_row_toggle("Keep Steam's apps out of Games", "Apps Steam installs beside games, like Wallpaper Engine, are sorted as apps, by what Steam's store calls them",
+                       "##steamtype", &c.steam_type_check)) {
+        log_line("options: steam type check %s", c.steam_type_check ? "on" : "off");
+        options_apply(0);
+    }
     f32 code_w = text_w(g_font, "View the code") + dp(32);
     opt_row_begin("The service is open source", "Read exactly what it does with a request", code_w);
     if (kit_button("View the code##repo", KIT_SECONDARY, ImVec2(code_w, 0))) open_url(OPT_API_REPO_URL);

@@ -150,6 +150,7 @@ static const char GAME_DESKTOP[] = "Desktop";
 static const char GAME_NOT_OURS[] = "Other";
 
 enum { WATCH_MAX = 8 }; // other apps' folders the library shows (Config.watch_dirs)
+enum { FOLDER_MAX = 128 }; // folder rules (Config.folders), and store folders added as rules (Config.store_seen)
 
 struct Config {
     Path save_dir;     // <Videos>\Rekodr, holding Clips, Sessions and Data (save_clips_dir and the rest)
@@ -209,6 +210,8 @@ struct Config {
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
     bool share_names;    // "Help name games": naming a game by hand tells the art service (gamedb_rename)
+    bool steam_type_check; // a Steam app the service says Steam's store calls software is an App, even in a Game
+                           // folder (gamedb_name_app)
     bool send_stats;     // a daily usage report to the service (telemetry.cpp); on unless the player says no
     bool auto_update;    // fetch and verify new versions (update.cpp); the top bar then offers the restart
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only
@@ -284,8 +287,12 @@ struct Config {
     AppInfo apps[512];
     i32     app_count;
 
-    FolderRule folders[32];
+    FolderRule folders[FOLDER_MAX];
     i32        folder_count;
+    // The store game folders already added as folder rules (store_folders_update), so one the player removed or gave
+    // another category isn't added again
+    char store_seen[FOLDER_MAX][MAX_PATH * 2];
+    i32  store_seen_count;
 };
 
 // The save folder: <save_dir>\Clips\<year> (with Source\ in it for rendered clips' originals),

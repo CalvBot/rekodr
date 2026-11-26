@@ -222,3 +222,249 @@ static bool exe_clues(const char *exe, const char *path, const char *name, bool 
     if (n < cap) n += snprintf(out + n, cap - n, "%s}", more ? more : "");
     return n > 0 && n < cap - 1;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Store game folders: where Steam, the Xbox app and the Epic launcher install games, added as Game folder rules at
+// each start (store_folders_update). Each is added once: Config.store_seen keeps the ones added, so a rule the
+// player removed or gave another category stays that way.
+//   Steam   each library's steamapps\common (Steam's libraryfolders.vdf), and the folder of each Steam app in it
+//           that isn't a game (STEAM_NOT_GAMES) as an App
+//   Xbox    the folders each fixed drive's .GamingRoot names (XboxGames)
+//   Epic    the InstallLocation of each game the launcher installed (its .item manifests), not Unreal Engine's
+
+// Steam apps that install under steamapps\common like a game but aren't one. Some run all day beside games.
+struct SteamNotGame {
+    u32         id;
+    const char *name;
+};
+static const SteamNotGame STEAM_NOT_GAMES[] = {
+    {431960, "Wallpaper Engine"},
+    {993090, "Lossless Scaling"},
+    {250820, "SteamVR"},
+    {1176510, "SteamVR Device Monitor"},
+    {228980, "Steamworks Common Redistributables"},
+    {629520, "Soundpad"},
+    {3419430, "Bongo Cat"},
+    {3301060, "Desktop Mate"},
+    {227260, "DisplayFusion"},
+    {607380, "Fences 3"},
+    {3165690, "Fences 6"},
+    {2296360, "Groupy 2"},
+    {1694750, "Start11 v2"},
+    {2294630, "WindowBlinds 11"},
+    {1325860, "VTube Studio"},
+    {1068820, "OVR Toolkit"},
+    {908520, "fpsVR"},
+    {382110, "Virtual Desktop Classic"},
+    {1905180, "OBS Studio"},
+    {365670, "Blender"},
+    {431730, "Aseprite"},
+    {1840, "Source Filmmaker"},
+    {223850, "3DMark"},
+};
+
+// Steam's folder, from the registry. False if Steam isn't installed.
+static bool steam_root(Path *out)
+{
+    DWORD bytes = sizeof out->s;
+    out->s[0] = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, 0, out->s, &bytes) != ERROR_SUCCESS || !out->s[0])
+        return false;
+    for (wchar_t *c = out->s; *c; c++)
+        if (*c == '/') *c = '\\';
+    return true;
+}
+
+// The value after the first `"key"` in a Steam .vdf or .acf text, its \\ unescaped, into out. False if none.
+static bool vdf_value(const char *text, const char *key, char *out, i32 cap, const char **after = 0)
+{
+    char pat[64];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(text, pat);
+    if (!p) return false;
+    p = strchr(p + strlen(pat), '"');
+    if (!p) return false;
+    i32 n = 0;
+    for (p++; *p && *p != '"'; p++) {
+        if (*p == '\\' && p[1]) p++;
+        if (n < cap - 1) out[n++] = *p;
+    }
+    out[n] = 0;
+    if (after) *after = *p ? p + 1 : p;
+    return true;
+}
+
+// The libraries Steam's libraryfolders.vdf lists: each "path". Returns how many went into out.
+static i32 steam_libraries(const char *vdf, char (*out)[MAX_PATH * 2], i32 max)
+{
+    i32 n = 0;
+    for (const char *p = vdf; n < max && vdf_value(p, "path", out[n], MAX_PATH * 2, &p);)
+        if (out[n][0]) n++;
+    return n;
+}
+
+// The folders a drive's .GamingRoot names, relative to the drive's root: "RGBX", a u32 count, then that many
+// UTF-16 names, each ending in a 0. Returns how many went into out (UTF-8).
+static i32 gaming_root_folders(const u8 *b, i64 len, char (*out)[MAX_PATH * 2], i32 max)
+{
+    if (len < 8 || memcmp(b, "RGBX", 4)) return 0;
+    u32 count;
+    memcpy(&count, b + 4, 4);
+    i32 n = 0;
+    i64 at = 8;
+    for (u32 i = 0; i < count && n < max && at + 2 <= len; i++) {
+        wchar_t name[MAX_PATH];
+        i32 w = 0;
+        for (; at + 2 <= len; at += 2) {
+            wchar_t c = (wchar_t)(b[at] | (b[at + 1] << 8));
+            if (!c) break;
+            if (w < MAX_PATH - 1) name[w++] = c;
+        }
+        at += 2; // the 0
+        name[w] = 0;
+        if (w) wide_to_utf8(name, out[n++], MAX_PATH * 2);
+    }
+    return n;
+}
+
+// A game's folder from an Epic launcher .item manifest: its InstallLocation, when its AppCategories has "games"
+// (the launcher also installs Unreal Engine and its plugins). False otherwise.
+static bool epic_item_folder(const char *text, char *out, i32 cap)
+{
+    out[0] = 0;
+    const char *cats = strstr(text, "\"AppCategories\"");
+    const char *open = cats ? strchr(cats, '[') : 0, *close = open ? strchr(open, ']') : 0;
+    if (!close) return false;
+    bool game = false;
+    for (const char *p = open; p && p < close && !game; p = strstr(p + 1, "\"games\"")) game = !strncmp(p, "\"games\"", 7);
+    return game && vdf_value(text, "InstallLocation", out, cap) && out[0];
+}
+
+struct StoreFolder {
+    char        path[MAX_PATH * 2]; // UTF-8, backslashes, no \ at the end
+    AppCategory category;
+};
+
+static void store_folder_add(StoreFolder *out, i32 *n, i32 max, const char *path, AppCategory cat)
+{
+    if (*n >= max || !path[0]) return;
+    StoreFolder *f = &out[(*n)++];
+    str_set(f->path, path);
+    for (char *c = f->path; *c; c++)
+        if (*c == '/') *c = '\\';
+    size_t len = strlen(f->path);
+    while (len > 3 && f->path[len - 1] == '\\') f->path[--len] = 0;
+    f->category = cat;
+}
+
+static bool dir_exists_utf8(const char *path)
+{
+    wchar_t w[MAX_PATH];
+    utf8_to_wide(path, w, MAX_PATH);
+    DWORD a = GetFileAttributesW(w);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// The store game folders on this PC. Returns how many went into out.
+static i32 store_folders_find(StoreFolder *out, i32 max)
+{
+    i32 n = 0;
+    Path root;
+    if (steam_root(&root)) {
+        i64 len = 0;
+        char *vdf = read_file(path_join(root, L"steamapps\\libraryfolders.vdf").s, &len);
+        static char libs[16][MAX_PATH * 2];
+        i32 lib_count = vdf ? steam_libraries(vdf, libs, COUNT(libs)) : 0;
+        free(vdf);
+        for (i32 l = 0; l < lib_count; l++) {
+            char common[MAX_PATH * 2];
+            snprintf(common, sizeof common, "%s\\steamapps\\common", libs[l]);
+            if (!dir_exists_utf8(common)) continue;
+            store_folder_add(out, &n, max, common, CAT_GAME);
+            Path lib = {};
+            utf8_to_wide(libs[l], lib.s, MAX_PATH);
+            for (const SteamNotGame &s : STEAM_NOT_GAMES) {
+                wchar_t acf[MAX_PATH];
+                swprintf(acf, MAX_PATH, L"%s\\steamapps\\appmanifest_%u.acf", lib.s, s.id);
+                char *t = read_file(acf, &len);
+                char dir[MAX_PATH];
+                if (t && vdf_value(t, "installdir", dir, sizeof dir) && dir[0]) {
+                    char app[MAX_PATH * 2];
+                    snprintf(app, sizeof app, "%s\\%s", common, dir);
+                    store_folder_add(out, &n, max, app, CAT_APP);
+                }
+                free(t);
+            }
+        }
+    }
+    DWORD drives = GetLogicalDrives();
+    for (i32 d = 0; d < 26; d++) {
+        wchar_t drive[4] = {(wchar_t)(L'A' + d), L':', L'\\', 0};
+        if (!(drives & (1u << d)) || GetDriveTypeW(drive) != DRIVE_FIXED) continue;
+        Path file = {};
+        swprintf(file.s, MAX_PATH, L"%s.GamingRoot", drive);
+        i64 len = 0;
+        char *b = read_file(file.s, &len);
+        char names[4][MAX_PATH * 2];
+        i32 count = b ? gaming_root_folders((const u8 *)b, len, names, COUNT(names)) : 0;
+        free(b);
+        for (i32 i = 0; i < count; i++) {
+            char dir[MAX_PATH * 2];
+            snprintf(dir, sizeof dir, "%c:\\%s", 'A' + d, names[i]);
+            if (dir_exists_utf8(dir)) store_folder_add(out, &n, max, dir, CAT_GAME);
+        }
+    }
+    wchar_t data[MAX_PATH];
+    DWORD dn = GetEnvironmentVariableW(L"ProgramData", data, COUNT(data));
+    if (dn && dn < COUNT(data)) {
+        Path dir = {};
+        swprintf(dir.s, MAX_PATH, L"%ls\\Epic\\EpicGamesLauncher\\Data\\Manifests", data);
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(path_join(dir, L"*.item").s, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (fd.nFileSizeHigh || fd.nFileSizeLow > 1024 * 1024) continue;
+                char *t = read_file(path_join(dir, fd.cFileName).s, 0);
+                char at[MAX_PATH * 2];
+                if (t && epic_item_folder(t, at, sizeof at) && dir_exists_utf8(at)) store_folder_add(out, &n, max, at, CAT_GAME);
+                free(t);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    return n;
+}
+
+// Adds each folder found as a folder rule, unless it is one already or was added before (Config.store_seen).
+// True if c changed.
+static bool store_folders_merge(Config *c, const StoreFolder *found, i32 n)
+{
+    bool changed = false;
+    for (i32 i = 0; i < n; i++) {
+        const char *p = found[i].path;
+        bool seen = false;
+        for (i32 s = 0; s < c->store_seen_count && !seen; s++) seen = !_stricmp(c->store_seen[s], p);
+        if (seen || c->store_seen_count == COUNT(c->store_seen)) continue;
+        bool rule = false;
+        for (i32 r = 0; r < c->folder_count && !rule; r++) rule = !_stricmp(c->folders[r].path, p);
+        if (!rule) {
+            if (c->folder_count == COUNT(c->folders)) continue;
+            FolderRule *r = &c->folders[c->folder_count++];
+            str_set(r->path, p);
+            r->category = found[i].category;
+        }
+        str_set(c->store_seen[c->store_seen_count++], p);
+        changed = true;
+    }
+    return changed;
+}
+
+// At each start: the store game folders this PC has that aren't rules yet. True if c changed.
+static bool store_folders_update(Config *c)
+{
+    static StoreFolder found[FOLDER_MAX];
+    i32 n = store_folders_find(found, COUNT(found));
+    bool changed = store_folders_merge(c, found, n);
+    if (changed) log_line("store folders: %d found, rules now %d", n, c->folder_count);
+    return changed;
+}

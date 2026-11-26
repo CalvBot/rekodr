@@ -61,6 +61,7 @@ struct LookAnswer {
     char name[128], key[48], how[16]; // how: its "matched_by"
     f32  confidence;
     char ask_args[512];               // a shared exe: what to look for in its command line, one a line; "" = none
+    bool software;                    // a Steam app Steam's store calls software, not a game ("steam_type")
     bool failed;
 };
 
@@ -1002,10 +1003,11 @@ static void gamedb_clip_game(const LibItem &it, const char *from, const char *to
 }
 
 // Names an app: its description becomes the game's name, and one that hasn't been sorted yet (and that no folder
-// rule sorts) becomes a Game. With the service on, a game is looked up there; Discord's list names it while it is
-// asked, and when the service can't be. An exe several games share is told apart by its command line: by the
-// strings the service asks about, or by Discord's entries (else its window naming a game in the list). One neither
-// knows goes by its exe's name until it is named by hand. Main thread. True if something about it changed.
+// rule sorts) becomes a Game. A Steam app Steam's store calls software (Wallpaper Engine) is never made a Game, and
+// one only a Game folder rule sorts becomes an App (steam_type_check). With the service on, a game is looked up
+// there; Discord's list names it while it is asked, and when the service can't be. An exe several games share is
+// told apart by its command line: by the strings the service asks about, or by Discord's entries (else its window
+// naming a game in the list). One neither knows goes by its exe's name until it is named by hand. Main thread. True if something about it changed.
 static bool gamedb_name_app(AppInfo *a)
 {
     GameInfo g;
@@ -1022,6 +1024,7 @@ static bool gamedb_name_app(AppInfo *a)
         }
     }
     AppCategory cat = app_category(g_app.config, *a);
+    bool software = false, sorted = false;
     if (gamedb_service_on() && a->path[0] && (cat == CAT_GAME || cat == CAT_NONE)) {
         static char body[16384], has[2048];
         LookAnswer ans = {};
@@ -1034,6 +1037,12 @@ static bool gamedb_name_app(AppInfo *a)
         }
         if (state >= 0) last_look_put(a->exe.s, body);
         if (state == 0 && !known) return false; // being asked
+        software = state == 1 && !ans.failed && ans.software && g_app.config.steam_type_check;
+        if (software && a->category == CAT_NONE && cat == CAT_GAME) {
+            a->category = CAT_APP;
+            log_line("%s: Steam's store calls it software, sorted as an app", a->exe.s);
+            sorted = true;
+        }
         // What it found only by a name is only taken for one sorted as a Game, or when it is sure
         if (state == 1 && !ans.failed && ans.name[0] &&
             (strcmp(ans.how, "name") || ans.confidence >= 0.9f || cat == CAT_GAME)) {
@@ -1046,19 +1055,19 @@ static bool gamedb_name_app(AppInfo *a)
         }
     }
     if (!known && shared) {
-        if (!a->desc.s[0]) return false;
+        if (!a->desc.s[0]) return sorted;
         a->desc.s[0] = 0; // its File description is the runtime's, not a game's
         sessions_game_renamed(a->exe.s);
         return true;
     }
-    if (!known) return false;
-    bool changed = false;
+    if (!known) return sorted;
+    bool changed = sorted;
     if (strcmp(a->desc.s, g.name)) {
         snprintf(a->desc.s, sizeof a->desc.s, "%s", g.name);
         changed = true;
         sessions_game_renamed(a->exe.s);
     }
-    if (a->category == CAT_NONE && !g.launcher && cat == CAT_NONE) {
+    if (a->category == CAT_NONE && !g.launcher && cat == CAT_NONE && !software) {
         a->category = CAT_GAME;
         log_line("%s is %s: sorted as a game", a->exe.s, g.name);
         changed = true;
@@ -1817,6 +1826,8 @@ static bool lookup_parse(const char *text, i64 len, LookAnswer *ans)
     j_get(text, len, "game.name", ans->name, sizeof ans->name);
     j_get(text, len, "game.key", ans->key, sizeof ans->key);
     if (j_get(text, len, "confidence", conf, sizeof conf)) ans->confidence = (f32)atof(conf);
+    char type[16];
+    ans->software = j_get(text, len, "steam_type", type, sizeof type) && !strcmp(type, "software");
     Json j = {text, text + len};
     if (j_find(&j, "ask_args") && j_eat(&j, '[')) {
         i32 n = 0;

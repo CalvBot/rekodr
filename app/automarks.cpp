@@ -181,59 +181,27 @@ static i32 lol_marks(LolSeen *s, u32 events, const char *body, i64 len, AutoMark
 // ---------------------------------------------------------------------------------------------------------------
 // Finding Counter-Strike 2
 
-// Steam's folder, from the registry. False if Steam isn't installed.
-static bool steam_root(Path *out)
-{
-    DWORD bytes = sizeof out->s;
-    out->s[0] = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, 0, out->s, &bytes) != ERROR_SUCCESS || !out->s[0])
-        return false;
-    for (wchar_t *c = out->s; *c; c++)
-        if (*c == '/') *c = '\\';
-    return true;
-}
-
 // The steamapps folder of the library an app is installed in, from Steam's libraryfolders.vdf. Any thread (the
 // main one and the achievements worker), so the file is read into a buffer of the call's own.
 static bool steam_app_library(u32 app, Path *out)
 {
     Path root;
     if (!steam_root(&root)) return false;
-    wchar_t vdf[MAX_PATH];
-    swprintf(vdf, MAX_PATH, L"%s\\steamapps\\libraryfolders.vdf", root.s);
-    FILE *f = _wfopen(vdf, L"rb");
-    if (!f) return false;
-    const size_t cap = 256 * 1024;
-    char *text = (char *)malloc(cap);
-    if (!text) {
-        fclose(f);
-        return false;
-    }
-    size_t len = fread(text, 1, cap - 1, f);
-    fclose(f);
-    text[len] = 0;
-    bool found = false;
-    for (const char *p = text; (p = strstr(p, "\"path\"")) != 0;) {
-        p = strchr(p + 6, '"');
-        if (!p) break;
-        char lib[MAX_PATH * 2];
-        i32 n = 0;
-        for (p++; *p && *p != '"'; p++) {
-            if (*p == '\\' && p[1]) p++;
-            if (n < (i32)sizeof lib - 1) lib[n++] = *p;
-        }
-        lib[n] = 0;
+    char *text = read_file(path_join(root, L"steamapps\\libraryfolders.vdf").s, 0);
+    if (!text) return false;
+    char libs[16][MAX_PATH * 2];
+    i32 n = steam_libraries(text, libs, COUNT(libs));
+    free(text);
+    for (i32 i = 0; i < n; i++) {
         wchar_t wlib[MAX_PATH], manifest[MAX_PATH];
-        utf8_to_wide(lib, wlib, MAX_PATH);
+        utf8_to_wide(libs[i], wlib, MAX_PATH);
         swprintf(manifest, MAX_PATH, L"%s\\steamapps\\appmanifest_%u.acf", wlib, app);
         if (GetFileAttributesW(manifest) != INVALID_FILE_ATTRIBUTES) {
             swprintf(out->s, COUNT(out->s), L"%s\\steamapps", wlib);
-            found = true;
-            break;
+            return true;
         }
     }
-    free(text);
-    return found;
+    return false;
 }
 
 // Where the cfg file goes. False if Counter-Strike 2 isn't installed.

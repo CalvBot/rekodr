@@ -200,6 +200,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->tooltips = true;
     c->share_names = true; // "Help name games" and "Send usage stats": on, the setup asks
     c->send_stats = true;
+    c->steam_type_check = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
     c->mic_clean = true;
@@ -771,6 +772,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "wave_keep_days")) real(&c->wave_keep_days);
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
+    else if (!strcmp(key, "steam_type_check")) boolean(&c->steam_type_check);
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
     else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
@@ -870,6 +872,8 @@ static void config_set(Config *c, const char *key, char *value)
             r->category = category_parse(f[0]);
             str_set(r->path, f[1]);
         }
+    } else if (!strcmp(key, "store_folder")) {
+        if (value[0] && c->store_seen_count < COUNT(c->store_seen)) str_set(c->store_seen[c->store_seen_count++], value);
     }
 }
 
@@ -991,6 +995,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "folder_warn_gb = %g\n", c.folder_warn_gb);
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
     boolean("share_names", c.share_names);
+    boolean("steam_type_check", c.steam_type_check);
     boolean("send_stats", c.send_stats);
     boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);
@@ -1082,6 +1087,8 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "\n# folder = category | path (every app in it or below it, unless the app has its own category)\n");
     for (i32 i = 0; i < c.folder_count; i++)
         fprintf(f, "folder = %s | %s\n", category_name(c.folders[i].category), c.folders[i].path);
+    fprintf(f, "\n# store_folder = path (a store's game folder, added as a folder rule once and never again)\n");
+    for (i32 i = 0; i < c.store_seen_count; i++) fprintf(f, "store_folder = %s\n", c.store_seen[i]);
     bool ok = fclose(f) == 0;
     ok = ok && MoveFileExW(tmp.s, paths.settings.s, MOVEFILE_REPLACE_EXISTING);
     if (!ok) log_line("couldn't save settings (%d)", (int)GetLastError());

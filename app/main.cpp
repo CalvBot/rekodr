@@ -463,6 +463,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         g_app.config.setup_done = false;
         config_save(g_app.config, g_app.paths);
     }
+    if (store_folders_update(&g_app.config)) config_save(g_app.config, g_app.paths);
     // The top bar offers What's new for versions after seen_version. A first start, or going back to an older
     // version, has nothing new to show.
     if (!g_app.config.seen_version[0] || version_cmp(REKODR_VERSION, g_app.config.seen_version) < 0) {
