@@ -4041,7 +4041,8 @@ static void test_automarks()
         T(eft_raid_minutes("GameTimer utcNow:11/26/2026 19:37:30 escape:11/26/2026 19:37:30") == 0 && eft_raid_minutes("GameTimer x") == 0);
 
         // A PvP Scav raid joined late (Calvin's Factory raid, redacted): the time left, not the whole raid; the end
-        // from the WebSocket message, then once from the disconnect; Scav said once after it
+        // from the WebSocket message, then once from the disconnect; its side not known at the start, so Scav is
+        // said once after it, as an amend of the raid
         es = {};
         const char *v = "2026-11-27 04:01:14.000|1.3.5.0.48914|Info|output|";
         auto pvp = [&](const char *msg) {
@@ -4056,9 +4057,23 @@ static void test_automarks()
         T(!strcmp(em[0].detail, "map=Factory;mode=PvP;time left=14 min;span=raid"));
         T(pvp("backend|WebSocketSharp - binary message received: type=Notification, id=<id>, payloadType=userMatchOver, payloadLength=396") == 1 && !strcmp(em[0].note, "Raid end"));
         T(pvp("output|Connection.Disconnect() TransportId:0 address:<ip> Reason:Stop game") == 0);
-        T(pvp("output|DevLog FinishScavSession") == 1 && !strcmp(em[0].note, "Scav raid") && !strcmp(em[0].detail, "side=Scav") && em[0].colour == 5);
+        T(pvp("output|DevLog FinishScavSession") == 1 && em[0].amend && !em[0].note[0] && !strcmp(em[0].detail, "side=Scav") && em[0].colour == EFT_SCAV);
         T(pvp("backend|---> Request HTTPS, id [120]: URL: https://gw-pvp.escapefromtarkov.com/client/game/profile/savage/regenerate. ") == 0);
         T(pvp("backend|---> Request HTTPS, id [130]: URL: https://gw-pvp.escapefromtarkov.com/client/game/profile/savage/regenerate. ") == 0);
+
+        // The side from the start: the raid's profile isn't the PMC's, so a Scav's, in its colour, and nothing said
+        // after it; then the PMC's own raid
+        es = {};
+        T(pvp("application|CompleteSelectedProfile ProfileId:5fe7c0 AccountId:1") == 0 && !strcmp(es.pmc, "5fe7c0"));
+        T(pvp("application|scene preset path:maps/factory_day_preset.bundle rcid:factory_day.scenespreset.asset") == 0);
+        T(pvp("application|TRACE-NetworkGameCreate profileStatus: 'Profileid: 5fe7bf, Status: Busy, Location: factory4_day, Sid: x'") == 0);
+        T(pvp("application|GameStarted:1(1)") == 1 && !strcmp(em[0].detail, "map=Factory;side=Scav;span=raid") && em[0].colour == EFT_SCAV);
+        T(pvp("output|x Reason:Stop game") == 1 && !strcmp(em[0].note, "Raid end") && em[0].colour == EFT_SCAV);
+        T(pvp("output|DevLog FinishScavSession") == 0);
+        T(pvp("application|scene preset path:maps/factory_day_preset.bundle rcid:factory_day.scenespreset.asset") == 0);
+        T(pvp("application|TRACE-NetworkGameCreate profileStatus: 'Profileid: 5fe7c0, Status: Busy, Location: factory4_day, Sid: x'") == 0);
+        T(pvp("application|GameStarted:1(1)") == 1 && !strcmp(em[0].detail, "map=Factory;side=PMC;span=raid") && em[0].colour == EFT_PMC);
+        T(pvp("output|x Reason:Stop game") == 1 && em[0].colour == EFT_PMC);
 
         // Only the output log is read, with or without the run's name before it
         T(eft_log_kind("output_000.log") == 0);

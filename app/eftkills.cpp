@@ -13,8 +13,8 @@
 //
 // Raids are found in every run's output log in <game>\Logs, so raids recorded before this ran get their kills too,
 // and the log's other markers (raid start and end, quests, groups), each at its line's time, unless a marker with the
-// same note is already within EK_SAME of it; that one only gets the band keys (span, span_end) it lacks. What has
-// been done is kept in <local_dir>\eftkills.tsv. It runs on a
+// same note is already within EK_SAME of it; that one only gets the log's colour and the keys of its detail it
+// lacks. What has been done is kept in <local_dir>\eftkills.tsv. It runs on a
 // thread of its own at low priority, started from the auto markers worker (eftkills_poll); only the game's logs and
 // Rekodr's own buffer are read.
 
@@ -69,7 +69,17 @@ static void ek_log_read(char *text, u32 events, EftSeen *seen, EkRaid *raids, i3
         AutoMark am[4];
         i32 n = eft_line(seen, events, line, false, am, COUNT(am));
         for (i32 i = 0; i < n && at; i++)
-            if (*mn < mcap) {
+            if (am[i].amend) { // the side of the last raid: its start's detail, its start's and end's colour
+                char k[32], v[64], o[64];
+                for (i32 j = *mn - 1; j >= 0; j--) {
+                    if (marker_detail_get(marks[j].detail, "span_end", v, sizeof v)) marks[j].colour = am[i].colour;
+                    if (!marker_detail_get(marks[j].detail, "span", v, sizeof v)) continue;
+                    marks[j].colour = am[i].colour;
+                    for (const char *d = am[i].detail; marker_detail_next(&d, k, sizeof k, v, sizeof v);)
+                        if (!marker_detail_get(marks[j].detail, k, o, sizeof o)) marker_detail_add(marks[j].detail, k, v);
+                    break;
+                }
+            } else if (*mn < mcap) {
                 EkLogMark &m = marks[(*mn)++];
                 m.t_us = at;
                 m.colour = am[i].colour;
@@ -436,8 +446,8 @@ struct EkKill {
     char name[64], level[8], faction[24], weapon[48];
 };
 
-// Words in [x0, x1) of a row, left to right, as one text: words OCR split with almost no gap between them (a name's
-// "_1" read apart) are put back together.
+// Words in [x0, x1) of a row, left to right, as one text of printable ASCII: words OCR split with almost no gap
+// between them (a name's "_1" read apart) are put back together.
 static void ek_cell_text(const EkWord *words, const i32 *row, i32 n, f32 x0, f32 x1, char *out, i32 cap)
 {
     i32 len = 0;
@@ -446,8 +456,14 @@ static void ek_cell_text(const EkWord *words, const i32 *row, i32 n, f32 x0, f32
     for (i32 i = 0; i < n; i++) {
         const EkWord &w = words[row[i]];
         if (w.x < x0 || w.x >= x1) continue;
+        char text[64];
+        i32 tl = 0;
+        for (const char *c = w.text; *c && tl < (i32)sizeof text - 1; c++)
+            if (*c >= 0x20 && *c < 0x7f) text[tl++] = *c;
+        text[tl] = 0;
+        if (!tl) continue;
         bool glued = right >= 0 && w.x - right < w.h * 0.3f;
-        len += snprintf(out + len, len < cap ? cap - len : 0, "%s%s", len && !glued ? " " : "", w.text);
+        len += snprintf(out + len, len < cap ? cap - len : 0, "%s%s", len && !glued ? " " : "", text);
         if (len >= cap) len = cap - 1;
         right = w.x + w.w;
     }
@@ -548,14 +564,16 @@ static void ek_name_key(const char *name, char (&out)[64])
     out[n] = 0;
 }
 
-// Whether two reads of a row are the same kill: the same second and names at most two letters apart.
+// Whether two reads of a row are the same kill: the same second and names at most two letters apart, or one name
+// the other with more after it (an icon beside the name read as letters).
 static bool ek_same_kill(const EkKill &a, const EkKill &b)
 {
     if (a.secs != b.secs) return false;
     char ka[64], kb[64];
     ek_name_key(a.name, ka);
     ek_name_key(b.name, kb);
-    i32 la = (i32)strlen(ka), lb = (i32)strlen(kb);
+    i32 la = (i32)strlen(ka), lb = (i32)strlen(kb), lo = la < lb ? la : lb;
+    if (lo >= 4 && !strncmp(ka, kb, (size_t)lo)) return true;
     if (abs(la - lb) > 2) return false;
     i32 d[65][65];
     for (i32 i = 0; i <= la; i++) d[i][0] = i;
@@ -570,13 +588,23 @@ static bool ek_same_kill(const EkKill &a, const EkKill &b)
     return d[la][lb] <= 2;
 }
 
-// Adds the rows of a frame to the kills read so far, a row already there once.
+// Adds the rows of a frame to the kills read so far, a row already there once: with the shorter of its names, and
+// what one read missed (the level) from another.
 static void ek_merge(EkKill *all, i32 cap, i32 *n, const EkKill *rows, i32 k)
 {
     for (i32 i = 0; i < k; i++) {
-        bool have = false;
-        for (i32 j = 0; j < *n && !have; j++) have = ek_same_kill(all[j], rows[i]);
-        if (!have && *n < cap) all[(*n)++] = rows[i];
+        const EkKill &r = rows[i];
+        i32 j = 0;
+        while (j < *n && !ek_same_kill(all[j], r)) j++;
+        if (j == *n) {
+            if (*n < cap) all[(*n)++] = r;
+            continue;
+        }
+        EkKill &a = all[j];
+        if (strlen(r.name) < strlen(a.name)) str_set(a.name, r.name);
+        if (!a.level[0]) str_set(a.level, r.level);
+        if (!a.faction[0]) str_set(a.faction, r.faction);
+        if (!a.weapon[0]) str_set(a.weapon, r.weapon);
     }
 }
 
@@ -729,16 +757,15 @@ static const Marker *ek_marked(i64 t, i64 within, const char *note, const char *
     return 0;
 }
 
-// A log mark that is on the timeline already gives that marker the keys a band is drawn from (span, span_end),
-// when it lacks them. How many it gave.
-static i32 ek_span_keys(const Marker &have, const char *detail)
+// A log mark that is on the timeline already gives that marker its colour (a Scav raid's) and the keys of its detail
+// the marker lacks (the band's span and span_end, the side). How many changes it made.
+static i32 ek_fill(const Marker &have, const EkLogMark &m)
 {
-    static const char *const KEYS[] = {"span", "span_end"};
-    char v[64], o[64];
+    char k[32], v[64], o[64];
     i32 n = 0;
-    for (const char *k : KEYS)
-        if (marker_detail_get(detail, k, v, sizeof v) && !marker_detail_get(have.detail, k, o, sizeof o))
-            markers_detail_put(have.t_us, k, v), n++;
+    for (const char *at = m.detail; marker_detail_next(&at, k, sizeof k, v, sizeof v);)
+        if (!marker_detail_get(have.detail, k, o, sizeof o)) markers_detail_put(have.t_us, k, v), n++;
+    if (have.colour != m.colour) markers_colour_set(have.t_us, m.colour), n++;
     return n;
 }
 
@@ -821,13 +848,13 @@ static DWORD WINAPI ek_thread(void *arg)
     for (i32 i = 0; i < nm; i++) {
         const EkLogMark &m = marks[i];
         if (m.t_us <= done.marks_us || m.t_us > now - EK_SETTLE) continue;
-        if (const Marker *have = ek_marked(m.t_us, EK_SAME, m.note, 0)) keyed += ek_span_keys(*have, m.detail);
+        if (const Marker *have = ek_marked(m.t_us, EK_SAME, m.note, 0)) keyed += ek_fill(*have, m);
         else ek_post(m.t_us, m.colour, m.note, m.detail), put++;
         done.marks_us = m.t_us;
         changed = true;
     }
     if (put) log_line("markers: Escape from Tarkov: %d from its logs, after the fact", put);
-    if (keyed) log_line("markers: Escape from Tarkov: %d raid band keys given to markers already there", keyed);
+    if (keyed) log_line("markers: Escape from Tarkov: %d changes to markers already there", keyed);
     const EkLang *lang = 0;
     for (const EkLang &l : EK_LANGS)
         if (!strcmp(l.game, j->lang)) lang = &l;

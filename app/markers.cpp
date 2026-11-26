@@ -239,6 +239,21 @@ static void markers_detail_put(i64 t_us, const char *key, const char *value)
     ReleaseSRWLockExclusive(&g_markers.lock);
 }
 
+// Gives the marker made at t_us a colour. Any thread.
+static void markers_colour_set(i64 t_us, u8 colour)
+{
+    AcquireSRWLockExclusive(&g_markers.lock);
+    markers_load_locked();
+    for (i32 i = 0; i < g_markers.count; i++) {
+        Marker &m = g_markers.items[i];
+        if (m.t_us != t_us) continue;
+        u8 c = colour < COUNT(MARKER_COLOURS) ? colour : 0;
+        if (m.colour != c) m.colour = c, markers_write_locked();
+        break;
+    }
+    ReleaseSRWLockExclusive(&g_markers.lock);
+}
+
 // A marker made after its moment (from a game's replay, read once the match is over): on the timeline, and in the
 // layers file of each clip or session saved over it, since the save's chapters are already written. Main thread.
 static void markers_add_late(i64 t_us, u8 colour, const char *note, const char *detail = 0)

@@ -540,17 +540,37 @@ static i32 hs_line(HsSeen *s, u32 events, const char *line, bool old, AutoMark *
 // it (online raids only); its time left: "GameTimer utcNow:<utc> ... escape:<utc>" (less than the whole raid for a
 // Scav who joins late). "GameStarted:" starts it. It ends at the first of the OnGameSessionEnd stack line, "Reason:Stop
 // game", backend's /client/match/local/end (PvE), the "UserMatchOver" notification and the "payloadType=userMatchOver"
-// WebSocket message (PvP). After a Scav raid the game says "FinishScavSession" and asks for
-// /client/game/profile/savage/regenerate. A quest done: backend's response to /client/quest/complete (a chat message
+// WebSocket message (PvP). The raid's side: "CompleteSelectedProfile ProfileId:<id>" names the PMC, and a PvP raid's
+// profileStatus names the profile in it, a Scav when that isn't the PMC. A Scav raid's start and end are EFT_SCAV, a
+// PMC's EFT_PMC. Where the start can't tell (PvE logs no profileStatus), "FinishScavSession" or
+// /client/game/profile/savage/regenerate after the raid says it was a Scav's: an amend that gives the raid's start
+// side=Scav and its start and end EFT_SCAV. A quest done: backend's response to /client/quest/complete (a chat message
 // about a quest may be a reward mail, so it marks nothing). A group joined: "GroupMatchInviteAccept", someone taking
 // the player's invite.
 struct EftSeen {
     char map[32];   // the raid's map, "" if not known
     char mode[4];   // "PvE" or "PvP", "" if not known
     i32  minutes;   // the raid's time left from its GameTimer, 0 if not known
+    char pmc[32];   // the PMC's profile id, "" if not known
+    char profile[32]; // the profile in the raid being joined (PvP's profileStatus), "" if not known
+    bool scav;      // the raid is a Scav's, as known at its start
     bool in_raid;   // started and not ended
-    bool after;     // the raid has ended and isn't known to be a Scav's yet
+    bool after;     // the raid has ended and its side wasn't known at its start
 };
+
+static const u8 EFT_PMC = 5, EFT_SCAV = 2; // the colours of a raid's start and end: blue, orange
+
+// The id after `key` in a line, letters and digits only, into out; out unchanged when the line hasn't it.
+static void eft_id(const char *line, const char *key, char (&out)[32])
+{
+    const char *p = strstr(line, key);
+    if (!p) return;
+    p += strlen(key);
+    size_t l = 0;
+    while (l < sizeof out - 1 && isalnum((u8)p[l])) l++;
+    memcpy(out, p, l);
+    out[l] = 0;
+}
 
 // The minutes left in a raid from its GameTimer line's "utcNow:<M/D/Y h:m:s> ... escape:<M/D/Y h:m:s>"; 0 if they
 // aren't there or aren't 1 to 300 minutes.
@@ -593,8 +613,7 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
     auto end = [&]() {
         if (!s->in_raid) return;
         s->in_raid = false;
-        s->after = true;
-        if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, 5, "Raid end", false, "span_end=raid");
+        if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, s->scav ? EFT_SCAV : EFT_PMC, "Raid end", false, "span_end=raid");
     };
     if (const char *g = strstr(line, "Got notification | ")) {
         g += 19;
@@ -613,10 +632,14 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
         const char *m = eft_map(p, l);
         str_set(s->map, m ? m : "");
         s->minutes = 0;
+        s->profile[0] = 0;
         s->in_raid = s->after = false;
+    } else if (strstr(line, "|CompleteSelectedProfile ProfileId:")) {
+        eft_id(line, "ProfileId:", s->pmc);
     } else if (const char *sm = strstr(line, "|Session mode: ")) {
         str_set(s->mode, !strncmp(sm + 15, "Pve", 3) ? "PvE" : !strncmp(sm + 15, "Regular", 7) ? "PvP" : "");
     } else if (strstr(line, "|TRACE-NetworkGameCreate ")) {
+        eft_id(line, "Profileid: ", s->profile);
         if (const char *at = strstr(line, "Location: ")) {
             at += 10;
             size_t l = strcspn(at, ",'");
@@ -626,6 +649,8 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
     } else if (strstr(line, "|GameTimer ")) {
         if (i32 m = eft_raid_minutes(line)) s->minutes = m;
     } else if (strstr(line, "|GameStarted:")) {
+        bool known = s->pmc[0] && s->profile[0];
+        s->scav = known && strcmp(s->pmc, s->profile);
         s->in_raid = true;
         s->after = false;
         if (!old && (events & AM_RAID_START)) {
@@ -638,17 +663,19 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
             marker_detail_add(detail, "map", s->map);
             marker_detail_add(detail, "mode", s->mode);
             marker_detail_add(detail, "time left", left);
+            if (known) marker_detail_add(detail, "side", s->scav ? "Scav" : "PMC");
             marker_detail_add(detail, "span", "raid");
-            am_push(out, cap, &n, 5, note, false, detail);
+            am_push(out, cap, &n, s->scav ? EFT_SCAV : EFT_PMC, note, false, detail);
         }
         s->minutes = 0;
+        s->after = !known; // the side is told after the raid
     } else if (strstr(line, "Reason:Stop game") || strstr(line, "/client/match/local/end") ||
                strstr(line, "payloadType=userMatchOver")) {
         end();
     } else if (strstr(line, "FinishScavSession") || strstr(line, "/client/game/profile/savage/regenerate")) {
         if (s->after) {
             s->after = false;
-            if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, 5, "Scav raid", false, "side=Scav");
+            if (!old && (events & (AM_RAID_START | AM_RAID_END))) am_push(out, cap, &n, EFT_SCAV, "", true, "side=Scav");
         }
     } else if (strstr(line, "|<--- Response HTTPS, id [") && strstr(line, "/client/quest/complete")) {
         if (!old && (events & AM_QUEST)) am_push(out, cap, &n, 3, "Quest done");
@@ -1643,6 +1670,8 @@ static struct {
     wchar_t poe_log[2][MAX_PATH];    // each Client.txt; "" when the game isn't installed (main thread sets them)
     wchar_t tf2_dir[MAX_PATH];       // the tf folder; "" when it isn't installed (main thread sets it)
     i64 last_kill[AMG_COUNT];        // the last kill marker of each (its time), for an amend
+    i64 last_start[AMG_COUNT];       // the last marker of each that starts a band (span=), for an amend with a detail
+    i64 last_end[AMG_COUNT];         // the last marker of each that ends one (span_end=)
 } g_am;
 
 static void am_put(const AutoMark *marks, i32 n, i32 game)
@@ -1650,12 +1679,21 @@ static void am_put(const AutoMark *marks, i32 n, i32 game)
     for (i32 i = 0; i < n; i++) {
         const AutoMark &m = marks[i];
         i64 *last_kill = &g_am.last_kill[game];
-        if (m.amend && *last_kill) markers_set(*last_kill, m.colour, m.note);
+        char k[32], v[64];
+        if (m.amend && m.detail[0]) { // the last band: its start's detail, its start's and end's colour
+            if (i64 t = g_am.last_start[game]) {
+                for (const char *at = m.detail; marker_detail_next(&at, k, sizeof k, v, sizeof v);) markers_detail_put(t, k, v);
+                markers_colour_set(t, m.colour);
+                if (g_am.last_end[game] > t) markers_colour_set(g_am.last_end[game], m.colour);
+            }
+        } else if (m.amend && *last_kill) markers_set(*last_kill, m.colour, m.note);
         else if (!m.amend) {
             i64 t = markers_add(now_us(), m.colour, m.note, m.detail);
             if (m.colour == 4) *last_kill = t;
+            if (marker_detail_get(m.detail, "span", v, sizeof v)) g_am.last_start[game] = t;
+            if (marker_detail_get(m.detail, "span_end", v, sizeof v)) g_am.last_end[game] = t;
         }
-        log_line("markers: %s: %s", AM_GAMES[game].name, m.note);
+        log_line("markers: %s: %s", AM_GAMES[game].name, m.note[0] ? m.note : m.detail);
     }
     if (n) event_post(Event{}); // the timeline shows it
 }
