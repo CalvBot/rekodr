@@ -2,10 +2,9 @@
 
 Rekodr records the screen and every app's audio all the time into a long buffer on disk. Later it turns parts of
 that buffer into files worth keeping or sharing. This spec describes it: one native C++ program plus
-ffmpeg. It replaced an earlier Rust service with a C# window and Edge pages; no code carried over, and that
-version is in the git history only.
+ffmpeg.
 
-## The three ways recordings are used
+## Sessions, clips and the library
 
 ### 1. Whole sessions
 Keep a whole session from start to finish.
@@ -189,7 +188,7 @@ The year is the year the footage starts in.
 
 Clips are named after the game played most in them, or `Desktop`. Sessions are named after the session. Files are tagged in the MP4:
 - **Genre:** the game (Explorer can group by it).
-- **Title:** `Overwatch · 15 Nov 2026 21:04`.
+- **Title:** `Overwatch - 15 Nov 2026 21:04`.
 - **Description:** every game in the file.
 
 The Library files a video under its tagged game, else the `{game}` its name holds by the file name template (`Clip` or
@@ -199,14 +198,13 @@ A game typed in the game picker rather than picked from its rows is a custom gam
 controller glyph, and no art is looked up for it or vote sent. Enter picks the row that is lit.
 
 ## Recording (always on)
-This works today and stays the same, including the on-disk buffer format, so switching versions keeps the buffer.
 
-- **Video:** ffmpeg `ddagrab` (GPU capture) → the GPU's encoder, no B-frames, a keyframe every 2 s → 2 s `.mkv`
+- **Video:** ffmpeg `ddagrab` (GPU capture) -> the GPU's encoder, no B-frames, a keyframe every 2 s -> 2 s `.mkv`
   segments in `buffer\video\<run>\`. A run is one ffmpeg process; recording restarts after the lock screen, UAC
   prompts and similar. Each run records the wall-clock time of its first frame in `anchor.txt`, and ffmpeg lists
   finished segments in `list.csv`.
-- **Encoder:** at start each encoder gets a one-frame test encode on the capture GPU, in the order NVENC → AMF →
-  QSV → CPU. The first that works is used, unless one is forced in settings. The ffmpeg argument sets per vendor
+- **Encoder:** at start each encoder gets a one-frame test encode on the capture GPU, in the order NVENC, AMF,
+  QSV, CPU. The first that works is used, unless one is forced in settings. The ffmpeg argument sets per vendor
   are in `app/recorder.cpp`.
 - **Audio:** WASAPI process loopback per app (including its child processes), plus the mic. Each stream is encoded
   to Opus in 10 s segments in `buffer\audio\<stream>\`, timed to the wall clock from WASAPI packet timestamps.
@@ -273,7 +271,7 @@ struct App {
 **Video playback** uses Media Foundation with hardware decoding into D3D11 textures on the UI's device, both for
 clips and for buffer segments. Scrubbing uses thumbnail strips.
 
-**Outside control:** `rekodr.exe <command>` (`save 90s`, `timeline`, `open`, `pause`, `quit` …) finds the running
+**Outside control:** `rekodr.exe <command>` (`save 90s`, `timeline`, `open`, `pause`, `quit`; [SCRIPTING.md](SCRIPTING.md) lists them all) finds the running
 copy, hands it the command as a `WM_COPYDATA` message and exits. With no running copy, it starts Rekodr. Hotkeys
 use `RegisterHotKey`.
 
@@ -317,7 +315,7 @@ One window with a header (status, pause, Help, Options):
 - No tooltips and no inline key hints.
 - Controls never move after a click; lists are fixed-size and paged (the Library grid scrolls instead).
 - Labels explain themselves.
-- Dark theme, as today.
+- Dark theme.
 
 ## Targets
 - Window hidden: about 0% CPU for Rekodr itself (ffmpeg aside), under 50 MB private memory, no GPU work.
@@ -337,14 +335,14 @@ One window with a header (status, pause, Help, Options):
   and keeps it under `%LOCALAPPDATA%\Rekodr\gamedb`, fetching it again after a week. Icons come from Discord's
   image server and covers from Steam's, each the first time something shows it. A known game is named properly and,
   if it hasn't been sorted, becomes a Game. An app the list can't place is named by hand: naming an app in
-  Options searches the list as you type. These are the only web requests Rekodr makes, and Options › General
+  Options searches the list as you type. These are the only web requests Rekodr makes, and Options > General
   turns them off.
 - **lifelog:** no code link. Shared data (the game list, app categories, and lifelog's view of what's playing if
   wanted) goes through plain files that both read. Rekodr has its own small process watcher, icon extraction and
   clipboard code.
 
-## Not doing
-- An HTTP API (the current `127.0.0.1:47820` endpoints go away).
+## What Rekodr doesn't do
+- An HTTP API.
 - Web or Edge pages.
 - A separate UI process.
 - Recording more than one monitor at once.
@@ -354,8 +352,3 @@ One window with a header (status, pause, Help, Options):
 - Play-time stats per game.
 - Posting straight to YouTube, TikTok or X.
 - Sending an edit to Premiere or DaVinci directly: the XML export covers it.
-
-## Open questions
-1. Cuts snap to the 2 s keyframes today. Should they be frame-exact, by re-encoding only the first part?
-2. Audio: keep one ffmpeg per stream for Opus, or link libopus and write the segments directly?
-3. Which files lifelog and Rekodr share, given lifelog is being rewritten too.
