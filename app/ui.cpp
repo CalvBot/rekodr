@@ -2,7 +2,7 @@
 // It draws only while shown, and then only for a few frames after input or a change (ui_wake), or continuously
 // while something animates (playback, progress). Closing it hides it.
 //
-// UI rules (SPEC.md): no tooltips or inline key hints (shortcuts are in Help, F1); controls never move after a
+// UI rules (docs/SPEC.md): no tooltips or inline key hints (shortcuts are in Help, F1); controls never move after a
 // click; labels explain themselves.
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);

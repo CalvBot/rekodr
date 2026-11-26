@@ -352,8 +352,8 @@ enum AudioKind : u8 {
     AUDIO_MIC, // a capture device: Windows' default (path empty) or the one whose endpoint id is the path
 };
 
-// Which track of a saved file a stream ends up on (SPEC.md, "Track layout"). Follows the app's category, so it's
-// worked out again whenever the settings change.
+// Which track of a saved file a stream ends up on (docs/SPEC.md, "Track layout in every saved file"). Follows the
+// app's category, so it's worked out again whenever the settings change.
 enum AudioTrack : u8 {
     TRACK_MIC,
     TRACK_COMMUNICATION,
@@ -1042,7 +1042,7 @@ struct Timeline {
     bool          rest_tried;      // its piece was built (or couldn't be): not again until it moves
     char          play_error[160];
 };
-// sessions.cpp: detecting sessions, the save popup, unsaved sessions (SPEC.md, "1. Whole sessions").
+// sessions.cpp: detecting sessions, the save popup, unsaved sessions (docs/SPEC.md, "1. Whole sessions").
 enum SessionState : u8 {
     SES_FREE,      // empty slot
     SES_OPEN,      // its game is being played, or was less than the session gap ago

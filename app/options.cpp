@@ -4,7 +4,7 @@
 // (options_apply). There's no Save button. Text and number boxes count only when the edit is finished (Enter or
 // clicking away), so a half-typed bitrate never restarts the capture.
 //
-// Layout rules (SPEC.md, "UI rules"): fixed-width controls, fixed-size paged lists whose order is frozen while
+// Layout rules (docs/SPEC.md, "UI rules"): fixed-width controls, fixed-size paged lists whose order is frozen while
 // Options is open, and settings that don't apply are disabled, never hidden.
 
 #include <shobjidl.h>

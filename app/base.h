@@ -1,6 +1,6 @@
 // Basics shared by every part of rekodr: integer types, fixed-size strings, the log and CHECK.
 //
-// Code rules (see SPEC.md, "Code"): plain structs that are valid when zeroed, functions that work on them, no
+// Code rules (see docs/SPEC.md, "Code"): plain structs that are valid when zeroed, functions that work on them, no
 // class hierarchies or RAII wrappers, fixed arrays where the maximum is known.
 
 typedef int8_t   i8;

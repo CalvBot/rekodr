@@ -1,4 +1,4 @@
-// Sessions (SPEC.md, "1. Whole sessions"): finding game sessions as they happen, asking whether to save one that
+// Sessions (docs/SPEC.md, "1. Whole sessions"): finding game sessions as they happen, asking whether to save one that
 // ended (the session toast, toast.cpp), the unsaved sessions, and sessions made by hand.
 //
 // Detection runs on the main thread, from the game being played (audio.cpp's watcher calls sessions_on_game when
@@ -9,7 +9,7 @@
 // On disk:
 //   <local_dir>\sessions.txt                     open sessions and ones still in the buffer, rewritten whole, so a
 //                                                restart of Rekodr carries on where it was
-//   <save_dir>\Data\<name>.session.txt           the record of a saved or hand-made session (SPEC.md, "Folders")
+//   <save_dir>\Data\<name>.session.txt           the record of a saved or hand-made session (docs/SPEC.md, "Folders")
 // At start, sessions.txt is read and activity.tsv is replayed to add what the file doesn't know (it may be lost,
 // or out of date after a crash).
 
@@ -119,7 +119,7 @@ static void fmt_stamp(i64 us, char *out, i32 cap)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The Data record: name, game or custom, the real start and end, and which part has footage (SPEC.md, "Folders").
+// The Data record: name, game or custom, the real start and end, and which part has footage (docs/SPEC.md, "Folders").
 // Named after the video once there is one, else after the name and start the way a session video would be.
 
 static void session_write_record(Session *s)
@@ -717,7 +717,7 @@ static u32 sessions_add_manual(i64 from_us, i64 to_us, const char *name)
     return s->id;
 }
 
-// Changes a session's start, end or name, including an automatic one (SPEC.md: "can be changed later the same
+// Changes a session's start, end or name, including an automatic one (docs/SPEC.md: "can be changed later the same
 // way"). Its record follows.
 static void sessions_change(u32 id, i64 from_us, i64 to_us, const char *name)
 {

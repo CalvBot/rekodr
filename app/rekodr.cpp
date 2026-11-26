@@ -1,5 +1,5 @@
 // rekodr: the whole program, built as one translation unit (build.bat compiles only this file).
-// See SPEC.md for what it does and how it's put together.
+// See docs/SPEC.md for what it does and how it's put together.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
