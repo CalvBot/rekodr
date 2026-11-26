@@ -8,7 +8,7 @@ and keep it.
 Rekodr is in beta: things may change between versions.
 
 ## What it does
-- **Hours of replay.** The buffer is on disk, not in memory, so it holds hours, not minutes.
+- **Hours of replay.** Because the buffer is kept on disk rather than in memory, it holds hours, not minutes.
 - **Every app's sound on its own track.** Game, voice chat and music stay separate, to mix or mute later.
 - **Clips and sessions.** Alt+F6 (or a Stream Deck key) saves the last stretch as a clip, and whole game
   sessions are kept to look back through.
