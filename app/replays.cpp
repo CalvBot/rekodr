@@ -217,3 +217,230 @@ static i32 r6_marks(const u8 *file, size_t len, ReplayMark *out, i32 cap)
     free(data);
     return n;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Fortnite
+//
+// %LOCALAPPDATA%\FortniteGame\Saved\Demos\*.replay, an Unreal Engine replay: a header (when recording started, in
+// the PC's local time, and the key its events are encrypted with, written once the match is over), then chunks.
+// The event chunks carry every elimination of the match (playerElim: the eliminated player, the eliminator, and
+// whether it was a knock) and the recording player's match stats (AthenaMatchStats). No event says who the
+// recording player is: FortniteGame.log does, the Epic account that logged in (fn_log_owner). A player's own end
+// (falling, the storm) is an elimination with themself as the eliminator: a death, not a kill, except in the
+// match's first FN_START_MS.
+
+// A little-endian reader over untrusted bytes: once a read runs past the end, `ok` is false and reads give 0.
+struct FnReader {
+    const u8 *d;
+    size_t len, at;
+    bool ok;
+    bool take(void *out, size_t n)
+    {
+        if (!ok || n > len - at) {
+            ok = false;
+            memset(out, 0, n);
+            return false;
+        }
+        memcpy(out, d + at, n), at += n;
+        return true;
+    }
+    u8 byte() { u8 v; take(&v, 1); return v; }
+    u32 u32le() { u32 v; take(&v, 4); return v; }
+    i64 i64le() { i64 v; take(&v, 8); return v; }
+    void skip(size_t n)
+    {
+        if (!ok || n > len - at) ok = false;
+        else at += n;
+    }
+    // An FString: i32 length; above 0, that many bytes with the NUL; below 0, that many UTF-16 units. Only ASCII
+    // is kept; anything else becomes '?'.
+    void fstring(char *out, i32 cap)
+    {
+        i32 n = (i32)u32le(), k = 0;
+        bool wide = n < 0;
+        if (wide) n = -n;
+        if (n > 65536) ok = false, n = 0;
+        for (i32 i = 0; i < n && ok; i++) {
+            u16 c = 0;
+            take(&c, wide ? 2 : 1);
+            if (c && k < cap - 1) out[k++] = c < 0x80 ? (char)c : '?';
+        }
+        out[k] = 0;
+    }
+};
+
+static const u32 FN_MAGIC = 0x1CA2E27F;
+
+struct FnHeader {
+    i64  start_us; // when recording started, on the wall clock
+    bool live;     // still recording: no key yet
+    bool encrypted;
+    u8   key[32];
+};
+
+// Unreal's FDateTime (100 ns since 0001-01-01) in the PC's local time, on the wall clock. 0 if it isn't one.
+static i64 fn_local_ticks_us(i64 ticks)
+{
+    const i64 to_1601 = 504911232000000000ll;
+    if (ticks <= to_1601) return 0;
+    i64 local = ticks - to_1601;
+    FILETIME lf = {(DWORD)local, (DWORD)(local >> 32)}, uf;
+    SYSTEMTIME ls, us;
+    if (!FileTimeToSystemTime(&lf, &ls) || !TzSpecificLocalTimeToSystemTime(0, &ls, &us) || !SystemTimeToFileTime(&us, &uf))
+        return 0;
+    i64 t = ((i64)uf.dwHighDateTime << 32) | uf.dwLowDateTime;
+    return (t - 116444736000000000LL) / 10;
+}
+
+// The header. False if the bytes aren't a replay's.
+static bool fn_header(FnReader *r, FnHeader *h)
+{
+    *h = {};
+    if (r->u32le() != FN_MAGIC) return false;
+    u32 version = r->u32le();
+    if (version >= 7) {
+        u32 n = r->u32le();
+        if (n > 4096) return false;
+        r->skip((size_t)n * 20); // custom versions: a GUID and a number each
+    }
+    r->skip(12); // its length, network version and changelist
+    char name[256];
+    r->fstring(name, sizeof name);
+    h->live = r->u32le() != 0;
+    if (version >= 3) h->start_us = fn_local_ticks_us(r->i64le());
+    if (version >= 2) r->skip(4); // whether its data chunks are compressed
+    if (version >= 6) {
+        h->encrypted = r->u32le() != 0;
+        u32 n = r->u32le();
+        if (n == 32) r->take(h->key, 32);
+        else if (n <= 1024) r->skip(n);
+        else return false;
+        if (h->encrypted && n != 32 && !h->live) return false;
+    }
+    return r->ok && h->start_us;
+}
+
+// An event's data, decrypted in place with AES-256-ECB and its padding taken off. Its length; -1 if it can't be.
+static i32 fn_decrypt(const FnHeader &h, u8 *data, u32 len)
+{
+    if (!h.encrypted) return (i32)len;
+    if (!len || len % 16) return -1;
+    BCRYPT_ALG_HANDLE alg = 0;
+    BCRYPT_KEY_HANDLE key = 0;
+    i32 out = -1;
+    ULONG got = 0;
+    if (BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, 0, 0)) &&
+        BCRYPT_SUCCESS(BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_ECB, sizeof BCRYPT_CHAIN_MODE_ECB, 0)) &&
+        BCRYPT_SUCCESS(BCryptGenerateSymmetricKey(alg, &key, 0, 0, (PUCHAR)h.key, 32, 0)) &&
+        BCRYPT_SUCCESS(BCryptDecrypt(key, data, len, 0, 0, 0, data, len, &got, 0)) && got == len) {
+        u8 pad = data[len - 1];
+        if (pad >= 1 && pad <= 16) out = (i32)(len - pad);
+    }
+    if (key) BCryptDestroyKey(key);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    return out;
+}
+
+// A player in an elimination: 0x03 a bot; 0x10 a named bot (an FString); 0x11 a player, u8 length and their Epic
+// account id, written here as 32 lowercase hex digits ("" for a bot). False when it isn't one of those.
+static bool fn_player(FnReader *r, char (&id)[40])
+{
+    id[0] = 0;
+    u8 kind = r->byte();
+    if (kind == 0x03) return r->ok;
+    if (kind == 0x10) {
+        char name[64];
+        r->fstring(name, sizeof name);
+        return r->ok;
+    }
+    u8 raw[16];
+    if (kind != 0x11 || r->byte() != 16 || !r->take(raw, 16)) return false;
+    for (i32 i = 0; i < 16; i++) snprintf(id + i * 2, 3, "%02x", raw[i]);
+    return true;
+}
+
+struct FnElim {
+    i64  t_ms; // in the replay's time
+    char victim[40], killer[40];
+    bool knock;
+};
+
+// playerElim: i32 version, a byte, both players' places (160 bytes), the eliminated, the eliminator, a byte for
+// the weapon, u32 knocked.
+static bool fn_elim(const u8 *d, i32 len, FnElim *e)
+{
+    FnReader r = {d, (size_t)len, 0, true};
+    r.skip(4 + 1 + 160);
+    if (!fn_player(&r, e->victim) || !fn_player(&r, e->killer)) return false;
+    r.skip(1);
+    e->knock = r.u32le() != 0;
+    return r.ok;
+}
+
+static const i64 FN_FINISH_MS = 65000;
+static const i64 FN_START_MS = 10000; // a respawn mode takes every player out of the match as it starts
+
+// The recording player's knocks and eliminations (green), and their being knocked or eliminated (red), oldest
+// first. `owner` is their account id, from FortniteGame.log. A finish within FN_FINISH_MS of the same player's knock
+// is the same moment and isn't marked again. How many; -1 if the file isn't a finished replay.
+static i32 fn_marks(const u8 *file, size_t len, const char *owner, ReplayMark *out, i32 cap)
+{
+    FnReader r = {file, len, 0, true};
+    FnHeader h;
+    if (!fn_header(&r, &h) || h.live) return -1;
+    static thread_local FnElim elims[2048];
+    static thread_local u8 data[4096];
+    i32 ne = 0;
+    while (r.ok && len - r.at >= 8) {
+        u32 type = r.u32le(), size = r.u32le();
+        if (size > len - r.at) break;
+        size_t end = r.at + size;
+        if (type == 3) { // an event
+            char id[128], group[64], meta[64];
+            r.fstring(id, sizeof id), r.fstring(group, sizeof group), r.fstring(meta, sizeof meta);
+            u32 start_ms = r.u32le();
+            r.skip(4);
+            u32 n = r.u32le();
+            if (r.ok && n <= sizeof data && r.at + n <= end && r.take(data, n)) {
+                i32 k = fn_decrypt(h, data, n);
+                if (k > 0 && !strcmp(group, "playerElim") && ne < COUNT(elims) && fn_elim(data, k, &elims[ne]))
+                    elims[ne++].t_ms = start_ms;
+            }
+        }
+        r.ok = true;
+        r.at = end;
+    }
+    char me[40] = "";
+    for (i32 i = 0; owner && owner[i] && i < 39; i++) me[i] = (char)tolower((u8)owner[i]), me[i + 1] = 0;
+    i32 n = 0;
+    if (!me[0]) return 0;
+    for (i32 i = 0; i < ne; i++) {
+        const FnElim &e = elims[i];
+        bool hit = !strcmp(e.victim, me), mine = !hit && !strcmp(e.killer, me);
+        if ((!mine && !hit) || (hit && !strcmp(e.killer, me) && e.t_ms < FN_START_MS)) continue;
+        bool finish = false;
+        for (i32 j = i - 1; j >= 0 && !finish && !e.knock; j--)
+            finish = elims[j].knock && !strcmp(elims[j].victim, e.victim) && e.t_ms - elims[j].t_ms <= FN_FINISH_MS;
+        if (finish) continue;
+        i64 t = h.start_us + e.t_ms * 1000;
+        if (hit) replay_push(out, cap, &n, t, 1, e.knock ? "Knocked" : "Death");
+        else replay_push(out, cap, &n, t, 4, e.knock ? "Knock" : "Kill");
+    }
+    return n;
+}
+
+// The account id in FortniteGame.log, the last "Successfully logged in user. UserId=[<32 hex digits>]".
+static bool fn_log_owner(const char *log, char (&out)[40])
+{
+    out[0] = 0;
+    static const char KEY[] = "Successfully logged in user. UserId=[";
+    for (const char *p = strstr(log, KEY); p; p = strstr(p + 1, KEY)) {
+        const char *id = p + sizeof KEY - 1;
+        i32 k = 0;
+        while (k < 32 && isxdigit((u8)id[k])) k++;
+        if (k != 32 || id[32] != ']') continue;
+        for (i32 i = 0; i < 32; i++) out[i] = (char)tolower((u8)id[i]);
+        out[32] = 0;
+    }
+    return out[0] != 0;
+}

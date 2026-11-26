@@ -4405,6 +4405,85 @@ static void test_r6_replay()
     T(r6_marks(f.b, 300, m, 8) == -1 && r6_marks((const u8 *)"dissect", 7, m, 8) == -1 && r6_marks(f.b, 0, m, 8) == -1);
 }
 
+// A Fortnite replay built by hand: its header and key, an event chunk per elimination, encrypted as the game does
+struct TestReplay : TestBytes {
+    u8 key[32];
+    void u32le(u32 v) { put(&v, 4); }
+    void fstring(const char *s) { u32le((u32)strlen(s) + 1), put(s, strlen(s) + 1); }
+    void header(i64 ticks, bool live)
+    {
+        for (i32 i = 0; i < 32; i++) key[i] = (u8)(i * 7 + 1);
+        u32le(FN_MAGIC), u32le(7), u32le(0), zeros(12), fstring(""), u32le(live), put(&ticks, 8), u32le(0);
+        u32le(1), u32le(32), put(key, 32);
+    }
+    void elim(u32 at_ms, char victim, char killer, bool knock)
+    {
+        u8 d[256] = {};
+        u32 dn = 4 + 1 + 160;
+        d[0] = 10;
+        const char who[2] = {victim, killer};
+        for (char c : who) {
+            d[dn++] = 0x11, d[dn++] = 16;
+            memset(d + dn, (u8)c, 16), dn += 16;
+        }
+        dn++; // the weapon
+        d[dn] = knock, dn += 4 + 4;
+        u8 pad = (u8)(16 - dn % 16);
+        memset(d + dn, pad, pad), dn += pad;
+        BCRYPT_ALG_HANDLE alg;
+        BCRYPT_KEY_HANDLE k;
+        ULONG got;
+        BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, 0, 0);
+        BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_ECB, sizeof BCRYPT_CHAIN_MODE_ECB, 0);
+        BCryptGenerateSymmetricKey(alg, &k, 0, 0, key, 32, 0);
+        BCryptEncrypt(k, d, dn, 0, 0, 0, d, dn, &got, 0);
+        BCryptDestroyKey(k), BCryptCloseAlgorithmProvider(alg, 0);
+        u32le(3);
+        size_t size_at = n;
+        u32le(0), fstring("event"), fstring("playerElim"), fstring(""), u32le(at_ms), u32le(at_ms), u32le(dn), put(d, dn);
+        u32 size = (u32)(n - size_at - 4);
+        memcpy(b + size_at, &size, 4);
+    }
+};
+
+static void test_fn_replay()
+{
+    static TestReplay f;
+    f = {};
+    const i64 ticks = 638705738100000000ll; // 2024-12-23 23:43:30 on this PC's clock
+    f.header(ticks, false);
+    // A data chunk, skipped; then A knocks B and finishes them, takes C out, is knocked by B and finished by C, is
+    // back and taken out by D; and E and F's own fight
+    f.u32le(1), f.u32le(4), f.u32le(0);
+    f.elim(1000, 'A', 'A', false); // the start of a respawn mode
+    f.elim(10000, 'B', 'A', true), f.elim(20000, 'B', 'A', false), f.elim(30000, 'C', 'A', false);
+    f.elim(40000, 'A', 'B', true), f.elim(50000, 'A', 'C', false), f.elim(60000, 'E', 'F', false);
+    f.elim(200000, 'A', 'A', false);
+    char owner[40];
+    memset(owner, 'A', 32), owner[32] = 0;
+    for (i32 i = 0; i < 32; i += 2) owner[i] = '4', owner[i + 1] = '1'; // 'A' is 0x41
+    ReplayMark m[8];
+    const i64 start = fn_local_ticks_us(ticks);
+    T(start > 1734900000ll * 1000000 && start < 1735100000ll * 1000000);
+    T(fn_marks(f.b, f.n, owner, m, 8) == 4);
+    T(m[0].t_us == start + 10000000 && m[0].colour == 4 && !strcmp(m[0].note, "Knock"));
+    T(m[1].t_us == start + 30000000 && m[1].colour == 4 && !strcmp(m[1].note, "Kill"));
+    T(m[2].t_us == start + 40000000 && m[2].colour == 1 && !strcmp(m[2].note, "Knocked"));
+    T(m[3].t_us == start + 200000000 && m[3].colour == 1 && !strcmp(m[3].note, "Death"));
+    // Whose it is comes from the log; without that, nothing. Still recording, or not a replay: -1
+    T(fn_marks(f.b, f.n, 0, m, 8) == 0 && fn_marks(f.b, f.n - 5, owner, m, 8) == 3);
+    static TestReplay live;
+    live = {};
+    live.header(ticks, true);
+    T(fn_marks(live.b, live.n, owner, m, 8) == -1 && fn_marks(f.b, 10, owner, m, 8) == -1);
+    char id[40];
+    const char *log = "[2024.12.23-23.40.01:000][  0]LogOnlineAccount: Successfully logged in user. UserId=[41414141414141414141414141414141]\n"
+                      "LogOnline: Successfully logged in user. UserId=[0123456789ABCDEF0123456789abcdef] DisplayName=[x]\n"
+                      "Successfully logged in user. UserId=[123]\n";
+    T(fn_log_owner(log, id) && !strcmp(id, "0123456789abcdef0123456789abcdef"));
+    T(!fn_log_owner("LogOnline: nothing", id) && !id[0]);
+}
+
 static void test_layers()
 {
     wchar_t tmp[MAX_PATH];
@@ -5042,6 +5121,7 @@ int main()
     test_cam_layer();
     test_layers();
     test_r6_replay();
+    test_fn_replay();
     test_plugins();
     test_lanes();
     test_share();
