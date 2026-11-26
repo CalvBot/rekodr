@@ -109,7 +109,7 @@ static i32 ach_unlocks(const u8 *data, i64 len, i64 after, AchUnlock *out, i32 c
 
 struct AchNames {
     const char *stat, *bit;
-    char api[128], shown[128], english[128];
+    char api[128], shown[128], english[128], icon[128];
 };
 
 static void ach_names_fn(void *ctx, const char *const *path, i32 depth, const char *s, i64)
@@ -120,10 +120,13 @@ static void ach_names_fn(void *ctx, const char *const *path, i32 depth, const ch
     if (depth == 6 && !strcmp(path[5], "name")) str_set(a.api, s);
     else if (depth == 7 && !strcmp(path[5], "display") && !strcmp(path[6], "name")) str_set(a.shown, s);
     else if (depth == 8 && !strcmp(path[5], "display") && !strcmp(path[6], "name") && !strcmp(path[7], "english")) str_set(a.english, s);
+    else if (depth == 7 && !strcmp(path[5], "display") && !strcmp(path[6], "icon")) str_set(a.icon, s);
 }
 
-// An achievement's API name (what the percentages list goes by) and the name players see, from the schema.
-static bool ach_names(const u8 *data, i64 len, i32 stat, i32 bit, char *api, i32 api_cap, char *shown, i32 shown_cap)
+// An achievement's API name (what the percentages list goes by), the name players see and its icon's file name
+// (<hash>.jpg, under Steam's community images for the app), from the schema.
+static bool ach_names(const u8 *data, i64 len, i32 stat, i32 bit, char *api, i32 api_cap, char *shown, i32 shown_cap,
+                      char *icon, i32 icon_cap)
 {
     static AchNames a;
     a = {};
@@ -135,6 +138,7 @@ static bool ach_names(const u8 *data, i64 len, i32 stat, i32 bit, char *api, i32
     kv_walk(data, data + len, ach_names_fn, &a);
     snprintf(api, api_cap, "%s", a.api);
     snprintf(shown, shown_cap, "%s", a.english[0] ? a.english : a.shown[0] ? a.shown : a.api);
+    snprintf(icon, icon_cap, "%s", a.icon);
     return a.api[0] != 0;
 }
 
@@ -202,15 +206,30 @@ static void ach_game_name(u32 app, char *out, i32 cap)
     out[n] = 0;
 }
 
-// What to do about one unlock: its names, its rarity, and a marker if it's rare enough.
-static void ach_found(const Path &dir, u32 app, const AchUnlock &u)
+// A marker's detail for an achievement: achievement (API name), name, icon, app and player (the SteamID64 of the
+// account whose stats file it was).
+static void ach_detail(char (&d)[256], u32 app, u32 account, const char *api, const char *shown, const char *icon)
+{
+    char num[24];
+    d[0] = 0;
+    marker_detail_add(d, "achievement", api);
+    marker_detail_add(d, "name", shown);
+    marker_detail_add(d, "icon", icon);
+    snprintf(num, sizeof num, "%u", app);
+    marker_detail_add(d, "app", num);
+    snprintf(num, sizeof num, "%llu", 76561197960265728ull + account);
+    marker_detail_add(d, "player", num);
+}
+
+// What to do about one unlock: its names, its rarity, and a marker if it's rare enough, its detail from ach_detail.
+static void ach_found(const Path &dir, u32 app, u32 account, const AchUnlock &u)
 {
     static u8 schema[4 << 20];
     i64 len = 0;
-    char api[128] = "", shown[128] = "";
+    char api[128] = "", shown[128] = "", icon[128] = "";
     wchar_t sp[MAX_PATH];
     swprintf(sp, MAX_PATH, L"%s\\UserGameStatsSchema_%u.bin", dir.s, app);
-    if (ach_read(sp, schema, sizeof schema, &len)) ach_names(schema, len, u.stat, u.bit, api, sizeof api, shown, sizeof shown);
+    if (ach_read(sp, schema, sizeof schema, &len)) ach_names(schema, len, u.stat, u.bit, api, sizeof api, shown, sizeof shown, icon, sizeof icon);
     if (!shown[0]) snprintf(shown, sizeof shown, "Achievement");
 
     f32 pct = -1;
@@ -229,7 +248,9 @@ static void ach_found(const Path &dir, u32 app, const AchUnlock &u)
     log_line("achievements: %s%s%s (%s%.1f%% of players)%s", game, game[0] ? ": " : "", shown, pct < 0 ? "unknown, " : "",
              pct < 0 ? 0.0 : pct, rare ? "" : ", not rare enough for a marker");
     if (!rare) return;
-    markers_add(u.time * 1000000, 3, shown);
+    char detail[256];
+    ach_detail(detail, app, account, api, shown, icon);
+    markers_add(u.time * 1000000, 3, shown, detail);
     event_post(Event{}); // the timeline shows it
 }
 
@@ -268,7 +289,7 @@ static void ach_scan(const Path &dir)
         if (first) continue; // what was there before Rekodr looked is old
         i64 now = now_us();
         for (i32 i = 0; i < n && !g_ach.stop; i++)
-            if (found[i].time * 1000000 >= now - ACH_RECENT_US) ach_found(dir, app, found[i]);
+            if (found[i].time * 1000000 >= now - ACH_RECENT_US) ach_found(dir, app, account, found[i]);
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     g_ach.seen = true;

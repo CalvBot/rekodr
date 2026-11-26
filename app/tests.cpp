@@ -3694,11 +3694,21 @@ static void test_automarks()
     T(mc_line(&mc, mce, "[12:00:00] [Render thread/INFO]: Setting user: Steve", true, m, 8) == 0 && !strcmp(mc.me, "Steve"));
     T(mc_line(&mc, mce, "[12:00:01] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", true, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", false, m, 8) == 1 &&
-      !strcmp(m[0].note, "Death") && m[0].colour == 1);
+      !strcmp(m[0].note, "Death") && m[0].colour == 1 && !strcmp(m[0].detail, "killer=Zombie"));
+    // The death message's killer and weapon, or its cause; a kill names who died
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was slain by Alex using [Diamond Sword]", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "killer=Alex;weapon=Diamond Sword"));
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve drowned whilst trying to escape Drowned", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "killer=Drowned"));
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve fell from a high place", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "cause=fell from a high place"));
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was killed by Witch using magic", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "killer=Witch;weapon=magic"));
     T(mc_line(&mc, mce, "[12:00:03] [Render thread/INFO]: [System] [CHAT] Steve has made the advancement [Stone Age]", false, m, 8) == 1 &&
       !strcmp(m[0].note, "Stone Age") && m[0].colour == 6);
     T(mc_line(&mc, mce, "[12:00:04] [Render thread/INFO]: [System] [CHAT] Alex has made the advancement [Stone Age]", false, m, 8) == 0);
-    T(mc_line(&mc, mce, "[12:00:05] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steve", false, m, 8) == 1 && !strcmp(m[0].note, "Kill"));
+    T(mc_line(&mc, mce, "[12:00:05] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steve", false, m, 8) == 1 && !strcmp(m[0].note, "Kill") &&
+      !strcmp(m[0].detail, "target=Alex"));
     T(mc_line(&mc, mce, "[12:00:06] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steven", false, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:07] [Render thread/INFO]: [System] [CHAT] <Alex> Steve was slain by me", false, m, 8) == 0);
     T(mc_line(&mc, AM_KILL, "[12:00:08] [Render thread/INFO]: [System] [CHAT] Steve drowned", false, m, 8) == 0);
@@ -4082,6 +4092,7 @@ static void test_achievements()
     s.str("english", "Place Camp Fire");
     s.str("token", "NEW_ACHIEVEMENT_67_0_NAME");
     s.close();
+    s.str("icon", "8dde5848abac85e61a376bcadc2a6f267c909324.jpg");
     s.close();
     s.close();
     s.open("1");
@@ -4094,10 +4105,20 @@ static void test_achievements()
     s.close();
     s.close();
     s.close();
-    char api[128], shown[128];
-    T(ach_names(s.b, s.n, 67, 0, api, sizeof api, shown, sizeof shown) && !strcmp(api, "PLACE_CAMPFIRE") && !strcmp(shown, "Place Camp Fire"));
-    T(ach_names(s.b, s.n, 67, 1, api, sizeof api, shown, sizeof shown) && !strcmp(api, "CRAFT_CAMPFIRE") && !strcmp(shown, "Craft Camp Fire"));
-    T(!ach_names(s.b, s.n, 67, 2, api, sizeof api, shown, sizeof shown));
+    char api[128], shown[128], icon[128];
+    T(ach_names(s.b, s.n, 67, 0, api, sizeof api, shown, sizeof shown, icon, sizeof icon) && !strcmp(api, "PLACE_CAMPFIRE") &&
+      !strcmp(shown, "Place Camp Fire") && !strcmp(icon, "8dde5848abac85e61a376bcadc2a6f267c909324.jpg"));
+    T(ach_names(s.b, s.n, 67, 1, api, sizeof api, shown, sizeof shown, icon, sizeof icon) && !strcmp(api, "CRAFT_CAMPFIRE") &&
+      !strcmp(shown, "Craft Camp Fire") && !icon[0]);
+    T(!ach_names(s.b, s.n, 67, 2, api, sizeof api, shown, sizeof shown, icon, sizeof icon));
+    // The marker's detail: the achievement, the app and the player's SteamID64 from the stats file's account
+    char ad[256], av[64];
+    ach_detail(ad, 252490, 39734287, "PLACE_CAMPFIRE", "Place Camp Fire", "8dde5848abac85e61a376bcadc2a6f267c909324.jpg");
+    T(marker_detail_get(ad, "achievement", av, sizeof av) && !strcmp(av, "PLACE_CAMPFIRE"));
+    T(marker_detail_get(ad, "name", av, sizeof av) && !strcmp(av, "Place Camp Fire"));
+    T(marker_detail_get(ad, "icon", av, sizeof av) && !strcmp(av, "8dde5848abac85e61a376bcadc2a6f267c909324.jpg"));
+    T(marker_detail_get(ad, "app", av, sizeof av) && !strcmp(av, "252490"));
+    T(marker_detail_get(ad, "player", av, sizeof av) && !strcmp(av, "76561198000000015"));
 
     const char *pct = "{\"achievementpercentages\":{\"achievements\":[{\"name\":\"PLACE_CAMPFIRE\",\"percent\":\"73.5\"},"
                       "{\"name\":\"CRAFT_CAMPFIRE\",\"percent\":0.8}]}}";

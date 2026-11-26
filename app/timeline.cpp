@@ -1954,7 +1954,8 @@ static void open_url(const char *url); // setup.cpp
 static const char *tl_detail_label(const char *key)
 {
     static const char *const names[][2] = {{"killer", "Killed by"}, {"target", "Target"}, {"attacker", "By"},
-                                           {"weapon", "Weapon"}, {"area", "Hit"}, {"distance", "Distance"}};
+                                           {"weapon", "Weapon"}, {"area", "Hit"}, {"distance", "Distance"},
+                                           {"cause", "Cause"}};
     for (auto &n : names)
         if (!strcmp(key, n[0])) return n[1];
     return key;
@@ -2994,7 +2995,8 @@ static void screen_timeline()
 
     // A marker's whole note, with its time and a copy button on the top line. The note wraps at a reading width; a
     // short one gets a window just wide enough, a long one a taller window. Under it, its detail a line a pair, and a
-    // Steam profile button when it names a player's SteamID64.
+    // Steam profile button when it names a player's SteamID64, or an Achievements button (the player's achievements
+    // page for the game) for an achievement. An achievement's own keys show as that button, not as lines.
     {
         const char *note = mark_open.note[0] ? mark_open.note : "No note";
         f32 pad = 12 * s, wrap = 300 * s, bs = fh;
@@ -3002,16 +3004,18 @@ static void screen_timeline()
         tl_clock(mark_open.t_us, true, when, sizeof when);
         f32 head = 16 * s + ImGui::CalcTextSize(when).x + 12 * s + (mark_open.note[0] ? bs : 0);
         f32 body = ImGui::CalcTextSize(note).x;
-        char lines[8][160], steam_id[24] = "";
+        char lines[8][160], steam_id[24] = "", app[16] = "", player[24] = "";
         i32 nl = 0;
         {
             char k[32], v[128];
             for (const char *at = mark_open.detail; nl < COUNT(lines) && marker_detail_next(&at, k, sizeof k, v, sizeof v);) {
                 if (!v[0]) continue;
-                if (!strcmp(k, "steam_id")) {
-                    str_set(steam_id, v);
+                if (!strcmp(k, "steam_id")) str_set(steam_id, v);
+                else if (!strcmp(k, "app")) str_set(app, v);
+                else if (!strcmp(k, "player")) str_set(player, v);
+                if (!strcmp(k, "steam_id") || !strcmp(k, "app") || !strcmp(k, "player") || !strcmp(k, "achievement") ||
+                    !strcmp(k, "name") || !strcmp(k, "icon"))
                     continue;
-                }
                 for (char *ch = v; *ch; ch++)
                     if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker")) *ch = ' ';
                 snprintf(lines[nl++], sizeof lines[0], "%s  %s", tl_detail_label(k), v);
@@ -3046,6 +3050,12 @@ static void screen_timeline()
             if (steam_id[0] && kit_button(ICON_OPEN "  Steam profile##steamprofile", KIT_GHOST)) {
                 char url[96];
                 snprintf(url, sizeof url, "https://steamcommunity.com/profiles/%s", steam_id);
+                open_url(url);
+                ImGui::CloseCurrentPopup();
+            }
+            if (app[0] && player[0] && kit_button(ICON_OPEN "  Achievements##steamach", KIT_GHOST)) {
+                char url[128];
+                snprintf(url, sizeof url, "https://steamcommunity.com/profiles/%s/stats/%s/?tab=achievements", player, app);
                 open_url(url);
                 ImGui::CloseCurrentPopup();
             }

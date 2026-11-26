@@ -60,15 +60,17 @@ struct AutoMark {
     u8   colour;
     bool amend;
     char note[32];
+    char detail[256]; // the marker's detail (marker_detail_add), "" for none
 };
 
-static void am_push(AutoMark *out, i32 cap, i32 *n, u8 colour, const char *note, bool amend = false)
+static void am_push(AutoMark *out, i32 cap, i32 *n, u8 colour, const char *note, bool amend = false, const char *detail = 0)
 {
     if (*n >= cap) return;
     AutoMark &m = out[(*n)++];
     m.colour = colour;
     m.amend = amend;
     str_set(m.note, note);
+    str_set(m.detail, detail ? detail : "");
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -292,6 +294,39 @@ static bool mc_death_words(const char *rest)
     return false;
 }
 
+// A vanilla death message's detail, from the words after the dead player's name: killer (and weapon) when one is
+// named ("was slain by Zombie using [Diamond Sword]", "drowned whilst trying to escape Zombie"), else the cause
+// ("fell from a high place").
+static void mc_death_detail(char (&d)[256], const char *rest)
+{
+    char words[160], killer[96] = "", weapon[96] = "";
+    str_set(words, rest);
+    size_t l = strlen(words);
+    while (l && (words[l - 1] == '.' || words[l - 1] == ' ')) words[--l] = 0;
+    static const char *const by[] = {" whilst trying to escape ", " whilst fighting ", " by "};
+    for (i32 i = 0; i < COUNT(by) && !killer[0]; i++) {
+        const char *k = strstr(words, by[i]);
+        if (!k) continue;
+        str_set(killer, k + strlen(by[i]));
+        if (char *u = strstr(killer, " using ")) {
+            str_set(weapon, u + 7);
+            *u = 0;
+        }
+        size_t wl = strlen(weapon);
+        if (wl >= 2 && weapon[0] == '[' && weapon[wl - 1] == ']') {
+            weapon[wl - 1] = 0;
+            memmove(weapon, weapon + 1, wl - 1);
+        }
+    }
+    d[0] = 0;
+    if (killer[0]) {
+        marker_detail_add(d, "killer", killer);
+        marker_detail_add(d, "weapon", weapon);
+    } else {
+        marker_detail_add(d, "cause", words);
+    }
+}
+
 // Minecraft's latest.log: the player's deaths and advancements, and the players whose death message names the
 // player (a kill). Chat lines (<name> ...) and other players' advancements are passed over.
 static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
@@ -323,10 +358,15 @@ static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *
         return n;
     }
     if (!mc_death_words(rest)) return 0;
+    char d[256], victim[64];
     if (mine) {
-        if (events & AM_DEATH) am_push(out, cap, &n, 1, "Death");
+        mc_death_detail(d, rest);
+        if (events & AM_DEATH) am_push(out, cap, &n, 1, "Death", false, d);
     } else if ((events & AM_KILL) && am_word(rest, s->me)) {
-        am_push(out, cap, &n, 4, "Kill");
+        snprintf(victim, sizeof victim, "%.*s", (int)(sp - c), c);
+        str_set(d, "");
+        marker_detail_add(d, "target", victim);
+        am_push(out, cap, &n, 4, "Kill", false, d);
     }
     return n;
 }
@@ -1500,7 +1540,7 @@ static void am_put(const AutoMark *marks, i32 n, i32 game)
         i64 *last_kill = &g_am.last_kill[game];
         if (m.amend && *last_kill) markers_set(*last_kill, m.colour, m.note);
         else if (!m.amend) {
-            i64 t = markers_add(now_us(), m.colour, m.note);
+            i64 t = markers_add(now_us(), m.colour, m.note, m.detail);
             if (m.colour == 4) *last_kill = t;
         }
         log_line("markers: %s: %s", AM_GAMES[game].name, m.note);
