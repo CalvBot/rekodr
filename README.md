@@ -1,4 +1,4 @@
-![Rekodr](docs/images/banner.png)
+![Rekodr: Always on. Don't miss anything.](docs/images/banner.png)
 
 # Rekodr
 
