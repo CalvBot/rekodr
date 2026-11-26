@@ -363,6 +363,36 @@ static void test_buffer_many()
     T(SHFileOperationW(&op) == 0);
 }
 
+// The preview page's picture (r2.cpp): a short clip gives a JPEG of its size.
+static void test_r2_thumb()
+{
+    Path ffmpeg = {};
+    if (!ffmpeg_find(Path{}, &ffmpeg)) {
+        printf("test_r2_thumb: no ffmpeg, skipped\n");
+        return;
+    }
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path clip = {}, jpg = {};
+    swprintf(clip.s, MAX_PATH, L"%srekodr-test-thumb-%u.mp4", temp, GetCurrentProcessId());
+    swprintf(jpg.s, MAX_PATH, L"%s.jpg", clip.s);
+    wchar_t args[2048] = {};
+    static const char *const gen[] = {"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "lavfi", "-i",
+                                      "testsrc=size=320x180:rate=30:duration=2", "-pix_fmt", "yuv420p"};
+    arg_list(args, COUNT(args), gen, COUNT(gen));
+    cmd_arg(args, COUNT(args), clip.s);
+    T(proc_run(ffmpeg.s, args, 60000, 0, 0) == 0);
+    i32 w = 0, h = 0;
+    T(r2_make_thumb(clip, ffmpeg, jpg, &w, &h));
+    T(w == 320 && h == 180);
+    i64 len = 0;
+    char *pic = read_file(jpg.s, &len);
+    T(pic && len > 2 && (u8)pic[0] == 0xFF && (u8)pic[1] == 0xD8);
+    free(pic);
+    DeleteFileW(jpg.s);
+    DeleteFileW(clip.s);
+}
+
 // Delete footage (erase.cpp): video segments over the stretch go, sound over it is silenced exactly, the rest stays.
 static void test_erase()
 {
@@ -4621,6 +4651,7 @@ int main()
     test_webcam();
     test_buffer_many();
     test_erase();
+    test_r2_thumb();
     test_save_names();
     test_buffer_names();
     test_shown_names();

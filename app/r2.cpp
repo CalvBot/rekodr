@@ -2102,7 +2102,7 @@ static bool r2_make_thumb(const Path &file, const Path &ffmpeg, const Path &jpg,
         const char *head[] = {"-hide_banner", "-loglevel", "error", "-y", "-ss", at, "-i"};
         arg_list(args, COUNT(args), head, COUNT(head));
         cmd_arg(args, COUNT(args), file.s);
-        const char *tail[] = {"-an", "-frames:v", "1", "-vf", scale, "-q:v", "3"};
+        const char *tail[] = {"-an", "-frames:v", "1", "-vf", scale, "-q:v", "3", "-f", "image2"};
         arg_list(args, COUNT(args), tail, COUNT(tail));
         cmd_arg(args, COUNT(args), tried.s);
         WIN32_FILE_ATTRIBUTE_DATA fa = {};
