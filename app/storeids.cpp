@@ -3,6 +3,8 @@
 // the exe's File description, and the store id its launcher left by it:
 //   Steam   <library>\steamapps\appmanifest_<appid>.acf, whose "installdir" is the folder under steamapps\common
 //   GOG     goggame-<id>.info in the game's folder
+//   Epic    the AppName of the launcher's install manifest (ProgramData\Epic\EpicGamesLauncher\Data\Manifests\*.item)
+//           whose InstallLocation holds the exe
 // Only a game is asked about: one sorted as a Game, one Discord's list knows, or one a store installed. No
 // launcher's account files are ever opened.
 
@@ -123,6 +125,41 @@ static u64 gog_game_for(const char *path)
     return 0;
 }
 
+// The Epic game whose install folder holds the exe, from the launcher's install manifests: its AppName, into out.
+// False if none.
+static bool epic_app_for(const char *path, char *out, i32 cap)
+{
+    out[0] = 0;
+    wchar_t data[MAX_PATH];
+    DWORD dn = GetEnvironmentVariableW(L"ProgramData", data, COUNT(data));
+    if (!dn || dn >= COUNT(data)) return false;
+    Path dir = {};
+    swprintf(dir.s, MAX_PATH, L"%ls\\Epic\\EpicGamesLauncher\\Data\\Manifests", data);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(path_join(dir, L"*.item").s, &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    do {
+        if (fd.nFileSizeHigh || fd.nFileSizeLow > 1024 * 1024) continue;
+        i64 len = 0;
+        char *t = read_file(path_join(dir, fd.cFileName).s, &len);
+        if (!t) continue;
+        char at[MAX_PATH * 3], app[128];
+        if (len > 0 && j_get(t, len, "InstallLocation", at, sizeof at) && j_get(t, len, "AppName", app, sizeof app) && at[0]) {
+            size_t n = strlen(at);
+            while (n && (at[n - 1] == '\\' || at[n - 1] == '/')) n--;
+            bool in = n > 2 && strlen(path) > n && (path[n] == '\\' || path[n] == '/');
+            for (size_t i = 0; in && i < n; i++) {
+                char a = (char)tolower((u8)(at[i] == '/' ? '\\' : at[i])), b = (char)tolower((u8)(path[i] == '/' ? '\\' : path[i]));
+                in = a == b;
+            }
+            if (in && app[0]) snprintf(out, cap, "%s", app);
+        }
+        free(t);
+    } while (!out[0] && FindNextFileW(h, &fd));
+    FindClose(h);
+    return out[0] != 0;
+}
+
 // The names of up to three folders an exe sits in, nearest last, as a JSON array: ["Games","Hollow Knight"].
 // None that could name the player (personal_folder), nor any above one. False if there are none.
 static bool exe_dirs(const char *path, char *out, i32 cap)
@@ -153,7 +190,7 @@ static bool exe_dirs(const char *path, char *out, i32 cap)
     return w < cap - 2;
 }
 
-// The service's clues for an exe: {"exe","folder","dirs","name","steam","gog"}, then `more` (more fields, each
+// The service's clues for an exe: {"exe","folder","dirs","name","steam","gog","epic"}, then `more` (more fields, each
 // with its comma first). False if it isn't to be asked about: not a game (game false, and no store installed it),
 // or no folder to go by.
 static bool exe_clues(const char *exe, const char *path, const char *name, bool game, const char *more, char *out,
@@ -164,7 +201,9 @@ static bool exe_clues(const char *exe, const char *path, const char *name, bool 
     if (!game_folder(path, folder, sizeof folder, &in_steam)) return false;
     u32 steam = in_steam ? steam_app_for(path, folder) : 0;
     u64 gog = steam ? 0 : gog_game_for(path);
-    if (!game && !in_steam && !gog) return false;
+    char epic[128] = "";
+    if (!steam && !gog) epic_app_for(path, epic, sizeof epic);
+    if (!game && !in_steam && !gog && !epic[0]) return false;
     i32 n = snprintf(out, cap, "{\"exe\":");
     mc_put(out, cap, &n, exe);
     n += snprintf(out + n, cap - n, ",\"folder\":");
@@ -176,6 +215,10 @@ static bool exe_clues(const char *exe, const char *path, const char *name, bool 
     }
     if (steam) n += snprintf(out + n, cap - n, ",\"steam\":%u", steam);
     if (gog) n += snprintf(out + n, cap - n, ",\"gog\":\"%llu\"", (unsigned long long)gog);
+    if (epic[0]) {
+        n += snprintf(out + n, cap - n, ",\"epic\":");
+        mc_put(out, cap, &n, epic);
+    }
     if (n < cap) n += snprintf(out + n, cap - n, "%s}", more ? more : "");
     return n > 0 && n < cap - 1;
 }

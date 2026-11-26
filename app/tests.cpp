@@ -3602,6 +3602,48 @@ static void test_storeids()
       !strcmp(body, "{\"exe\":\"witcher3.exe\",\"folder\":\"Witcher 3\",\"dirs\":[\"Witcher 3\",\"bin\",\"x64\"],"
                     "\"gog\":\"1207664643\",\"args_has\":[]}"));
 
+    // Epic: the AppName of the launcher's manifest whose install folder holds the exe
+    {
+        wchar_t keep[MAX_PATH] = L"";
+        DWORD had = GetEnvironmentVariableW(L"ProgramData", keep, MAX_PATH);
+        snprintf(p, sizeof p, "%s/PD/Epic/EpicGamesLauncher/Data/Manifests", root);
+        make_dirs(p);
+        snprintf(p, sizeof p, "%s/Epic/Fall Guys", root);
+        make_dirs(p);
+        char item[1024], at[MAX_PATH * 3];
+        i32 an = 0;
+        for (const char *c = root; *c && an < (i32)sizeof at - 2; c++) {
+            if (*c == '/') { at[an++] = '\\'; at[an++] = '\\'; }
+            else at[an++] = *c;
+        }
+        at[an] = 0;
+        snprintf(item, sizeof item, "{\"AppName\":\"Fall\",\"InstallLocation\":\"%s\\\\Epic\\\\Fall Guys\"}", at);
+        snprintf(p, sizeof p, "%s/PD/Epic/EpicGamesLauncher/Data/Manifests/1.item", root);
+        put_text(p, item);
+        snprintf(p, sizeof p, "%s/PD", root);
+        Path pd = {};
+        utf8_to_wide(p, pd.s, MAX_PATH);
+        SetEnvironmentVariableW(L"ProgramData", pd.s);
+        char epic[128];
+        snprintf(p, sizeof p, "%s/Epic/Fall Guys/FallGuys_client.exe", root);
+        T(epic_app_for(p, epic, sizeof epic) && !strcmp(epic, "Fall"));
+        T(exe_clues("FallGuys_client.exe", p, "", false, 0, body, sizeof body) && strstr(body, ",\"epic\":\"Fall\"}"));
+        snprintf(p, sizeof p, "%s/Epic/Fall Guys Two/x.exe", root);
+        T(!epic_app_for(p, epic, sizeof epic));
+        SetEnvironmentVariableW(L"ProgramData", had ? keep : 0);
+        snprintf(p, sizeof p, "%s/PD/Epic/EpicGamesLauncher/Data/Manifests/1.item", root);
+        Path w = {};
+        utf8_to_wide(p, w.s, MAX_PATH);
+        DeleteFileW(w.s);
+        const char *dirs[] = {"PD/Epic/EpicGamesLauncher/Data/Manifests", "PD/Epic/EpicGamesLauncher/Data", "PD/Epic/EpicGamesLauncher",
+                              "PD/Epic", "PD", "Epic/Fall Guys", "Epic"};
+        for (auto d : dirs) {
+            snprintf(p, sizeof p, "%s/%s", root, d);
+            utf8_to_wide(p, w.s, MAX_PATH);
+            RemoveDirectoryW(w.s);
+        }
+    }
+
     // Not a game and not from a store: not asked about. Sorted as a Game: asked about with what there is.
     snprintf(p, sizeof p, "%s/Tools/Thing/thing.exe", root);
     T(!exe_clues("thing.exe", p, "Thing", false, 0, body, sizeof body));
