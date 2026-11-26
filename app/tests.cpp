@@ -2148,6 +2148,16 @@ static void put_file(const Path &p, const char *text)
 
 // Minecraft's modpacks: what is read from a game's folder, and what goes to the art service
 // Links (r2.cpp): request signing, names, the history file, limits and what cleanup removes
+// A file in the repo, by its path from the repo's top, found from this source file rather than the working directory
+static Path test_repo_file(const wchar_t *rel)
+{
+    wchar_t at[MAX_PATH];
+    swprintf(at, MAX_PATH, L"%hs\\..\\..\\%ls", __FILE__, rel);
+    Path p = {};
+    GetFullPathNameW(at, MAX_PATH, p.s, 0);
+    return p;
+}
+
 static void test_r2()
 {
     { // connecting a bucket fills in its settings
@@ -2551,15 +2561,17 @@ static void test_r2()
     // an icon for the page: a PNG scaled to R2_ICON_PX, in base64
     {
         static char data[32768];
-        Path png = {};
-        GetFullPathNameW(L"..\\assets\\icons\\rekodr.png", MAX_PATH, png.s, 0);
-        T(r2_icon_data(png, data, sizeof data) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
+        Path png = test_repo_file(L"assets\\icons\\rekodr.png");
+        bool made = r2_icon_data(png, data, sizeof data);
+        if (!made) printf("  r2_icon_data %ls: %s\n", png.s, g_r2_icon_why);
+        T(made && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
         T(strlen(data) < 24000 && !strchr(data, '"'));
         T(!r2_icon_data(png, data, 64) && !data[0]);
         // the art behind a page: small and grey
-        T(r2_icon_data(png, data, sizeof data, R2_ART_PX, true) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
-        Path none = {};
-        GetFullPathNameW(L"..\\assets\\icons\\none.png", MAX_PATH, none.s, 0);
+        made = r2_icon_data(png, data, sizeof data, R2_ART_PX, true);
+        if (!made) printf("  r2_icon_data %ls grey: %s\n", png.s, g_r2_icon_why);
+        T(made && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
+        Path none = test_repo_file(L"assets\\icons\\none.png");
         T(!r2_icon_data(none, data, sizeof data));
     }
     // The accent's ink: white on the default and darker picks, the page's near-black on light ones

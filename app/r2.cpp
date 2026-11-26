@@ -1925,10 +1925,13 @@ enum { R2_ICON_PX = 64, R2_ART_PX = 96 };
 
 // A picture as a data: address for a page: `png` (or a JPEG) scaled to fit `px` square and made a PNG, in grey
 // when `grey`, in base64. The page carries it in its own text, so it costs no file in the bucket and no request of
-// its own. False (and "") if it can't be read or doesn't fit `cap`.
+// its own. False (and "") if it can't be read or doesn't fit `cap`; g_r2_icon_why then says which step failed and
+// how, and the log has it too.
+static char g_r2_icon_why[96];
 static bool r2_icon_data(const Path &png, char *out, i32 cap, i32 px = R2_ICON_PX, bool grey = false)
 {
     out[0] = 0;
+    g_r2_icon_why[0] = 0;
     bool com = SUCCEEDED(CoInitializeEx(0, COINIT_MULTITHREADED));
     IWICImagingFactory *wic = 0;
     IWICBitmapDecoder *dec = 0;
@@ -1938,37 +1941,51 @@ static bool r2_icon_data(const Path &png, char *out, i32 cap, i32 px = R2_ICON_P
     IStream *mem = 0;
     IWICBitmapEncoder *enc = 0;
     IWICBitmapFrameEncode *fenc = 0;
-    UINT w = 0, h = 0;
+    UINT w = 0, h = 0, sw = 0, sh = 0;
+    HGLOBAL hg = 0;
+    STATSTG st = {};
+    WICPixelFormatGUID fmt = grey ? GUID_WICPixelFormat8bppGray : GUID_WICPixelFormat32bppBGRA;
+    static const char head[] = "data:image/png;base64,";
+    const char *step = "";
+    HRESULT hr = S_OK;
     bool ok = false;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) goto done;
-    if (FAILED(wic->CreateDecoderFromFilename(png.s, 0, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
-    if (FAILED(dec->GetFrame(0, &frame)) || FAILED(frame->GetSize(&w, &h)) || !w || !h) goto done;
+    i64 n = 0;
+    const u8 *b = 0;
+#define R2_TRY(what, call) do { step = what; if (FAILED(hr = (call))) goto done; } while (0)
+    R2_TRY("factory", CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)));
+    R2_TRY("open", wic->CreateDecoderFromFilename(png.s, 0, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec));
+    R2_TRY("frame", dec->GetFrame(0, &frame));
+    R2_TRY("size", frame->GetSize(&w, &h));
+    step = "empty";
+    if (!w || !h) goto done;
     {
         f64 k = fmin(1.0, (f64)px / (w > h ? w : h));
-        UINT sw = (UINT)fmax(1, floor(w * k + 0.5)), sh = (UINT)fmax(1, floor(h * k + 0.5));
-        if (FAILED(wic->CreateBitmapScaler(&scaler)) ||
-            FAILED(scaler->Initialize(frame, sw, sh, WICBitmapInterpolationModeHighQualityCubic)) ||
-            FAILED(wic->CreateFormatConverter(&conv)) ||
-            FAILED(conv->Initialize(scaler, grey ? GUID_WICPixelFormat8bppGray : GUID_WICPixelFormat32bppBGRA,
-                                    WICBitmapDitherTypeNone, 0, 0,
-                                    WICBitmapPaletteTypeCustom)) ||
-            FAILED(CreateStreamOnHGlobal(0, TRUE, &mem)) ||
-            FAILED(wic->CreateEncoder(GUID_ContainerFormatPng, 0, &enc)) ||
-            FAILED(enc->Initialize(mem, WICBitmapEncoderNoCache)) || FAILED(enc->CreateNewFrame(&fenc, 0)) ||
-            FAILED(fenc->Initialize(0)) || FAILED(fenc->SetSize(sw, sh)))
-            goto done;
-        WICPixelFormatGUID fmt = grey ? GUID_WICPixelFormat8bppGray : GUID_WICPixelFormat32bppBGRA;
-        if (FAILED(fenc->SetPixelFormat(&fmt)) || FAILED(fenc->WriteSource(conv, 0)) || FAILED(fenc->Commit()) ||
-            FAILED(enc->Commit()))
-            goto done;
-        HGLOBAL hg = 0;
-        STATSTG st = {};
-        if (FAILED(mem->Stat(&st, STATFLAG_NONAME)) || FAILED(GetHGlobalFromStream(mem, &hg))) goto done;
-        i64 n = (i64)st.cbSize.QuadPart;
-        static const char head[] = "data:image/png;base64,";
-        if (n <= 0 || (i64)sizeof head + (n + 2) / 3 * 4 >= cap) goto done;
-        const u8 *b = (const u8 *)GlobalLock(hg);
-        if (!b) goto done;
+        sw = (UINT)fmax(1, floor(w * k + 0.5)), sh = (UINT)fmax(1, floor(h * k + 0.5));
+    }
+    R2_TRY("scaler", wic->CreateBitmapScaler(&scaler));
+    R2_TRY("scale", scaler->Initialize(frame, sw, sh, WICBitmapInterpolationModeHighQualityCubic));
+    R2_TRY("converter", wic->CreateFormatConverter(&conv));
+    R2_TRY("convert", conv->Initialize(scaler, fmt, WICBitmapDitherTypeNone, 0, 0, WICBitmapPaletteTypeCustom));
+    R2_TRY("stream", CreateStreamOnHGlobal(0, TRUE, &mem));
+    R2_TRY("encoder", wic->CreateEncoder(GUID_ContainerFormatPng, 0, &enc));
+    R2_TRY("encode", enc->Initialize(mem, WICBitmapEncoderNoCache));
+    R2_TRY("encode", enc->CreateNewFrame(&fenc, 0));
+    R2_TRY("encode", fenc->Initialize(0));
+    R2_TRY("encode", fenc->SetSize(sw, sh));
+    R2_TRY("encode", fenc->SetPixelFormat(&fmt));
+    R2_TRY("write", fenc->WriteSource(conv, 0));
+    R2_TRY("write", fenc->Commit());
+    R2_TRY("write", enc->Commit());
+    R2_TRY("read back", mem->Stat(&st, STATFLAG_NONAME));
+    R2_TRY("read back", GetHGlobalFromStream(mem, &hg));
+#undef R2_TRY
+    n = (i64)st.cbSize.QuadPart;
+    step = "too big";
+    if (n <= 0 || (i64)sizeof head + (n + 2) / 3 * 4 >= cap) goto done;
+    step = "lock";
+    b = (const u8 *)GlobalLock(hg);
+    if (!b) goto done;
+    {
         static const char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         i32 len = snprintf(out, cap, "%s", head);
         for (i64 i = 0; i < n; i += 3) {
@@ -1979,10 +1996,14 @@ static bool r2_icon_data(const Path &png, char *out, i32 cap, i32 px = R2_ICON_P
             out[len++] = i + 2 < n ? digits[v & 63] : '=';
         }
         out[len] = 0;
-        GlobalUnlock(hg);
-        ok = true;
     }
+    GlobalUnlock(hg);
+    ok = true;
 done:
+    if (!ok) {
+        snprintf(g_r2_icon_why, sizeof g_r2_icon_why, "%s (0x%08lx)", step, (unsigned long)hr);
+        log_line("r2: picture %ls not made: %s", png.s, g_r2_icon_why);
+    }
     if (fenc) fenc->Release();
     if (enc) enc->Release();
     if (mem) mem->Release();
