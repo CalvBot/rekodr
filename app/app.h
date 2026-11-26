@@ -158,22 +158,24 @@ enum { FOLDER_MAX = 128 }; // folder rules (Config.folders), and store folders a
 // inhibitor the player took in League. AM_LAP is a lap better than the player's best (F1: the session's fastest);
 // AM_INCIDENT is contact, a penalty or iRacing's incident points. In Rocket League AM_KILL is a demolition the
 // player made and AM_DEATH one they took. AM_QUEST is a quest finished; AM_GROUP someone joining the player's group.
+// AM_DOWNED is the player knocked down (Rust's wounded).
 enum AmEvent : u32 {
     AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32, AM_ASSIST = 64,
     AM_ADVANCEMENT = 128, AM_LEVEL = 256, AM_LAP = 512, AM_OVERTAKE = 1024, AM_INCIDENT = 2048, AM_GOAL = 4096,
-    AM_SAVE = 8192, AM_RAID_START = 16384, AM_RAID_END = 32768, AM_QUEST = 65536, AM_GROUP = 131072
+    AM_SAVE = 8192, AM_RAID_START = 16384, AM_RAID_END = 32768, AM_QUEST = 65536, AM_GROUP = 131072,
+    AM_DOWNED = 262144
 };
 static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level",
-                                             "lap", "overtake", "incident", "goal", "save", "raid_start", "raid_end", "quest", "group"};
+                                             "lap", "overtake", "incident", "goal", "save", "raid_start", "raid_end", "quest", "group", "downed"};
 // Each event's marker colour (MARKER_COLOURS) and the note it gets when its source gives none: a plugin's events.
-static const u8 AM_EVENT_COLOURS[] = {4, 4, 1, 3, 3, 5, 5, 6, 6, 6, 4, 1, 4, 5, 5, 5, 3, 6};
+static const u8 AM_EVENT_COLOURS[] = {4, 4, 1, 3, 3, 5, 5, 6, 6, 6, 4, 1, 4, 5, 5, 5, 3, 6, 2};
 static const char *const AM_EVENT_NOTES[] = {"Kill", "Multi-kill", "Death", "Round won", "Win", "Objective", "Assist",
                                              "Advancement", "Level up", "Best lap", "Overtake", "Incident", "Goal", "Save",
-                                             "Raid start", "Raid end", "Quest done", "Group joined"};
+                                             "Raid start", "Raid end", "Quest done", "Group joined", "Downed"};
 static_assert(sizeof AM_EVENT_COLOURS == sizeof AM_EVENT_WORDS / sizeof *AM_EVENT_WORDS, "a colour for each event");
 static_assert(sizeof AM_EVENT_NOTES == sizeof AM_EVENT_WORDS, "a note for each event");
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
-                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_TARKOV, AMG_COUNT };
+                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_TARKOV, AMG_RUST, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
 // or listening.
 struct AmGame { const char *key, *name, *feed; u32 events; };
@@ -194,6 +196,7 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"hearthstone", "Hearthstone", "From the game's log", AM_WIN},
     {"war_thunder", "War Thunder", "From the game's map server, for the name below", AM_KILL | AM_DEATH | AM_WIN},
     {"tarkov", "Escape from Tarkov", "From the game's logs", AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP},
+    {"rust", "Rust", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED},
 };
 
 // A plugin's event ticks in Options > Auto markers, saved as am_events_plugin_<folder> (plugins.cpp). A plugin
@@ -297,6 +300,7 @@ struct Config {
     bool auto_marks_on[AMG_COUNT];     // each of AM_GAMES marks its events on the timeline (on)
     u32  auto_marks_events[AMG_COUNT]; // AmEvent bits: what it marks while on (all it has)
     char wt_name[64];                  // the player's War Thunder name, whose kills and deaths are marked ("")
+    bool rust_print_on_death;          // a death in Rust presses F15 there, bound to combatlog, for its kills (off)
     bool ach_marks;       // a Steam achievement rarer than ach_rarer gets a marker (achievements.cpp; on)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), else 1 to LINK_DAYS_MAX; the
@@ -1235,6 +1239,7 @@ struct Marker {
     i64  t_us;      // when, on the wall clock; no two markers share one, so it also says which marker
     u8   colour;    // an index into MARKER_COLOURS; 0 = none
     char note[256]; // UTF-8, one line
+    char detail[256]; // more about it, kept on this PC only: key=value pairs (markers.cpp, marker_detail_add)
 };
 
 struct MarkerColour {
@@ -1254,6 +1259,7 @@ enum AmState { AM_OFF, AM_READY, AM_NOT_FOUND, AM_PORT_BUSY };
 static void automarks_apply();
 static AmState automarks_state(i32 game);
 static void automarks_uninstall();
+static i32 rust_bind_state(); // rustlog.cpp: 1 when Rust's keys.cfg binds F15 to combatlog, 0 not, -1 no keys.cfg
 static void achievements_apply(); // achievements.cpp
 
 // Webcam (webcam.cpp). A saved clip carries the webcam as its second video stream, titled CAM_STREAM_TITLE.

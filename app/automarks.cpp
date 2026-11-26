@@ -1665,6 +1665,8 @@ static void mc_log_path(wchar_t *out)
 
 static void replays_poll(); // replays.cpp
 static void replays_apply();
+static void rust_poll(); // rustlog.cpp
+static void rust_apply();
 
 // Once a second: the lines each log game on has added, and the replays games have finished.
 static void am_logs_poll()
@@ -1727,6 +1729,7 @@ static void am_logs_poll()
                 });
     }
     replays_poll();
+    rust_poll();
 }
 
 // Once a second: iRacing's and Assetto Corsa Competizione's shared memory, while the sim has it open.
@@ -2089,8 +2092,9 @@ static void automarks_apply()
 
     bool logs = false;
     replays_apply();
+    rust_apply();
     static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER,
-                                     AMG_TARKOV};
+                                     AMG_TARKOV, AMG_RUST};
     for (i32 g : log_games) logs |= g_am.events[g] != 0;
     if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);

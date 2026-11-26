@@ -4047,9 +4047,21 @@ static void test_markers()
     char plain[] = "1763500000000001\t\t\r\n", bad[] = "not a marker";
     T(marker_from_line(plain, &back) && back.colour == 0 && !back.note[0]);
     T(!marker_from_line(bad, &back));
+    // Detail: key=value pairs, values escaped, kept through a line
+    Marker d = {1763500000000002, 1, "Death"};
+    marker_detail_add(d.detail, "killer", "A;b=c 100%");
+    marker_detail_add(d.detail, "steam_id", "76561198000000001");
+    marker_detail_add(d.detail, "empty", "");
+    T(!strcmp(d.detail, "killer=A%3Bb%3Dc 100%25;steam_id=76561198000000001"));
+    T(marker_line(d, line, sizeof line) > 0 && marker_from_line(line, &back) && !strcmp(back.note, "Death") && !strcmp(back.detail, d.detail));
+    char dv[64];
+    T(marker_detail_get(back.detail, "killer", dv, sizeof dv) && !strcmp(dv, "A;b=c 100%"));
+    T(!marker_detail_get(back.detail, "weapon", dv, sizeof dv) && !marker_detail_get("", "killer", dv, sizeof dv));
+    marker_detail_set(back.detail, "a=1\nb");
+    T(!strcmp(back.detail, "a=1b"));
 
     static Markers ms;
-    ms = {};
+    memset(&ms, 0, sizeof ms); // not "= {}": that builds the 1 MB list on the stack first
     Marker a = {300}, b = {100}, c = {200};
     T(markers_insert(&ms, a) == 300 && markers_insert(&ms, b) == 100 && markers_insert(&ms, c) == 200);
     T(ms.count == 3 && ms.items[0].t_us == 100 && ms.items[1].t_us == 200 && ms.items[2].t_us == 300);
@@ -4059,6 +4071,105 @@ static void test_markers()
     T(markers_range(&ms, 0, 1000, got, 2) == 2);
     for (i32 i = 0; i < MARKER_MAX; i++) { Marker x = {1000 + i}; markers_insert(&ms, x); }
     T(ms.count == MARKER_MAX && ms.items[0].t_us == 1000 && ms.items[MARKER_MAX - 1].t_us == 1000 + MARKER_MAX - 1); // the oldest went
+}
+
+// Rust's output_log.txt: deaths with who, kills and downs out of the combat log, each once across its prints
+static void test_rust()
+{
+    // Lines from a real log (names in it escaped), and a fall
+    static const char log[] =
+        "2026-11-25T11:32:14.389Z|0x5c28|You died: killed by Marlow (76561198000000011)\n"
+        "2026-11-25T11:50:46.587Z|0x5c28|You died: killed by Captain Wobble (76561198000000012)\n"
+        "2026-11-25T12:20:20.446Z|0x5c28|You died: killed by \xD0\x9F\xD0\xB5\xD1\x82\xD1\x8F RAMPAGE (76561198000000013)\n"
+        "2026-11-25T13:40:59.375Z|0x5c28|time    attacker       target                      weapon                 ammo                      area    distance old_hp new_hp info   hits integrity travel mismatch desync \n"
+        "468.07s you            player_505050               pistol_semiauto.entity pistolbullet              head    16.8m    52.6   0.0    killed 0    1.00      0.06s  0.00m    48     \n"
+        "+ 5 events in the last 10 seconds\n"
+        "2026-11-25T13:41:01.331Z|0x5c28|time    attacker       target                      weapon                 ammo                      area    distance old_hp new_hp info   hits integrity travel mismatch desync \n"
+        "470.02s you            player_505050               pistol_semiauto.entity pistolbullet              head    16.8m    52.6   0.0    killed 0    1.00      0.06s  0.00m    48     \n"
+        "+ 5 events in the last 10 seconds\n"
+        "2026-11-25T13:41:08.644Z|0x5c28|time    attacker       target                      weapon                 ammo                      area    distance old_hp new_hp info    hits integrity travel mismatch desync \n"
+        "477.33s you            player_505050               pistol_semiauto.entity pistolbullet              head    16.8m    52.6   0.0    killed  0    1.00      0.06s  0.00m    48     \n"
+        "27.16s  you            player_6060606              pistol_semiauto.entity pistolbullet              stomach 33.9m    89.5   79.6           0    1.00      0.12s  0.00m    108    \n"
+        "14.52s  player_6060606 you                         ak47u.entity           riflebullet               arm     17.4m    11.8   7.0    wounded 0    1.00      0.05s  0.00m    38     \n"
+        "UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)\n"
+        "2026-11-25T13:41:11.284Z|0x5c28|You died: killed by \xED\x95\x98\xEB\x8A\x98 (76561198000000014)\n"
+        "2026-11-25T13:45:00.000Z|0x5c28|You died: Fall\n";
+    static RustMark m[16];
+    T(rust_marks(log, m, 16) == 7);
+    char v[128];
+    T(m[0].event == AM_DEATH && m[0].t_us == rust_time("2026-11-25T11:32:14.389Z|") && !strcmp(m[0].note, "Death"));
+    T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "Marlow"));
+    T(marker_detail_get(m[0].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000011"));
+    T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Captain Wobble"));
+    T(marker_detail_get(m[2].detail, "killer", v, sizeof v) && !strcmp(v, "\xD0\x9F\xD0\xB5\xD1\x82\xD1\x8F RAMPAGE"));
+    T(marker_detail_get(m[2].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000013"));
+    // The kill, in three prints, is one: a headshot, at the first print less its age
+    T(m[3].event == AM_KILL && !strcmp(m[3].note, "Headshot") && m[3].t_us == rust_time("2026-11-25T13:40:59.375Z|") - 468070000);
+    T(marker_detail_get(m[3].detail, "target", v, sizeof v) && !strcmp(v, "player_505050"));
+    T(marker_detail_get(m[3].detail, "weapon", v, sizeof v) && !strcmp(v, "pistol_semiauto"));
+    T(marker_detail_get(m[3].detail, "distance", v, sizeof v) && !strcmp(v, "16.8m"));
+    T(m[4].event == AM_DOWNED && !strcmp(m[4].note, "Downed") && m[4].t_us == rust_time("2026-11-25T13:41:08.644Z|") - 14520000);
+    T(marker_detail_get(m[4].detail, "attacker", v, sizeof v) && !strcmp(v, "player_6060606"));
+    T(marker_detail_get(m[5].detail, "killer", v, sizeof v) && !strcmp(v, "\xED\x95\x98\xEB\x8A\x98"));
+    T(m[6].event == AM_DEATH && !strcmp(m[6].note, "Death: Fall") && !m[6].detail[0]);
+    T(rust_time("2026-11-25 13:45:00|x") == 0 && rust_marks("", m, 16) == 0 && rust_marks(log, m, 2) == 2);
+    // A name with brackets of its own, and no id
+    T(rust_marks("2026-11-25T13:45:00.000Z|0x1|You died: killed by [AB] (x) (76561198000000001)\n"
+                 "2026-11-25T13:46:00.000Z|0x1|You died: killed by Scientist\n", m, 16) == 2);
+    T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "[AB] (x)"));
+    T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Scientist"));
+    T(!marker_detail_get(m[1].detail, "steam_id", v, sizeof v));
+
+    // The F15 bind, as Rust writes keys.cfg
+    T(rust_bind_found("bind f1 consoletoggle;combatlog\nbind f15 combatlog\n"));
+    T(rust_bind_found("bind f2 x\r\nbind f15 chat.open;combatlog\r\n"));
+    T(!rust_bind_found("bind f1 consoletoggle;combatlog\nbind f15 demo.resume\n"));
+    T(!rust_bind_found("bind f15 combatlogs\nbind f150 combatlog\n") && !rust_bind_found(""));
+    // The press: down then up, due from its moment for RUST_EVERY
+    INPUT in[2];
+    rust_f15_inputs(in);
+    T(in[0].type == INPUT_KEYBOARD && in[0].ki.wVk == VK_F15 && !in[0].ki.dwFlags && in[1].ki.wVk == VK_F15 && in[1].ki.dwFlags == KEYEVENTF_KEYUP);
+    T(!rust_press_due(99, 100) && rust_press_due(100, 100) && rust_press_due(100 + RUST_EVERY, 100) && !rust_press_due(101 + RUST_EVERY, 100) && !rust_press_due(5, 0));
+
+    // The watcher: each mark once, also after a restart (rust.tsv), and none it wasn't asked for
+    Path keep = g_app.paths.local_dir, home;
+    wchar_t temp[MAX_PATH], file[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(home.s, MAX_PATH, L"%srekodr-tests-rust-%lu", temp, GetCurrentProcessId());
+    CreateDirectoryW(home.s, 0);
+    g_app.paths.local_dir = home;
+    swprintf(file, MAX_PATH, L"%s\\output_log.txt", home.s);
+    FILE *o = _wfopen(file, L"wb");
+    fwrite(log, 1, sizeof log - 1, o);
+    fclose(o);
+    Event e;
+    while (event_take(&e)) {}
+    auto poll = [&]() {
+        g_rust.next = 0, g_rust.size = 0;
+        rust_poll();
+        i32 n = 0;
+        while (event_take(&e)) {
+            n += e.kind == EV_MARKER;
+            if (e.kind == EV_MARKER && strstr(e.text, "Marlow")) T(!strcmp(e.text, "Death\tkiller=Marlow;steam_id=76561198000000011"));
+        }
+        return n;
+    };
+    g_rust = {};
+    wcscpy_s(g_rust.dir, home.s);
+    g_am.events[AMG_RUST] = AM_DEATH;
+    T(poll() == 5 && poll() == 0);
+    g_am.events[AMG_RUST] = AM_DEATH | AM_KILL;
+    g_rust.loaded = false; // a restart: only the kill is new
+    T(poll() == 1 && g_rust.press_at == 0); // print on death is off, and these deaths are old
+    g_rust.loaded = false;
+    T(poll() == 0);
+    g_am.events[AMG_RUST] = 0;
+    g_rust = {};
+    g_app.paths.local_dir = keep;
+    DeleteFileW(file);
+    swprintf(file, MAX_PATH, L"%s\\rust.tsv", home.s);
+    DeleteFileW(file);
+    RemoveDirectoryW(home.s);
 }
 
 // Chapters: wall clock to file time across a gap, sorted, titles escaped
@@ -5138,10 +5249,12 @@ static void test_layers()
     T(layers_mark_add(late_file, T0 + 40 * S, 4, "Kill") && layers_mark_add(late_file, T0 + 10 * S, 1, "Death"));
     T(!layers_mark_add(late_file, T0 + 25 * S, 4, "Gap") && !layers_mark_add(late_file, T0 + 60 * S, 4, "After"));
     T(!layers_mark_add(late_file, T0 + 40 * S, 4, "Kill"));
+    T(layers_mark_add(late_file, T0 + 12 * S, 1, "Death", "killer=Marlow;steam_id=76561198000000011"));
     Marker late[8];
-    T(layers_marks_read(late_file, late, 8) == 2);
-    T(late[0].t_us == 2 * S && late[0].colour == 1 && !strcmp(late[0].note, "Death"));
-    T(late[1].t_us == 22 * S && late[1].colour == 4 && !strcmp(late[1].note, "Kill"));
+    T(layers_marks_read(late_file, late, 8) == 3);
+    T(late[0].t_us == 2 * S && late[0].colour == 1 && !strcmp(late[0].note, "Death") && !late[0].detail[0]);
+    T(late[1].t_us == 4 * S && !strcmp(late[1].note, "Death") && !strcmp(late[1].detail, "killer=Marlow;steam_id=76561198000000011"));
+    T(late[2].t_us == 22 * S && late[2].colour == 4 && !strcmp(late[2].note, "Kill"));
     T(!layers_read(late_file, &none));
     layer_set_free(&none);
     T(layers_marks_read(path_join(data, L"No such clip.layers.txt"), late, 8) == 0);
@@ -5737,6 +5850,7 @@ int main()
     test_store_folders();
     test_markers();
     test_automarks();
+    test_rust();
     test_achievements();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;

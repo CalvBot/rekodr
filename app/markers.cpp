@@ -8,9 +8,9 @@
 // The moment is when the command came, not when the note was finished, and the marker is kept even if the window
 // is closed without a word.
 //
-// They are kept in <local>\markers.tsv, a line each of <time in us> <tab> <colour's name> <tab> <note>, oldest
-// first, the newest MARKER_MAX of them. markers_in gives the ones in a stretch of time, for the timeline to draw
-// and for a save to write into the file as chapters.
+// They are kept in <local>\markers.tsv, a line each of <time in us> <tab> <colour's name> <tab> <note>, and
+// <tab> <detail> when it has one (marker_detail_add), oldest first, the newest MARKER_MAX of them. markers_in gives
+// the ones in a stretch of time, for the timeline to draw and for a save to write into the file as chapters.
 
 enum { MARKER_MAX = 2048 };
 struct Markers {
@@ -48,9 +48,69 @@ static void marker_args(const char *arg, u8 *colour, char (&note)[256])
     marker_note_set(note, *colour ? arg + word : arg);
 }
 
+// A marker's detail: what a game says of it beyond the note (who killed the player, the weapon), as "key=value"
+// pairs joined by ';', each value with '%', ';', '=' and control characters written %XX. It stays on this PC: the
+// note alone goes into chapters, shared pages and cards.
+static void marker_detail_add(char (&d)[256], const char *key, const char *value)
+{
+    if (!value || !value[0]) return;
+    char one[256];
+    i32 n = snprintf(one, sizeof one, "%s%s=", d[0] ? ";" : "", key);
+    for (const u8 *c = (const u8 *)value; *c && n < (i32)sizeof one - 4; c++) {
+        if (*c < 0x20 || *c == '%' || *c == ';' || *c == '=') n += snprintf(one + n, sizeof one - n, "%%%02X", *c);
+        else one[n++] = (char)*c;
+    }
+    one[n] = 0;
+    size_t have = strlen(d);
+    if (have + n < sizeof d) memcpy(d + have, one, (size_t)n + 1);
+}
+
+// The next pair of a detail from *at, its value decoded; false at the end.
+static bool marker_detail_next(const char **at, char *key, i32 key_cap, char *value, i32 value_cap)
+{
+    const char *p = *at;
+    if (!*p) return false;
+    const char *end = strchr(p, ';');
+    if (!end) end = p + strlen(p);
+    const char *eq = (const char *)memchr(p, '=', (size_t)(end - p));
+    if (!eq) eq = end;
+    snprintf(key, key_cap, "%.*s", (int)(eq - p), p);
+    i32 n = 0;
+    for (const char *c = eq < end ? eq + 1 : end; c < end && n < value_cap - 1; c++) {
+        if (*c == '%' && end - c >= 3 && isxdigit((u8)c[1]) && isxdigit((u8)c[2])) {
+            char hex[3] = {c[1], c[2], 0};
+            value[n++] = (char)strtol(hex, 0, 16);
+            c += 2;
+        } else value[n++] = *c;
+    }
+    value[n] = 0;
+    *at = *end ? end + 1 : end;
+    return true;
+}
+
+// A detail's value for `key`, "" when it has none.
+static bool marker_detail_get(const char *d, const char *key, char *out, i32 cap)
+{
+    char k[32];
+    for (const char *at = d; marker_detail_next(&at, k, sizeof k, out, cap);)
+        if (!strcmp(k, key)) return true;
+    out[0] = 0;
+    return false;
+}
+
+// A detail as it is kept: one line with no tabs.
+static void marker_detail_set(char (&d)[256], const char *text)
+{
+    i32 n = 0;
+    for (; text && *text && n < (i32)sizeof d - 1; text++)
+        if ((u8)*text >= 0x20) d[n++] = *text;
+    d[n] = 0;
+}
+
 static i32 marker_line(const Marker &m, char *out, i32 cap)
 {
-    return snprintf(out, cap, "%lld\t%s\t%s\n", (long long)m.t_us, MARKER_COLOURS[m.colour].name, m.note);
+    return snprintf(out, cap, "%lld\t%s\t%s%s%s\n", (long long)m.t_us, MARKER_COLOURS[m.colour].name, m.note,
+                    m.detail[0] ? "\t" : "", m.detail);
 }
 
 // A line of markers.tsv. False if it isn't one.
@@ -58,13 +118,15 @@ static bool marker_from_line(char *line, Marker *m)
 {
     size_t len = strlen(line);
     while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
-    char *f[3];
-    if (split_tabs(line, f, 3) != 3) return false;
+    char *f[4];
+    i32 nf = split_tabs(line, f, 4);
+    if (nf < 3) return false;
     *m = {};
     m->t_us = strtoll(f[0], 0, 10);
     if (m->t_us <= 0) return false;
     m->colour = marker_colour_named(f[1], strlen(f[1]));
     marker_note_set(m->note, f[2]);
+    if (nf == 4) marker_detail_set(m->detail, f[3]);
     return true;
 }
 
@@ -104,7 +166,7 @@ static void markers_load_locked()
     g_markers.loaded = true;
     FILE *f = _wfopen(path_join(g_app.paths.local_dir, L"markers.tsv").s, L"rb");
     if (!f) return;
-    char line[512];
+    char line[1024];
     Marker m;
     while (fgets(line, sizeof line, f))
         if (marker_from_line(line, &m)) markers_insert(&g_markers, m);
@@ -118,7 +180,7 @@ static void markers_write_locked()
     wcscat_s(tmp.s, L".tmp");
     FILE *f = _wfopen(tmp.s, L"wb");
     if (!f) { log_line("markers: couldn't write markers.tsv (%d)", (int)GetLastError()); return; }
-    char line[512];
+    char line[1024];
     for (i32 i = 0; i < g_markers.count; i++) {
         i32 n = marker_line(g_markers.items[i], line, sizeof line);
         if (n > 0 && n < (i32)sizeof line) fwrite(line, 1, (size_t)n, f);
@@ -127,13 +189,14 @@ static void markers_write_locked()
     if (!MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING)) log_line("markers: couldn't replace markers.tsv (%d)", (int)GetLastError());
 }
 
-// A new marker. Returns its time, which is how it is named afterwards.
-static i64 markers_add(i64 t_us, u8 colour, const char *note)
+// A new marker, with its detail if it has one. Returns its time, which is how it is named afterwards.
+static i64 markers_add(i64 t_us, u8 colour, const char *note, const char *detail = 0)
 {
     Marker m = {};
     m.t_us = t_us;
     m.colour = colour < COUNT(MARKER_COLOURS) ? colour : 0;
     marker_note_set(m.note, note);
+    marker_detail_set(m.detail, detail);
     AcquireSRWLockExclusive(&g_markers.lock);
     markers_load_locked();
     i64 id = markers_insert(&g_markers, m);
@@ -160,9 +223,9 @@ static void markers_set(i64 t_us, u8 colour, const char *note)
 
 // A marker made after its moment (from a game's replay, read once the match is over): on the timeline, and in the
 // layers file of each clip or session saved over it, since the save's chapters are already written. Main thread.
-static void markers_add_late(i64 t_us, u8 colour, const char *note)
+static void markers_add_late(i64 t_us, u8 colour, const char *note, const char *detail = 0)
 {
-    markers_add(t_us, colour, note);
+    markers_add(t_us, colour, note, detail);
     Saving &sv = g_app.saving;
     saved_load();
     for (i32 i = 0; i < sv.saved_count; i++) {
@@ -170,7 +233,7 @@ static void markers_add_late(i64 t_us, u8 colour, const char *note)
         if (t_us < r.from_us || t_us >= r.to_us) continue;
         Path video = {};
         utf8_to_wide(r.path, video.s, COUNT(video.s));
-        if (layers_mark_add(layers_video_path(g_app.config.save_dir, video), t_us, colour, note))
+        if (layers_mark_add(layers_video_path(g_app.config.save_dir, video), t_us, colour, note, detail))
             log_line("markers: \"%s\" added to %s", note, r.path);
     }
 }

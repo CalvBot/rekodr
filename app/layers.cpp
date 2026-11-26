@@ -579,10 +579,11 @@ static bool layers_read(const Path &file, LayerSet *set)
 
 // ---------------------------------------------------------------------------------------------------------------
 // Markers that came after the save (from a game's replay, once the match is over) are kept in the same file as
-// "mark = time colour note", the time on the wall clock and the colour an index into MARKER_COLOURS. The markers made
-// before the save are the video's chapters.
+// "mark = time colour note", the time on the wall clock and the colour an index into MARKER_COLOURS, and a tab and
+// the marker's detail when it has one. The markers made before the save are the video's chapters.
 
 static void marker_note_set(char (&note)[256], const char *text); // markers.cpp
+static void marker_detail_set(char (&d)[256], const char *text);
 
 // A layers file's pieces and late markers, the markers still on the wall clock. False when it can't be read.
 static bool layers_file_marks(const Path &file, Piece *pieces, i32 piece_cap, i32 *piece_count, Marker *marks,
@@ -605,7 +606,10 @@ static bool layers_file_marks(const Path &file, Piece *pieces, i32 piece_cap, i3
             m = {};
             m.t_us = a;
             m.colour = colour > 0 && colour < (i32)COUNT(MARKER_COLOURS) ? (u8)colour : 0;
-            marker_note_set(m.note, line + 7 + used);
+            char *note = line + 7 + used, *tab = strchr(note, '\t');
+            if (tab) *tab++ = 0;
+            marker_note_set(m.note, note);
+            marker_detail_set(m.detail, tab);
         }
     }
     fclose(f);
@@ -614,7 +618,7 @@ static bool layers_file_marks(const Path &file, Piece *pieces, i32 piece_cap, i3
 
 // Adds a marker to a saved video's layers file, when its moment is in the video and it isn't there already. True
 // when it was added.
-static bool layers_mark_add(const Path &file, i64 t_us, u8 colour, const char *note)
+static bool layers_mark_add(const Path &file, i64 t_us, u8 colour, const char *note, const char *detail = 0)
 {
     static thread_local Piece pieces[512];
     static thread_local Marker marks[256];
@@ -623,11 +627,13 @@ static bool layers_mark_add(const Path &file, i64 t_us, u8 colour, const char *n
     if (file_time(pieces, np, t_us) < 0 || nm == COUNT(marks)) return false;
     Marker m = {};
     marker_note_set(m.note, note);
+    marker_detail_set(m.detail, detail);
     for (i32 i = 0; i < nm; i++)
         if (marks[i].t_us == t_us && !strcmp(marks[i].note, m.note)) return false;
     FILE *f = _wfopen(file.s, L"ab");
     if (!f) return false;
-    fprintf(f, "mark = %lld %d %s\n", (long long)t_us, colour < COUNT(MARKER_COLOURS) ? colour : 0, m.note);
+    fprintf(f, "mark = %lld %d %s%s%s\n", (long long)t_us, colour < COUNT(MARKER_COLOURS) ? colour : 0, m.note,
+            m.detail[0] ? "\t" : "", m.detail);
     fclose(f);
     return true;
 }

@@ -167,6 +167,11 @@ static void run_command(const char *text)
             g_app.options.tab = OPT_INTEGRATIONS;
             g_opt_show_r2 = true;
         }
+        else if (!strcmp(arg, "rust")) { // Auto markers, scrolled to Rust's row
+            ui_show(SCREEN_OPTIONS);
+            g_app.options.tab = OPT_AUTOMARKS;
+            g_opt_show_rust = true;
+        }
         else if (!strcmp(arg, "folders")) { // General, scrolled to its Folders
             ui_show(SCREEN_OPTIONS);
             g_app.options.tab = OPT_GENERAL;
@@ -185,7 +190,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {
@@ -248,7 +253,15 @@ static void handle_event(const Event &e)
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
     case EV_ERASE: timeline_on_erase(e); break;
-    case EV_MARKER: markers_add_late(e.a, (u8)e.b, e.text), ui_wake(); break;
+    case EV_MARKER: { // text: the note, and a tab and the detail when it has one
+        char note[sizeof e.text];
+        str_set(note, e.text);
+        char *tab = strchr(note, '\t');
+        if (tab) *tab++ = 0;
+        markers_add_late(e.a, (u8)e.b, note, tab);
+        ui_wake();
+        break;
+    }
     case EV_GAMEDB: gamedb_on_event(e); break;
     case EV_R2: r2_on_event(e); library_r2_event(); break;
     default: break;
