@@ -647,14 +647,37 @@ static DWORD WINAPI stderr_thread(void *arg)
 }
 
 // Asks ffmpeg to finish the current segment and exit; kills it if it doesn't within 5 s.
-static void capture_stop(Proc *p)
+//
+// ffmpeg finishes only once the capture hands it one more frame, and Windows Graphics Capture hands out a frame only
+// when the screen changes: on a still screen ffmpeg would wait forever. So while it stops, a 1x1 fully transparent
+// window that never takes focus or clicks hops between two pixels in a corner of the captured monitor (`nudge`, 0
+// when the capture isn't a monitor's), and each hop is a changed screen.
+static void capture_stop(Proc *p, HMONITOR nudge)
 {
     if (p->in) {
         DWORD written;
         WriteFile(p->in, "q", 1, &written, 0);
         proc_close_stdin(p);
     }
-    if (proc_wait(p, 5000) < 0) {
+    MONITORINFO mi = {sizeof mi};
+    HWND hop = 0;
+    if (nudge && GetMonitorInfoW(nudge, &mi)) {
+        hop = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                              L"STATIC", L"", WS_POPUP, mi.rcMonitor.right - 1, mi.rcMonitor.bottom - 1, 1, 1, 0, 0, 0, 0);
+        if (hop) SetLayeredWindowAttributes(hop, 0, 0, LWA_ALPHA);
+    }
+    u64 asked = GetTickCount64();
+    for (i32 n = 0; hop && proc_wait(p, 0) < 0 && GetTickCount64() - asked < 5000; n++) {
+        // ffmpeg reads the q between frames, up to a second after it was sent: keep making frames until it's gone
+        SetWindowPos(hop, HWND_TOPMOST, mi.rcMonitor.right - 1 - (n & 1), mi.rcMonitor.bottom - 1, 0, 0,
+                     SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        MSG msg;
+        while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+        proc_wait(p, 100);
+    }
+    if (hop) DestroyWindow(hop);
+    u64 spent = GetTickCount64() - asked;
+    if (proc_wait(p, spent < 5000 ? (u32)(5000 - spent) : 0) < 0) {
         log_line("video ffmpeg didn't stop when asked; killing it");
         proc_kill(p);
         proc_wait(p, 2000);
@@ -803,6 +826,7 @@ static DWORD WINAPI recorder_thread(void *)
         g_reader.segment_tick = 0;
         g_reader.frames = g_reader.dups = g_reader.drops = g_reader.progress_tick = g_reader.out_us = 0;
         HANDLE reader = thread_start(stderr_thread, &g_reader);
+        HMONITOR nudge = wgc && !s.hwnd ? (HMONITOR)(uintptr_t)s.hmonitor : 0;
 
         u64 started = GetTickCount64();
         bool announced = false;
@@ -831,7 +855,7 @@ static DWORD WINAPI recorder_thread(void *)
                 if (restart) log_line("video settings changed: restarting the capture");
             }
             if (rec_stopping() || now.paused || restart) {
-                capture_stop(&p);
+                capture_stop(&p, nudge);
                 break;
             }
             // ffmpeg can hit an encoder or capture error and stay running without writing anything ("Generic
@@ -850,12 +874,12 @@ static DWORD WINAPI recorder_thread(void *)
                 if (!idle) log_line("screen unchanged: the capture waits for it to change");
                 idle = true;
             } else if (still && quiet > 60000) {
-                capture_stop(&p); // a fresh capture starts the next stretch with the screen as it is
+                capture_stop(&p, nudge); // a fresh capture starts the next stretch with the screen as it is
                 renewed = true;
                 break;
             } else if (quiet > 15000) {
                 log_line("video capture stalled: no new segment for 15 s (%s); restarting it", g_reader.last);
-                capture_stop(&p);
+                capture_stop(&p, nudge);
                 code = 2; // handled like ffmpeg stopping by itself: retry with backoff
                 break;
             }
@@ -904,7 +928,7 @@ static DWORD WINAPI recorder_thread(void *)
                     } else {
                         log_line("video frozen: no new frame for 10 s while a game is played; restarting the capture");
                     }
-                    capture_stop(&p);
+                    capture_stop(&p, nudge);
                     frozen = true;
                     break;
                 }
