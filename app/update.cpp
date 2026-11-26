@@ -4,7 +4,7 @@
 //
 // The manifest is text, one "key value" per line, with the signature last:
 //   version 0.3.0
-//   url https://cloud.calvfletch.dev/s/<share>/download?path=%2F&files=rekodr-0.3.0.exe
+//   url https://github.com/CalvBot/rekodr/releases/download/v0.3.0/rekodr-0.3.0.exe
 //   size 3502080
 //   sha256 <64 hex digits>
 //   sig <128 hex digits>
@@ -17,8 +17,9 @@
 // download in the foreground, logs what happened and exits 0 when an update was made ready; `update-check apply`
 // also swaps it in (a test copy doesn't start the new exe, which would open its window).
 
-// TODO: the manifest's address, once it's decided where releases go. Empty means no checks.
-static const wchar_t UPDATE_MANIFEST_URL[] = L"";
+// latest.txt of the newest GitHub Release (release.ps1). GitHub answers both addresses with redirects to its file
+// host, which WinHTTP follows (https to https only).
+static const wchar_t UPDATE_MANIFEST_URL[] = L"https://github.com/CalvBot/rekodr/releases/latest/download/latest.txt";
 // The release key's public half, X then Y (the private half signs in release.ps1)
 static const u8 UPDATE_PUBLIC_KEY[64] = {
     0xa7, 0x8f, 0xe3, 0x41, 0xe9, 0x06, 0xc5, 0xb1, 0x48, 0x1d, 0xac, 0x67, 0x02, 0xda, 0x3e, 0x4b,

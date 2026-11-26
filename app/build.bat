@@ -27,4 +27,4 @@ powershell -NoProfile -Command "$bad = 0; Get-ChildItem *.cpp,*.h,*.rc,*.bat | F
 
 rc /nologo /fo build\rekodr.res rekodr.rc || exit /b 1
 cl %FLAGS% rekodr.cpp build\rekodr.res /Fobuild\ /Fdbuild\ /Febuild\rekodr.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS% || exit /b 1
-if "%1"=="release" powershell -NoProfile -ExecutionPolicy Bypass -File release.ps1 || exit /b 1
+if "%1"=="release" pwsh -NoProfile -ExecutionPolicy Bypass -File release.ps1 || exit /b 1
