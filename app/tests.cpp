@@ -4234,6 +4234,71 @@ static void test_markers()
     T(ms.count == MARKER_MAX && ms.items[0].t_us == 1000 && ms.items[MARKER_MAX - 1].t_us == 1000 + MARKER_MAX - 1); // the oldest went
 }
 
+// Star Citizen's Game.log: lines in the shapes public trackers read, with neutral names
+static void test_star_citizen()
+{
+    u32 ev = AM_GAMES[AMG_STAR_CITIZEN].events;
+    ScSeen s = {};
+    AutoMark m[8];
+    char v[128];
+    T(sc_line(&s, ev, "<2026-11-27T10:00:00.000Z> [Notice] <Legacy login response> [CIG-net] User Login Success - Handle[Pilot-1_A] - Time[1]", true, m, 8) == 0 &&
+      !strcmp(s.me, "Pilot-1_A"));
+    const char *kill = "<2026-11-27T10:05:00.000Z> [Notice] <Actor Death> CActor::Kill: 'PU_Human-NineTails-Grunt-Male-Grunt_10_123456789012' "
+                       "[123456789012] in zone 'OOC_Stanton_3a_Lyria' killed by 'Pilot-1_A' [123456789013] using "
+                       "'GATS_BallisticGatling_Mounted_S1_123456789014' [Class GATS_BallisticGatling_Mounted_S1] with damage type 'Bullet' "
+                       "from direction x: 0, y: 0, z: 0 [Team_ActorTech][Actor]";
+    T(sc_line(&s, ev, kill, true, m, 8) == 0); // there before Rekodr looked
+    T(sc_line(&s, ev, kill, false, m, 8) == 1 && !strcmp(m[0].note, "Kill") && m[0].colour == 4 &&
+      marker_detail_get(m[0].detail, "target", v, sizeof v) && !strcmp(v, "PU_Human-NineTails-Grunt-Male-Grunt_10") &&
+      marker_detail_get(m[0].detail, "weapon", v, sizeof v) && !strcmp(v, "GATS_BallisticGatling_Mounted_S1") &&
+      marker_detail_get(m[0].detail, "damage", v, sizeof v) && !strcmp(v, "Bullet") &&
+      marker_detail_get(m[0].detail, "zone", v, sizeof v) && !strcmp(v, "OOC_Stanton_3a_Lyria"));
+    T(sc_line(&s, AM_DEATH, kill, false, m, 8) == 0);
+    // A death: the killer's weapon by its name when its class is unknown; killing oneself has no killer
+    T(sc_line(&s, ev, "<2026-11-27T10:06:00.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-1_A' [123456789013] in zone "
+                      "'ANVL_Valkyrie_PU_AI_NT_QIG_1234567890123' killed by 'Pilot-2_B' [123456789015] using 'BEHR_LaserCannon_S5_1234567890123' "
+                      "[Class unknown] with damage type 'VehicleDestruction' from direction x: 0, y: 0, z: 0", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Death") && m[0].colour == 1 && marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "Pilot-2_B") &&
+      marker_detail_get(m[0].detail, "weapon", v, sizeof v) && !strcmp(v, "BEHR_LaserCannon_S5") &&
+      marker_detail_get(m[0].detail, "zone", v, sizeof v) && !strcmp(v, "ANVL_Valkyrie_PU_AI_NT_QIG"));
+    T(sc_line(&s, ev, "<2026-11-27T10:07:00.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-1_A' [1] in zone 'Stanton1' killed by "
+                      "'Pilot-1_A' [1] using 'unknown' [Class unknown] with damage type 'Crash' from direction x: 0", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Death: suicide") && !marker_detail_get(m[0].detail, "killer", v, sizeof v));
+    T(sc_line(&s, ev, "<2026-11-27T10:07:30.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-3_C' [1] in zone 'Stanton1' killed by "
+                      "'Pilot-2_B' [2] using 'x' [Class x] with damage type 'Bullet' from", false, m, 8) == 0); // not the player's
+    T(sc_line(&s, ev, "<2026-11-27T10:08:00.000Z> Logged an incap.! nickname: Pilot-1_A, causes: [Bleed (0.350000 damage)]", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Downed") && !strcmp(m[0].detail, "cause=Bleed"));
+    T(sc_line(&s, ev, "<2026-11-27T10:08:00.000Z> Logged an incap.! nickname: Pilot-2_B, causes: [Bleed (0.350000 damage)]", false, m, 8) == 0);
+    T(sc_line(&s, ev, "<2026-11-27T10:09:00.000Z> [Notice] <CSessionManager::OnClientSpawned> [CSessionManager::OnClientSpawned] Spawned!", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Spawned"));
+    // HUD notifications: contracts with their titles, zones
+    T(sc_line(&s, ev, "<2026-11-27T10:10:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Contract Accepted:  Standard | "
+                      "<EM3>DIRECT</EM3> Small Haul | Rappel > Jackson's Swap <EM4>[JS]*</EM4>: \" [16] to queue. New queue size: 8, MissionId: [x]",
+              false, m, 8) == 1 && !strcmp(m[0].note, "Contract accepted") && m[0].colour == 5 &&
+      marker_detail_get(m[0].detail, "contract", v, sizeof v) && !strcmp(v, "Standard | DIRECT Small Haul | Rappel > Jackson's Swap [JS]*"));
+    T(sc_line(&s, ev, "<2026-11-27T10:30:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Contract Complete: Big Delivery: \" [3] to queue.",
+              false, m, 8) == 1 && !strcmp(m[0].note, "Contract complete") && m[0].colour == 3 && !strcmp(m[0].detail, "contract=Big Delivery"));
+    T(sc_line(&s, AM_CONTRACT, "<2026-11-27T10:30:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Contract Complete: Big Delivery: \" [3] to queue.",
+              false, m, 8) == 0);
+    T(sc_line(&s, ev, "<2026-11-27T10:31:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Leaving Armistice Zone\" [3] to queue.", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Left armistice zone") && m[0].colour == 6);
+    T(sc_line(&s, ev, "<2026-11-27T10:31:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Entering Armistice Zone: \" [3] to queue.", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Armistice zone"));
+    T(sc_line(&s, ev, "<2026-11-27T10:32:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Entered People's Alliance Jurisdiction: \" [3] to queue.",
+              false, m, 8) == 1 && !strcmp(m[0].note, "Entered People's Alliance Jurisdiction"));
+    T(sc_line(&s, ev, "<2026-11-27T10:32:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Entered Monitored Space: \" [3] to queue.", false, m, 8) == 0);
+    T(sc_line(&s, ev, "<2026-11-27T10:32:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Bolide: \" [32] to queue.", false, m, 8) == 0);
+    // A quantum jump once per target; a jump to another system
+    const char *qt = "<2026-11-27T10:40:00.000Z> [Notice] <Quantum Navtarget> CSCItemQuantumDrive::RmMulticastOnQTToPoint : Local client user "
+                     "Pilot-1_A[123456789013] received QT data for Entity:RSI_Aurora_123456789016[123456789016] to Target Stanton1b_Aberdeen_123456789017 [x]";
+    T(sc_line(&s, ev, qt, false, m, 8) == 1 && !strcmp(m[0].note, "Quantum jump") && !strcmp(m[0].detail, "to=Stanton1b_Aberdeen"));
+    T(sc_line(&s, ev, qt, false, m, 8) == 0);
+    T(sc_line(&s, ev, "<2026-11-27T10:50:00.000Z> [Notice] <Changing Solar System> CSystem::Change: Client entity Pilot-1_A [1] "
+                      "changing system from Stanton to Pyro [Team_x]", false, m, 8) == 1 && !strcmp(m[0].note, "Jump to Pyro") &&
+      !strcmp(m[0].detail, "from=Stanton;to=Pyro"));
+    T(am_events_parse("contract,zone,travel,spawn", ev) == (AM_CONTRACT | AM_ZONE | AM_TRAVEL | AM_SPAWN));
+}
+
 // Rust's output_log.txt: deaths with who, kills and downs out of the combat log, each once across its prints
 static void test_rust()
 {
@@ -6068,6 +6133,7 @@ int main()
     test_markers();
     test_automarks();
     test_rust();
+    test_star_citizen();
     test_achievements();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
