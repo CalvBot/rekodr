@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+html,body{margin:0;background:transparent}
+#b{width:1280px;height:400px;position:relative;overflow:hidden;border-radius:24px;font-family:"Segoe UI",sans-serif;
+  background:radial-gradient(760px 380px at 12% 30%,rgba(0,137,123,.30),transparent 70%),
+             radial-gradient(620px 260px at 92% 110%,rgba(0,137,123,.16),transparent 70%),#0c0e0e}
+#b::after{content:"";position:absolute;inset:0;border-radius:24px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.07);pointer-events:none}
+.logo{position:absolute;left:88px;top:62px;width:128px;height:128px}
+.word{position:absolute;left:248px;top:58px;color:#fff;font-weight:600;font-size:84px;letter-spacing:-1.5px;line-height:1}
+.tag{position:absolute;left:252px;top:158px;color:#a9b8b5;font-size:25px;line-height:1.3}
+.tag b{color:#e6efed;font-weight:600}
+#tl{position:absolute;left:88px;top:240px;width:1104px;height:104px;overflow:visible}
+.lab{position:absolute;top:84px;font-size:15px;color:#6f7d7a;letter-spacing:.3px}
+</style></head><body><div id="b">
+<svg class="logo" viewBox="0 0 607.03 607.03"><circle cx="303.52" cy="303.52" r="119.23" fill="#26b3a3"/>
+<path fill="#fff" d="M130,271.71c0-78.26,63.45-141.71,141.71-141.71h67.41c6.83,0,13.27-3.17,17.43-8.58l66.16-86.01C433.85,20.94,423.53,0,405.28,0h-131.79C201,0,131.09,28.18,79.78,79.38,28.34,130.72,0,199.04,0,271.71v133.57c0,18.25,20.94,28.56,35.41,17.43l86.01-66.16c5.41-4.16,8.58-10.61,8.58-17.43v-67.41Z"/>
+<path fill="#fff" d="M477.03,267.91v67.41c0,78.26-63.45,141.71-141.71,141.71h-67.41c-6.83,0-13.27,3.17-17.43,8.58l-66.16,86.01c-11.13,14.46-.81,35.41,17.43,35.41h133.57c72.58,0,140.81-28.26,192.13-79.58,51.32-51.32,79.58-119.55,79.58-192.13v-133.57c0-18.25-20.94-28.56-35.41-17.43l-86.01,66.16c-5.41,4.16-8.58,10.61-8.58,17.43Z"/></svg>
+<div class="word">Rekodr</div>
+<div class="tag">A replay buffer for Windows that keeps <b>hours</b>, not minutes.<br>Clip anything you just played. Free, all of it.</div>
+<svg id="tl" viewBox="0 0 1104 104"></svg>
+<div class="lab" style="left:88px;top:336px">2 h ago</div>
+<div class="lab" style="right:88px;top:336px">now</div>
+</div>
+<script>
+// The buffer: a strip of activity bars, game sessions as brighter runs, a selected region, markers and the live edge.
+const NS="http://www.w3.org/2000/svg",svg=document.getElementById('tl'),W=1104,MID=50,STEP=6,BW=3.4;
+const el=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);svg.appendChild(e);return e;};
+let s=7;const rnd=()=>(s=(s*16807)%2147483647)/2147483647;
+const sessions=[[40,330],[420,760],[820,1080]], sel=[600,742];
+const inRun=(x,r)=>x>=r[0]&&x<=r[1];
+for(let x=2;x<W-14;x+=STEP){
+  const game=sessions.some(r=>inRun(x,r));
+  const h=game?8+Math.pow(rnd(),1.4)*30+(Math.sin(x/37)+1)*4:3+rnd()*5;
+  const fill=inRun(x,sel)?'#2fc4b2':game?'#3b4644':'#242b2a';
+  el('rect',{x:x,y:MID-h/2,width:BW,height:h,rx:1.7,fill:fill});
+}
+el('rect',{x:sel[0]-6,y:MID-30,width:sel[1]-sel[0]+12,height:60,rx:9,fill:'rgba(0,137,123,.16)',stroke:'#26b3a3','stroke-width':2});
+for(const [x,c] of [[150,'#e8c53d'],[268,'#f0434f'],[520,'#5b9cff'],[655,'#e8c53d'],[700,'#f0434f'],[930,'#5b9cff']]){
+  el('line',{x1:x,y1:MID-30,x2:x,y2:MID+30,stroke:c,'stroke-width':2,'stroke-opacity':.55});
+  el('circle',{cx:x,cy:MID-34,r:5,fill:c});
+}
+const nx=W-8;
+el('line',{x1:nx,y1:MID-32,x2:nx,y2:MID+32,stroke:'#fff','stroke-width':3,'stroke-linecap':'round'});
+el('circle',{cx:nx,cy:MID-38,r:9,fill:'rgba(240,67,79,.25)'});
+el('circle',{cx:nx,cy:MID-38,r:5,fill:'#f0434f'});
+</script></body></html>
