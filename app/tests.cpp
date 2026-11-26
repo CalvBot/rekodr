@@ -775,6 +775,39 @@ static void test_first_run()
 static bool test_has_spotify_steam(const FirstApp &a) { return strstr(a.where, "Spotify") || strstr(a.where, "Valve"); }
 static bool test_has_none(const FirstApp &) { return false; }
 
+static void test_ffmpeg_check()
+{
+    char v[32], why[192];
+    T(ffmpeg_version("ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026", v, sizeof v) == 8);
+    T(!strcmp(v, "8.1.1"));
+    T(ffmpeg_version("ffmpeg version n7.1-12-gabc Copyright", v, sizeof v) == 7 && !strcmp(v, "7.1"));
+    T(ffmpeg_version("ffmpeg version N-121000-g1a2b3c4d5e-20260101 Copyright", v, sizeof v) == 0);
+    T(!strcmp(v, "N-121000-g1a2b3c4d5e"));
+    T(ffmpeg_version("ffmpeg version 2026-01-01-git-abc-full_build Copyright", v, sizeof v) == 0);
+    T(ffmpeg_version("not ffmpeg at all", v, sizeof v) == -1);
+
+    // The list lines are flags then the name; a name inside another or in a description doesn't count
+    const char *filters_ok = "Filters:\n  T.. = Timeline support\n  ------\n"
+                             " .. amix              N->A       Audio mixing.\n"
+                             " .. afftdn            A->A       Denoise.\n .. loudnorm A->A x\n"
+                             " .S xfade             VV->V      Cross fade.\n .. subtitles V->V x\n .. drawtext V->V x\n"
+                             " .. hwupload V->V x\n .. ddagrab           |->V       Desktop Duplication\r\n"
+                             " .. gfxcapture        |->V       Capture graphics\r\n";
+    const char *encoders = " V....D libx264              libx264 H.264\n A....D aac   AAC\n A....D libopus  Opus\n";
+    T(ffmpeg_lists(filters_ok, "gfxcapture") && ffmpeg_lists(filters_ok, "ddagrab"));
+    T(!ffmpeg_lists(filters_ok, "mix") && !ffmpeg_lists(filters_ok, "Desktop") && !ffmpeg_lists(encoders, "libx26"));
+    const char *ver = "ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright";
+    T(ffmpeg_judge(ver, filters_ok, encoders, true, v, sizeof v, why, sizeof why) && !why[0]);
+    T(!ffmpeg_judge(ver, filters_ok, encoders, false, v, sizeof v, why, sizeof why) && strstr(why, "ffprobe"));
+    T(!ffmpeg_judge("ffmpeg version 7.1 Copyright", filters_ok, encoders, true, v, sizeof v, why, sizeof why));
+    T(strstr(why, "too old") && !strcmp(v, "7.1"));
+    T(!ffmpeg_judge("", filters_ok, encoders, true, v, sizeof v, why, sizeof why) && strstr(why, "didn't answer"));
+    const char *no_wgc = " .. amix N->A x\n .. afftdn A->A x\n .. loudnorm A->A x\n .. xfade VV->V x\n"
+                         " .. subtitles V->V x\n .. drawtext V->V x\n .. hwupload V->V x\n .. ddagrab |->V x\n";
+    T(!ffmpeg_judge(ver, no_wgc, " A....D aac AAC\n", true, v, sizeof v, why, sizeof why));
+    T(!strcmp(why, "it has no gfxcapture, libx264, libopus"));
+}
+
 static void test_first_apps()
 {
     // Only what is installed is added, with its category and name
@@ -4423,6 +4456,7 @@ int main()
     test_game_guess();
     test_first_run();
     test_first_apps();
+    test_ffmpeg_check();
     test_telemetry();
     test_backup();
     test_backup_places();

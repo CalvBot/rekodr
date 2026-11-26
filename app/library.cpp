@@ -3298,7 +3298,7 @@ static void ffget_bar()
         ImGui::SetCursorScreenPos(ImVec2(right, floorf(a.y + (h - fh) / 2)));
         if (kit_button("Retry##ffget", KIT_SECONDARY, ImVec2(bw, 0))) {
             dev_click("ffmpeg", "Retry");
-            ffget_start(false);
+            ffget_start(true);
         }
         right -= kit_px(10);
     }

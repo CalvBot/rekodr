@@ -1178,12 +1178,10 @@ static DWORD WINAPI audio_watch_thread(void *)
             InterlockedExchange(&g_aw.pending_set, 0);
             ReleaseSRWLockExclusive(&g_aw.lock);
             Path found;
-            if (ffmpeg_find(g_aw.config.ffmpeg, &found)) {
-                g_aw.ffmpeg = found;
-                g_aw.ffmpeg_missing_logged = false;
-            } else {
-                g_aw.ffmpeg = {};
-            }
+            if (!ffmpeg_find(g_aw.config.ffmpeg, &found)) found = {};
+            if (wcscmp(found.s, g_aw.ffmpeg.s) && g_aw.ffmpeg.s[0]) workers_stop_all(); // they start again with it
+            g_aw.ffmpeg = found;
+            if (found.s[0]) g_aw.ffmpeg_missing_logged = false;
         }
         procs_snapshot(&g_aw.procs);
         if (tick % 2 == 0) audio_tick_activity();

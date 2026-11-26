@@ -850,8 +850,9 @@ static DWORD WINAPI recorder_thread(void *)
                 i32 v2 = pick_vendor(now.s, now.works);
                 const RecSettings ns = without_bad_window(now.s);
                 if (v2 >= 0) capture_args(&base_now, v2, ns, use_wgc(ns));
+                Path ffmpeg_now; // another ffmpeg picked, or this one being uninstalled
                 restart = v2 != vendor || wcscmp(base_now.s, base.s) || wcscmp(now.s.buffer_dir.s, s.buffer_dir.s) ||
-                          wcscmp(now.s.ffmpeg.s, s.ffmpeg.s);
+                          !ffmpeg_find(now.s.ffmpeg, &ffmpeg_now) || wcscmp(ffmpeg_now.s, ffmpeg.s);
                 if (restart) log_line("video settings changed: restarting the capture");
             }
             if (rec_stopping() || now.paused || restart) {

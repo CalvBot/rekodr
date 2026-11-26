@@ -260,6 +260,19 @@ static Path ffget_dir()
 
 static Path ffget_exe() { return path_join(ffget_dir(), L"ffmpeg-8.1.1-full_build-shared\\bin\\ffmpeg.exe"); }
 
+// Set while Rekodr's own copy is being uninstalled (ffget_uninstall): ffmpeg_find passes over it.
+static volatile LONG g_ffget_hidden;
+
+// Where winget links the ffmpeg it installs.
+static Path ffmpeg_winget()
+{
+    Path p = {};
+    wchar_t local[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH))
+        swprintf(p.s, MAX_PATH, L"%s\\Microsoft\\WinGet\\Links\\ffmpeg.exe", local);
+    return p;
+}
+
 // Finds ffmpeg.exe: the configured path, then PATH, then winget's links folder, then the one Rekodr fetched.
 // ffprobe is expected next to it.
 static bool ffmpeg_find(const Path &configured, Path *out)
@@ -267,17 +280,15 @@ static bool ffmpeg_find(const Path &configured, Path *out)
     *out = {};
     if (configured.s[0]) {
         if (GetFileAttributesW(configured.s) == INVALID_FILE_ATTRIBUTES) return false;
+        if (g_ffget_hidden && !_wcsicmp(configured.s, ffget_exe().s)) return false;
         *out = configured;
         return true;
     }
     if (SearchPathW(0, L"ffmpeg.exe", 0, MAX_PATH, out->s, 0)) return true;
-    wchar_t local[MAX_PATH];
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) {
-        swprintf(out->s, MAX_PATH, L"%s\\Microsoft\\WinGet\\Links\\ffmpeg.exe", local);
-        if (GetFileAttributesW(out->s) != INVALID_FILE_ATTRIBUTES) return true;
-    }
+    *out = ffmpeg_winget();
+    if (out->s[0] && GetFileAttributesW(out->s) != INVALID_FILE_ATTRIBUTES) return true;
     *out = ffget_exe();
-    if (GetFileAttributesW(out->s) != INVALID_FILE_ATTRIBUTES) return true;
+    if (!g_ffget_hidden && GetFileAttributesW(out->s) != INVALID_FILE_ATTRIBUTES) return true;
     *out = {};
     return false;
 }
@@ -298,4 +309,139 @@ static HANDLE thread_start(DWORD (WINAPI *fn)(void *), void *arg)
     HANDLE t = CreateThread(0, 0, fn, arg, 0, 0);
     CHECK(t, "CreateThread failed (%d)", (int)GetLastError());
     return t;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// What an ffmpeg needs to have. An ffmpeg.exe picked in Options is checked before it is used and refused with the
+// reason it falls short, and Options shows the version of the one in use. A check is three short ffmpeg runs
+// (-version, -filters, -encoders) on a worker thread.
+
+static const i32 FFMPEG_MIN_MAJOR = 8; // gfxcapture, the default capture and the only one for a window, is 8.0's
+// gfxcapture with ddagrab as the fallback, hwupload for the GPU encoders, the mix and the mic cleaning, the
+// editor's fades, captions and title cards; H.264 on the CPU (the encoder fallback and the webcam), AAC and Opus.
+static const char *const FFMPEG_FILTERS[] = {"gfxcapture", "ddagrab", "hwupload", "amix", "afftdn",
+                                             "loudnorm", "xfade", "subtitles", "drawtext"};
+static const char *const FFMPEG_ENCODERS[] = {"libx264", "aac", "libopus"};
+
+// The version from -version's first line: "ffmpeg version 8.1.1-full_build-www.gyan.dev ..." -> "8.1.1" and 8,
+// "n7.1-..." -> "7.1" and 7. A git or dated build has no number: 0, and `shown` is its version word, cut short.
+// -1 if the text isn't ffmpeg's.
+static i32 ffmpeg_version(const char *text, char *shown, i32 cap)
+{
+    shown[0] = 0;
+    const char *v = strstr(text, "ffmpeg version ");
+    if (!v) return -1;
+    v += 15;
+    const char *num = v[0] == 'n' && isdigit((u8)v[1]) ? v + 1 : v;
+    char *end = 0;
+    long major = strtol(num, &end, 10);
+    if (end != num && *end == '.') {
+        i32 n = 0;
+        while (n < cap - 1 && (isdigit((u8)num[n]) || num[n] == '.')) n++;
+        snprintf(shown, cap, "%.*s", n, num);
+        return (i32)major;
+    }
+    i32 n = 0;
+    while (v[n] && v[n] != ' ' && v[n] != '\r' && v[n] != '\n') n++;
+    snprintf(shown, cap, "%.*s", n < 20 ? n : 20, v);
+    return 0;
+}
+
+// Whether -filters or -encoders output lists `name`: each line is flags, then the name.
+static bool ffmpeg_lists(const char *text, const char *name)
+{
+    size_t len = strlen(name);
+    for (const char *p = text; *p;) {
+        const char *e = p;
+        while (*e && *e != '\n') e++;
+        const char *t = p;
+        while (t < e && *t == ' ') t++;
+        while (t < e && *t != ' ') t++;
+        while (t < e && *t == ' ') t++;
+        if ((size_t)(e - t) >= len && !memcmp(t, name, len) && (t + len == e || t[len] == ' ' || t[len] == '\r'))
+            return true;
+        p = *e ? e + 1 : e;
+    }
+    return false;
+}
+
+// Whether an ffmpeg with this -version, -filters and -encoders output (and ffprobe.exe beside it or not) is good
+// enough. `shown` gets its version either way, `why` the first way it falls short.
+static bool ffmpeg_judge(const char *version, const char *filters, const char *encoders, bool probe, char *shown,
+                         i32 shown_cap, char *why, i32 why_cap)
+{
+    why[0] = 0;
+    i32 major = ffmpeg_version(version, shown, shown_cap);
+    if (major < 0) {
+        snprintf(why, why_cap, "it didn't answer as ffmpeg does");
+        return false;
+    }
+    if (major > 0 && major < FFMPEG_MIN_MAJOR) {
+        snprintf(why, why_cap, "too old, " APP_NAME " needs ffmpeg %d or later", FFMPEG_MIN_MAJOR);
+        return false;
+    }
+    char missing[192] = "";
+    for (const char *f : FFMPEG_FILTERS)
+        if (!ffmpeg_lists(filters, f)) snprintf(missing + strlen(missing), sizeof missing - strlen(missing), "%s%s", missing[0] ? ", " : "", f);
+    for (const char *f : FFMPEG_ENCODERS)
+        if (!ffmpeg_lists(encoders, f)) snprintf(missing + strlen(missing), sizeof missing - strlen(missing), "%s%s", missing[0] ? ", " : "", f);
+    if (missing[0]) {
+        snprintf(why, why_cap, "it has no %s", missing);
+        return false;
+    }
+    if (!probe) {
+        snprintf(why, why_cap, "ffprobe.exe isn't next to it");
+        return false;
+    }
+    return true;
+}
+
+struct FfCheck {
+    Path exe;             // the ffmpeg.exe checked last, or being checked
+    volatile LONG busy;
+    bool done, ok;        // read only while not busy
+    char version[32];
+    char why[192];        // what it lacks, when not ok
+    HANDLE thread;
+};
+
+static DWORD WINAPI ffcheck_thread(void *arg)
+{
+    FfCheck *k = (FfCheck *)arg;
+    const i32 cap = 1 << 18;
+    char *v = (char *)calloc(1, cap), *f = (char *)calloc(1, cap), *e = (char *)calloc(1, cap);
+    if (proc_run(k->exe.s, L"-hide_banner -version", 10000, v, cap) != 0) v[0] = 0;
+    proc_run(k->exe.s, L"-hide_banner -filters", 10000, f, cap);
+    proc_run(k->exe.s, L"-hide_banner -encoders", 10000, e, cap);
+    Path probe = ffprobe_for(k->exe);
+    k->ok = ffmpeg_judge(v, f, e, GetFileAttributesW(probe.s) != INVALID_FILE_ATTRIBUTES, k->version,
+                         sizeof k->version, k->why, sizeof k->why);
+    log_line("ffmpeg %ls: %s%s%s", k->exe.s, k->version[0] ? k->version : "no version", k->ok ? "" : ", ", k->why);
+    free(v);
+    free(f);
+    free(e);
+    k->done = true;
+    InterlockedExchange(&k->busy, 0);
+    return 0;
+}
+
+// Starts checking `exe`. False while a check is still running.
+static bool ffcheck_start(FfCheck *k, const Path &exe)
+{
+    if (k->busy) return false;
+    if (k->thread) {
+        WaitForSingleObject(k->thread, INFINITE); // it has cleared busy, so it's ending
+        CloseHandle(k->thread);
+    }
+    k->exe = exe;
+    k->done = false;
+    InterlockedExchange(&k->busy, 1);
+    k->thread = thread_start(ffcheck_thread, k);
+    return true;
+}
+
+// The finished check of `exe`; null while it runs, or when the last one checked was another file.
+static const FfCheck *ffcheck_of(const FfCheck &k, const Path &exe)
+{
+    return !k.busy && k.done && !_wcsicmp(k.exe.s, exe.s) ? &k : 0;
 }

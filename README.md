@@ -27,8 +27,8 @@ Windows. The installer isn't signed yet, so Windows SmartScreen may warn: click 
 Rekodr updates itself. It checks each new version's signature and asks before restarting into it, and if a new
 version crashes in its first minute, it goes back to the one before. Uninstall it from Windows Settings > Apps.
 
-It needs Windows 10 or 11. If it finds no ffmpeg 7 or later, it downloads a pinned build (FFmpeg 8.1.1, GPL) on
-first start.
+It needs Windows 10 or 11 and ffmpeg 8 or later. If it finds no ffmpeg, it downloads a pinned build (FFmpeg 8.1.1,
+GPL) on first start.
 
 ## Building
 You need:
@@ -45,8 +45,8 @@ app\test.bat            # builds app\build\tests.exe and runs the tests
 `build.bat` finds Visual Studio by itself with vswhere. `build.bat release` also writes the signed installer and
 update manifest to `dist\`; it needs the maintainer's release key.
 
-The build has no ffmpeg in it. At runtime Rekodr uses the one set in Options, or one on the PATH, and if it finds
-no ffmpeg 7 or later it downloads a pinned build (FFmpeg 8.1.1, GPL) on first start.
+The build has no ffmpeg in it. At runtime Rekodr uses the one picked in Options, or one on the PATH, and if it finds
+none it downloads a pinned build (FFmpeg 8.1.1, GPL) on first start.
 
 The whole program is one translation unit, `app\rekodr.cpp`, which includes every other file in `app\`. With
 `REKODR_HOME` set to a folder, Rekodr runs as a separate copy that keeps everything under that folder, which is

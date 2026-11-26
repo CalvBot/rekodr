@@ -2,7 +2,8 @@
 // own: Gyan's 8.1.1 full shared build from its GitHub release. The zip is checked against its size and SHA-256
 // while it streams in, then unpacked with Windows' own tar.exe into ffget_dir() (local_dir\ffmpeg). ffmpeg_find
 // picks it up from there, so the recorder (which retries every 5 s) starts by itself once it lands.
-// The build is GPL; its LICENSE file is kept next to it.
+// The build is GPL; its LICENSE file is kept next to it. Options can also fetch it while another ffmpeg is found
+// and switch to it, and uninstall it: that deletes ffget_dir() and nothing else.
 
 static const wchar_t FFGET_HOST[] = L"github.com";
 static const wchar_t FFGET_PATH[] =
@@ -14,10 +15,14 @@ enum FfgetState : LONG { FFGET_IDLE, FFGET_RUNNING, FFGET_DONE, FFGET_FAILED };
 
 struct Ffget {
     volatile LONG state;
-    volatile LONG64 got; // bytes downloaded so far
-    char error[160];     // set before state turns FFGET_FAILED
-    HANDLE thread;
+    volatile LONG64 got;    // bytes downloaded so far
+    char error[160];        // set before state turns FFGET_FAILED
+    HANDLE thread;          // the download, or the uninstall
     volatile LONG stop;
+    volatile LONG removing; // uninstalling: its folder is being deleted
+    bool use;               // Options points at it once it lands
+    bool announced;         // ffget_tick has seen it land
+    bool remove_failed;     // part of the folder was still in use
 };
 static Ffget g_ffget;
 
@@ -164,12 +169,81 @@ static void ffget_start(bool force = false)
     g_ffget.thread = thread_start(ffget_thread, 0);
 }
 
-// Called once a second on the main thread: once the download lands, the library scans again with ffmpeg.
+// Options uses Rekodr's own copy from now on, even when another ffmpeg is found.
+static void ffget_use()
+{
+    g_app.config.ffmpeg = ffget_exe();
+    log_line("options: ffmpeg is " APP_NAME "'s own copy");
+    options_apply(APPLY_RECORDER | APPLY_AUDIO);
+}
+
+// The Download or Use button: fetches the pinned build even when another ffmpeg is found and uses it once it lands,
+// or uses it now if it's here.
+static void ffget_get_and_use()
+{
+    if (g_ffget.removing) return;
+    if (GetFileAttributesW(ffget_exe().s) != INVALID_FILE_ATTRIBUTES) {
+        ffget_use();
+        return;
+    }
+    g_ffget.use = true;
+    ffget_start(true);
+}
+
+// Deletes ffget_dir(), retrying while the ffmpegs that ran from it end.
+static DWORD WINAPI ffget_remove_thread(void *)
+{
+    Path dir = ffget_dir();
+    wchar_t from[MAX_PATH + 2] = {}; // double 0 at the end, as SHFileOperation wants
+    wcscpy_s(from, MAX_PATH, dir.s);
+    bool gone = false;
+    for (i32 i = 0; i < 60 && !gone && !g_ffget.stop; i++) {
+        if (i) Sleep(500);
+        SHFILEOPSTRUCTW op = {};
+        op.wFunc = FO_DELETE;
+        op.pFrom = from;
+        op.fFlags = FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+        SHFileOperationW(&op);
+        gone = GetFileAttributesW(dir.s) == INVALID_FILE_ATTRIBUTES;
+    }
+    log_line("ffget: %ls %s", dir.s, gone ? "deleted" : "not all deleted, part of it is still in use");
+    if (gone) InterlockedExchange(&g_ffget_hidden, 0);
+    g_ffget.remove_failed = !gone;
+    InterlockedExchange(&g_ffget.removing, 0);
+    return 0;
+}
+
+// The Uninstall button. Only Rekodr's own copy, ffget_dir(), is deleted. If Options points at it, Options goes back
+// to finding one by itself, and the recorder and the audio tracks move off it first.
+static void ffget_uninstall()
+{
+    if (g_ffget.state == FFGET_RUNNING || g_ffget.removing) return;
+    if (g_ffget.thread) {
+        WaitForSingleObject(g_ffget.thread, INFINITE);
+        CloseHandle(g_ffget.thread);
+    }
+    InterlockedExchange(&g_ffget_hidden, 1);
+    if (!_wcsicmp(g_app.config.ffmpeg.s, ffget_exe().s)) g_app.config.ffmpeg = {};
+    log_line("options: uninstalling " APP_NAME "'s own ffmpeg");
+    options_apply(APPLY_RECORDER | APPLY_AUDIO);
+    g_ffget.error[0] = 0;
+    g_ffget.use = g_ffget.announced = g_ffget.remove_failed = false;
+    InterlockedExchange64(&g_ffget.got, 0);
+    InterlockedExchange(&g_ffget.state, FFGET_IDLE);
+    InterlockedExchange(&g_ffget.removing, 1);
+    g_ffget.thread = thread_start(ffget_remove_thread, 0);
+}
+
+// Called once a second on the main thread: once the download lands, the library scans again with ffmpeg, and
+// Options switches to it if that's what it was fetched for.
 static void ffget_tick()
 {
-    static bool announced;
-    if (g_ffget.state == FFGET_DONE && !announced) {
-        announced = true;
+    if (g_ffget.state == FFGET_DONE && !g_ffget.announced) {
+        g_ffget.announced = true;
+        if (g_ffget.use) {
+            g_ffget.use = false;
+            ffget_use();
+        }
         library_rescan();
         ui_wake();
     }
@@ -186,6 +260,26 @@ static void ffget_stop()
 }
 
 static bool ffget_failed() { return g_ffget.state == FFGET_FAILED; } // Retry is offered
+static bool ffget_running() { return g_ffget.state == FFGET_RUNNING; }
+static bool ffget_removing() { return g_ffget.removing != 0; }
+
+// Options' line for Rekodr's own copy while it downloads, is being uninstalled or failed; false otherwise.
+static bool ffget_note(char *out, i32 cap, bool *failed)
+{
+    *failed = false;
+    if (g_ffget.removing) snprintf(out, cap, "Uninstalling");
+    else if (g_ffget.remove_failed) {
+        snprintf(out, cap, "Not all uninstalled: part of it is still in use");
+        *failed = true;
+    }
+    else if (g_ffget.state == FFGET_RUNNING)
+        snprintf(out, cap, "Downloading: %d of %d MB", (int)(g_ffget.got >> 20), (int)(FFGET_BYTES >> 20));
+    else if (g_ffget.state == FFGET_FAILED) {
+        snprintf(out, cap, "Couldn't get it: %s", g_ffget.error);
+        *failed = true;
+    } else return false;
+    return true;
+}
 
 // One line for the UI while ffmpeg is on its way or failed; false when there's nothing to say.
 static bool ffget_status(char *out, i32 cap, f32 *progress)

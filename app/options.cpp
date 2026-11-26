@@ -2365,6 +2365,90 @@ static void opt_rows_buffer()
 }
 
 static bool g_opt_show_audio; // "show audio": Recording scrolled to its Audio
+static void ffget_get_and_use(); // ffget.cpp
+static void ffget_uninstall();
+static bool ffget_running();
+static bool ffget_removing();
+static bool ffget_note(char *out, i32 cap, bool *failed);
+
+// Which ffmpeg records and saves, with its version: picked by hand, found on the PATH or by winget, or Rekodr's own
+// copy. Choose picks an ffmpeg.exe, which is checked and refused with the reason if it falls short; Auto goes back
+// to finding one. Below it, Rekodr's own copy: Download (and use it, even when another is found), Use, Uninstall.
+static FfCheck g_ff_used, g_ff_pick;
+
+static void opt_rows_ffmpeg(Config &c)
+{
+    static Path picked;        // checked before it's used
+    static char refused[256];  // why the last pick wasn't used, for a while
+    static f64 refused_until;
+    f64 now = ImGui::GetTime();
+    if (picked.s[0]) {
+        if (const FfCheck *k = ffcheck_of(g_ff_pick, picked)) {
+            if (k->ok) {
+                c.ffmpeg = picked;
+                log_line("options: ffmpeg %ls (%s)", picked.s, k->version);
+                options_apply(APPLY_RECORDER | APPLY_AUDIO);
+            } else {
+                snprintf(refused, sizeof refused, "Not used: %s", k->why);
+                refused_until = now + 12;
+                log_line("options: ffmpeg %ls not used: %s", picked.s, k->why);
+            }
+            picked = {};
+        }
+    }
+    Path found, own = ffget_exe();
+    bool have = ffmpeg_find(c.ffmpeg, &found);
+    if (have && (!g_ff_used.busy && (!g_ff_used.done || _wcsicmp(g_ff_used.exe.s, found.s)))) ffcheck_start(&g_ff_used, found);
+    const FfCheck *k = have ? ffcheck_of(g_ff_used, found) : 0;
+    bool own_used = have && !_wcsicmp(found.s, own.s);
+    const char *from = own_used ? APP_NAME "'s own copy" : c.ffmpeg.s[0] ? "picked by hand"
+                       : !_wcsicmp(found.s, ffmpeg_winget().s) ? "from winget" : "on the PATH";
+    char sub[320];
+    if (picked.s[0]) snprintf(sub, sizeof sub, "Checking the one you picked");
+    else if (refused[0] && now < refused_until) { str_set(sub, refused); opt_warn(sub); }
+    else if (!have) { str_set(sub, c.ffmpeg.s[0] ? "The one picked isn't there, so nothing records" : "None found, so nothing records"); opt_warn(sub); }
+    else if (!k) snprintf(sub, sizeof sub, "Checking the one %s", own_used ? "in use" : from);
+    else if (!k->ok) { snprintf(sub, sizeof sub, "%s %s: %s", k->version, from, k->why); opt_warn(sub); }
+    else snprintf(sub, sizeof sub, "%s, %s", k->version, from);
+    if (picked.s[0] || g_ff_used.busy || g_ff_pick.busy || (refused[0] && now < refused_until)) ui_wake();
+
+    f32 bgap = ImGui::GetStyle().ItemSpacing.x;
+    f32 bw = text_w(g_font, "Download") + dp(32); // every button here is this wide
+    opt_row_begin("ffmpeg", sub, 2 * bw + bgap);
+    if (kit_button("Choose##ffpick", KIT_SECONDARY, ImVec2(bw, 0), !picked.s[0] && !g_ff_pick.busy)) {
+        Path p = {};
+        if (pick_file(have ? found : c.ffmpeg, &p, L"ffmpeg", L"ffmpeg.exe") && ffcheck_start(&g_ff_pick, p)) {
+            picked = p;
+            refused[0] = 0;
+        }
+    }
+    ImGui::SameLine(0, bgap);
+    if (kit_button("Auto##ffauto", KIT_SECONDARY, ImVec2(bw, 0), c.ffmpeg.s[0] != 0)) {
+        c.ffmpeg = {};
+        log_line("options: ffmpeg found by itself");
+        options_apply(APPLY_RECORDER | APPLY_AUDIO);
+    }
+    opt_row_end();
+
+    char note[256];
+    bool failed = false, busy = ffget_running(), removing = ffget_removing();
+    bool own_here = !removing && GetFileAttributesW(own.s) != INVALID_FILE_ATTRIBUTES;
+    bool own_dir = !removing && GetFileAttributesW(ffget_dir().s) != INVALID_FILE_ATTRIBUTES;
+    if (ffget_note(note, sizeof note, &failed)) {
+        if (failed) opt_warn(note);
+        if (!failed) ui_wake();
+    } else {
+        snprintf(note, sizeof note, "FFmpeg 8.1.1, gyan.dev's GPL build, %s",
+                 own_here ? (own_used ? "in use" : "not in use") : "a 96 MB download");
+    }
+    opt_row_begin(APP_NAME "'s copy", note, 2 * bw + bgap);
+    const char *get = own_here ? "Use##ffget" : ffget_failed() ? "Retry##ffget" : "Download##ffget";
+    if (kit_button(get, KIT_SECONDARY, ImVec2(bw, 0), !busy && !removing && !own_used)) ffget_get_and_use();
+    ImGui::SameLine(0, bgap);
+    if (kit_button("Uninstall##ffdel", KIT_SECONDARY, ImVec2(bw, 0), own_dir && !busy)) ffget_uninstall();
+    opt_row_end();
+}
+
 static void options_recording()
 {
     Config &c = g_app.config;
@@ -2564,16 +2648,11 @@ static void options_recording()
         options_apply(0);
     }
     ImGui::EndDisabled();
-    opt_row_begin("ffmpeg.exe", 0, wide);
-    char ff[MAX_PATH * 3], text[MAX_PATH * 3];
-    wide_to_utf8(c.ffmpeg.s, ff, sizeof ff);
-    if (opt_text("##ffmpeg", ff, wide, 0, "Found by itself", text, sizeof text)) {
-        char *t = trim(text);
-        utf8_to_wide(t, c.ffmpeg.s, MAX_PATH);
-        log_line("options: ffmpeg %s", t[0] ? t : "found by itself");
-        options_apply(APPLY_RECORDER);
-    }
-    opt_row_end();
+    opt_card_end();
+
+    opt_section("FFMPEG");
+    opt_card_begin();
+    opt_rows_ffmpeg(c);
     opt_card_end();
 
     opt_section("WEBCAM");
