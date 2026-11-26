@@ -3705,29 +3705,13 @@ static void opt_min_quality_row()
     opt_row_end();
 }
 
-// The clip a link card's preview shows: the newest clip with a game, else the newest clip, else none.
-static const LibItem *opt_card_sample()
-{
-    Library &lib = g_app.library;
-    const LibItem *best = 0;
-    for (i32 i = 0; i < lib.item_count; i++) {
-        const LibItem &it = lib.items[i];
-        if (it.kind != LIB_CLIPS || !it.probed) continue;
-        bool better = !best || (it.info.game[0] && !best->info.game[0]) ||
-                      (!it.info.game[0] == !best->info.game[0] && it.when_us > best->when_us);
-        if (better) best = &it;
-    }
-    return best;
-}
-
-// The card styles as chips, two rows across the control column; shown only when there's more than one. Returns
-// the style under the mouse, for the preview, else -1.
-static i32 opt_card_styles()
+// The card styles as chips, two rows across the control column; shown only when there's more than one.
+static void opt_card_styles()
 {
     Config &c = g_app.config;
     i32 n = embed_style_count();
-    if (n < 2) return -1;
-    i32 per = (n + 1) / 2, hot = -1;
+    if (n < 2) return;
+    i32 per = (n + 1) / 2;
     f32 cw = opt_wide_w(), gap = dp(6), fh = ImGui::GetFrameHeight(), chip_w = floorf((cw - (per - 1) * gap) / per);
     opt_row_begin("Style", "What the card shows", cw, 2 * fh + gap + dp(24));
     f32 x = g_row.x1 - cw, y = g_row.y + dp(12);
@@ -3740,98 +3724,7 @@ static i32 opt_card_styles()
             log_line("options: card style %s", embed_style_id(i));
             options_apply(0);
         }
-        if (ImGui::IsItemHovered()) hot = i;
     }
-    opt_row_end();
-    return hot;
-}
-
-// Our own icon, for the card's "via" line: the exe's, as the window's.
-static ID3D11ShaderResourceView *opt_own_icon()
-{
-    static ID3D11ShaderResourceView *srv;
-    static bool tried;
-    if (!tried) {
-        tried = true;
-        Path exe = {};
-        GetModuleFileNameW(0, exe.s, MAX_PATH);
-        srv = app_icon_load(exe);
-    }
-    return srv;
-}
-
-// A link's card as Discord shows it in `style` (-1: the player's), built by embed_card as the page's is: the title
-// in bold, the line ("Game - Name") with the game's small icon before it, the video with a play button (or the
-// picture), and the small grey "via" line with our icon. The row's height is fixed at the tallest card, so nothing below moves.
-static void opt_link_card_preview(i32 style)
-{
-    const LibItem *it = opt_card_sample();
-    char title[200];
-    str_set(title, !it ? "Clip" : it->display_name[0] ? it->display_name : it->name);
-    const char *game = it ? it->info.game : "";
-    EmbedInput in = {title, game, it ? it->info.duration : 42, 0, now_us(), true, g_app.config.accent};
-    EmbedCard card;
-    embed_card(in, &card, style);
-
-    char line[400];
-    str_set(line, card.line);
-    if (card.tag[0]) snprintf(line + strlen(line), sizeof line - strlen(line), "%s%s", line[0] ? " - " : "", card.tag);
-
-    f32 cw = opt_wide_w(), pad = dp(12), bar = dp(4), lgap = dp(6);
-    f32 title_h = g_font_bold->FontSize, line_h = g_font->FontSize, via_h = g_font_small->FontSize;
-    f32 vid_w = cw - bar - 2 * pad, vid_h = floorf(vid_w * 9 / 16);
-    f32 tall = pad + title_h + lgap + line_h + dp(10) + vid_h + dp(8) + via_h + pad;
-    f32 head_h = line[0] ? title_h + lgap + line_h : title_h;
-    f32 card_h = pad + head_h + dp(10) + vid_h + (card.via ? dp(8) + via_h : 0) + pad;
-    opt_row_begin("Preview", "How Discord shows a link from your bucket", cw, tall + dp(24));
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImVec2 a(g_row.x1 - cw, g_row.y + dp(12)), b(g_row.x1, g_row.y + dp(12) + card_h);
-    // Discord's dark theme, whatever ours is
-    const u32 BG = 0x2b2d31, EDGE = 0x1e1f22, TITLE = 0xf2f3f5, LINE = 0xb5bac1, FAINT = 0x949ba4;
-    dl->AddRectFilled(a, b, col32(BG), dp(8));
-    dl->AddRect(a, b, col32(EDGE), dp(8));
-    if (card.accent) dl->AddRectFilled(a, ImVec2(a.x + bar, b.y), col32(card.accent), dp(8), ImDrawFlags_RoundCornersLeft);
-    f32 x = a.x + bar + pad, x1 = b.x - pad, y = a.y + pad;
-    opt_text_at(dl, g_font_bold, ImVec2(x, y), TITLE, card.title, x1);
-    if (line[0]) {
-        f32 ly = y + title_h + lgap, lx = x;
-        // The game's emoji, as Discord shows it: only for a game that has one
-        char emoji[96];
-        bool has = card.icon && game[0] && gamedb_emoji(game, emoji, sizeof emoji);
-        ID3D11ShaderResourceView *icon = has ? game_icon(game) : 0;
-        if (icon) { // the game's icon before the line, the line's height
-            f32 is = floorf(line_h);
-            dl->AddImageRounded((ImTextureID)(intptr_t)icon, ImVec2(lx, ly), ImVec2(lx + is, ly + is), ImVec2(0, 0),
-                                ImVec2(1, 1), IM_COL32_WHITE, dp(3));
-            lx += is + dp(6);
-        }
-        opt_text_at(dl, g_font, ImVec2(lx, ly), LINE, line, x1);
-    }
-    y += head_h + dp(10);
-    ImVec2 v0(x, y), v1(x + vid_w, y + vid_h);
-    LibThumb *th = it ? lib_thumb(*it) : 0;
-    if (th && th->srv)
-        dl->AddImageRounded((ImTextureID)(intptr_t)th->srv, v0, v1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, dp(6));
-    else dl->AddRectFilled(v0, v1, col32(0x111214), dp(6));
-    if (card.player) { // the play button over the picture
-        ImVec2 m((v0.x + v1.x) / 2, (v0.y + v1.y) / 2);
-        f32 r = dp(22);
-        dl->AddCircleFilled(m, r, IM_COL32(0, 0, 0, 150), 32);
-        f32 t = r * 0.42f;
-        dl->AddTriangleFilled(ImVec2(m.x - t * 0.7f, m.y - t), ImVec2(m.x - t * 0.7f, m.y + t), ImVec2(m.x + t, m.y),
-                              IM_COL32_WHITE);
-    }
-    y += vid_h + dp(8);
-    if (card.via) { // our icon, then "via"
-        f32 vx = x;
-        if (ID3D11ShaderResourceView *own = opt_own_icon()) {
-            f32 is = floorf(via_h);
-            dl->AddImage((ImTextureID)(intptr_t)own, ImVec2(vx, y), ImVec2(vx + is, y + is));
-            vx += is + dp(4);
-        }
-        opt_text_at(dl, g_font_small, ImVec2(vx, y), FAINT, "via " APP_NAME, x1);
-    }
-    if (th && th->pending) ui_wake();
     opt_row_end();
 }
 
@@ -4125,7 +4018,7 @@ static void options_sharing()
         }
         opt_row_end();
     }
-    opt_link_card_preview(opt_card_styles()); // a hovered chip's style shows in the preview
+    opt_card_styles();
     opt_card_end();
 }
 
