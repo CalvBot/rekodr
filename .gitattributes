@@ -1,0 +1,4 @@
+# GitHub language stats: our headers are C++, and vendored code and the banner source do not count.
+*.h linguist-language=C++
+app/vendor/** linguist-vendored
+assets/*.html linguist-documentation
