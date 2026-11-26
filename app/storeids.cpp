@@ -234,6 +234,8 @@ static bool exe_clues(const char *exe, const char *path, const char *name, bool 
 //   GOG     the path of each game GOG Galaxy or a GOG installer put in (HKLM SOFTWARE\GOG.com\Games\<id>)
 //   EA      the Install Dir of each game the EA app or Origin put in (HKLM SOFTWARE\EA Games, Electronic Arts and
 //           Respawn, a key per game)
+//   Battle.net  the InstallLocation of each game whose uninstaller is Battle.net's agent (Windows' Uninstall keys),
+//           not Battle.net's own
 
 // Steam apps that install under steamapps\common like a game but aren't one. Some run all day beside games.
 struct SteamNotGame {
@@ -387,6 +389,33 @@ static void reg_game_folders(HKEY root, const wchar_t *key, const wchar_t *value
     RegCloseKey(games);
 }
 
+// Whether an Uninstall key's UninstallString is Battle.net's agent removing a game:
+//   "C:\ProgramData\Battle.net\Agent\Blizzard Uninstaller.exe" --lang=enUS --uid=prometheus --displayname="Overwatch"
+// Battle.net itself is uninstalled the same way, with --uid=battle.net.
+static bool battlenet_game_uninstall(const wchar_t *s)
+{
+    return wcsstr(s, L"\\Battle.net\\Agent\\") && wcsstr(s, L"--uid=") && !wcsstr(s, L"--uid=battle.net");
+}
+
+// The folder of each game Battle.net installed, from the Uninstall keys under `key` in one view of the registry
+static void battlenet_game_folders(HKEY root, const wchar_t *key, REGSAM view, StoreFolder *out, i32 *n, i32 max)
+{
+    HKEY apps;
+    if (RegOpenKeyExW(root, key, 0, KEY_READ | view, &apps) != ERROR_SUCCESS) return;
+    wchar_t id[256];
+    for (DWORD i = 0, len = COUNT(id); RegEnumKeyExW(apps, i, id, &len, 0, 0, 0, 0) == ERROR_SUCCESS; i++, len = COUNT(id)) {
+        wchar_t un[1024], path[MAX_PATH];
+        DWORD ub = sizeof un, pb = sizeof path;
+        if (RegGetValueW(apps, id, L"UninstallString", RRF_RT_REG_SZ, 0, un, &ub) != ERROR_SUCCESS || !battlenet_game_uninstall(un))
+            continue;
+        if (RegGetValueW(apps, id, L"InstallLocation", RRF_RT_REG_SZ, 0, path, &pb) != ERROR_SUCCESS || !path[0]) continue;
+        char at[MAX_PATH * 2];
+        wide_to_utf8(path, at, sizeof at);
+        if (dir_exists_utf8(at)) store_folder_add(out, n, max, at, CAT_GAME);
+    }
+    RegCloseKey(apps);
+}
+
 // The store game folders on this PC. Returns how many went into out.
 static i32 store_folders_find(StoreFolder *out, i32 max)
 {
@@ -460,6 +489,9 @@ static i32 store_folders_find(StoreFolder *out, i32 max)
     for (const wchar_t *k : EA_KEYS)
         for (REGSAM view : VIEWS)
             reg_game_folders(HKEY_LOCAL_MACHINE, k, L"Install Dir", view, out, &n, max);
+    for (REGSAM view : VIEWS)
+        battlenet_game_folders(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", view, out, &n,
+                               max);
     return n;
 }
 

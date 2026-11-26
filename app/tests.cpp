@@ -5008,6 +5008,9 @@ static void test_store_folders()
             {L"Respawn\\Apex", L"Install Dir", temp},
             {L"Respawn\\Titanfall2", L"Install Dir", L"Z:\\Gone\\Titanfall2"},
             {L"Respawn\\Launcher", L"ClientPath", temp},
+            {L"Uninstall\\Overwatch", L"InstallLocation", temp},
+            {L"Uninstall\\Battle.net", L"InstallLocation", temp},
+            {L"Uninstall\\Other", L"InstallLocation", temp},
         };
         for (auto &g : games) {
             HKEY h;
@@ -5029,6 +5032,23 @@ static void test_store_folders()
         T(gn == 1 && !_stricmp(got[0].path, want)); // the launcher's own key has no Install Dir
         reg_game_folders(HKEY_CURRENT_USER, L"Software\\RekodrTest\\None", L"path", KEY_WOW64_32KEY, got, &gn, COUNT(got));
         T(gn == 1);
+        // Battle.net: an Uninstall key whose uninstaller is its agent, for a game and not for Battle.net itself
+        static const wchar_t *const UN[] = {
+            L"\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=prometheus --displayname=\"Overwatch\"",
+            L"\"C:\\ProgramData\\Battle.net\\Agent\\Blizzard Uninstaller.exe\" --lang=enUS --uid=battle.net --displayname=\"Battle.net\"",
+            L"\"C:\\Program Files\\Riot Vanguard\\uninstall.exe\""};
+        static const wchar_t *const UN_KEY[] = {L"Overwatch", L"Battle.net", L"Other"};
+        T(battlenet_game_uninstall(UN[0]) && !battlenet_game_uninstall(UN[1]) && !battlenet_game_uninstall(UN[2]));
+        for (i32 i = 0; i < 3; i++) {
+            HKEY h;
+            swprintf(sub, MAX_PATH, L"Software\\RekodrTest\\Uninstall\\%ls", UN_KEY[i]);
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, sub, 0, KEY_SET_VALUE, &h) != ERROR_SUCCESS) continue;
+            RegSetValueExW(h, L"UninstallString", 0, REG_SZ, (const BYTE *)UN[i], (DWORD)((wcslen(UN[i]) + 1) * sizeof(wchar_t)));
+            RegCloseKey(h);
+        }
+        gn = 0;
+        battlenet_game_folders(HKEY_CURRENT_USER, L"Software\\RekodrTest\\Uninstall", KEY_WOW64_64KEY, got, &gn, COUNT(got));
+        T(gn == 1 && !_stricmp(got[0].path, want));
         RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\RekodrTest");
     }
 
