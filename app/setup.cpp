@@ -235,13 +235,15 @@ static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h
 }
 
 // What No leaves to the player, shown while No is picked: the same clip as a library card with the service, filed
-// under its game with the game's art and icon, and without, where the game isn't known and the card has only the
+// under its game, beside the game's art, with its icon, and without, where the game isn't known and the card has only the
 // exe's name; then what the player does by hand, and a box for their own SteamGridDB key. The clip's picture is a
 // frame built into the exe (assets/images/setup-example.jpg).
-static const char SETUP_EXAMPLE_GAME[] = "Overwatch", SETUP_EXAMPLE_EXE[] = "Overwatch.exe";
+static const char SETUP_EXAMPLE_GAME[] = "Counter-Strike 2", SETUP_EXAMPLE_EXE[] = "cs2.exe";
+static const f32 SETUP_EXAMPLE_ART_X = 0.72f; // where across its art the example shows: the players
 
-// One example card at a, w wide: the game's art (a plain tile when there is none), then the clip card as the library
-// draws it, with its picture, length, game icon, name and dim line. Returns its height.
+// One example card on a panel at a, w wide: the game's art shows on the panel's left, fading into it under the
+// clip card on its right (a plain panel with a faint game glyph when there is no art), and the card is
+// drawn as the library draws it, with its picture, length, game icon, name and dim line. Returns the panel's height.
 static f32 setup_example_card(ImDrawList *dl, ImVec2 a, f32 w, bool known)
 {
     static ID3D11ShaderResourceView *pic;
@@ -251,35 +253,43 @@ static f32 setup_example_card(ImDrawList *dl, ImVec2 a, f32 w, bool known)
         i32 pw, ph;
         pic = resource_texture(SETUP_EXAMPLE_RESOURCE, &pw, &ph);
     }
-    f32 r = kit_px(4), gap = kit_px(8);
-    // Art at 3:4 beside the card, as tall as its picture: card_w + card_w * 9/16 * 3/4 + gap = w
-    f32 cw = floorf((w - gap) / (1 + 27.0f / 64)), th = floorf(cw * 9 / 16), aw = w - gap - cw;
-    ImVec2 p0 = a, p1(a.x + aw, a.y + th);
+    f32 r = kit_px(4), pad = dp(12), cw = floorf(w * 0.62f), th = floorf(cw * 9 / 16);
+    f32 isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize, ph = pad + th + kit_px(8) + isz + pad;
+    ImVec2 p0 = a, p1(a.x + w, a.y + ph);
+    ImVec2 t0(p1.x - pad - cw, a.y + pad), t1(t0.x + cw, t0.y + th);
+    f32 aw = t0.x + dp(24) - p0.x, fade0 = p0.x + aw * 0.6f, fade1 = p0.x + aw;
     i32 gw = 0, gh = 0;
     ID3D11ShaderResourceView *art = known ? game_db_cover(SETUP_EXAMPLE_GAME, &gw, &gh) : 0;
-    if (art && gw > 0 && gh > 0) {
-        f32 want = aw / th, have = (f32)gw / gh, u = 0, v = 0;
-        if (have > want) u = (1 - want / have) / 2;
-        else v = (1 - have / want) / 2;
-        dl->AddImageRounded((ImTextureID)art, p0, p1, ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, r);
+    if (art && gw > 0 && gh > 0) { // on the panel's left, cut to that shape around SETUP_EXAMPLE_ART_X across
+        dl->AddRectFilled(p0, p1, col32(COL_PANEL), dp(12));
+        f32 want = aw / ph, have = (f32)gw / gh, u0 = 0, u1 = 1, v = 0;
+        if (have > want) {
+            f32 span = want / have;
+            u0 = SETUP_EXAMPLE_ART_X - span / 2;
+            u0 = u0 < 0 ? 0 : u0 > 1 - span ? 1 - span : u0;
+            u1 = u0 + span;
+        } else v = (1 - have / want) / 2;
+        dl->AddImageRounded((ImTextureID)art, p0, ImVec2(fade1, p1.y), ImVec2(u0, v), ImVec2(u1, 1 - v), IM_COL32_WHITE, dp(12),
+                            ImDrawFlags_RoundCornersLeft);
+        ImU32 clear = col32(COL_PANEL, 0), solid = col32(COL_PANEL);
+        dl->AddRectFilledMultiColor(ImVec2(fade0, p0.y), ImVec2(fade1, p1.y), clear, solid, solid, clear);
     } else {
-        dl->AddRectFilled(p0, p1, col32(COL_PANEL), r);
-        f32 gs = kit_px(20);
+        dl->AddRectFilled(p0, p1, col32(COL_PANEL), dp(12));
+        f32 gs = kit_px(22);
         ImVec2 sz = g_font_icon->CalcTextSizeA(gs, FLT_MAX, 0, ICON_GAME);
-        dl->AddText(g_font_icon, gs, ImVec2(floorf(p0.x + (aw - sz.x) / 2), floorf(p0.y + (th - sz.y) / 2)), col32(COL_FAINT),
-                    ICON_GAME);
+        dl->AddText(g_font_icon, gs, ImVec2(floorf((p0.x + t0.x - sz.x) / 2), floorf(p0.y + (ph - sz.y) / 2)),
+                    col32(COL_FAINT), ICON_GAME);
     }
-    ImVec2 t0(a.x + aw + gap, a.y), t1(t0.x + cw, a.y + th);
     if (pic) dl->AddImageRounded((ImTextureID)pic, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
-    else dl->AddRectFilled(t0, t1, col32(COL_PANEL), r);
-    badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, "0:18");
+    else dl->AddRectFilled(t0, t1, col32(COL_PANEL2), r);
+    badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, "0:22");
     // The caption: the game's icon (a plain glyph when no game is known), the name and one dim line
-    f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
+    f32 y = t1.y + kit_px(8);
     ID3D11ShaderResourceView *icon = known ? game_icon(SETUP_EXAMPLE_GAME) : 0;
     if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(t0.x, y), ImVec2(t0.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
                                   IM_COL32_WHITE, kit_px(3));
     else {
-        dl->AddRectFilled(ImVec2(t0.x, y), ImVec2(t0.x + isz, y + isz), col32(COL_PANEL), kit_px(3));
+        dl->AddRectFilled(ImVec2(t0.x, y), ImVec2(t0.x + isz, y + isz), col32(COL_PANEL2), kit_px(3));
         ImVec2 is = g_font_icon->CalcTextSizeA(g_font_icon->FontSize, FLT_MAX, 0, ICON_VIDEO);
         dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(floorf(t0.x + (isz - is.x) / 2), floorf(y + (isz - is.y) / 2)),
                     col32(COL_FAINT), ICON_VIDEO);
@@ -287,9 +297,9 @@ static f32 setup_example_card(ImDrawList *dl, ImVec2 a, f32 w, bool known)
     f32 tx = t0.x + isz + kit_px(10);
     opt_text_at(dl, g_font_bold, ImVec2(tx, y), COL_TEXT, "Example clip", t1.x);
     char line[96];
-    snprintf(line, sizeof line, "%s  -  Today  -  29 MB", known ? SETUP_EXAMPLE_GAME : SETUP_EXAMPLE_EXE);
+    snprintf(line, sizeof line, "%s  -  Today", known ? SETUP_EXAMPLE_GAME : SETUP_EXAMPLE_EXE);
     opt_text_at(dl, g_font_small, ImVec2(tx, y + g_font_bold->FontSize + kit_px(2)), COL_DIM, line, t1.x);
-    return th + kit_px(8) + isz;
+    return ph;
 }
 
 static void setup_detection_by_hand(ImDrawList *dl, f32 x0, f32 x1, f32 y)
