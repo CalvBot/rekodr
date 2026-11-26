@@ -16,7 +16,9 @@ set /p VS=<build\vs.txt
 call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 :have_cl
 
-set FLAGS=/nologo /std:c++20 /utf-8 /W4 /wd4100 /wd4505 /GR- /EHs-c- /D_HAS_EXCEPTIONS=0 /Zi /FS
+rem /pathmap writes source paths as .\... and /PDBALTPATH names the .pdb without its folder, so the exe holds no
+rem path from this PC. /pathmap needs /experimental:deterministic, which warns (5048) on __DATE__ and __TIME__.
+set FLAGS=/nologo /std:c++20 /utf-8 /W4 /wd4100 /wd4505 /wd5048 /GR- /EHs-c- /D_HAS_EXCEPTIONS=0 /Zi /FS /experimental:deterministic /pathmap:"%CD%"=.
 if "%1"=="debug" (set FLAGS=%FLAGS% /Od /MTd /DDEBUG) else (set FLAGS=%FLAGS% /O2 /MT)
 set LIBS=user32.lib gdi32.lib shell32.lib ole32.lib advapi32.lib d3d11.lib dxgi.lib dwmapi.lib dbghelp.lib imm32.lib mmdevapi.lib mfplat.lib mfuuid.lib windowscodecs.lib oleaut32.lib winhttp.lib bcrypt.lib shcore.lib
 
@@ -26,5 +28,5 @@ rem text, and are allowed.
 powershell -NoProfile -Command "$bad = 0; Get-ChildItem *.cpp,*.h,*.rc,*.bat | ForEach-Object { $n = 0; foreach ($l in [IO.File]::ReadAllLines($_.FullName, [Text.Encoding]::GetEncoding(28591))) { $n++; if ($l -match '[^\x00-\x7F]' -or $l -match '\\x([cd][0-9a-f]|e[0-9a-d]|f[0-4])') { Write-Host ('{0}({1}): error: non-ASCII text: {2}' -f $_.Name, $n, $l.Trim()); $bad++ } } }; exit [int]($bad -gt 0)" || exit /b 1
 
 rc /nologo /fo build\rekodr.res rekodr.rc || exit /b 1
-cl %FLAGS% rekodr.cpp build\rekodr.res /Fobuild\ /Fdbuild\ /Febuild\rekodr.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS% || exit /b 1
+cl %FLAGS% rekodr.cpp build\rekodr.res /Fobuild\ /Fdbuild\ /Febuild\rekodr.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /PDBALTPATH:%%_PDB%% %LIBS% || exit /b 1
 if "%1"=="release" pwsh -NoProfile -ExecutionPolicy Bypass -File release.ps1 || exit /b 1
