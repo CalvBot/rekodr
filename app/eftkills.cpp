@@ -7,9 +7,11 @@
 // often for a second or less, and only if the player opens it. Once that stretch is EK_SETTLE in the past, the
 // footage Rekodr recorded of it is read at EK_FPS frames a second with ffmpeg. A frame whose title names the kill list
 // is read with Windows' own OCR (Windows.Media.Ocr) in the language of the game's UI (Game.ini's "Language"); a
-// language with no title text here, or no OCR pack on the PC, reads nothing. OCR can't read the time column's italic
-// digital digits, so they are matched against EK_DIGITS. A row seen in several frames (the list scrolls) is kept
-// once. Each becomes a Kill marker at spawn + its time, its detail the name, level, faction and weapon.
+// language with no title text here, or no OCR pack on the PC, reads nothing. Only the kill list's own layout is
+// trusted: its title, its column heads in their order, and rows that fit each column (ek_row_fits). Anything else on
+// the screen, and every other end-of-raid screen, gives no kill. OCR can't read the time column's italic digital
+// digits, so they are matched against EK_DIGITS. A row seen in several frames (the list scrolls) is kept once. Each
+// becomes a Kill marker at spawn + its time, its detail the name, level, faction and weapon.
 //
 // Raids are found in every run's output log in <game>\Logs, so raids recorded before this ran get their kills too,
 // and the log's other markers (raid start and end, quests, groups), each at its line's time, unless a marker with the
@@ -436,11 +438,13 @@ done:
 struct EkLang {
     const char *game;
     const wchar_t *ocr[2];
-    const char *title;                                  // in the line under "RAID ENDED"
-    const char *time, *player, *level, *faction, *status; // the column heads
+    const char *ended, *title;                                       // the screen's head and the line under it
+    const char *location, *time, *player, *level, *faction, *status; // the column heads, left to right
+    const char *factions[3];                                         // what the faction column may say
 };
 static const EkLang EK_LANGS[] = {
-    {"en", {L"en-US", L"en-GB"}, "KILL LIST", "TIME", "PLAYER", "LVL", "FACTION", "STATUS"},
+    {"en", {L"en-US", L"en-GB"}, "RAID ENDED", "KILL LIST", "LOCATION", "TIME", "PLAYER", "LVL", "FACTION", "STATUS",
+     {"USEC", "BEAR", "SCAV"}},
 };
 
 struct EkKill {
@@ -473,6 +477,41 @@ static void ek_cell_text(const EkWord *words, const i32 *row, i32 n, f32 x0, f32
 
 static bool ek_word_is(const EkWord &w, const char *text) { return !_stricmp(w.text, text); }
 
+// Whether a row's cells fit the kill list's columns: a location with a letter in it; a level of "--" (or nothing, the
+// dashes not read) or 1 to 99; one of the language's factions; and a status of "<how> (<weapon>, ..., <distance>m)",
+// "Headshot (MPX, 22m)" or "Killed (MPX, thorax, 16.8m)".
+static bool ek_row_fits(const EkLang &lang, const char *location, const char *level, const char *faction, const char *how)
+{
+    bool letter = false;
+    for (const char *c = location; *c; c++) letter |= isalpha((u8)*c) != 0;
+    if (!letter) return false;
+    i32 digits = 0, dashes = 0, other = 0;
+    for (const char *c = level; *c; c++) {
+        if (isdigit((u8)*c)) digits++;
+        else if (*c == '-' || *c == '_' || *c == '~') dashes++;
+        else if (*c != ' ') other++;
+    }
+    if (other || (digits && dashes) || digits > 2 || (digits && atoi(level) < 1)) return false;
+    bool known = false;
+    for (const char *f : lang.factions) known |= f && !_stricmp(faction, f);
+    if (!known) return false;
+    const char *open = strchr(how, '(');
+    if (!open || open == how) return false;
+    for (const char *c = how; c < open; c++)
+        if (!isalpha((u8)*c) && *c != ' ') return false;
+    size_t len = strlen(how);
+    const char *end = how + len; // past the ')'
+    if (len < 4 || end[-1] != ')') return false;
+    const char *unit = end - 2;
+    if (*unit == 'n' && unit[-1] == 'r') unit--; // OCR reads "m" as "rn"
+    else if (*unit != 'm') return false;
+    const char *num = unit;
+    while (num > open && (isdigit((u8)num[-1]) || num[-1] == '.')) num--;
+    if (num == unit || !isdigit((u8)*num)) return false;
+    const char *comma = strchr(open, ',');
+    return comma && comma < num && comma > open + 1;
+}
+
 // The rows of the kill list in a frame of EK_W by EK_H grey pixels; -1 if the frame isn't the kill list.
 static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
 {
@@ -483,9 +522,9 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
     for (i32 i = 0, len = 0; i < n && len < (i32)sizeof title - 1; i++)
         len += snprintf(title + len, sizeof title - len, " %s", words[i].text);
     _strupr_s(title);
-    if (!strstr(title, lang.title)) return -1;
+    if (!strstr(title, lang.ended) || !strstr(title, lang.title)) return -1;
     n = ek_ocr(px, EK_W, EK_W, EK_H, words, COUNT(words));
-    const EkWord *time = 0, *player = 0, *level = 0, *faction = 0, *status = 0;
+    const EkWord *location = 0, *time = 0, *player = 0, *level = 0, *faction = 0, *status = 0;
     for (i32 i = 0; i < n; i++) {
         const EkWord &w = words[i];
         if (ek_word_is(w, lang.time)) time = &w;
@@ -494,13 +533,15 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
     for (i32 i = 0; i < n; i++) {
         const EkWord &w = words[i];
         if (fabsf(w.y - time->y) > w.h) continue;
-        if (ek_word_is(w, lang.player)) player = &w;
+        if (ek_word_is(w, lang.location)) location = &w;
+        else if (ek_word_is(w, lang.player)) player = &w;
         else if (ek_word_is(w, lang.level)) level = &w;
         else if (ek_word_is(w, lang.faction)) faction = &w;
         else if (ek_word_is(w, lang.status)) status = &w;
     }
-    if (!player || !level || !faction || !status || !(time->x < player->x && player->x < level->x && level->x < faction->x &&
-                                                      faction->x < status->x))
+    if (!location || !player || !level || !faction || !status ||
+        !(location->x < time->x && time->x < player->x && player->x < level->x && level->x < faction->x &&
+          faction->x < status->x))
         return 0;
     f32 pad = time->h, head_y = time->y;
     // A row is where a name is: the words in the player column, from the top, each with the words beside it.
@@ -525,11 +566,13 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
                 row[j] = row[j - 1], row[j - 1] = t;
             }
         EkKill kill = {};
-        char lv[16], how[128];
+        char where[64], lv[16], how[128];
+        ek_cell_text(words, row, k, location->x - pad, time->x - pad, where, sizeof where);
         ek_cell_text(words, row, k, player->x - pad, level->x - pad, kill.name, sizeof kill.name);
         ek_cell_text(words, row, k, level->x - pad, faction->x - pad, lv, sizeof lv);
         ek_cell_text(words, row, k, faction->x - pad, status->x - pad, kill.faction, sizeof kill.faction);
         ek_cell_text(words, row, k, status->x - pad, 1e9f, how, sizeof how);
+        if (!ek_row_fits(lang, where, lv, kill.faction, how)) continue;
         for (i32 i = 0, j = 0; lv[i] && j < (i32)sizeof kill.level - 1; i++)
             if (isdigit((u8)lv[i])) kill.level[j++] = lv[i];
         // "Headshot (MPX, 22m)": the weapon is what the brackets start with.

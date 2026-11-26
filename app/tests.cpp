@@ -4331,6 +4331,36 @@ static void test_am_pc()
     T(am_pc_apps(c, AMG_RUST) == AM_PC_HERE);
 }
 
+// Writes text in white on a black box at (x, y) of a w-wide grey picture, `size` pixels high, in Segoe UI
+static void test_grey_text(u8 *px, i32 w, i32 x, i32 y, i32 bw, i32 bh, i32 size, const wchar_t *text)
+{
+    BITMAPINFO bi = {};
+    bi.bmiHeader = {sizeof bi.bmiHeader, bw, -bh, 1, 32, BI_RGB};
+    void *bits = 0;
+    HDC dc = CreateCompatibleDC(0);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, 0, 0);
+    if (!bmp) {
+        DeleteDC(dc);
+        return;
+    }
+    HGDIOBJ old = SelectObject(dc, bmp);
+    HFONT font = CreateFontW(-size, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
+    HGDIOBJ oldf = SelectObject(dc, font);
+    SetBkColor(dc, RGB(0, 0, 0));
+    SetTextColor(dc, RGB(255, 255, 255));
+    RECT r = {0, 0, bw, bh};
+    ExtTextOutW(dc, 0, 0, ETO_OPAQUE, &r, 0, 0, 0);
+    TextOutW(dc, 0, 0, text, (int)wcslen(text));
+    GdiFlush();
+    for (i32 j = 0; j < bh; j++)
+        for (i32 i = 0; i < bw; i++) px[(size_t)(y + j) * w + x + i] = ((u8 *)bits)[((size_t)j * bw + i) * 4 + 1];
+    SelectObject(dc, oldf);
+    SelectObject(dc, old);
+    DeleteObject(font);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+}
+
 // A grey picture from a PNG in testdata, w by h; free() it. 0 if it can't be read.
 static u8 *test_png_grey(const wchar_t *name, i32 *w, i32 *h)
 {
@@ -4410,8 +4440,48 @@ static void test_eft_kills()
     for (i32 i = 0; i < n && i < 10; i++) T(got[i].secs == secs[i] && !strcmp(got[i].faction, "SCAV") && !got[i].level[0]);
     T(n == 10 && !strcmp(got[0].name, "Lyova Shambambulish") && !strcmp(got[0].weapon, "MPX") &&
       !strcmp(got[9].name, "Trofim Neboskryob") && !strcmp(got[9].weapon, "MP-443 Grach"));
+
+    // Rows must fit the columns
+    const EkLang &en = EK_LANGS[0];
+    T(ek_row_fits(en, "Ground Zero", "", "SCAV", "Headshot (MPX, 22m)") &&
+      ek_row_fits(en, "Customs", "--", "BEAR", "Killed (MP-443 Grach, thorax, 16.8m)") &&
+      ek_row_fits(en, "Woods", "42", "usec", "Headshot (M4A1, 101rn)"));
+    T(!ek_row_fits(en, "", "", "SCAV", "Headshot (MPX, 22m)") && !ek_row_fits(en, "Ground Zero", "100", "SCAV", "Headshot (MPX, 22m)") &&
+      !ek_row_fits(en, "Ground Zero", "4x", "SCAV", "Headshot (MPX, 22m)") &&
+      !ek_row_fits(en, "Ground Zero", "", "LOOT", "Headshot (MPX, 22m)") &&
+      !ek_row_fits(en, "Ground Zero", "", "SCAV", "Headshot") && !ek_row_fits(en, "Ground Zero", "", "SCAV", "Headshot (MPX)") &&
+      !ek_row_fits(en, "Ground Zero", "", "SCAV", "(MPX, 22m)") && !ek_row_fits(en, "Ground Zero", "", "SCAV", "Sold for 12,000 (2)"));
+
+    // Stray text on the kill list is no kill; a row whose faction cell says something else is dropped
+    test_grey_text(frame, w, 960, 1160, 900, 60, 40, L"Garik Morgan 00:02:54 Headshot (MPX, 22m)");
+    test_grey_text(frame, w, 1490, 1060, 200, 60, 40, L"LOOT");
+    n = ek_kill_list(frame, en, got, COUNT(got));
+    T(n == 9);
+    for (i32 i = 0; i < n && i < 9; i++) T(got[i].secs == secs[i]);
+    // Without its STATUS column head it isn't the kill list's table
+    test_grey_text(frame, w, 1700, 270, 200, 50, 30, L" ");
+    T(ek_kill_list(frame, en, got, COUNT(got)) == 0);
+
+    // Other screens: the kill list's title over other text, another end-of-raid screen, and a page of text
+    static const struct {
+        const wchar_t *head, *line;
+        const wchar_t *rows[4];
+        i32 want;
+    } screens[] = {
+        {L"RAID ENDED", L"YOUR KILL LIST", {L"Experience  12,345", L"Kills  3", L"Time in raid  00:06:00"}, 0},
+        {L"RAID ENDED", L"SURVIVED", {L"LOCATION    TIME    PLAYER    LVL    FACTION    STATUS", L"Ground Zero  Garik Morgan  SCAV  Headshot (MPX, 22m)"}, -1},
+        {L"KILL LIST", L"", {L"TIME  PLAYER  LVL  FACTION  STATUS", L"Garik Morgan  SCAV  Headshot (MPX, 22m)"}, -1},
+        {L"RAID ENDED", L"YOUR KILL LIST", {L"STATUS    FACTION    LVL    PLAYER    TIME    LOCATION", L"Headshot (MPX, 22m)  SCAV  --  Garik Morgan  Ground Zero"}, 0},
+    };
+    for (const auto &s : screens) {
+        memset(frame, 0, (size_t)w * h);
+        test_grey_text(frame, w, 1000, 20, 560, 70, 56, s.head);
+        test_grey_text(frame, w, 1000, 95, 560, 34, 26, s.line);
+        for (i32 i = 0; i < 4 && s.rows[i]; i++) test_grey_text(frame, w, 400, 280 + 80 * i, 1800, 60, 34, s.rows[i]);
+        T(ek_kill_list(frame, en, got, COUNT(got)) == s.want);
+    }
     memset(frame, 0, (size_t)w * h);
-    T(ek_kill_list(frame, EK_LANGS[0], got, COUNT(got)) == -1);
+    T(ek_kill_list(frame, en, got, COUNT(got)) == -1);
     free(frame);
 }
 
