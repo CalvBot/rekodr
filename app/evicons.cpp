@@ -97,232 +97,106 @@ static const char *const EVI_NAMES[EVI_COUNT] = {
     "Zone", "Travel", "Spawn", "Server", "Account", "MVP", "Plant", "Defuse", "Achievement", "Rifle", "Pistol", "SMG",
     "Sniper", "Shotgun", "Knife", "Grenade"};
 
-// Draws `icon` centred on `c`, `size` across, in `col`; `hole` is the colour behind it.
+// Each icon's shapes on a 14 by 14 grid of pixels at 100%, so straight edges fall on whole pixels. Upper case in
+// the icon's colour, lower case in the colour behind it (holes): R x0 y0 x1 y1 a rectangle; D x y r a disc; O x y r w
+// a ring, r to its outside; P n x y ... a convex shape of n points; S w n x y ... a line w wide through n points;
+// T x y r1 r2 a five-point star.
+static const char *const EVI_SHAPES[EVI_COUNT] = {
+    "",
+    /* kill */ "O 7 7 5 2 R 6 0 8 3 R 6 11 8 14 R 0 6 3 8 R 11 6 14 8 R 6 6 8 8",
+    /* death */ "D 7 6 5.5 R 3 8 11 13 d 4.8 6.6 1.7 d 9.2 6.6 1.7 r 5 11 6 13 r 8 11 9 13",
+    /* headshot */ "D 7 5 4.5 d 7 5 2.5 D 7 5 1.2 P 4 1 14 3 10 11 10 13 14",
+    /* multi */ "P 8 7 0 11 5 12 9 10.5 12.5 7 14 3.5 12.5 2 9 3 5 p 5 7 6.5 9 10 8 12 6 12 5 10",
+    /* downed */ "D 3 8.5 2.5 R 6 7 13 11 R 0 12 14 14",
+    /* assist */ "D 5 4 3 P 5 0 14 1 9 5 8 9 9 10 14 R 10 2 12 10 R 7 5 15 7",
+    /* round */ "R 2 1 4 14 R 4 1 9 8 P 3 9 1 13 1 9 8 P 3 13 8 9 8 9 4.5",
+    /* win */ "R 3 1 11 5 D 7 5 4 R 6 8 8 11 R 4 11 10 13 R 1 2 3 3 R 1 2 2 6 R 11 2 13 3 R 12 2 13 6",
+    /* objective */ "R 2 5 12 13 R 2 2 4 5 R 6 2 8 5 R 10 2 12 5 r 6 9 8 13",
+    /* advancement */ "T 7 7.6 7 2.9",
+    /* level */ "S 2.4 3 2 7.5 7 2.5 12 7.5 S 2.4 3 2 12.5 7 7.5 12 12.5",
+    /* lap */ "O 7 8 6 2 R 5 0 9 2 R 6 4 8 9 R 11 2 13 4",
+    /* overtake */ "S 2.4 3 2 2 7 7 2 12 S 2.4 3 7 2 12 7 7 12",
+    /* incident */ "P 3 7 0.5 14 13.5 0 13.5 r 6 5 8 9 r 6 10 8 12",
+    /* goal */ "R 0 2 14 4 R 0 2 2 14 R 12 2 14 14 D 7 10.5 2.5",
+    /* save */ "P 5 1 1.5 13 1.5 13 7.5 7 13 1 7.5 r 6 4 8 10 r 4 6 10 8",
+    /* raid_start */ "R 9 1 13 3 R 11 1 13 13 R 9 11 13 13 R 0 6 6 8 P 3 5 2.5 9.5 7 5 11.5",
+    /* raid_end */ "R 1 1 5 3 R 1 1 3 13 R 1 11 5 13 R 4 6 10 8 P 3 9 2.5 13.5 7 9 11.5",
+    /* quest */ "D 7 7 7 s 2.2 3 3.8 7.2 6 9.4 10.4 4.8",
+    /* group */ "D 10 3.5 2.5 P 4 6 12 14 12 14 8 6 8 d 5 5 3.6 p 4 -1 14 11 14 11 9 -1 9 D 5 5 2.5 P 4 0 14 10 14 10 10 0 10",
+    /* contract */ "P 5 2 0 9 0 12 3 12 14 2 14 r 4 5 10 6 r 4 8 10 9 r 4 11 8 12",
+    /* zone */ "D 7 5.5 5 P 3 2.4 7.6 11.6 7.6 7 14 d 7 5.5 2",
+    /* travel */ "P 3 0 6 14 0 6 8 P 3 6 8 14 0 9 14 s 1 2 6 8 13 1",
+    /* spawn */ "D 7 4 3.2 P 6 1 14 2 10 5 8.5 9 8.5 12 10 13 14",
+    /* server */ "R 1 1 13 4 R 1 5 13 8 R 1 9 13 12 r 9 2 11 3 r 9 6 11 7 r 9 10 11 11",
+    /* account */ "R 0 2 14 12 d 4.5 6 1.8 r 2 8.5 7 10.5 r 8 5 12 6 r 8 8 12 9",
+    /* mvp */ "R 1 9 13 12 P 3 1 3 1 9 5 9 P 3 7 1 3.5 9 10.5 9 P 3 13 3 13 9 9 9",
+    /* plant */ "D 6 8.5 5 R 8 3 11 5 R 11 1 12 3 R 12 0 14 1",
+    /* defuse */ "D 6 8.5 5 R 8 3 11 5 s 1.6 2 2.5 12 9.5 5",
+    /* achievement */ "P 4 3 0 6 0 8 5 5 5 P 4 8 0 11 0 9 5 6 5 D 7 9 4.8 d 7 9 2.4",
+    /* rifle */ "P 4 0 5 4 4 4 8 0 9 R 4 4 11 7 R 11 4 14 6 P 4 7 7 9 7 10 11 8 11 P 4 4 7 6 7 5 10 3 10",
+    /* pistol */ "R 2 3 13 7 P 4 3 7 7 7 6 12 2 12",
+    /* smg */ "R 0 4 2 6 R 2 3 11 7 R 11 4 14 6 R 6 7 8 12 P 4 3 7 5 7 4 10 2 10",
+    /* sniper */ "P 4 0 6 3 5 3 9 0 10 R 3 5 9 8 R 9 5 14 7 R 4 2 9 4 P 4 4 8 6 8 5 11 3 11",
+    /* shotgun */ "P 4 0 5 4 4 4 8 0 10 R 4 4 14 6 R 7 6 12 8 P 4 4 6 6 6 5 9 3 9",
+    /* knife */ "P 4 1 13 8 4 11 7 3 13 S 3 2 10 5.5 13 2.5",
+    /* grenade */ "D 7 9 4.8 R 5 2 9 5 R 9 2 12 3 O 3.5 3.5 2 1",
+};
+
+// Draws `icon` centred on `c`, `size` across (14 * the UI's scale keeps edges on whole pixels), in `col`; `hole` is
+// the colour behind it.
 static void evi_draw(ImDrawList *dl, EvIcon icon, ImVec2 c, f32 size, ImU32 col, ImU32 hole)
 {
-    const f32 u = size / 16;
-    auto P = [&](f32 x, f32 y) { return ImVec2(c.x + (x - 8) * u, c.y + (y - 8) * u); };
-    const f32 th = 1.6f * u; // a stroke
-    auto line = [&](f32 x0, f32 y0, f32 x1, f32 y1, f32 w = 0) { dl->AddLine(P(x0, y0), P(x1, y1), col, w ? w * u : th); };
-    auto circle = [&](f32 x, f32 y, f32 r, f32 w = 0) { dl->AddCircle(P(x, y), r * u, col, 0, w ? w * u : th); };
-    auto disc = [&](f32 x, f32 y, f32 r, ImU32 k) { dl->AddCircleFilled(P(x, y), r * u, k); };
-    auto rect = [&](f32 x0, f32 y0, f32 x1, f32 y1, ImU32 k, f32 r = 0) { dl->AddRectFilled(P(x0, y0), P(x1, y1), k, r * u); };
-    // A filled shape, or a line through points, from x, y pairs
-    auto poly = [&](const f32 *v, i32 count, ImU32 k) {
-        ImVec2 p[24];
-        i32 n = 0;
-        for (i32 i = 0; i + 1 < count && n < 24; i += 2) p[n++] = P(v[i], v[i + 1]);
-        dl->AddConcavePolyFilled(p, n, k);
-    };
-    auto stroke = [&](const f32 *v, i32 count, bool closed, f32 w) {
-        ImVec2 p[24];
-        i32 n = 0;
-        for (i32 i = 0; i + 1 < count && n < 24; i += 2) p[n++] = P(v[i], v[i + 1]);
-        dl->AddPolyline(p, n, col, closed ? ImDrawFlags_Closed : 0, w ? w * u : th);
-    };
-#define EVI_POLY(k, ...) do { static const f32 v_[] = {__VA_ARGS__}; poly(v_, COUNT(v_), k); } while (0)
-#define EVI_STROKE(closed, w, ...) do { static const f32 v_[] = {__VA_ARGS__}; stroke(v_, COUNT(v_), closed, w); } while (0)
-    auto crosshair = [&](f32 x, f32 y, f32 r) {
-        circle(x, y, r);
-        line(x, y - r - 2, x, y - r + 2.5f), line(x, y + r - 2.5f, x, y + r + 2);
-        line(x - r - 2, y, x - r + 2.5f, y), line(x + r - 2.5f, y, x + r + 2, y);
-    };
-    auto star = [&](f32 x, f32 y, f32 R, f32 r) {
-        ImVec2 p[10];
-        for (i32 i = 0; i < 10; i++) {
-            f32 a = -IM_PI / 2 + i * IM_PI / 5, rr = (i & 1) ? r : R;
-            p[i] = P(x + cosf(a) * rr, y + sinf(a) * rr);
+    if (icon <= EVI_NONE || icon >= EVI_COUNT) return;
+    const f32 u = size / 14, ox = floorf(c.x - size / 2 + 0.5f), oy = floorf(c.y - size / 2 + 0.5f);
+    auto P = [&](f32 x, f32 y) { return ImVec2(ox + x * u, oy + y * u); };
+    const char *s = EVI_SHAPES[icon];
+    f32 v[40];
+    auto num = [&]() { char *e; f32 f = strtof(s, &e); s = e; return f; };
+    while (*s) {
+        while (*s == ' ') s++;
+        char op = *s;
+        if (!op) break;
+        s++;
+        ImU32 k = isupper((u8)op) ? col : hole;
+        switch (toupper((u8)op)) {
+        case 'R': // whole pixels, no smoothing: crisp
+            for (i32 i = 0; i < 4; i++) v[i] = num();
+            dl->AddRectFilled(ImVec2(roundf(ox + v[0] * u), roundf(oy + v[1] * u)), ImVec2(roundf(ox + v[2] * u), roundf(oy + v[3] * u)), k);
+            break;
+        case 'D':
+            for (i32 i = 0; i < 3; i++) v[i] = num();
+            dl->AddCircleFilled(P(v[0], v[1]), v[2] * u, k);
+            break;
+        case 'O':
+            for (i32 i = 0; i < 4; i++) v[i] = num();
+            dl->AddCircle(P(v[0], v[1]), (v[2] - v[3] / 2) * u, k, 0, v[3] * u);
+            break;
+        case 'P': case 'S': {
+            f32 w = toupper((u8)op) == 'S' ? num() : 0;
+            i32 n = (i32)num();
+            ImVec2 p[16];
+            n = n > 16 ? 16 : n;
+            for (i32 i = 0; i < n; i++) { f32 x = num(); p[i] = P(x, num()); }
+            if (!w) dl->AddConvexPolyFilled(p, n, k);
+            else {
+                dl->AddPolyline(p, n, k, 0, w * u);
+                for (i32 i = 1; i + 1 < n; i++) dl->AddCircleFilled(p[i], w * u / 2, k); // round joints
+            }
+            break;
         }
-        dl->AddConcavePolyFilled(p, 10, col);
-    };
-    auto person = [&](f32 x, f32 y, f32 k) { // head and shoulders, `k` the scale
-        disc(x, y - 3 * k, 2.6f * k, col);
-        dl->PathArcTo(P(x, y + 5 * k), 5 * k * u, IM_PI, 2 * IM_PI);
-        dl->PathFillConvex(col);
-    };
-    auto bomb = [&]() {
-        disc(7, 9.5f, 5, col);
-        rect(9.5f, 3.5f, 12, 6, col);
-        line(11.5f, 4, 13.5f, 1.5f, 1.2f);
-    };
-    switch (icon) {
-    case EVI_NONE: case EVI_COUNT: break;
-    case EVI_KILL: crosshair(8, 8, 5); disc(8, 8, 1.3f, col); break;
-    case EVI_MULTI: // a crosshair and a tally of kills
-        crosshair(6, 8, 3.6f); disc(6, 8, 1.1f, col);
-        rect(12.2f, 3.5f, 13.5f, 12.5f, col), rect(14.5f, 3.5f, 15.8f, 12.5f, col);
-        break;
-    case EVI_DEATH: // skull: dome, jaw, eye holes, nose
-        disc(8, 7, 6, col);
-        rect(4.5f, 9, 11.5f, 14, col, 1.2f);
-        disc(5.8f, 7.8f, 1.7f, hole), disc(10.2f, 7.8f, 1.7f, hole);
-        EVI_POLY(hole, 8, 9.6f, 7, 11.4f, 9, 11.4f);
-        rect(6.6f, 12.4f, 7.2f, 14, hole), rect(8.8f, 12.4f, 9.4f, 14, hole);
-        break;
-    case EVI_HEADSHOT: // a head with a crosshair on it
-        person(8, 9.5f, 1.1f);
-        disc(8, 6.2f, 1.4f, hole);
-        circle(8, 6.2f, 4.3f, 1.2f);
-        line(8, 0.6f, 8, 2.6f, 1.2f), line(2.4f, 6.2f, 4.4f, 6.2f, 1.2f), line(11.6f, 6.2f, 13.6f, 6.2f, 1.2f);
-        break;
-    case EVI_DOWNED: // a person fallen, an arrow down over them
-        disc(3.5f, 12, 2, col);
-        rect(6, 10.5f, 14.5f, 13.5f, col, 1.5f);
-        line(10, 1.5f, 10, 7);
-        EVI_STROKE(false, 0, 7.5f, 4.8f, 10, 7.5f, 12.5f, 4.8f);
-        break;
-    case EVI_ASSIST: // a second person behind, a plus
-        person(6.5f, 8.5f, 0.95f);
-        rect(10.4f, 3.5f, 12.2f, 10.5f, col), rect(7.8f, 6.1f, 14.8f, 7.9f, col);
-        break;
-    case EVI_ROUND: // a flag
-        rect(3, 1.5f, 4.6f, 15, col);
-        EVI_POLY(col, 4.6f, 2, 13.5f, 2, 11, 5.5f, 13.5f, 9, 4.6f, 9);
-        break;
-    case EVI_WIN: // a trophy
-        dl->PathArcTo(P(8, 3), 4.5f * u, 0, IM_PI);
-        dl->PathFillConvex(col);
-        rect(3.5f, 1.5f, 12.5f, 3.2f, col);
-        EVI_STROKE(false, 1.3f, 3.6f, 3, 1.6f, 3, 1.8f, 5.5f, 4.4f, 7);
-        EVI_STROKE(false, 1.3f, 12.4f, 3, 14.4f, 3, 14.2f, 5.5f, 11.6f, 7);
-        rect(7.2f, 7, 8.8f, 11.5f, col);
-        rect(4.5f, 11.5f, 11.5f, 14, col, 0.8f);
-        break;
-    case EVI_OBJECTIVE: // a tower
-        EVI_POLY(col, 3, 2, 5, 2, 5, 4, 7, 4, 7, 2, 9, 2, 9, 4, 11, 4, 11, 2, 13, 2, 13, 6.5f, 11.5f, 7.5f, 11.5f, 14.5f,
-              4.5f, 14.5f, 4.5f, 7.5f, 3, 6.5f);
-        dl->PathArcTo(P(8, 12), 1.6f * u, IM_PI, 2 * IM_PI);
-        dl->PathLineTo(P(9.6f, 14.5f));
-        dl->PathLineTo(P(6.4f, 14.5f));
-        dl->PathFillConvex(hole);
-        break;
-    case EVI_ADVANCEMENT: star(8, 8.6f, 7, 3); break;
-    case EVI_LEVEL: // up chevrons
-        EVI_STROKE(false, 2.2f, 3, 8, 8, 3, 13, 8);
-        EVI_STROKE(false, 2.2f, 3, 13.5f, 8, 8.5f, 13, 13.5f);
-        break;
-    case EVI_LAP: // a stopwatch
-        circle(8, 9.5f, 5.5f);
-        rect(6.5f, 1.2f, 9.5f, 2.6f, col);
-        line(8, 2.4f, 8, 4);
-        line(8, 9.5f, 10.5f, 7, 1.4f);
-        line(12.5f, 4.2f, 13.8f, 2.9f, 1.4f);
-        break;
-    case EVI_OVERTAKE: // one arrow past a bar
-        rect(1.5f, 10, 6.5f, 13.5f, col, 1);
-        line(2.5f, 6.5f, 12, 6.5f, 2);
-        EVI_POLY(col, 10, 2.5f, 15, 6.5f, 10, 10.5f);
-        break;
-    case EVI_INCIDENT: // a warning sign
-        EVI_POLY(col, 8, 1.5f, 15, 14, 1, 14);
-        rect(7.2f, 5.5f, 8.8f, 10.2f, hole);
-        rect(7.2f, 11.2f, 8.8f, 12.7f, hole);
-        break;
-    case EVI_GOAL: // a ball
-        circle(8, 8, 6.2f);
-        EVI_POLY(col, 8, 5.2f, 10.7f, 7.2f, 9.7f, 10.3f, 6.3f, 10.3f, 5.3f, 7.2f);
-        line(8, 5.2f, 8, 1.8f, 1.2f), line(10.7f, 7.2f, 14, 6.2f, 1.2f), line(9.7f, 10.3f, 11.7f, 13, 1.2f);
-        line(6.3f, 10.3f, 4.3f, 13, 1.2f), line(5.3f, 7.2f, 2, 6.2f, 1.2f);
-        break;
-    case EVI_SAVE: // a shield
-        EVI_POLY(col, 8, 1.2f, 14, 3.4f, 13.6f, 8.5f, 11.8f, 12, 8, 14.8f, 4.2f, 12, 2.4f, 8.5f, 2, 3.4f);
-        EVI_POLY(hole, 8, 3.4f, 11.8f, 4.8f, 11.5f, 8.3f, 10.2f, 10.8f, 8, 12.5f);
-        break;
-    case EVI_RAID_START: case EVI_RAID_END: { // a door frame, an arrow in or out
-        EVI_STROKE(false, 1.8f, 9, 2, 14, 2, 14, 14, 9, 14);
-        bool in = icon == EVI_RAID_START;
-        line(in ? 1.5f : 5, 8, in ? 9 : 12.5f, 8, 2);
-        if (in) EVI_POLY(col, 7, 4.5f, 11, 8, 7, 11.5f);
-        else EVI_POLY(col, 4.5f, 4.5f, 0.5f, 8, 4.5f, 11.5f);
-        break;
-    }
-    case EVI_QUEST: // a tick in a circle
-        disc(8, 8, 7, col);
-        { // the tick, cut out of it
-            ImVec2 tick[3] = {P(4.6f, 8.2f), P(7, 10.6f), P(11.6f, 5.6f)};
-            dl->AddPolyline(tick, 3, hole, 0, 2 * u);
+        case 'T': { // a star: its middle and five points, each convex
+            for (i32 i = 0; i < 4; i++) v[i] = num();
+            ImVec2 p[10];
+            for (i32 i = 0; i < 10; i++) {
+                f32 a = -IM_PI / 2 + i * IM_PI / 5, r = (i & 1) ? v[3] : v[2];
+                p[i] = P(v[0] + r * cosf(a), v[1] + r * sinf(a));
+            }
+            ImVec2 mid[5] = {p[1], p[3], p[5], p[7], p[9]};
+            dl->AddConvexPolyFilled(mid, 5, k);
+            for (i32 i = 0; i < 10; i += 2) dl->AddTriangleFilled(p[(i + 9) % 10], p[i], p[i + 1], k);
+            break;
         }
-        break;
-    case EVI_GROUP: person(5.5f, 8.5f, 0.85f); person(11, 9, 0.85f); break;
-    case EVI_CONTRACT: // a page with lines
-        EVI_POLY(col, 3, 1.5f, 10, 1.5f, 13, 4.5f, 13, 14.5f, 3, 14.5f);
-        rect(5, 6.5f, 11, 7.6f, hole), rect(5, 9, 11, 10.1f, hole), rect(5, 11.5f, 9, 12.6f, hole);
-        break;
-    case EVI_ZONE: // a map pin
-        disc(8, 6, 5, col);
-        EVI_POLY(col, 3.6f, 7.8f, 12.4f, 7.8f, 8, 15);
-        disc(8, 6, 1.9f, hole);
-        break;
-    case EVI_TRAVEL: // a planet and its ring
-        disc(8, 8, 4.5f, col);
-        dl->AddEllipse(P(8, 8), ImVec2(7.5f * u, 2.4f * u), hole, -0.45f, 0, 2.6f * u);
-        dl->AddEllipse(P(8, 8), ImVec2(7.5f * u, 2.4f * u), col, -0.45f, 0, 1.2f * u);
-        break;
-    case EVI_SPAWN: person(8, 8.5f, 1.15f); break;
-    case EVI_SERVER: // stacked boxes, a light each
-        for (i32 k = 0; k < 3; k++) {
-            f32 y = 2 + k * 4.4f;
-            rect(2, y, 14, y + 3.4f, col, 0.8f);
-            disc(4.2f, y + 1.7f, 0.8f, hole);
+        default: return;
         }
-        break;
-    case EVI_ACCOUNT: // a card with a person on it
-        rect(1, 3, 15, 13, col, 1.5f);
-        disc(5.5f, 7, 1.8f, hole);
-        dl->PathArcTo(P(5.5f, 12.4f), 3.2f * u, IM_PI, 2 * IM_PI);
-        dl->PathFillConvex(hole);
-        rect(9, 6, 13, 7.1f, hole), rect(9, 8.8f, 12, 9.9f, hole);
-        break;
-    case EVI_MVP: // a crown
-        EVI_POLY(col, 1.5f, 4, 5, 8, 8, 2.5f, 11, 8, 14.5f, 4, 13, 12, 3, 12);
-        rect(3, 13, 13, 14.6f, col);
-        break;
-    case EVI_PLANT: bomb(); break;
-    case EVI_DEFUSE: // a bomb, a tick over it
-        bomb();
-        disc(7, 9.5f, 3.2f, hole);
-        EVI_STROKE(false, 1.5f, 5.2f, 9.6f, 6.6f, 11, 9, 8.2f);
-        break;
-    case EVI_ACHIEVEMENT: // a medal on a ribbon
-        EVI_POLY(col, 4, 1, 7, 1, 9, 6, 6, 6);
-        EVI_POLY(col, 9, 1, 12, 1, 10, 6, 7.5f, 6);
-        disc(8, 10, 4.8f, col);
-        star(8, 10.2f, 3, 1.3f);
-        dl->AddCircleFilled(P(8, 10), 3.4f * u, hole);
-        star(8, 10.3f, 2.8f, 1.2f);
-        break;
-    // Weapons, pointing right
-    case EVI_RIFLE:
-        EVI_POLY(col, 0.5f, 6, 4, 6, 4, 5, 12, 5, 12, 5.8f, 15.5f, 5.8f, 15.5f, 7, 11, 7, 10, 8.5f, 9, 8.5f, 9.5f, 12, 7.8f, 12,
-              7.2f, 8.5f, 6, 8.5f, 5.2f, 10.5f, 0.5f, 10);
-        break;
-    case EVI_PISTOL:
-        EVI_POLY(col, 2, 4, 14, 4, 14, 7, 7.5f, 7, 7, 8, 7.8f, 8.5f, 6.5f, 13, 2.5f, 13, 4.2f, 7);
-        break;
-    case EVI_SMG:
-        EVI_POLY(col, 1, 5.5f, 13, 5.5f, 13, 6.3f, 15, 6.3f, 15, 7.5f, 13, 7.5f, 11.5f, 8.8f, 10.5f, 8.8f, 11, 13.5f, 9.3f, 13.5f,
-              8.6f, 8.8f, 6.8f, 8.8f, 6, 11, 4.5f, 11, 5, 8.8f, 1, 8.8f);
-        break;
-    case EVI_SNIPER:
-        EVI_POLY(col, 0.5f, 7, 3.5f, 7, 4, 6.6f, 15.5f, 6.6f, 15.5f, 7.6f, 8, 7.6f, 7, 9, 5.8f, 9, 5, 11, 0.5f, 10.5f);
-        rect(5, 3.4f, 10.5f, 5.2f, col, 0.9f);
-        rect(7, 5, 8, 6.7f, col);
-        break;
-    case EVI_SHOTGUN:
-        EVI_POLY(col, 0.5f, 6.5f, 4.5f, 6.2f, 15.5f, 6.2f, 15.5f, 7.6f, 8, 7.6f, 7, 9, 5, 9, 4.5f, 11, 0.5f, 10.5f);
-        rect(9, 8.2f, 14, 9.6f, col, 0.6f);
-        break;
-    case EVI_KNIFE:
-        EVI_POLY(col, 1, 9.5f, 6, 9.5f, 6, 7, 11, 7, 15.5f, 5, 13, 9.5f, 6, 11, 6, 10.5f, 1, 11);
-        rect(5.5f, 6.4f, 6.6f, 11.8f, col);
-        break;
-    case EVI_GRENADE:
-        disc(8, 10, 5, col);
-        rect(6.2f, 3.2f, 9.8f, 5.6f, col);
-        EVI_STROKE(false, 1.3f, 9.8f, 3.8f, 12.5f, 3.8f, 13, 6.5f);
-        circle(5, 3.3f, 1.5f, 1.1f);
-        break;
     }
 }
-#undef EVI_POLY
-#undef EVI_STROKE

@@ -2646,7 +2646,8 @@ static void screen_timeline()
         mark_icon[i] = roomy ? evi_of_marker(marks[i].detail) : EVI_NONE;
     }
 
-    // Ruler, ticks on round local times, and their lines faintly through the tracks
+    // Ruler, ticks on round local times, and their lines faintly through the tracks. A tick or label a marker's icon
+    // would touch isn't drawn on the ruler.
     {
         i64 step = tl_tick_step(c.px_per_us, 96 * s);
         i64 off = tl_utc_offset(now);
@@ -2655,7 +2656,10 @@ static void screen_timeline()
         f32 pill_x = pill_t ? tl_x(c, pill_t) : -1e9f, pill_half = ImGui::CalcTextSize(g_app.config.clock_24h ? "00:00:00" : "00:00:00 pm").x / 2 + 10 * s;
         for (i64 t = ((c.start + off) / step + 1) * step - off; t < view_end; t += step) {
             f32 x = floorf(tl_x(c, t)) + 0.5f;
-            dl->AddLine(ImVec2(x, y_ruler + ruler_h - 7 * s), ImVec2(x, y_ruler + ruler_h), col32(COL_FAINT));
+            bool under = false; // an icon's tick isn't drawn
+            for (i32 i = 0; i < mark_count && !under; i++)
+                under = mark_icon[i] && fabsf(x - tl_x(c, marks[i].t_us)) < icon_r + 2 * s;
+            if (!under) dl->AddLine(ImVec2(x, y_ruler + ruler_h - 7 * s), ImVec2(x, y_ruler + ruler_h), col32(COL_FAINT));
             dl->AddLine(ImVec2(x, y_tracks), ImVec2(x, y_bottom), col32(COL_LINE, 0.55f));
             char label[16];
             SYSTEMTIME lt = local_time(t);
@@ -2945,7 +2949,8 @@ static void screen_timeline()
         bool picked = marks[i].t_us == tl.marker_pick, hot = i == mark_hit;
         if (hot) dl->AddLine(ImVec2(x, y_tracks), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
         if (mark_icon[i]) {
-            f32 cy = y_ruler + ruler_h - icon_r - 1 * s, r = icon_r + (hot || picked ? 1 * s : 0);
+            f32 cy = y_ruler + ruler_h - icon_r - 1 * s, r = icon_r;
+            if (hot || picked) dl->AddRectFilled(ImVec2(x - r - 2 * s, cy - r - 2 * s), ImVec2(x + r + 2 * s, cy + r + 1 * s), col32(rgb, 0.2f), 3 * s);
             evi_draw(dl, mark_icon[i], ImVec2(x, cy), 2 * r, col32(rgb), col32(COL_PANEL));
             if (picked) dl->AddRect(ImVec2(x - r - 2 * s, cy - r - 2 * s), ImVec2(x + r + 2 * s, cy + r + 1 * s), col32(COL_TEXT), 3 * s, 0, 1.5f * s);
             continue;
@@ -3135,7 +3140,7 @@ static void screen_timeline()
             // The event's icon in the marker's colour, as on the ruler; a dot for a marker without one
             ImVec2 dot(p.x + 5 * s, ty + lh / 2);
             if (EvIcon icon = evi_of_marker(mark_open.detail))
-                evi_draw(ImGui::GetWindowDrawList(), icon, ImVec2(p.x + 6 * s, dot.y), 13 * s, col32(mrgb),
+                evi_draw(ImGui::GetWindowDrawList(), icon, ImVec2(p.x + 7 * s, dot.y), 14 * s, col32(mrgb),
                          ImGui::GetColorU32(ImGuiCol_PopupBg));
             else ImGui::GetWindowDrawList()->AddCircleFilled(dot, 5 * s, col32(mrgb));
             ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 16 * s, ty), col32(COL_DIM), when);
