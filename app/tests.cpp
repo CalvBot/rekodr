@@ -808,6 +808,20 @@ static void test_ffmpeg_check()
     T(!strcmp(why, "it has no gfxcapture, libx264, libopus"));
 }
 
+static void test_ffmpeg_tools_ignored()
+{
+    // ffplay sorted as a Game in Options is still never one, nor are ffmpeg and ffprobe; javaw keeps its category
+    Config c = {};
+    AppInfo *ffplay = config_app(&c, "ffplay.exe");
+    ffplay->category = CAT_GAME;
+    config_app(&c, "javaw.exe")->category = CAT_GAME;
+    T(app_category(c, *ffplay) == CAT_IGNORED);
+    T(app_category_in(c.apps, c.app_count, c.folders, c.folder_count, "ffplay.exe", "") == CAT_IGNORED);
+    T(app_category_in(c.apps, c.app_count, c.folders, c.folder_count, "FFmpeg.exe", "") == CAT_IGNORED);
+    T(app_category_in(c.apps, c.app_count, c.folders, c.folder_count, "ffprobe.exe", "") == CAT_IGNORED);
+    T(app_category_in(c.apps, c.app_count, c.folders, c.folder_count, "javaw.exe", "") == CAT_GAME);
+}
+
 static void test_first_apps()
 {
     // Only what is installed is added, with its category and name
@@ -4456,6 +4470,7 @@ int main()
     test_game_guess();
     test_first_run();
     test_first_apps();
+    test_ffmpeg_tools_ignored();
     test_ffmpeg_check();
     test_telemetry();
     test_backup();
