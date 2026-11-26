@@ -11,7 +11,9 @@
 // trusted: its title, its column heads in their order, and rows that fit each column (ek_row_fits). Anything else on
 // the screen, and every other end-of-raid screen, gives no kill. OCR can't read the time column's italic digital
 // digits, so they are matched against EK_DIGITS. A row seen in several frames (the list scrolls) is kept once. Each
-// becomes a Kill marker at spawn + its time, its detail the name, level, faction and weapon.
+// becomes a Kill marker at spawn + its time, its note the weapon and the side killed ("MPX kill on Scav", PMC for USEC
+// and BEAR, "Kill on PMC" with no weapon read), its detail the side and weapon. The player's name and level are never
+// kept.
 //
 // Raids are found in every run's output log in <game>\Logs, so raids recorded before this ran get their kills too,
 // and the log's other markers (raid start and end, quests, groups), each at its line's time, unless a marker with the
@@ -440,7 +442,7 @@ struct EkLang {
     const wchar_t *ocr[2];
     const char *ended, *title;                                       // the screen's head and the line under it
     const char *location, *time, *player, *level, *faction, *status; // the column heads, left to right
-    const char *factions[3];                                         // what the faction column may say
+    const char *factions[3];                                         // what the faction column may say, the Scavs' last
 };
 static const EkLang EK_LANGS[] = {
     {"en", {L"en-US", L"en-GB"}, "RAID ENDED", "KILL LIST", "LOCATION", "TIME", "PLAYER", "LVL", "FACTION", "STATUS",
@@ -448,8 +450,9 @@ static const EkLang EK_LANGS[] = {
 };
 
 struct EkKill {
-    i32  secs; // into the raid, from the player's spawn
-    char name[64], level[8], faction[24], weapon[48];
+    i32  secs;    // into the raid, from the player's spawn
+    char side[8]; // PMC or Scav
+    char weapon[48];
 };
 
 // Words in [x0, x1) of a row, left to right, as one text of printable ASCII: words OCR split with almost no gap
@@ -544,7 +547,7 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
           faction->x < status->x))
         return 0;
     f32 pad = time->h, head_y = time->y;
-    // A row is where a name is: the words in the player column, from the top, each with the words beside it.
+    // A row is where the player column has words, from the top, each with the words beside it.
     bool used[COUNT(words)] = {};
     i32 rows = 0;
     for (;;) {
@@ -566,15 +569,14 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
                 row[j] = row[j - 1], row[j - 1] = t;
             }
         EkKill kill = {};
-        char where[64], lv[16], how[128];
+        char where[64], who[64], lv[16], side[24], how[128];
         ek_cell_text(words, row, k, location->x - pad, time->x - pad, where, sizeof where);
-        ek_cell_text(words, row, k, player->x - pad, level->x - pad, kill.name, sizeof kill.name);
+        ek_cell_text(words, row, k, player->x - pad, level->x - pad, who, sizeof who);
         ek_cell_text(words, row, k, level->x - pad, faction->x - pad, lv, sizeof lv);
-        ek_cell_text(words, row, k, faction->x - pad, status->x - pad, kill.faction, sizeof kill.faction);
+        ek_cell_text(words, row, k, faction->x - pad, status->x - pad, side, sizeof side);
         ek_cell_text(words, row, k, status->x - pad, 1e9f, how, sizeof how);
-        if (!ek_row_fits(lang, where, lv, kill.faction, how)) continue;
-        for (i32 i = 0, j = 0; lv[i] && j < (i32)sizeof kill.level - 1; i++)
-            if (isdigit((u8)lv[i])) kill.level[j++] = lv[i];
+        if (!who[0] || !ek_row_fits(lang, where, lv, side, how)) continue;
+        str_set(kill.side, !_stricmp(side, lang.factions[COUNT(lang.factions) - 1]) ? "Scav" : "PMC");
         // "Headshot (MPX, 22m)": the weapon is what the brackets start with.
         if (const char *open = strchr(how, '(')) {
             open++;
@@ -589,67 +591,35 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
         i32 y0 = (i32)(words[first].y - pad * 0.55f), y1 = (i32)(words[first].y + pad * 2.1f);
         if (x0 < 0 || y0 < 0 || x1 > EK_W || y1 > EK_H || x1 <= x0 || y1 <= y0) continue;
         kill.secs = ek_time_secs(px + (size_t)y0 * EK_W + x0, EK_W, x1 - x0, y1 - y0);
-        if (kill.secs < 0 || !kill.name[0] || rows == cap) continue;
+        if (kill.secs < 0 || rows == cap) continue;
         out[rows++] = kill;
     }
     return rows;
 }
 
-// A name as compared: lower case, no spaces, and the letters OCR mixes up (1 l I |, 0 O) as one.
-static void ek_name_key(const char *name, char (&out)[64])
+// A kill's marker note: "MPX kill on Scav", or "Kill on PMC" with no weapon
+static void ek_kill_note(const EkKill &k, char *out, i32 cap)
 {
-    i32 n = 0;
-    for (const char *c = name; *c && n < (i32)sizeof out - 1; c++) {
-        char ch = (char)tolower((u8)*c);
-        if (ch == ' ') continue;
-        if (ch == '1' || ch == 'i' || ch == '|') ch = 'l';
-        if (ch == '0') ch = 'o';
-        out[n++] = ch;
-    }
-    out[n] = 0;
+    if (k.weapon[0]) snprintf(out, cap, "%s kill on %s", k.weapon, k.side);
+    else snprintf(out, cap, "Kill on %s", k.side);
 }
 
-// Whether two reads of a row are the same kill: the same second and names at most two letters apart, or one name
-// the other with more after it (an icon beside the name read as letters).
-static bool ek_same_kill(const EkKill &a, const EkKill &b)
-{
-    if (a.secs != b.secs) return false;
-    char ka[64], kb[64];
-    ek_name_key(a.name, ka);
-    ek_name_key(b.name, kb);
-    i32 la = (i32)strlen(ka), lb = (i32)strlen(kb), lo = la < lb ? la : lb;
-    if (lo >= 4 && !strncmp(ka, kb, (size_t)lo)) return true;
-    if (abs(la - lb) > 2) return false;
-    i32 d[65][65];
-    for (i32 i = 0; i <= la; i++) d[i][0] = i;
-    for (i32 j = 0; j <= lb; j++) d[0][j] = j;
-    for (i32 i = 1; i <= la; i++)
-        for (i32 j = 1; j <= lb; j++) {
-            i32 v = d[i - 1][j - 1] + (ka[i - 1] != kb[j - 1]);
-            if (d[i - 1][j] + 1 < v) v = d[i - 1][j] + 1;
-            if (d[i][j - 1] + 1 < v) v = d[i][j - 1] + 1;
-            d[i][j] = v;
-        }
-    return d[la][lb] <= 2;
-}
-
-// Adds the rows of a frame to the kills read so far, a row already there once: with the shorter of its names, and
-// what one read missed (the level) from another.
+// Adds the rows of a frame to the kills read so far. Rows of the same second and side are the same kills: a frame
+// adds only those beyond the ones already there (two kills in one second are two rows of one frame), and a weapon
+// one read missed is taken from another.
 static void ek_merge(EkKill *all, i32 cap, i32 *n, const EkKill *rows, i32 k)
 {
+    auto same = [](const EkKill &a, const EkKill &b) { return a.secs == b.secs && !strcmp(a.side, b.side); };
+    i32 had = *n;
     for (i32 i = 0; i < k; i++) {
         const EkKill &r = rows[i];
-        i32 j = 0;
-        while (j < *n && !ek_same_kill(all[j], r)) j++;
-        if (j == *n) {
+        i32 before = 0, seen = 0, at = -1;
+        for (i32 j = 0; j < i; j++) before += same(rows[j], r);
+        for (i32 j = 0; j < had; j++)
+            if (same(all[j], r) && seen++ == before) at = j;
+        if (at < 0) {
             if (*n < cap) all[(*n)++] = r;
-            continue;
-        }
-        EkKill &a = all[j];
-        if (strlen(r.name) < strlen(a.name)) str_set(a.name, r.name);
-        if (!a.level[0]) str_set(a.level, r.level);
-        if (!a.faction[0]) str_set(a.faction, r.faction);
-        if (!a.weapon[0]) str_set(a.weapon, r.weapon);
+        } else if (!all[at].weapon[0]) str_set(all[at].weapon, r.weapon);
     }
 }
 
@@ -918,13 +888,12 @@ static DWORD WINAPI ek_thread(void *arg)
         if (n < 0) continue;
         put = 0;
         for (i32 k = 0; k < n; k++) {
-            char detail[256] = "";
-            marker_detail_add(detail, "name", kills[k].name);
-            marker_detail_add(detail, "level", kills[k].level);
-            marker_detail_add(detail, "faction", kills[k].faction);
+            char note[80], detail[256] = "";
+            ek_kill_note(kills[k], note, sizeof note);
+            marker_detail_add(detail, "side", kills[k].side);
             marker_detail_add(detail, "weapon", kills[k].weapon);
             i64 t = r.spawn_us + kills[k].secs * 1000000ll + 500000;
-            if (!ek_marked(t, 1500000, "Kill", detail)) ek_post(t, AM_KILL, 4, "Kill", detail), put++;
+            if (!ek_marked(t, 1500000, note, detail)) ek_post(t, AM_KILL, 4, note, detail), put++;
         }
         log_line("markers: Escape from Tarkov: %d kills from the kill list of the raid that ended %lld", put, r.end_us);
         if (done.raid_count == COUNT(done.raids)) memmove(done.raids, done.raids + 1, sizeof done.raids[0] * --done.raid_count);

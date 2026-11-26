@@ -4492,13 +4492,21 @@ static void test_eft_kills()
     T(cell && ek_time_secs(cell, w, w, h) == 100);
     free(cell);
 
-    EkKill a = {173, "Bob_1x"}, b = {173, "Bob_lx"}, c = {174, "Bob_1x"}, d = {173, "Someone"};
-    T(ek_same_kill(a, b) && !ek_same_kill(a, c) && !ek_same_kill(a, d));
-    EkKill all[4];
+    // Frames of a scrolling list: a row seen again adds nothing, two kills in one second are two, a weapon one read
+    // missed comes from another
+    EkKill a = {173, "Scav", ""}, b = {173, "Scav", "MPX"}, c = {174, "Scav", "MPX"}, d = {173, "PMC", "MPX"};
+    EkKill all[8];
     i32 n = 0;
-    EkKill rows[] = {a, b, c, d};
-    ek_merge(all, COUNT(all), &n, rows, 4);
-    T(n == 3);
+    EkKill first[] = {a, c};
+    ek_merge(all, COUNT(all), &n, first, 2);
+    EkKill next[] = {b, c, d};
+    ek_merge(all, COUNT(all), &n, next, 3);
+    T(n == 3 && !strcmp(all[0].weapon, "MPX") && !strcmp(all[2].side, "PMC"));
+    EkKill twice[] = {a, b};
+    ek_merge(all, COUNT(all), &n, twice, 2);
+    T(n == 4);
+    ek_merge(all, COUNT(all), &n, twice, 2);
+    T(n == 4);
 
     CoInitializeEx(0, COINIT_MULTITHREADED);
     T(ek_ocr_open(L"en-US"));
@@ -4509,9 +4517,15 @@ static void test_eft_kills()
     n = ek_kill_list(frame, EK_LANGS[0], got, COUNT(got));
     static const i32 secs[] = {173, 174, 178, 209, 220, 223, 272, 333, 338, 360};
     T(n == 10);
-    for (i32 i = 0; i < n && i < 10; i++) T(got[i].secs == secs[i] && !strcmp(got[i].faction, "SCAV") && !got[i].level[0]);
-    T(n == 10 && !strcmp(got[0].name, "Lyova Shambambulish") && !strcmp(got[0].weapon, "MPX") &&
-      !strcmp(got[9].name, "Trofim Neboskryob") && !strcmp(got[9].weapon, "MP-443 Grach"));
+    for (i32 i = 0; i < n && i < 10; i++) T(got[i].secs == secs[i] && !strcmp(got[i].side, "Scav"));
+    T(n == 10 && !strcmp(got[0].weapon, "MPX") && !strcmp(got[9].weapon, "MP-443 Grach"));
+    char note[80];
+    ek_kill_note(got[0], note, sizeof note);
+    T(!strcmp(note, "MPX kill on Scav"));
+    ek_kill_note(d, note, sizeof note);
+    T(!strcmp(note, "MPX kill on PMC"));
+    ek_kill_note(a, note, sizeof note);
+    T(!strcmp(note, "Kill on Scav"));
 
     // Rows must fit the columns
     const EkLang &en = EK_LANGS[0];

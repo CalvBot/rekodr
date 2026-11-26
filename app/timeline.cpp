@@ -2025,7 +2025,7 @@ static const char *tl_detail_label(const char *key)
     static const char *const names[][2] = {{"killer", "Killed by"}, {"target", "Target"}, {"attacker", "By"},
                                            {"weapon", "Weapon"}, {"area", "Hit"}, {"distance", "Distance"},
                                            {"cause", "Cause"}, {"server", "Server"}, {"map", "Map"},
-                                           {"name", "Name"}, {"level", "Level"}, {"faction", "Faction"}};
+                                           {"side", "Side"}};
     for (auto &n : names)
         if (!strcmp(key, n[0])) return n[1];
     return key;
@@ -3053,8 +3053,8 @@ static void screen_timeline()
                 col32(MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb, 0.9f), col32(0x000000));
         ImGui::PopFont();
     }
-    // A crowd's list: each of its markers with its icon, time, note and the player it names (a kill's). A click on one
-    // puts the playhead there and picks it.
+    // A crowd's list: each of its markers with its icon, time and note. A click on one puts the playhead there and
+    // picks it.
     ImGui::SetNextWindowPos(crowd_at, ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(320 * s, 0));
     lib_popup_style_push(6);
@@ -3087,13 +3087,7 @@ static void screen_timeline()
             }
             f32 ty = floorf(p.y + (rh - ImGui::GetTextLineHeight()) / 2);
             pd->AddText(ImVec2(p.x + 34 * s, ty), col32(COL_DIM), at);
-            const char *note = m.note[0] ? m.note : "Marker";
-            char who[96] = "";
-            if (!marker_detail_get(m.detail, "achievement", who, sizeof who)) marker_detail_get(m.detail, "name", who, sizeof who);
-            else who[0] = 0;
-            f32 nw = ImMin(ImGui::CalcTextSize(note).x, who[0] ? 110 * s : w - 112 * s);
-            tl_text_fit(pd, ImVec2(p.x + 104 * s, ty), nw, col32(COL_TEXT), note);
-            if (who[0]) tl_text_fit(pd, ImVec2(p.x + 104 * s + nw + 10 * s, ty), w - 122 * s - nw, col32(COL_DIM), who);
+            tl_text_fit(pd, ImVec2(p.x + 104 * s, ty), w - 112 * s, col32(COL_TEXT), m.note[0] ? m.note : "Marker");
         }
         ImGui::EndChild();
         ImGui::PopFont();
@@ -3228,7 +3222,7 @@ static void screen_timeline()
                     continue;
                 for (char *ch = v; *ch; ch++)
                     if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker") &&
-                        strcmp(k, "name") && strcmp(k, "map"))
+                        strcmp(k, "map"))
                         *ch = ' ';
                 snprintf(lines[nl++], sizeof lines[0], "%s  %s", tl_detail_label(k), v);
                 body = ImMax(body, ImGui::CalcTextSize(lines[nl - 1]).x);
