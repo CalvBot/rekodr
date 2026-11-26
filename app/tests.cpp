@@ -3939,6 +3939,206 @@ static void test_cam_layer()
     RemoveDirectoryW(cache.s);
 }
 
+static const Layer *test_layer_named(const LayerSet &set, const char *name)
+{
+    for (i32 k = 0; k < set.count; k++)
+        if (!strcmp(set.layers[k].name, name)) return &set.layers[k];
+    return 0;
+}
+
+static void test_remove_dir(const Path &dir)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(path_join(dir, L"*").s, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) DeleteFileW(path_join(dir, fd.cFileName).s);
+        while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir.s);
+}
+
+// Layers, through a test source: one of each kind registered, pushed to and a span replaced; the store read back
+// from its files and pruned; a save's slice in the clip's time through its pieces, read back by the library; an
+// edit's switches kept; and the render's .ass drawing what is switched on where the pieces play it
+static void test_layers()
+{
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    Path dir = {}, save_dir = {};
+    swprintf(dir.s, MAX_PATH, L"%srekodr-test-layers-%u", tmp, GetCurrentProcessId());
+    swprintf(save_dir.s, MAX_PATH, L"%srekodr-test-layers-save-%u", tmp, GetCurrentProcessId());
+    auto fresh_store = [&]() {
+        for (i32 k = 0; k < g_layers.set.count; k++) layer_free_samples(&g_layers.set.layers[k]);
+        g_layers = {};
+        g_layers.dir = dir;
+    };
+    fresh_store();
+    const i64 T0 = 1000000000000ll, S = 1000000;
+    i32 hr = layer_register("test heart", LAYER_VALUE), words = layer_register("test words", LAYER_TEXT),
+        keys = layer_register("test keys", LAYER_INPUT);
+    T(hr == 0 && words == 1 && keys == 2);
+    T(layer_register("test heart", LAYER_VALUE) == hr && layer_register("test heart", LAYER_TEXT) == -1);
+    T(layer_register("", LAYER_VALUE) == -1 && layer_register(" x", LAYER_VALUE) == -1 &&
+      layer_register("a\tb", LAYER_VALUE) == -1 && layer_register("x", LAYER_KINDS) == -1);
+    // A minute: the heart every 10 s from 80, a line every 20 s, W held from 5 s to 25 s and Space tapped at 40 s
+    for (i32 i = 0; i < 6; i++) T(layer_value(hr, T0 + i * 10 * S, 80 + i));
+    layer_text(words, T0, T0 + 4 * S, "first words");
+    layer_text(words, T0 + 20 * S, T0 + 24 * S, "rough guess");
+    layer_text(words, T0 + 40 * S, T0 + 44 * S, "last\twords");
+    layer_input(keys, T0 + 5 * S, 'W', true);
+    layer_input(keys, T0 + 25 * S, 'W', false);
+    layer_input(keys, T0 + 40 * S, VK_SPACE, true);
+    layer_input(keys, T0 + 40 * S + S / 10, VK_SPACE, false);
+    // The source's better guess at 15-30 s, in place of its own
+    LayerSample better[2] = {};
+    better[0].t_us = T0 + 26 * S, better[0].end_us = T0 + 28 * S, better[0].text = (char *)"and more";
+    better[1].t_us = T0 + 21 * S, better[1].end_us = T0 + 23 * S, better[1].text = (char *)"better words";
+    T(layer_replace(words, T0 + 15 * S, T0 + 30 * S, better, 2));
+    T(!layer_replace(7, 0, 1, 0, 0) && !layer_value(-1, T0, 1) && !layer_value(hr, 0, 1));
+
+    // Read again from its files, as after a restart: the same samples, each layer under its own name
+    fresh_store();
+    hr = layer_register("test heart", LAYER_VALUE), words = layer_register("test words", LAYER_TEXT);
+    keys = layer_register("test keys", LAYER_INPUT);
+    T(g_layers.set.count == 3 && hr >= 0 && words >= 0 && keys >= 0);
+    const Layer &w0 = g_layers.set.layers[words];
+    T(g_layers.set.layers[hr].count == 6 && w0.count == 4 && g_layers.set.layers[keys].count == 4);
+    T(w0.s[1].t_us == T0 + 21 * S && !strcmp(w0.s[1].text, "better words") && !strcmp(w0.s[2].text, "and more"));
+    T(!strcmp(w0.s[3].text, "last words") && w0.s[3].end_us == T0 + 44 * S);
+
+    // A save of 8-50 s with a gap at 20-30 s: the heart from its last before, the lines that overlap, W held from
+    // the start; then in the file's time, the gap closed up
+    static LayerSet set;
+    layers_slice(T0 + 8 * S, T0 + 50 * S, &set);
+    const Layer *h = test_layer_named(set, "test heart"), *t = test_layer_named(set, "test words"),
+                *k = test_layer_named(set, "test keys");
+    T(set.count == 3 && h && t && k);
+    if (h && t && k) {
+        T(h->count == 5 && h->s[0].t_us == T0 && h->s[0].value == 80 && h->s[4].value == 84);
+        T(t->count == 3 && !strcmp(t->s[0].text, "better words"));
+        T(k->count == 4 && k->s[0].t_us == T0 + 8 * S && k->s[0].code == 'W' && k->s[0].value == 1);
+    }
+    layer_set_free(&set);
+    SaveWork *w = &g_save_work;
+    Path keep_save = w->cfg.save_dir, keep_lib = g_app.config.save_dir;
+    w->cfg.save_dir = g_app.config.save_dir = save_dir;
+    w->piece_count = 2;
+    w->pieces[0] = {T0 + 8 * S, T0 + 20 * S, 0};
+    w->pieces[1] = {T0 + 30 * S, T0 + 50 * S, 12 * S};
+    Path video = {};
+    swprintf(video.s, MAX_PATH, L"%s\\Clips\\2026\\Test clip.mp4", save_dir.s);
+    save_layers(w, T0 + 8 * S, T0 + 50 * S, video);
+    LibItem it = {};
+    str_set(it.name, "Test clip");
+    Path data = save_data_dir(save_dir);
+    T(!wcscmp(lib_layers_path(it).s, path_join(data, L"Test clip.layers.txt").s));
+    static LayerSet clip;
+    T(lib_layers_read(it, &clip) && clip.count == 3);
+    Path files[LIB_ITEM_FILES];
+    T(lib_item_files(it, files) == 2 && !wcscmp(files[1].s, lib_layers_path(it).s));
+    h = test_layer_named(clip, "test heart"), t = test_layer_named(clip, "test words"), k = test_layer_named(clip, "test keys");
+    T(h && t && k);
+    if (h && t && k) {
+        T(h->count == 5 && h->s[0].t_us == 0 && h->s[1].t_us == 2 * S && h->s[2].t_us == 12 * S && h->s[3].t_us == 12 * S);
+        T(h->s[4].t_us == 22 * S && h->s[4].value == 84);
+        T(t->count == 1 && t->s[0].t_us == 22 * S && t->s[0].end_us == 26 * S && !strcmp(t->s[0].text, "last words"));
+        T(k->count == 4 && k->s[0].t_us == 0 && k->s[1].t_us == 12 * S && k->s[1].value == 0 && k->s[2].code == VK_SPACE);
+        T(k->s[3].t_us == 22 * S + S / 10);
+    }
+    // Nothing in a slice (before the first sample), no file
+    swprintf(video.s, MAX_PATH, L"%s\\Clips\\2026\\Empty clip.mp4", save_dir.s);
+    save_layers(w, T0 - 100 * S, T0 - 80 * S, video);
+    T(GetFileAttributesW(path_join(data, L"Empty clip.layers.txt").s) == INVALID_FILE_ATTRIBUTES);
+    w->piece_count = 0;
+
+    // An edit's switches: kept on disk, kept through Advanced and back
+    static EditRecord e, er;
+    static MediaInfo m;
+    e = {}, m = {};
+    m.duration = 32, m.width = 1920, m.height = 1080, m.fps = 30;
+    str_set(e.layer_on[0], "test heart"), str_set(e.layer_on[1], "test words"), str_set(e.layer_on[2], "test keys");
+    e.layer_on_count = 3;
+    e.pieces[0] = {10, 30};
+    e.piece_count = 1;
+    T(!edit_is_default(e));
+    Path ef = path_join(data, L"Test clip.edit.txt");
+    edit_write(ef, e);
+    edit_read(ef, &er);
+    T(er.layer_on_count == 3 && !strcmp(er.layer_on[1], "test words") && er.piece_count == 1);
+    DeleteFileW(ef.s);
+    er = e;
+    edit_to_advanced(&er, m);
+    T(er.mode == EDIT_ADVANCED && er.layer_on_count == 3 && !strcmp(er.layer_on[2], "test keys"));
+    edit_to_simple(&er, m);
+    T(er.layer_on_count == 3);
+
+    // The render's layers: 10-30 s of the clip played from the start; the heart's number at the top right while it
+    // holds, the line at the bottom, the keys held at the bottom left
+    LayerSpan spans[] = {{10, 30, 0}};
+    T(layers_ass(0, clip, e.layer_on, 0, spans, 1, 20, 1920, 1080) == 0);
+    T(layers_ass(0, clip, e.layer_on, 3, spans, 1, 20, 1920, 1080) == 6);
+    T(layers_ass(0, clip, e.layer_on + 1, 1, spans, 1, 20, 1920, 1080) == 1);
+    Path ass = path_join(data, L"test.ass");
+    FILE *f = _wfopen(ass.s, L"wb");
+    if (f) layers_ass(f, clip, e.layer_on, 3, spans, 1, 20, 1920, 1080), fclose(f);
+    static char text[8192];
+    text[0] = 0;
+    f = _wfopen(ass.s, L"rb");
+    if (f) text[fread(text, 1, sizeof text - 1, f)] = 0, fclose(f);
+    DeleteFileW(ass.s);
+    T(strstr(text, "PlayResX: 1920\nPlayResY: 1080\n") != 0);
+    T(strstr(text, "Style: Value,Segoe UI,49,") != 0 && strstr(text, ",9,36,36,36,1\n") != 0);
+    T(strstr(text, "Dialogue: 0,0:00:00.00,0:00:02.00,Value,,0,0,36,,81\n") != 0);
+    T(strstr(text, "Dialogue: 0,0:00:02.00,0:00:12.00,Value,,0,0,36,,83\n") != 0);
+    T(strstr(text, "Dialogue: 0,0:00:12.00,0:00:20.00,Value,,0,0,36,,84\n") != 0);
+    T(strstr(text, ",82\n") == 0);
+    T(strstr(text, "Dialogue: 0,0:00:12.00,0:00:16.00,Text,,0,0,36,,last words\n") != 0);
+    T(strstr(text, "Dialogue: 0,0:00:00.00,0:00:02.00,Input,,0,0,36,,W\n") != 0);
+    T(strstr(text, "Dialogue: 0,0:00:12.00,0:00:12.10,Input,,0,0,36,,#32\n") != 0);
+    // Two of a kind stack, and a line's braces and backslashes stay text
+    static LayerSet two;
+    two = {};
+    two.count = 2;
+    str_set(two.layers[0].name, "a"), str_set(two.layers[1].name, "b");
+    two.layers[0].kind = two.layers[1].kind = LAYER_TEXT;
+    LayerSample line = {};
+    line.t_us = 11 * S, line.end_us = 12 * S, line.text = (char *)"x {y} \\n";
+    layer_insert(&two.layers[0], layer_sample_clean(LAYER_TEXT, line));
+    layer_insert(&two.layers[1], layer_sample_clean(LAYER_TEXT, line));
+    char on2[2][LAYER_NAME_MAX] = {"a", "b"};
+    f = _wfopen(ass.s, L"wb");
+    i32 events = 0;
+    if (f) events = layers_ass(f, two, on2, 2, spans, 1, 20, 1920, 1080), fclose(f);
+    T(events == 2);
+    f = _wfopen(ass.s, L"rb");
+    text[0] = 0;
+    if (f) text[fread(text, 1, sizeof text - 1, f)] = 0, fclose(f);
+    DeleteFileW(ass.s);
+    T(strstr(text, "Text,,0,0,36,,x \\{y\\} \\") != 0 && strstr(text, "Text,,0,0,97,,x") != 0);
+    T(strstr(text, "\\n\n") == 0);
+    layer_set_free(&two);
+    layer_set_free(&clip);
+
+    // Pruned as the buffer moves on: not until the oldest is well behind, then all but the heart's last
+    layers_prune(T0 + 45 * S);
+    T(g_layers.set.layers[hr].count == 6 && g_layers.set.layers[keys].count == 4);
+    layers_prune(T0 + 700 * S);
+    fresh_store();
+    hr = layer_register("test heart", LAYER_VALUE), words = layer_register("test words", LAYER_TEXT);
+    keys = layer_register("test keys", LAYER_INPUT);
+    T(g_layers.set.layers[hr].count == 1 && g_layers.set.layers[hr].s[0].value == 85);
+    T(g_layers.set.layers[words].count == 0 && g_layers.set.layers[keys].count == 0);
+
+    fresh_store();
+    g_layers.dir = {};
+    test_remove_dir(dir);
+    test_remove_dir(data);
+    RemoveDirectoryW(save_dir.s);
+    w->cfg.save_dir = keep_save, g_app.config.save_dir = keep_lib;
+}
+
 // The social copy: whole when it fits, else a preview as long as the budget allows; the edit cut to its first part
 static void test_social_preview()
 {
@@ -4171,6 +4371,7 @@ int main()
     test_social_preview();
     test_edit_advanced();
     test_cam_layer();
+    test_layers();
     test_lanes();
     test_share();
     test_render();

@@ -81,6 +81,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "audio.cpp"
 #include "pipe.cpp"
 #include "buffer.cpp"
+#include "layers.cpp"
 #include "save.cpp"
 #include "erase.cpp"
 #include "r2.cpp"

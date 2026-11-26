@@ -1421,6 +1421,7 @@ static void recorder_on_event(const Event &e)
     case REC_PACE: quality_pace(GetTickCount64(), e.text); break;
     case REC_BUFFER:
         r.oldest_us = e.b;
+        layers_prune(e.b);
         sscanf_s(e.text, "%lld %lld", &r.buffer_bytes, &r.free_bytes);
         break;
     default: break;

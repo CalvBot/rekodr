@@ -288,7 +288,7 @@ struct Config {
 };
 
 // The save folder: <save_dir>\Clips\<year> (with Source\ in it for rendered clips' originals),
-// <save_dir>\Sessions\<year>, and <save_dir>\Data for edits, render notes, session records and Rendering.
+// <save_dir>\Sessions\<year>, and <save_dir>\Data for edits, layers, render notes, session records and Rendering.
 // The year is the year the footage starts in.
 static inline Path save_clips_dir(const Path &root, i32 year)
 { Path p; swprintf(p.s, MAX_PATH, L"%s\\Clips\\%d", root.s, year); return p; }
@@ -525,6 +525,28 @@ struct ItemKey {
     u8  ease;
 };
 
+// Layers (layers.cpp): samples from a source on the wall clock, kept beside the buffer and written into each clip
+enum LayerKind : u8 { LAYER_VALUE, LAYER_TEXT, LAYER_INPUT, LAYER_KINDS };
+enum { LAYER_MAX = 16, LAYER_NAME_MAX = 32, LAYER_TEXT_MAX = 512 };
+struct LayerSample {
+    i64   t_us;   // when: the wall clock in the buffer, the time into the video in a clip's layers
+    i64   end_us; // Text: when the line ends, on the same clock
+    f64   value;  // Value: the number; Input: 1 down, 0 up
+    u32   code;   // Input: the key or button
+    char *text;   // Text: the line, UTF-8, owned by the layer
+};
+struct Layer {
+    char         name[LAYER_NAME_MAX];
+    u8           kind; // LayerKind
+    i32          count, cap;
+    LayerSample *s; // oldest first
+};
+struct LayerSet { // owns its samples: layer_set_free
+    i32   count;
+    Layer layers[LAYER_MAX];
+};
+static void layers_prune(i64 before_us); // drops what is older than the buffer; main thread
+
 // An edit never changes the original: it's this small record, kept in Data\<video name>.edit.txt.
 // A Simple edit is the pieces, keys and volumes; an Advanced one is the items and their keys, with muted[] per audio
 // track and the rest empty.
@@ -550,6 +572,8 @@ struct EditRecord {
     i32      item_count;
     ItemKey  ikeys[EDIT_MAX_ITEM_KEYS]; // sorted by item, what, t
     i32      ikey_count;
+    char     layer_on[LAYER_MAX][LAYER_NAME_MAX]; // the layers drawn into the picture, by name
+    i32      layer_on_count;
 };
 
 // The editor's keyed lanes: the zoom (0), each volume slot (1 + slot), then each colour (ED_COLOR + colour).

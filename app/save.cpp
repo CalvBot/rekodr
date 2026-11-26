@@ -293,6 +293,60 @@ static i64 file_time(const Piece *pieces, i32 piece_count, i64 t_us)
     return -1;
 }
 
+// Where a wall-clock moment lands in the saved file, one in a gap where the file carries on after it (the end for
+// one after the last piece)
+static i64 file_time_held(const Piece *pieces, i32 piece_count, i64 t_us)
+{
+    for (i32 k = 0; k < piece_count; k++) {
+        if (t_us < pieces[k].start_us) return pieces[k].offset_us;
+        if (t_us < pieces[k].end_us) return pieces[k].offset_us + t_us - pieces[k].start_us;
+    }
+    return piece_count ? pieces[piece_count - 1].offset_us + pieces[piece_count - 1].end_us - pieces[piece_count - 1].start_us : 0;
+}
+
+// A slice of the layers (layers_slice) moved from the wall clock to the saved file's time. Text lines wholly in a
+// gap go, and layers left with nothing.
+static void layers_to_file_time(LayerSet *set, const Piece *pieces, i32 piece_count)
+{
+    i32 kept_layers = 0;
+    for (i32 k = 0; k < set->count; k++) {
+        Layer &l = set->layers[k];
+        i32 kept = 0;
+        for (i32 i = 0; i < l.count; i++) {
+            LayerSample s = l.s[i];
+            s.t_us = file_time_held(pieces, piece_count, s.t_us);
+            if (l.kind == LAYER_TEXT) {
+                s.end_us = file_time_held(pieces, piece_count, s.end_us);
+                if (s.end_us - s.t_us < 1000) { free(s.text); continue; }
+            }
+            l.s[kept++] = s;
+        }
+        l.count = kept;
+        if (!kept) { layer_free_samples(&l); continue; }
+        if (kept_layers != k) set->layers[kept_layers] = l, l = {};
+        kept_layers++;
+    }
+    set->count = kept_layers;
+}
+
+// The clip's layers, [from, to) of the buffer's, written beside its edit as Data\<video's name>.layers.txt. None
+// is written when no layer has anything in it.
+static void save_layers(const SaveWork *w, i64 from, i64 to, const Path &video)
+{
+    static LayerSet set;
+    layers_slice(from, to, &set);
+    layers_to_file_time(&set, w->pieces, w->piece_count);
+    if (set.count) {
+        wchar_t stem[MAX_PATH];
+        const wchar_t *name = wcsrchr(video.s, L'\\');
+        wcscpy_s(stem, name ? name + 1 : video.s);
+        wchar_t *dot = wcsrchr(stem, L'.');
+        if (dot) *dot = 0;
+        if (!layers_write(layers_clip_path(w->cfg.save_dir, stem), set)) log_line("save %u: couldn't write its layers", w->req.id);
+    }
+    layer_set_free(&set);
+}
+
 // The chapters as an ffmetadata file, each running to the next one (the last to the end). Chapters in a gap and
 // ones on the same millisecond as the one before are left out. MP4 players start the first chapter at 0, so when
 // the first is later, a chapter titled `lead` comes before it. Returns how many were written; 0 = none.
@@ -1098,6 +1152,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
     if (code == 0 && MoveFileExW(part_path.s, final_path.s, 0)) {
         snprintf(out, out_cap, "%s", final8);
         result = SAVE_EV_DONE;
+        if (!preview) save_layers(w, clip_start, clip_end, final_path);
     } else {
         DeleteFileW(part_path.s);
         if (code == -2) {
@@ -1911,6 +1966,8 @@ static void edit_to_advanced(EditRecord *e, const MediaInfo &m)
         at += pc[i].to - pc[i].from;
     }
     for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++) a.muted[t] = e->muted[t] || e->muted[EDIT_MASTER];
+    memcpy(a.layer_on, e->layer_on, sizeof a.layer_on);
+    a.layer_on_count = e->layer_on_count;
     *e = a;
 }
 
@@ -1972,6 +2029,8 @@ static void edit_to_simple(EditRecord *e, const MediaInfo &m)
         });
         s.muted[t] = e->muted[t];
     }
+    memcpy(s.layer_on, e->layer_on, sizeof s.layer_on);
+    s.layer_on_count = e->layer_on_count;
     *e = s;
 }
 
@@ -2548,6 +2607,53 @@ static const f32 END_CARD_S = 1.5f;
 enum { LOUD_LUFS = -14 };
 static const f64 LOUD_PEAK = -1.5;
 
+// The layers an edit switches on, for drawing into its render: the clip's own (a Rekodr clip in the save folder), and
+// where each stretch of the source plays (the pieces in turn, or the picture's items). False when there are none.
+static bool edit_layers(const SaveWork *w, const EditJob &j, const EditPiece *pc, i32 np, LayerSet *set,
+                        LayerSpan *spans, i32 *n_spans)
+{
+    *n_spans = 0;
+    *set = {};
+    size_t root = wcslen(w->cfg.save_dir.s);
+    if (!j.edit.layer_on_count || !root || _wcsnicmp(j.src.s, w->cfg.save_dir.s, root) || j.src.s[root] != L'\\')
+        return false;
+    wchar_t stem[MAX_PATH];
+    const wchar_t *name = wcsrchr(j.src.s, L'\\');
+    wcscpy_s(stem, name + 1);
+    wchar_t *dot = wcsrchr(stem, L'.');
+    if (dot) *dot = 0;
+    if (!layers_read(layers_clip_path(w->cfg.save_dir, stem), set)) return false;
+    if (j.edit.mode == EDIT_ADVANCED) {
+        i32 idx[EDIT_MAX_ITEMS], n = track_items(j.edit, 0, idx);
+        for (i32 k = 0; k < n; k++) {
+            const EditItem &it = j.edit.items[idx[k]];
+            spans[(*n_spans)++] = {it.from, it.to, it.start};
+        }
+    } else {
+        f64 at = 0;
+        for (i32 i = 0; i < np; i++) {
+            spans[(*n_spans)++] = {pc[i].from, pc[i].to, at};
+            at += pc[i].to - pc[i].from;
+        }
+    }
+    return true;
+}
+
+// A path as a filter's quoted option: forward slashes, the drive's colon escaped. False for one that can't be quoted.
+static bool filter_path(const Path &p, char *out, i32 cap)
+{
+    char u[MAX_PATH * 3];
+    wide_to_utf8(p.s, u, sizeof u);
+    i32 n = 0;
+    for (const char *c = u; *c; c++) {
+        if (*c == '\'' || n + 3 >= cap) return false;
+        if (*c == ':') out[n++] = '\\';
+        out[n++] = *c == '\\' ? '/' : *c;
+    }
+    out[n] = 0;
+    return true;
+}
+
 static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
 {
     const SaveRequest &req = w->req;
@@ -2631,7 +2737,14 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     bool link_big = link && ((aim > 0 && copy_bytes > aim * 1.1) || (limit > 0 && copy_bytes > limit * (1 - SHARE_MARGIN)));
     i32 fit_w = 0, fit_h = 0; // a Link made smaller (max_h)
     if (link) link_fit_size(m.width, m.height, j.max_h, &fit_w, &fit_h);
-    bool reencode = share || zoom || colored || seq || j.end_card > 0 || (link && (!link_video_ok || link_big || fit_w));
+    // Layers switched on are drawn into the picture, from layers.ass in the work folder
+    static LayerSet lays;
+    static LayerSpan lay_spans[EDIT_MAX_ITEMS + EDIT_MAX_PIECES];
+    i32 n_lay_spans = 0;
+    bool lay = edit_layers(w, j, pc, np, &lays, lay_spans, &n_lay_spans) &&
+               layers_ass(0, lays, j.edit.layer_on, j.edit.layer_on_count, lay_spans, n_lay_spans, dur, m.width, m.height) > 0;
+    if (!lay) layer_set_free(&lays);
+    bool reencode = lay || share || zoom || colored || seq || j.end_card > 0 || (link && (!link_video_ok || link_big || fit_w));
     bool sized = reencode && (share || link) && aim > 0;
     // The sound streams written: the mix alone, or (a link with `tracks`) the tracks, after a rebuilt mix when there
     // is one; a sized copy encodes every one at rate.audio_kbps
@@ -2649,7 +2762,18 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
     }
     Path work = work_file(w->cfg.work_dir, L"edit-%d", (i32)req.id);
     SHCreateDirectoryExW(0, work.s, 0);
-    Path graph = path_join(work, L"graph.txt");
+    Path graph = path_join(work, L"graph.txt"), ass = path_join(work, L"layers.ass");
+    char ass_arg[MAX_PATH * 3] = {};
+    if (lay) {
+        FILE *f = filter_path(ass, ass_arg, sizeof ass_arg) ? _wfopen(ass.s, L"wb") : 0;
+        if (f) layers_ass(f, lays, j.edit.layer_on, j.edit.layer_on_count, lay_spans, n_lay_spans, dur, m.width, m.height), fclose(f);
+        layer_set_free(&lays);
+        if (!f) {
+            snprintf(out, out_cap, "couldn't write the layers for the picture");
+            RemoveDirectoryW(work.s);
+            return SAVE_EV_FAILED;
+        }
+    }
     i32 code = 0;
     f64 audio_bytes = rate.audio_kbps * 125.0 * dur * n_audio;
     for (i32 attempt = 0;; attempt++) {
@@ -2712,11 +2836,19 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                 seq_join(w, tr, sa, sb, np, s);
             }
         }
-        if (fit_w) { // the finished picture [v] made smaller, as [vfit]
+        const char *pic = "v"; // the finished picture's label
+        if (lay) { // the layers drawn on [v], as [vl]
             i32 end = w->graph_len;
             while (end > 0 && (w->graph[end - 1] == '\n' || w->graph[end - 1] == ' ')) end--;
-            graph_add(w, "%s[v]scale=%d:%d:flags=lanczos[vfit];\n", end > 0 && w->graph[end - 1] != ';' ? ";\n" : "",
-                      fit_w, fit_h);
+            graph_add(w, "%s[v]subtitles=filename='%s':fontsdir='C\\:/Windows/Fonts'[vl];\n",
+                      end > 0 && w->graph[end - 1] != ';' ? ";\n" : "", ass_arg);
+            pic = "vl";
+        }
+        if (fit_w) { // the finished picture made smaller, as [vfit]
+            i32 end = w->graph_len;
+            while (end > 0 && (w->graph[end - 1] == '\n' || w->graph[end - 1] == ' ')) end--;
+            graph_add(w, "%s[%s]scale=%d:%d:flags=lanczos[vfit];\n", end > 0 && w->graph[end - 1] != ';' ? ";\n" : "",
+                      pic, fit_w, fit_h);
         }
         // Share and Link: the mix (the one sound stream, [o0] when joined, else [a]) made evenly loud, as [loud]
         const char *loud_from = !mixed ? 0 : seq ? (ns && streams[0] == -1 ? "o0" : 0) : mix ? "a" : 0;
@@ -2733,10 +2865,11 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
                          ":fontcolor=0xd6d9de:fontsize=%d:x=(w-text_w)/2:y=(h-text_h)/2,setsar=1[card];\n",
                       end > 0 && w->graph[end - 1] != ';' ? ";\n" : "", cw, ch, m.fps > 0 ? m.fps : 60.0, j.end_card,
                       w->cfg.vendor == VENDOR_QSV ? "nv12" : "yuv420p", END_CARD_FONT, END_CARD_TEXT, ch / 18 > 8 ? ch / 18 : 8);
-            graph_add(w, "[%s]setsar=1[vcut];\n[vcut][card]concat=n=2:v=1:a=0[vend];\n", fit_w ? "vfit" : "v");
+            graph_add(w, "[%s]setsar=1[vcut];\n[vcut][card]concat=n=2:v=1:a=0[vend];\n", fit_w ? "vfit" : pic);
         }
         if (w->graph_full) {
             snprintf(out, out_cap, "the zoom or colour has too many keyframes");
+            DeleteFileW(ass.s);
             RemoveDirectoryW(work.s);
             return SAVE_EV_FAILED;
         }
@@ -2744,6 +2877,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             FILE *f = _wfopen(graph.s, L"wb");
             if (!f) {
                 snprintf(out, out_cap, "couldn't write the edit's work files");
+                DeleteFileW(ass.s);
                 RemoveDirectoryW(work.s);
                 return SAVE_EV_FAILED;
             }
@@ -2766,7 +2900,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
             cmd_arg(a, cap, graph.s);
         }
         if (reencode) {
-            arg_pair(a, cap, "-map", j.end_card > 0 ? "[vend]" : fit_w ? "[vfit]" : "[v]");
+            arg_pair(a, cap, "-map", "[%s]", j.end_card > 0 ? "vend" : fit_w ? "vfit" : pic);
             edit_encoder_args(a, cap, w->cfg.vendor, sized ? video_kbps : 0);
         } else {
             arg_pair(a, cap, "-map", "0:v:0");
@@ -2899,6 +3033,7 @@ static i64 edit_run(SaveWork *w, char *out, i32 out_cap)
         }
     }
     DeleteFileW(graph.s);
+    DeleteFileW(ass.s);
     RemoveDirectoryW(work.s);
     return result;
 }

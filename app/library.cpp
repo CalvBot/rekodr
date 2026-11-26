@@ -1110,14 +1110,33 @@ static Path lib_render_note_path(const LibItem &it)
     return p;
 }
 
-enum { LIB_ITEM_FILES = 4 };
+// Where a Rekodr clip's layers are kept: <save_dir>\Data\<name>.layers.txt. Another app's clip has none.
+static Path lib_layers_path(const LibItem &it)
+{
+    if (it.dir) return {};
+    wchar_t name[256];
+    utf8_to_wide(it.name, name, COUNT(name));
+    return layers_clip_path(g_app.config.save_dir, name);
+}
 
-// A card's files that are there: its original, its rendered copy, its edit and its render note. Returns how many.
+// A clip's layers, into a set of their own (layer_set_free). False when it has none.
+static bool lib_layers_read(const LibItem &it, LayerSet *set)
+{
+    Path p = lib_layers_path(it);
+    if (!p.s[0]) { *set = {}; return false; }
+    return layers_read(p, set);
+}
+
+enum { LIB_ITEM_FILES = 5 };
+
+// A card's files that are there: its original, its rendered copy, its edit, its render note and its layers.
+// Returns how many.
 static i32 lib_item_files(const LibItem &it, Path *out)
 {
     i32 n = 0;
     out[n++] = lib_item_path(it);
-    Path more[] = {it.rendered ? lib_playable_path(it) : Path{}, lib_edit_path(it), lib_render_note_path(it)};
+    Path more[] = {it.rendered ? lib_playable_path(it) : Path{}, lib_edit_path(it), lib_render_note_path(it),
+                   lib_layers_path(it)};
     for (const Path &p : more)
         if (p.s[0] && file_exists(p.s)) out[n++] = p;
     return n;
@@ -4104,11 +4123,12 @@ static bool lib_rename_apply()
         else {
             if (lib.player.open && !wcscmp(lib.player.path.s, from.s)) library_close_player();
             if (MoveFileW(from.s, to.s)) {
-                // The rendered copy, the edit and the render note go with it.
+                // The rendered copy, the edit, the render note and the layers go with it.
                 Path copy = lib.target.rendered ? lib_playable_path(lib.target) : Path{};
                 Path pairs[][2] = {{copy, lib_playable_path(renamed)},
                                    {lib_edit_path(lib.target), lib_edit_path(renamed)},
-                                   {lib_render_note_path(lib.target), lib_render_note_path(renamed)}};
+                                   {lib_render_note_path(lib.target), lib_render_note_path(renamed)},
+                                   {lib_layers_path(lib.target), lib_layers_path(renamed)}};
                 for (auto &p : pairs)
                     if (p[0].s[0] && file_exists(p[0].s)) MoveFileW(p[0].s, p[1].s);
                 lib_message(false, "Renamed to %s", t);

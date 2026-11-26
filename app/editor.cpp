@@ -33,7 +33,13 @@ static bool edit_is_default(const EditRecord &e)
         if (e.muted[t] || e.boost[t] != 0 || e.vol_count[t]) return false;
     for (i32 c = 0; c < EDIT_COLORS; c++)
         if (e.color_count[c]) return false;
-    return true;
+    return !e.layer_on_count;
+}
+
+// The layers switched on, a line each: layer = <name>
+static void edit_write_layers(FILE *f, const EditRecord &e)
+{
+    for (i32 i = 0; i < e.layer_on_count; i++) fprintf(f, "layer = %s\n", e.layer_on[i]);
 }
 
 // Whether an edit file holds an Advanced edit: its first line says so.
@@ -60,6 +66,9 @@ static void edit_read(const Path &file, EditRecord *e)
         char *k = trim(line), *v = trim(eq + 1);
         if (!strcmp(k, "mode")) {
             e->mode = !strcmp(v, "advanced") ? EDIT_ADVANCED : EDIT_SIMPLE;
+        } else if (!strcmp(k, "layer")) {
+            if (e->layer_on_count < LAYER_MAX && layer_name_ok(v) && !layer_switched_on(e->layer_on, e->layer_on_count, v))
+                str_set(e->layer_on[e->layer_on_count++], v);
         } else if (!strcmp(k, "item") && e->item_count < EDIT_MAX_ITEMS) {
             // id track start from to link, then fade in, fade out and crossfade, then the webcam's x y and width
             EditItem it = {};
@@ -197,6 +206,7 @@ static void edit_write(const Path &file, const EditRecord &e)
         }
         for (i32 t = 0; t < MEDIA_MAX_TRACKS; t++)
             if (e.muted[t]) fprintf(f, "volume = %d 1 1\n", t);
+        edit_write_layers(f, e);
         fclose(f);
         MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
         return;
@@ -225,6 +235,7 @@ static void edit_write(const Path &file, const EditRecord &e)
     for (i32 c = 0; c < EDIT_COLORS; c++)
         for (i32 k = 0; k < e.color_count[c]; k++)
             fprintf(f, "ckey = %c %.3f %.3f %d\n", "bcs"[c], e.color[c][k].t, e.color[c][k].v, e.color[c][k].ease);
+    edit_write_layers(f, e);
     fclose(f);
     MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING);
 }
