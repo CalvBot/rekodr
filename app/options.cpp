@@ -4325,6 +4325,11 @@ static void options_integrations()
         options_apply(0);
         busy_apply();
     }
+    if (c.input_busy && opt_row_f32("AFK after", "No keys or mouse this long with a game in front shows as AFK on the Busy row",
+                                    "##afk", &c.afk_after_min, 0.5, 30, "min")) {
+        log_line("options: AFK after %g min", c.afk_after_min);
+        options_apply(0);
+    }
     for (i32 i = 0; i < g_plugins.count; i++) {
         Plugin &p = g_plugins.p[i];
         char sub[160] = "";

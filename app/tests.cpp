@@ -4703,6 +4703,29 @@ static void test_busy()
     mouse(0, 0, 5, 1000000), mouse(0, 0, -2, 1050000), mouse(0, 0, 1, 1250000), mouse(0, 0, 0, 1500000);
     T(busy_take(&b) == 2);
     T(busy_take(&b) == 0);
+
+    // AFK: 3 quiet seconds with a game in front, at a 3 s threshold, begin a span at the first; input ends it
+    BusyAway w = {};
+    const i64 S = 1000000, afk = 3 * S;
+    i64 at = 0;
+    T(busy_away_step(&w, 10 * S, 0, true, afk, &at) == 0);
+    T(busy_away_step(&w, 11 * S, 0, true, afk, &at) == 0);
+    T(busy_away_step(&w, 12 * S, 0, true, afk, &at) == 1 && at == 10 * S);
+    T(busy_away_step(&w, 13 * S, 0, true, afk, &at) == 0);
+    T(busy_away_step(&w, 14 * S, 2, true, afk, &at) == 2 && at == 14 * S);
+    T(busy_away_step(&w, 15 * S, 2, true, afk, &at) == 0);
+    // Quiet with no game in front isn't AFK, and a busy second starts the count again
+    T(busy_away_step(&w, 20 * S, 0, false, afk, &at) == 0);
+    T(busy_away_step(&w, 21 * S, 0, false, afk, &at) == 0);
+    T(busy_away_step(&w, 22 * S, 0, false, afk, &at) == 0);
+    T(busy_away_step(&w, 30 * S, 0, true, afk, &at) == 0);
+    T(busy_away_step(&w, 31 * S, 0, true, afk, &at) == 0);
+    T(busy_away_step(&w, 32 * S, 1, true, afk, &at) == 0);
+    T(busy_away_step(&w, 33 * S, 0, true, afk, &at) == 0);
+    // The game leaving the front ends an open span
+    T(busy_away_step(&w, 34 * S, 0, true, afk, &at) == 0);
+    T(busy_away_step(&w, 35 * S, 0, true, afk, &at) == 1 && at == 33 * S);
+    T(busy_away_step(&w, 36 * S, 0, false, afk, &at) == 2 && at == 36 * S);
 }
 
 static void test_fn_replay()

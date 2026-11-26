@@ -314,6 +314,7 @@ struct Config {
     char timeline_show[512];
     bool front_window;      // the Front window layer is recorded (on)
     bool input_busy;        // the Busy layer is recorded: how many keys and mouse moves a second, never which (off)
+    f32  afk_after_min;     // no input this long with a game in front is AFK on the Busy row (2)
     char plugins_off[512];  // plugin folders switched off, |-separated
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default
     f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default

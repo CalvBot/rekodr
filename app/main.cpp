@@ -266,6 +266,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             render_tick();
             share_prep_tick();
             webcam_tick();
+            busy_tick();
             plugins_tick();
             pipe_publish();
         }
