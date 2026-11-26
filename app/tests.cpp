@@ -3656,7 +3656,7 @@ static void test_automarks()
     Cs2Seen mb = {};
     T(cs2_feed(&mb, "7656", "warmup", "live", "", 0, 0, 0, 0, 0, m, all) == 0);
     T(cs2_feed(&mb, "7656", "live", "freezetime", "", 0, 0, 0, 0, 0, m, all) == 1 && m[0].event == AM_RAID_START &&
-      !strcmp(m[0].note, "Match start (de_dust2)") && !strcmp(m[0].detail, "map=de_dust2;span=match"));
+      !strcmp(m[0].note, "Match start (Dust II)") && !strcmp(m[0].detail, "map=Dust II;span=match"));
     T(cs2_feed(&mb, "7656", "live", "live", "", 1, 0, 1, 0, 0, m, all) == 1 && !strcmp(m[0].note, "Kill"));
     T(cs2_feed(&mb, "7657", "live", "live", "", 1, 0, 1, 0, 0, m, all) == 0); // watching a teammate doesn't end it
     T(cs2_feed(&mb, "7656", "gameover", "over", "T", 1, 0, 0, 3, 13, m, all) == 1 && m[0].event == AM_RAID_END &&
@@ -3671,12 +3671,12 @@ static void test_automarks()
     T(cs2_marks(&lv, all, "{\"provider\":{\"steamid\":\"7656\"}}", 33, m, 8) == 0);
     T(cs2_feed(&lv, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 1 && m[0].event == AM_RAID_START); // and again
     T(cs2_feed(&mb, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 1 && cs2_feed(&mb, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 0);
-    { // on to another map: the match ends there, and the new map's starts
+    { // on to another map: the match ends there, and the new map's starts, named by its file when it isn't listed
         char body[256];
-        snprintf(body, sizeof body, "{\"provider\":{\"steamid\":\"7656\"},\"map\":{\"name\":\"de_nuke\",\"phase\":\"live\"},"
+        snprintf(body, sizeof body, "{\"provider\":{\"steamid\":\"7656\"},\"map\":{\"name\":\"de_cbble_v2\",\"phase\":\"live\"},"
                                     "\"player\":{\"steamid\":\"7656\"}}");
         T(cs2_marks(&mb, all, body, (i64)strlen(body), m, 8) == 2 && m[0].event == AM_RAID_END && m[1].event == AM_RAID_START &&
-          !strcmp(m[1].note, "Match start (de_nuke)"));
+          !strcmp(m[1].note, "Match start (de_cbble_v2)"));
     }
     // Only some events: multi-kills alone skip plain kills; kills alone mark a double as a Kill; no deaths, no rounds
     Cs2Seen e = {};

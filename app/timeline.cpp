@@ -3096,7 +3096,7 @@ static void screen_timeline()
     // short one gets a window just wide enough, a long one a taller window. Under it, its detail a line a pair, and a
     // Steam profile button when it names a player's SteamID64, or an Achievements button (the player's achievements
     // page for the game) for an achievement. An achievement's own keys (its name too) show as that button, not as
-    // lines. Player names keep their underscores.
+    // lines. Player and map names keep their underscores.
     {
         const char *note = mark_open.note[0] ? mark_open.note : "No note";
         f32 pad = 12 * s, wrap = 300 * s, bs = fh;
@@ -3120,7 +3120,7 @@ static void screen_timeline()
                     continue;
                 for (char *ch = v; *ch; ch++)
                     if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker") &&
-                        strcmp(k, "name"))
+                        strcmp(k, "name") && strcmp(k, "map"))
                         *ch = ' ';
                 snprintf(lines[nl++], sizeof lines[0], "%s  %s", tl_detail_label(k), v);
                 body = ImMax(body, ImGui::CalcTextSize(lines[nl - 1]).x);

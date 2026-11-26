@@ -129,6 +129,20 @@ static i32 j_int(const char *body, i64 len, const char *path, i32 keep)
 // weapon in hand and, for a headshot, area=head. The bomb is the player's plant when they stopped carrying it as it
 // was planted, or when their score went up then without a kill or assist; a defuse is theirs when they are a live
 // CT whose score went up so. A state about another player (the one being watched after a death) changes nothing.
+// A CS2 map's name as the game's menus show it, or its file name (de_dust2) for a map not listed
+static const char *cs2_map_name(const char *map)
+{
+    static const char *const names[][2] = {
+        {"de_dust2", "Dust II"},   {"de_mirage", "Mirage"},     {"de_inferno", "Inferno"}, {"de_nuke", "Nuke"},
+        {"de_ancient", "Ancient"}, {"de_anubis", "Anubis"},     {"de_vertigo", "Vertigo"}, {"de_overpass", "Overpass"},
+        {"de_train", "Train"},     {"cs_office", "Office"},     {"cs_italy", "Italy"},     {"ar_baggage", "Baggage"},
+        {"ar_shoots", "Shoots"},
+    };
+    for (auto &n : names)
+        if (!strcmp(map, n[0])) return n[1];
+    return map;
+}
+
 // A match is a band: it starts (span=match) when the map's phase is first seen live, and ends (span_end=match) at
 // gameover, on another map, or when a state has no map (the player left for the menus).
 static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
@@ -187,8 +201,8 @@ static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark
 
     if (!in_match && !strcmp(now.phase, "live") && (events & AM_RAID_START)) {
         char note[96], detail[256] = "";
-        snprintf(note, sizeof note, "Match start (%s)", map);
-        marker_detail_add(detail, "map", map);
+        snprintf(note, sizeof note, "Match start (%s)", cs2_map_name(map));
+        marker_detail_add(detail, "map", cs2_map_name(map));
         marker_detail_add(detail, "span", "match");
         am_push(out, cap, &n, AM_RAID_START, 5, note, false, detail);
         in_match = true;
