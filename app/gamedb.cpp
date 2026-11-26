@@ -1111,8 +1111,8 @@ static bool gamedb_name_app(AppInfo *a)
     if (!known && shared) {
         if (!facts) facts = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title);
         if (facts) {
-            DEV_LOG("gamedb: %s is shared; its window is \"%s\", its command line ends \"%s\"", a->exe.s, title,
-                    strlen(cmd) > 400 ? cmd + strlen(cmd) - 400 : cmd);
+            // Never the command line itself: launchers put sign-in tokens and the player's paths on it.
+            DEV_LOG("gamedb: %s is shared; its window is \"%s\"", a->exe.s, title);
             known = gamedb_by_exe(a->exe.s, a->path, cmd, title, &g);
         }
     }
