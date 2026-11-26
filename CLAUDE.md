@@ -15,5 +15,9 @@ Rekodr is not released. One PC runs it. Write for the program as it is going to 
 - Rekodr and its service link to each other: https://github.com/CalvBot/rekodr and
   https://github.com/CalvBot/rekodr-api.
 
+## Builds
+- Dev and test builds run locally (`app\build.bat`). Only a public release is built on GitHub Actions, once per
+  release, never on every push.
+
 ## The service (rekodr-api)
 - Its address tells nothing to someone without the app: every unsigned request, the front page too, is an empty 404.
