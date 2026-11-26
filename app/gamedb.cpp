@@ -1502,13 +1502,13 @@ static bool sgdb_art_json(u32 steam, const char *name, char **out, i64 *out_len)
 
 // A search for a name: the service's, or with it off, SteamGridDB's with the player's own key. Returns the status
 // (0: nothing to search with); the answer, as the service gives it, in *body. `typing`: the player is still typing
-// it, so the service keeps it in its edge cache only, not its store.
+// it, so a 429 isn't waited out.
 static u32 art_search(const char *q, char **body, i64 *len, bool typing = false)
 {
     char enc[400], path[512];
     url_encode(q, enc, sizeof enc);
     if (g_gamedb.service[0]) {
-        snprintf(path, sizeof path, "/v1/search?q=%s%s", enc, typing ? "&typing=1" : "");
+        snprintf(path, sizeof path, "/v1/search?q=%s", enc);
         return art_service_get(path, body, len, 0, !typing);
     }
     if (!g_gamedb.sgdb_key[0]) return 0;
