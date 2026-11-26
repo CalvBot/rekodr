@@ -804,9 +804,23 @@ static void r2_page_put(const char *fmt, const R2PageParts &p, char *out, i32 ca
     out[*len < cap ? *len : cap - 1] = 0;
 }
 
-// The page for a link: the game's art (else the clip's picture) in grey and blurred behind its name, the game line
-// (after the game's icon, else its emoji), the clip in Rekodr's own player and its markers, then "via Rekodr" (a
-// link to the project), Download and Copy link. The head has the tags chat
+// Whether text on the accent `c` (0xRRGGBB, 0 = the default) is near-black rather than white, as in the app (ink_on).
+static bool r2_accent_ink(u32 c)
+{
+    c = c ? c & 0xffffff : ACCENT_DEFAULT;
+    f32 l = 0, w[3] = {0.2126f, 0.7152f, 0.0722f};
+    for (i32 i = 0; i < 3; i++) {
+        f32 v = ((c >> (16 - 8 * i)) & 255) / 255.f;
+        l += w[i] * (v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f));
+    }
+    return 1.05f / (l + 0.05f) < 3; // as ink_on
+}
+
+// The page for a link, in the app's look: the game's art (else the clip's picture) grey, blurred and faint behind
+// it all; the clip first, in Rekodr's own player (its markers as ticks on the seek bar, a wide volume slider), as
+// wide as the screen's height leaves room for; under it the name and the game line (after the game's icon, else its
+// emoji) with Download and Copy link beside them, then "via Rekodr" (a link to the project). The accent fills the
+// played part, the volume and the main buttons. The head has the tags chat
 // apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and
 // Discord's own card (`card`) before them. A #t= in the address (seconds, or m:ss or h:mm:ss) starts the clip there,
 // which is where a card's preview tag links to; when cards play a preview, a button and a green tick mark where it
@@ -855,67 +869,91 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         r2_page_put("<meta name=\"twitter:card\" content=\"summary_large_image\">\n"
                     "<meta name=\"twitter:title\" content=\"%T\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
                     p, out, cap, &len);
-    // The look: flat near-black, the game's art in grey and blurred behind a centred column; the name, the game
-    // line, the player with the markers as ticks on its timeline, then "via Rekodr", Download (a white pill) and
-    // Copy link. Onest is in the page itself, so it asks nothing of anyone else.
+    // The app's surfaces, radii and type; Onest is in the page itself, so it asks nothing of anyone else.
     r2_page_put("<style>@font-face{font-family:Onest;font-weight:400 700;font-display:swap;"
                 "src:url(data:font/woff2;base64,",
                 p, out, cap, &len);
     r2_page_put(ONEST_LATIN_WOFF2, p, out, cap, &len);
     r2_page_put(") format(\"woff2\")}"
-                ":root{--fg:#f2f2f2;--dim:#969696;--line:#262626;--panel:#161616;--raised:#1f1f1f;--scrim:#000000c0;",
+                ":root{--fg:#f2f2f2;--dim:#969696;--line:#363636;--panel:#161616;--raised:#1f1f1f;--hover:#262626;"
+                "--scrim:#000000c0;",
                 p, out, cap, &len);
     if (len + 24 < cap) len += snprintf(out + len, cap - len, "--accent:#%06x;", p.accent ? p.accent & 0xffffff : ACCENT_DEFAULT);
+    if (len + 24 < cap) len += snprintf(out + len, cap - len, "--ink:%s;", r2_accent_ink(p.accent) ? "#0a0a0a" : "#fff");
+    // Room the page keeps above and below the picture: its padding, the controls, the title and game line, the
+    // via line. The player is as wide as the screen's height leaves room for, at the clip's shape.
     r2_page_put(
-        "--mark:#fff;--prev:#4cc985;color-scheme:dark}"
-        "html{background:#0a0a0a}body{margin:0;min-height:100vh;color:var(--fg);"
-        "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif}"
-        "body{display:grid;place-items:center;padding:24px 16px;box-sizing:border-box;overflow-x:hidden}"
-        ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(36px);opacity:.3;"
+        "--mark:#fff;--prev:#4cc985;--room:280px;--hot:color-mix(in srgb,var(--accent) 85%,#fff);"
+        "color-scheme:dark}"
+        "html{background:#0a0a0a}body{margin:0;min-height:100vh;min-height:100svh;color:var(--fg);"
+        "font:15px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif;-webkit-font-smoothing:antialiased}"
+        "body{display:grid;place-items:center;padding:24px;box-sizing:border-box;overflow-x:hidden}"
+        ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(48px);opacity:.16;"
         "z-index:-1}"
-        "main{width:min(960px,100%);display:grid;gap:12px}"
-        "h1{font-size:26px;line-height:1.1;font-weight:700;letter-spacing:-.025em;margin:0;text-align:center;"
-        "overflow-wrap:anywhere}"
-        ".game{display:flex;gap:6px;align-items:center;justify-content:center;color:var(--dim);font-size:13px}"
-        ".game img,.via img{width:18px;height:18px}.game .icon{border-radius:3px}"
-        ".player{border-radius:6px;overflow:hidden;background:#000;outline:none}"
+        "main{width:min(100%,1600px,max(640px,calc((100vh - var(--room)) * var(--w) / var(--h))));"
+        "width:min(100%,1600px,max(640px,calc((100svh - var(--room)) * var(--w) / var(--h))));"
+        "display:grid;gap:16px}main:not(:has(.player)){width:min(100%,640px)}"
+        ".info{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 24px;flex-wrap:wrap}"
+        ".info>:first-child{min-width:0;flex:1 1 320px;display:grid;gap:4px}"
+        "h1{font-size:28px;line-height:1.2;font-weight:700;letter-spacing:-.02em;margin:0;overflow-wrap:anywhere}"
+        ".game{display:flex;gap:8px;align-items:center;color:var(--dim);font-size:15px}"
+        ".game img{width:22px;height:22px}.game .icon{border-radius:5px}.via svg{width:18px;height:18px}"
+        ".player{border-radius:10px;overflow:hidden;background:var(--panel);outline:none}"
         ".player:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
-        ".view{position:relative;overflow:hidden;max-height:calc(100vh - 230px);cursor:zoom-in;touch-action:none}"
+        ".view{position:relative;overflow:hidden;background:#000;max-height:calc(100vh - var(--room));"
+        "max-height:calc(100svh - var(--room));margin:auto;cursor:zoom-in;touch-action:none}"
         ".view.z{cursor:grab}.view.d{cursor:grabbing}"
         "video{display:block;width:100%;height:100%;object-fit:contain;transform-origin:0 0;background:#000}"
-        ".tag{position:absolute;top:10px;font-size:12px;font-weight:600;background:var(--scrim);border-radius:999px;"
-        "padding:3px 10px;font-variant-numeric:tabular-nums}"
+        ".tag{position:absolute;top:12px;font-size:13px;font-weight:600;background:var(--scrim);border-radius:999px;"
+        "padding:4px 12px;font-variant-numeric:tabular-nums}"
         ".tag button{all:unset;cursor:pointer;color:var(--dim);margin-left:8px}"
-        ".ctrl{display:grid;gap:6px;padding:8px 12px;background:var(--scrim)}"
-        ".scrub{position:relative;height:18px;cursor:pointer;touch-action:none}"
+        ".ctrl{display:grid;grid-template-columns:minmax(0,1fr);gap:4px;padding:6px 14px 10px}"
+        ".scrub{position:relative;height:22px;cursor:pointer;touch-action:none}"
         ".scrub>*{position:absolute;pointer-events:none}"
-        ".rail{left:0;right:0;top:7px;height:4px;background:#ffffff40;border-radius:2px}"
-        ".done{left:0;top:7px;height:4px;background:var(--accent);border-radius:2px}"
-        ".head{top:3px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:#fff}"
-        "#tk{inset:0}.tick{position:absolute;top:4px;width:2px;height:10px;margin-left:-1px;background:var(--mark)}"
-        ".tick.pv{background:var(--prev);top:1px;height:16px}"
-        ".row{display:flex;align-items:center;gap:2px;flex-wrap:wrap;font-size:12px;color:var(--dim);"
+        ".rail,.done{left:0;top:9px;height:4px;border-radius:2px;transition:height .1s,top .1s}"
+        ".rail{right:0;background:var(--line)}.done{background:var(--accent)}"
+        ".scrub:hover .rail,.scrub:hover .done{top:8px;height:6px}"
+        ".head{top:4px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#fff}"
+        "#tk{inset:0}.tick{position:absolute;top:6px;width:2px;height:10px;margin-left:-1px;background:var(--mark)}"
+        ".tick.pv{background:var(--prev);top:3px;height:16px}"
+        ".row{display:flex;align-items:center;gap:4px;font-size:14px;color:var(--dim);"
         "font-variant-numeric:tabular-nums}"
-        ".ic{width:32px;height:32px;border:0;border-radius:999px;background:none;color:var(--fg);cursor:pointer;"
-        "display:grid;place-items:center}"
-        ".ic:hover{background:#ffffff14}svg{width:18px;height:18px;fill:currentColor}"
-        "#pb{width:28px;height:28px;margin:2px;background:#fff;color:#000}#pb:hover{background:#e6e6e6}"
-        "#pb svg{width:14px;height:14px}"
-        ".time{margin:0 8px;color:var(--fg)}.spd{display:flex;align-items:center;margin-left:auto}"
-        ".spd span{min-width:40px;text-align:center;color:var(--fg);font-weight:600}"
-        ".pill{font:inherit;font-size:12px;font-weight:600;color:var(--fg);background:none;"
-        "border:1px solid var(--prev);border-radius:999px;padding:3px 10px;cursor:pointer}"
-        ".foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}"
-        ".via{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--dim);text-decoration:none}"
-        ".via b{color:var(--fg);font-weight:600}.via:hover b{text-decoration:underline}"
-        ".acts{display:flex;gap:8px;flex-wrap:wrap}"
-        ".btn{font:inherit;font-size:14px;font-weight:600;color:var(--fg);background:#ffffff1a;border:0;"
-        "border-radius:999px;height:32px;padding:0 18px;box-sizing:border-box;cursor:pointer;display:inline-flex;"
-        "gap:8px;align-items:center;text-decoration:none}"
-        ".btn:hover{background:#ffffff24}.btn.p{background:#fff;color:#000}.btn.p:hover{background:#e6e6e6}"
-        ".btn svg{width:16px;height:16px}"
-        "button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
-        "p{margin:0;text-align:center;color:var(--dim)}"
+        ".ic{flex:none;width:40px;height:40px;border:0;border-radius:999px;background:none;color:var(--fg);"
+        "cursor:pointer;display:grid;place-items:center;padding:0}"
+        ".ic:hover{background:var(--raised)}svg{width:20px;height:20px;fill:currentColor}"
+        "#pb{width:44px;height:44px;margin-right:6px;background:var(--accent);color:var(--ink)}#pb:hover{background:var(--hot)}"
+        "#pb svg{width:18px;height:18px}"
+        ".vol{display:flex;align-items:center;gap:4px;flex:0 1 220px;min-width:110px}"
+        ".vol input{flex:1;min-width:0;height:22px;margin:0 6px 0 0;background:none;cursor:pointer;"
+        "-webkit-appearance:none;appearance:none;--f:100%}"
+        ".vol input::-webkit-slider-runnable-track{height:4px;border-radius:2px;"
+        "background:linear-gradient(90deg,var(--accent) var(--f),var(--line) var(--f))}"
+        ".vol input::-moz-range-track{height:4px;border-radius:2px;"
+        "background:linear-gradient(90deg,var(--accent) var(--f),var(--line) var(--f))}"
+        ".vol input::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-5px;"
+        "border:0;border-radius:50%;background:#fff}"
+        ".vol input::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;background:#fff}"
+        ".vol input:hover::-webkit-slider-runnable-track{background:linear-gradient(90deg,var(--hot) var(--f),"
+        "var(--hover) var(--f))}"
+        ".time{margin:0 10px;color:var(--fg);white-space:nowrap}"
+        ".spd{display:flex;align-items:center;margin-left:auto}"
+        ".spd span{min-width:44px;text-align:center;color:var(--fg);font-weight:600}"
+        ".pill{font:inherit;font-size:13px;font-weight:600;color:var(--fg);background:none;white-space:nowrap;"
+        "border:1px solid var(--prev);border-radius:999px;padding:4px 12px;cursor:pointer}"
+        ".via{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--dim);text-decoration:none;"
+        "justify-self:start}"
+        ".via b{color:var(--fg);font-weight:600}.via:hover b{color:var(--accent)}"
+        ".acts{display:flex;gap:10px;flex-wrap:wrap}"
+        ".btn{font:inherit;font-size:15px;font-weight:600;color:var(--fg);background:var(--raised);border:0;"
+        "border-radius:999px;height:42px;padding:0 20px;box-sizing:border-box;cursor:pointer;display:inline-flex;"
+        "gap:8px;align-items:center;text-decoration:none;white-space:nowrap}"
+        ".btn:hover{background:var(--hover)}.btn.p{background:var(--accent);color:var(--ink)}"
+        ".btn.p:hover{background:var(--hot)}.btn svg{width:18px;height:18px}"
+        "button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+        "p{margin:0;color:var(--dim)}"
+        "@media(max-width:600px){body{padding:16px 12px;place-items:start center}main{width:100%;gap:14px}"
+        "h1{font-size:22px}.ctrl{padding:4px 8px 8px}#fb,#ff,.spd{display:none}.vol{flex:1 1 auto}"
+        ".time{margin:0 0 0 auto}.info{gap:14px}.acts{width:100%}.acts .btn{flex:1;justify-content:center}}"
         "</style>\n"
         "</head><body>\n",
         p, out, cap, &len);
@@ -924,19 +962,9 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         len += snprintf(out + len, cap - len, "<div class=\"bg\" style=\"background-image:url('%s')\"></div>\n", p.art);
     else if (!paused && p.image && p.image[0])
         r2_page_put("<div class=\"bg\" style=\"background-image:url('%I')\"></div>\n", p, out, cap, &len);
-    r2_page_put("<main>\n<h1>", p, out, cap, &len);
-    r2_html_text(p.heading && p.heading[0] ? p.heading : p.title, out, cap, &len);
-    r2_page_put("</h1>\n", p, out, cap, &len);
-    if (p.line && p.line[0]) {
-        r2_page_put("<div class=\"game\">", p, out, cap, &len);
-        char src[160];
-        if (p.icon && p.icon[0] && len + (i32)strlen(p.icon) + 200 < cap)
-            len += snprintf(out + len, cap - len, "<img class=\"icon\" src=\"%s\" alt=\"\">", p.icon);
-        else if (r2_emoji_url(p.emoji, src, sizeof src) && len + 200 < cap)
-            len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", src);
-        r2_html_text(p.line, out, cap, &len);
-        r2_page_put("</div>\n", p, out, cap, &len);
-    }
+    if (len + 40 < cap)
+        len += snprintf(out + len, cap - len, "<main style=\"--w:%d;--h:%d\">\n", p.w > 0 && p.h > 0 ? p.w : 16,
+                        p.w > 0 && p.h > 0 ? p.h : 9);
     if (!paused) {
         r2_page_put(
             "<div class=\"player\" id=\"pl\" tabindex=\"0\">"
@@ -954,8 +982,9 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "<path d=\"M6 5h2v14H6zM20 5 9 12l11 7z\"/></svg></button>"
             "<button class=\"ic\" id=\"ff\" aria-label=\"Forward one frame (.)\"><svg viewBox=\"0 0 24 24\">"
             "<path d=\"M16 5h2v14h-2zM4 5l11 7-11 7z\"/></svg></button>"
-            "<button class=\"ic\" id=\"mu\" aria-label=\"Sound\"><svg viewBox=\"0 0 24 24\"><path id=\"mi\" "
-            "d=\"M4 9h4l5-4v14l-5-4H4z\"/></svg></button>"
+            "<span class=\"vol\"><button class=\"ic\" id=\"mu\" aria-label=\"Sound (m)\"><svg viewBox=\"0 0 24 24\">"
+            "<path id=\"mi\" d=\"M4 9h4l5-4v14l-5-4H4z\"/></svg></button>"
+            "<input id=\"vl\" type=\"range\" min=\"0\" max=\"1\" step=\"0.01\" value=\"1\" aria-label=\"Volume\"></span>"
             "<span class=\"time\" id=\"tm\">0:00</span>"
             "<button class=\"pill\" id=\"kw\" type=\"button\" hidden></button>"
             "<span class=\"spd\"><button class=\"ic\" id=\"sl\" aria-label=\"Slower ([)\"><svg viewBox=\"0 0 24 24\">"
@@ -966,12 +995,22 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "<path d=\"M4 4h6v2H6v4H4zM14 4h6v6h-2V6h-4zM4 14h2v4h4v2H4zM18 14h2v6h-6v-2h4z\"/></svg></button>"
             "</div></div></div>\n",
             p, out, cap, &len);
-    } else r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
-    r2_page_put("<div class=\"foot\"><a class=\"via\" href=\"" R2_HOME_URL "\">", p, out, cap, &len);
-    char logo[160];
-    if (r2_emoji_url(R2_LOGO_EMOJI, logo, sizeof logo) && len + 200 < cap)
-        len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", logo);
-    r2_page_put("via <b>" APP_NAME "</b></a><div class=\"acts\">", p, out, cap, &len);
+    }
+    r2_page_put("<div class=\"info\"><div><h1>", p, out, cap, &len);
+    r2_html_text(p.heading && p.heading[0] ? p.heading : p.title, out, cap, &len);
+    r2_page_put("</h1>\n", p, out, cap, &len);
+    if (p.line && p.line[0]) {
+        r2_page_put("<div class=\"game\">", p, out, cap, &len);
+        char src[160];
+        if (p.icon && p.icon[0] && len + (i32)strlen(p.icon) + 200 < cap)
+            len += snprintf(out + len, cap - len, "<img class=\"icon\" src=\"%s\" alt=\"\">", p.icon);
+        else if (r2_emoji_url(p.emoji, src, sizeof src) && len + 200 < cap)
+            len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", src);
+        r2_html_text(p.line, out, cap, &len);
+        r2_page_put("</div>\n", p, out, cap, &len);
+    }
+    if (paused) r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
+    r2_page_put("</div><div class=\"acts\">", p, out, cap, &len);
     if (!paused)
         r2_page_put("<a class=\"btn p\" href=\"%V\" download><svg viewBox=\"0 0 24 24\"><path d=\"M11 3h2v10l4-4 1.4 "
                     "1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg>Download</a>"
@@ -981,7 +1020,15 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
                     "1.2zM16.9 13.1l-1.4-1.4 2.8-2.8a2 2 0 1 0-2.8-2.8l-2.8 2.8-1.4-1.4 2.8-2.8a4 4 0 0 1 5.6 "
                     "5.6z\"/></svg><span id=\"cl\">Copy link</span></button>",
                     p, out, cap, &len);
-    r2_page_put("</div></div>\n</main>\n", p, out, cap, &len);
+    // the via line: Rekodr's mono logo (assets/icons/rekodr-logo.svg) in the text's colour
+    r2_page_put("</div></div>\n<a class=\"via\" href=\"" R2_HOME_URL "\"><svg viewBox=\"0 0 607 607\" aria-hidden=\"true\">"
+                "<circle cx=\"303.5\" cy=\"303.5\" r=\"119.2\"/><path d=\"M130 271.7c0-78.3 63.5-141.7 141.7-141.7h67.4"
+                "c6.8 0 13.3-3.2 17.4-8.6l66.2-86C433.9 20.9 423.5 0 405.3 0H273.5C201 0 131.1 28.2 79.8 79.4 28.3 130.7 0 "
+                "199 0 271.7v133.6c0 18.2 20.9 28.6 35.4 17.4l86-66.2c5.4-4.2 8.6-10.6 8.6-17.4z\"/><path d=\"M477 267.9v67.4"
+                "c0 78.3-63.5 141.7-141.7 141.7h-67.4c-6.8 0-13.3 3.2-17.4 8.6l-66.2 86c-11.1 14.5-.8 35.4 17.4 35.4h133.6"
+                "c72.6 0 140.8-28.3 192.1-79.6 51.3-51.3 79.6-119.6 79.6-192.1V201.7c0-18.2-20.9-28.6-35.4-17.4l-86 66.2"
+                "c-5.4 4.2-8.6 10.6-8.6 17.4z\"/></svg>via <b>" APP_NAME "</b></a>\n</main>\n",
+                p, out, cap, &len);
     if (!paused) {
         // The player's facts, then the player: own controls (the browser's stay without script), a scroll zooms
         // into the picture and a drag moves it, , and . step a frame, [ and ] change the speed, markers and the
@@ -1015,7 +1062,10 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "$('tm').textContent=clock(v.currentTime)+' / '+clock(d);"
             "$('pi').setAttribute('d',v.paused?'M7 4l13 8-13 8z':'M6 4h4v16H6zM14 4h4v16h-4z');"
             "$('pb').setAttribute('aria-label',v.paused?'Play':'Pause');"
-            "$('mi').setAttribute('d',v.muted?'M4 9h4l5-4v14l-5-4H4zM16 9l5 6M21 9l-5 6':'M4 9h4l5-4v14l-5-4H4z')}"
+            "var vol=v.muted?0:v.volume,vl=$('vl');if(document.activeElement!==vl)vl.value=vol;"
+            "vl.style.setProperty('--f',vol*100+'%');"
+            "$('mi').setAttribute('d',!vol?'M4 9h4l5-4v14l-5-4H4zM16 9l5 6M21 9l-5 6':vol<.5?'M4 9h4l5-4v14l-5-4H4zM16 "
+            "9.5a3.5 3.5 0 0 1 0 5':'M4 9h4l5-4v14l-5-4H4zM16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10')}"
             "function marks(){var d=D(),tk=$('tk');if(!d||tk.childNodes.length)return;"
             "function add(t,pv){if(t<0||t>d)return;var i=document.createElement('i');"
             "i.className='tick'+(pv?' pv':'');i.style.left=t/d*100+'%';tk.appendChild(i);ticks.push(t)}"
@@ -1056,7 +1106,8 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "vw.ondblclick=unzoom;$('zr').onclick=unzoom;window.addEventListener('resize',zoom);"
             "$('pb').onclick=toggle;$('fb').onclick=function(){step(-1)};$('ff').onclick=function(){step(1)};"
             "$('sl').onclick=function(){speed(-1)};$('sf').onclick=function(){speed(1)};"
-            "$('mu').onclick=function(){v.muted=!v.muted};"
+            "function mute(){if(v.muted||!v.volume){v.muted=false;if(!v.volume)v.volume=1}else v.muted=true}"
+            "$('mu').onclick=mute;$('vl').oninput=function(){v.volume=+this.value;v.muted=!v.volume;ui()};"
             "$('fs').onclick=function(){if(document.fullscreenElement)document.exitFullscreen();"
             "else if(pl.requestFullscreen)pl.requestFullscreen()};"
             "$('cp').onclick=function(){var u=location.href.split('#')[0],t=Math.floor(v.currentTime);"
@@ -1065,10 +1116,10 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){said(t>0?'Copied at '+clock(t):"
             "'Copied')},function(){prompt('Link',u)});else prompt('Link',u)};"
             "document.addEventListener('keydown',function(e){var k=e.key,b=e.target.tagName=='BUTTON';"
-            "if(e.ctrlKey||e.metaKey||e.altKey)return;"
+            "if(e.ctrlKey||e.metaKey||e.altKey||e.target.tagName=='INPUT')return;"
             "if(k==',')step(-1);else if(k=='.')step(1);else if(k=='[')speed(-1);else if(k==']')speed(1);"
             "else if((k==' '&&!b)||k=='k')toggle();else if(k=='ArrowLeft')go(v.currentTime-5);"
-            "else if(k=='ArrowRight')go(v.currentTime+5);else if(k=='m')v.muted=!v.muted;"
+            "else if(k=='ArrowRight')go(v.currentTime+5);else if(k=='m')mute();"
             "else if(k=='f')$('fs').onclick();else if(k=='0'||k=='Escape'&&z>1)unzoom();else return;"
             "e.preventDefault()});ui()})()</script>\n",
             p, out, cap, &len);

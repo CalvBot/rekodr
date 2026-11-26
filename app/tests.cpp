@@ -2513,11 +2513,15 @@ static void test_r2()
     T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/rekodr/abc/thumb.jpg?v=2')\">"));
     // Onest is in the page: no font, nor anything else, from another site
     T(strstr(html, "@font-face{font-family:Onest;") && strstr(html, "src:url(data:font/woff2;base64,d09GMg"));
-    T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
-    // Download (the white pill), Copy link, and "via Rekodr" linking to the project; no game line without one
+    T(!strstr(html, "fonts.g") && strstr(html, "font:15px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
+    // the player as wide as the height leaves room for, at the clip's shape; a volume slider beside the sound button
+    T(strstr(html, "<main style=\"--w:2560;--h:1440\">") && strstr(html, "calc((100svh - var(--room)) * var(--w) / var(--h))"));
+    T(strstr(html, "<input id=\"vl\" type=\"range\" min=\"0\" max=\"1\"") && strstr(html, "v.volume=+this.value"));
+    // Download (in the accent), Copy link, and "via Rekodr" linking to the project, after the name; no game line
+    // without one
     T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" download>"));
-    T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/rekodr\"><img src=\"https://cdn.discordapp.com/"
-                   "emojis/1574532567124803645.webp\" alt=\"\">via <b>Rekodr</b></a>"));
+    T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/rekodr\"><svg viewBox=\"0 0 607 607\"") &&
+      strstr(html, "</svg>via <b>Rekodr</b></a>") && !strstr(html, "emojis/1574532567124803645"));
     T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
     // the accent, in the CSS and as the theme colour: the default, or the one picked
     T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)") &&
@@ -2525,6 +2529,7 @@ static void test_r2()
     pp.accent = 0xffe066;
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && strstr(html, "--accent:#ffe066;") && strstr(html, "content=\"#ffe066\"") && !strstr(html, "#00897b"));
+    T(strstr(html, "--ink:#0a0a0a;") && !r2_accent_ink(0) && r2_accent_ink(0xffe066));
     pp.accent = 0;
     // #t= starts the clip there; no preview, no markers
     T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "var CB={pv:0.000,m:[]};"));
@@ -2580,6 +2585,8 @@ static void test_r2()
     // The accent's ink: white on the default and darker picks, the page's near-black on light ones
     T(ink_on(ACCENT_DEFAULT) == 0xffffff && ink_on(0x4f8cff) == 0xffffff && ink_on(0xf0434f) == 0xffffff);
     T(ink_on(0xffe066) == COL_BG && ink_on(0xffffff) == COL_BG && ink_on(0x7fffd4) == COL_BG);
+    static const u32 picks[] = {ACCENT_DEFAULT, 0x4f8cff, 0xf0434f, 0xffe066, 0xffffff, 0x7fffd4, 0x3fbf74, 0xe8a33d};
+    for (u32 c : picks) T(r2_accent_ink(c) == (ink_on(c) == COL_BG)); // the page's ink is the app's
     ui_apply_accent(0xffe066);
     T(COL_ACCENT == 0xffe066 && COL_ACCENT_INK == COL_BG && COL_ACCENT_HOVER != COL_ACCENT);
     ui_apply_accent(ACCENT_DEFAULT);
@@ -2598,7 +2605,7 @@ static void test_r2()
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
     T(!strstr(html, "thumb.jpg") && !strstr(html, "<script") && strstr(html, "via <b>Rekodr</b></a>"));
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "via <b>Rekodr</b></a>") > strstr(html, "<video"));
+    T(hn > 0 && strstr(html, "via <b>Rekodr</b></a>") > strstr(html, "<h1>") && strstr(html, "<h1>") > strstr(html, "<video"));
     T(r2_page_html(pp, false, html, 64) == 0);
 
     // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag
