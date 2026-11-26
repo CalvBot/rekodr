@@ -279,6 +279,8 @@ static bool plugin_register(Plugin *p)
     return ok;
 }
 
+static void marker_detail_event(char (&d)[256], u32 event, const char *detail); // markers.cpp
+
 // `<event> [<note>] [@-<ms>]` from the plugin, arrived at `t_us`: a marker to the main thread (EV_MARKER).
 static PluginDrop plugin_event(Plugin *p, const char *s, i64 t_us)
 {
@@ -307,9 +309,11 @@ static PluginDrop plugin_event(Plugin *p, const char *s, i64 t_us)
     e.kind = EV_MARKER;
     e.a = t_us;
     e.b = AM_EVENT_COLOURS[bit];
-    str_set(e.text, n[0] ? n : AM_EVENT_NOTES[bit]);
+    char d[256];
+    marker_detail_event(d, 1u << bit, 0);
+    snprintf(e.text, sizeof e.text, "%s\t%s", n[0] ? n : AM_EVENT_NOTES[bit], d);
     event_post(e);
-    log_line("markers: %s: %s, from its plugin", p->name, e.text);
+    log_line("markers: %s: %s, from its plugin", p->name, n[0] ? n : AM_EVENT_NOTES[bit]);
     return PDROP_NONE;
 }
 

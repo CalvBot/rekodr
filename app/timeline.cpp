@@ -1989,21 +1989,6 @@ static bool tl_marker_span(const Marker &start, const Marker *after, i32 n, cons
     *end = z;
     return true;
 }
-// The icon of the game being played at `t` (activity), which a marker made then shows. Null when none was, or
-// while its icon is being looked up.
-static ID3D11ShaderResourceView *tl_marker_icon(const ActivityEntry *activity, i32 n, i64 t)
-{
-    for (i32 g = n - 1; g >= 0; g--)
-        if (activity[g].us <= t) {
-            if (!activity[g].exe[0]) return 0;
-            char name[64];
-            audio_display_name(g_app.config, activity[g].exe, name, sizeof name);
-            ID3D11ShaderResourceView *icon = game_db_icon(name);
-            return icon ? icon : app_icon(activity[g].exe);
-        }
-    return 0;
-}
-
 static void open_url(const char *url); // setup.cpp
 
 // What a marker's detail key is called in its popup.
@@ -2650,6 +2635,17 @@ static void screen_timeline()
     }
     dl->PopClipRect();
 
+    // Which markers show their event's icon (evicons.cpp): a game's, with room on both sides for it. A ruler label
+    // an icon would cover isn't drawn.
+    const f32 icon_r = 7 * s, icon_room = 2 * icon_r + 3 * s;
+    static EvIcon mark_icon[COUNT(marks)];
+    for (i32 i = 0; i < mark_count; i++) {
+        f32 x = tl_x(c, marks[i].t_us);
+        bool roomy = (i == 0 || x - tl_x(c, marks[i - 1].t_us) >= icon_room) &&
+                     (i + 1 == mark_count || tl_x(c, marks[i + 1].t_us) - x >= icon_room);
+        mark_icon[i] = roomy ? evi_of_marker(marks[i].detail) : EVI_NONE;
+    }
+
     // Ruler, ticks on round local times, and their lines faintly through the tracks
     {
         i64 step = tl_tick_step(c.px_per_us, 96 * s);
@@ -2668,6 +2664,12 @@ static void screen_timeline()
             else tl_clock(t, step < 60 * TL_SEC, label, sizeof label);
             f32 lw = ImGui::CalcTextSize(label).x;
             if (x + 5 * s < pill_x + pill_half && x + 5 * s + lw > pill_x - pill_half) continue; // under the time pill
+            bool covered = false;
+            for (i32 i = 0; i < mark_count && !covered; i++) {
+                f32 bx = tl_x(c, marks[i].t_us);
+                covered = mark_icon[i] && x + 5 * s < bx + icon_r + 2 * s && x + 5 * s + lw > bx - icon_r - 2 * s;
+            }
+            if (covered) continue;
             dl->AddText(ImVec2(x + 5 * s, floorf(y_ruler + (ruler_h - 7 * s - sh) / 2)), col32(COL_DIM), label);
         }
         ImGui::PopFont();
@@ -2935,23 +2937,17 @@ static void screen_timeline()
     }
 
     // Markers: a diamond on the ruler in the marker's colour (the playhead's is a white triangle), bigger when picked
-    // or under the mouse. A marker made while a game was played, with room on both sides, is the game's icon in a
-    // ring of its colour instead. The line down through the tracks shows only while the mouse is on it.
-    const f32 badge_r = 8.5f * s, badge_room = 2 * badge_r + 3 * s;
+    // or under the mouse. A game's marker with room on both sides is its event's icon in that colour instead. The
+    // line down through the tracks shows only while the mouse is on it.
     for (i32 i = 0; i < mark_count; i++) {
         f32 x = floorf(tl_x(c, marks[i].t_us)) + 0.5f;
         u32 rgb = MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb;
         bool picked = marks[i].t_us == tl.marker_pick, hot = i == mark_hit;
         if (hot) dl->AddLine(ImVec2(x, y_tracks), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
-        bool roomy = (i == 0 || x - tl_x(c, marks[i - 1].t_us) >= badge_room) &&
-                     (i + 1 == mark_count || tl_x(c, marks[i + 1].t_us) - x >= badge_room);
-        ID3D11ShaderResourceView *icon = roomy ? tl_marker_icon(b.activity, b.activity_count, marks[i].t_us) : 0;
-        if (icon) {
-            f32 br = badge_r + (hot || picked ? 1 * s : 0), cy = y_ruler + ruler_h - badge_r - 1 * s, ir = br - 2 * s;
-            dl->AddCircleFilled(ImVec2(x, cy), br, col32(rgb));
-            dl->AddImageRounded((ImTextureID)icon, ImVec2(x - ir, cy - ir), ImVec2(x + ir, cy + ir), ImVec2(0, 0), ImVec2(1, 1),
-                                col32(COL_WHITE), ir);
-            if (picked) dl->AddCircle(ImVec2(x, cy), br + 1 * s, col32(COL_TEXT), 0, 1.5f * s);
+        if (mark_icon[i]) {
+            f32 cy = y_ruler + ruler_h - icon_r - 1 * s, r = icon_r + (hot || picked ? 1 * s : 0);
+            evi_draw(dl, mark_icon[i], ImVec2(x, cy), 2 * r, col32(rgb), col32(COL_PANEL));
+            if (picked) dl->AddRect(ImVec2(x - r - 2 * s, cy - r - 2 * s), ImVec2(x + r + 2 * s, cy + r + 1 * s), col32(COL_TEXT), 3 * s, 0, 1.5f * s);
             continue;
         }
         f32 r = (hot || picked ? 5.5f : 4.5f) * s, cy = y_ruler + ruler_h - r - 1 * s;
@@ -3115,7 +3111,7 @@ static void screen_timeline()
                 else if (!strcmp(k, "player")) str_set(player, v);
                 if (!strcmp(k, "steam_id") || !strcmp(k, "app") || !strcmp(k, "player") || !strcmp(k, "achievement") ||
                     (achievement && !strcmp(k, "name")) || !strcmp(k, "icon") || !strcmp(k, "local") ||
-                    !strcmp(k, "span") || !strcmp(k, "span_end"))
+                    !strcmp(k, "span") || !strcmp(k, "span_end") || !strcmp(k, "event"))
                     continue;
                 for (char *ch = v; *ch; ch++)
                     if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker") &&
@@ -3136,15 +3132,12 @@ static void screen_timeline()
             u32 mrgb = MARKER_COLOURS[mark_open.colour < COUNT(MARKER_COLOURS) ? mark_open.colour : 0].rgb;
             ImVec2 p = ImGui::GetCursorScreenPos();
             f32 lh = ImGui::GetTextLineHeight(), ty = floorf(p.y + (bs - lh) / 2);
-            // The game's icon in a ring of the marker's colour, as on the ruler; a dot without a game
+            // The event's icon in the marker's colour, as on the ruler; a dot for a marker without one
             ImVec2 dot(p.x + 5 * s, ty + lh / 2);
-            if (ID3D11ShaderResourceView *icon = tl_marker_icon(b.activity, b.activity_count, mark_open.t_us)) {
-                f32 br = 7 * s, ir = br - 1.5f * s;
-                dot.x = p.x + br;
-                ImGui::GetWindowDrawList()->AddCircleFilled(dot, br, col32(mrgb));
-                ImGui::GetWindowDrawList()->AddImageRounded((ImTextureID)icon, ImVec2(dot.x - ir, dot.y - ir), ImVec2(dot.x + ir, dot.y + ir),
-                                                            ImVec2(0, 0), ImVec2(1, 1), col32(COL_WHITE), ir);
-            } else ImGui::GetWindowDrawList()->AddCircleFilled(dot, 5 * s, col32(mrgb));
+            if (EvIcon icon = evi_of_marker(mark_open.detail))
+                evi_draw(ImGui::GetWindowDrawList(), icon, ImVec2(p.x + 6 * s, dot.y), 13 * s, col32(mrgb),
+                         ImGui::GetColorU32(ImGuiCol_PopupBg));
+            else ImGui::GetWindowDrawList()->AddCircleFilled(dot, 5 * s, col32(mrgb));
             ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 16 * s, ty), col32(COL_DIM), when);
             if (mark_open.note[0]) {
                 ImGui::SetCursorScreenPos(ImVec2(p.x + w - bs, p.y));

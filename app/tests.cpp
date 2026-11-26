@@ -4436,6 +4436,30 @@ static void test_house_flipper_2()
 }
 
 // Bands between paired markers: to the end, else to where the game stopped being played, the next start, the cap
+// A marker's icon: its event word, a kill as its weapon's class or a headshot, an achievement's medal.
+static void test_event_icons()
+{
+    char d[256];
+    marker_detail_event(d, AM_KILL, "weapon=ak47");
+    T(!strcmp(d, "event=kill;weapon=ak47"));
+    T(evi_of_marker(d) == EVI_RIFLE);
+    marker_detail_event(d, AM_DEATH, 0);
+    T(!strcmp(d, "event=death") && evi_of_marker(d) == EVI_DEATH);
+    T(evi_of_marker("event=kill;weapon=ak47;area=head") == EVI_HEADSHOT);
+    T(evi_of_marker("event=kill") == EVI_KILL && evi_of_marker("event=multi;weapon=awp") == EVI_SNIPER);
+    T(evi_of_marker("event=kill;weapon=knife_karambit") == EVI_KNIFE);
+    T(evi_of_marker("event=kill;weapon=Steering wheel") == EVI_KILL); // a weapon of no class
+    T(evi_of_marker("event=plant") == EVI_PLANT && evi_of_marker("event=raid_start;span=raid") == EVI_RAID_START);
+    T(evi_of_marker("achievement=ACH_1;name=First") == EVI_ACHIEVEMENT);
+    T(evi_of_marker("") == EVI_NONE && evi_of_marker("event=frag") == EVI_NONE && evi_of_marker("map=Customs") == EVI_NONE);
+    T(evi_weapon_class("usp_silencer") == EVI_PISTOL && evi_weapon_class("mag7") == EVI_SHOTGUN);
+    T(evi_weapon_class("hegrenade") == EVI_GRENADE && evi_weapon_class("mp9") == EVI_SMG);
+    T(evi_weapon_class("AK-74N") == EVI_RIFLE && evi_weapon_class("Mosin rifle (infantry)") == EVI_SNIPER);
+    T(evi_weapon_class("Makarov PM") == EVI_PISTOL && evi_weapon_class("MP-133 12ga shotgun") == EVI_SHOTGUN);
+    T(evi_weapon_class("") == EVI_NONE);
+    for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++) T(EVI_OF_EVENT[i] != EVI_NONE && EVI_NAMES[EVI_OF_EVENT[i]][0]);
+}
+
 static void test_marker_spans()
 {
     const i64 T0 = 1000000000000ll, M = 60 * 1000000ll;
@@ -4686,7 +4710,7 @@ static void test_rust()
         i32 n = 0;
         while (event_take(&e)) {
             n += e.kind == EV_MARKER;
-            if (e.kind == EV_MARKER && strstr(e.text, "Marlow")) T(!strcmp(e.text, "Death\tkiller=Marlow;steam_id=76561198000000011"));
+            if (e.kind == EV_MARKER && strstr(e.text, "Marlow")) T(!strcmp(e.text, "Death\tevent=death;killer=Marlow;steam_id=76561198000000011"));
         }
         return n;
     };
@@ -6146,9 +6170,9 @@ static void test_plugins()
         i32 n = 0;
         while (n < 8 && event_take(&got[n])) n += got[n].kind == EV_MARKER;
         T(n == 4);
-        T(got[0].a == E0 && got[0].b == 4 && !strcmp(got[0].text, "Kill"));
-        T(got[1].a == E0 - 1500000 && got[1].b == 3 && !strcmp(got[1].text, "Victory"));
-        T(got[2].a == E0 && !strcmp(got[2].text, "Ana") && !strcmp(got[3].text, "mail a@b"));
+        T(got[0].a == E0 && got[0].b == 4 && !strcmp(got[0].text, "Kill\tevent=kill"));
+        T(got[1].a == E0 - 1500000 && got[1].b == 3 && !strcmp(got[1].text, "Victory\tevent=win"));
+        T(got[2].a == E0 && !strcmp(got[2].text, "Ana\tevent=kill") && !strcmp(got[3].text, "mail a@b\tevent=kill"));
 
         // Ticks: all its events until some are saved, then only those it has
         Config tc = {};
@@ -6518,6 +6542,7 @@ int main()
     test_rust();
     test_star_citizen();
     test_marker_spans();
+    test_event_icons();
     test_house_flipper_2();
     test_am_pc();
     test_achievements();

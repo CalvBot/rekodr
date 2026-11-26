@@ -107,13 +107,13 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
             marker_detail_add(d, "weapon", cls[0] ? cls : weapon);
             marker_detail_add(d, "damage", type);
             marker_detail_add(d, "zone", zone);
-            am_push(out, cap, &n, 1, killed ? "Death: suicide" : "Death", false, d);
+            am_push(out, cap, &n, AM_DEATH, 1, killed ? "Death: suicide" : "Death", false, d);
         } else if (killed && !died && (events & AM_KILL)) {
             marker_detail_add(d, "target", victim);
             marker_detail_add(d, "weapon", cls[0] ? cls : weapon);
             marker_detail_add(d, "damage", type);
             marker_detail_add(d, "zone", zone);
-            am_push(out, cap, &n, 4, "Kill", false, d);
+            am_push(out, cap, &n, AM_KILL, 4, "Kill", false, d);
         }
         return n;
     }
@@ -124,11 +124,11 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
             if (paren) *paren = 0;
             marker_detail_add(d, "cause", b);
         }
-        am_push(out, cap, &n, 2, "Downed", false, d);
+        am_push(out, cap, &n, AM_DOWNED, 2, "Downed", false, d);
         return n;
     }
     if (strstr(line, "[CSessionManager::OnClientSpawned] Spawned!")) {
-        if (events & AM_SPAWN) am_push(out, cap, &n, 3, "Spawned");
+        if (events & AM_SPAWN) am_push(out, cap, &n, AM_SPAWN, 3, "Spawned");
         return n;
     }
     if (strstr(line, "<SHUDEvent_OnNotification> Added notification \"")) {
@@ -143,16 +143,16 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
         if (title) {
             while (*title == ' ') title++;
             marker_detail_add(d, "contract", title);
-            if (events & ev) am_push(out, cap, &n, ev == AM_QUEST ? 3 : 5, note, false, d);
+            if (events & ev) am_push(out, cap, &n, ev, ev == AM_QUEST ? 3 : 5, note, false, d);
             return n;
         }
         if (!(events & AM_ZONE)) return 0;
         size_t l = strlen(text);
         static const char JUR[] = " Jurisdiction";
-        if (!strcmp(text, "Entering Armistice Zone")) am_push(out, cap, &n, 6, "Armistice zone");
-        else if (!strcmp(text, "Leaving Armistice Zone")) am_push(out, cap, &n, 6, "Left armistice zone");
+        if (!strcmp(text, "Entering Armistice Zone")) am_push(out, cap, &n, AM_ZONE, 6, "Armistice zone");
+        else if (!strcmp(text, "Leaving Armistice Zone")) am_push(out, cap, &n, AM_ZONE, 6, "Left armistice zone");
         else if (!strncmp(text, "Entered ", 8) && l > 8 + sizeof JUR - 1 && !strcmp(text + l - (sizeof JUR - 1), JUR))
-            am_push(out, cap, &n, 6, text);
+            am_push(out, cap, &n, AM_ZONE, 6, text);
         return n;
     }
     if (strstr(line, "<Quantum Navtarget>") && strstr(line, "received QT data for Entity:")) {
@@ -167,7 +167,7 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
         s->qt_at = at;
         sc_bare(b);
         marker_detail_add(d, "to", b);
-        am_push(out, cap, &n, 5, "Quantum jump", false, d);
+        am_push(out, cap, &n, AM_TRAVEL, 5, "Quantum jump", false, d);
         return n;
     }
     if (strstr(line, "<Changing Solar System>") && sc_between(line, " changing system from ", " ", a, sizeof a)) {
@@ -181,7 +181,7 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
         marker_detail_add(d, "to", b);
         char note[64];
         snprintf(note, sizeof note, "Jump to %s", b);
-        am_push(out, cap, &n, 5, note, false, d);
+        am_push(out, cap, &n, AM_TRAVEL, 5, note, false, d);
     }
     return n;
 }

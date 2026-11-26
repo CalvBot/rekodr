@@ -33,7 +33,7 @@ static i32 hf2_line(Hf2Seen *s, u32 events, const char *line, bool old, AutoMark
         snprintf(api, sizeof api, "%.*s", (int)(l - u), a);
         hf2_words(api, note, sizeof note);
         marker_detail_add(d, "achievement", api);
-        am_push(out, cap, &n, 6, note, false, d);
+        am_push(out, cap, &n, AM_ADVANCEMENT, 6, note, false, d);
         return n;
     }
     const char *p = strstr(line, PHOTOS);
@@ -56,7 +56,7 @@ static i32 hf2_line(Hf2Seen *s, u32 events, const char *line, bool old, AutoMark
     if (!(events & AM_QUEST)) return 0;
     char d[256] = "";
     marker_detail_add(d, "job", job);
-    am_push(out, cap, &n, 3, "Job done", false, d);
+    am_push(out, cap, &n, AM_QUEST, 3, "Job done", false, d);
     return n;
 }
 

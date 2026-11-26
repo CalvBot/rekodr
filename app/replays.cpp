@@ -11,15 +11,17 @@
 
 struct ReplayMark {
     i64  t_us; // when, on the wall clock
+    u32  event; // AM_KILL, AM_DEATH or AM_DOWNED
     u8   colour;
     char note[32];
 };
 
-static void replay_push(ReplayMark *out, i32 cap, i32 *n, i64 t_us, u8 colour, const char *note)
+static void replay_push(ReplayMark *out, i32 cap, i32 *n, i64 t_us, u32 event, u8 colour, const char *note)
 {
     if (*n >= cap) return;
     ReplayMark &m = out[(*n)++];
     m.t_us = t_us;
+    m.event = event;
     m.colour = colour;
     str_set(m.note, note);
 }
@@ -203,8 +205,8 @@ static i32 r6_feed(const u8 *d, size_t len, size_t from, const R6Round &r, Repla
         if (dup) continue;
         if (seen_n < COUNT(seen)) str_set(seen[seen_n].killer, killer), str_set(seen[seen_n].target, target), seen_n++;
         i64 t = r.start_us + elapsed * 1000000;
-        if (!strcmp(target, r.me)) replay_push(out, cap, &n, t, 1, "Death");
-        else if (!strcmp(killer, r.me)) replay_push(out, cap, &n, t, 4, "Kill");
+        if (!strcmp(target, r.me)) replay_push(out, cap, &n, t, AM_DEATH, 1, "Death");
+        else if (!strcmp(killer, r.me)) replay_push(out, cap, &n, t, AM_KILL, 4, "Kill");
         i = at - 1;
     }
     return n;
@@ -432,8 +434,8 @@ static i32 fn_marks(const u8 *file, size_t len, const char *owner, ReplayMark *o
             finish = elims[j].knock && !strcmp(elims[j].victim, e.victim) && e.t_ms - elims[j].t_ms <= FN_FINISH_MS;
         if (finish) continue;
         i64 t = h.start_us + e.t_ms * 1000;
-        if (hit) replay_push(out, cap, &n, t, 1, e.knock ? "Knocked" : "Death");
-        else replay_push(out, cap, &n, t, 4, e.knock ? "Knock" : "Kill");
+        if (hit) replay_push(out, cap, &n, t, e.knock ? AM_DOWNED : AM_DEATH, 1, e.knock ? "Knocked" : "Death");
+        else replay_push(out, cap, &n, t, AM_KILL, 4, e.knock ? "Knock" : "Kill");
     }
     return n;
 }
@@ -560,7 +562,9 @@ static void replays_post(i32 game, const ReplayMark *m, i32 n, u32 events)
         e.kind = EV_MARKER;
         e.a = m[i].t_us;
         e.b = m[i].colour;
-        str_set(e.text, m[i].note);
+        char d[256];
+        marker_detail_event(d, m[i].event, 0);
+        snprintf(e.text, sizeof e.text, "%s\t%s", m[i].note, d);
         event_post(e);
         log_line("markers: %s: %s, from its replay", AM_GAMES[game].name, m[i].note);
     }

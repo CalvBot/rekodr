@@ -37,6 +37,7 @@ struct EkRaid {
 
 struct EkLogMark {
     i64  t_us;
+    u32  event; // its AmEvent bit
     u8   colour;
     char note[64];
     char detail[256];
@@ -82,6 +83,7 @@ static void ek_log_read(char *text, u32 events, EftSeen *seen, EkRaid *raids, i3
             } else if (*mn < mcap) {
                 EkLogMark &m = marks[(*mn)++];
                 m.t_us = at;
+                m.event = am[i].event;
                 m.colour = am[i].colour;
                 str_set(m.note, am[i].note);
                 str_set(m.detail, am[i].detail);
@@ -769,13 +771,15 @@ static i32 ek_fill(const Marker &have, const EkLogMark &m)
     return n;
 }
 
-static void ek_post(i64 t, u8 colour, const char *note, const char *detail)
+static void ek_post(i64 t, u32 event, u8 colour, const char *note, const char *detail)
 {
     Event e = {};
     e.kind = EV_MARKER;
     e.a = t;
     e.b = colour;
-    snprintf(e.text, sizeof e.text, "%s%s%s", note, detail[0] ? "\t" : "", detail);
+    char d[256];
+    marker_detail_event(d, event, detail);
+    snprintf(e.text, sizeof e.text, "%s\t%s", note, d);
     event_post(e);
 }
 
@@ -849,7 +853,7 @@ static DWORD WINAPI ek_thread(void *arg)
         const EkLogMark &m = marks[i];
         if (m.t_us <= done.marks_us || m.t_us > now - EK_SETTLE) continue;
         if (const Marker *have = ek_marked(m.t_us, EK_SAME, m.note, 0)) keyed += ek_fill(*have, m);
-        else ek_post(m.t_us, m.colour, m.note, m.detail), put++;
+        else ek_post(m.t_us, m.event, m.colour, m.note, m.detail), put++;
         done.marks_us = m.t_us;
         changed = true;
     }
@@ -877,7 +881,7 @@ static DWORD WINAPI ek_thread(void *arg)
             marker_detail_add(detail, "faction", kills[k].faction);
             marker_detail_add(detail, "weapon", kills[k].weapon);
             i64 t = r.spawn_us + kills[k].secs * 1000000ll + 500000;
-            if (!ek_marked(t, 1500000, "Kill", detail)) ek_post(t, 4, "Kill", detail), put++;
+            if (!ek_marked(t, 1500000, "Kill", detail)) ek_post(t, AM_KILL, 4, "Kill", detail), put++;
         }
         log_line("markers: Escape from Tarkov: %d kills from the kill list of the raid that ended %lld", put, r.end_us);
         if (done.raid_count == COUNT(done.raids)) memmove(done.raids, done.raids + 1, sizeof done.raids[0] * --done.raid_count);

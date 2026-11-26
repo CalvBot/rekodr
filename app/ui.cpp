@@ -1374,6 +1374,7 @@ static ID3D11ShaderResourceView *gpu_texture(const u32 *pixels, i32 w, i32 h)
 #include "wave.cpp"
 #include "workarea.cpp"
 #include "editor.cpp"
+#include "evicons.cpp"
 #include "timeline.cpp"
 #include "options.cpp"
 #include "setup.cpp"

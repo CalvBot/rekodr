@@ -60,16 +60,18 @@ static const AmGsi AM_GSI[] = {
 // A marker to put in. `amend`: the note (and colour) of the last kill marker change instead, as when League says
 // the kill was a double kill.
 struct AutoMark {
+    u32  event; // its AmEvent bit
     u8   colour;
     bool amend;
     char note[64];
     char detail[256]; // the marker's detail (marker_detail_add), "" for none
 };
 
-static void am_push(AutoMark *out, i32 cap, i32 *n, u8 colour, const char *note, bool amend = false, const char *detail = 0)
+static void am_push(AutoMark *out, i32 cap, i32 *n, u32 event, u8 colour, const char *note, bool amend = false, const char *detail = 0)
 {
     if (*n >= cap) return;
     AutoMark &m = out[(*n)++];
+    m.event = event;
     m.colour = colour;
     m.amend = amend;
     str_set(m.note, note);
@@ -188,26 +190,26 @@ static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark
             char detail[256] = "";
             marker_detail_add(detail, "weapon", now.weapon);
             if (head) marker_detail_add(detail, "area", "head");
-            am_push(out, cap, &n, 4, multi ? am_kill_note(in_round, false) : shot ? "Headshot" : "Kill", false, detail);
+            am_push(out, cap, &n, multi ? AM_MULTI : AM_KILL, 4, multi ? am_kill_note(in_round, false) : shot ? "Headshot" : "Kill", false, detail);
         }
-        if (now.deaths > was.deaths && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
-        if (now.mvps > was.mvps && (events & AM_MVP)) am_push(out, cap, &n, 3, "MVP");
+        if (now.deaths > was.deaths && (events & AM_DEATH)) am_push(out, cap, &n, AM_DEATH, 1, "Death");
+        if (now.mvps > was.mvps && (events & AM_MVP)) am_push(out, cap, &n, AM_MVP, 3, "MVP");
         bool scored = now.score > was.score && now.kills == was.kills && now.assists == was.assists;
         if (!strcmp(now.bomb, "planted") && strcmp(was.bomb, "planted") && (events & AM_PLANT) &&
             (now.c4_gone || was.c4_gone || (scored && !strcmp(now.team, "T"))))
-            am_push(out, cap, &n, 5, "Bomb planted");
+            am_push(out, cap, &n, AM_PLANT, 5, "Bomb planted");
         if (!strcmp(now.bomb, "defused") && strcmp(was.bomb, "defused") && (events & AM_DEFUSE) && scored &&
             !strcmp(now.team, "CT") && now.health > 0)
-            am_push(out, cap, &n, 5, "Bomb defused");
+            am_push(out, cap, &n, AM_DEFUSE, 5, "Bomb defused");
         bool match_won = false;
         if (!strcmp(now.phase, "gameover") && strcmp(was.phase, "gameover") && now.team[0]) {
             i32 ct = j_int(body, len, "map.team_ct.score", 0), t = j_int(body, len, "map.team_t.score", 0);
             match_won = !strcmp(now.team, "CT") ? ct > t : t > ct;
-            if (match_won && (events & AM_WIN)) am_push(out, cap, &n, 3, "Match won");
+            if (match_won && (events & AM_WIN)) am_push(out, cap, &n, AM_WIN, 3, "Match won");
         }
         if (!(match_won && (events & AM_WIN)) && (events & AM_ROUND) && !strcmp(now.round, "over") && strcmp(was.round, "over") &&
             now.team[0] && !strcmp(win, now.team))
-            am_push(out, cap, &n, 3, "Round won");
+            am_push(out, cap, &n, AM_ROUND, 3, "Round won");
     }
     now.have = true;
     str_set(now.map, map);
@@ -246,12 +248,12 @@ static i32 dota_marks(DotaSeen *s, u32 events, const char *body, i64 len, AutoMa
 
     i32 n = 0;
     if (s->have && !strcmp(s->match, match)) {
-        if (kills > s->kills && (events & AM_KILL)) am_push(out, cap, &n, 4, "Kill");
-        if (deaths > s->deaths && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
-        if (assists > s->assists && (events & AM_ASSIST)) am_push(out, cap, &n, 2, "Assist");
+        if (kills > s->kills && (events & AM_KILL)) am_push(out, cap, &n, AM_KILL, 4, "Kill");
+        if (deaths > s->deaths && (events & AM_DEATH)) am_push(out, cap, &n, AM_DEATH, 1, "Death");
+        if (assists > s->assists && (events & AM_ASSIST)) am_push(out, cap, &n, AM_ASSIST, 2, "Assist");
         if ((events & AM_WIN) && !strcmp(state, DOTA_POST_GAME) && strcmp(s->state, DOTA_POST_GAME) && team[0] &&
             !strcmp(win, team))
-            am_push(out, cap, &n, 3, "Win");
+            am_push(out, cap, &n, AM_WIN, 3, "Win");
     }
     s->have = true;
     str_set(s->match, match);
@@ -310,22 +312,22 @@ static i32 lol_marks(LolSeen *s, u32 events, const char *body, i64 len, AutoMark
             j_get(e.p, e.len, "EventName", name, sizeof name);
             bool mine = j_get(e.p, e.len, "KillerName", who, sizeof who) && lol_is_me(who, s->me);
             if (!strcmp(name, "ChampionKill")) {
-                if (mine && (events & AM_KILL)) am_push(out, cap, &n, 4, "Kill");
+                if (mine && (events & AM_KILL)) am_push(out, cap, &n, AM_KILL, 4, "Kill");
                 if ((events & AM_DEATH) && j_get(e.p, e.len, "VictimName", who, sizeof who) && lol_is_me(who, s->me))
-                    am_push(out, cap, &n, 1, "Death");
+                    am_push(out, cap, &n, AM_DEATH, 1, "Death");
             } else if (!strcmp(name, "Multikill")) {
                 if (mine && (events & AM_MULTI)) {
                     i32 streak = j_get(e.p, e.len, "KillStreak", v, sizeof v) ? atoi(v) : 2;
-                    am_push(out, cap, &n, 4, am_kill_note(streak, true), (events & AM_KILL) != 0);
+                    am_push(out, cap, &n, AM_MULTI, 4, am_kill_note(streak, true), (events & AM_KILL) != 0);
                 }
             } else if (!strcmp(name, "GameEnd")) {
-                if ((events & AM_WIN) && j_get(e.p, e.len, "Result", v, sizeof v) && !strcmp(v, "Win")) am_push(out, cap, &n, 3, "Win");
+                if ((events & AM_WIN) && j_get(e.p, e.len, "Result", v, sizeof v) && !strcmp(v, "Win")) am_push(out, cap, &n, AM_WIN, 3, "Win");
             } else if (mine && (events & AM_OBJECTIVE)) {
                 static const char *const objectives[][2] = {{"DragonKill", "Dragon"}, {"HeraldKill", "Rift Herald"},
                                                             {"BaronKill", "Baron"}, {"TurretKilled", "Turret"},
                                                             {"InhibKilled", "Inhibitor"}};
                 for (i32 o = 0; o < COUNT(objectives); o++)
-                    if (!strcmp(name, objectives[o][0])) am_push(out, cap, &n, 5, objectives[o][1]);
+                    if (!strcmp(name, objectives[o][0])) am_push(out, cap, &n, AM_OBJECTIVE, 5, objectives[o][1]);
             }
         }
     }
@@ -423,7 +425,7 @@ static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *
             i32 k = 0;
             for (const char *p = rest + l; *p && *p != ']' && k < (i32)sizeof note - 1; p++) note[k++] = *p;
             note[k] = 0;
-            am_push(out, cap, &n, 6, note[0] ? note : "Advancement");
+            am_push(out, cap, &n, AM_ADVANCEMENT, 6, note[0] ? note : "Advancement");
         }
         return n;
     }
@@ -431,12 +433,12 @@ static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *
     char d[256], victim[64];
     if (mine) {
         mc_death_detail(d, rest);
-        if (events & AM_DEATH) am_push(out, cap, &n, 1, "Death", false, d);
+        if (events & AM_DEATH) am_push(out, cap, &n, AM_DEATH, 1, "Death", false, d);
     } else if ((events & AM_KILL) && am_word(rest, s->me)) {
         snprintf(victim, sizeof victim, "%.*s", (int)(sp - c), c);
         str_set(d, "");
         marker_detail_add(d, "target", victim);
-        am_push(out, cap, &n, 4, "Kill", false, d);
+        am_push(out, cap, &n, AM_KILL, 4, "Kill", false, d);
     }
     return n;
 }
@@ -460,13 +462,13 @@ static i32 poe_line(PoeSeen *s, u32 events, const char *line, bool old, AutoMark
         if (!old && (events & AM_LEVEL)) {
             char note[32];
             snprintf(note, sizeof note, "Level %d", atoi(lv + 15));
-            am_push(out, cap, &n, 6, note);
+            am_push(out, cap, &n, AM_LEVEL, 6, note);
         }
         return n;
     }
     size_t me = strlen(s->me);
     if (!old && me && (events & AM_DEATH) && !strncmp(t, s->me, me) && !strcmp(t + me, " has been slain."))
-        am_push(out, cap, &n, 1, "Death");
+        am_push(out, cap, &n, AM_DEATH, 1, "Death");
     return n;
 }
 
@@ -480,18 +482,18 @@ static i32 tf2_line(Tf2Seen *s, u32 events, const char *line, bool old, AutoMark
     i32 n = 0;
     bool starts = !strncmp(line, s->me, me);
     if (starts && !strcmp(line + me, " suicided.")) {
-        if (events & AM_DEATH) am_push(out, cap, &n, 1, "Death");
+        if (events & AM_DEATH) am_push(out, cap, &n, AM_DEATH, 1, "Death");
         return n;
     }
     const char *with = strstr(line, " with ");
     if (!with) return 0;
     if (starts && !strncmp(line + me, " killed ", 8)) {
-        if (events & AM_KILL) am_push(out, cap, &n, 4, "Kill");
+        if (events & AM_KILL) am_push(out, cap, &n, AM_KILL, 4, "Kill");
         return n;
     }
     const char *k = strstr(line, " killed ");
     if (k && k < with && (size_t)(with - (k + 8)) == me && !strncmp(k + 8, s->me, me) && (events & AM_DEATH))
-        am_push(out, cap, &n, 1, "Death");
+        am_push(out, cap, &n, AM_DEATH, 1, "Death");
     return n;
 }
 
@@ -526,7 +528,7 @@ static i32 hs_line(HsSeen *s, u32 events, const char *line, bool old, AutoMark *
         const char *v = t && me && !strncmp(t + 18, s->me, me) ? t + 18 + me : 0;
         if (v && !strncmp(v, " tag=PLAYSTATE value=WON", 24) && (u8)v[24] <= ' ' && !s->won_said) {
             s->won_said = true;
-            if (!old && (events & AM_WIN)) am_push(out, cap, &n, 3, "Win");
+            if (!old && (events & AM_WIN)) am_push(out, cap, &n, AM_WIN, 3, "Win");
         }
     }
     return n;
@@ -613,11 +615,11 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
     auto end = [&]() {
         if (!s->in_raid) return;
         s->in_raid = false;
-        if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, s->scav ? EFT_SCAV : EFT_PMC, "Raid end", false, "span_end=raid");
+        if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, AM_RAID_END, s->scav ? EFT_SCAV : EFT_PMC, "Raid end", false, "span_end=raid");
     };
     if (const char *g = strstr(line, "Got notification | ")) {
         g += 19;
-        if (!strncmp(g, "GroupMatchInviteAccept", 22) && !old && (events & AM_GROUP)) am_push(out, cap, &n, 6, "Group joined");
+        if (!strncmp(g, "GroupMatchInviteAccept", 22) && !old && (events & AM_GROUP)) am_push(out, cap, &n, AM_GROUP, 6, "Group joined");
         if (!strncmp(g, "UserMatchOver", 13)) end();
         return n;
     }
@@ -665,7 +667,7 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
             marker_detail_add(detail, "time left", left);
             if (known) marker_detail_add(detail, "side", s->scav ? "Scav" : "PMC");
             marker_detail_add(detail, "span", "raid");
-            am_push(out, cap, &n, s->scav ? EFT_SCAV : EFT_PMC, note, false, detail);
+            am_push(out, cap, &n, AM_RAID_START, s->scav ? EFT_SCAV : EFT_PMC, note, false, detail);
         }
         s->minutes = 0;
         s->after = !known; // the side is told after the raid
@@ -675,10 +677,10 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
     } else if (strstr(line, "FinishScavSession") || strstr(line, "/client/game/profile/savage/regenerate")) {
         if (s->after) {
             s->after = false;
-            if (!old && (events & (AM_RAID_START | AM_RAID_END))) am_push(out, cap, &n, EFT_SCAV, "", true, "side=Scav");
+            if (!old && (events & (AM_RAID_START | AM_RAID_END))) am_push(out, cap, &n, AM_RAID_START, EFT_SCAV, "", true, "side=Scav");
         }
     } else if (strstr(line, "|<--- Response HTTPS, id [") && strstr(line, "/client/quest/complete")) {
-        if (!old && (events & AM_QUEST)) am_push(out, cap, &n, 3, "Quest done");
+        if (!old && (events & AM_QUEST)) am_push(out, cap, &n, AM_QUEST, 3, "Quest done");
     }
     return n;
 }
@@ -718,12 +720,12 @@ static i32 wt_damage(WtSeen *s, u32 events, const char *msg, AutoMark *out, i32 
         if (strncmp(rest, k, kl)) continue;
         const char *them = rest + kl, *t_open = strstr(them, " (");
         bool me_hit = wt_is(them, t_open ? (size_t)(t_open - them) : strlen(them), s->me);
-        if (mine && !me_hit && (events & AM_KILL)) am_push(out, cap, &n, 4, "Kill");
-        else if (me_hit && !mine && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
+        if (mine && !me_hit && (events & AM_KILL)) am_push(out, cap, &n, AM_KILL, 4, "Kill");
+        else if (me_hit && !mine && (events & AM_DEATH)) am_push(out, cap, &n, AM_DEATH, 1, "Death");
         return n;
     }
     if (mine && (!strcmp(rest, "has crashed.") || !strcmp(rest, "has been wrecked.")) && (events & AM_DEATH))
-        am_push(out, cap, &n, 1, "Death");
+        am_push(out, cap, &n, AM_DEATH, 1, "Death");
     return n;
 }
 
@@ -770,7 +772,7 @@ static i32 wt_mission(WtSeen *s, u32 events, const char *body, i64 len, AutoMark
     if (!strcmp(st, "running")) s->running = true;
     else if (s->running && (!strcmp(st, "success") || !strcmp(st, "fail"))) {
         s->running = false, s->last = -1, s->have = false; // the next battle's log starts afresh
-        if (events & AM_WIN) am_push(out, cap, &n, st[0] == 's' ? 3 : 1, st[0] == 's' ? "Mission won" : "Mission lost");
+        if (events & AM_WIN) am_push(out, cap, &n, AM_WIN, st[0] == 's' ? 3 : 1, st[0] == 's' ? "Mission won" : "Mission lost");
     }
     return n;
 }
@@ -804,14 +806,14 @@ static i32 f1_packet(u32 events, const u8 *p, i32 len, AutoMark *out, i32 cap)
     const char *code = (const char *)p + 29;
     const u8 *d = p + 33;
     i32 n = 0;
-    if (!memcmp(code, "FTLP", 4) && d[0] == me && (events & AM_LAP)) am_push(out, cap, &n, 6, "Fastest lap");
-    else if (!memcmp(code, "OVTK", 4) && d[0] == me && (events & AM_OVERTAKE)) am_push(out, cap, &n, 4, "Overtake");
-    else if (!memcmp(code, "COLL", 4) && (d[0] == me || d[1] == me) && (events & AM_INCIDENT)) am_push(out, cap, &n, 1, "Contact");
+    if (!memcmp(code, "FTLP", 4) && d[0] == me && (events & AM_LAP)) am_push(out, cap, &n, AM_LAP, 6, "Fastest lap");
+    else if (!memcmp(code, "OVTK", 4) && d[0] == me && (events & AM_OVERTAKE)) am_push(out, cap, &n, AM_OVERTAKE, 4, "Overtake");
+    else if (!memcmp(code, "COLL", 4) && (d[0] == me || d[1] == me) && (events & AM_INCIDENT)) am_push(out, cap, &n, AM_INCIDENT, 1, "Contact");
     else if (!memcmp(code, "PENA", 4) && d[2] == me && (events & AM_INCIDENT)) {
         static const u8 marked[] = {0, 1, 2, 4, 6};
         for (u8 t : marked)
-            if (d[0] == t) am_push(out, cap, &n, 2, "Penalty");
-    } else if (!memcmp(code, "RCWN", 4) && d[0] == me && (events & AM_WIN)) am_push(out, cap, &n, 3, "Race won");
+            if (d[0] == t) am_push(out, cap, &n, AM_INCIDENT, 2, "Penalty");
+    } else if (!memcmp(code, "RCWN", 4) && d[0] == me && (events & AM_WIN)) am_push(out, cap, &n, AM_WIN, 3, "Race won");
     return n;
 }
 
@@ -894,15 +896,15 @@ static i32 ir_marks(IrSeen *s, u32 events, const u8 *m, i64 size, AutoMark *out,
         if (inc > s->incidents && (events & AM_INCIDENT)) {
             char note[32];
             snprintf(note, sizeof note, "Incident %dx", inc - s->incidents);
-            am_push(out, cap, &n, 1, note);
+            am_push(out, cap, &n, AM_INCIDENT, 1, note);
         }
-        if (best > 0 && s->best > 0 && best < s->best - 0.0005f && (events & AM_LAP)) am_push(out, cap, &n, 6, "Best lap");
+        if (best > 0 && s->best > 0 && best < s->best - 0.0005f && (events & AM_LAP)) am_push(out, cap, &n, AM_LAP, 6, "Best lap");
         if (state >= 5 && pos == 1 && !s->won_said) {
             char type[32];
             ir_session_type(m, size, session, type, sizeof type);
             if (!strcmp(type, "Race")) {
                 s->won_said = true;
-                if (events & AM_WIN) am_push(out, cap, &n, 3, "Race won");
+                if (events & AM_WIN) am_push(out, cap, &n, AM_WIN, 3, "Race won");
             }
         }
     }
@@ -930,11 +932,11 @@ static i32 acc_marks(AccSeen *s, u32 events, const u8 *m, i64 size, AutoMark *ou
     if (!s->have || session != s->session || laps < s->laps) {
         *s = {};
     } else {
-        if (timed && s->best && best < s->best && (events & AM_LAP)) am_push(out, cap, &n, 6, "Best lap");
+        if (timed && s->best && best < s->best && (events & AM_LAP)) am_push(out, cap, &n, AM_LAP, 6, "Best lap");
         if (session == 2 && s->position > 0 && pos > 0 && pos < s->position && (events & AM_OVERTAKE)) {
             char note[32];
             snprintf(note, sizeof note, "Up to P%d", pos);
-            am_push(out, cap, &n, 4, note);
+            am_push(out, cap, &n, AM_OVERTAKE, 4, note);
         }
     }
     s->have = true;
@@ -989,14 +991,14 @@ static i32 rl_message(RlSeen *s, u32 events, const char *msg, i64 len, AutoMark 
         get("SecondaryTarget.Name", second, sizeof second);
         bool mine = !strcmp(main, s->me);
         if (!strcmp(what, "Demolish")) {
-            if (mine && (events & AM_KILL)) am_push(out, cap, &n, 4, "Demolition");
-            else if (!strcmp(second, s->me) && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Demolished");
-        } else if (mine && strstr(what, "Goal") && (events & AM_GOAL)) am_push(out, cap, &n, 4, label[0] ? label : "Goal");
-        else if (mine && strstr(what, "Save") && (events & AM_SAVE)) am_push(out, cap, &n, 5, label[0] ? label : "Save");
-        else if (mine && !strcmp(what, "Assist") && (events & AM_ASSIST)) am_push(out, cap, &n, 5, "Assist");
+            if (mine && (events & AM_KILL)) am_push(out, cap, &n, AM_KILL, 4, "Demolition");
+            else if (!strcmp(second, s->me) && (events & AM_DEATH)) am_push(out, cap, &n, AM_DEATH, 1, "Demolished");
+        } else if (mine && strstr(what, "Goal") && (events & AM_GOAL)) am_push(out, cap, &n, AM_GOAL, 4, label[0] ? label : "Goal");
+        else if (mine && strstr(what, "Save") && (events & AM_SAVE)) am_push(out, cap, &n, AM_SAVE, 5, label[0] ? label : "Save");
+        else if (mine && !strcmp(what, "Assist") && (events & AM_ASSIST)) am_push(out, cap, &n, AM_ASSIST, 5, "Assist");
     } else if (!strcmp(ev, "MatchEnded")) {
         if (s->me[0] && s->team >= 0 && get("WinnerTeamNum", v, sizeof v) && atoi(v) == s->team && (events & AM_WIN))
-            am_push(out, cap, &n, 3, "Win");
+            am_push(out, cap, &n, AM_WIN, 3, "Win");
         s->me[0] = 0;
     } else if (!strcmp(ev, "MatchDestroyed")) {
         s->me[0] = 0;
@@ -1688,7 +1690,9 @@ static void am_put(const AutoMark *marks, i32 n, i32 game)
             }
         } else if (m.amend && *last_kill) markers_set(*last_kill, m.colour, m.note);
         else if (!m.amend) {
-            i64 t = markers_add(now_us(), m.colour, m.note, m.detail);
+            char d[256];
+            marker_detail_event(d, m.event, m.detail);
+            i64 t = markers_add(now_us(), m.colour, m.note, d);
             if (m.colour == 4) *last_kill = t;
             if (marker_detail_get(m.detail, "span", v, sizeof v)) g_am.last_start[game] = t;
             if (marker_detail_get(m.detail, "span_end", v, sizeof v)) g_am.last_end[game] = t;

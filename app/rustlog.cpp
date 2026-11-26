@@ -644,7 +644,9 @@ static void rust_post(const RustMark &m)
     i32 bit = 0;
     while (bit < 31 && !(m.event & (1u << bit))) bit++;
     e.b = AM_EVENT_COLOURS[bit];
-    snprintf(e.text, sizeof e.text, "%s%s%s", m.note, m.detail[0] ? "\t" : "", m.detail);
+    char d[256];
+    marker_detail_event(d, m.event, m.detail);
+    snprintf(e.text, sizeof e.text, "%s\t%s", m.note, d);
     event_post(e);
 }
 

@@ -65,6 +65,15 @@ static void marker_detail_add(char (&d)[256], const char *key, const char *value
     if (have + n < sizeof d) memcpy(d + have, one, (size_t)n + 1);
 }
 
+// `detail` with event=<word> in front: the AmEvent that made the marker, which the timeline draws as its icon.
+static void marker_detail_event(char (&d)[256], u32 event, const char *detail)
+{
+    d[0] = 0;
+    for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++)
+        if (event == 1u << i) marker_detail_add(d, "event", AM_EVENT_WORDS[i]);
+    if (detail && detail[0]) snprintf(d + strlen(d), sizeof d - strlen(d), "%s%s", d[0] ? ";" : "", detail);
+}
+
 // The next pair of a detail from *at, its value decoded; false at the end.
 static bool marker_detail_next(const char **at, char *key, i32 key_cap, char *value, i32 value_cap)
 {
