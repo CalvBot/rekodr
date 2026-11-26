@@ -86,3 +86,7 @@ while (($line = $r.ReadLine()) -ne $null) {
 }
 $pipe.Dispose()
 ```
+
+More small examples are in [examples](examples): saving a clip, adding a marker and showing the window as .bat
+files, and this one as [save-and-wait.ps1](examples/save-and-wait.ps1). The .bat files call Rekodr where the
+installer puts it, `%LOCALAPPDATA%\Programs\Rekodr\rekodr.exe`.
