@@ -213,8 +213,9 @@ controller glyph, and no art is looked up for it or vote sent. Enter picks the r
 - **Which game:** every 2 s, the game being played is the game whose window is in front. Failing that, it's the last
   one played if it's still running, then any running game, then the desktop. Changes are logged to
   `buffer\activity.tsv`. This log drives file names, tags, sessions and per-game bitrate.
-- **Buffer length:** the buffer keeps the last 24 hours (setting). Nobody needs an automatic session longer than
-  that, and longer ones can still be recorded by hand (see Sessions). Footage older than that is deleted. A
+- **Buffer length:** the buffer keeps the last 24 hours (setting). Footage older than that is deleted, so a
+  session longer than the buffer keeps only what is still in it; its real start and end can be set by hand (see
+  Sessions). A
   disk-space floor (setting, default 50 GB free) deletes the oldest footage early rather than fill the drive. 24 h
   at 20 Mbps is about 216 GB.
 - **Track layout in every saved file:**
@@ -301,14 +302,14 @@ One window with a header (status, pause, Help, Options):
 - **Sessions *Not saved* list:** sessions still in the buffer, with Save and how long until each is gone.
 - **Timeline:** the buffer, a range selection, Save, Share and Edit.
 - **Editor:** trim, zoom keyframes, track volumes, Keep and Share; *Recent shares*.
-- **Options:**
-  - apps and their categories (new apps first; right-click opens the file location)
-  - hotkeys
-  - recording (monitor, fps, codec, encoder, bitrate, per-game bitrate, advanced, showing only what the encoder in
-    use supports)
-  - sessions (gap, minimum length, per-game ask/always/never)
-  - storage (buffer folder, buffer length and disk-space floor, save folder, share retention)
-  - start with Windows
+- **Options**, in six tabs:
+  - Apps: apps and their categories (new apps first; right-click opens the file location) and folder rules
+  - Recording: video, bitrate, encoder (showing only what the encoder in use supports), buffer, audio and webcam
+  - Hotkeys
+  - Integrations: sharing, the link card, Stream Deck, video editors and other programs on the pipe
+  - Auto markers: games' own event feeds and rare Steam achievements
+  - General: look, popups, sounds, sessions, folders, audio previews, privacy, games, backup, startup,
+    developer, feedback and about
 - **Help (F1):** every shortcut and command. This is the only place shortcuts are explained.
 
 **UI rules:**
@@ -328,15 +329,22 @@ One window with a header (status, pause, Help, Options):
 - **Style:** plain structs that are valid when zeroed (ZII), and functions that operate on them. No class
   hierarchies or RAII wrappers. Data-oriented: fixed arrays where the maximum is known.
 - **Dependencies:** the Windows SDK (D3D11, DXGI, Media Foundation, WASAPI, Shell) and Dear ImGui (vendored
-  source). ffmpeg and ffprobe are found on the PATH or set in settings.
+  source). ffmpeg and ffprobe are found on the PATH or set in settings; with no ffmpeg 7 or later, Rekodr
+  downloads a pinned build (FFmpeg 8.1.1, GPL) from GitHub on first start.
 - **Games database** (`gamedb.cpp`): which exe is which game, its proper name, its icon and cover. Nothing is
   shipped; Rekodr fetches Discord's public list of detectable games (about 25,000, with each game's exe names,
   the folders they sit in, and the command line that tells apart an exe several games share, such as `javaw.exe`)
   and keeps it under `%LOCALAPPDATA%\Rekodr\gamedb`, fetching it again after a week. Icons come from Discord's
   image server and covers from Steam's, each the first time something shows it. A known game is named properly and,
   if it hasn't been sorted, becomes a Game. An app the list can't place is named by hand: naming an app in
-  Options searches the list as you type. These are the only web requests Rekodr makes, and Options > General
-  turns them off.
+  Options searches the list as you type.
+- **Web requests:** Options > General > Look up games online turns off the game list, icons and covers above,
+  along with Rekodr's own service ([rekodr-api](https://github.com/CalvBot/rekodr-api)), which names games the
+  list can't and hands out art from SteamGridDB and IGDB, the daily usage counts and feedback; the service and
+  the counts also have their own switches. With the player's own SteamGridDB key, art comes from SteamGridDB
+  directly. Apart from those, Rekodr fetches new versions from its GitHub releases (Update by itself), ffmpeg
+  from GitHub when none is found, how rare a Steam achievement is from Steam's public API (Auto markers), and
+  uploads to the player's own R2 bucket or uploaders when a clip is shared as a link.
 - **lifelog:** no code link. Shared data (the game list, app categories, and lifelog's view of what's playing if
   wanted) goes through plain files that both read. Rekodr has its own small process watcher, icon extraction and
   clipboard code.
