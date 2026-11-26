@@ -4494,7 +4494,7 @@ static void test_marker_spans()
     T(!tl_marker_span(start, after, 2, act, 3, T0 + 100 * M, &z));
 }
 
-// Star Citizen's Game.log: lines in the shapes public trackers read, with neutral names
+// Star Citizen's Game.log: lines from a real log and in the shapes public trackers read, with neutral names
 static void test_star_citizen()
 {
     u32 ev = AM_GAMES[AMG_STAR_CITIZEN].events;
@@ -4529,8 +4529,19 @@ static void test_star_citizen()
     T(sc_line(&s, ev, "<2026-11-27T10:08:00.000Z> Logged an incap.! nickname: Pilot-1_A, causes: [Bleed (0.350000 damage)]", false, m, 8) == 1 &&
       !strcmp(m[0].note, "Downed") && !strcmp(m[0].detail, "cause=Bleed"));
     T(sc_line(&s, ev, "<2026-11-27T10:08:00.000Z> Logged an incap.! nickname: Pilot-2_B, causes: [Bleed (0.350000 damage)]", false, m, 8) == 0);
-    T(sc_line(&s, ev, "<2026-11-27T10:09:00.000Z> [Notice] <CSessionManager::OnClientSpawned> [CSessionManager::OnClientSpawned] Spawned!", false, m, 8) == 1 &&
-      !strcmp(m[0].note, "Spawned"));
+    // The menu's spawn is none; the universe's after Join PU is, until the game goes back to the menu
+    const char *spawned = "<2026-11-14T14:38:46.099Z> [CSessionManager::OnClientSpawned] Spawned!";
+    T(sc_line(&s, ev, spawned, false, m, 8) == 0);
+    T(sc_line(&s, ev, "<2026-11-14T14:41:56.901Z> [Notice] <Join PU> address[34.151.75.230] port[64344] shard[pub_apse2a_13165946_020] "
+                      "locationId[-281470681677823] [Team_GameServices][GIM][Matchmaking]", false, m, 8) == 0);
+    T(sc_line(&s, ev, spawned, false, m, 8) == 1 && !strcmp(m[0].note, "Spawned"));
+    T(sc_line(&s, ev, "<2026-11-14T15:00:00.000Z> [CSessionManager::RequestFrontEnd] Started - RequestFrontEndReason=\"x\"!", false, m, 8) == 0);
+    T(sc_line(&s, ev, spawned, false, m, 8) == 0);
+    T(sc_line(&s, ev, "<2026-11-14T15:01:00.000Z> [Notice] <Join PU> address[1.2.3.4] port[1] shard[x]", true, m, 8) == 0); // read before
+    T(sc_line(&s, ev, spawned, false, m, 8) == 1);
+    T(sc_line(&s, ev, "<2026-11-14T14:43:20.728Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Entered Hurston Dynamics "
+                      "Jurisdiction: \" [0] to queue. New queue size: 1, MissionId: [00000000-0000-0000-0000-000000000000], ObjectiveId: [] "
+                      "[Team_CoreGameplayFeatures][Missions][Comms]", false, m, 8) == 1 && !strcmp(m[0].note, "Entered Hurston Dynamics Jurisdiction"));
     // HUD notifications: contracts with their titles, zones
     T(sc_line(&s, ev, "<2026-11-27T10:10:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Contract Accepted:  Standard | "
                       "<EM3>DIRECT</EM3> Small Haul | Rappel > Jackson's Swap <EM4>[JS]*</EM4>: \" [16] to queue. New queue size: 8, MissionId: [x]",

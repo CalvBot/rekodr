@@ -9,7 +9,9 @@
 //            in: the player as killer is a kill, as victim a death. The other side, weapon, damage type and zone go
 //            in the marker's detail, which stays on this PC.
 //   Downed   "Logged an incap.! nickname: <name>, causes: [<cause> (<n> damage), ...]".
-//   Spawns   "[CSessionManager::OnClientSpawned] Spawned!": into the game, and again after each death.
+//   Spawns   "[CSessionManager::OnClientSpawned] Spawned!" in the universe: after "<Join PU> address[...]" and until
+//            "[CSessionManager::RequestFrontEnd] Started" back to the menu, whose own spawn is no marker. Once on
+//            joining, and again after each death.
 //   HUD      "<SHUDEvent_OnNotification> Added notification "<text>: " [n] to queue. ...": "Contract Accepted:
 //            <title>" and "Contract Complete: <title>" (contracts); "Entering Armistice Zone", "Leaving Armistice
 //            Zone" and "Entered <name> Jurisdiction" (zones).
@@ -20,6 +22,7 @@ struct ScSeen {
     char me[64];          // the player's handle
     char qt_to[64];       // the last quantum jump's target
     i64  qt_at;           // and when (the line's time, seconds)
+    bool in_pu;           // in the universe, not the menu
 };
 
 static const i64 SC_QT_AGAIN = 60; // the same target named again this soon is the same jump
@@ -88,6 +91,8 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
         return 0;
     }
     if (!s->me[0] && sc_between(line, "Local client user ", "[", a, sizeof a) && a[0]) str_set(s->me, a);
+    if (strstr(line, "<Join PU> address[")) s->in_pu = true;
+    if (strstr(line, "[CSessionManager::RequestFrontEnd] Started")) s->in_pu = false;
     if (old) return 0;
     i32 n = 0;
     char d[256] = "";
@@ -128,7 +133,7 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
         return n;
     }
     if (strstr(line, "[CSessionManager::OnClientSpawned] Spawned!")) {
-        if (events & AM_SPAWN) am_push(out, cap, &n, AM_SPAWN, 3, "Spawned");
+        if (s->in_pu && (events & AM_SPAWN)) am_push(out, cap, &n, AM_SPAWN, 3, "Spawned");
         return n;
     }
     if (strstr(line, "<SHUDEvent_OnNotification> Added notification \"")) {
