@@ -36,6 +36,7 @@
 static const i64 AUDIO_LINGER_US = 30000000; // a stream closes once its app has been quiet this long
 static const i64 AUDIO_GAP_US    = 20000;    // pad gaps longer than this with silence...
 static const i64 AUDIO_LATE_US   = 40000;    // ...and trim audio arriving later than this, keeping the stream on time
+static const i64 AUDIO_STALL_US  = 10000000; // the front window not looked at for this long: the PC slept or Rekodr stalled
 
 enum AudioEventKind : u8 {
     AE_NONE,
@@ -789,6 +790,8 @@ struct AudioWatch {
     Str64         focus;         // the program in front, as last written to focus.tsv
     Path          focus_file;
     i32           front_layer;   // the Front window layer's id + 1, 0 until registered
+    LONG          front_closed;  // layers_closed() when the Front window line was last held
+    i64           looked_us;     // when the front window was last looked at
     HWND          window;        // the game window being recorded, 0 = the monitor
     Str64         window_exe;    // whose it is
     char          window_path[MAX_PATH];
@@ -1101,6 +1104,12 @@ static void audio_tick_activity()
     char front_path[MAX_PATH] = "";
     if (fg_pid) proc_image_path(fg_pid, front_path, sizeof front_path);
 
+    // Not looked for a while (the PC slept, or Rekodr stalled): what was held ends where it was last seen
+    i64 now = now_us();
+    if (g_aw.looked_us && now - g_aw.looked_us > AUDIO_STALL_US) layers_close_held(g_aw.looked_us);
+    g_aw.looked_us = now;
+    layers_seen(now);
+
     // focus.tsv: a line when the program in front changes (and a fresh one on start, or when the buffer moves)
     {
         Str64 focus = {};
@@ -1108,7 +1117,8 @@ static void audio_tick_activity()
         str_set(focus.s, name ? name + 1 : front_path);
         for (char *p = focus.s; *p; p++) *p = (char)tolower((u8)*p);
         Path file = path_join(cfg.buffer_dir, L"focus.tsv");
-        if (!str_eq(focus.s, g_aw.focus.s) || wcscmp(file.s, g_aw.focus_file.s)) {
+        bool closed = layers_closed() != g_aw.front_closed; // its line was ended: hold it afresh
+        if (!str_eq(focus.s, g_aw.focus.s) || wcscmp(file.s, g_aw.focus_file.s) || closed) {
             SHCreateDirectoryExW(0, cfg.buffer_dir.s, 0);
             buffer_log_append(file, focus.s);
             g_aw.focus = focus;
@@ -1119,7 +1129,8 @@ static void audio_tick_activity()
                 if (!g_aw.front_layer) g_aw.front_layer = layer_register("Front window", LAYER_SPANS, 0, 0, 0, 0) + 1;
                 char label[64] = "";
                 if (focus.s[0] && fg_pid != GetCurrentProcessId()) audio_display_name(cfg, focus.s, label, sizeof label);
-                layer_hold(g_aw.front_layer - 1, now_us(), label);
+                g_aw.front_closed = layers_closed();
+                layer_hold(g_aw.front_layer - 1, now, label);
             }
         }
     }

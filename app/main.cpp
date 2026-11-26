@@ -329,6 +329,15 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// Sleep and the end of the Windows session are told only to top-level windows: a hidden one of its own hears them,
+// and the layers' held lines (the program in front) end then, not where Rekodr next starts.
+static LRESULT power_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if ((msg == WM_POWERBROADCAST && wp == PBT_APMSUSPEND) || msg == WM_QUERYENDSESSION || (msg == WM_ENDSESSION && wp))
+        layers_close_held(now_us());
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Crashes: a log line, a minidump, the stack, and then Rekodr starts itself again. (Windows' own restart,
 // RegisterApplicationRestart, only acts on crashes that reach Windows Error Reporting; this handler ends the
@@ -512,6 +521,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     RegisterClassExW(&wc);
     g_app.msg_hwnd = CreateWindowExW(0, MSG_CLASS, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, 0, inst, 0);
     CHECK(g_app.msg_hwnd, "the message window couldn't be created (%d)", (int)GetLastError());
+    WNDCLASSEXW pc = {sizeof pc};
+    pc.lpfnWndProc = diag_wndproc<power_wndproc_body>;
+    pc.hInstance = inst;
+    pc.lpszClassName = L"rekodr.power";
+    RegisterClassExW(&pc);
+    if (!CreateWindowExW(WS_EX_TOOLWINDOW, pc.lpszClassName, L"", WS_POPUP, 0, 0, 0, 0, 0, 0, inst, 0))
+        log_line("the power window couldn't be created (%d); sleep and shutdown aren't heard", (int)GetLastError());
 
     if (!ui_init()) log_line("the window couldn't be created; Rekodr keeps recording without it");
     tray_init(g_app.msg_hwnd);
@@ -581,6 +597,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     backup_stop();
     telemetry_stop();
     audio_stop();
+    layers_close_held(now_us());
     recorder_stop();
     save_stop();
     tray_remove(g_app.msg_hwnd);

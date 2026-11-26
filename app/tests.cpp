@@ -5746,6 +5746,55 @@ static void test_layers()
     w->cfg.save_dir = keep_save, g_app.config.save_dir = keep_lib;
 }
 
+// A held line (the program in front) never runs across a time Rekodr wasn't watching: it ends where Rekodr was last
+// seen, when held lines are closed (sleep, session end, quitting), and on the next start if Rekodr stopped unseen.
+static void test_layers_held()
+{
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    Path dir = {};
+    swprintf(dir.s, MAX_PATH, L"%srekodr-test-held-%u", tmp, GetCurrentProcessId());
+    auto fresh_store = [&]() {
+        for (i32 k = 0; k < g_layers.set.count; k++) layer_free_samples(&g_layers.set.layers[k]);
+        g_layers = {};
+        g_layers.dir = dir;
+    };
+    fresh_store();
+    const i64 T0 = 1000000000000ll, S = 1000000;
+    i32 front = layer_register("test front", LAYER_SPANS, 0, 0, 0, 0), heart = layer_register("test bpm", LAYER_VALUE, 0, 0, 0, 0);
+    T(layer_hold(front, T0, "Terminal") && layer_value(heart, T0, 70));
+    layers_seen(T0 + 30 * S);
+    // Rekodr stopped without a word: the next start ends the line where it was last seen
+    fresh_store();
+    front = layer_register("test front", LAYER_SPANS, 0, 0, 0, 0), heart = layer_register("test bpm", LAYER_VALUE, 0, 0, 0, 0);
+    const Layer *l = &g_layers.set.layers[front];
+    T(l->count == 1 && l->s[0].end_us == T0 + 30 * S && g_layers.set.layers[heart].s[0].end_us == 0);
+    // A line held this run, then sleep: it ends then, and the source is told to hold it afresh
+    T(layer_hold(front, T0 + 3600 * S, "Terminal"));
+    LONG closed = layers_closed();
+    layers_close_held(T0 + 3700 * S);
+    T(l->s[1].end_us == T0 + 3700 * S && layers_closed() != closed);
+    closed = layers_closed();
+    layers_close_held(T0 + 3800 * S); // nothing held: nothing changes
+    T(l->s[1].end_us == T0 + 3700 * S && layers_closed() == closed);
+    // Seen before the line began (the clock moved): it ends where it began
+    T(layer_hold(front, T0 + 4000 * S, "Browser"));
+    layers_seen(T0 + 3900 * S);
+    fresh_store();
+    front = layer_register("test front", LAYER_SPANS, 0, 0, 0, 0);
+    l = &g_layers.set.layers[front];
+    T(l->count == 3 && l->s[1].end_us == T0 + 3700 * S && l->s[2].end_us == T0 + 4000 * S);
+    // Read once more: the ends were written, and a line that ended stays as it is
+    layers_seen(T0 + 9000 * S);
+    fresh_store();
+    front = layer_register("test front", LAYER_SPANS, 0, 0, 0, 0);
+    l = &g_layers.set.layers[front];
+    T(l->count == 3 && l->s[0].end_us == T0 + 30 * S && l->s[2].end_us == T0 + 4000 * S);
+    fresh_store();
+    g_layers.dir = {};
+    test_remove_dir(dir);
+}
+
 // Plugins: plugin.txt read and refused, and the lines a plugin sends kept or dropped
 static void test_plugins()
 {
@@ -6185,6 +6234,7 @@ int main()
     test_edit_advanced();
     test_cam_layer();
     test_layers();
+    test_layers_held();
     test_r6_replay();
     test_fn_replay();
     test_busy();

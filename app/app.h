@@ -629,6 +629,9 @@ struct LayerSet { // owns its samples: layer_set_free
 static void layers_prune(i64 before_us); // drops what is older than the buffer; main thread
 static i32  layer_register(const char *name, LayerKind kind, const char *label, const char *unit, f64 lo, f64 hi);
 static bool layer_hold(i32 id, i64 t_us, const char *text); // a Text or Spans line until the next one
+static void layers_seen(i64 at);       // the sources are watching at `at`; held lines end there if Rekodr stops
+static void layers_close_held(i64 at); // ends every held line at `at` (sleep, session end, quitting, a stall)
+static LONG layers_closed();           // changes each time held lines are ended: hold a fresh one
 
 // An edit never changes the original: it's this small record, kept in Data\<video name>.edit.txt.
 // A Simple edit is the pieces, keys and volumes; an Advanced one is the items and their keys, with muted[] per audio

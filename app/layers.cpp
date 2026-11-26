@@ -212,6 +212,35 @@ static void layer_load_file(LayerStore *ls, const Path &file)
     fclose(f);
 }
 
+// Ends each layer's held Text or Spans line at `at` (its own start if that is later) and rewrites the layers that
+// changed. Only a layer's last line can be held. Called with the lock held.
+static bool layers_close_held_locked(LayerStore *ls, i64 at)
+{
+    bool any = false;
+    for (i32 k = 0; k < ls->set.count; k++) {
+        Layer &l = ls->set.layers[k];
+        if (!layer_has_lines(l.kind) || !l.count || l.s[l.count - 1].end_us) continue;
+        LayerSample &s = l.s[l.count - 1];
+        s.end_us = at > s.t_us ? at : s.t_us;
+        layer_write_locked(ls, l);
+        any = true;
+    }
+    return any;
+}
+
+// The last time the sources were seen watching (layers_seen), from <dir>\seen.txt; 0 when there's none.
+static i64 layers_seen_read(const LayerStore *ls)
+{
+    FILE *f = _wfopen(path_join(ls->dir, L"seen.txt").s, L"rb");
+    if (!f) return 0;
+    long long t = 0;
+    if (fscanf(f, "%lld", &t) != 1) t = 0;
+    fclose(f);
+    return t;
+}
+
+// A line still held when the files were last written was held by a Rekodr that has stopped: it ends where that
+// Rekodr was last seen watching, never at this run's first line.
 static void layers_load_locked(LayerStore *ls)
 {
     if (ls->loaded) return;
@@ -224,6 +253,7 @@ static void layers_load_locked(LayerStore *ls)
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) layer_load_file(ls, path_join(ls->dir, fd.cFileName));
     } while (FindNextFileW(h, &fd));
     FindClose(h);
+    layers_close_held_locked(ls, layers_seen_read(ls));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -308,6 +338,38 @@ static bool layer_input(i32 id, i64 t_us, u32 code, bool down)
     s.t_us = t_us, s.code = code, s.value = down ? 1 : 0;
     return layer_push(id, s);
 }
+
+// The sources are watching at `at`: kept in <dir>\seen.txt, where a line held when Rekodr stops ends. The audio
+// watcher calls it each time it looks at the front window.
+static void layers_seen(i64 at)
+{
+    LayerStore *ls = &g_layers;
+    AcquireSRWLockExclusive(&ls->lock);
+    layers_load_locked(ls);
+    SHCreateDirectoryExW(0, ls->dir.s, 0);
+    FILE *f = _wfopen(path_join(ls->dir, L"seen.txt").s, L"wb");
+    if (f) {
+        fprintf(f, "%lld\n", (long long)at);
+        fclose(f);
+    }
+    ReleaseSRWLockExclusive(&ls->lock);
+}
+
+// Ends every held line at `at`: Windows is going to sleep or ending the session, Rekodr is quitting, or the watcher
+// found it hadn't run since `at`. A source whose line was ended holds a fresh one when it next looks
+// (layers_closed tells it).
+static volatile LONG g_layers_closed;
+static void layers_close_held(i64 at)
+{
+    LayerStore *ls = &g_layers;
+    AcquireSRWLockExclusive(&ls->lock);
+    layers_load_locked(ls);
+    if (layers_close_held_locked(ls, at)) InterlockedIncrement(&g_layers_closed);
+    ReleaseSRWLockExclusive(&ls->lock);
+}
+
+// How many times held lines have been ended; a source holds its line afresh when this changes.
+static LONG layers_closed() { return InterlockedCompareExchange(&g_layers_closed, 0, 0); }
 
 // Puts samples in place of the layer's own that start in [from, to). The new ones may lie anywhere.
 static bool layer_replace(i32 id, i64 from, i64 to, const LayerSample *s, i32 n)
