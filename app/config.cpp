@@ -187,9 +187,10 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_link_days = 0;
     c->share_copy_on_close = false;
     c->auto_marks = true;
-    c->auto_marks_cs2_on = c->auto_marks_lol_on = true;
-    c->auto_marks_cs2 = AM_CS2_EVENTS;
-    c->auto_marks_lol = AM_LOL_EVENTS;
+    for (i32 g = 0; g < AMG_COUNT; g++) {
+        c->auto_marks_on[g] = true;
+        c->auto_marks_events[g] = AM_GAMES[g].events;
+    }
     c->ach_marks = true;
     c->ach_rarer = 5;
     str_set(c->r2_bucket, "rekodr");
@@ -812,10 +813,15 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
     else if (!strcmp(key, "share_copy_on_close")) boolean(&c->share_copy_on_close);
     else if (!strcmp(key, "auto_marks")) boolean(&c->auto_marks);
-    else if (!strcmp(key, "auto_marks_cs2_on")) boolean(&c->auto_marks_cs2_on);
-    else if (!strcmp(key, "auto_marks_lol_on")) boolean(&c->auto_marks_lol_on);
-    else if (!strcmp(key, "auto_marks_cs2")) c->auto_marks_cs2 = am_events_parse(value, AM_CS2_EVENTS);
-    else if (!strcmp(key, "auto_marks_lol")) c->auto_marks_lol = am_events_parse(value, AM_LOL_EVENTS);
+    else if (!strncmp(key, "auto_marks_", 11)) {
+        for (i32 g = 0; g < AMG_COUNT; g++) {
+            const char *k = AM_GAMES[g].key, *rest = key + 11;
+            size_t n = strlen(k);
+            if (strncmp(rest, k, n)) continue;
+            if (!rest[n]) c->auto_marks_events[g] = am_events_parse(value, AM_GAMES[g].events);
+            else if (!strcmp(rest + n, "_on")) boolean(&c->auto_marks_on[g]);
+        }
+    }
     else if (!strcmp(key, "ach_marks")) boolean(&c->ach_marks);
     else if (!strcmp(key, "ach_rarer")) { i32 r = atoi(value); c->ach_rarer = r == 1 || r == 10 || r == 100 ? r : 5; }
     else if (!strcmp(key, "share_link_days")) { i32 d = atoi(value); c->share_link_days = d == 1 || d == 7 ? d : 0; }
@@ -1023,14 +1029,11 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_link_page", c.share_link_page);
     boolean("share_copy_on_close", c.share_copy_on_close);
     boolean("auto_marks", c.auto_marks);
-    boolean("auto_marks_cs2_on", c.auto_marks_cs2_on);
-    boolean("auto_marks_lol_on", c.auto_marks_lol_on);
-    {
-        char ev[96];
-        am_events_text(c.auto_marks_cs2, ev, sizeof ev);
-        fprintf(f, "auto_marks_cs2 = %s\n", ev);
-        am_events_text(c.auto_marks_lol, ev, sizeof ev);
-        fprintf(f, "auto_marks_lol = %s\n", ev);
+    for (i32 g = 0; g < AMG_COUNT; g++) {
+        char ev[256];
+        am_events_text(c.auto_marks_events[g], ev, sizeof ev);
+        fprintf(f, "auto_marks_%s_on = %s\nauto_marks_%s = %s\n", AM_GAMES[g].key, c.auto_marks_on[g] ? "true" : "false",
+                AM_GAMES[g].key, ev);
     }
     boolean("ach_marks", c.ach_marks);
     fprintf(f, "ach_rarer = %d\n", c.ach_rarer);

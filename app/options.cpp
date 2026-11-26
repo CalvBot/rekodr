@@ -4158,36 +4158,32 @@ static void options_automarks()
     opt_card_end();
 
     ImGui::BeginDisabled(!c.auto_marks);
-    static const AmChoice cs2[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
-                                   {AM_ROUND, "Round wins"}, {AM_WIN, "Match wins"}};
-    static const AmChoice lol[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
-                                   {AM_OBJECTIVE, "Objectives"}, {AM_WIN, "Wins"}};
-    AmCs2State st = automarks_cs2_state();
-    bool cs2_on = c.auto_marks && c.auto_marks_cs2_on;
-    const char *sub = !cs2_on ? "From the game's own feed"
-                      : st == AM_CS2_NOT_FOUND ? "Not installed on this PC"
-                      : st == AM_CS2_PORT_BUSY ? "Another program is using its port"
-                      : "From the game's next start";
-    bool bad = cs2_on && (st == AM_CS2_NOT_FOUND || st == AM_CS2_PORT_BUSY);
-    if (opt_am_row_begin("Counter-Strike 2", sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_cs2_on, kit_px(20))) {
-        log_line("options: Counter-Strike 2 markers %s", c.auto_marks_cs2_on ? "on" : "off");
-        marks = true;
+    // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins
+    static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives"};
+    static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
+    for (i32 g = 0; g < AMG_COUNT; g++) {
+        const AmGame &game = AM_GAMES[g];
+        AmChoice choices[COUNT(labels)];
+        i32 n = 0;
+        for (i32 i = 0; i < COUNT(labels); i++)
+            if (game.events & (1u << i))
+                choices[n++] = {1u << i, (1u << i) == AM_WIN && (game.events & AM_ROUND) ? "Match wins" : labels[i]};
+        AmState st = c.auto_marks && c.auto_marks_on[g] ? automarks_state(g) : AM_OFF;
+        const char *sub = st == AM_NOT_FOUND ? "Not installed on this PC"
+                          : st == AM_PORT_BUSY ? "Another program is using its port"
+                          : st == AM_READY && g == AMG_CS2 ? "From the game's next start"
+                          : game.feed;
+        bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY;
+        if (opt_am_row_begin(game.name, sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_on[g], kit_px(20))) {
+            log_line("options: %s markers %s", game.name, c.auto_marks_on[g] ? "on" : "off");
+            marks = true;
+        }
+        if (opt_am_events(game.name, &c.auto_marks_events[g], choices, n)) {
+            log_line("options: %s marks 0x%x", game.name, c.auto_marks_events[g]);
+            marks = true;
+        }
+        opt_am_row_end();
     }
-    if (opt_am_events("Counter-Strike 2", &c.auto_marks_cs2, cs2, COUNT(cs2))) {
-        log_line("options: Counter-Strike 2 marks 0x%x", c.auto_marks_cs2);
-        marks = true;
-    }
-    opt_am_row_end();
-
-    if (opt_am_row_begin("League of Legends", "While a match runs", COL_DIM, &c.auto_marks_lol_on, kit_px(20))) {
-        log_line("options: League of Legends markers %s", c.auto_marks_lol_on ? "on" : "off");
-        marks = true;
-    }
-    if (opt_am_events("League of Legends", &c.auto_marks_lol, lol, COUNT(lol))) {
-        log_line("options: League of Legends marks 0x%x", c.auto_marks_lol);
-        marks = true;
-    }
-    opt_am_row_end();
 
     if (opt_am_row_begin("Steam achievements", "A marker when Steam gives you a rare one, in any game", COL_DIM, &c.ach_marks, ImGui::GetFrameHeight())) {
         log_line("options: achievement markers %s", c.ach_marks ? "on" : "off");

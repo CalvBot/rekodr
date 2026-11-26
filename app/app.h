@@ -152,6 +152,20 @@ static const char GAME_NOT_OURS[] = "Other";
 enum { WATCH_MAX = 8 }; // other apps' folders the library shows (Config.watch_dirs)
 enum { FOLDER_MAX = 128 }; // folder rules (Config.folders), and store folders added as rules (Config.store_seen)
 
+// Games that mark their events on the timeline (automarks.cpp). Each marks the AmEvent bits it has, saved as the
+// words of AM_EVENT_WORDS (bit i). AM_WIN is a won match; AM_OBJECTIVE is a dragon, Herald, Baron, turret or
+// inhibitor the player took in League.
+enum AmEvent : u32 { AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32 };
+static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective"};
+enum AmGameId { AMG_CS2, AMG_LOL, AMG_COUNT };
+// key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
+// or listening.
+struct AmGame { const char *key, *name, *feed; u32 events; };
+static const AmGame AM_GAMES[AMG_COUNT] = {
+    {"cs2", "Counter-Strike 2", "From the game's own feed", AM_KILL | AM_MULTI | AM_DEATH | AM_ROUND | AM_WIN},
+    {"lol", "League of Legends", "While a match runs", AM_KILL | AM_MULTI | AM_DEATH | AM_OBJECTIVE | AM_WIN},
+};
+
 struct Config {
     Path save_dir;     // <Videos>\Rekodr, holding Clips, Sessions and Data (save_clips_dir and the rest)
     Path buffer_dir;   // the rolling buffer
@@ -245,9 +259,8 @@ struct Config {
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     bool share_copy_on_close; // when a game closes, its clips' share copies are made while nothing else runs (off)
     bool auto_marks;      // Options' Auto markers tab as a whole: games' and Steam achievements' markers (on)
-    bool auto_marks_cs2_on, auto_marks_lol_on; // the game marks its events on the timeline (automarks.cpp; on)
-    u32  auto_marks_cs2;  // AmEvent bits: what Counter-Strike 2 marks while on (all)
-    u32  auto_marks_lol;  // AmEvent bits: what League of Legends marks while on (all)
+    bool auto_marks_on[AMG_COUNT];     // each of AM_GAMES marks its events on the timeline (on)
+    u32  auto_marks_events[AMG_COUNT]; // AmEvent bits: what it marks while on (all it has)
     bool ach_marks;       // a Steam achievement rarer than ach_rarer gets a marker (achievements.cpp; on)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), 7 or 1; the Share menu can
@@ -1196,16 +1209,10 @@ static const MarkerColour MARKER_COLOURS[] = {
 static i32 markers_in(i64 from, i64 to, Marker *out, i32 cap); // the ones in [from, to], oldest first; any thread
 
 // Markers from games (automarks.cpp)
-enum AmCs2State { AM_CS2_OFF, AM_CS2_LISTENING, AM_CS2_NOT_FOUND, AM_CS2_PORT_BUSY };
-// What a game marks: bits of Config.auto_marks_cs2 / auto_marks_lol, saved as the words of AM_EVENT_WORDS (bit i).
-// AM_WIN is a won match in Counter-Strike 2; AM_OBJECTIVE is a dragon, Herald, Baron, turret or inhibitor the player
-// took in League.
-enum AmEvent : u32 { AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32 };
-static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective"};
-static const u32 AM_CS2_EVENTS = AM_KILL | AM_MULTI | AM_DEATH | AM_ROUND | AM_WIN;
-static const u32 AM_LOL_EVENTS = AM_KILL | AM_MULTI | AM_DEATH | AM_OBJECTIVE | AM_WIN;
+// What Options says of a game's feed: off, waiting for the game, not installed, or its port taken.
+enum AmState { AM_OFF, AM_READY, AM_NOT_FOUND, AM_PORT_BUSY };
 static void automarks_apply();
-static AmCs2State automarks_cs2_state();
+static AmState automarks_state(i32 game);
 static void automarks_uninstall();
 static void achievements_apply(); // achievements.cpp
 

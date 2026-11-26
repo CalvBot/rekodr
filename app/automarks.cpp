@@ -260,7 +260,7 @@ static struct {
     volatile bool stop;
     volatile bool cs2_on, lol_on;
     volatile u32 cs2_events, lol_events; // AmEvent bits, from the config
-    volatile LONG cs2_state;  // AmCs2State (app.h), for Options
+    volatile LONG cs2_state;  // AmState (app.h), for Options
     bool cs2_applied;         // cs2_on as automarks_apply last left the cfg file
     char token[40];           // the cfg file's token
     Cs2Seen cs2;
@@ -398,11 +398,11 @@ static DWORD WINAPI am_thread(void *)
             if (ls == INVALID_SOCKET || bind(ls, (sockaddr *)&a, sizeof a) || listen(ls, 4)) {
                 if (ls != INVALID_SOCKET) closesocket(ls);
                 ls = INVALID_SOCKET;
-                if (InterlockedExchange(&g_am.cs2_state, AM_CS2_PORT_BUSY) != AM_CS2_PORT_BUSY)
+                if (InterlockedExchange(&g_am.cs2_state, AM_PORT_BUSY) != AM_PORT_BUSY)
                     log_line("markers: port %u is taken; Counter-Strike 2 can't reach " APP_NAME, AM_CS2_PORT);
                 cs2_retry = now_us() + 10000000;
             } else {
-                InterlockedExchange(&g_am.cs2_state, AM_CS2_LISTENING);
+                InterlockedExchange(&g_am.cs2_state, AM_READY);
                 log_line("markers: listening for Counter-Strike 2 on port %u", AM_CS2_PORT);
             }
         }
@@ -507,16 +507,16 @@ static bool am_cs2_cfg(bool on)
 static void automarks_apply()
 {
     const Config &c = g_app.config;
-    u32 cs2_events = c.auto_marks && c.auto_marks_cs2_on ? c.auto_marks_cs2 : 0;
-    u32 lol_events = c.auto_marks && c.auto_marks_lol_on ? c.auto_marks_lol : 0;
+    auto events = [&](i32 g) { return c.auto_marks && c.auto_marks_on[g] ? c.auto_marks_events[g] : 0; };
+    u32 cs2_events = events(AMG_CS2), lol_events = events(AMG_LOL);
     bool cs2 = cs2_events != 0;
     if (cs2 != g_am.cs2_applied || (cs2 && !g_am.token[0])) {
         bool found = am_cs2_cfg(cs2);
         g_am.cs2_applied = cs2;
         if (cs2 && !found) {
-            InterlockedExchange(&g_am.cs2_state, AM_CS2_NOT_FOUND);
+            InterlockedExchange(&g_am.cs2_state, AM_NOT_FOUND);
             log_line("markers: Counter-Strike 2 isn't installed");
-        } else if (!cs2) InterlockedExchange(&g_am.cs2_state, AM_CS2_OFF);
+        } else if (!cs2) InterlockedExchange(&g_am.cs2_state, AM_OFF);
     }
     g_am.cs2_events = cs2_events;
     g_am.lol_events = lol_events;
@@ -529,7 +529,7 @@ static void automarks_apply()
     if (g_am.wake) SetEvent(g_am.wake);
 }
 
-static AmCs2State automarks_cs2_state() { return (AmCs2State)g_am.cs2_state; }
+static AmState automarks_state(i32 game) { return game == AMG_CS2 ? (AmState)g_am.cs2_state : AM_READY; }
 
 static void automarks_stop()
 {
