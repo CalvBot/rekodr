@@ -883,7 +883,7 @@ static DWORD WINAPI recorder_thread(void *)
                         strained = true;
                         char tip[200];
                         snprintf(tip, sizeof tip, "The PC can't keep up: video is written at %d%% of real time. "
-                                 "Try a lower frame rate or size in Options > Video", (int)(pace * 100));
+                                 "Try a lower frame rate or size in Options > Recording", (int)(pace * 100));
                         log_line("recording strained: pace %.2f", pace);
                         rec_post(REC_STRAIN, 0, tip);
                     } else if (strained && good_windows >= 3) {
