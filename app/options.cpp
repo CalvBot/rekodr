@@ -5158,59 +5158,41 @@ static void screen_options()
     }
     o.last_frame = frame;
 
-    // The sections as an icon and a label over a hairline, the current one underlined in the accent. Each tab is
-    // as wide as its bold label, so none moves; the new-apps count sits on the Apps icon and takes no room.
+    // The sections down the left, like the Library's list: docked to the window's left edge from the top bar to the
+    // bottom, a row each with its icon, the current one lit, Apps with how many apps wait to be sorted. The page
+    // is right of it, in the screen's usual padding (the Options screen has none of its own, as the Library).
     static const char *names[OPT_TAB_COUNT] = {"Apps", "Recording", "Hotkeys", "Integrations", "General"};
     static const char *icons[OPT_TAB_COUNT] = {ICON_APPS, ICON_VIDEO, ICON_KEYBOARD, ICON_LINK, ICON_SLIDERS};
     if (o.tab < 0 || o.tab >= OPT_TAB_COUNT) o.tab = OPT_APPS;
     i32 new_apps = 0;
     for (i32 i = 0; i < g_app.config.app_count; i++) // as the New chip counts: not ones a folder rule sorts
         new_apps += app_category(g_app.config, g_app.config.apps[i]) == CAT_NONE;
-    char count[8];
-    snprintf(count, sizeof count, new_apps > 99 ? "99+" : "%d", new_apps);
-
-    // Every tab is one column of the same width, in the middle of the window
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 avail = ImGui::GetContentRegionAvail().x, tab_h = dp(34), gap = dp(28);
-    f32 col_w = fminf(avail, dp(1080));
-    a.x = floorf(a.x + (avail - col_w) / 2);
-    avail = col_w;
-    dl->AddLine(ImVec2(a.x, a.y + tab_h - 0.5f), ImVec2(a.x + avail, a.y + tab_h - 0.5f), col32(COL_LINE));
-    f32 x = a.x;
+    f32 pad_y = kit_px(LIB_PAD_Y), side_w = kit_px(2 * 104 + 4 + 12), row_w = side_w - kit_px(12);
+    ImVec2 s0 = ImGui::GetCursorScreenPos();
+    s0.x += kit_px(8);
+    ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + pad_y));
+    ImGui::BeginGroup();
     for (i32 t = 0; t < OPT_TAB_COUNT; t++) {
-        f32 slot = g_font_icon->FontSize + dp(12), w = slot + text_w(g_font_bold, names[t]);
-        bool active = o.tab == t;
-        ImGui::SetCursorScreenPos(ImVec2(x - gap / 2, a.y));
         ImGui::PushID(t);
-        ImGui::BeginDisabled(o.capture_slot != 0 && !active); // finish setting the hotkey first
-        if (ImGui::InvisibleButton("##tab", ImVec2(w + gap, tab_h))) {
+        ImGui::BeginDisabled(o.capture_slot != 0 && o.tab != t); // finish setting the hotkey first
+        if (lib_game_item(0, names[t], t == OPT_APPS && new_apps ? new_apps : -1, o.tab == t, row_w, false, icons[t])) {
             o.tab = t;
             dev_click("tab", names[t]);
         }
-        bool hot = ImGui::IsItemHovered();
-        ImFont *font = active ? g_font_bold : g_font;
-        f32 ty = floorf(a.y + (tab_h - dp(4) - font->FontSize) / 2);
-        u32 ink = active ? COL_BG : hot ? COL_TEXT : COL_DIM;
-        f32 iy = floorf(a.y + (tab_h - dp(4) - g_font_icon->FontSize) / 2);
-        if (active) // the current tab: a white pill
-            dl->AddRectFilled(ImVec2(x - dp(12), a.y), ImVec2(x + w + dp(12), a.y + tab_h - dp(4)), col32(COL_WHITE),
-                              (tab_h - dp(4)) / 2);
-        opt_text_at(dl, g_font_icon, ImVec2(x, iy), ink, icons[t], x + slot);
-        opt_text_at(dl, font, ImVec2(x + slot, ty), ink, names[t], x + w + 1);
-        if (t == OPT_APPS && new_apps) { // a badge on the icon's top right corner, ringed in the page colour
-            f32 pw = opt_pill_w(count), ph = dp(18), r = dp(2);
-            ImVec2 p(x + g_font_icon->FontSize - dp(9), iy);
-            dl->AddRectFilled(ImVec2(p.x - r, p.y - ph / 2 - r), ImVec2(p.x + pw + r, p.y + ph / 2 + r), col32(COL_BG),
-                              ph / 2 + r);
-            opt_pill(dl, p, count, COL_WHITE, COL_BG);
-        }
         ImGui::EndDisabled();
         ImGui::PopID();
-        x += w + gap;
     }
-    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + tab_h));
-    ImGui::Dummy(ImVec2(avail, dp(6)));
+    ImGui::EndGroup();
+    ImGui::SetCursorScreenPos(ImVec2(s0.x + side_w - kit_px(14), s0.y)); // the page starts 16 px past the rows
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kit_px(UI_GUTTER), pad_y));
+    ImGui::BeginChild("##optmain", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar();
+
+    // The page is one column of at most 1080, in the middle of what's left
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 avail = ImGui::GetContentRegionAvail().x, col_w = fminf(avail, dp(1080));
+    a.x = floorf(a.x + (avail - col_w) / 2);
 
     // List pages fit their page and turn pages; the others scroll if the window is short. A scrollbar goes to the
     // right of the column, so the cards keep the column's width (whether it scrolls is known from the last frame).
@@ -5218,7 +5200,7 @@ static void screen_options()
     g_combo_wheel = list;
     static bool scrolls;
     f32 bar = !list && scrolls ? ImGui::GetStyle().ScrollbarSize : 0;
-    ImGui::SetCursorScreenPos(ImVec2(a.x, ImGui::GetCursorScreenPos().y));
+    ImGui::SetCursorScreenPos(a);
     ImGui::BeginChild("page", ImVec2(col_w + bar, 0), ImGuiChildFlags_None,
                       list ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
     switch (o.tab) {
@@ -5232,5 +5214,6 @@ static void screen_options()
     scrolls = ImGui::GetScrollMaxY() > 0;
     kit_scroll_fade_window();
     ImGui::EndChild();
+    ImGui::EndChild(); // ##optmain
     if (o.capture_slot) ui_wake(); // keep drawing while waiting for keys
 }

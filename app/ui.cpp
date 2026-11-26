@@ -2340,9 +2340,10 @@ static void ui_frame()
     top_bar(kit_px(46));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y - kit_px(8));
     // The screen: padded content area under the top bar. Screens lay out inside it with GetContentRegionAvail. The
-    // Library pads itself, right of the list it docks to the window's left edge.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                        g_app.ui.screen == SCREEN_LIBRARY ? ImVec2(0, 0) : ImVec2(kit_px(UI_GUTTER), kit_px(16)));
+    // Library and Options pad themselves, right of the list each docks to the window's left edge.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, g_app.ui.screen == SCREEN_LIBRARY || g_app.ui.screen == SCREEN_OPTIONS
+                                                         ? ImVec2(0, 0)
+                                                         : ImVec2(kit_px(UI_GUTTER), kit_px(16)));
     ImGui::BeginChild("##screen", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
