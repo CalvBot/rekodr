@@ -768,6 +768,22 @@ static const JavaGame g_java_games[] = {
 
 static bool is_java_exe(const char *exe) { return !_stricmp(exe, "java.exe") || !_stricmp(exe, "javaw.exe"); }
 
+// The game a shared exe (java) was named as, kept while its name is taken away: by a look that couldn't tell it
+// apart (seen before its window is up), or by the exe running from another folder (another game's Java). The next
+// name it gets is compared with this one, so another game ends the open session rather than renaming it.
+static struct { char exe[64], name[128]; } g_untold[8];
+static void gamedb_untold_put(const char *exe, const char *name)
+{
+    i32 k = -1; // its own slot, else a free one, else the first
+    for (i32 i = 0; i < COUNT(g_untold) && k < 0; i++)
+        if (!strcmp(g_untold[i].exe, exe)) k = i;
+    for (i32 i = 0; i < COUNT(g_untold) && k < 0; i++)
+        if (!g_untold[i].exe[0]) k = i;
+    if (k < 0) k = 0;
+    str_set(g_untold[k].exe, exe);
+    str_set(g_untold[k].name, name);
+}
+
 
 // Whether any of a |-separated list is in `s` (`whole`: is all of it).
 static bool java_list_has(const char *list, const char *s, bool whole)
@@ -1144,16 +1160,23 @@ static bool gamedb_name_app(AppInfo *a)
     // another program: its open session ends rather than taking the new name. It was a game when its description
     // is a name, not the exe's own File description (the runtime's). Minecraft named as one of its modpacks is
     // the same game, found out more about.
+    // Its name before: the description, else the game's name taken away since (gamedb_untold_put).
     char own[128] = "";
-    bool was_game = (java || shared || is_java_exe(a->exe.s)) && a->desc.s[0];
-    if (was_game) exe_description(a->path, own, sizeof own);
-    was_game = was_game && strcmp(a->desc.s, own) && !(minecraft && !strcmp(a->desc.s, "Minecraft"));
+    bool shared_exe = java || shared || is_java_exe(a->exe.s);
+    if (shared_exe) exe_description(a->path, own, sizeof own);
+    const char *old = a->desc.s;
+    for (auto &u : g_untold)
+        if ((!old[0] || !strcmp(old, own)) && !strcmp(u.exe, a->exe.s)) old = u.name;
+    bool was_game = shared_exe && old[0] && strcmp(old, own) && !(minecraft && !strcmp(old, "Minecraft"));
     if (!known && shared) {
         if (!a->desc.s[0]) return sorted;
+        if (was_game) gamedb_untold_put(a->exe.s, old);
         a->desc.s[0] = 0; // its File description is the runtime's, not a game's
         sessions_game_renamed(a->exe.s, was_game);
         return true;
     }
+    for (auto &u : g_untold)
+        if (!strcmp(u.exe, a->exe.s)) u.exe[0] = 0;
     if (!known) return sorted;
     bool changed = sorted;
     if (strcmp(a->desc.s, g.name)) {

@@ -1308,6 +1308,11 @@ static void audio_on_event(const Event &e)
         if (!app) break; // the table is full
         app->last_heard_us = e.b;
         bool moved = path[0] && strcmp(app->path, path);
+        if (moved && is_java_exe(exe.s) && app->desc.s[0]) { // a game's name, unless it is the old Java's own
+            char own[128];
+            exe_description(app->path, own, sizeof own);
+            if (strcmp(app->desc.s, own)) gamedb_untold_put(exe.s, app->desc.s);
+        }
         if (path[0]) str_set(app->path, path);
         if (moved || (path[0] && g_app.config.app_count != before)) // its name can differ where it runs from now
             exe_description(app->path, app->desc.s, sizeof app->desc.s);
