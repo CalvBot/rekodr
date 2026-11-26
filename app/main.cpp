@@ -93,7 +93,7 @@ static void run_command(const char *text)
     } else if (!strcmp(cmd, "show")) { // show <page>: a page or tab by name, for screenshots and Stream Deck keys
         Library &lib = g_app.library;
         g_app.ui.help_close = true;
-        if (g_app.ui.setup_open && strcmp(arg, "setup")) setup_finish("left for another page"); // it covers every page
+        if (g_app.ui.setup_open && !starts_with(arg, "setup")) setup_finish("left for another page"); // it covers every page
         if (!strcmp(arg, "clips") || !strcmp(arg, "sessions")) {
             library_close_player();
             ui_show(SCREEN_LIBRARY);
@@ -167,9 +167,10 @@ static void run_command(const char *text)
             g_app.options.tab = OPT_GENERAL;
             g_opt_show_folders = true;
         }
-        else if (!strcmp(arg, "setup")) { // the first-run setup
-            ui_show(SCREEN_LIBRARY);
+        else if (!strcmp(arg, "setup") || !strcmp(arg, "setup-detection")) { // the first-run setup, at its first page
+            ui_show(SCREEN_LIBRARY);                                          // or its game detection page
             g_app.ui.setup_open = true;
+            g_setup_page = arg[5] ? SETUP_DETECTION : SETUP_WELCOME;
         }
         else {
             static const char *const tabs[OPT_TAB_COUNT] = {"apps", "recording", "hotkeys", "integrations", "auto-markers", "general"};
@@ -179,7 +180,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {

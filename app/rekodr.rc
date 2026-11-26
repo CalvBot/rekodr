@@ -6,6 +6,9 @@
 // The first-run setup's begging picture: 15 frames, 5 across and 3 down (setup.cpp).
 10 RCDATA "../assets/images/setup-beg.jpg"
 
+// The first-run setup's example clip picture: one frame of an Overwatch clip, 400 x 225 (setup.cpp).
+11 RCDATA "../assets/images/setup-example.jpg"
+
 // Cloudflare's own icon, from its site, for Share's host rows (library.cpp host_logo).
 21 RCDATA "../assets/images/host-cloudflare.png"
 

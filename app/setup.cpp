@@ -2,7 +2,7 @@
 // defaults. They show the clip key and ask about tooltips, game detection, usage stats and sharing. Each answer
 // changes the setting at once; Done on the last page marks it finished. Options > General runs it again.
 
-enum { SETUP_BEG_RESOURCE = 10 };
+enum { SETUP_BEG_RESOURCE = 10, SETUP_EXAMPLE_RESOURCE = 11 };
 // The begging picture (assets/images/setup-beg.jpg): 15 frames of 240 x 230, 5 across and 3 down, at 10 a second.
 static const i32 BEG_COLS = 5, BEG_ROWS = 3, BEG_FRAMES = 15, BEG_FPS = 10;
 
@@ -234,6 +234,110 @@ static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h
     opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, "Either way, F1 lists every key.", x1);
 }
 
+// What No leaves to the player, shown while No is picked: the same clip as a library card with the service, filed
+// under its game with the game's art and icon, and without, where the game isn't known and the card has only the
+// exe's name; then what the player does by hand, and a box for their own SteamGridDB key. The clip's picture is a
+// frame built into the exe (assets/images/setup-example.jpg).
+static const char SETUP_EXAMPLE_GAME[] = "Overwatch", SETUP_EXAMPLE_EXE[] = "Overwatch.exe";
+
+// One example card at a, w wide: the game's art (a plain tile when there is none), then the clip card as the library
+// draws it, with its picture, length, game icon, name and dim line. Returns its height.
+static f32 setup_example_card(ImDrawList *dl, ImVec2 a, f32 w, bool known)
+{
+    static ID3D11ShaderResourceView *pic;
+    static bool pic_tried;
+    if (!pic_tried) {
+        pic_tried = true;
+        i32 pw, ph;
+        pic = resource_texture(SETUP_EXAMPLE_RESOURCE, &pw, &ph);
+    }
+    f32 r = kit_px(4), gap = kit_px(8);
+    // Art at 3:4 beside the card, as tall as its picture: card_w + card_w * 9/16 * 3/4 + gap = w
+    f32 cw = floorf((w - gap) / (1 + 27.0f / 64)), th = floorf(cw * 9 / 16), aw = w - gap - cw;
+    ImVec2 p0 = a, p1(a.x + aw, a.y + th);
+    i32 gw = 0, gh = 0;
+    ID3D11ShaderResourceView *art = known ? game_db_cover(SETUP_EXAMPLE_GAME, &gw, &gh) : 0;
+    if (art && gw > 0 && gh > 0) {
+        f32 want = aw / th, have = (f32)gw / gh, u = 0, v = 0;
+        if (have > want) u = (1 - want / have) / 2;
+        else v = (1 - have / want) / 2;
+        dl->AddImageRounded((ImTextureID)art, p0, p1, ImVec2(u, v), ImVec2(1 - u, 1 - v), IM_COL32_WHITE, r);
+    } else {
+        dl->AddRectFilled(p0, p1, col32(COL_PANEL), r);
+        f32 gs = kit_px(20);
+        ImVec2 sz = g_font_icon->CalcTextSizeA(gs, FLT_MAX, 0, ICON_GAME);
+        dl->AddText(g_font_icon, gs, ImVec2(floorf(p0.x + (aw - sz.x) / 2), floorf(p0.y + (th - sz.y) / 2)), col32(COL_FAINT),
+                    ICON_GAME);
+    }
+    ImVec2 t0(a.x + aw + gap, a.y), t1(t0.x + cw, a.y + th);
+    if (pic) dl->AddImageRounded((ImTextureID)pic, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
+    else dl->AddRectFilled(t0, t1, col32(COL_PANEL), r);
+    badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, "0:18");
+    // The caption: the game's icon (a plain glyph when no game is known), the name and one dim line
+    f32 y = t1.y + kit_px(8), isz = g_font_bold->FontSize + kit_px(2) + g_font_small->FontSize;
+    ID3D11ShaderResourceView *icon = known ? game_icon(SETUP_EXAMPLE_GAME) : 0;
+    if (icon) dl->AddImageRounded((ImTextureID)icon, ImVec2(t0.x, y), ImVec2(t0.x + isz, y + isz), ImVec2(0, 0), ImVec2(1, 1),
+                                  IM_COL32_WHITE, kit_px(3));
+    else {
+        dl->AddRectFilled(ImVec2(t0.x, y), ImVec2(t0.x + isz, y + isz), col32(COL_PANEL), kit_px(3));
+        ImVec2 is = g_font_icon->CalcTextSizeA(g_font_icon->FontSize, FLT_MAX, 0, ICON_VIDEO);
+        dl->AddText(g_font_icon, g_font_icon->FontSize, ImVec2(floorf(t0.x + (isz - is.x) / 2), floorf(y + (isz - is.y) / 2)),
+                    col32(COL_FAINT), ICON_VIDEO);
+    }
+    f32 tx = t0.x + isz + kit_px(10);
+    opt_text_at(dl, g_font_bold, ImVec2(tx, y), COL_TEXT, "Example clip", t1.x);
+    char line[96];
+    snprintf(line, sizeof line, "%s  -  Today  -  29 MB", known ? SETUP_EXAMPLE_GAME : SETUP_EXAMPLE_EXE);
+    opt_text_at(dl, g_font_small, ImVec2(tx, y + g_font_bold->FontSize + kit_px(2)), COL_DIM, line, t1.x);
+    return th + kit_px(8) + isz;
+}
+
+static void setup_detection_by_hand(ImDrawList *dl, f32 x0, f32 x1, f32 y)
+{
+    Config &c = g_app.config;
+    f32 sh = g_font_small->FontSize, bh = g_font_bold->FontSize, fh = ImGui::GetFrameHeight();
+
+    // The same clip with the service and without
+    f32 gap = dp(24), ew = floorf((x1 - x0 - gap) / 2), card_h = 0;
+    for (i32 i = 0; i < 2; i++) {
+        f32 ex = x0 + i * (ew + gap);
+        opt_text_at(dl, g_font_small, ImVec2(ex, y), COL_DIM, i == 0 ? "With our service" : "Without", ex + ew);
+        card_h = setup_example_card(dl, ImVec2(ex, y + sh + dp(8)), ew, i == 0);
+    }
+
+    // What is then done by hand, under them in two columns
+    static const char *const icons[] = {ICON_EDIT, ICON_APPS, ICON_GAME, ICON_TAG};
+    static const char *const lines[] = {"Name each game Discord doesn't know", "Sort it in Options > Apps",
+                                        "Add your own key for its art", "Go without modpack names and emojis"};
+    f32 ly = y + sh + dp(8) + card_h + dp(20);
+    opt_text_at(dl, g_font_bold, ImVec2(x0, ly), COL_TEXT, "Without it, you", x1);
+    ly += bh + dp(10);
+    for (i32 i = 0; i < 4; i++) {
+        f32 lx = x0 + (i % 2) * (ew + gap), row = ly + (i / 2) * (sh + dp(10)), is = dp(14);
+        dl->AddText(g_font_icon, is, ImVec2(lx, floorf(row + (sh - is) / 2 + dp(1))), col32(COL_DIM), icons[i]);
+        opt_text_at(dl, g_font_small, ImVec2(lx + dp(24), row), COL_DIM, lines[i], lx + ew);
+    }
+
+    // The player's own SteamGridDB key, for art the service would have found
+    f32 pad = dp(16), cy = ly + 2 * (sh + dp(10)) + dp(10);
+    f32 key_h = pad + bh + dp(4) + sh + dp(12) + fh + pad;
+    dl->AddRectFilled(ImVec2(x0, cy), ImVec2(x1, cy + key_h), col32(COL_PANEL), dp(12));
+    f32 bw = text_w(g_font, "Get a key") + dp(36), text_end = x1 - pad - bw - dp(12);
+    opt_text_at(dl, g_font_bold, ImVec2(x0 + pad, cy + pad), COL_TEXT, "Your own SteamGridDB key", text_end);
+    opt_text_at(dl, g_font_small, ImVec2(x0 + pad, cy + pad + bh + dp(4)), COL_DIM,
+                "Free: sign in at steamgriddb.com, then Preferences > API", text_end);
+    ImGui::SetCursorScreenPos(ImVec2(x1 - pad - bw, floorf(cy + pad + (bh + dp(4) + sh - fh) / 2)));
+    if (kit_button("Get a key##setupsgdb", KIT_SECONDARY, ImVec2(bw, 0))) open_url(OPT_SGDB_KEY_URL);
+    ImGui::SetCursorScreenPos(ImVec2(x0 + pad, cy + pad + bh + dp(4) + sh + dp(12)));
+    char key[sizeof c.sgdb_key];
+    if (opt_text("##setupsgdbkey", c.sgdb_key, x1 - x0 - 2 * pad, ImGuiInputTextFlags_Password, "Paste your key here", key,
+                 sizeof key)) {
+        str_set(c.sgdb_key, trim(key));
+        log_line("setup: own SteamGridDB key %s", c.sgdb_key[0] ? "set" : "cleared");
+        options_apply(0);
+    }
+}
+
 // Game detection: whether Rekodr's service is asked about the player's games (art_service), and told the names
 // the player gives (share_names). No turns both off at once, so nothing about a game goes to the service; games are
 // then named from Discord's game list and the names the player types.
@@ -245,7 +349,7 @@ static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair
                         "name and art.");
     ImGui::SetCursorScreenPos(ImVec2(x0, y));
     static const char *const titles[] = {"Sure", "No thanks"};
-    static const char *const subs[] = {"Names and art from " APP_NAME "'s service", "Only Discord's game list and names you type"};
+    static const char *const subs[] = {"Names, art and sorting, filled in for you", "Only Discord's game list; the rest by hand"};
     bool on = c.game_lookup && c.art_service.s[0];
     ImGui::BeginDisabled(!c.game_lookup);
     i32 hit = setup_pair("detect", titles, subs, on ? 0 : 1, x1 - x0, pair_h);
@@ -260,8 +364,10 @@ static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair
     }
     const char *note = !c.game_lookup ? "Look up games online is off in Options, so this is too."
                        : on           ? "A game's exe and the names you give it go to the service. Nothing else."
-                                      : "Nothing about your games goes to " APP_NAME "'s service.";
+                                      : "Nothing about your games goes to " APP_NAME "'s service. Games Discord knows keep their art.";
     opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, note, x1);
+    if (!c.game_lookup || on) return;
+    setup_detection_by_hand(dl, x0, x1, y + pair_h + dp(40));
 }
 
 // Help development: the daily usage counts. The begging picture shows only once the answer is no.
