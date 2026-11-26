@@ -232,6 +232,8 @@ static bool exe_clues(const char *exe, const char *path, const char *name, bool 
 //   Xbox    the folders each fixed drive's .GamingRoot names (XboxGames)
 //   Epic    the InstallLocation of each game the launcher installed (its .item manifests), not Unreal Engine's
 //   GOG     the path of each game GOG Galaxy or a GOG installer put in (HKLM SOFTWARE\GOG.com\Games\<id>)
+//   EA      the Install Dir of each game the EA app or Origin put in (HKLM SOFTWARE\EA Games, Electronic Arts and
+//           Respawn, a key per game)
 
 // Steam apps that install under steamapps\common like a game but aren't one. Some run all day beside games.
 struct SteamNotGame {
@@ -366,17 +368,18 @@ static bool dir_exists_utf8(const char *path)
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-// The folder of each game under `key` (GOG.com\Games: a key per game id, its install folder in "path"), in the
-// registry's 32-bit view, where GOG writes. Ones that aren't there any more are left out.
-static void gog_game_folders(HKEY root, const wchar_t *key, StoreFolder *out, i32 *n, i32 max)
+// The folder of each game under `key`, a key per game with its install folder in `value`, in one view of the
+// registry (KEY_WOW64_32KEY or KEY_WOW64_64KEY). Ones that aren't there any more are left out.
+static void reg_game_folders(HKEY root, const wchar_t *key, const wchar_t *value, REGSAM view, StoreFolder *out, i32 *n,
+                             i32 max)
 {
     HKEY games;
-    if (RegOpenKeyExW(root, key, 0, KEY_READ | KEY_WOW64_32KEY, &games) != ERROR_SUCCESS) return;
-    wchar_t id[64];
+    if (RegOpenKeyExW(root, key, 0, KEY_READ | view, &games) != ERROR_SUCCESS) return;
+    wchar_t id[256];
     for (DWORD i = 0, len = COUNT(id); RegEnumKeyExW(games, i, id, &len, 0, 0, 0, 0) == ERROR_SUCCESS; i++, len = COUNT(id)) {
         wchar_t path[MAX_PATH];
         DWORD bytes = sizeof path;
-        if (RegGetValueW(games, id, L"path", RRF_RT_REG_SZ, 0, path, &bytes) != ERROR_SUCCESS || !path[0]) continue;
+        if (RegGetValueW(games, id, value, RRF_RT_REG_SZ, 0, path, &bytes) != ERROR_SUCCESS || !path[0]) continue;
         char at[MAX_PATH * 2];
         wide_to_utf8(path, at, sizeof at);
         if (dir_exists_utf8(at)) store_folder_add(out, n, max, at, CAT_GAME);
@@ -451,7 +454,12 @@ static i32 store_folders_find(StoreFolder *out, i32 max)
             FindClose(h);
         }
     }
-    gog_game_folders(HKEY_LOCAL_MACHINE, L"SOFTWARE\\GOG.com\\Games", out, &n, max);
+    reg_game_folders(HKEY_LOCAL_MACHINE, L"SOFTWARE\\GOG.com\\Games", L"path", KEY_WOW64_32KEY, out, &n, max);
+    static const wchar_t *const EA_KEYS[] = {L"SOFTWARE\\EA Games", L"SOFTWARE\\Electronic Arts", L"SOFTWARE\\Respawn"};
+    static const REGSAM VIEWS[] = {KEY_WOW64_64KEY, KEY_WOW64_32KEY};
+    for (const wchar_t *k : EA_KEYS)
+        for (REGSAM view : VIEWS)
+            reg_game_folders(HKEY_LOCAL_MACHINE, k, L"Install Dir", view, out, &n, max);
     return n;
 }
 

@@ -4997,28 +4997,37 @@ static void test_store_folders()
     T(!epic_item_folder("{\"AppCategories\": [\"plugins\"], \"Note\": \"games\", \"InstallLocation\": \"C:\\\\X\"}", at, sizeof at));
     T(!epic_item_folder("{\"InstallLocation\": \"C:\\\\X\"}", at, sizeof at));
 
-    // GOG: each game key's "path", when that folder is there
+    // GOG and EA: each game key's install folder (GOG's "path", EA's "Install Dir"), when that folder is there
     {
-        const wchar_t *key = L"Software\\RekodrTest\\GOG.com\\Games";
         wchar_t temp[MAX_PATH], sub[MAX_PATH];
         GetTempPathW(MAX_PATH, temp);
-        struct { const wchar_t *id, *path; } games[] = {{L"1207658930", temp}, {L"1453375253", L"Z:\\Gone\\Game"}, {L"1", 0}};
+        struct { const wchar_t *key, *value, *path; } games[] = {
+            {L"GOG.com\\Games\\1207658930", L"path", temp},
+            {L"GOG.com\\Games\\1453375253", L"path", L"Z:\\Gone\\Game"},
+            {L"GOG.com\\Games\\1", 0, 0},
+            {L"Respawn\\Apex", L"Install Dir", temp},
+            {L"Respawn\\Titanfall2", L"Install Dir", L"Z:\\Gone\\Titanfall2"},
+            {L"Respawn\\Launcher", L"ClientPath", temp},
+        };
         for (auto &g : games) {
             HKEY h;
-            swprintf(sub, MAX_PATH, L"%ls\\%ls", key, g.id);
+            swprintf(sub, MAX_PATH, L"Software\\RekodrTest\\%ls", g.key);
             if (RegCreateKeyExW(HKEY_CURRENT_USER, sub, 0, 0, 0, KEY_SET_VALUE | KEY_WOW64_32KEY, 0, &h, 0) != ERROR_SUCCESS) continue;
-            if (g.path) RegSetValueExW(h, L"path", 0, REG_SZ, (const BYTE *)g.path, (DWORD)((wcslen(g.path) + 1) * sizeof(wchar_t)));
+            if (g.value) RegSetValueExW(h, g.value, 0, REG_SZ, (const BYTE *)g.path, (DWORD)((wcslen(g.path) + 1) * sizeof(wchar_t)));
             RegCloseKey(h);
         }
-        static StoreFolder gog[4];
-        i32 gn = 0;
-        gog_game_folders(HKEY_CURRENT_USER, key, gog, &gn, COUNT(gog));
         char want[MAX_PATH * 2];
         wide_to_utf8(temp, want, sizeof want);
         size_t wl = strlen(want);
         while (wl > 3 && want[wl - 1] == '\\') want[--wl] = 0;
-        T(gn == 1 && !_stricmp(gog[0].path, want) && gog[0].category == CAT_GAME);
-        gog_game_folders(HKEY_CURRENT_USER, L"Software\\RekodrTest\\None", gog, &gn, COUNT(gog));
+        static StoreFolder got[4];
+        i32 gn = 0;
+        reg_game_folders(HKEY_CURRENT_USER, L"Software\\RekodrTest\\GOG.com\\Games", L"path", KEY_WOW64_32KEY, got, &gn, COUNT(got));
+        T(gn == 1 && !_stricmp(got[0].path, want) && got[0].category == CAT_GAME);
+        gn = 0;
+        reg_game_folders(HKEY_CURRENT_USER, L"Software\\RekodrTest\\Respawn", L"Install Dir", KEY_WOW64_32KEY, got, &gn, COUNT(got));
+        T(gn == 1 && !_stricmp(got[0].path, want)); // the launcher's own key has no Install Dir
+        reg_game_folders(HKEY_CURRENT_USER, L"Software\\RekodrTest\\None", L"path", KEY_WOW64_32KEY, got, &gn, COUNT(got));
         T(gn == 1);
         RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\RekodrTest");
     }
