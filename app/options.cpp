@@ -4138,7 +4138,8 @@ static void options_automarks()
     // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins, and Rocket League's
     // kills and deaths are demolitions
     static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists",
-                                         "Advancements", "Level-ups", "Best laps", "Overtakes", "Incidents", "Goals", "Saves"};
+                                         "Advancements", "Level-ups", "Best laps", "Overtakes", "Incidents", "Goals", "Saves",
+                                         "Raid starts", "Raid ends", "Quests done", "Group joins"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
     for (i32 g = 0; g < AMG_COUNT; g++) {
         const AmGame &game = AM_GAMES[g];

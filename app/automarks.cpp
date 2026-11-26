@@ -28,6 +28,8 @@
 //                      when the game starts; turning it off takes out only that section.
 //   War Thunder        Its map server, http://127.0.0.1:8111, once a second while the game runs: the battle's log
 //                      and the mission's state. The player's name is the one typed in Options.
+//   Escape from Tarkov Logs\log_<started>\ in its folder, the newest run's: its application, output, backend and
+//                      push-notifications logs, only read. Nothing is written to the game or sent to it.
 //
 // Only what the player did counts: kills, deaths and objectives of the player themself, rounds and matches their
 // team won.
@@ -416,6 +418,90 @@ static i32 hs_line(HsSeen *s, u32 events, const char *line, bool old, AutoMark *
             s->won_said = true;
             if (!old && (events & AM_WIN)) am_push(out, cap, &n, 3, "Win");
         }
+    }
+    return n;
+}
+
+// Escape from Tarkov's logs, each line "<date> <time>|<version>|<level>|<channel>|<message>", some followed by lines
+// of JSON or of a stack trace. Kills, deaths and extracts aren't logged. A raid's map: application's "scene preset
+// path:maps/<scene>.bundle" as it loads, then "TRACE-NetworkGameCreate ... Location: <map>, ..." once a server
+// holds it (online raids only). "GameStarted:" starts it. It ends at the first of output's OnGameSessionEnd stack
+// line or "Reason:Stop game", backend's /client/match/local/end (PvE) and the "UserMatchOver" notification. A
+// quest done: a "ChatMessageReceived" notification whose JSON has a templateId "<id> successMessageText". A group
+// joined: "GroupMatchInviteAccept", someone taking the player's invite.
+struct EftSeen {
+    char map[32];     // the raid's map, "" if not known
+    bool in_raid;     // started and not ended
+    bool chat;        // in a ChatMessageReceived notification's JSON
+    bool quest_said;  // and its quest is marked
+};
+
+// A map's name from its location id or its scene's bundle name, 0 if not known.
+static const char *eft_map(const char *id, size_t len)
+{
+    static const char *const maps[][2] = {
+        {"bigmap", "Customs"}, {"customs", "Customs"}, {"factory", "Factory"}, {"interchange", "Interchange"},
+        {"shopping_mall", "Interchange"}, {"laboratory", "The Lab"}, {"labyrinth", "The Labyrinth"},
+        {"lighthouse", "Lighthouse"}, {"rezerv", "Reserve"}, {"shoreline", "Shoreline"}, {"woods", "Woods"},
+        {"tarkovstreets", "Streets of Tarkov"}, {"city", "Streets of Tarkov"}, {"sandbox", "Ground Zero"}};
+    char low[64];
+    if (len >= sizeof low) len = sizeof low - 1;
+    for (size_t i = 0; i < len; i++) low[i] = (char)tolower((u8)id[i]);
+    low[len] = 0;
+    for (auto &m : maps)
+        if (strstr(low, m[0])) return m[1];
+    return 0;
+}
+
+static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
+{
+    i32 n = 0;
+    auto end = [&]() {
+        if (!s->in_raid) return;
+        s->in_raid = false;
+        if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, 5, "Raid end");
+    };
+    if (const char *g = strstr(line, "Got notification | ")) {
+        g += 19;
+        s->chat = !strncmp(g, "ChatMessageReceived", 19);
+        s->quest_said = false;
+        if (!strncmp(g, "GroupMatchInviteAccept", 22) && !old && (events & AM_GROUP)) am_push(out, cap, &n, 6, "Group joined");
+        if (!strncmp(g, "UserMatchOver", 13)) end();
+        return n;
+    }
+    bool head = isdigit((u8)line[0]) && isdigit((u8)line[3]) && line[4] == '-';
+    if (!head) { // a line of JSON or of a stack trace
+        if (s->chat && !s->quest_said && strstr(line, " successMessageText\"")) {
+            s->quest_said = true;
+            if (!old && (events & AM_QUEST)) am_push(out, cap, &n, 3, "Quest done");
+        }
+        if (strstr(line, "OnGameSessionEnd(")) end();
+        return n;
+    }
+    if (strstr(line, "|push-notifications|")) s->chat = false;
+    if (const char *p = strstr(line, "|scene preset path:maps/")) {
+        p += 24;
+        size_t l = strcspn(p, ". ");
+        const char *m = eft_map(p, l);
+        str_set(s->map, m ? m : "");
+        s->in_raid = false;
+    } else if (strstr(line, "|TRACE-NetworkGameCreate ")) {
+        if (const char *at = strstr(line, "Location: ")) {
+            at += 10;
+            size_t l = strcspn(at, ",'");
+            if (const char *m = eft_map(at, l)) str_set(s->map, m);
+            else if (l && l < sizeof s->map) memcpy(s->map, at, l), s->map[l] = 0;
+        }
+    } else if (strstr(line, "|GameStarted:")) {
+        s->in_raid = true;
+        if (!old && (events & AM_RAID_START)) {
+            char note[32];
+            if (s->map[0]) snprintf(note, sizeof note, "Raid start (%s)", s->map);
+            else str_set(note, "Raid start");
+            am_push(out, cap, &n, 5, note);
+        }
+    } else if (strstr(line, "Reason:Stop game") || strstr(line, "/client/match/local/end")) {
+        end();
     }
     return n;
 }
@@ -1280,6 +1366,89 @@ static void hs_log_path(const wchar_t *dir, wchar_t *out)
     if (best[0]) swprintf(out, MAX_PATH, L"%s\\Logs\\%s\\Power.log", dir, best);
 }
 
+// Escape from Tarkov's folder that holds its Logs: Battlestate Games' install (its uninstall entry), else Steam's
+// <library>\common\<dir>\build. "" when neither is there.
+static void eft_dir(wchar_t *out)
+{
+    out[0] = 0;
+    DWORD bytes = MAX_PATH * sizeof(wchar_t);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\EscapeFromTarkov",
+                     L"InstallLocation", RRF_RT_REG_SZ, 0, out, &bytes) == ERROR_SUCCESS && out[0]) {
+        size_t l = wcslen(out);
+        while (l && out[l - 1] == L'\\') out[--l] = 0;
+        if (GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES) return;
+    }
+    out[0] = 0;
+    Path lib;
+    if (!steam_app_library(3932890, &lib)) return;
+    wchar_t p[MAX_PATH];
+    swprintf(p, MAX_PATH, L"%s\\appmanifest_3932890.acf", lib.s);
+    char *text = read_file(p, 0), dir[MAX_PATH];
+    bool ok = text && vdf_value(text, "installdir", dir, sizeof dir) && dir[0];
+    free(text);
+    if (!ok) return;
+    wchar_t wd[MAX_PATH];
+    utf8_to_wide(dir, wd, MAX_PATH);
+    swprintf(out, MAX_PATH, L"%s\\common\\%s\\build", lib.s, wd);
+    if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) out[0] = 0;
+}
+
+// The logs of a run of Escape from Tarkov, by what each file's name ends in: "<name>.log" or "<name>_<n>.log",
+// after the name's start, a space or a '_'.
+static const char *const EFT_LOGS[] = {"application", "output", "backend", "push-notifications"};
+enum { EFT_LOG_COUNT = COUNT(EFT_LOGS) };
+
+// Which of EFT_LOGS a file is, -1 for none.
+static i32 eft_log_kind(const char *file)
+{
+    size_t l = strlen(file);
+    if (l < 4 || _stricmp(file + l - 4, ".log")) return -1;
+    l -= 4;
+    size_t d = l;
+    while (d && isdigit((u8)file[d - 1])) d--;
+    if (d < l && d && file[d - 1] == '_') l = d - 1;
+    for (i32 i = 0; i < EFT_LOG_COUNT; i++) {
+        size_t k = strlen(EFT_LOGS[i]);
+        if (l >= k && !_strnicmp(file + l - k, EFT_LOGS[i], k) && (l == k || file[l - k - 1] == ' ' || file[l - k - 1] == '_'))
+            return i;
+    }
+    return -1;
+}
+
+// Each of EFT_LOGS in the newest run's folder, <dir>\Logs\log_<date and time>_<version>, the last written of each
+// kind; "" for one not there. The newest folder is the last made, as its name's hour has no leading 0.
+static void eft_log_paths(const wchar_t *dir, wchar_t out[][MAX_PATH])
+{
+    for (i32 i = 0; i < EFT_LOG_COUNT; i++) out[i][0] = 0;
+    wchar_t pat[MAX_PATH], run[MAX_PATH] = L"";
+    FILETIME made = {};
+    swprintf(pat, MAX_PATH, L"%s\\Logs\\log_*", dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && CompareFileTime(&fd.ftCreationTime, &made) > 0) {
+            made = fd.ftCreationTime;
+            wcscpy_s(run, fd.cFileName);
+        }
+    while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (!run[0]) return;
+    swprintf(pat, MAX_PATH, L"%s\\Logs\\%s\\*.log", dir, run);
+    FILETIME written[EFT_LOG_COUNT] = {};
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        char name[MAX_PATH];
+        wide_to_utf8(fd.cFileName, name, sizeof name);
+        i32 k = eft_log_kind(name);
+        if (k < 0 || (out[k][0] && CompareFileTime(&fd.ftLastWriteTime, &written[k]) < 0)) continue;
+        written[k] = fd.ftLastWriteTime;
+        swprintf(out[k], MAX_PATH, L"%s\\Logs\\%s\\%s", dir, run, fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The worker
 
@@ -1310,6 +1479,11 @@ static struct {
     wchar_t hs_dir[MAX_PATH];        // Hearthstone's install; "" when it isn't installed (main thread sets it)
     wchar_t hs_log[MAX_PATH];        // the newest run's Power.log; "" until found
     i64 hs_next;                     // when to look for a newer one
+    EftSeen eft;
+    AmTail eft_tail[EFT_LOG_COUNT];
+    wchar_t eft_dir[MAX_PATH];       // Escape from Tarkov's folder; "" when it isn't installed (main thread sets it)
+    wchar_t eft_log[EFT_LOG_COUNT][MAX_PATH]; // the newest run's logs; "" until found
+    i64 eft_next;                    // when to look for newer ones
     volatile LONG rl_port;           // the port Rocket League's Stats API sends on (main thread sets it)
     AmTail mc_tail, poe_tail[2], tf2_tail;
     wchar_t mc_log[MAX_PATH];        // the running Minecraft's latest.log; "" until found
@@ -1541,6 +1715,17 @@ static void am_logs_poll()
                 feed(AMG_HEARTHSTONE, hs_line(&g_am.hs, ev, l, old, marks, COUNT(marks)));
             });
     }
+    if (u32 ev = g_am.events[AMG_TARKOV]) {
+        if (g_am.eft_dir[0] && now_us() >= g_am.eft_next) {
+            eft_log_paths(g_am.eft_dir, g_am.eft_log);
+            g_am.eft_next = now_us() + 5000000;
+        }
+        for (i32 i = 0; i < EFT_LOG_COUNT; i++)
+            if (g_am.eft_log[i][0])
+                am_tail(&g_am.eft_tail[i], g_am.eft_log[i], [&](const char *l, bool old) {
+                    feed(AMG_TARKOV, eft_line(&g_am.eft, ev, l, old, marks, COUNT(marks)));
+                });
+    }
     replays_poll();
 }
 
@@ -1692,6 +1877,10 @@ static DWORD WINAPI am_thread(void *)
         if (!g_am.events[AMG_ROCKET_LEAGUE]) g_am.rl.me[0] = 0;
         if (!g_am.events[AMG_WAR_THUNDER]) g_am.wt = {}, g_am.wt.last = -1, g_am.wt_running = false, g_am.wt_next = 0;
         if (!g_am.events[AMG_HEARTHSTONE]) g_am.hs = {}, g_am.hs_tail = {}, g_am.hs_log[0] = 0, g_am.hs_next = 0;
+        if (!g_am.events[AMG_TARKOV]) {
+            g_am.eft = {}, g_am.eft_next = 0;
+            for (i32 i = 0; i < EFT_LOG_COUNT; i++) g_am.eft_tail[i] = {}, g_am.eft_log[i][0] = 0;
+        }
 
         i64 now = now_us();
         i64 wait_ms = 1000;
@@ -1887,6 +2076,10 @@ static void automarks_apply()
         InterlockedExchange(&g_am.state[AMG_HEARTHSTONE], !hs ? AM_OFF : hd[0] ? AM_READY : AM_NOT_FOUND);
     }
     wcscpy_s(g_am.hs_dir, hd);
+    wchar_t ed[MAX_PATH] = L"";
+    if (g_am.events[AMG_TARKOV]) eft_dir(ed);
+    wcscpy_s(g_am.eft_dir, ed);
+    InterlockedExchange(&g_am.state[AMG_TARKOV], !g_am.events[AMG_TARKOV] ? AM_OFF : ed[0] ? AM_READY : AM_NOT_FOUND);
     str_set(g_am.wt_me, c.wt_name);
     InterlockedExchange(&g_am.state[AMG_WAR_THUNDER], g_am.events[AMG_WAR_THUNDER] ? AM_READY : AM_OFF);
     static const i32 waiting[] = {AMG_MINECRAFT, AMG_IRACING, AMG_ACC};
@@ -1896,7 +2089,8 @@ static void automarks_apply()
 
     bool logs = false;
     replays_apply();
-    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER};
+    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER,
+                                     AMG_TARKOV};
     for (i32 g : log_games) logs |= g_am.events[g] != 0;
     if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);

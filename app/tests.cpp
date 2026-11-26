@@ -3693,6 +3693,76 @@ static void test_automarks()
         T(rl_port("[Other]\nPort=1\n") == 49123);
     }
 
+    // Escape from Tarkov: a raid's start with its map, its end said once, quests finished and group joins, from
+    // lines in the shape of the game's logs
+    {
+        EftSeen es = {};
+        AutoMark em[4];
+        u32 ee = AM_GAMES[AMG_TARKOV].events;
+        auto line = [&](const char *l, bool old = false) { return eft_line(&es, ee, l, old, em, 4); };
+        const char *pre = "2026-10-11 11:03:07.123|1.2.0.0.47965|Info|";
+        auto app = [&](const char *msg, bool old = false) {
+            char b[512];
+            snprintf(b, sizeof b, "%sapplication|%s", pre, msg);
+            return line(b, old);
+        };
+        T(app("Session mode: Pve") == 0);
+        T(app("scene preset path:maps/shopping_mall.bundle rcid:shopping_mall.scenespreset.asset") == 0);
+        T(!strcmp(es.map, "Interchange"));
+        T(app("LocationLoaded:12.5 real:13.1 diff:0.6") == 0);
+        T(app("GameStarting:") == 0);
+        T(app("GameStarted:60.69(0) real:61.02 diff:0.33") == 1 && !strcmp(em[0].note, "Raid start (Interchange)") && em[0].colour == 5);
+        T(line("EFT.LocalPlayer:OnGameSessionEnd(ExitStatus, Single, String, String)") == 1 && !strcmp(em[0].note, "Raid end"));
+        T(line("2026-10-11 11:30:00.000|1.2.0.0.47965|Info|backend|---> Request HTTPS, id [1001]: URL: https://x/client/match/local/end. ") == 0); // the same end
+        T(line("2026-10-11 11:30:01.000|1.2.0.0.47965|Info|backend|<--- Response HTTPS, id [1001]: URL: https://x/client/match/local/end") == 0);
+
+        // Online: the map from the server's Location, the end from the disconnect
+        T(app("scene preset path:maps/customs_preset.bundle rcid:bigmap.scenespreset.asset") == 0 && !strcmp(es.map, "Customs"));
+        T(app("TRACE-NetworkGameCreate profileStatus: 'Profileid: abc, Status: Busy, RaidMode: Online, Ip: 1.2.3.4, Port: 17000, Location: TarkovStreets, Sid: x, GameMode: deathmatch, shortId: ABC123'") == 0);
+        T(!strcmp(es.map, "Streets of Tarkov"));
+        T(app("GameStarted:10.0(0) real:10.2 diff:0.2") == 1 && !strcmp(em[0].note, "Raid start (Streets of Tarkov)"));
+        T(line("2026-10-11 12:01:00.000|1.2.0.0.47965|Info|output|Connection.Disconnect() TransportId:0 address:1.2.3.4 Reason:Stop game") == 1);
+        T(line("2026-10-11 12:01:00.000|1.2.0.0.47965|Info|output|Connection.Disconnect() TransportId:0 address:1.2.3.4 Reason:Stop game") == 0);
+        T(app("TRACE-NetworkGameCreate profileStatus: 'Profileid: abc, Status: Busy, RaidMode: Online, Location: NewPlace, Sid: x'") == 0);
+        T(!strcmp(es.map, "NewPlace")); // a map not known by its id
+        T(app("scene preset path:maps/unknown_preset.bundle rcid:x") == 0 && !es.map[0]);
+        T(app("GameStarted:5.0(0) real:5.0 diff:0") == 1 && !strcmp(em[0].note, "Raid start"));
+        T(app("GameStarted:5.0(0) real:5.0 diff:0", true) == 0 && es.in_raid); // an old line marks nothing
+        T(line("2026-10-11 12:30:00.000|1.2.0.0.47965|Info|push-notifications|Got notification | UserMatchOver") == 1);
+
+        // Notifications: a quest finished once per message, a quest started not, a group join
+        const char *note = "2026-10-11 12:40:00.000|1.2.0.0.47965|Info|push-notifications|Got notification | ";
+        char b[256];
+        snprintf(b, sizeof b, "%sChatMessageReceived", note);
+        T(line(b) == 0);
+        T(line("{") == 0 && line("  \"type\": 10,") == 0);
+        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b description\",") == 0);
+        T(line(b) == 0);
+        T(line("    \"text\": \"quest finished\",") == 0);
+        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 1 && !strcmp(em[0].note, "Quest done") && em[0].colour == 3);
+        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 0);
+        T(line("2026-10-11 12:41:00.000|1.2.0.0.47965|Info|push-notifications|NotificationManager: something") == 0);
+        T(line("    \"templateId\": \"6a successMessageText\",") == 0); // not in a chat message now
+        snprintf(b, sizeof b, "%sGroupMatchInviteAccept", note);
+        T(line(b) == 1 && !strcmp(em[0].note, "Group joined") && em[0].colour == 6);
+        T(line(b, true) == 0);
+        snprintf(b, sizeof b, "%sGroupMatchUserLeave", note);
+        T(line(b) == 0);
+        T(eft_line(&es, AM_RAID_START, "2026-10-11 13:00:00.000|1.2.0.0.47965|Info|application|GameStarted:1(0)", false, em, 4) == 1);
+        T(eft_line(&es, AM_RAID_START, "2026-10-11 13:20:00.000|1.2.0.0.47965|Info|output|x Reason:Stop game", false, em, 4) == 0); // its tick off
+        T(!es.in_raid);
+
+        // Each run's log files by name, with or without the run's name before them
+        T(eft_log_kind("application_000.log") == 0);
+        T(eft_log_kind("2026.10.11_11-03-07_1.2.0.0.47965 application_000.log") == 0);
+        T(eft_log_kind("2026.10.11_11-03-07_1.2.0.0.47965 output_001.log") == 1);
+        T(eft_log_kind("backend.log") == 2);
+        T(eft_log_kind("x push-notifications_000.log") == 3);
+        T(eft_log_kind("notifications_000.log") == -1);
+        T(eft_log_kind("errors_000.log") == -1 && eft_log_kind("application_000.txt") == -1);
+        T(eft_log_kind("myapplication_000.log") == -1);
+    }
+
     // Hearthstone: the player is whoever this PC sent the mulligan for; their win is said once a game
     {
         HsSeen hs = {};
