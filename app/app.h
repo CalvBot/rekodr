@@ -165,7 +165,7 @@ enum AmEvent : u32 {
 static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level",
                                              "lap", "overtake", "incident", "goal", "save"};
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
-                AMG_ROCKET_LEAGUE, AMG_COUNT };
+                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
 // or listening.
 struct AmGame { const char *key, *name, *feed; u32 events; };
@@ -183,6 +183,7 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"fortnite", "Fortnite", "From its replays, after the match (Record Replays on)", AM_KILL | AM_DEATH},
     {"siege", "Rainbow Six Siege", "From its match replays, after each round", AM_KILL | AM_DEATH},
     {"rocket_league", "Rocket League", "From the game's Stats API", AM_GOAL | AM_SAVE | AM_ASSIST | AM_KILL | AM_DEATH | AM_WIN},
+    {"hearthstone", "Hearthstone", "From the game's log", AM_WIN},
 };
 
 struct Config {
@@ -310,6 +311,7 @@ struct Config {
     // Timeline: the rows shown, |-separated: "Clips", "Sessions", and layers by name (Clips|Sessions)
     char timeline_show[512];
     bool front_window;      // the Front window layer is recorded (on)
+    bool input_busy;        // the Busy layer is recorded: how many keys and mouse moves a second, never which (off)
     char plugins_off[512];  // plugin folders switched off, |-separated
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default
     f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default

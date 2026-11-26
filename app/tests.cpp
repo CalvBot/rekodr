@@ -3671,6 +3671,46 @@ static void test_automarks()
         T(rl_port("[Other]\nPort=1\n") == 49123);
     }
 
+    // Hearthstone: the player is whoever this PC sent the mulligan for; their win is said once a game
+    {
+        HsSeen hs = {};
+        AutoMark hm[4];
+        u32 hse = AM_GAMES[AMG_HEARTHSTONE].events;
+        const char *pre = "D 20:01:02.0000000 ";
+        auto line = [&](const char *l, bool old = false) {
+            char b[512];
+            snprintf(b, sizeof b, "%s%s", pre, l);
+            return hs_line(&hs, hse, b, old, hm, 4);
+        };
+        T(line("GameState.DebugPrintPower() - CREATE_GAME") == 0);
+        line("GameState.DebugPrintEntityChoices() - id=1 Player=Them#2222 TaskList= ChoiceType=MULLIGAN CountMin=0 CountMax=3");
+        line("GameState.DebugPrintEntityChoices() - id=2 Player=Me#1234 TaskList= ChoiceType=MULLIGAN CountMin=0 CountMax=4");
+        T(!hs.me[0]);
+        line("GameState.SendChoices() - id=2 ChoiceType=MULLIGAN");
+        T(!strcmp(hs.me, "Me#1234"));
+        T(line("GameState.DebugPrintPower() - TAG_CHANGE Entity=Them#2222 tag=PLAYSTATE value=WON") == 0);
+        T(line("GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1234 tag=PLAYSTATE value=WON") == 1 && hm[0].colour == 3);
+        T(line("PowerTaskList.DebugPrintPower() -     TAG_CHANGE Entity=Me#1234 tag=PLAYSTATE value=WON") == 0); // the same win
+        line("PowerTaskList.DebugPrintPower() - CREATE_GAME");
+        T(line("GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1234 tag=PLAYSTATE value=WON", true) == 0); // an old line
+        line("GameState.DebugPrintPower() - CREATE_GAME");
+        T(line("GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1234 tag=PLAYSTATE value=WONDER") == 0);
+        T(line("GameState.DebugPrintPower() - TAG_CHANGE Entity=Me#1234 tag=PLAYSTATE value=LOST") == 0);
+
+        // log.config: Rekodr's [Power] in and out, a [Power] of the player's own left as it is
+        char hcfg[1024], back[1024];
+        hs_log_config("", true, hcfg, sizeof hcfg);
+        T(!strncmp(hcfg, "[Power]\nLogLevel=1\nFilePrinting=true\n", 37));
+        T(hs_log_config(hcfg, false, back, sizeof back) == 0);
+        hs_log_config("[Zone]\r\nLogLevel=1", true, hcfg, sizeof hcfg);
+        T(!strncmp(hcfg, "[Zone]\r\nLogLevel=1\n[Power]\n", 27));
+        hs_log_config(hcfg, false, back, sizeof back);
+        T(!strcmp(back, "[Zone]\r\nLogLevel=1\n"));
+        const char *own = "[Power]\nLogLevel=1\nFilePrinting=true\n[Zone]\nLogLevel=1\n";
+        hs_log_config(own, true, hcfg, sizeof hcfg);
+        T(!strcmp(hcfg, own));
+    }
+
     // autoexec.cfg: Rekodr's line in and out, the player's lines as they were
     char ax[512];
     T(tf2_autoexec("", true, ax, sizeof ax) > 0 && !strcmp(ax, "con_logfile console.log // " APP_NAME " reads it for markers\n"));

@@ -4155,7 +4155,7 @@ static void options_automarks()
         AmState st = c.auto_marks && c.auto_marks_on[g] ? automarks_state(g) : AM_OFF;
         const char *sub = st == AM_NOT_FOUND ? "Not installed on this PC"
                           : st == AM_PORT_BUSY ? "Another program is using its port"
-                          : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2 || g == AMG_ROCKET_LEAGUE) ? "From the game's next start"
+                          : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2 || g == AMG_ROCKET_LEAGUE || g == AMG_HEARTHSTONE) ? "From the game's next start"
                           : game.feed;
         bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY;
         if (opt_am_row_begin(game.name, sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_on[g], kit_px(20))) {

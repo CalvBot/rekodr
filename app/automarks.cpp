@@ -23,6 +23,9 @@
 //   Rocket League      Its Stats API, a JSON stream from 127.0.0.1:49123 (the Port in its ini). Turning it on sets
 //                      PacketSendRate in TAGame\Config\DefaultStatsAPI.ini (and the player's TAStatsAPI.ini) when
 //                      the API is off there, read when the game starts; turning it off puts back only what it set.
+//   Hearthstone        Logs\Hearthstone_<started>\Power.log in its folder, the newest run's. Turning it on adds a
+//                      [Power] section to %LOCALAPPDATA%\Blizzard\Hearthstone\log.config when there is none, read
+//                      when the game starts; turning it off takes out only that section.
 //
 // Only what the player did counts: kills, deaths and objectives of the player themself, rounds and matches their
 // team won.
@@ -375,6 +378,43 @@ static i32 tf2_line(Tf2Seen *s, u32 events, const char *line, bool old, AutoMark
     const char *k = strstr(line, " killed ");
     if (k && k < with && (size_t)(with - (k + 8)) == me && !strncmp(k + 8, s->me, me) && (events & AM_DEATH))
         am_push(out, cap, &n, 1, "Death");
+    return n;
+}
+
+// Hearthstone's Power.log. Both players' mulligans are logged ("DebugPrintEntityChoices() - id=<n> Player=<name>
+// TaskList=... ChoiceType=MULLIGAN"), but only the player's own choice is sent from this PC ("SendChoices() -
+// id=<n>"), which names them. A game won: "TAG_CHANGE Entity=<name> tag=PLAYSTATE value=WON", logged by both
+// GameState and PowerTaskList, so it is said once per game (CREATE_GAME starts the next).
+struct HsSeen {
+    char me[64];
+    i32 choice;           // the last mulligan choice's id
+    char choice_who[64];  // and whose it was
+    bool won_said;
+};
+
+static i32 hs_line(HsSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
+{
+    i32 n = 0;
+    if (const char *c = strstr(line, "DebugPrintEntityChoices() - id=")) {
+        const char *p = strstr(c, " Player="), *e = p ? strstr(p, " TaskList=") : 0;
+        if (e && strstr(e, "ChoiceType=MULLIGAN") && e - (p + 8) < (i64)sizeof s->choice_who) {
+            s->choice = atoi(c + 31);
+            memcpy(s->choice_who, p + 8, e - (p + 8));
+            s->choice_who[e - (p + 8)] = 0;
+        }
+    } else if (const char *sc = strstr(line, "SendChoices() - id=")) {
+        if (s->choice_who[0] && atoi(sc + 19) == s->choice) str_set(s->me, s->choice_who);
+    } else if (strstr(line, "DebugPrintPower() - CREATE_GAME")) {
+        s->won_said = false;
+    } else if (const char *t = strstr(line, "DebugPrintPower() -")) {
+        t = strstr(t, "TAG_CHANGE Entity=");
+        size_t me = strlen(s->me);
+        const char *v = t && me && !strncmp(t + 18, s->me, me) ? t + 18 + me : 0;
+        if (v && !strncmp(v, " tag=PLAYSTATE value=WON", 24) && (u8)v[24] <= ' ' && !s->won_said) {
+            s->won_said = true;
+            if (!old && (events & AM_WIN)) am_push(out, cap, &n, 3, "Win");
+        }
+    }
     return n;
 }
 
@@ -1036,6 +1076,116 @@ static u16 am_rl_cfg(const wchar_t *dir, bool on)
     return port;
 }
 
+// Hearthstone writes its Power.log only with a [Power] section in %LOCALAPPDATA%\Blizzard\Hearthstone\log.config,
+// read when it starts. Rekodr adds the section when there is none, leaving a file in local_dir that says so, and
+// takes out only that section, only then.
+static const char HS_SECTION[] = "[Power]";
+static const char HS_KEYS[] = "LogLevel=1\nFilePrinting=true\nConsolePrinting=false\nScreenPrinting=false\nVerbose=true\n";
+
+// log.config's text with Rekodr's [Power] section put in (on, when there is no [Power]) or taken out. Returns its
+// length.
+static i32 hs_log_config(const char *text, bool on, char *out, i32 cap)
+{
+    i32 n = 0;
+    bool have = false, skip = false;
+    for (const char *p = text; *p;) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) + 1 : strlen(p), body = len;
+        while (body && (p[body - 1] == '\n' || p[body - 1] == '\r')) body--;
+        if (body && p[0] == '[') {
+            bool power = body == strlen(HS_SECTION) && !_strnicmp(p, HS_SECTION, body);
+            have |= power;
+            skip = power && !on;
+        }
+        if (!skip && n + (i32)len < cap) memcpy(out + n, p, len), n += (i32)len;
+        p += len;
+    }
+    if (on && !have) {
+        if (n && out[n - 1] != '\n' && n + 1 < cap) out[n++] = '\n';
+        n += snprintf(out + n, cap - n, "%s\n%s", HS_SECTION, HS_KEYS);
+    }
+    if (n >= cap) n = cap - 1;
+    out[n] = 0;
+    return n;
+}
+
+// Puts Rekodr's section in or takes it out (only when Rekodr put it there); a file left empty goes. A test copy
+// keeps its file in its own home.
+static void am_hs_cfg(bool on)
+{
+    Path cfg;
+    if (is_test_copy()) {
+        Path d = path_join(g_app.paths.local_dir, L"gsicfg");
+        CreateDirectoryW(d.s, 0);
+        cfg = path_join(d, L"hs_log.config");
+    } else {
+        PWSTR local = 0;
+        if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, 0, &local))) return;
+        swprintf(cfg.s, COUNT(cfg.s), L"%s\\Blizzard\\Hearthstone", local);
+        CoTaskMemFree(local);
+        if (on) CreateDirectoryW(cfg.s, 0);
+        wcscat_s(cfg.s, L"\\log.config");
+    }
+    Path flag = path_join(g_app.paths.local_dir, L"hs_logconfig_on");
+    bool ours = GetFileAttributesW(flag.s) != INVALID_FILE_ATTRIBUTES;
+    if (!on && !ours) return;
+    i64 size = 0;
+    char *text = read_file(cfg.s, &size);
+    static char out[64 * 1024];
+    if (size >= (i64)sizeof out - 256) {
+        free(text);
+        return;
+    }
+    i32 n = hs_log_config(text ? text : "", on, out, sizeof out);
+    bool same = text && n == size && !memcmp(text, out, n);
+    free(text);
+    if (!same) {
+        bool empty = true;
+        for (i32 i = 0; i < n; i++) empty &= out[i] == ' ' || out[i] == '\t' || out[i] == '\r' || out[i] == '\n';
+        if (empty) DeleteFileW(cfg.s);
+        else if (FILE *f = _wfopen(cfg.s, L"wb")) fwrite(out, 1, n, f), fclose(f);
+    }
+    if (on && !same && !ours) {
+        if (FILE *f = _wfopen(flag.s, L"wb")) fclose(f);
+        log_line("markers: Hearthstone's log.config has Rekodr's [Power] section; the game reads it when it starts");
+    } else if (!on) {
+        DeleteFileW(flag.s);
+        log_line("markers: Hearthstone's log.config no longer has Rekodr's [Power] section");
+    }
+}
+
+// Hearthstone's install folder, from its uninstall entry (Battle.net's), else the usual place. "" if not there.
+static void hs_dir(wchar_t *out)
+{
+    out[0] = 0;
+    DWORD bytes = MAX_PATH * sizeof(wchar_t);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Hearthstone",
+                     L"InstallLocation", RRF_RT_REG_SZ, 0, out, &bytes) != ERROR_SUCCESS || !out[0]) {
+        wchar_t pf[MAX_PATH];
+        if (!GetEnvironmentVariableW(L"ProgramFiles(x86)", pf, MAX_PATH)) return;
+        swprintf(out, MAX_PATH, L"%s\\Hearthstone", pf);
+    }
+    size_t l = wcslen(out);
+    while (l && out[l - 1] == L'\\') out[--l] = 0;
+    if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) out[0] = 0;
+}
+
+// The Power.log of the game's newest run: <install>\Logs\Hearthstone_<date and time>\Power.log. "" if none.
+static void hs_log_path(const wchar_t *dir, wchar_t *out)
+{
+    out[0] = 0;
+    wchar_t pat[MAX_PATH], best[MAX_PATH] = L"";
+    swprintf(pat, MAX_PATH, L"%s\\Logs\\Hearthstone_*", dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, best) > 0) wcscpy_s(best, fd.cFileName);
+    while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (best[0]) swprintf(out, MAX_PATH, L"%s\\Logs\\%s\\Power.log", dir, best);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The worker
 
@@ -1057,6 +1207,11 @@ static struct {
     IrSeen ir;
     AccSeen acc;
     RlSeen rl;
+    HsSeen hs;
+    AmTail hs_tail;
+    wchar_t hs_dir[MAX_PATH];        // Hearthstone's install; "" when it isn't installed (main thread sets it)
+    wchar_t hs_log[MAX_PATH];        // the newest run's Power.log; "" until found
+    i64 hs_next;                     // when to look for a newer one
     volatile LONG rl_port;           // the port Rocket League's Stats API sends on (main thread sets it)
     AmTail mc_tail, poe_tail[2], tf2_tail;
     wchar_t mc_log[MAX_PATH];        // the running Minecraft's latest.log; "" until found
@@ -1245,6 +1400,16 @@ static void am_logs_poll()
             });
         }
     }
+    if (u32 ev = g_am.events[AMG_HEARTHSTONE]) {
+        if (g_am.hs_dir[0] && now_us() >= g_am.hs_next) {
+            hs_log_path(g_am.hs_dir, g_am.hs_log);
+            g_am.hs_next = now_us() + 5000000;
+        }
+        if (g_am.hs_log[0])
+            am_tail(&g_am.hs_tail, g_am.hs_log, [&](const char *l, bool old) {
+                feed(AMG_HEARTHSTONE, hs_line(&g_am.hs, ev, l, old, marks, COUNT(marks)));
+            });
+    }
     replays_poll();
 }
 
@@ -1394,6 +1559,7 @@ static DWORD WINAPI am_thread(void *)
         if (!g_am.events[AMG_IRACING]) g_am.ir = {};
         if (!g_am.events[AMG_ACC]) g_am.acc = {};
         if (!g_am.events[AMG_ROCKET_LEAGUE]) g_am.rl.me[0] = 0;
+        if (!g_am.events[AMG_HEARTHSTONE]) g_am.hs = {}, g_am.hs_tail = {}, g_am.hs_log[0] = 0, g_am.hs_next = 0;
 
         i64 now = now_us();
         i64 wait_ms = 1000;
@@ -1576,6 +1742,15 @@ static void automarks_apply()
         g_am.gsi_applied[AMG_ROCKET_LEAGUE] = rl_on;
         InterlockedExchange(&g_am.state[AMG_ROCKET_LEAGUE], !rl_on ? AM_OFF : port ? AM_READY : AM_NOT_FOUND);
     }
+    bool hs = g_am.events[AMG_HEARTHSTONE] != 0;
+    wchar_t hd[MAX_PATH] = L"";
+    if (hs) hs_dir(hd);
+    if (hs || g_am.gsi_applied[AMG_HEARTHSTONE] || !c.auto_marks_on[AMG_HEARTHSTONE]) {
+        if (hd[0] || !hs) am_hs_cfg(hs);
+        g_am.gsi_applied[AMG_HEARTHSTONE] = hs;
+        InterlockedExchange(&g_am.state[AMG_HEARTHSTONE], !hs ? AM_OFF : hd[0] ? AM_READY : AM_NOT_FOUND);
+    }
+    wcscpy_s(g_am.hs_dir, hd);
     static const i32 waiting[] = {AMG_MINECRAFT, AMG_IRACING, AMG_ACC};
     for (i32 g : waiting) InterlockedExchange(&g_am.state[g], g_am.events[g] ? AM_READY : AM_OFF);
     if (!g_am.events[AMG_F1_25]) InterlockedExchange(&g_am.state[AMG_F1_25], AM_OFF);
@@ -1583,7 +1758,7 @@ static void automarks_apply()
 
     bool logs = false;
     replays_apply();
-    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE};
+    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE};
     for (i32 g : log_games) logs |= g_am.events[g] != 0;
     if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);
@@ -1605,8 +1780,8 @@ static void automarks_stop()
     g_am.thread = 0;
 }
 
-// Uninstall: the cfg files and Team Fortress 2's autoexec line go, and Rocket League's Stats API is turned back off
-// if Rekodr turned it on, whatever the switches say.
+// Uninstall: the cfg files and Team Fortress 2's autoexec line go, and Rocket League's Stats API and Hearthstone's
+// Power log are turned back off if Rekodr turned them on, whatever the switches say.
 static void automarks_uninstall()
 {
     for (i32 i = 0; i < COUNT(AM_GSI); i++) am_gsi_cfg(AM_GSI[i], false);
@@ -1616,4 +1791,5 @@ static void automarks_uninstall()
     wchar_t rd[MAX_PATH];
     rl_dir(rd);
     am_rl_cfg(rd, false);
+    am_hs_cfg(false);
 }
