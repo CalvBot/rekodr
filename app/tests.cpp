@@ -3157,7 +3157,8 @@ static void test_share_ready_edit()
     only_file.file = true;
     T(share_ready_kind(only_file, KIT_SECONDARY) == KIT_TINT && share_ready_kind(st, KIT_SECONDARY) == KIT_TINT);
     T(share_ready_kind(ClipShareState{}, KIT_SECONDARY) == KIT_SECONDARY);
-    T(!strcmp(share_ready_icon(only_file), ICON_SHARE) && !strcmp(share_ready_icon(st), ICON_LINK));
+    T(!strcmp(share_ready_icon(only_file), ICON_FILE) && !strcmp(share_ready_icon(st), ICON_LINK));
+    T(!strcmp(share_ready_icon(ClipShareState{}), ICON_SHARE));
     // The library's note shows the link glyph only for a link that went on the clipboard
     lib_note_link("clip");
     T(g_lib_note_link && !strcmp(g_lib_note, "Link copied: clip"));

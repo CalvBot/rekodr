@@ -3119,18 +3119,24 @@ static ClipShareState lib_clip_state(const LibItem &it)
 }
 
 // How a Share button looks for what one click gives, at the same size and place whatever it is: tinted in the accent
-// when a share is ready (the link glyph for a link that plays, which Share copies; the share glyph for a copy on
-// disk), else `plain`.
+// when a share is ready (share_ready_icon says which), else `plain`.
 static KitKind share_ready_kind(const ClipShareState &cs, KitKind plain)
 {
     return cs.link_ready || cs.file ? KIT_TINT : plain;
 }
-static const char *share_ready_icon(const ClipShareState &cs) { return cs.link_ready ? ICON_LINK : ICON_SHARE; }
+// The Share button's glyph: a link for a link that plays (Share copies it), a file for a copy ready on disk (Share
+// copies the file), else the share arrow.
+static const char *share_ready_icon(const ClipShareState &cs)
+{
+    return cs.link_ready ? ICON_LINK : cs.file ? ICON_FILE : ICON_SHARE;
+}
 
 // The Share button's tip: what one click does.
 static const char *share_ready_tip(const ClipShareState &cs)
 {
-    return cs.link_ready ? "Copy the link. Right-click for more options" : "Share. Right-click for more options";
+    return cs.link_ready ? "Copy the link. Right-click for more options"
+           : cs.file     ? "Copy the file. Right-click for more options"
+                         : "Share. Right-click for more options";
 }
 
 // What deleting cards takes with it, as the Delete dialog's line: their share copies and links, and the links that
@@ -4903,12 +4909,9 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
                               COL_TEXT);
             ui_wake();
         } else {
-            f32 is = g_font_icon->FontSize;
             const char *sicon = share_big ? ICON_SHARE : share_ready_icon(share_cs);
             u32 ink = share_big ? COL_FAINT : sk == KIT_TINT ? COL_ACCENT_HOVER : COL_TEXT;
-            ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, sicon);
-            dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)),
-                        col32(ink), sicon);
+            kit_icon_at(dl, ImVec2((s0.x + s1.x) / 2, (s0.y + s1.y) / 2), col32(ink), sicon);
         }
     }
     if (share && share_running) {

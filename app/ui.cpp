@@ -819,6 +819,21 @@ static void kit_next_tip(const char *what, const char *keys = 0)
     g_next_tip_keys = keys;
 }
 
+// Draws an icon (ICON_*) with the middle of its ink on `c`. Placing it by its advance and line instead rounds the ink a
+// pixel off the middle in some boxes.
+static void kit_icon_at(ImDrawList *dl, ImVec2 c, u32 col, const char *icon, f32 size = 0)
+{
+    ImFont *f = g_font_icon;
+    if (!size) size = f->FontSize;
+    unsigned int cp = 0;
+    ImTextCharFromUtf8(&cp, icon, 0);
+    const ImFontGlyph *g = f->FindGlyphNoFallback((ImWchar)cp);
+    f32 s = size / f->FontSize;
+    ImVec2 at = g ? ImVec2(roundf(c.x - (g->X0 + g->X1) * s / 2), roundf(c.y - (g->Y0 + g->Y1) * s / 2))
+                  : ImVec2(floorf(c.x - size / 2), floorf(c.y - size / 2));
+    dl->AddText(f, size, at, col, icon);
+}
+
 // A square button showing one icon (ICON_*). id must be unique in the window ("##play"). active draws it selected.
 static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT_GHOST, bool enabled = true,
                             bool active = false, f32 size = 0)
@@ -851,10 +866,7 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     }
     if (held && kind != KIT_PRIMARY && kind != KIT_ACCENT) fill_a *= 0.8f;
     if (fill_a > 0) dl->AddRectFilled(a, z, col32(fill, fill_a), size / 2);
-    ImGui::PushFont(g_font_icon);
-    ImVec2 ts = ImGui::CalcTextSize(icon);
-    dl->AddText(ImVec2(floorf(a.x + (size - ts.x) / 2), floorf(a.y + (size - ts.y) / 2)), col32(ink, enabled ? 1 : 0.35f), icon);
-    ImGui::PopFont();
+    kit_icon_at(dl, ImVec2(a.x + size / 2, a.y + size / 2), col32(ink, enabled ? 1 : 0.35f), icon);
     return clicked && enabled;
 }
 

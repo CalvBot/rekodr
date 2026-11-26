@@ -2757,7 +2757,8 @@ static void ed_share_tab(f32 w)
         else if (js.done) str_set(label, js.line);
         ClipShareState cs = share_clip_state(ed.item.key, ed.path.s, ed_share_info(), &ed.edit);
         if (!js.running && !js.done && !sharing && cs.link_ready) str_set(label, ICON_LINK "  Copy link");
-        else if (!js.running && !js.done) str_set(label, sharing ? "Sharing..." : ICON_SHARE "  Share");
+        else if (!js.running && !js.done && !sharing) snprintf(label, sizeof label, "%s  Share", share_ready_icon(cs));
+        else if (!js.running && !js.done) str_set(label, "Sharing...");
         ImVec2 share_at = ImGui::GetCursorScreenPos();
         KitKind kind = js.running ? KIT_SECONDARY : js.done || sharing ? KIT_PRIMARY : share_ready_kind(cs, KIT_PRIMARY);
         i32 sb = kit_split_button(label, "##edshare", kind, ImVec2(bw, 0),
