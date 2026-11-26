@@ -2385,6 +2385,7 @@ static void opt_rows_buffer()
 }
 
 static bool g_opt_show_audio; // "show audio": Recording scrolled to its Audio
+static bool g_opt_show_r2; // "show cloudflare": Integrations scrolled to Cloudflare's Advanced rows, open
 static void ffget_get_and_use(); // ffget.cpp
 static void ffget_uninstall();
 static bool ffget_running();
@@ -3467,8 +3468,8 @@ static void opt_uploader_rows()
 static i32 g_read_cap_saved = -1;
 
 // The reads limit (r2_read_cap): bucket links pause near it until the month ends. A slider of 1 to 100 million in
-// steps of a million with a tick at R2's free 10 million, and a box for the number. Over the free ones the line
-// says what the month costs at the limit.
+// steps of a million with a tick at R2's free 10 million that a drag snaps to, and a box for the number. Over the
+// free ones the line says what the month costs at the limit.
 static void opt_read_cap_row()
 {
     Config &c = g_app.config;
@@ -3886,6 +3887,11 @@ static void options_sharing()
     // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made
     // by hand. Each link has a slot as wide as its longer wording, so neither moves when the other is clicked.
     static bool advanced, token_rows;
+    if (g_opt_show_r2) { // "show cloudflare": scrolled to here with the Advanced rows open, once
+        advanced = true;
+        ImGui::SetScrollHereY(0);
+        g_opt_show_r2 = false;
+    }
     opt_row_begin(0, 0, 0, dp(36));
     {
         struct Fold {

@@ -3159,6 +3159,12 @@ static void test_share_ready_edit()
     T(share_ready_kind(ClipShareState{}, KIT_SECONDARY) == KIT_SECONDARY);
     T(!strcmp(share_ready_icon(only_file), ICON_FILE) && !strcmp(share_ready_icon(st), ICON_LINK));
     T(!strcmp(share_ready_icon(ClipShareState{}), ICON_SHARE));
+    // A slider drag near a tick lands on it: the reads limit's free 10 M, or a preset among `snaps`
+    static const f32 snaps[] = {1, 7};
+    T(slider_snap(10.4f, 0.6f, 1, 100, 10, 0, 0) == 10 && slider_snap(11, 0.6f, 1, 100, 10, 0, 0) == 11);
+    T(slider_snap(6.7f, 0.5f, 0, 30, -1e9f, snaps, 2) == 7 && slider_snap(4, 0.5f, 0, 30, -1e9f, snaps, 2) == 4);
+    T(slider_snap(0.5f, 1, 2, 30, -1e9f, snaps, 2) == 0.5f); // a tick outside the range is none
+
     // The library's note shows the link glyph only for a link that went on the clipboard
     lib_note_link("clip");
     T(g_lib_note_link && !strcmp(g_lib_note, "Link copied: clip"));

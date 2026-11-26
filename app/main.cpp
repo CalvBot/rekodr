@@ -162,6 +162,11 @@ static void run_command(const char *text)
         }
         else if (!strcmp(arg, "help")) { g_app.ui.help_open = true; g_app.ui.help_close = false; }
         else if (!strcmp(arg, "news")) g_app.ui.news_open = g_app.ui.news_since = true; // What's new since seen_version
+        else if (!strcmp(arg, "cloudflare")) { // Integrations, scrolled to Cloudflare's Advanced rows, open
+            ui_show(SCREEN_OPTIONS);
+            g_app.options.tab = OPT_INTEGRATIONS;
+            g_opt_show_r2 = true;
+        }
         else if (!strcmp(arg, "folders")) { // General, scrolled to its Folders
             ui_show(SCREEN_OPTIONS);
             g_app.options.tab = OPT_GENERAL;
@@ -180,7 +185,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {

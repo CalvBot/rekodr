@@ -2152,10 +2152,21 @@ static void lib_play_mark(ImDrawList *dl, ImVec2 c, f32 r)
                           IM_COL32_WHITE);
 }
 
+// A slider's value `v` moved onto the first tick (`mark`, then `snaps`) within `reach` of it, if any
+static f32 slider_snap(f32 v, f32 reach, f32 lo, f32 hi, f32 mark, const f32 *snaps, i32 snap_count)
+{
+    for (i32 i = -1; i < snap_count; i++) {
+        f32 t = i < 0 ? mark : snaps[i];
+        if (t >= lo && t <= hi && fabsf(v - t) <= reach) return t;
+    }
+    return v;
+}
+
 // A flat slider: a thin track filled up to the value and a knob, both a little bigger under the mouse. `mark` puts a
-// tick on the track (100% on a volume); below `lo` there's none. Returns true when the value changed.
+// tick on the track (100% on a volume); below `lo` there's none. `snaps` are more ticks. A drag that comes within a
+// few pixels of a tick lands on it. Returns true when the value changed.
 static bool lib_slider(const char *id, f32 *v, f32 lo, f32 hi, f32 w, f32 h, f32 mark = -1e9f, bool enabled = true,
-                       u32 fill = COL_ACCENT)
+                       u32 fill = COL_ACCENT, const f32 *snaps = 0, i32 snap_count = 0)
 {
     ImVec2 a = ImGui::GetCursorScreenPos();
     if (!enabled) ImGui::BeginDisabled();
@@ -2168,7 +2179,7 @@ static bool lib_slider(const char *id, f32 *v, f32 lo, f32 hi, f32 w, f32 h, f32
     if (held && x1 > x0) {
         f32 u = (ImGui::GetIO().MousePos.x - x0) / (x1 - x0);
         u = u < 0 ? 0 : u > 1 ? 1 : u;
-        f32 nv = lo + u * (hi - lo);
+        f32 nv = slider_snap(lo + u * (hi - lo), kit_px(6) / (x1 - x0) * (hi - lo), lo, hi, mark, snaps, snap_count);
         if (nv != *v) {
             *v = nv;
             changed = true;
@@ -2180,8 +2191,10 @@ static bool lib_slider(const char *id, f32 *v, f32 lo, f32 hi, f32 w, f32 h, f32
     u = u < 0 ? 0 : u > 1 ? 1 : u;
     f32 kx = x0 + u * (x1 - x0);
     dl->AddRectFilled(ImVec2(x0, cy - th / 2), ImVec2(x1, cy + th / 2), col32(COL_HOVER), th);
-    if (mark >= lo && mark <= hi) {
-        f32 mx = floorf(x0 + (mark - lo) / (hi - lo) * (x1 - x0));
+    for (i32 i = -1; i < snap_count; i++) {
+        f32 t = i < 0 ? mark : snaps[i];
+        if (t < lo || t > hi) continue;
+        f32 mx = floorf(x0 + (t - lo) / (hi - lo) * (x1 - x0));
         dl->AddRectFilled(ImVec2(mx - kit_px(1), cy - kit_px(6)), ImVec2(mx + kit_px(1), cy + kit_px(6)), col32(COL_FAINT));
     }
     dl->AddRectFilled(ImVec2(x0, cy - th / 2), ImVec2(kx, cy + th / 2), col32(enabled ? fill : COL_FAINT), th);
