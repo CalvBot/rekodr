@@ -1,8 +1,8 @@
 // Event icons: a small mono picture for each kind of game event (a skull for a death, a crosshair for a kill, a
-// trophy for a win) and for a few weapon classes, drawn as paths so every game shows the same icon for the same
+// trophy for a win) and for the main kinds of weapon, drawn as paths so every game shows the same icon for the same
 // event at any size. The timeline draws a marker as its icon, tinted with the marker's colour.
 //
-// Each icon is laid out on a 16 x 16 grid centred on the point it is drawn at; `hole` is the colour behind it, for
+// Each icon is laid out on a 14 x 14 grid centred on the point it is drawn at; `hole` is the colour behind it, for
 // the parts cut out of a shape (a skull's eyes).
 
 static bool marker_detail_get(const char *d, const char *key, char *out, i32 cap); // markers.cpp
@@ -12,7 +12,7 @@ enum EvIcon {
     EVI_ADVANCEMENT, EVI_LEVEL, EVI_LAP, EVI_OVERTAKE, EVI_INCIDENT, EVI_GOAL, EVI_SAVE, EVI_RAID_START, EVI_RAID_END,
     EVI_QUEST, EVI_GROUP, EVI_CONTRACT, EVI_ZONE, EVI_TRAVEL, EVI_SPAWN, EVI_SERVER, EVI_ACCOUNT, EVI_MVP, EVI_PLANT,
     EVI_DEFUSE, EVI_ACHIEVEMENT,
-    EVI_RIFLE, EVI_PISTOL, EVI_SMG, EVI_SNIPER, EVI_SHOTGUN, EVI_KNIFE, EVI_GRENADE,
+    EVI_RIFLE, EVI_PISTOL, EVI_SMG, EVI_SNIPER, EVI_SHOTGUN, EVI_MELEE, EVI_GRENADE, EVI_LMG, EVI_LAUNCHER,
     EVI_COUNT
 };
 
@@ -24,7 +24,7 @@ static const u8 EVI_OF_EVENT[] = {EVI_KILL, EVI_MULTI, EVI_DEATH, EVI_ROUND, EVI
                                   EVI_DEFUSE};
 static_assert(sizeof EVI_OF_EVENT == sizeof AM_EVENT_WORDS / sizeof *AM_EVENT_WORDS, "an icon for each event");
 
-// A weapon's class from its name: Counter-Strike 2's ("ak47", "awp", "knife_karambit"), and the words other games
+// A weapon's kind from its name, one of the main kinds every game's weapons fall into (an AWP is a sniper rifle): Counter-Strike 2's ("ak47", "awp", "knife_karambit"), and the words other games
 // use ("AK-74N", "Mosin rifle", "F-1 hand grenade"). EVI_NONE when the name says nothing of it.
 static EvIcon evi_weapon_class(const char *weapon)
 {
@@ -38,8 +38,8 @@ static EvIcon evi_weapon_class(const char *weapon)
     static const Word words[] = {
         {"awp", EVI_SNIPER, true}, {"ssg08", EVI_SNIPER, true}, {"scar20", EVI_SNIPER, true}, {"g3sg1", EVI_SNIPER, true},
         {"ak47", EVI_RIFLE, true}, {"m4a1", EVI_RIFLE, true}, {"m4a1_silencer", EVI_RIFLE, true}, {"famas", EVI_RIFLE, true},
-        {"galilar", EVI_RIFLE, true}, {"aug", EVI_RIFLE, true}, {"sg556", EVI_RIFLE, true}, {"m249", EVI_RIFLE, true},
-        {"negev", EVI_RIFLE, true},
+        {"galilar", EVI_RIFLE, true}, {"aug", EVI_RIFLE, true}, {"sg556", EVI_RIFLE, true}, {"m249", EVI_LMG, true},
+        {"negev", EVI_LMG, true},
         {"mac10", EVI_SMG, true}, {"mp9", EVI_SMG, true}, {"mp7", EVI_SMG, true}, {"mp5sd", EVI_SMG, true},
         {"ump45", EVI_SMG, true}, {"p90", EVI_SMG, true}, {"bizon", EVI_SMG, true},
         {"nova", EVI_SHOTGUN, true}, {"xm1014", EVI_SHOTGUN, true}, {"sawedoff", EVI_SHOTGUN, true}, {"mag7", EVI_SHOTGUN, true},
@@ -49,9 +49,14 @@ static EvIcon evi_weapon_class(const char *weapon)
         {"hegrenade", EVI_GRENADE, true}, {"molotov", EVI_GRENADE, true}, {"incgrenade", EVI_GRENADE, true},
         {"flashbang", EVI_GRENADE, true}, {"smokegrenade", EVI_GRENADE, true}, {"decoy", EVI_GRENADE, true},
         {"inferno", EVI_GRENADE, true},
-        {"knife", EVI_KNIFE, false}, {"bayonet", EVI_KNIFE, false}, {"machete", EVI_KNIFE, false}, {"axe", EVI_KNIFE, false},
-        {"hatchet", EVI_KNIFE, false}, {"melee", EVI_KNIFE, false}, {"sword", EVI_KNIFE, false}, {"spear", EVI_KNIFE, false},
-        {"grenade", EVI_GRENADE, false}, {"explosive", EVI_GRENADE, false}, {"c4", EVI_GRENADE, false}, {"rocket", EVI_GRENADE, false},
+        {"launcher", EVI_LAUNCHER, false}, {"rpg", EVI_LAUNCHER, false}, {"bazooka", EVI_LAUNCHER, false},
+        {"panzerfaust", EVI_LAUNCHER, false}, {"at4", EVI_LAUNCHER, false}, {"mgl", EVI_LAUNCHER, false},
+        {"machine gun", EVI_LMG, false}, {"machinegun", EVI_LMG, false}, {"pkm", EVI_LMG, false}, {"pkp", EVI_LMG, false},
+        {"rpk", EVI_LMG, false}, {"rpd", EVI_LMG, false}, {"m60", EVI_LMG, false}, {"mg42", EVI_LMG, false},
+        {"mg3", EVI_LMG, false}, {"minigun", EVI_LMG, false}, {"hmg", EVI_LMG, false}, {"m2 browning", EVI_LMG, false},
+        {"knife", EVI_MELEE, false}, {"bayonet", EVI_MELEE, false}, {"machete", EVI_MELEE, false}, {"axe", EVI_MELEE, false},
+        {"hatchet", EVI_MELEE, false}, {"melee", EVI_MELEE, false}, {"sword", EVI_MELEE, false}, {"spear", EVI_MELEE, false},
+        {"grenade", EVI_GRENADE, false}, {"explosive", EVI_GRENADE, false}, {"c4", EVI_GRENADE, false}, {"rocket", EVI_LAUNCHER, false},
         {"sniper", EVI_SNIPER, false}, {"mosin", EVI_SNIPER, false}, {"sv-98", EVI_SNIPER, false}, {"m700", EVI_SNIPER, false},
         {"t-5000", EVI_SNIPER, false}, {"dvl", EVI_SNIPER, false}, {"bolt action", EVI_SNIPER, false}, {"l96", EVI_SNIPER, false},
         {"shotgun", EVI_SHOTGUN, false}, {"mp-133", EVI_SHOTGUN, false}, {"mp-153", EVI_SHOTGUN, false}, {"saiga", EVI_SHOTGUN, false},
@@ -61,8 +66,8 @@ static EvIcon evi_weapon_class(const char *weapon)
         {"pistol", EVI_PISTOL, false}, {"glock", EVI_PISTOL, false}, {"makarov", EVI_PISTOL, false}, {"pm ", EVI_PISTOL, false},
         {"m1911", EVI_PISTOL, false}, {"revolver", EVI_PISTOL, false}, {"deagle", EVI_PISTOL, false}, {"apb", EVI_PISTOL, false},
         {"rifle", EVI_RIFLE, false}, {"ak-", EVI_RIFLE, false}, {"m4a1", EVI_RIFLE, false}, {"akm", EVI_RIFLE, false},
-        {"carbine", EVI_RIFLE, false}, {"lmg", EVI_RIFLE, false}, {"hk 416", EVI_RIFLE, false}, {"mdr", EVI_RIFLE, false},
-        {"sks", EVI_RIFLE, false}, {"vss", EVI_RIFLE, false}, {"m249", EVI_RIFLE, false},
+        {"carbine", EVI_RIFLE, false}, {"lmg", EVI_LMG, false}, {"hk 416", EVI_RIFLE, false}, {"mdr", EVI_RIFLE, false},
+        {"sks", EVI_RIFLE, false}, {"vss", EVI_RIFLE, false}, {"m249", EVI_LMG, false},
         // Tarkov's
         {"mpx", EVI_SMG, false}, {"pp-19", EVI_SMG, false}, {"pp-91", EVI_SMG, false}, {"pp-9 ", EVI_SMG, false},
         {"saiga-9", EVI_SMG, false}, {"vityaz", EVI_SMG, false}, {"kriss", EVI_SMG, false}, {"stm-9", EVI_SMG, false},
@@ -79,7 +84,7 @@ static EvIcon evi_weapon_class(const char *weapon)
     };
     for (const Word &x : words)
         if (x.whole ? !strcmp(w, x.word) : strstr(w, x.word) != 0) return (EvIcon)x.icon;
-    if (starts_with(w, "knife")) return EVI_KNIFE;
+    if (starts_with(w, "knife")) return EVI_MELEE;
     return EVI_NONE;
 }
 
@@ -107,8 +112,8 @@ static EvIcon evi_of_marker(const char *detail)
 static const char *const EVI_NAMES[EVI_COUNT] = {
     "", "Kill", "Death", "Headshot", "Multi-kill", "Downed", "Assist", "Round", "Win", "Objective", "Advancement",
     "Level", "Lap", "Overtake", "Incident", "Goal", "Save", "Raid start", "Raid end", "Quest", "Group", "Contract",
-    "Zone", "Travel", "Spawn", "Server", "Account", "MVP", "Plant", "Defuse", "Achievement", "Rifle", "Pistol", "SMG",
-    "Sniper", "Shotgun", "Knife", "Grenade"};
+    "Zone", "Travel", "Spawn", "Server", "Account", "MVP", "Plant", "Defuse", "Achievement", "Assault rifle", "Pistol",
+    "SMG", "Sniper rifle", "Shotgun", "Melee", "Grenade", "Machine gun", "Rocket launcher"};
 
 // Each icon's shapes on a 14 by 14 grid of pixels at 100%, so straight edges fall on whole pixels. Upper case in
 // the icon's colour, lower case in the colour behind it (holes): R x0 y0 x1 y1 a rectangle; D x y r a disc; O x y r w
@@ -118,7 +123,7 @@ static const char *const EVI_SHAPES[EVI_COUNT] = {
     "",
     /* kill */ "O 7 7 5 2 R 6 0 8 3 R 6 11 8 14 R 0 6 3 8 R 11 6 14 8 R 6 6 8 8",
     /* death */ "D 7 6 5.5 R 3 8 11 13 d 4.8 6.6 1.7 d 9.2 6.6 1.7 r 5 11 6 13 r 8 11 9 13",
-    /* headshot */ "D 7 5 4.5 d 7 5 2.5 D 7 5 1.2 P 4 1 14 3 10 11 10 13 14",
+    /* headshot */ "P 8 3.5 1 8.5 1 10.5 3 11 6 12.5 9 10.5 9.5 9.5 14 3.5 14 D 5.5 5.8 4.6 t 11 3 3.6 1.6 T 11 3 2.7 1.1",
     /* multi */ "P 8 7 0 11 5 12 9 10.5 12.5 7 14 3.5 12.5 2 9 3 5 p 5 7 6.5 9 10 8 12 6 12 5 10",
     /* downed */ "D 3 8.5 2.5 R 6 7 13 11 R 0 12 14 14",
     /* assist */ "D 5 4 3 P 5 0 14 1 9 5 8 9 9 10 14 R 10 2 12 10 R 7 5 15 7",
@@ -146,13 +151,15 @@ static const char *const EVI_SHAPES[EVI_COUNT] = {
     /* plant */ "D 6 8.5 5 R 8 3 11 5 R 11 1 12 3 R 12 0 14 1",
     /* defuse */ "D 6 8.5 5 R 8 3 11 5 s 1.6 2 2.5 12 9.5 5",
     /* achievement */ "P 4 3 0 6 0 8 5 5 5 P 4 8 0 11 0 9 5 6 5 D 7 9 4.8 d 7 9 2.4",
-    /* rifle */ "P 4 0 5 4 4 4 8 0 9 R 4 4 11 7 R 11 4 14 6 P 4 7 7 9 7 10 11 8 11 P 4 4 7 6 7 5 10 3 10",
+    /* assault rifle */ "P 4 0 5 4 4 4 8 0 9 R 4 4 11 7 R 11 4 14 6 P 4 7 7 9 7 10 11 8 11 P 4 4 7 6 7 5 10 3 10",
     /* pistol */ "R 2 3 13 7 P 4 3 7 7 7 6 12 2 12",
     /* smg */ "R 0 4 2 6 R 2 3 11 7 R 11 4 14 6 R 6 7 8 12 P 4 3 7 5 7 4 10 2 10",
-    /* sniper */ "P 4 0 6 3 5 3 9 0 10 R 3 5 9 8 R 9 5 14 7 R 4 2 9 4 P 4 4 8 6 8 5 11 3 11",
+    /* sniper rifle */ "P 4 0 6 3 5 3 9 0 10 R 3 5 9 8 R 9 5 14 7 R 4 2 9 4 P 4 4 8 6 8 5 11 3 11",
     /* shotgun */ "P 4 0 5 4 4 4 8 0 10 R 4 4 14 6 R 7 6 12 8 P 4 4 6 6 6 5 9 3 9",
-    /* knife */ "P 4 1 13 8 4 11 7 3 13 S 3 2 10 5.5 13 2.5",
+    /* melee */ "P 4 1 13 8 4 11 7 3 13 S 3 2 10 5.5 13 2.5",
     /* grenade */ "D 7 9 4.8 R 5 2 9 5 R 9 2 12 3 O 3.5 3.5 2 1",
+    /* machine gun */ "P 4 0 4 3 4 3 7 0 8 R 3 3 10 6 R 10 3.5 14 5 R 5 6 9 9 S 1 2 11.5 5 10 10 S 1 2 11.5 5 13 10 P 4 3 6 5 6 4.5 9 3 9",
+    /* rocket launcher */ "R 0 5 10 8 P 5 10 3.5 12 3.5 14 6.5 12 9.5 10 9.5 R 3 8 5 11 R 6 8 7.5 10 R 5 3 7 5",
 };
 
 // Draws `icon` centred on `c`, `size` across (14 * the UI's scale keeps edges on whole pixels), in `col`; `hole` is

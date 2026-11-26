@@ -4558,7 +4558,7 @@ static void test_event_icons()
     T(!strcmp(d, "event=death") && evi_of_marker(d) == EVI_DEATH);
     T(evi_of_marker("event=kill;weapon=ak47;area=head") == EVI_HEADSHOT);
     T(evi_of_marker("event=kill") == EVI_KILL && evi_of_marker("event=multi;weapon=awp") == EVI_SNIPER);
-    T(evi_of_marker("event=kill;weapon=knife_karambit") == EVI_KNIFE);
+    T(evi_of_marker("event=kill;weapon=knife_karambit") == EVI_MELEE);
     T(evi_of_marker("event=kill;weapon=Steering wheel") == EVI_KILL); // a weapon of no class
     T(evi_of_marker("event=plant") == EVI_PLANT && evi_of_marker("event=raid_start;span=raid") == EVI_RAID_START);
     T(evi_of_marker("achievement=ACH_1;name=First") == EVI_ACHIEVEMENT);
@@ -4568,7 +4568,12 @@ static void test_event_icons()
     T(evi_weapon_class("AK-74N") == EVI_RIFLE && evi_weapon_class("Mosin rifle (infantry)") == EVI_SNIPER);
     T(evi_weapon_class("Makarov PM") == EVI_PISTOL && evi_weapon_class("MP-133 12ga shotgun") == EVI_SHOTGUN);
     T(evi_weapon_class("MPX") == EVI_SMG && evi_weapon_class("MP-443 Grach") == EVI_PISTOL && evi_weapon_class("SA-58") == EVI_RIFLE);
+        // machine guns and launchers are kinds of their own, in any game
+    T(evi_weapon_class("negev") == EVI_LMG && evi_weapon_class("M249") == EVI_LMG && evi_weapon_class("RPK-16") == EVI_LMG);
+    T(evi_weapon_class("Rocket Launcher") == EVI_LAUNCHER && evi_weapon_class("Multiple Grenade Launcher") == EVI_LAUNCHER);
+    T(evi_weapon_class("awp") == EVI_SNIPER && evi_weapon_class("L96 Rifle") == EVI_SNIPER);
     T(evi_weapon_class("") == EVI_NONE);
+    for (i32 i = EVI_RIFLE; i < EVI_COUNT; i++) T(EVI_NAMES[i][0] && EVI_SHAPES[i][0]);
     for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++) T(EVI_OF_EVENT[i] != EVI_NONE && EVI_NAMES[EVI_OF_EVENT[i]][0]);
 }
 
