@@ -2877,6 +2877,7 @@ static LibUpload g_lib_uploads[LIB_UPLOADS_MAX]; // oldest first
 static i32 g_lib_upload_count;
 static char g_lib_note[200];
 static bool g_lib_note_error;
+static bool g_lib_note_link; // the note is about a link: it shows the link glyph, else the share glyph
 static i64 g_lib_note_us;  // when the note was set; it shows for a few seconds
 
 static void lib_note(bool error, const char *fmt, ...)
@@ -2886,9 +2887,17 @@ static void lib_note(bool error, const char *fmt, ...)
     vsnprintf(g_lib_note, sizeof g_lib_note, fmt, args);
     va_end(args);
     g_lib_note_error = error;
+    g_lib_note_link = false;
     g_lib_note_us = now_us();
     log_line("library: %s", g_lib_note);
     ui_wake();
+}
+
+// The note for a link that went on the clipboard
+static void lib_note_link(const char *name)
+{
+    lib_note(false, "Link copied: %s", name);
+    g_lib_note_link = true;
 }
 
 // What an upload is doing; its progress starts again at each step.
@@ -3110,10 +3119,11 @@ static ClipShareState lib_clip_state(const LibItem &it)
 }
 
 // How a Share button looks for what one click gives, at the same size and place whatever it is: filled in the accent
-// with the link glyph for a link that plays (Share copies it), tinted for a copy ready on disk, else `plain`.
+// when a share is ready (the link glyph for a link that plays, which Share copies; the share glyph for a copy on
+// disk), else `plain`.
 static KitKind share_ready_kind(const ClipShareState &cs, KitKind plain)
 {
-    return cs.link_ready ? KIT_ACCENT : cs.file ? KIT_TINT : plain;
+    return cs.link_ready || cs.file ? KIT_ACCENT : plain;
 }
 static const char *share_ready_icon(const ClipShareState &cs) { return cs.link_ready ? ICON_LINK : ICON_SHARE; }
 
@@ -3224,7 +3234,7 @@ static void lib_uploads_poll()
             if (!j.id) lib_note(true, "Couldn't share %s", u.name);
             else if (j.state == SHARE_FAILED) lib_note(true, "Couldn't share %s: %s", u.name, j.error);
             else if (j.state == SHARE_DONE && j.error[0]) lib_note(true, "%s: %s", u.name, j.error);
-            else if (j.state == SHARE_DONE && j.kind == SHARE_LINK) lib_note(false, "Link copied: %s", u.name);
+            else if (j.state == SHARE_DONE && j.kind == SHARE_LINK) lib_note_link(u.name);
             else if (j.state == SHARE_DONE) {
                 lib_note(false, "Copied %s, ready to paste", u.name);
                 editor_refresh_shares();
@@ -3237,7 +3247,7 @@ static void lib_uploads_poll()
             if (j.state == R2_DONE) {
                 ImGui::SetClipboardText(j.url);
                 sound_event(SOUND_SHARE_READY);
-                lib_note(false, "Link copied: %s", u.name);
+                lib_note_link(u.name);
             } else if (j.state == R2_FAILED) {
                 sound_event(SOUND_FAILED);
                 lib_note(true, "Couldn't share %s: %s", u.name, j.error);
@@ -3332,12 +3342,12 @@ static void lib_note_draw()
     ui_wake(); // until it goes
     char text[256], pct[16] = "";
     f32 progress = -1;
-    const char *icon = ICON_LINK;
+    const char *icon = g_lib_note_link ? ICON_LINK : ICON_SHARE;
     u32 ink = COL_ACCENT;
     if (busy) {
         LibJobNow n = lib_job_now(g_lib_uploads[0]);
         progress = n.progress;
-        if (!n.link) icon = ICON_SHARE;
+        icon = n.link ? ICON_LINK : ICON_SHARE;
         if (g_lib_upload_count > 1)
             snprintf(text, sizeof text, "%s %s, %d more after it", n.verb, g_lib_uploads[0].name, g_lib_upload_count - 1);
         else snprintf(text, sizeof text, "%s %s", n.verb, g_lib_uploads[0].name);
@@ -3693,7 +3703,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         ImGui::SetCursorScreenPos(ImVec2(bx, by));
         if (share_menu_icon(ICON_COPY, "##smcopy", COL_TEXT, isz)) {
             ImGui::SetClipboardText(s.url);
-            lib_note(false, "Link copied: %s", s.title);
+            lib_note_link(s.title);
         }
         kit_tip(paused ? "Copy link: it plays once resumed" : "Copy link");
         ImGui::SetCursorScreenPos(ImVec2(bx + isz + igap, by));
@@ -3706,6 +3716,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
                 else r2_pause(s.key);
                 log_line("library: link %s %s", s.key, s.paused ? "resumed" : "paused");
                 lib_note(false, s.paused ? "Link playing again: %s" : "Link paused: %s", s.title);
+                g_lib_note_link = true;
             }
             kit_tip(s.moving ? (s.paused ? "Resuming..." : "Pausing...")
                     : s.paused == 2 ? "Paused until tomorrow: click to let it play again"
@@ -4886,8 +4897,6 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         u32 sfill = sk == KIT_ACCENT ? (share_hot ? COL_ACCENT_HOVER : COL_ACCENT)
                                      : share_hot && !share_big ? COL_HOVER : COL_PANEL2;
         dl->AddRectFilled(s0, s1, col32(sfill, share_held ? 0.8f : 1.f), ImGui::GetStyle().FrameRounding);
-        if (sk == KIT_TINT)
-            dl->AddRectFilled(s0, s1, col32(COL_ACCENT, share_hot ? 0.3f : 0.2f), ImGui::GetStyle().FrameRounding);
         if (share_running) {
             share_cancel_ring(dl, ImVec2(floorf((s0.x + s1.x) / 2), floorf((s0.y + s1.y) / 2)), kit_px(8), sj.progress,
                               COL_TEXT);
@@ -4895,7 +4904,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         } else {
             f32 is = g_font_icon->FontSize;
             const char *sicon = share_big ? ICON_SHARE : share_ready_icon(share_cs);
-            u32 ink = share_big ? COL_FAINT : sk == KIT_ACCENT ? COL_WHITE : sk == KIT_TINT ? COL_ACCENT_HOVER : COL_TEXT;
+            u32 ink = share_big ? COL_FAINT : sk == KIT_ACCENT ? COL_WHITE : COL_TEXT;
             ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, sicon);
             dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)),
                         col32(ink), sicon);

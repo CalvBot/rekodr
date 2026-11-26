@@ -722,7 +722,7 @@ struct ShareJobView {
     ShareKind  kind;
     ShareState state;
     f32        progress;       // 0..1 in the current state
-    char       verb[32];       // "Compressing for upload", "Compressing", "Exporting", "Uploading"; "" once done
+    char       verb[32];       // "Compressing for upload", "Compressing", "Making share copy", "Uploading"; "" once done
     bool       reused;         // an earlier one was given again, nothing made
     char       path[MAX_PATH * 3]; // the file (UTF-8), for a link the copy uploaded
     char       url[512];       // a link's address

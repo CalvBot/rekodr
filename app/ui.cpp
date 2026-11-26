@@ -553,9 +553,9 @@ static void ui_show(Screen screen)
 // - Sizes never depend on state: a segmented control sizes every segment to the widest label, a button that
 //   changes its label is given a width.
 
-// KIT_ACCENT: filled in the accent, white ink. KIT_TINT: a faint accent fill with accent ink, a quieter state.
+// KIT_ACCENT: filled in the accent, white ink.
 // KIT_QUIET: a ghost in dim ink until the mouse is over it, for a button that's always there but rarely used.
-enum KitKind { KIT_SECONDARY, KIT_PRIMARY, KIT_GHOST, KIT_DANGER, KIT_ACCENT, KIT_TINT, KIT_QUIET };
+enum KitKind { KIT_SECONDARY, KIT_PRIMARY, KIT_GHOST, KIT_DANGER, KIT_ACCENT, KIT_QUIET };
 
 static f32 kit_px(f32 v) { return v * g_dpi_scale; }
 
@@ -842,7 +842,6 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     case KIT_SECONDARY: fill = hot ? COL_HOVER : COL_PANEL2; break;
     case KIT_DANGER: fill = hot ? COL_HOVER : COL_PANEL2; ink = COL_RED; break;
     case KIT_ACCENT: fill = held ? COL_ACCENT_DOWN : hot ? COL_ACCENT_HOVER : COL_ACCENT; ink = COL_WHITE; break;
-    case KIT_TINT: fill = COL_ACCENT; fill_a = hot ? 0.32f : 0.2f; ink = COL_ACCENT_HOVER; break;
     default: // a veil of white over whatever is behind it
         fill = COL_WHITE;
         fill_a = active ? 0.14f : hot ? 0.08f : 0;
@@ -886,12 +885,10 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
     ImGui::PopID();
     if (hit) dev_click("button", label, hit == 2 ? "(arrow)" : "");
     u32 bg = COL_PANEL2, hover = COL_HOVER, ink = COL_TEXT;
-    f32 tint = 0; // KIT_TINT: the accent over the plain fill, this strong
     switch (kind) {
     case KIT_PRIMARY: bg = COL_WHITE; hover = 0xe6e6e6; ink = COL_BG; break;
     case KIT_DANGER: ink = COL_RED; break;
     case KIT_ACCENT: bg = COL_ACCENT; hover = COL_ACCENT_HOVER; ink = COL_WHITE; break;
-    case KIT_TINT: tint = 0.2f; ink = COL_ACCENT_HOVER; break;
     default: break;
     }
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -900,7 +897,6 @@ static i32 kit_split_button(const char *label, const char *id, KitKind kind, ImV
         ImVec2 p0(i ? split : a.x, a.y), p1(i ? z.x : split, z.y);
         ImDrawFlags corners = i ? ImDrawFlags_RoundCornersRight : ImDrawFlags_RoundCornersLeft;
         dl->AddRectFilled(p0, p1, col32(fill, held[i] ? 0.8f : 1.f), r, corners);
-        if (tint > 0 && on[i]) dl->AddRectFilled(p0, p1, col32(COL_ACCENT, hot[i] ? tint + 0.1f : tint), r, corners);
     }
     dl->AddLine(ImVec2(split, a.y + kit_px(6)), ImVec2(split, z.y - kit_px(6)), col32(0x000000, 0.3f), kit_px(1));
     if (progress >= 0) { // a thin bar along the bottom edge

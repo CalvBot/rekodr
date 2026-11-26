@@ -3099,6 +3099,84 @@ static void test_share_ready()
     cf.share_keep_days = keep_days;
 }
 
+// A clip's ready share copy and link go with its edit: a trim, a muted track or the edit taken away makes Share's
+// button plain again, and going back to the edit they were made from makes them ready again.
+static void test_share_ready_edit()
+{
+    f32 keep_days = g_app.config.share_keep_days;
+    g_app.config.share_keep_days = 7;
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Paths keep_paths = g_app.paths;
+    swprintf(g_app.paths.local_dir.s, MAX_PATH, L"%srekodr-tests-redit-%lu", temp, GetCurrentProcessId());
+    CreateDirectoryW(g_app.paths.local_dir.s, 0);
+    Path clip = path_join(g_app.paths.local_dir, L"clip.mp4"), copy = path_join(g_app.paths.local_dir, L"copy.mp4");
+    const Path *made_files[] = {&clip, &copy};
+    for (const Path *p : made_files) {
+        FILE *f = _wfopen(p->s, L"wb");
+        if (f) fputs("x", f), fclose(f);
+    }
+    static R2Share keep_shares[R2_MAX_SHARES];
+    memcpy(keep_shares, g_r2.shares, sizeof keep_shares);
+    i32 keep_count = g_r2.count;
+    bool keep_loaded = g_r2.loaded;
+    g_r2.loaded = true;
+    g_r2.count = 1;
+    R2Share &h = g_r2.shares[0];
+    h = {};
+    h.host = HOST_R2, h.lib_key = 9, h.uploaded_us = now_us();
+    str_set(h.url, "https://clips.example/r");
+    g_made = {};
+    g_made.loaded = true;
+
+    MediaInfo m = {};
+    m.duration = 10, m.width = 1280, m.height = 720, m.fps = 30, m.track_count = 1;
+    static EditRecord a, b;
+    a = {};
+    a.piece_count = 1, a.pieces[0].from = 1, a.pieces[0].to = 8;
+    char copy8[MAX_PATH * 3];
+    wide_to_utf8(copy.s, copy8, sizeof copy8);
+    share_made_add(share_aims(false, clip.s, m, &a).hash, 9, share_source_hash(clip.s, &a), copy8);
+    share_made_add(share_aims(true, clip.s, m, &a).hash, 9, share_source_hash(clip.s, &a), h.url);
+    ClipShareState st = share_clip_state(9, clip.s, m, &a);
+    T(st.file && st.link_ready);
+    b = a;
+    b.pieces[0].to = 7; // trimmed
+    st = share_clip_state(9, clip.s, m, &b);
+    T(!st.file && !st.link_ready && st.link); // the link still plays, for its menu row
+    b = a;
+    b.muted[0] = true;
+    st = share_clip_state(9, clip.s, m, &b);
+    T(!st.file && !st.link_ready);
+    st = share_clip_state(9, clip.s, m, 0); // the edit taken away
+    T(!st.file && !st.link_ready);
+    st = share_clip_state(9, clip.s, m, &a);
+    T(st.file && st.link_ready);
+    // A ready copy and a ready link fill the Share button alike; only the glyph tells them apart
+    ClipShareState only_file = {};
+    only_file.file = true;
+    T(share_ready_kind(only_file, KIT_SECONDARY) == KIT_ACCENT && share_ready_kind(st, KIT_SECONDARY) == KIT_ACCENT);
+    T(share_ready_kind(ClipShareState{}, KIT_SECONDARY) == KIT_SECONDARY);
+    T(!strcmp(share_ready_icon(only_file), ICON_SHARE) && !strcmp(share_ready_icon(st), ICON_LINK));
+    // The library's note shows the link glyph only for a link that went on the clipboard
+    lib_note_link("clip");
+    T(g_lib_note_link && !strcmp(g_lib_note, "Link copied: clip"));
+    lib_note(false, "Copied %s, ready to paste", "clip");
+    T(!g_lib_note_link);
+    g_lib_note[0] = 0;
+
+    g_made = {};
+    memcpy(g_r2.shares, keep_shares, sizeof keep_shares);
+    g_r2.count = keep_count;
+    g_r2.loaded = keep_loaded;
+    DeleteFileW(path_join(g_app.paths.local_dir, L"made-shares.tsv").s);
+    DeleteFileW(clip.s);
+    DeleteFileW(copy.s);
+    RemoveDirectoryW(g_app.paths.local_dir.s);
+    g_app.paths = keep_paths;
+    g_app.config.share_keep_days = keep_days;
+}
+
 static void test_share_cancel()
 {
     wchar_t temp[MAX_PATH];
@@ -5635,6 +5713,7 @@ int main()
     test_r2();
     test_share_cancel();
     test_share_ready();
+    test_share_ready_edit();
     test_storeids();
     test_store_folders();
     test_markers();

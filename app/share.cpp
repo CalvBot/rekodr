@@ -569,7 +569,7 @@ static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, 
         share_end(j, true, made, "");
         return j.v.id;
     }
-    str_set(j.v.verb, link ? "Compressing for upload" : j.squeezed ? "Compressing" : "Exporting");
+    str_set(j.v.verb, link ? "Compressing for upload" : j.squeezed ? "Compressing" : "Making share copy");
     if (link) {
         j.r2 = r2_share_file(path, j.name, game, lib_key, &m, edit, a.hosts, a.aim, a.limit, days);
         if (!j.r2) {
