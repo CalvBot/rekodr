@@ -6100,7 +6100,8 @@ static void screen_library()
     // The list down the left, docked to the window's left edge from the top bar to the bottom: on the same ground as
     // the top bar, with no line between it and the clips. A Games / Folders switch level with the Clips and
     // Sessions one and coloured like it, then all of them and each game in this view with how many it has, most
-    // recent first, or this view's folders. It scrolls on its own (the wheel, no bar) when there are more than fit.
+    // recent first, or this view's folders. The rows scroll on their own (the wheel, no bar) when there are more than
+    // fit; the switch above them stays put.
     // The button at its foot, level with the footer, collapses it to a rail of icons, which stay where they were.
     if (!lib.player.open) {
         bool &collapsed = g_app.config.games_collapsed;
@@ -6111,8 +6112,6 @@ static void screen_library()
         s0.x += kit_px(8); // the list, its foot button and the clips after it sit this far in from the window's edge
         ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + pad_y));
         f32 foot = fh + kit_px(6);
-        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), side_h - 2 * pad_y - foot), 0,
-                          ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
         bool &by_folder = g_app.config.side_folders;
         if (lib_side_toggle(side_w - kit_px(12), collapsed)) {
             by_folder = !by_folder;
@@ -6121,6 +6120,9 @@ static void screen_library()
             lib.scroll = lib.scroll_to = 0;
             lib_refilter();
         }
+        f32 rows_y = ImGui::GetCursorScreenPos().y; // the rows start under the switch
+        ImGui::BeginChild("##gameside", ImVec2(side_w - kit_px(12), s0.y + side_h - pad_y - foot - rows_y), 0,
+                          ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
         i32 pick = -1;
         static char game_target[64]; // the game a right-click menu is about
         bool game_menu = false;
