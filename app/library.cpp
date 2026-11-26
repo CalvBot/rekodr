@@ -3595,7 +3595,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         else if (clicked && can) result = SHARE_MENU_SHARE;
         f32 r = kit_px(7);
         dl->AddRectFilled(a, b, col32(COL_WHITE, hot ? 0.14f : 0.08f), r);
-        // The pill: plainly the button
+        // The pill, drawn as a button
         ImVec2 p0(b.x - pad - pill_w, floorf(a.y + (h - pill_h) / 2)), p1(b.x - pad, p0.y + pill_h);
         if (st.running) { // Cancel: the X in its ring
             dl->AddRectFilled(p0, p1, col32(hot ? COL_HOVER : COL_PANEL2), pill_h / 2);

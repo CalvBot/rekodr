@@ -417,8 +417,8 @@ static LRESULT ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SIZE: {
         gpu_resize(LOWORD(lp), HIWORD(lp));
         ui_wake();
-        // While an edge is dragged Windows runs its own loop and ours never gets to draw, so the old picture was
-        // stretched until the mouse let go. Draw here, at the new size.
+        // While an edge is dragged Windows runs its own loop and ours doesn't get to draw, which would leave the
+        // last picture stretched until the mouse lets go. Draw here, at the new size.
         static bool drawing;
         if (!drawing && g_app.ui.shown && g_gpu.target && wp != SIZE_MINIMIZED && ImGui::GetCurrentContext() &&
             !ImGui::GetCurrentContext()->WithinFrameScope) {
@@ -787,7 +787,7 @@ static bool kit_button(const char *label, KitKind kind = KIT_SECONDARY, ImVec2 s
     case KIT_DANGER: text = COL_RED; break;
     default: break;
     }
-    if (!enabled) { // plainly off: a quiet fill and faint text, whatever kind it is
+    if (!enabled) { // disabled: a quiet fill and faint text, whatever kind it is
         bg = hover = COL_PANEL2;
         text = COL_FAINT;
         bg_a = kind == KIT_GHOST ? 0.0f : 1.0f;

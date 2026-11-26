@@ -629,7 +629,7 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
                 if (args[0] && cl && strstr(cmd, args)) {
                     score += 10;
                 } else {
-                    // Not provably this one. If the window or the command line names the game, it is a fair guess
+                    // Maybe not this one. If the window or the command line names the game, it is a fair guess
                     wants_more = true;
                     char letters[128];
                     i32 n = gdb_letters(r.name, letters, sizeof letters);
