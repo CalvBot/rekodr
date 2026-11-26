@@ -4160,7 +4160,7 @@ static void options_automarks()
     ImGui::BeginDisabled(!c.auto_marks);
     // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins
     static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists",
-                                         "Advancements", "Level-ups"};
+                                         "Advancements", "Level-ups", "Best laps", "Overtakes", "Incidents"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
     for (i32 g = 0; g < AMG_COUNT; g++) {
         const AmGame &game = AM_GAMES[g];

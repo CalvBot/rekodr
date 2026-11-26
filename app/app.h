@@ -154,13 +154,15 @@ enum { FOLDER_MAX = 128 }; // folder rules (Config.folders), and store folders a
 
 // Games that mark their events on the timeline (automarks.cpp). Each marks the AmEvent bits it has, saved as the
 // words of AM_EVENT_WORDS (bit i). AM_WIN is a won match; AM_OBJECTIVE is a dragon, Herald, Baron, turret or
-// inhibitor the player took in League.
+// inhibitor the player took in League. AM_LAP is a lap better than the player's best (F1: the session's fastest);
+// AM_INCIDENT is contact, a penalty or iRacing's incident points.
 enum AmEvent : u32 {
     AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32, AM_ASSIST = 64,
-    AM_ADVANCEMENT = 128, AM_LEVEL = 256
+    AM_ADVANCEMENT = 128, AM_LEVEL = 256, AM_LAP = 512, AM_OVERTAKE = 1024, AM_INCIDENT = 2048
 };
-static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level"};
-enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_COUNT };
+static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level",
+                                             "lap", "overtake", "incident"};
+enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
 // or listening.
 struct AmGame { const char *key, *name, *feed; u32 events; };
@@ -172,6 +174,9 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"poe", "Path of Exile", "From the game's log", AM_DEATH | AM_LEVEL},
     {"poe2", "Path of Exile 2", "From the game's log", AM_DEATH | AM_LEVEL},
     {"tf2", "Team Fortress 2", "From the game's console log", AM_KILL | AM_DEATH},
+    {"f1_25", "F1 25", "Turn on UDP Telemetry in the game's settings", AM_LAP | AM_OVERTAKE | AM_INCIDENT | AM_WIN},
+    {"iracing", "iRacing", "From the sim's telemetry", AM_LAP | AM_INCIDENT | AM_WIN},
+    {"acc", "Assetto Corsa Competizione", "From the sim's shared memory", AM_LAP | AM_OVERTAKE},
 };
 
 struct Config {

@@ -3525,6 +3525,90 @@ static void test_automarks()
     T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Mainer with scattergun.", false, m, 8) == 0);
     T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower.", true, m, 8) == 0);
 
+    // F1 25: only the player's car's events, of packet format 2025
+    u32 f1e = AM_GAMES[AMG_F1_25].events;
+    auto f1 = [&](const char *code, u8 a, u8 b, u8 c, AutoMark *out, u32 ev) {
+        u8 p[45] = {};
+        p[0] = 2025 & 255, p[1] = 2025 >> 8, p[6] = 3, p[27] = 7;
+        memcpy(p + 29, code, 4);
+        p[33] = a, p[34] = b, p[35] = c;
+        return f1_packet(ev, p, sizeof p, out, 8);
+    };
+    T(f1("FTLP", 7, 0, 0, m, f1e) == 1 && !strcmp(m[0].note, "Fastest lap") && m[0].colour == 6);
+    T(f1("FTLP", 3, 0, 0, m, f1e) == 0);
+    T(f1("OVTK", 7, 2, 0, m, f1e) == 1 && !strcmp(m[0].note, "Overtake"));
+    T(f1("OVTK", 2, 7, 0, m, f1e) == 0); // overtaken
+    T(f1("COLL", 1, 7, 0, m, f1e) == 1 && !strcmp(m[0].note, "Contact"));
+    T(f1("PENA", 4, 0, 7, m, f1e) == 1 && !strcmp(m[0].note, "Penalty"));
+    T(f1("PENA", 5, 0, 7, m, f1e) == 0); // a warning
+    T(f1("RCWN", 7, 0, 0, m, f1e) == 1 && !strcmp(m[0].note, "Race won"));
+    T(f1("RCWN", 7, 0, 0, m, f1e & ~AM_WIN) == 0);
+    {
+        u8 p[45] = {};
+        p[0] = 2024 & 255, p[1] = 2024 >> 8, p[6] = 3, p[27] = 7;
+        memcpy(p + 29, "RCWN", 4);
+        p[33] = 7;
+        T(f1_packet(f1e, p, sizeof p, m, 8) == 0); // another year's format
+    }
+
+    // iRacing: a telemetry file with one buffer and five vars, and a YAML session list
+    {
+        static u8 ir[8192];
+        memset(ir, 0, sizeof ir);
+        auto put = [&](i64 at, i32 v) { memcpy(ir + at, &v, 4); };
+        const char *yaml = "SessionInfo:\n Sessions:\n - SessionNum: 0\n   SessionType: Practice\n - SessionNum: 1\n   SessionType: Race\n";
+        put(4, 1), put(16, (i32)strlen(yaml)), put(20, 7000), memcpy(ir + 7000, yaml, strlen(yaml));
+        const char *names[] = {"SessionNum", "SessionUniqueID", "PlayerCarMyIncidentCount", "SessionState", "PlayerCarPosition", "LapBestLapTime"};
+        put(24, 6), put(28, 200), put(32, 1), put(48, 5), put(52, 4000);
+        for (i32 i = 0; i < 6; i++) {
+            put(200 + i * 144, i == 5 ? 4 : 2), put(204 + i * 144, i * 4);
+            strcpy((char *)ir + 216 + i * 144, names[i]);
+        }
+        auto var = [&](i32 i, i32 v) { put(4000 + i * 4, v); };
+        auto lap = [&](f32 v) { memcpy(ir + 4000 + 20, &v, 4); };
+        u32 ire = AM_GAMES[AMG_IRACING].events;
+        IrSeen is = {};
+        var(0, 1), var(1, 9), var(2, 0), var(3, 4), var(4, 3), lap(0);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 0 && is.have);
+        lap(92.5f);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 0); // the first timed lap
+        var(2, 4), lap(91.f);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 2 && !strcmp(m[0].note, "Incident 4x") && !strcmp(m[1].note, "Best lap"));
+        lap(93.f);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 0 && is.best == 91.f);
+        var(3, 5), var(4, 1);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 1 && !strcmp(m[0].note, "Race won"));
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 0); // said once
+        var(0, 0), var(3, 4);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 0 && is.session == 0 && !is.won_said); // another session
+        var(3, 5);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 0); // first in practice
+        put(4, 0);
+        T(ir_marks(&is, ire, ir, sizeof ir, m, 8) == 0 && !is.have); // the sim closed
+    }
+
+    // Assetto Corsa Competizione: a better best lap, and places gained in a race only
+    {
+        u8 g[256] = {};
+        auto put = [&](i64 at, i32 v) { memcpy(g + at, &v, 4); };
+        u32 acce = AM_GAMES[AMG_ACC].events;
+        AccSeen as = {};
+        put(4, 2), put(8, 2), put(132, 0), put(136, 6), put(148, 2147483647);
+        T(acc_marks(&as, acce, g, sizeof g, m, 8) == 0 && as.have);
+        put(136, 4);
+        T(acc_marks(&as, acce, g, sizeof g, m, 8) == 1 && !strcmp(m[0].note, "Up to P4") && m[0].colour == 4);
+        put(136, 5), put(132, 1), put(148, 101000);
+        T(acc_marks(&as, acce, g, sizeof g, m, 8) == 0);
+        put(132, 2), put(148, 100500);
+        T(acc_marks(&as, acce, g, sizeof g, m, 8) == 1 && !strcmp(m[0].note, "Best lap"));
+        put(4, 3), put(136, 1);
+        T(acc_marks(&as, acce, g, sizeof g, m, 8) == 0 && as.position == 5); // paused: as it was
+        put(4, 2), put(8, 0), put(136, 1);
+        T(acc_marks(&as, acce, g, sizeof g, m, 8) == 0); // another session
+        put(136, 0);
+        T(acc_marks(&as, acce, g, sizeof g, m, 8) == 0); // practice: no places
+    }
+
     // autoexec.cfg: Rekodr's line in and out, the player's lines as they were
     char ax[512];
     T(tf2_autoexec("", true, ax, sizeof ax) > 0 && !strcmp(ax, "con_logfile console.log // " APP_NAME " reads it for markers\n"));

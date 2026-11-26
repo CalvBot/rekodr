@@ -15,6 +15,11 @@
 //   Team Fortress 2    tf\console.log. Turning it on adds a con_logfile line to tf\cfg\autoexec.cfg, read when the
 //                      game starts; turning it off takes only that line out.
 //
+//   F1 25              Its UDP telemetry on 127.0.0.1:F1_PORT, which the player turns on in the game's settings.
+//   iRacing            The sim's telemetry file, Local\IRSDKMemMapFileName, read once a second.
+//   Assetto Corsa      Its shared memory, Local\acpmf_graphics, read once a second.
+//   Competizione
+//
 // Only what the player did counts: kills, deaths and objectives of the player themself, rounds and matches their
 // team won.
 // Markers go in at the moment Rekodr hears of them. Everything runs on one worker thread.
@@ -370,6 +375,174 @@ static i32 tf2_line(Tf2Seen *s, u32 events, const char *line, bool old, AutoMark
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// The racing games: what each says of the player's own car
+
+static i32 am_i32(const u8 *p, i64 at)
+{
+    i32 v;
+    memcpy(&v, p + at, 4);
+    return v;
+}
+static f32 am_f32(const u8 *p, i64 at)
+{
+    f32 v;
+    memcpy(&v, p + at, 4);
+    return v;
+}
+
+// F1 25's UDP telemetry, packet format 2025, little-endian and packed: a 29-byte header (packetFormat u16 at 0,
+// packetId u8 at 6, playerCarIndex u8 at 27), and for packetId 3 (Event) a 4-letter code at 29 and its details at
+// 33. FTLP fastest lap {vehicleIdx}, OVTK overtake {overtakingVehicleIdx, beingOvertakenVehicleIdx}, COLL collision
+// {vehicle1Idx, vehicle2Idx}, PENA penalty {penaltyType, infringementType, vehicleIdx, ...}, RCWN race winner
+// {vehicleIdx}. Penalties marked: drive-through (0), stop-go (1), grid (2), time (4), disqualified (6).
+static const u16 F1_PORT = 20777;
+static i32 f1_packet(u32 events, const u8 *p, i32 len, AutoMark *out, i32 cap)
+{
+    if (len < 37 || (p[0] | p[1] << 8) != 2025 || p[6] != 3) return 0;
+    u8 me = p[27];
+    const char *code = (const char *)p + 29;
+    const u8 *d = p + 33;
+    i32 n = 0;
+    if (!memcmp(code, "FTLP", 4) && d[0] == me && (events & AM_LAP)) am_push(out, cap, &n, 6, "Fastest lap");
+    else if (!memcmp(code, "OVTK", 4) && d[0] == me && (events & AM_OVERTAKE)) am_push(out, cap, &n, 4, "Overtake");
+    else if (!memcmp(code, "COLL", 4) && (d[0] == me || d[1] == me) && (events & AM_INCIDENT)) am_push(out, cap, &n, 1, "Contact");
+    else if (!memcmp(code, "PENA", 4) && d[2] == me && (events & AM_INCIDENT)) {
+        static const u8 marked[] = {0, 1, 2, 4, 6};
+        for (u8 t : marked)
+            if (d[0] == t) am_push(out, cap, &n, 2, "Penalty");
+    } else if (!memcmp(code, "RCWN", 4) && d[0] == me && (events & AM_WIN)) am_push(out, cap, &n, 3, "Race won");
+    return n;
+}
+
+// iRacing's telemetry, the memory-mapped file Local\IRSDKMemMapFileName. Its header: status (bit 0: connected) at
+// 4, sessionInfoLen 16, sessionInfoOffset 20, numVars 24, varHeaderOffset 28, numBuf 32, and from 48 up to 4
+// buffers of {tickCount, bufOffset, pad[2]}; the newest buffer has the highest tickCount. Each var header is 144
+// bytes: type 0 (2 int, 4 float), offset 4, name 16 (32 chars). The session info is YAML, its Sessions list holding
+// each session's SessionNum and SessionType.
+static const wchar_t IR_MAP[] = L"Local\\IRSDKMemMapFileName";
+struct IrSeen {
+    bool have;
+    i32 session, uid;    // SessionNum, SessionUniqueID: another session starts over
+    i32 incidents;       // PlayerCarMyIncidentCount
+    f32 best;            // LapBestLapTime, s; 0 before a timed lap
+    bool won_said;
+};
+
+// A var of the newest buffer, by name: false if there is none of that type.
+static bool ir_var(const u8 *m, i64 size, i64 buf, const char *name, i32 type, void *out)
+{
+    i32 nv = am_i32(m, 24), vh = am_i32(m, 28);
+    if (nv < 0 || nv > 4096 || vh < 0 || vh + (i64)nv * 144 > size) return false;
+    for (i32 i = 0; i < nv; i++) {
+        const u8 *h = m + vh + (i64)i * 144;
+        if (strncmp((const char *)h + 16, name, 32)) continue;
+        i64 at = buf + am_i32(h, 4);
+        if (am_i32(h, 0) != type || at < 0 || at + 4 > size) return false;
+        memcpy(out, m + at, 4);
+        return true;
+    }
+    return false;
+}
+
+// SessionType of session `num` in the session info YAML ("" when not found).
+static void ir_session_type(const u8 *m, i64 size, i32 num, char *out, i32 cap)
+{
+    out[0] = 0;
+    i32 len = am_i32(m, 16), at = am_i32(m, 20);
+    if (len <= 0 || at < 0 || at + (i64)len > size) return;
+    const char *y = (const char *)m + at, *end = y + len;
+    char want[32];
+    snprintf(want, sizeof want, "SessionNum: %d\n", num);
+    i32 wl = (i32)strlen(want);
+    for (const char *s = y; s + wl <= end; s++) {
+        if (memcmp(s, want, wl)) continue;
+        for (const char *t = s + wl; t + 13 <= end && memcmp(t, "SessionNum: ", 12); t++) {
+            if (memcmp(t, "SessionType: ", 13)) continue;
+            i32 k = 0;
+            for (t += 13; t < end && *t != '\n' && *t != '\r' && k < cap - 1; t++) out[k++] = *t;
+            out[k] = 0;
+            return;
+        }
+        return;
+    }
+}
+
+// Incidents, a better best lap, and a race won (the checkered flag or after with the player first).
+static i32 ir_marks(IrSeen *s, u32 events, const u8 *m, i64 size, AutoMark *out, i32 cap)
+{
+    if (size < 112 || !(am_i32(m, 4) & 1)) {
+        s->have = false;
+        return 0;
+    }
+    i32 nb = am_i32(m, 32), best_tick = -1;
+    i64 buf = -1;
+    for (i32 i = 0; i < nb && i < 4; i++)
+        if (am_i32(m, 48 + i * 16) > best_tick) best_tick = am_i32(m, 48 + i * 16), buf = am_i32(m, 52 + i * 16);
+    i32 session = 0, uid = 0, inc = 0, state = 0, pos = 0;
+    f32 best = 0;
+    if (buf < 0 || !ir_var(m, size, buf, "SessionNum", 2, &session) || !ir_var(m, size, buf, "PlayerCarMyIncidentCount", 2, &inc))
+        return 0;
+    ir_var(m, size, buf, "SessionUniqueID", 2, &uid);
+    ir_var(m, size, buf, "SessionState", 2, &state);
+    ir_var(m, size, buf, "PlayerCarPosition", 2, &pos);
+    ir_var(m, size, buf, "LapBestLapTime", 4, &best);
+    i32 n = 0;
+    if (!s->have || s->session != session || s->uid != uid) {
+        *s = {};
+    } else {
+        if (inc > s->incidents && (events & AM_INCIDENT)) {
+            char note[32];
+            snprintf(note, sizeof note, "Incident %dx", inc - s->incidents);
+            am_push(out, cap, &n, 1, note);
+        }
+        if (best > 0 && s->best > 0 && best < s->best - 0.0005f && (events & AM_LAP)) am_push(out, cap, &n, 6, "Best lap");
+        if (state >= 5 && pos == 1 && !s->won_said) {
+            char type[32];
+            ir_session_type(m, size, session, type, sizeof type);
+            if (!strcmp(type, "Race")) {
+                s->won_said = true;
+                if (events & AM_WIN) am_push(out, cap, &n, 3, "Race won");
+            }
+        }
+    }
+    s->have = true;
+    s->session = session, s->uid = uid, s->incidents = inc;
+    if (best > 0 && (!s->best || best < s->best)) s->best = best;
+    return n;
+}
+
+// Assetto Corsa Competizione's shared memory Local\acpmf_graphics: status at 4 (2 = live), session at 8 (2 = race),
+// completedLaps 132, position 136, iBestTime 148 (ms).
+static const wchar_t ACC_MAP[] = L"Local\\acpmf_graphics";
+struct AccSeen {
+    bool have;
+    i32 session, laps, position, best;
+};
+
+// A better best lap, and places gained in a race.
+static i32 acc_marks(AccSeen *s, u32 events, const u8 *m, i64 size, AutoMark *out, i32 cap)
+{
+    if (size < 152 || am_i32(m, 4) != 2) return 0; // paused, a replay or the menus: as it was
+    i32 session = am_i32(m, 8), laps = am_i32(m, 132), pos = am_i32(m, 136), best = am_i32(m, 148);
+    bool timed = best > 0 && best < 3600000;
+    i32 n = 0;
+    if (!s->have || session != s->session || laps < s->laps) {
+        *s = {};
+    } else {
+        if (timed && s->best && best < s->best && (events & AM_LAP)) am_push(out, cap, &n, 6, "Best lap");
+        if (session == 2 && s->position > 0 && pos > 0 && pos < s->position && (events & AM_OVERTAKE)) {
+            char note[32];
+            snprintf(note, sizeof note, "Up to P%d", pos);
+            am_push(out, cap, &n, 4, note);
+        }
+    }
+    s->have = true;
+    s->session = session, s->laps = laps, s->position = pos;
+    if (timed) s->best = best;
+    return n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Finding the Game State Integration games
 
 // The steamapps folder of the library an app is installed in, from Steam's libraryfolders.vdf. Any thread (the
@@ -638,6 +811,8 @@ static struct {
     McSeen mc;
     PoeSeen poe[2];                  // Path of Exile, Path of Exile 2
     Tf2Seen tf2;
+    IrSeen ir;
+    AccSeen acc;
     AmTail mc_tail, poe_tail[2], tf2_tail;
     wchar_t mc_log[MAX_PATH];        // the running Minecraft's latest.log; "" until found
     i64 mc_next;                     // when to look for it again
@@ -824,6 +999,70 @@ static void am_logs_poll()
     }
 }
 
+// Once a second: iRacing's and Assetto Corsa Competizione's shared memory, while the sim has it open.
+static void am_sims_poll()
+{
+    AutoMark marks[8];
+    static const i32 games[] = {AMG_IRACING, AMG_ACC};
+    static const wchar_t *const maps[] = {IR_MAP, ACC_MAP};
+    for (i32 i = 0; i < 2; i++) {
+        i32 g = games[i];
+        u32 ev = g_am.events[g];
+        if (!ev) continue;
+        HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, maps[i]);
+        if (!h) {
+            if (g == AMG_IRACING) g_am.ir.have = false;
+            continue;
+        }
+        const u8 *m = (const u8 *)MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0);
+        MEMORY_BASIC_INFORMATION mi = {};
+        i32 n = 0;
+        if (m && VirtualQuery(m, &mi, sizeof mi)) {
+            i64 size = (i64)mi.RegionSize;
+            n = g == AMG_IRACING ? ir_marks(&g_am.ir, ev, m, size, marks, COUNT(marks)) : acc_marks(&g_am.acc, ev, m, size, marks, COUNT(marks));
+        }
+        if (m) UnmapViewOfFile(m);
+        CloseHandle(h);
+        am_put(marks, n, g);
+    }
+}
+
+// F1 25's telemetry socket, 127.0.0.1:F1_PORT, open while the game runs (looked for every 5 s) so no other
+// program's use of the port is in the way the rest of the time. Its packets are read as they come.
+static void am_f1_socket(SOCKET *s, i64 *next)
+{
+    bool want = false;
+    if (g_am.events[AMG_F1_25]) {
+        if (now_us() < *next) return;
+        *next = now_us() + 5000000;
+        static char cmd[4096];
+        char title[8];
+        want = process_facts("F1_25.exe", cmd, sizeof cmd, title, sizeof title);
+    }
+    if (!want) {
+        if (*s != INVALID_SOCKET) closesocket(*s), *s = INVALID_SOCKET;
+        if (!g_am.events[AMG_F1_25]) *next = 0;
+        return;
+    }
+    if (*s != INVALID_SOCKET) return;
+    SOCKET u = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockaddr_in a = {};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(F1_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    BOOL excl = TRUE;
+    if (u != INVALID_SOCKET) setsockopt(u, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&excl, sizeof excl);
+    if (u == INVALID_SOCKET || bind(u, (sockaddr *)&a, sizeof a)) {
+        if (u != INVALID_SOCKET) closesocket(u);
+        if (InterlockedExchange(&g_am.state[AMG_F1_25], AM_PORT_BUSY) != AM_PORT_BUSY)
+            log_line("markers: port %u is taken; F1 25 can't reach " APP_NAME, F1_PORT);
+        return;
+    }
+    *s = u;
+    InterlockedExchange(&g_am.state[AMG_F1_25], AM_READY);
+    log_line("markers: listening for F1 25 on port %u", F1_PORT);
+}
+
 // Sets the state of each GSI game that is on.
 static void am_gsi_state(AmState st)
 {
@@ -836,7 +1075,8 @@ static DWORD WINAPI am_thread(void *)
 {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
-    SOCKET ls = INVALID_SOCKET;
+    SOCKET ls = INVALID_SOCKET, f1 = INVALID_SOCKET;
+    i64 f1_next = 0;
     HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_NO_PROXY, 0, 0, 0);
     i64 lol_next = 0, gsi_retry = 0, logs_next = 0;
     bool busy_said = false;
@@ -873,6 +1113,8 @@ static DWORD WINAPI am_thread(void *)
         for (i32 i = 0; i < 2; i++)
             if (!g_am.events[i ? AMG_POE2 : AMG_POE]) g_am.poe[i] = {}, g_am.poe_tail[i] = {};
         if (!g_am.events[AMG_TF2]) g_am.tf2 = {}, g_am.tf2_tail = {};
+        if (!g_am.events[AMG_IRACING]) g_am.ir = {};
+        if (!g_am.events[AMG_ACC]) g_am.acc = {};
 
         i64 now = now_us();
         i64 wait_ms = 1000;
@@ -881,14 +1123,24 @@ static DWORD WINAPI am_thread(void *)
             i64 until = (lol_next - now) / 1000;
             if (until < wait_ms) wait_ms = until < 0 ? 0 : until;
         }
-        if (ls != INVALID_SOCKET) {
+        am_f1_socket(&f1, &f1_next);
+        if (ls != INVALID_SOCKET || f1 != INVALID_SOCKET) {
             fd_set fds;
             FD_ZERO(&fds);
-            FD_SET(ls, &fds);
+            if (ls != INVALID_SOCKET) FD_SET(ls, &fds);
+            if (f1 != INVALID_SOCKET) FD_SET(f1, &fds);
             timeval tv = {(long)(wait_ms / 1000), (long)(wait_ms % 1000) * 1000};
             if (select(0, &fds, 0, 0, &tv) > 0) {
-                SOCKET c = accept(ls, 0, 0);
-                if (c != INVALID_SOCKET) am_gsi_client(c);
+                if (ls != INVALID_SOCKET && FD_ISSET(ls, &fds)) {
+                    SOCKET c = accept(ls, 0, 0);
+                    if (c != INVALID_SOCKET) am_gsi_client(c);
+                }
+                if (f1 != INVALID_SOCKET && FD_ISSET(f1, &fds)) {
+                    static u8 pkt[2048];
+                    i32 got = recv(f1, (char *)pkt, sizeof pkt, 0);
+                    AutoMark marks[4];
+                    if (got > 0) am_put(marks, f1_packet(g_am.events[AMG_F1_25], pkt, got, marks, COUNT(marks)), AMG_F1_25);
+                }
             }
         } else {
             WaitForSingleObject(g_am.wake, (DWORD)wait_ms);
@@ -899,10 +1151,12 @@ static DWORD WINAPI am_thread(void *)
         }
         if (now_us() >= logs_next) {
             am_logs_poll();
+            am_sims_poll();
             logs_next = now_us() + 1000000;
         }
     }
     if (ls != INVALID_SOCKET) closesocket(ls);
+    if (f1 != INVALID_SOCKET) closesocket(f1);
     if (session) WinHttpCloseHandle(session);
     WSACleanup();
     return 0;
@@ -1017,10 +1271,13 @@ static void automarks_apply()
         InterlockedExchange(&g_am.state[AMG_TF2], !tf2 ? AM_OFF : found ? AM_READY : AM_NOT_FOUND);
     }
     wcscpy_s(g_am.tf2_dir, tf2 ? tf : L"");
-    InterlockedExchange(&g_am.state[AMG_MINECRAFT], g_am.events[AMG_MINECRAFT] ? AM_READY : AM_OFF);
+    static const i32 waiting[] = {AMG_MINECRAFT, AMG_IRACING, AMG_ACC};
+    for (i32 g : waiting) InterlockedExchange(&g_am.state[g], g_am.events[g] ? AM_READY : AM_OFF);
+    if (!g_am.events[AMG_F1_25]) InterlockedExchange(&g_am.state[AMG_F1_25], AM_OFF);
+    else if (g_am.state[AMG_F1_25] == AM_OFF) InterlockedExchange(&g_am.state[AMG_F1_25], AM_READY);
 
     bool logs = false;
-    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2};
+    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC};
     for (i32 g : log_games) logs |= g_am.events[g] != 0;
     if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);
