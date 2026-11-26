@@ -3,7 +3,7 @@
 // changes the setting at once; Done on the last page marks it finished. Options > General runs it again.
 
 enum { SETUP_BEG_RESOURCE = 10 };
-// The begging picture (assets/setup-beg.jpg): 15 frames of 240 x 230, 5 across and 3 down, at 10 a second.
+// The begging picture (assets/images/setup-beg.jpg): 15 frames of 240 x 230, 5 across and 3 down, at 10 a second.
 static const i32 BEG_COLS = 5, BEG_ROWS = 3, BEG_FRAMES = 15, BEG_FPS = 10;
 
 static void open_url(const char *url)

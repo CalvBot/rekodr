@@ -2445,14 +2445,14 @@ static void test_r2()
     {
         static char data[32768];
         Path png = {};
-        GetFullPathNameW(L"..\\assets\\rekodr.png", MAX_PATH, png.s, 0);
+        GetFullPathNameW(L"..\\assets\\icons\\rekodr.png", MAX_PATH, png.s, 0);
         T(r2_icon_data(png, data, sizeof data) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
         T(strlen(data) < 24000 && !strchr(data, '"'));
         T(!r2_icon_data(png, data, 64) && !data[0]);
         // the art behind a page: small and grey
         T(r2_icon_data(png, data, sizeof data, R2_ART_PX, true) && starts_with(data, "data:image/png;base64,iVBORw0KGgo"));
         Path none = {};
-        GetFullPathNameW(L"..\\assets\\none.png", MAX_PATH, none.s, 0);
+        GetFullPathNameW(L"..\\assets\\icons\\none.png", MAX_PATH, none.s, 0);
         T(!r2_icon_data(none, data, sizeof data));
     }
     // The accent's ink: white on the default and darker picks, the page's near-black on light ones

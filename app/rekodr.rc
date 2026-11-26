@@ -1,13 +1,13 @@
-// Icon 1 is the app icon; 2 and 3 are the tray icons (recording, paused). Drawn by assets/make_icons.py.
-1 ICON "../assets/rekodr.ico"
-2 ICON "../assets/tray-recording.ico"
-3 ICON "../assets/tray-paused.ico"
+// Icon 1 is the app icon; 2 and 3 are the tray icons (recording, paused).
+1 ICON "../assets/icons/rekodr.ico"
+2 ICON "../assets/icons/tray-recording.ico"
+3 ICON "../assets/icons/tray-paused.ico"
 
 // The first-run setup's begging picture: 15 frames, 5 across and 3 down (setup.cpp).
-10 RCDATA "../assets/setup-beg.jpg"
+10 RCDATA "../assets/images/setup-beg.jpg"
 
 // Cloudflare's own icon, from its site, for Share's host rows (library.cpp host_logo).
-21 RCDATA "../assets/host-cloudflare.png"
+21 RCDATA "../assets/images/host-cloudflare.png"
 
 // The app's typeface, Onest (fonts/OFL.txt is its licence), read in place by ui_load_fonts.
 30 RCDATA "fonts/Onest-Regular.ttf"

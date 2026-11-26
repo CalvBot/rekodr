@@ -1,7 +1,7 @@
 // Writes the plugin's static key images and action icons (imgs\) from the same drawing code the keys use:
 //   node streamdeck\make-imgs.mjs
 // *-key.svg is what a key shows before the plugin has drawn it; the others are the white icons in Stream Deck's
-// action list. The plugin and category icons are PNGs from assets\make_icons.py, on the app icon's plate.
+// action list. The plugin and category icons are PNGs drawn from the logo, on the app icon's plate.
 import fs from "node:fs";
 import path from "node:path";
 import { C, card, saveKey, history, film, dot } from "./dev.calvbot.rekodr.sdPlugin/render.mjs";

@@ -1,4 +1,4 @@
-![Rekodr](assets/banner.png)
+![Rekodr](docs/images/banner.png)
 
 # Rekodr
 
