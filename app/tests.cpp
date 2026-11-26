@@ -2665,7 +2665,7 @@ static void test_r2()
     r2_mark_entry(1, "Headshot", "event=kill;area=head;weapon=ak47", me, sizeof me);
     T(!strcmp(me, "1.000 headshot Headshot: ak47"));
     r2_mark_entry(2, "Kill (AK-74N)", "event=kill;weapon=AK-74N", me, sizeof me);
-    T(!strcmp(me, "2.000 rifle Kill (AK-74N)"));
+    T(!strcmp(me, "2.000 assault-rifle Kill (AK-74N)"));
     r2_mark_entry(3, "", "", me, sizeof me);
     T(!strcmp(me, "3.000 - Marker"));
     r2_mark_entry(4, "Raid start (Customs)", "event=raid_start;span=raid", me, sizeof me);
