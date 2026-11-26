@@ -1,4 +1,6 @@
 /app/build
 /streamdeck/build
 /dist
-/docs
+/plans
+/CLAUDE.md
+/.vscode
