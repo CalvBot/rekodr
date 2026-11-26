@@ -43,7 +43,7 @@ enum AudioEventKind : u8 {
     AE_STARTED, // b = stream id | kind << 32, text = "exe	path"
     AE_STOPPED, // b = stream id
     AE_HEARD,   // b = us, text = "exe	path": an app played sound (added to Config.apps as new if it isn't known)
-    AE_GAME,    // text = the game being played, empty on the desktop
+    AE_GAME,    // text = "exe	path" of the game being played, empty on the desktop
     AE_WINDOW,  // b = the game window to record (an HWND), 0 = the monitor
 };
 
@@ -1157,8 +1157,10 @@ static void audio_tick_activity()
         }
     }
 
+    const char *game_path = "";
     if (front && audio_category_at(cfg, front->exe.s, front_path) == CAT_GAME) {
         game = front->exe;
+        game_path = front_path;
     } else {
         bool prev_running = false;
         const char *first = 0;
@@ -1173,6 +1175,8 @@ static void audio_tick_activity()
         }
         if (prev_running) game = g_aw.game;
         else if (first) str_set(game.s, first);
+        for (i32 i = 0; game.s[0] && i < cfg.app_count; i++)
+            if (str_eq(cfg.apps[i].exe.s, game.s)) game_path = cfg.apps[i].path;
     }
 
     Path file = path_join(cfg.buffer_dir, L"activity.tsv");
@@ -1197,7 +1201,7 @@ static void audio_tick_activity()
     Event e = {};
     e.kind = EV_AUDIO;
     e.a = AE_GAME;
-    str_set(e.text, game.s);
+    if (game.s[0]) snprintf(e.text, sizeof e.text, "%s	%s", game.s, game_path);
     event_post(e);
 }
 
@@ -1318,16 +1322,35 @@ static void audio_on_event(const Event &e)
         if (moved || named) config_save(g_app.config, g_app.paths); // folder rules decide by it, so keep it
         break;
     }
-    case AE_GAME:
-        str_set(a.game.s, e.text);
-        // An exe several games share (javaw.exe) is whichever one is running now, so ask while it is
-        for (i32 i = 0; e.text[0] && i < g_app.config.app_count; i++)
-            if (!strcmp(g_app.config.apps[i].exe.s, e.text) && gamedb_name_app(&g_app.config.apps[i])) config_save(g_app.config, g_app.paths);
+    case AE_GAME: {
+        Str64 exe;
+        char path[MAX_PATH];
+        split_exe_path(e.text, &exe, path, sizeof path);
+        a.game = exe;
+        bool listed = false;
+        for (i32 i = 0; exe.s[0] && i < g_app.config.app_count && !listed; i++) listed = str_eq(g_app.config.apps[i].exe.s, exe.s);
+        if (exe.s[0] && !listed && path[0]) {
+            // A game by its folder that has made no sound yet: listed now, so it is named and gets a session
+            AppInfo *app = config_app(&g_app.config, exe.s);
+            if (app) {
+                str_set(app->path, path);
+                exe_description(app->path, app->desc.s, sizeof app->desc.s);
+                gamedb_name_app(app);
+                log_line("new app in front: %s", exe.s);
+                audio_config_changed();
+                config_save(g_app.config, g_app.paths);
+            }
+        } else {
+            // An exe several games share (javaw.exe) is whichever one is running now, so ask while it is
+            for (i32 i = 0; exe.s[0] && i < g_app.config.app_count; i++)
+                if (str_eq(g_app.config.apps[i].exe.s, exe.s) && gamedb_name_app(&g_app.config.apps[i])) config_save(g_app.config, g_app.paths);
+        }
         recorder_settings_changed(); // a game can have its own recording settings
         // And its own hotkeys, unless Options is taking a hotkey's keys (they're all off meanwhile)
         if (!is_test_copy() && !g_app.options.capture_slot) hotkeys_apply(g_app.config, g_app.msg_hwnd, a.game.s);
-        sessions_on_game(e.text);
+        sessions_on_game(exe.s);
         break;
+    }
     case AE_WINDOW:
         a.window = (u64)e.b;
         recorder_settings_changed(); // a new capture, of that window or of the monitor
