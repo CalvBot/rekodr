@@ -370,6 +370,7 @@ static const FixedCover g_fixed_covers[] = {
     {"Fortnite", {"6c4d541fc68d426aa028bc05f38164d1.png", "6dc3399d124d4cf965d4d62d0663228e.png", "6e94aaaaa650e631109fee66a94385fb.png"}},
     {"Escape from Tarkov", {"1cf764f9ac1d084662f0c1dc8932a876.jpg", "dc0f04636741308dd78de552d345cc6b.png", "ea9dc69aa87d34bba96112dcd72b211e.png"}},
     {"Rust", {"22c9fb3c8efd34dfb32c8cbf21ffb3d5.png", "35f6e50ae1b299f6efdf99b6490b712c.png", "c3ed3f768198b986e0a79be45cde4524.jpg"}},
+    {"Star Citizen", {"b791d74d3f40b71f77b9c9df9927ed5a.png", "0dde4f06489f98551cebeed507aea149.png", "55b41404d256c30aeee0e2c554dc43f6.png"}},
     {"Steam achievements", {"39c2966989c4f0091a99eef7f1d09c09.png", "c5174327c1975f78b7ffc788ed60b80e.png", "dba324d3fb4b6d4ddd559fb5a70ff362.jpg"}},
 };
 enum { GAMEDB_FIXED_COVER = 5 }; // gamedb_on_event: the worker has settled one of the hand-picked covers
