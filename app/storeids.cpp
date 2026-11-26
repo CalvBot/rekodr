@@ -236,6 +236,7 @@ static bool exe_clues(const char *exe, const char *path, const char *name, bool 
 //           Respawn, a key per game)
 //   Battle.net  the InstallLocation of each game whose uninstaller is Battle.net's agent (Windows' Uninstall keys),
 //           not Battle.net's own
+//   Riot    each game folder in the Riot Client's ProgramData\Riot Games\RiotClientInstalls.json ("associated_client")
 
 // Steam apps that install under steamapps\common like a game but aren't one. Some run all day beside games.
 struct SteamNotGame {
@@ -416,6 +417,25 @@ static void battlenet_game_folders(HKEY root, const wchar_t *key, REGSAM view, S
     RegCloseKey(apps);
 }
 
+// The game folders in a RiotClientInstalls.json: the keys of its "associated_client", each a game's folder with the
+// Riot Client that runs it as the value ({"E:/Riot Games/League of Legends/": "C:/Riot Games/Riot Client/..."}).
+// Returns how many went into out.
+static i32 riot_game_folders(const char *text, i64 len, char (*out)[MAX_PATH * 2], i32 max)
+{
+    Json j = {text, text + len};
+    if (!j_find(&j, "associated_client") || !j_eat(&j, '{')) return 0;
+    i32 n = 0;
+    while (j.p < j.end && !j_eat(&j, '}')) {
+        char dir[MAX_PATH * 2];
+        if (!j_string(&j, dir, sizeof dir)) break;
+        j_eat(&j, ':');
+        j_skip(&j);
+        j_eat(&j, ',');
+        if (dir[0] && n < max) str_set(out[n++], dir);
+    }
+    return n;
+}
+
 // The store game folders on this PC. Returns how many went into out.
 static i32 store_folders_find(StoreFolder *out, i32 max)
 {
@@ -492,6 +512,17 @@ static i32 store_folders_find(StoreFolder *out, i32 max)
     for (REGSAM view : VIEWS)
         battlenet_game_folders(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", view, out, &n,
                                max);
+    if (dn && dn < COUNT(data)) {
+        Path file = {};
+        swprintf(file.s, MAX_PATH, L"%ls\\Riot Games\\RiotClientInstalls.json", data);
+        i64 len = 0;
+        char *t = read_file(file.s, &len);
+        static char riot[16][MAX_PATH * 2];
+        i32 count = t ? riot_game_folders(t, len, riot, COUNT(riot)) : 0;
+        free(t);
+        for (i32 i = 0; i < count; i++)
+            if (dir_exists_utf8(riot[i])) store_folder_add(out, &n, max, riot[i], CAT_GAME);
+    }
     return n;
 }
 

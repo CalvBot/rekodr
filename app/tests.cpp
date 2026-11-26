@@ -5052,6 +5052,26 @@ static void test_store_folders()
         RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\RekodrTest");
     }
 
+    // Riot: the game folders RiotClientInstalls.json ties to a Riot Client
+    {
+        static const char riot[] = "{\n    \"associated_client\": {\n        \"E:/Riot Games/League of Legends/\": "
+                                   "\"C:/Riot Games/Riot Client/RiotClientServices.exe\",\n        \"C:/Riot Games/VALORANT/live/\": "
+                                   "\"C:/Riot Games/Riot Client/RiotClientServices.exe\"\n    },\n    \"patchlines\": {\n        "
+                                   "\"KeystoneFoundationLiveWin\": \"C:/Riot Games/Riot Client/RiotClientServices.exe\"\n    },\n"
+                                   "    \"rc_default\": \"C:/Riot Games/Riot Client/RiotClientServices.exe\"\n}\n";
+        static char dirs[4][MAX_PATH * 2];
+        T(riot_game_folders(riot, sizeof riot - 1, dirs, 4) == 2 && !strcmp(dirs[0], "E:/Riot Games/League of Legends/") &&
+          !strcmp(dirs[1], "C:/Riot Games/VALORANT/live/"));
+        T(riot_game_folders(riot, sizeof riot - 1, dirs, 1) == 1);
+        static const char none[] = "{\"rc_default\": \"C:/Riot Games/Riot Client/RiotClientServices.exe\"}";
+        T(riot_game_folders(none, sizeof none - 1, dirs, 4) == 0);
+        T(riot_game_folders("{\"associated_client\": {}}", 25, dirs, 4) == 0);
+        static StoreFolder rf[1];
+        i32 rn = 0;
+        store_folder_add(rf, &rn, 1, dirs[0], CAT_GAME);
+        T(rn == 1 && !strcmp(rf[0].path, "E:\\Riot Games\\League of Legends"));
+    }
+
     // Found folders become rules once: a rule the player removed or changed stays that way
     static Config c;
     c = {};
