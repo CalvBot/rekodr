@@ -4397,7 +4397,7 @@ static void options_automarks()
     // The tick grid: one column width for every label a card can show, from where a top-level card's body starts
     {
         static const char *const renamed[] = {"Match wins", "Demolitions", "Demolished", "Contracts done", "Jobs done",
-                                              "Achievements", "Mission results"};
+                                              "Achievements", "Mission results", "Match starts", "Match ends"};
         f32 cw = 0;
         for (const char *l : labels) cw = fmaxf(cw, lib_dialog_check_w(l));
         for (const char *l : renamed) cw = fmaxf(cw, lib_dialog_check_w(l));
@@ -4418,6 +4418,8 @@ static void options_automarks()
             if (!(game.events & (1u << i))) continue;
             const char *l = labels[i];
             if ((1u << i) == AM_WIN && (game.events & AM_ROUND)) l = "Match wins";
+            if (g == AMG_CS2 && (1u << i) == AM_RAID_START) l = "Match starts";
+            if (g == AMG_CS2 && (1u << i) == AM_RAID_END) l = "Match ends";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_KILL) l = "Demolitions";
             if (g == AMG_STAR_CITIZEN && (1u << i) == AM_QUEST) l = "Contracts done";
             if (g == AMG_HOUSE_FLIPPER_2 && (1u << i) == AM_QUEST) l = "Jobs done";

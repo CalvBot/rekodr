@@ -3617,7 +3617,8 @@ static void put_text(const char *utf8, const char *text)
 // Markers: what follows `mark`, their line in markers.tsv, and the list kept in time order
 // A Counter-Strike 2 state as the game sends it, cut down to what cs2_marks reads.
 static i32 cs2_feed(Cs2Seen *s, const char *watched, const char *map_phase, const char *round_phase, const char *win,
-                    i32 kills, i32 deaths, i32 round_kills, i32 ct, i32 t, AutoMark *out, u32 events = AM_GAMES[AMG_CS2].events)
+                    i32 kills, i32 deaths, i32 round_kills, i32 ct, i32 t, AutoMark *out,
+                    u32 events = AM_GAMES[AMG_CS2].events & ~(AM_RAID_START | AM_RAID_END))
 {
     char body[2048];
     snprintf(body, sizeof body,
@@ -3650,6 +3651,33 @@ static void test_automarks()
     T(cs2_feed(&w, "7656", "warmup", "live", "", 0, 0, 0, 0, 0, m) == 0);
     T(cs2_feed(&w, "7656", "warmup", "live", "", 2, 1, 2, 0, 0, m) == 0); // warmup kills don't count
     T(cs2_marks(&w, AM_GAMES[AMG_CS2].events, "{\"provider\":{\"steamid\":\"7656\"}}", 33, m, 8) == 0 && !w.have); // in the menus
+    // A match is a band: from the first live state to gameover, or to leaving for the menus
+    const u32 all = AM_GAMES[AMG_CS2].events;
+    Cs2Seen mb = {};
+    T(cs2_feed(&mb, "7656", "warmup", "live", "", 0, 0, 0, 0, 0, m, all) == 0);
+    T(cs2_feed(&mb, "7656", "live", "freezetime", "", 0, 0, 0, 0, 0, m, all) == 1 && m[0].event == AM_RAID_START &&
+      !strcmp(m[0].note, "Match start (de_dust2)") && !strcmp(m[0].detail, "map=de_dust2;span=match"));
+    T(cs2_feed(&mb, "7656", "live", "live", "", 1, 0, 1, 0, 0, m, all) == 1 && !strcmp(m[0].note, "Kill"));
+    T(cs2_feed(&mb, "7657", "live", "live", "", 1, 0, 1, 0, 0, m, all) == 0); // watching a teammate doesn't end it
+    T(cs2_feed(&mb, "7656", "gameover", "over", "T", 1, 0, 0, 3, 13, m, all) == 1 && m[0].event == AM_RAID_END &&
+      !strcmp(m[0].detail, "span_end=match"));
+    T(cs2_feed(&mb, "7656", "gameover", "over", "T", 1, 0, 0, 3, 13, m, all) == 0);
+    T(cs2_marks(&mb, all, "{\"provider\":{\"steamid\":\"7656\"}}", 33, m, 8) == 0); // ended already
+    Cs2Seen lv = {};
+    T(cs2_feed(&lv, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 1 && m[0].event == AM_RAID_START); // joined mid-match
+    T(cs2_feed(&lv, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 0);
+    T(cs2_marks(&lv, all, "{\"provider\":{\"steamid\":\"7656\"}}", 33, m, 8) == 1 && m[0].event == AM_RAID_END &&
+      !strcmp(m[0].note, "Match end") && !lv.in_match); // left
+    T(cs2_marks(&lv, all, "{\"provider\":{\"steamid\":\"7656\"}}", 33, m, 8) == 0);
+    T(cs2_feed(&lv, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 1 && m[0].event == AM_RAID_START); // and again
+    T(cs2_feed(&mb, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 1 && cs2_feed(&mb, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, all) == 0);
+    { // on to another map: the match ends there, and the new map's starts
+        char body[256];
+        snprintf(body, sizeof body, "{\"provider\":{\"steamid\":\"7656\"},\"map\":{\"name\":\"de_nuke\",\"phase\":\"live\"},"
+                                    "\"player\":{\"steamid\":\"7656\"}}");
+        T(cs2_marks(&mb, all, body, (i64)strlen(body), m, 8) == 2 && m[0].event == AM_RAID_END && m[1].event == AM_RAID_START &&
+          !strcmp(m[1].note, "Match start (de_nuke)"));
+    }
     // Only some events: multi-kills alone skip plain kills; kills alone mark a double as a Kill; no deaths, no rounds
     Cs2Seen e = {};
     T(cs2_feed(&e, "7656", "live", "live", "", 0, 0, 0, 0, 0, m, AM_MULTI) == 0);
@@ -3662,7 +3690,8 @@ static void test_automarks()
 
     // Headshots, the weapon, MVPs and the bomb, from a fuller state; a kill each, however many one state brings
     auto cs2 = [](Cs2Seen *s, const char *team, i32 kills, i32 assists, i32 mvps, i32 score, i32 rk, i32 rhs, i32 health,
-                  const char *weapons, const char *bomb, AutoMark *out, u32 events = AM_GAMES[AMG_CS2].events) {
+                  const char *weapons, const char *bomb, AutoMark *out,
+                  u32 events = AM_GAMES[AMG_CS2].events & ~(AM_RAID_START | AM_RAID_END)) {
         char body[2048];
         snprintf(body, sizeof body,
                  "{\"provider\":{\"appid\":730,\"steamid\":\"7656\"},\"map\":{\"name\":\"de_inferno\",\"phase\":\"live\"},"
@@ -3690,7 +3719,7 @@ static void test_automarks()
     // A partial state leaves its match_stats out: nothing changes
     const char *part = "{\"provider\":{\"steamid\":\"7656\"},\"map\":{\"name\":\"de_inferno\",\"phase\":\"live\"},"
                        "\"player\":{\"steamid\":\"7656\",\"state\":{\"health\":90}}}";
-    T(cs2_marks(&h2, AM_GAMES[AMG_CS2].events, part, (i64)strlen(part), m, 16) == 0 && h2.kills == 3 && h2.mvps == 1);
+    T(cs2_marks(&h2, AM_KILL, part, (i64)strlen(part), m, 16) == 0 && h2.kills == 3 && h2.mvps == 1);
     T(cs2(&h2, "T", 4, 0, 1, 8, 4, 2, 100, ak, "", m) == 1 && !strcmp(m[0].note, "Quad kill"));
     // The bomb: planted as the player stops carrying it; a teammate's plant isn't theirs
     Cs2Seen bp = {};
@@ -4714,6 +4743,9 @@ static void test_rust()
     T(marker_detail_get(m[0].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000002"));
     T(m[1].event == AM_SERVER && !strcmp(m[1].note, "Joined server") && m[1].t_us == rust_time("2026-11-25T11:25:58.517Z|"));
     T(marker_detail_get(m[1].detail, "server", v, sizeof v) && !strcmp(v, "Some.GG"));
+    // A server join never makes a band: hours go by reloading into one
+    T(!marker_detail_get(m[1].detail, "span", v, sizeof v) && !marker_detail_get(m[1].detail, "span_end", v, sizeof v));
+    T(!(AM_GAMES[AMG_RUST].events & (AM_RAID_START | AM_RAID_END)));
     T(marker_detail_get(m[1].detail, "map", v, sizeof v) && !strcmp(v, "https://maps.example/a.map"));
     T(!marker_local(m[1].detail) && marker_local("x=1;local=1") && !marker_local("x=1"));
     // A map whose welcome never comes is joined unnamed once the log runs on; a welcome with no map is a join

@@ -190,7 +190,7 @@ enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, A
 // game for its markers, or 0.
 struct AmGame { const char *key, *name, *need; u32 events; };
 static const AmGame AM_GAMES[AMG_COUNT] = {
-    {"cs2", "Counter-Strike 2", 0, AM_KILL | AM_MULTI | AM_HEADSHOT | AM_DEATH | AM_MVP | AM_PLANT | AM_DEFUSE | AM_ROUND | AM_WIN},
+    {"cs2", "Counter-Strike 2", 0, AM_KILL | AM_MULTI | AM_HEADSHOT | AM_DEATH | AM_MVP | AM_PLANT | AM_DEFUSE | AM_ROUND | AM_WIN | AM_RAID_START | AM_RAID_END},
     {"dota2", "Dota 2", "Add -gamestateintegration to its launch options", AM_KILL | AM_DEATH | AM_ASSIST | AM_WIN},
     {"lol", "League of Legends", 0, AM_KILL | AM_MULTI | AM_DEATH | AM_OBJECTIVE | AM_WIN},
     {"minecraft", "Minecraft", 0, AM_KILL | AM_DEATH | AM_ADVANCEMENT},

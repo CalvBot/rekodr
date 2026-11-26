@@ -94,6 +94,7 @@ struct Cs2Seen {
     char round[16];   // round.phase: live, over, freezetime
     char bomb[16];    // round.bomb: planted, exploded, defused, or ""
     char phase[16];   // map.phase: warmup, live, intermission, gameover
+    bool in_match;    // a match's start was marked and its end not yet
 };
 
 static const char *am_kill_note(i32 in_a_row, bool league)
@@ -128,17 +129,26 @@ static i32 j_int(const char *body, i64 len, const char *path, i32 keep)
 // weapon in hand and, for a headshot, area=head. The bomb is the player's plant when they stopped carrying it as it
 // was planted, or when their score went up then without a kill or assist; a defuse is theirs when they are a live
 // CT whose score went up so. A state about another player (the one being watched after a death) changes nothing.
+// A match is a band: it starts (span=match) when the map's phase is first seen live, and ends (span_end=match) at
+// gameover, on another map, or when a state has no map (the player left for the menus).
 static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
 {
     char me[32], player[32], map[64];
-    if (!j_get(body, len, "map.name", map, sizeof map)) {
+    i32 n = 0;
+    bool on_map = j_get(body, len, "map.name", map, sizeof map);
+    if (s->in_match && (!on_map || strcmp(s->map, map))) {
+        if (events & AM_RAID_END) am_push(out, cap, &n, AM_RAID_END, 5, "Match end", false, "span_end=match");
+        s->in_match = false;
+    }
+    if (!on_map) {
         s->have = false;
-        return 0;
+        return n;
     }
     if (!j_get(body, len, "provider.steamid", me, sizeof me) || !j_get(body, len, "player.steamid", player, sizeof player) ||
         strcmp(me, player))
-        return 0;
+        return n;
     bool same = s->have && !strcmp(s->map, map);
+    bool in_match = s->in_match;
     Cs2Seen was = *s;
     if (!same) was = {};
     Cs2Seen now = was;
@@ -175,7 +185,14 @@ static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark
     char win[8] = "";
     j_get(body, len, "round.win_team", win, sizeof win);
 
-    i32 n = 0;
+    if (!in_match && !strcmp(now.phase, "live") && (events & AM_RAID_START)) {
+        char note[96], detail[256] = "";
+        snprintf(note, sizeof note, "Match start (%s)", map);
+        marker_detail_add(detail, "map", map);
+        marker_detail_add(detail, "span", "match");
+        am_push(out, cap, &n, AM_RAID_START, 5, note, false, detail);
+        in_match = true;
+    }
     if (same && strcmp(now.phase, "warmup")) {
         i32 k = now.kills - was.kills;
         k = k < 0 ? 0 : k > 5 ? 5 : k;
@@ -211,6 +228,11 @@ static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark
             now.team[0] && !strcmp(win, now.team))
             am_push(out, cap, &n, AM_ROUND, 3, "Round won");
     }
+    if (in_match && !strcmp(now.phase, "gameover")) {
+        if (events & AM_RAID_END) am_push(out, cap, &n, AM_RAID_END, 5, "Match end", false, "span_end=match");
+        in_match = false;
+    }
+    now.in_match = in_match;
     now.have = true;
     str_set(now.map, map);
     *s = now;
