@@ -1084,19 +1084,11 @@ static void kit_shadow(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 rounding, f32 str
     }
 }
 
-// A control raised off what's behind it: a shadow half the popups' strength, wider and further down than theirs
-// (before the control's fill), and a 1 px lighter line along its rounded top edge (`edge`, after the fill). The
-// ground is usually game art, where the shadow shows; on the black window the edge does.
-static void kit_lift(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 rounding, bool edge)
+// A control raised off what's behind it: a shadow half the popups' strength, wider and further down than theirs.
+// Drawn before the control's fill.
+static void kit_lift(ImDrawList *dl, ImVec2 a, ImVec2 b, f32 rounding)
 {
-    if (!edge) {
-        kit_shadow(dl, a, b, rounding, 0.8f, 10, 2.2f);
-        return;
-    }
-    f32 r = ImMin(rounding, (b.y - a.y) / 2), y = a.y + 0.5f;
-    dl->PathArcTo(ImVec2(a.x + r, y + r), r, IM_PI * 1.25f, IM_PI * 1.5f);
-    dl->PathArcTo(ImVec2(b.x - r, y + r), r, IM_PI * 1.5f, IM_PI * 1.75f);
-    dl->PathStroke(col32(COL_WHITE, 0.14f), 0, kit_px(1));
+    kit_shadow(dl, a, b, rounding, 0.8f, 10, 2.2f);
 }
 
 // Every open popup and menu gets a shadow (kit_shadow) on what's under it. Once a frame, after the frame's windows

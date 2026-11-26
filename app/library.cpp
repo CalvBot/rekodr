@@ -2282,9 +2282,8 @@ static bool lib_pill(const char *id, const char *label, f32 w, bool on, ID3D11Sh
     if (clicked) dev_click("pill", label);
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    kit_lift(dl, a, z, round, false);
+    kit_lift(dl, a, z, round);
     dl->AddRectFilled(a, z, col32(hot ? COL_HOVER : COL_PANEL2), round);
-    kit_lift(dl, a, z, round, true);
     f32 ty = floorf(a.y + (h - g_font->FontSize) / 2);
     if (on) dl->AddRect(a, z, col32(COL_WHITE, 0.7f), round, 0, kit_px(1));
     f32 x = a.x + kit_px(12), is = kit_px(20);
@@ -2312,9 +2311,8 @@ static bool lib_switch(const char *id, const char *const *labels, f32 w, f32 h, 
     bool hot = ImGui::IsItemHovered();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 round = ImGui::GetStyle().FrameRounding, in = kit_px(3);
-    kit_lift(dl, a, ImVec2(a.x + w, a.y + h), round, false);
+    kit_lift(dl, a, ImVec2(a.x + w, a.y + h), round);
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? track_hot : track), round);
-    kit_lift(dl, a, ImVec2(a.x + w, a.y + h), round, true);
     for (i32 s = 0; s < 2; s++) {
         ImVec2 p(a.x + floorf(s * w / 2), a.y), q(a.x + floorf((s + 1) * w / 2), a.y + h);
         bool on = (s == 1) == second;
@@ -2338,9 +2336,8 @@ static i32 lib_segments(const char *id, const char *const *labels, i32 n, f32 w,
     if (under >= n) under = n - 1;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 round = ImGui::GetStyle().FrameRounding, in = kit_px(3);
-    kit_lift(dl, a, ImVec2(a.x + w, a.y + h), round, false);
+    kit_lift(dl, a, ImVec2(a.x + w, a.y + h), round);
     dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(hot ? track_hot : track), round);
-    kit_lift(dl, a, ImVec2(a.x + w, a.y + h), round, true);
     for (i32 s = 0; s < n; s++) {
         ImVec2 p(a.x + floorf(s * w / n), a.y), q(a.x + floorf((s + 1) * w / n), a.y + h);
         bool lit_s = s == on;
@@ -6316,12 +6313,11 @@ static void screen_library()
     ImGui::SetCursorScreenPos(ImVec2(h0.x + full_w - search_w, h0.y));
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) && !ImGui::IsPopupOpen("game")) ImGui::SetKeyboardFocusHere();
     ImVec2 s0 = ImGui::GetCursorScreenPos(), s1(s0.x + search_w, s0.y + fh);
-    kit_lift(ImGui::GetWindowDrawList(), s0, s1, ImGui::GetStyle().FrameRounding, false);
+    kit_lift(ImGui::GetWindowDrawList(), s0, s1, ImGui::GetStyle().FrameRounding);
     if (kit_search("##search", lib.search, sizeof lib.search, "Search", search_w)) {
         lib.scroll = lib.scroll_to = 0;
         lib_refilter();
     }
-    kit_lift(ImGui::GetWindowDrawList(), s0, s1, ImGui::GetStyle().FrameRounding, true);
     }
     ImGui::SetCursorScreenPos(ImVec2(h0.x, h0.y + fh + kit_px(16)));
 
