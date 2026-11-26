@@ -768,14 +768,6 @@ static const JavaGame g_java_games[] = {
 
 static bool is_java_exe(const char *exe) { return !_stricmp(exe, "java.exe") || !_stricmp(exe, "javaw.exe"); }
 
-// Whether `name` is a game's name (a Java game's, or one in the games list) rather than an exe's File description.
-static bool gamedb_named_game(const char *name)
-{
-    for (const JavaGame &g : g_java_games)
-        if (!strcmp(g.name, name)) return true;
-    GameInfo g;
-    return gamedb_by_name(name, &g);
-}
 
 // Whether any of a |-separated list is in `s` (`whole`: is all of it).
 static bool java_list_has(const char *list, const char *s, bool whole)
@@ -1117,7 +1109,7 @@ static bool gamedb_name_app(AppInfo *a)
         }
     }
     AppCategory cat = app_category(g_app.config, *a);
-    bool software = false, sorted = false;
+    bool software = false, sorted = false, minecraft = false;
     if (!java && gamedb_service_on() && a->path[0] && (cat == CAT_GAME || cat == CAT_NONE)) {
         static char body[16384], has[2048];
         LookAnswer ans = {};
@@ -1145,11 +1137,17 @@ static bool gamedb_name_app(AppInfo *a)
             str_set(g.key, ans.key);
             g.launcher = launcher;
             known = true;
+            minecraft = !strcmp(ans.how, "mc") || !strcmp(ans.how, "mc_pack");
         }
     }
     // An exe several games share (java among them) that was named as one game and is now something else is
-    // another program: its open session ends rather than taking the new name.
-    bool was_game = (java || shared || is_java_exe(a->exe.s)) && a->desc.s[0] && gamedb_named_game(a->desc.s);
+    // another program: its open session ends rather than taking the new name. It was a game when its description
+    // is a name, not the exe's own File description (the runtime's). Minecraft named as one of its modpacks is
+    // the same game, found out more about.
+    char own[128] = "";
+    bool was_game = (java || shared || is_java_exe(a->exe.s)) && a->desc.s[0];
+    if (was_game) exe_description(a->path, own, sizeof own);
+    was_game = was_game && strcmp(a->desc.s, own) && !(minecraft && !strcmp(a->desc.s, "Minecraft"));
     if (!known && shared) {
         if (!a->desc.s[0]) return sorted;
         a->desc.s[0] = 0; // its File description is the runtime's, not a game's
