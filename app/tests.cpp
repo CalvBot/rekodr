@@ -3559,6 +3559,18 @@ static void test_mcpack()
     T(!strstr(body, "My Own") && !strstr(body, "rekodr-mcpack"));
     T(!mc_clues("javaw -jar notagame.jar --gameDir C:/x", body, sizeof body));
 
+    // Prism hands the game its arguments on stdin: the folder from the instance beside the natives, the version
+    // from mmc-pack.json
+    put_file(path_join(prism, L"mmc-pack.json"), "{\"components\": [{\"uid\": \"org.lwjgl3\", \"version\": \"3.3.3\"}, "
+                                                 "{\"cachedVersion\": \"1.21.1\", \"uid\": \"net.minecraft\", \"version\": \"1.21.1\"}]}");
+    char pdir[MAX_PATH * 2], got[MAX_PATH * 2];
+    wide_to_utf8(prism.s, pdir, sizeof pdir);
+    snprintf(cmd, sizeof cmd, "javaw -XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump "
+                              "-Djava.library.path=%s/natives -cp x org.prismlauncher.EntryPoint", pdir);
+    T(mc_game_dir(cmd, got, sizeof got) && strstr(got, ".minecraft"));
+    T(mc_clues(cmd, body, sizeof body) && strstr(body, "\"launcher\":\"prism\",\"mc\":\"1.21.1\""));
+    T(!mc_game_dir("javaw -Djava.library.path=C:/x/natives -cp x some.other.Main", got, sizeof got));
+
     // The service's answer for a pack its launcher named: the pack, keyed by its platform's project
     static const char answer[] = "{\"game\":{\"key\":\"p:modrinth:1KVo5zza\",\"name\":\"Fabulously Optimized\"},\"matched_by\":\"mc_pack\","
                                  "\"confidence\":0.95,\"art\":{\"icon\":null,\"hero\":null,\"cover\":{\"url\":\"https://a/g.png\"}},\"v\":\"3\"}";

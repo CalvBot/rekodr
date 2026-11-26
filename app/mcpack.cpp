@@ -1,11 +1,11 @@
 // Minecraft's modpacks. javaw.exe is every Minecraft there is, so which modpack a running one is comes from the
-// record its launcher keeps by the game's folder (the --gameDir on its command line). What is sent to the art
+// record its launcher keeps by the game's folder (mc_game_dir). What is sent to the art
 // service to name the pack is only: the launcher, the pack's platform and its project and version ids, the
 // Minecraft version and loader, and the names of the mods (their file names with the versions cut off). Never a
 // path, and never an instance's name, which the player chose. Where each launcher keeps its record, from the game's
 // folder:
 //   Prism, MultiMC   ..\instance.cfg: ManagedPack, ManagedPackType (flame = CurseForge, modrinth), ManagedPackID,
-//                    ManagedPackVersionID
+//                    ManagedPackVersionID; ..\mmc-pack.json: the net.minecraft component's version
 //   CurseForge       minecraftinstance.json (in it, or one up): projectID, fileID (0 for a pack imported from a zip)
 //   FTB App          ..\instance.json (or in it): id, versionId
 //   GDLauncher       ..\instance.json: modpack {platform, project_id, version_id or file_id}
@@ -38,6 +38,35 @@ static bool mc_arg(const char *cmd, const char *name, char *out, i32 cap)
         }
         out[n] = 0;
         return n > 0;
+    }
+    return false;
+}
+
+// A running Minecraft's game folder: --gameDir on its command line, else for Prism and MultiMC, which hand the game
+// its arguments on stdin, the instance's minecraft or .minecraft folder (the instance is the folder that holds the
+// natives folder in -Djava.library.path, which needn't exist). False if neither is there.
+static bool mc_game_dir(const char *cmd, char *out, i32 cap)
+{
+    if (mc_arg(cmd, "--gameDir", out, cap)) return true;
+    out[0] = 0;
+    if (!strstr(cmd, "org.prismlauncher.EntryPoint") && !strstr(cmd, "org.multimc.EntryPoint")) return false;
+    char inst[MAX_PATH * 2];
+    if (!mc_arg(cmd, "-Djava.library.path", inst, sizeof inst)) return false;
+    char *cut = strrchr(inst, '/'), *cut2 = strrchr(inst, '\\');
+    if (cut2 > cut) cut = cut2;
+    if (!cut) return false;
+    *cut = 0;
+    static const char *const names[] = {"minecraft", ".minecraft"};
+    for (const char *name : names) {
+        char dir[MAX_PATH * 2];
+        snprintf(dir, sizeof dir, "%s/%s", inst, name);
+        wchar_t w[MAX_PATH];
+        utf8_to_wide(dir, w, MAX_PATH);
+        DWORD at = GetFileAttributesW(w);
+        if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_DIRECTORY)) {
+            snprintf(out, cap, "%s", dir);
+            return true;
+        }
     }
     return false;
 }
@@ -111,6 +140,15 @@ static bool mc_read_record(const char *game_dir, McClues *c)
             ini_get(t, "ManagedPackID", c->project, sizeof c->project);
             ini_get(t, "ManagedPackVersionID", c->version, sizeof c->version);
         }
+        free(t);
+        t = 0;
+        // The Minecraft version: Prism puts no --version on the command line
+        if ((t = mc_read(up, L"mmc-pack.json", &len)) != 0) {
+            const char *u = strstr(t, "\"net.minecraft\"");
+            const char *k = u ? strstr(u, "\"version\"") : 0;
+            const char *q = k ? strchr(k + 9, '"') : 0;
+            for (i32 n = 0; q && n < (i32)sizeof c->mc - 1 && (isdigit((u8)q[1 + n]) || q[1 + n] == '.'); n++) c->mc[n] = q[1 + n], c->mc[n + 1] = 0;
+        }
     } else if ((t = mc_read(here, L"minecraftinstance.json", &len)) != 0 || (t = mc_read(up, L"minecraftinstance.json", &len)) != 0) {
         str_set(c->launcher, "curseforge");
         if (j_get(t, len, "projectID", c->project, sizeof c->project) && strcmp(c->project, "0")) {
@@ -176,7 +214,7 @@ static bool mc_clues(const char *cmdline, char *out, i32 cap)
     i32 l = 0;
     for (; cmdline[l] && l < (i32)sizeof low - 1; l++) low[l] = (char)tolower((u8)cmdline[l]);
     low[l] = 0;
-    if (!strstr(low, "minecraft") || !mc_arg(cmdline, "--gameDir", dir, sizeof dir)) return false;
+    if (!strstr(low, "minecraft") || !mc_game_dir(cmdline, dir, sizeof dir)) return false;
     static McClues c; // big; the main thread is the only one asking
     if (!mc_read_record(dir, &c)) return false;
     if (mc_arg(cmdline, "--version", ver, sizeof ver)) {

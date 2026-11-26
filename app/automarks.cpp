@@ -10,7 +10,7 @@
 //   League of Legends  The Live Client Data API, https://127.0.0.1:2999, which the game serves while a match runs.
 //                      Its event list is read once a second.
 //
-//   Minecraft          logs\latest.log in the running game's folder (--gameDir), read once a second.
+//   Minecraft          logs\latest.log in the running game's folder (mc_game_dir), read once a second.
 //   Path of Exile 1, 2 logs\Client.txt in the game's folder (Steam, else Grinding Gear Games' install).
 //   Team Fortress 2    tf\console.log. Turning it on adds a con_logfile line to tf\cfg\autoexec.cfg, read when the
 //                      game starts; turning it off takes only that line out.
@@ -1828,8 +1828,6 @@ static void am_lol_poll(HINTERNET session)
     am_put(marks, n, AMG_LOL);
 }
 
-// Minecraft's latest.log: in the folder on the running game's command line (--gameDir). Looked for every 5 s while
-// it isn't known.
 // War Thunder's battle, once a second while aces.exe runs (looked for every 5 s).
 static void am_wt_poll(HINTERNET session)
 {
@@ -1861,6 +1859,7 @@ static void am_wt_poll(HINTERNET session)
         am_put(marks, wt_mission(&s, ev, buf, len, marks, COUNT(marks)), AMG_WAR_THUNDER);
 }
 
+// Minecraft's latest.log: in the running game's folder (mc_game_dir). Looked for every 5 s while it isn't known.
 static void mc_log_path(wchar_t *out)
 {
     out[0] = 0;
@@ -1869,7 +1868,7 @@ static void mc_log_path(wchar_t *out)
     static const char *const exes[] = {"javaw.exe", "java.exe"};
     for (const char *exe : exes) {
         if (!process_facts(exe, cmd, sizeof cmd, title, sizeof title) || !strstr(cmd, "minecraft")) continue;
-        if (!mc_arg(cmd, "--gameDir", dir, sizeof dir)) continue;
+        if (!mc_game_dir(cmd, dir, sizeof dir)) continue;
         wchar_t w[MAX_PATH];
         utf8_to_wide(dir, w, MAX_PATH);
         swprintf(out, MAX_PATH, L"%s\\logs\\latest.log", w);
