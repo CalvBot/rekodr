@@ -5131,6 +5131,64 @@ static void test_plugins()
     };
     for (const char *b : bad) T(!plugin_manifest_parse("x", b, &p) && p.why[0]);
     T(!plugin_manifest_parse("a folder name far too long", "exe = x.exe\nlayer = a | value\n", &p));
+    T(!plugin_manifest_parse("a=b", "exe = x.exe\nlayer = a | value\n", &p)); // its config key would break
+
+    // Events: a plugin with only events is fine; game is kept in lower case
+    T(plugin_manifest_parse("ow", "name = Overwatch\nexe = owmarks.exe\ngame = Overwatch.exe\nevents = kill, death win\n", &p));
+    T(!strcmp(p.game, "overwatch.exe") && p.events == (AM_KILL | AM_DEATH | AM_WIN) && !p.layer_count);
+    const char *bad_events[] = {
+        "exe = x.exe\nevents = kill frag\n",        // not an event
+        "exe = x.exe\nevents = \n",                 // no layers or events
+        "exe = x.exe\ngame = x\nevents = kill\n",   // not a program
+        "exe = x.exe\ngame = c:\\x.exe\nevents = kill\n",
+    };
+    for (const char *b : bad_events) T(!plugin_manifest_parse("x", b, &p) && p.why[0]);
+    // The sample plugin in docs reads
+    {
+        char *sample = read_file(L"..\\docs\\examples\\log-markers\\plugin.txt", 0);
+        T(sample && plugin_manifest_parse("log-markers", sample, &p) && !strcmp(p.game, "mygame.exe") &&
+          p.events == (AM_KILL | AM_DEATH | AM_WIN));
+        free(sample);
+    }
+
+    // Event lines: a marker each, with the event's colour and note, or the plugin's note; @-<ms> moves it back
+    {
+        Event e;
+        while (event_take(&e)) {}
+        T(plugin_manifest_parse("ow", "name = Overwatch\nexe = owmarks.exe\ngame = overwatch.exe\nevents = kill death win\n", &p));
+        p.marking = AM_KILL | AM_WIN;
+        const i64 E0 = 1000000000000ll;
+        auto ev = [&](const char *s) { return plugin_line(&p, s, (i32)strlen(s), E0); };
+        T(ev("e kill") == PDROP_NONE && ev("e win Victory @-1500") == PDROP_NONE && ev("e kill Ana @-0") == PDROP_NONE);
+        T(ev("e death") == PDROP_OFF);                                    // its tick is off
+        T(ev("e goal") == PDROP_EVENT && ev("e frag") == PDROP_EVENT);    // not in plugin.txt
+        T(ev("e ") == PDROP_BAD && ev("e kill @-x") == PDROP_BAD && ev("e kill @-700000") == PDROP_BAD);
+        T(ev("e kill mail a@b") == PDROP_NONE);                           // an @ in the note is the note's
+        Event got[8];
+        i32 n = 0;
+        while (n < 8 && event_take(&got[n])) n += got[n].kind == EV_MARKER;
+        T(n == 4);
+        T(got[0].a == E0 && got[0].b == 4 && !strcmp(got[0].text, "Kill"));
+        T(got[1].a == E0 - 1500000 && got[1].b == 3 && !strcmp(got[1].text, "Victory"));
+        T(got[2].a == E0 && !strcmp(got[2].text, "Ana") && !strcmp(got[3].text, "mail a@b"));
+
+        // Ticks: all its events until some are saved, then only those it has
+        Config tc = {};
+        T(plugin_ticks(&tc, &p) == (AM_KILL | AM_DEATH | AM_WIN));
+        char v1[] = "death,goal";
+        config_set(&tc, "am_events_plugin_ow", v1);
+        T(tc.am_plugin_count == 1 && plugin_ticks(&tc, &p) == AM_DEATH);
+        char v2[] = "";
+        config_set(&tc, "am_events_plugin_ow", v2);
+        T(tc.am_plugin_count == 1 && plugin_ticks(&tc, &p) == 0);
+        for (i32 k = 0; k < AM_PLUGIN_TICKS + 2; k++) {
+            char key[40], v3[] = "kill";
+            snprintf(key, sizeof key, "am_events_plugin_p%d", k);
+            config_set(&tc, key, v3);
+        }
+        T(tc.am_plugin_count == AM_PLUGIN_TICKS && !am_plugin_ticks(&tc, "ow", false) &&
+          am_plugin_ticks(&tc, "p17", false));                            // the oldest went
+    }
 
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);

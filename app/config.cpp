@@ -693,6 +693,23 @@ static void am_events_text(u32 bits, char *out, size_t cap)
         }
 }
 
+// The event ticks saved for the plugin in `folder`; with `add`, a new entry when it has none (the oldest goes when
+// they're full). Null when it has none and `add` is false.
+static AmPluginTicks *am_plugin_ticks(Config *c, const char *folder, bool add)
+{
+    for (i32 i = 0; i < c->am_plugin_count; i++)
+        if (!strcmp(c->am_plugin[i].folder, folder)) return &c->am_plugin[i];
+    if (!add || !folder[0] || strlen(folder) >= AM_PLUGIN_FOLDER) return 0;
+    if (c->am_plugin_count == AM_PLUGIN_TICKS) {
+        memmove(c->am_plugin, c->am_plugin + 1, sizeof c->am_plugin - sizeof *c->am_plugin);
+        c->am_plugin_count--;
+    }
+    AmPluginTicks *t = &c->am_plugin[c->am_plugin_count++];
+    *t = {};
+    str_set(t->folder, folder);
+    return t;
+}
+
 static void config_set(Config *c, const char *key, char *value)
 {
     wchar_t wide[MAX_PATH];
@@ -817,6 +834,10 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_copy_on_close")) boolean(&c->share_copy_on_close);
     else if (!strcmp(key, "auto_marks")) boolean(&c->auto_marks);
     else if (!strcmp(key, "war_thunder_name")) str_set(c->wt_name, value);
+    else if (!strncmp(key, "am_events_plugin_", 17)) {
+        AmPluginTicks *t = am_plugin_ticks(c, key + 17, true);
+        if (t) t->events = am_events_parse(value, ~0u);
+    }
     else if (!strncmp(key, "auto_marks_", 11)) {
         for (i32 g = 0; g < AMG_COUNT; g++) {
             const char *k = AM_GAMES[g].key, *rest = key + 11;
@@ -1040,6 +1061,11 @@ static bool config_save(const Config &c, const Paths &paths)
                 AM_GAMES[g].key, ev);
     }
     fprintf(f, "war_thunder_name = %s\n", c.wt_name);
+    for (i32 i = 0; i < c.am_plugin_count; i++) {
+        char ev[256];
+        am_events_text(c.am_plugin[i].events, ev, sizeof ev);
+        fprintf(f, "am_events_plugin_%s = %s\n", c.am_plugin[i].folder, ev);
+    }
     boolean("ach_marks", c.ach_marks);
     fprintf(f, "ach_rarer = %d\n", c.ach_rarer);
     fprintf(f, "share_link_days = %d\n", c.share_link_days);

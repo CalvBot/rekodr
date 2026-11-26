@@ -1,0 +1,5 @@
+# A Rekodr plugin: kills, deaths and wins from a game's log (see docs\PLUGINS.md)
+name   = My game
+exe    = logmarks.exe
+game   = mygame.exe
+events = kill death win

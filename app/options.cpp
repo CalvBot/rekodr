@@ -4181,6 +4181,37 @@ static void options_automarks()
         opt_am_row_end();
     }
 
+    // Plugins that send events: a row each, its switch the plugin's own (as in Integrations)
+    for (i32 i = 0; i < g_plugins.count; i++) {
+        Plugin &p = g_plugins.p[i];
+        if (!p.events) continue;
+        AmChoice choices[COUNT(labels)];
+        i32 n = 0;
+        for (i32 b = 0; b < COUNT(labels); b++)
+            if (p.events & (1u << b)) choices[n++] = {1u << b, labels[b]};
+        bool on = !word_list_has(c.plugins_off, p.folder), broken = p.state == PLUGIN_BROKEN || p.state == PLUGIN_FAILED;
+        char sub[128];
+        if (p.state == PLUGIN_BROKEN) snprintf(sub, sizeof sub, "%s", p.why);
+        else if (p.state == PLUGIN_FAILED) snprintf(sub, sizeof sub, "Stopped: it kept ending");
+        else if (p.game[0]) snprintf(sub, sizeof sub, "From a plugin, while %s runs", p.game);
+        else snprintf(sub, sizeof sub, "From a plugin");
+        ImGui::PushID(i);
+        if (opt_am_row_begin(p.name, sub, broken ? COL_WARN : COL_DIM, &on, kit_px(20))) {
+            word_list_toggle(c.plugins_off, sizeof c.plugins_off, p.folder);
+            log_line("options: plugin %s %s", p.folder, on ? "on" : "off");
+            marks = true;
+        }
+        u32 ev = plugin_ticks(&c, &p);
+        if (opt_am_events(p.name, &ev, choices, n)) {
+            AmPluginTicks *t = am_plugin_ticks(&c, p.folder, true);
+            if (t) t->events = ev;
+            log_line("options: plugin %s marks 0x%x", p.folder, ev);
+            marks = true;
+        }
+        opt_am_row_end();
+        ImGui::PopID();
+    }
+
     if (opt_am_row_begin("Steam achievements", "A marker when Steam gives you a rare one, in any game", COL_DIM, &c.ach_marks, ImGui::GetFrameHeight())) {
         log_line("options: achievement markers %s", c.ach_marks ? "on" : "off");
         ach = true;
@@ -4337,11 +4368,12 @@ static void options_integrations()
             if (k) strncat_s(sub, ", ", _TRUNCATE);
             strncat_s(sub, p.layers[k].label, _TRUNCATE);
         }
+        if (p.events) strncat_s(sub, sub[0] ? ", Auto markers" : "Auto markers", _TRUNCATE);
         bool on = !word_list_has(c.plugins_off, p.folder);
         PluginState st = p.state;
         const char *status = st == PLUGIN_BROKEN ? p.why : st == PLUGIN_FAILED ? "Stopped: it kept ending"
                            : st == PLUGIN_RUNNING ? "Running" : st == PLUGIN_WAITING ? "Starting again"
-                           : on && p.game_only ? "Waits for a game" : on ? "Starting" : "Off";
+                           : on && (p.game_only || p.game[0]) ? "Waits for a game" : on ? "Starting" : "Off";
         u32 col = st == PLUGIN_BROKEN || st == PLUGIN_FAILED ? COL_WARN : st == PLUGIN_RUNNING ? COL_OK : COL_DIM;
         ImGui::PushID(i);
         opt_row_begin(p.name, st == PLUGIN_BROKEN ? "plugin.txt" : sub, sw + dp(12) + dp(36));

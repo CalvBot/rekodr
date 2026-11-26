@@ -164,6 +164,12 @@ enum AmEvent : u32 {
 };
 static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level",
                                              "lap", "overtake", "incident", "goal", "save"};
+// Each event's marker colour (MARKER_COLOURS) and the note it gets when its source gives none: a plugin's events.
+static const u8 AM_EVENT_COLOURS[] = {4, 4, 1, 3, 3, 5, 5, 6, 6, 6, 4, 1, 4, 5};
+static const char *const AM_EVENT_NOTES[] = {"Kill", "Multi-kill", "Death", "Round won", "Win", "Objective", "Assist",
+                                             "Advancement", "Level up", "Best lap", "Overtake", "Incident", "Goal", "Save"};
+static_assert(sizeof AM_EVENT_COLOURS == sizeof AM_EVENT_WORDS / sizeof *AM_EVENT_WORDS, "a colour for each event");
+static_assert(sizeof AM_EVENT_NOTES == sizeof AM_EVENT_WORDS, "a note for each event");
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
                 AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
@@ -186,6 +192,11 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"hearthstone", "Hearthstone", "From the game's log", AM_WIN},
     {"war_thunder", "War Thunder", "From the game's map server, for the name below", AM_KILL | AM_DEATH | AM_WIN},
 };
+
+// A plugin's event ticks in Options > Auto markers, saved as am_events_plugin_<folder> (plugins.cpp). A plugin
+// with none saved marks every event it has.
+enum { AM_PLUGIN_TICKS = 16, AM_PLUGIN_FOLDER = 18 };
+struct AmPluginTicks { char folder[AM_PLUGIN_FOLDER]; u32 events; };
 
 struct Config {
     Path save_dir;     // <Videos>\Rekodr, holding Clips, Sessions and Data (save_clips_dir and the rest)
@@ -316,6 +327,8 @@ struct Config {
     bool input_busy;        // the Busy layer is recorded: how many keys and mouse moves a second, never which (off)
     f32  afk_after_min;     // no input this long with a game in front is AFK on the Busy row (2)
     char plugins_off[512];  // plugin folders switched off, |-separated
+    AmPluginTicks am_plugin[AM_PLUGIN_TICKS]; // plugins' event ticks, newest last
+    i32  am_plugin_count;
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default
     f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default
     i32 editor_lane;    // Editor: a timeline lane's height, in pixels at 100% (Shift + wheel); 0 = the default

@@ -1,30 +1,40 @@
-// Plugins: small programs that feed layers. Each is a folder <config_dir>\Plugins\<folder>\ holding plugin.txt and
-// the program it names. plugin.txt has one `key = value` per line:
+// Plugins: small programs that feed layers and mark a game's events. Each is a folder in <config_dir>\Plugins
+// holding plugin.txt and the program it names (docs\PLUGINS.md). plugin.txt has one `key = value` per line:
 //
-//   name  = Heart rate                    what the player sees (the folder name when left out)
-//   exe   = heart.exe                     the program, in the folder; started with no arguments
-//   run   = always | game                 game: only while a game is being played (always when left out)
-//   layer = <id> | <kind> | <label> | ... one per layer it sends, at most PLUGIN_LAYERS:
-//           value adds `<unit> | <lo>-<hi>`, input adds the codes it may send, text and spans add nothing
+//   name   = Heart rate                    what the player sees (the folder name when left out)
+//   exe    = heart.exe                     the program, in the folder; started with no arguments
+//   run    = always | game                 game: only while a game is being played (always when left out)
+//   game   = overwatch.exe                 only while this game is being played (overrides run)
+//   events = kill death win                the Auto markers events it sends (AM_EVENT_WORDS); it gets a row with a
+//                                          tick for each in Options > Auto markers
+//   layer  = <id> | <kind> | <label> | ... one per layer it sends, at most PLUGIN_LAYERS:
+//            value adds `<unit> | <lo>-<hi>`, input adds the codes it may send, text and spans add nothing
 //
-// The layer's stored name is "<folder>/<id>". The program writes lines to its stdout, each stamped when it arrives:
+// A plugin has layers, events or both. The layer's stored name is "<folder>/<id>". The program writes lines to its
+// stdout, each stamped when it arrives:
 //
-//   v <id> <number>         a Value
-//   t <id> <text>           a Text or Spans line that holds until the next one; no text clears it
-//   k <id> <code> down|up   an Input key or button, one of the codes in plugin.txt
+//   v <id> <number>              a Value
+//   t <id> <text>                a Text or Spans line that holds until the next one; no text clears it
+//   k <id> <code> down|up        an Input key or button, one of the codes in plugin.txt
+//   e <event> [<note>] [@-<ms>]  a marker for one of its events, <ms> before now when it ends with @-<ms> (at most
+//                                PLUGIN_LATE_MS); the event's own note when it has none
 //
-// A line that doesn't read, names an unknown id or code, or is over PLUGIN_LINE_MAX bytes is dropped; the first of
-// each kind is logged. A Value layer keeps at most one value per PLUGIN_VALUE_US. stderr goes to the log, after
-// the folder name. Plugins run in Rekodr's job object, so they end with it. One that ends by itself is started
+// A marker is made only while Auto markers and the event's tick are on; its colour is the event's (AM_EVENT_COLOURS).
+// A line that doesn't read, names an unknown id, code or event, or is over PLUGIN_LINE_MAX bytes is dropped; the
+// first of each kind is logged. A Value layer keeps at most one value per PLUGIN_VALUE_US. stderr goes to the log,
+// after the folder name. Plugins run in Rekodr's job object, so they end with it. One that ends by itself is started
 // again after 1, 4 and 16 s; after that it stays off until Rekodr starts again.
 
-enum { PLUGIN_MAX = 8, PLUGIN_LAYERS = 4, PLUGIN_CODES = 32, PLUGIN_ID_MAX = 13, PLUGIN_FOLDER_MAX = 18,
-       PLUGIN_LINE_MAX = 512, PLUGIN_RESTARTS = 3 };
+enum { PLUGIN_MAX = 8, PLUGIN_LAYERS = 4, PLUGIN_CODES = 32, PLUGIN_ID_MAX = 13, PLUGIN_FOLDER_MAX = AM_PLUGIN_FOLDER,
+       PLUGIN_LINE_MAX = 512, PLUGIN_RESTARTS = 3, PLUGIN_LATE_MS = 600000 };
 static const i64 PLUGIN_VALUE_US = 100000;
 
-enum PluginDrop : u8 { PDROP_NONE, PDROP_BAD, PDROP_ID, PDROP_CODE, PDROP_LONG, PDROP_FAST, PDROP_KINDS };
+// PDROP_FAST and PDROP_OFF (an event whose tick is off) aren't logged.
+enum PluginDrop : u8 { PDROP_NONE, PDROP_BAD, PDROP_ID, PDROP_CODE, PDROP_LONG, PDROP_EVENT, PDROP_FAST, PDROP_OFF,
+                       PDROP_KINDS };
 static const char *const PDROP_WHY[PDROP_KINDS] = {"", "a line that doesn't read", "an unknown id",
-                                                    "a code not in plugin.txt", "a line that is too long", ""};
+                                                    "a code not in plugin.txt", "a line that is too long",
+                                                    "an event not in plugin.txt", "", ""};
 
 enum PluginState : u8 {
     PLUGIN_OFF,     // switched off, or waiting for a game
@@ -51,6 +61,9 @@ struct Plugin {
     char        name[LAYER_NAME_MAX];
     wchar_t     exe[64];
     bool        game_only;
+    char        game[64];  // only while this exe (lower case) is played; "" for any
+    u32         events;    // the AmEvent bits it sends
+    volatile u32 marking;  // the ones it marks now: its ticks, while Auto markers is on (plugins_tick)
     PluginLayer layers[PLUGIN_LAYERS];
     i32         layer_count;
     char        why[96]; // PLUGIN_BROKEN: what is wrong
@@ -180,8 +193,8 @@ static bool plugin_manifest_parse(const char *folder, const char *text, Plugin *
     str_set(p->folder, folder);
     char name[LAYER_NAME_MAX + 4];
     snprintf(name, sizeof name, "%s/x", folder);
-    if (strlen(folder) >= PLUGIN_FOLDER_MAX || !layer_name_ok(name)) {
-        snprintf(p->why, sizeof p->why, "the folder's name is too long");
+    if (strlen(folder) >= PLUGIN_FOLDER_MAX || !layer_name_ok(name) || strchr(folder, '=')) {
+        snprintf(p->why, sizeof p->why, "the folder's name is too long or has = in it");
         return false;
     }
     char line[1024];
@@ -207,6 +220,28 @@ static bool plugin_manifest_parse(const char *folder, const char *text, Plugin *
         } else if (!strcmp(key, "run")) {
             if (!strcmp(value, "game")) p->game_only = true;
             else if (strcmp(value, "always")) { snprintf(p->why, sizeof p->why, "run is always or game"); return false; }
+        } else if (!strcmp(key, "game")) {
+            size_t n = strlen(value);
+            if (n < 5 || n >= sizeof p->game || _stricmp(value + n - 4, ".exe") || strpbrk(value, "\\/:")) {
+                snprintf(p->why, sizeof p->why, "game isn't a program's name, like game.exe");
+                return false;
+            }
+            for (size_t i = 0; i <= n; i++) p->game[i] = (char)tolower((u8)value[i]);
+        } else if (!strcmp(key, "events")) {
+            for (char *w = value; *w;) {
+                while (*w == ' ' || *w == ',') w++;
+                size_t wl = strcspn(w, " ,");
+                if (!wl) break;
+                i32 bit = -1;
+                for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++)
+                    if (strlen(AM_EVENT_WORDS[i]) == wl && !strncmp(w, AM_EVENT_WORDS[i], wl)) bit = i;
+                if (bit < 0) {
+                    snprintf(p->why, sizeof p->why, "\"%.*s\" isn't an event", (int)(wl < 16 ? wl : 16), w);
+                    return false;
+                }
+                p->events |= 1u << bit;
+                w += wl;
+            }
         } else if (!strcmp(key, "layer")) {
             if (p->layer_count == PLUGIN_LAYERS) {
                 snprintf(p->why, sizeof p->why, "more than %d layers", PLUGIN_LAYERS);
@@ -224,7 +259,7 @@ static bool plugin_manifest_parse(const char *folder, const char *text, Plugin *
         // Other keys are ignored.
     }
     if (!p->exe[0]) { snprintf(p->why, sizeof p->why, "no exe"); return false; }
-    if (!p->layer_count) { snprintf(p->why, sizeof p->why, "no layers"); return false; }
+    if (!p->layer_count && !p->events) { snprintf(p->why, sizeof p->why, "no layers or events"); return false; }
     if (!p->name[0]) layer_word_set(p->name, sizeof p->name, folder);
     return true;
 }
@@ -244,10 +279,45 @@ static bool plugin_register(Plugin *p)
     return ok;
 }
 
+// `<event> [<note>] [@-<ms>]` from the plugin, arrived at `t_us`: a marker to the main thread (EV_MARKER).
+static PluginDrop plugin_event(Plugin *p, const char *s, i64 t_us)
+{
+    size_t len = strcspn(s, " ");
+    i32 bit = -1;
+    for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++)
+        if (len && strlen(AM_EVENT_WORDS[i]) == len && !strncmp(s, AM_EVENT_WORDS[i], len)) bit = i;
+    if (bit < 0) return len ? PDROP_EVENT : PDROP_BAD;
+    if (!(p->events & (1u << bit))) return PDROP_EVENT;
+    char note[PLUGIN_LINE_MAX + 1];
+    str_set(note, s + len);
+    char *n = note;
+    while (*n == ' ') n++;
+    char *at = strrchr(n, '@');
+    if (at && (at == n || at[-1] == ' ') && at[1] == '-') {
+        char *end;
+        long ms = strtol(at + 2, &end, 10);
+        if (end == at + 2 || *end || ms < 0 || ms > PLUGIN_LATE_MS) return PDROP_BAD;
+        t_us -= (i64)ms * 1000;
+        *at = 0;
+    }
+    size_t nl = strlen(n);
+    while (nl && n[nl - 1] == ' ') n[--nl] = 0;
+    if (!(p->marking & (1u << bit))) return PDROP_OFF;
+    Event e = {};
+    e.kind = EV_MARKER;
+    e.a = t_us;
+    e.b = AM_EVENT_COLOURS[bit];
+    str_set(e.text, n[0] ? n : AM_EVENT_NOTES[bit]);
+    event_post(e);
+    log_line("markers: %s: %s, from its plugin", p->name, e.text);
+    return PDROP_NONE;
+}
+
 // One line from the plugin, `len` bytes long (more than fit in `line` when it's too long), arrived at `t_us`.
 static PluginDrop plugin_line(Plugin *p, const char *line, i32 len, i64 t_us)
 {
     if (len > PLUGIN_LINE_MAX) return PDROP_LONG;
+    if (line[0] == 'e' && line[1] == ' ') return plugin_event(p, line + 2, t_us);
     char op = line[0];
     if ((op != 'v' && op != 't' && op != 'k') || line[1] != ' ') return PDROP_BAD;
     const char *id = line + 2, *sp = strchr(id, ' ');
@@ -314,7 +384,7 @@ static DWORD WINAPI plugin_out_thread(void *arg)
     Plugin *p = (Plugin *)arg;
     plugin_read_lines(p->proc.out, [&](const char *line, i32 len) {
         PluginDrop d = plugin_line(p, line, len, now_us());
-        if (d != PDROP_NONE && d != PDROP_FAST && !(p->logged & (1u << d))) {
+        if (d != PDROP_NONE && d != PDROP_FAST && d != PDROP_OFF && !(p->logged & (1u << d))) {
             p->logged |= 1u << d;
             log_line("plugin %s: dropped %s: %.80s", p->folder, PDROP_WHY[d], line);
         }
@@ -404,16 +474,26 @@ static void plugin_start(Plugin *p)
     log_line("plugin %s: started", p->folder);
 }
 
+// The events the plugin marks while Auto markers is on: its ticks in Options, all it has when none are saved.
+static u32 plugin_ticks(Config *c, const Plugin *p)
+{
+    AmPluginTicks *t = am_plugin_ticks(c, p->folder, false);
+    return t ? t->events & p->events : p->events;
+}
+
 // Starts and stops plugins as they're switched and as games come and go; main thread, once a second.
 static void plugins_tick()
 {
     if (!g_plugins.scanned) plugins_scan();
-    bool game = g_app.audio.game.s[0] != 0;
+    Config &c = g_app.config;
+    const char *game = g_app.audio.game.s;
     u64 now = GetTickCount64();
     for (i32 i = 0; i < g_plugins.count; i++) {
         Plugin *p = &g_plugins.p[i];
         if (p->state == PLUGIN_BROKEN || p->state == PLUGIN_FAILED) continue;
-        bool want = !word_list_has(g_app.config.plugins_off, p->folder) && (!p->game_only || game);
+        p->marking = c.auto_marks ? plugin_ticks(&c, p) : 0;
+        bool want = !word_list_has(c.plugins_off, p->folder) &&
+                    (p->game[0] ? !_stricmp(game, p->game) : !p->game_only || game[0]);
         if (p->state == PLUGIN_RUNNING) {
             if (!want) {
                 proc_kill(&p->proc);
