@@ -572,9 +572,19 @@ struct AudioWorker {
     // The watcher's own.
     i64 last_playing_us;
     i64 last_heard_us; // last AE_HEARD posted
+    // The worker's own: the last failure logged, so a mic that keeps failing the same way is logged once.
+    u32 last_fail;
 };
 
 enum CaptureEnd { CAPTURE_STOP, CAPTURE_RESTART, CAPTURE_ERROR };
+
+// Whether a capture failure is new: not the one logged last time (0 once a capture started).
+static bool audio_fail_new(u32 *last, u32 hr)
+{
+    bool fresh = *last != hr;
+    *last = hr;
+    return fresh;
+}
 
 #define AUDIO_PACKET_CAP (AUDIO_RATE * AUDIO_FRAME_BYTES) // one second, far more than one packet ever holds
 
@@ -616,7 +626,7 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
         }
         char name[256];
         device_name(dev, name, sizeof name);
-        log_line(w->path[0] ? "input: %s" : "mic: %s", name);
+        if (!w->last_fail) log_line(w->path[0] ? "input: %s" : "mic: %s", name);
         hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void **)&client);
     } else {
         what = "starting process loopback";
@@ -647,6 +657,8 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
     if (FAILED(hr)) goto done;
 
     what = "capturing";
+    if (w->last_fail) log_line("%s: audio capture works again", w->exe.s);
+    w->last_fail = 0;
     while (!w->stop) {
         if (w->kind == AUDIO_MIC && !w->path[0] && GetTickCount64() - mic_checked >= 3000) {
             mic_checked = GetTickCount64();
@@ -708,7 +720,9 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
     end = CAPTURE_STOP;
 
 done:
-    if (end == CAPTURE_ERROR) log_line("%s: audio capture stopped while %s (0x%08x)", w->exe.s, what, (u32)hr);
+    if (end == CAPTURE_ERROR && audio_fail_new(&w->last_fail, (u32)hr))
+        log_line("%s: audio capture stopped while %s (0x%08x)%s", w->exe.s, what, (u32)hr,
+                 w->kind == AUDIO_MIC ? "; trying again every 5 s, logged again when that changes" : "");
     if (client) client->Stop();
     writer_finish(&writer, w->exe.s);
     if (capture) capture->Release();

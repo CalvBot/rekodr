@@ -18,9 +18,73 @@ typedef double   f64;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Log: %LOCALAPPDATA%\Rekodr\rekodr-native.log (see paths_init), one line per call, also to the debugger.
+//
+// A call only queues its line; the log thread writes the queue to the file. A slow disk (a scan of the log, a busy
+// VM) then never holds up the thread that logged, the UI's among them. log_flush writes what's queued at once: on a
+// crash and at exit.
 
-static SRWLOCK g_log_lock;
-static wchar_t g_log_path[MAX_PATH];
+static SRWLOCK            g_log_lock;      // the queue
+static SRWLOCK            g_log_file_lock; // the file: one writer at a time, so lines keep their order
+static CONDITION_VARIABLE g_log_wake;
+static wchar_t            g_log_path[MAX_PATH];
+static char               g_log_queue[512 * 1024];
+static int                g_log_queued;
+static int                g_log_lost; // lines that didn't fit while the disk was stalled
+static INIT_ONCE          g_log_once = INIT_ONCE_STATIC_INIT;
+
+// Takes the queue and appends it to the file (dropped while there's no file yet). Must hold g_log_file_lock.
+static void log_write_queued()
+{
+    static char batch[sizeof g_log_queue + 128];
+    AcquireSRWLockExclusive(&g_log_lock);
+    int n = g_log_queued, lost = g_log_lost;
+    memcpy(batch, g_log_queue, n);
+    g_log_queued = 0;
+    g_log_lost = 0;
+    ReleaseSRWLockExclusive(&g_log_lock);
+    if (lost) n += snprintf(batch + n, 128, "(%d log lines lost: the log file couldn't keep up)\r\n", lost);
+    if (!n || !g_log_path[0]) return;
+    HANDLE f = CreateFileW(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD written;
+    WriteFile(f, batch, (DWORD)n, &written, 0);
+    CloseHandle(f);
+}
+
+static DWORD WINAPI log_thread(void *)
+{
+    for (;;) {
+        AcquireSRWLockExclusive(&g_log_lock);
+        while (!g_log_queued && !g_log_lost) SleepConditionVariableSRW(&g_log_wake, &g_log_lock, INFINITE, 0);
+        ReleaseSRWLockExclusive(&g_log_lock);
+        AcquireSRWLockExclusive(&g_log_file_lock);
+        log_write_queued();
+        ReleaseSRWLockExclusive(&g_log_file_lock);
+    }
+}
+
+// Writes what's queued now. Gives up after 2 s if the log thread is stuck writing (it may be the one crashing).
+static void log_flush()
+{
+    for (int i = 0; !TryAcquireSRWLockExclusive(&g_log_file_lock); i++) {
+        if (i == 200) return;
+        Sleep(10);
+    }
+    log_write_queued();
+    ReleaseSRWLockExclusive(&g_log_file_lock);
+}
+
+static BOOL CALLBACK log_start(INIT_ONCE *, void *, void **)
+{
+    HANDLE t = CreateThread(0, 0, log_thread, 0, 0, 0);
+    if (t) {
+        SetThreadDescription(t, L"log");
+        CloseHandle(t);
+    }
+    atexit(log_flush);
+    return TRUE;
+}
 
 // Dev mode: a detailed log (every click, key, screen change, command and event) for finding what led up to a
 // problem. On with Options > General > Detailed log, `rekodr.exe dev`, or REKODR_DEV=1.
@@ -45,17 +109,16 @@ static void log_line(const char *fmt, ...)
     if (n >= (int)sizeof line) n = (int)sizeof line - 1;
     OutputDebugStringA(line);
 
+    InitOnceExecuteOnce(&g_log_once, log_start, 0, 0);
     AcquireSRWLockExclusive(&g_log_lock);
-    if (g_log_path[0]) {
-        HANDLE f = CreateFileW(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL, 0);
-        if (f != INVALID_HANDLE_VALUE) {
-            DWORD written;
-            WriteFile(f, line, (DWORD)n, &written, 0);
-            CloseHandle(f);
-        }
+    if (g_log_queued + n <= (int)sizeof g_log_queue) {
+        memcpy(g_log_queue + g_log_queued, line, n);
+        g_log_queued += n;
+    } else {
+        g_log_lost++;
     }
     ReleaseSRWLockExclusive(&g_log_lock);
+    WakeConditionVariable(&g_log_wake);
 }
 
 // CHECK states what was expected and what was found. A failed CHECK logs where and why, then crashes so the

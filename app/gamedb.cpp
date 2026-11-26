@@ -747,9 +747,9 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
 }
 
 // Games other than Minecraft that run as java.exe or javaw.exe. Which one a running java is goes by where it runs
-// from (the Java each ships in its own folder), then by the program that started it, then by its command line;
-// each test is tried on every game before the next. Lists are |-separated, lower case, with / for \. A java that
-// is one of these is never taken for Minecraft.
+// from (the Java each ships in its own folder: java_vm/ from Steam, runtime/ from a game's own installer), then by
+// the program that started it, then by its command line; each test is tried on every game before the next. Lists
+// are |-separated, lower case, with / for \. A java that is one of these is never taken for Minecraft.
 struct JavaGame {
     const char *name;
     u32 steam;
@@ -758,8 +758,8 @@ struct JavaGame {
 static const JavaGame g_java_games[] = {
     {"Starsector", 0, "/starsector/", "starsector.exe", "com.fs.starfarer."},
     {"Slay the Spire", 646570, "/slaythespire/jre/", "", "mts-launcher.jar|modthespire"}, // played with mods
-    {"Spiral Knights", 99900, "/spiral knights/java_vm/", "", "com.threerings.projectx."},
-    {"Puzzle Pirates", 99910, "/puzzle pirates/java_vm/", "", "com.threerings.yohoho."},
+    {"Spiral Knights", 99900, "/spiral knights/java_vm/|/spiral knights/runtime/", "spiral knights.exe", "com.threerings.projectx."},
+    {"Puzzle Pirates", 99910, "/puzzle pirates/java_vm/|/puzzle pirates/runtime/", "puzzle pirates.exe", "com.threerings.yohoho."},
     {"Wakfu", 215080, "/wakfu/jre/", "ankama launcher.exe", ""},
     {"StarMade", 244770, "/starmade/", "", "starmade.jar"},
     {"Wurm Unlimited", 366220, "/wurm unlimited/", "", ""},
@@ -767,6 +767,15 @@ static const JavaGame g_java_games[] = {
 };
 
 static bool is_java_exe(const char *exe) { return !_stricmp(exe, "java.exe") || !_stricmp(exe, "javaw.exe"); }
+
+// Whether `name` is a game's name (a Java game's, or one in the games list) rather than an exe's File description.
+static bool gamedb_named_game(const char *name)
+{
+    for (const JavaGame &g : g_java_games)
+        if (!strcmp(g.name, name)) return true;
+    GameInfo g;
+    return gamedb_by_name(name, &g);
+}
 
 // Whether any of a |-separated list is in `s` (`whole`: is all of it).
 static bool java_list_has(const char *list, const char *s, bool whole)
@@ -801,7 +810,7 @@ static const JavaGame *java_game(const char *image, const char *parent, const ch
     return 0;
 }
 
-static void sessions_game_renamed(const char *exe); // sessions.cpp
+static void sessions_game_renamed(const char *exe, bool other_game); // sessions.cpp
 static bool mc_clues(const char *cmdline, char *out, i32 cap); // mcpack.cpp
 static void mc_put(char *out, i32 cap, i32 *n, const char *s); // mcpack.cpp
 static bool exe_clues(const char *exe, const char *path, const char *name, bool game, const char *more, char *out,
@@ -1138,10 +1147,13 @@ static bool gamedb_name_app(AppInfo *a)
             known = true;
         }
     }
+    // An exe several games share (java among them) that was named as one game and is now something else is
+    // another program: its open session ends rather than taking the new name.
+    bool was_game = (java || shared || is_java_exe(a->exe.s)) && a->desc.s[0] && gamedb_named_game(a->desc.s);
     if (!known && shared) {
         if (!a->desc.s[0]) return sorted;
         a->desc.s[0] = 0; // its File description is the runtime's, not a game's
-        sessions_game_renamed(a->exe.s);
+        sessions_game_renamed(a->exe.s, was_game);
         return true;
     }
     if (!known) return sorted;
@@ -1149,7 +1161,7 @@ static bool gamedb_name_app(AppInfo *a)
     if (strcmp(a->desc.s, g.name)) {
         snprintf(a->desc.s, sizeof a->desc.s, "%s", g.name);
         changed = true;
-        sessions_game_renamed(a->exe.s);
+        sessions_game_renamed(a->exe.s, was_game);
     }
     if (a->category == CAT_NONE && !g.launcher && cat == CAT_NONE && !software) {
         a->category = CAT_GAME;

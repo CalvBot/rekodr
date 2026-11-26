@@ -375,7 +375,9 @@ static LONG WINAPI on_crash(EXCEPTION_POINTERS *info)
         log_line("it was at:");
         diag_log_stack(GetCurrentThread(), *info->ContextRecord, false);
     }
+    log_flush(); // before the new copy starts adding to the same log
     restart_after_crash();
+    log_flush();
     return EXCEPTION_EXECUTE_HANDLER;
 }
 

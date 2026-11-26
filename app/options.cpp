@@ -1426,7 +1426,7 @@ static void apps_rename_popup()
         str_set(a.name.s, trim(name));
         log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
         if (a.name.s[0] && app_category(g_app.config, a) == CAT_GAME) gamedb_rename(a, was, a.name.s);
-        sessions_game_renamed(a.exe.s);
+        sessions_game_renamed(a.exe.s, false);
         options_apply(APPLY_AUDIO);
         ImGui::CloseCurrentPopup();
     }

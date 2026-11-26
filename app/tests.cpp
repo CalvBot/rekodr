@@ -1108,6 +1108,81 @@ static void test_sessions_seen()
     g_app.config.buffer_dir = buffer;
 }
 
+// The log: lines queue on the calling thread and reach the file in order once flushed
+static void test_log_queue()
+{
+    wchar_t temp[MAX_PATH], path[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(path, MAX_PATH, L"%srekodr-tests-log-%lu.log", temp, GetCurrentProcessId());
+    DeleteFileW(path);
+    wcscpy_s(g_log_path, path);
+    for (i32 i = 0; i < 300; i++) log_line("line %d", i);
+    log_flush();
+    g_log_path[0] = 0;
+    FILE *f = _wfopen(path, L"rb");
+    T(f != 0);
+    i32 next = 0;
+    char line[256];
+    while (f && fgets(line, sizeof line, f)) {
+        const char *at = strstr(line, "] line ");
+        if (at && atoi(at + 7) == next) next++;
+    }
+    if (f) fclose(f);
+    T(next == 300);
+    DeleteFileW(path);
+}
+
+// A mic that fails the same way on every retry is logged once; another failure, or one after it worked, is logged
+static void test_audio_fail_once()
+{
+    u32 last = 0;
+    T(audio_fail_new(&last, 0x80070490u) && !audio_fail_new(&last, 0x80070490u) && !audio_fail_new(&last, 0x80070490u));
+    T(audio_fail_new(&last, 0x88890004u) && audio_fail_new(&last, 0x80070490u));
+    last = 0; // the capture started
+    T(audio_fail_new(&last, 0x80070490u));
+}
+
+// A java named as one game and then as another ends the first game's session instead of renaming it; a name found
+// out later for the same game (a modpack's) is taken by the open session.
+static void test_sessions_other_game()
+{
+    static Config keep;
+    keep = g_app.config;
+    Config &c = g_app.config;
+    c.app_count = 1;
+    c.apps[0] = {};
+    str_set(c.apps[0].exe.s, "javaw.exe");
+    c.apps[0].category = CAT_GAME;
+    c.apps[0].session_mode = SESSION_ASK;
+    c.session_min_length_min = 1;
+    Sessions &ss = g_app.sessions;
+    ss = {};
+    ss.loaded = true;
+    i64 t = 1000000000000ll;
+    Session *s = session_new("javaw.exe", "Spiral Knights", t, t + 600000000ll);
+    str_set(c.apps[0].desc.s, "Spiral Knights");
+    sessions_game_renamed("javaw.exe", true); // the same name: nothing to do
+    T(s->state == SES_OPEN && !strcmp(s->name, "Spiral Knights"));
+    str_set(c.apps[0].desc.s, "Puzzle Pirates");
+    sessions_game_renamed("javaw.exe", true);
+    T(s->state == SES_ASKING && !strcmp(s->name, "Spiral Knights"));
+    sessions_observe(t + 660000000ll, "javaw.exe");
+    i32 open = 0;
+    for (const Session &o : ss.items)
+        if (o.state == SES_OPEN) {
+            open++;
+            T(!strcmp(o.name, "Puzzle Pirates") && o.start_us == t + 660000000ll);
+        }
+    T(open == 1);
+    ss = {};
+    ss.loaded = true;
+    s = session_new("javaw.exe", "javaw", t, t + 600000000ll);
+    sessions_game_renamed("javaw.exe", false);
+    T(s->state == SES_OPEN && !strcmp(s->name, "Puzzle Pirates"));
+    ss = {};
+    g_app.config = keep;
+}
+
 static void test_hotkeys()
 {
     HotkeyKeys k;
@@ -2066,6 +2141,10 @@ static void test_gamedb()
         T(!strcmp(jg("C:\\Java\\bin\\javaw.exe", "cmd.exe", "javaw -jar StarMade.jar -force"), "StarMade"));
         T(!strcmp(jg("C:\\Users\\x\\AppData\\Local\\Ankama\\Wakfu\\jre\\bin\\java.exe", "", ""), "Wakfu"));
         T(!strcmp(jg("", "", "javaw com.threerings.yohoho.client.YoClient"), "Puzzle Pirates"));
+        // Three Rings' own installers: the Java in a runtime folder, started by the game's exe
+        T(!strcmp(jg("C:\\Users\\x\\AppData\\Local\\Spiral Knights\\runtime\\bin\\javaw.exe", "", ""), "Spiral Knights"));
+        T(!strcmp(jg("C:\\Users\\x\\AppData\\Local\\Puzzle Pirates\\runtime\\bin\\javaw.exe", "", ""), "Puzzle Pirates"));
+        T(!strcmp(jg("C:\\Java\\bin\\javaw.exe", "Spiral Knights.exe", ""), "Spiral Knights"));
         // Minecraft, and a parent's name only as a whole file name
         T(!strcmp(jg("C:\\java\\bin\\javaw.exe", "MinecraftLauncher.exe", "javaw net.minecraft.client.main.Main"), ""));
         T(!strcmp(jg("C:\\java\\bin\\javaw.exe", "notstarsector.exe", ""), ""));
@@ -5830,6 +5909,9 @@ int main()
     test_hotkeys();
     test_mic_clean();
     test_sessions_seen();
+    test_sessions_other_game();
+    test_audio_fail_once();
+    test_log_queue();
     test_toast_clip();
     test_popup_place();
     test_settings_round_trip();
