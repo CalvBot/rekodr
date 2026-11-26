@@ -758,6 +758,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "input_busy")) c->input_busy = atoi(value) != 0;
     else if (!strcmp(key, "afk_after_min")) real(&c->afk_after_min);
     else if (!strcmp(key, "plugins_off")) str_set(c->plugins_off, value);
+    else if (!strcmp(key, "auto_marks_open")) str_set(c->am_open, value);
     else if (!strcmp(key, "editor_top")) real(&c->editor_top);
     else if (!strcmp(key, "editor_side")) real(&c->editor_side);
     else if (!strcmp(key, "editor_lane")) c->editor_lane = atoi(value);
@@ -1113,6 +1114,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "input_busy = %d\nafk_after_min = %g\n", c.input_busy ? 1 : 0, c.afk_after_min);
     fprintf(f, "timeline_show = %s\nfront_window = %d\nplugins_off = %s\n", c.timeline_show, c.front_window ? 1 : 0,
             c.plugins_off);
+    fprintf(f, "auto_marks_open = %s\n", c.am_open);
     fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\neditor_zoom_view = %d\n", c.editor_top, c.editor_side,
             c.editor_lane, c.editor_zoom_view);
     fprintf(f, "\n# hotkey = keys | action | action when held | the one game it's for\n");

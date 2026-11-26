@@ -4073,19 +4073,91 @@ static void options_sharing()
     opt_card_end();
 }
 
-// Auto markers: a row for each game, its box art on the left, its name and a status line beside it, its events as
-// ticks in columns under them, and its switch on the right. What is under the name greys while the game is off and
-// keeps its ticks.
+// Auto markers: a card for each game that opens and closes. Its header: a chevron, its box art, its name and a
+// status line, how many of its events are ticked, and its switch on the right. Open, its event ticks sit in columns
+// under the name, and its extras under them; they grey while the game is off and keep their ticks. Which cards are
+// open is saved (am_open).
 struct AmChoice { u32 bit; const char *label; };
-static const f32 AM_ART_W = 64, AM_ART_H = 96, AM_PAD = 14;
+static const f32 AM_ART_W = 32, AM_ART_H = 48, AM_PAD = 14, AM_HEAD_H = 68;
 static ImVec2 g_am_row;
-static f32 g_am_text_end; // the right edge of what a row puts beside its art
+static bool g_am_row_open;
+static f32 g_am_row_alpha;
+static f32 g_am_text_end; // the right edge of what a row puts in its body
+
+// How Auto markers knows a game is on this PC: an exe Apps has heard (or, for a token with a \ in it, a part of the
+// path it was heard from), or its Steam app in a Steam library.
+struct AmFind { const char *key, *exes; u32 steam; };
+static const AmFind AM_FIND[] = {
+    {"cs2", "cs2.exe", 730},
+    {"dota2", "dota2.exe", 570},
+    {"lol", "league of legends.exe|leagueclient.exe", 0},
+    {"minecraft", "minecraft.exe|javaw.exe|minecraftlauncher.exe", 0},
+    {"poe", "\\path of exile\\", 238960},
+    {"poe2", "\\path of exile 2\\", 2694490},
+    {"tf2", "tf_win64.exe|tf.exe", 440},
+    {"f1_25", "f1_25.exe", 3059520},
+    {"iracing", "iracingsim64dx11.exe|iracingui.exe", 266410},
+    {"acc", "ac2-win64-shipping.exe", 805550},
+    {"fortnite", "fortniteclient-win64-shipping.exe", 0},
+    {"siege", "rainbowsix.exe|rainbowsix_vulkan.exe|rainbowsix_be.exe", 359550},
+    {"rocket_league", "rocketleague.exe", 252950},
+    {"hearthstone", "hearthstone.exe", 0},
+    {"war_thunder", "aces.exe", 236390},
+    {"tarkov", "escapefromtarkov.exe", 3932890},
+    {"rust", "rustclient.exe", 252490},
+    {"star_citizen", "starcitizen.exe", 0},
+    {"house_flipper_2", "houseflipper2.exe", 1190970},
+};
+static_assert(COUNT(AM_FIND) == AMG_COUNT, "a way to find each game");
+
+enum { AM_PC_NONE, AM_PC_HERE, AM_PC_LEFT_OUT };
+
+// Whether Apps has heard game g: AM_PC_HERE, AM_PC_LEFT_OUT when every app of it is set to not include (Ignored),
+// else AM_PC_NONE.
+static i32 am_pc_apps(const Config &c, i32 g)
+{
+    const AmFind *f = 0;
+    for (i32 i = 0; i < COUNT(AM_FIND); i++)
+        if (!strcmp(AM_FIND[i].key, AM_GAMES[g].key)) f = &AM_FIND[i];
+    if (!f) return AM_PC_NONE;
+    bool heard = false, kept = false;
+    for (i32 a = 0; a < c.app_count; a++) {
+        const AppInfo &app = c.apps[a];
+        char path[MAX_PATH];
+        str_set(path, app.path);
+        for (char *p = path; *p; p++) *p = (char)tolower((u8)*p);
+        bool match = false;
+        for (const char *s = f->exes; *s && !match;) {
+            const char *bar = strchr(s, '|');
+            size_t len = bar ? (size_t)(bar - s) : strlen(s);
+            char tok[64] = "";
+            if (len < sizeof tok) memcpy(tok, s, len), tok[len] = 0;
+            match = strchr(tok, '\\') ? strstr(path, tok) != 0 : !_stricmp(app.exe.s, tok);
+            s = bar ? bar + 1 : s + len;
+        }
+        if (!match) continue;
+        heard = true;
+        if (app_category(c, app) != CAT_IGNORED) kept = true;
+    }
+    return kept ? AM_PC_HERE : heard ? AM_PC_LEFT_OUT : AM_PC_NONE;
+}
+
+static bool steam_app_library(u32 app, Path *out); // automarks.cpp
+
+// am_pc_apps, and a game Apps hasn't heard is on this PC when Steam has it installed.
+static i32 am_pc(const Config &c, i32 g)
+{
+    i32 r = am_pc_apps(c, g);
+    if (r != AM_PC_NONE) return r;
+    Path dir;
+    return AM_FIND[g].steam && steam_app_library(AM_FIND[g].steam, &dir) ? AM_PC_HERE : AM_PC_NONE;
+}
 
 // A game's box art in p0..p1, the middle of the cover cut to the box's shape: its hand-picked cover, else the games
 // database's; a game icon on a box without one.
 static void opt_am_art(ImDrawList *dl, const char *game, ImVec2 p0, ImVec2 p1, f32 alpha)
 {
-    f32 round = dp(6);
+    f32 round = dp(4);
     i32 tw = 0, th = 0;
     bool fixed = false;
     ID3D11ShaderResourceView *art = game_fixed_cover(game, &tw, &th, &fixed);
@@ -4097,51 +4169,92 @@ static void opt_am_art(ImDrawList *dl, const char *game, ImVec2 p0, ImVec2 p1, f
         dl->AddImageRounded((ImTextureID)art, p0, p1, ImVec2(u, v), ImVec2(1 - u, 1 - v), col32(COL_WHITE, alpha), round);
         return;
     }
-    dl->AddRectFilled(p0, p1, col32(COL_PANEL2), round);
+    dl->AddRectFilled(p0, p1, col32(COL_PANEL2, alpha), round);
     ImGui::PushFont(g_font_icon);
     ImVec2 is = ImGui::CalcTextSize(ICON_GAME);
     dl->AddText(ImVec2(floorf((p0.x + p1.x - is.x) / 2), floorf((p0.y + p1.y - is.y) / 2)), col32(COL_FAINT, alpha), ICON_GAME);
     ImGui::PopFont();
 }
 
-// The row's art, name, status and switch. The cursor is left under the status for what the game does (body_h
-// tall), in a group that opt_am_row_end closes; the name, status and body sit in the middle of the art's height.
-// True when the switch flipped.
-static bool opt_am_row_begin(const char *game, const char *status, u32 status_col, bool *on, f32 body_h)
+// A card's header, AM_HEAD_H tall whatever it holds: its chevron, art (game; 0 leaves its place empty), name, status, count and,
+// with `on`, its switch. A click on it opens or closes the card under `key` in am_open. True when it is open; with
+// `body`, the cursor is then left under the name for the body, in a group that opt_am_row_end closes. *flipped: the
+// switch.
+static bool opt_am_row_begin(const char *key, const char *game, const char *name, const char *status, u32 status_col,
+                             bool *on, const char *count, bool dim, bool body, bool *flipped)
 {
+    Config &c = g_app.config;
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
     g_am_row = a;
-    f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD);
+    g_am_row_alpha = dim ? 0.5f : 1;
+    f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD), head = dp(AM_HEAD_H), tog = kit_px(36);
+    bool open = word_list_has(c.am_open, key);
     dl->ChannelsSplit(2); // the card goes under what is drawn on it, once its height is known
     dl->ChannelsSetCurrent(1);
-    ImVec2 p0(a.x + pad, a.y + pad), p1(p0.x + dp(AM_ART_W), p0.y + dp(AM_ART_H));
-    opt_am_art(dl, game, p0, p1, *on ? 1 : 0.5f);
-    f32 x = p1.x + dp(16), tog = kit_px(36);
-    g_am_text_end = a.x + w - pad - tog - dp(16);
-    f32 gap = dp(10), block = g_font_bold->FontSize + dp(2) + g_font_small->FontSize + gap + body_h;
-    f32 top = p0.y + fmaxf(0, floorf((dp(AM_ART_H) - block) / 2));
-    opt_text_at(dl, g_font_bold, ImVec2(x, top), COL_TEXT, game, g_am_text_end);
-    f32 y = top + g_font_bold->FontSize + dp(2);
-    if (status) opt_text_at(dl, g_font_small, ImVec2(x, y), status_col, status, g_am_text_end);
-    ImGui::PushID(game);
-    ImGui::SetCursorScreenPos(ImVec2(a.x + w - pad - tog, floorf(p0.y + (dp(AM_ART_H) - ImGui::GetFrameHeight()) / 2)));
-    bool flipped = kit_toggle("##on", on);
+    ImGui::PushID(key);
+    f32 right = a.x + w - pad - tog - dp(16); // the switch's place, kept on a card without one
+    ImGui::SetCursorScreenPos(a);
+    if (ImGui::InvisibleButton("##head", ImVec2(fmaxf(1, (on ? right : a.x + w) - a.x), head))) {
+        word_list_toggle(c.am_open, sizeof c.am_open, key);
+        open = !open;
+        dev_click("row", key, open ? "open" : "closed");
+        options_apply(0);
+    }
+    if (ImGui::IsItemHovered())
+        dl->AddRectFilled(a, ImVec2(a.x + w, a.y + head), col32(COL_HOVER), dp(10), open ? ImDrawFlags_RoundCornersTop : 0);
+    f32 alpha = g_am_row_alpha * (on && !*on ? 0.5f : 1);
+    ImGui::PushFont(g_font_icon);
+    const char *chev = open ? ICON_DOWN : ICON_RIGHT;
+    ImVec2 cs = ImGui::CalcTextSize(chev);
+    dl->AddText(ImVec2(a.x + pad, floorf(a.y + (head - cs.y) / 2)), col32(COL_DIM, g_am_row_alpha), chev);
+    ImGui::PopFont();
+    f32 x = a.x + pad + dp(28);
+    ImVec2 p0(x, floorf(a.y + (head - dp(AM_ART_H)) / 2)), p1(p0.x + dp(AM_ART_W), p0.y + dp(AM_ART_H));
+    if (game) opt_am_art(dl, game, p0, p1, alpha);
+    x = p1.x + dp(14);
+    // The count, in a pill of one width for any count, left of the switch
+    ImGui::PushFont(g_font_small);
+    f32 pill_w = ImGui::CalcTextSize("00 / 00").x + dp(20), pill_h = g_font_small->FontSize + dp(8);
+    f32 px = right - pill_w;
+    if (count && count[0]) {
+        ImVec2 ts = ImGui::CalcTextSize(count);
+        f32 py = floorf(a.y + (head - pill_h) / 2);
+        dl->AddRectFilled(ImVec2(px, py), ImVec2(px + pill_w, py + pill_h), col32(COL_WHITE, 0.08f * g_am_row_alpha), pill_h / 2);
+        dl->AddText(ImVec2(floorf(px + (pill_w - ts.x) / 2), floorf(py + (pill_h - ts.y) / 2)), col32(COL_DIM, g_am_row_alpha), count);
+    }
+    ImGui::PopFont();
+    f32 text_end = px - dp(12);
+    f32 block = g_font_bold->FontSize + (status ? dp(2) + g_font_small->FontSize : 0);
+    f32 top = floorf(a.y + (head - block) / 2);
+    opt_text_at(dl, g_font_bold, ImVec2(x, top), dim ? COL_DIM : COL_TEXT, name, text_end);
+    if (status) opt_text_at(dl, g_font_small, ImVec2(x, top + g_font_bold->FontSize + dp(2)), dim ? COL_FAINT : status_col, status, text_end);
+    *flipped = false;
+    if (on) {
+        ImGui::SetCursorScreenPos(ImVec2(a.x + w - pad - tog, floorf(a.y + (head - ImGui::GetFrameHeight()) / 2)));
+        *flipped = kit_toggle("##on", on);
+    }
     ImGui::PopID();
-    ImGui::SetCursorScreenPos(ImVec2(x, y + g_font_small->FontSize + gap));
+    g_am_row_open = open && body;
+    if (!g_am_row_open) return open;
+    g_am_text_end = a.x + w - pad;
+    ImGui::SetCursorScreenPos(ImVec2(x, a.y + head));
     ImGui::BeginGroup();
-    ImGui::BeginDisabled(!*on);
-    return flipped;
+    ImGui::BeginDisabled(on && !*on);
+    return true;
 }
 
 static void opt_am_row_end()
 {
-    ImGui::EndDisabled();
-    ImGui::EndGroup();
+    f32 head = dp(AM_HEAD_H), y = g_am_row.y + head;
+    if (g_am_row_open) {
+        ImGui::EndDisabled();
+        ImGui::EndGroup();
+        y = fmaxf(y, ImGui::GetItemRectMax().y + dp(AM_PAD));
+    }
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = g_am_row;
-    f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD);
-    f32 y = fmaxf(ImGui::GetItemRectMax().y, a.y + pad + dp(AM_ART_H)) + pad;
+    f32 w = ImGui::GetContentRegionAvail().x;
     dl->ChannelsSetCurrent(0);
     dl->AddRectFilled(a, ImVec2(a.x + w, y), col32(COL_PANEL), dp(10));
     dl->ChannelsMerge();
@@ -4246,6 +4359,9 @@ static bool opt_am_rust(AmState st)
 }
 
 // Options > Auto markers: markers put on the timeline by games and by rare Steam achievements, under one switch.
+// First the games on this PC, the plugins and Steam achievements; then "Other supported games", closed, holding the
+// games not seen here; then, greyed, the games set to not include in Apps. The order is made as the page opens, so
+// nothing moves while it is open.
 static void options_automarks()
 {
     Config &c = g_app.config;
@@ -4257,6 +4373,15 @@ static void options_automarks()
     }
     opt_card_end();
 
+    static i32 shown_frame = -10, pc[AMG_COUNT];
+    if (ImGui::GetFrameCount() - shown_frame > 1)
+        for (i32 g = 0; g < AMG_COUNT; g++) pc[g] = am_pc(c, g);
+    shown_frame = ImGui::GetFrameCount();
+    if (g_opt_show_rust) {
+        if (!word_list_has(c.am_open, "rust")) word_list_toggle(c.am_open, sizeof c.am_open, "rust");
+        if (pc[AMG_RUST] == AM_PC_NONE && !word_list_has(c.am_open, "other")) word_list_toggle(c.am_open, sizeof c.am_open, "other");
+    }
+
     ImGui::BeginDisabled(!c.auto_marks);
     // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins, and Rocket League's
     // kills and deaths are demolitions
@@ -4265,10 +4390,10 @@ static void options_automarks()
                                          "Raid starts", "Raid ends", "Quests done", "Group joins", "Downs",
                                          "Contracts taken", "Zones", "Jumps", "Spawns"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
-    for (i32 g = 0; g < AMG_COUNT; g++) {
+    auto game_row = [&](i32 g, bool dim) {
         const AmGame &game = AM_GAMES[g];
         AmChoice choices[COUNT(labels)];
-        i32 n = 0;
+        i32 n = 0, ticked = 0;
         for (i32 i = 0; i < COUNT(labels); i++) {
             if (!(game.events & (1u << i))) continue;
             const char *l = labels[i];
@@ -4279,6 +4404,7 @@ static void options_automarks()
             if (g == AMG_HOUSE_FLIPPER_2 && (1u << i) == AM_ADVANCEMENT) l = "Achievements";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_DEATH) l = "Demolished";
             if (g == AMG_WAR_THUNDER && (1u << i) == AM_WIN) l = "Mission results";
+            if (c.auto_marks_events[g] & (1u << i)) ticked++;
             choices[n++] = {1u << i, l};
         }
         AmState st = c.auto_marks && c.auto_marks_on[g] ? automarks_state(g) : AM_OFF;
@@ -4288,55 +4414,71 @@ static void options_automarks()
                           : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2 || g == AMG_ROCKET_LEAGUE || g == AMG_HEARTHSTONE) ? "From the game's next start"
                           : game.feed;
         bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY || (st == AM_READY && g == AMG_WAR_THUNDER && !c.wt_name[0]);
-        if (opt_am_row_begin(game.name, sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_on[g], kit_px(20))) {
+        char count[16];
+        snprintf(count, sizeof count, "%d / %d", ticked, n);
+        bool flipped;
+        bool open = opt_am_row_begin(game.key, game.name, game.name, sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_on[g], count, dim, true, &flipped);
+        if (flipped) {
             log_line("options: %s markers %s", game.name, c.auto_marks_on[g] ? "on" : "off");
             marks = true;
         }
-        if (opt_am_events(game.name, &c.auto_marks_events[g], choices, n)) {
-            log_line("options: %s marks 0x%x", game.name, c.auto_marks_events[g]);
-            marks = true;
-        }
-        if (g == AMG_WAR_THUNDER) {
-            char name[64];
-            ImGui::Dummy(ImVec2(0, dp(2)));
-            if (opt_text("##wtname", c.wt_name, fminf(dp(260), g_am_text_end - ImGui::GetCursorScreenPos().x), 0,
-                         "Your name in War Thunder", name, sizeof name)) {
-                str_set(c.wt_name, trim(name));
-                log_line("options: War Thunder name set");
+        if (open) {
+            if (opt_am_events(game.name, &c.auto_marks_events[g], choices, n)) {
+                log_line("options: %s marks 0x%x", game.name, c.auto_marks_events[g]);
                 marks = true;
             }
+            if (g == AMG_WAR_THUNDER) {
+                char name[64];
+                ImGui::Dummy(ImVec2(0, dp(2)));
+                if (opt_text("##wtname", c.wt_name, fminf(dp(260), g_am_text_end - ImGui::GetCursorScreenPos().x), 0,
+                             "Your name in War Thunder", name, sizeof name)) {
+                    str_set(c.wt_name, trim(name));
+                    log_line("options: War Thunder name set");
+                    marks = true;
+                }
+            }
+            if (g == AMG_RUST && opt_am_rust(st)) marks = true;
         }
-        if (g == AMG_RUST && opt_am_rust(st)) marks = true;
         opt_am_row_end();
         // The whole row in view, its bottom clear of the page's fade
         if (g == AMG_RUST && g_opt_show_rust) {
             ImGui::SetScrollFromPosY(ImGui::GetCursorScreenPos().y - ImGui::GetWindowPos().y + dp(64), 1);
             g_opt_show_rust = false;
         }
-    }
+    };
 
-    // Plugins that send events: a row each, its switch the plugin's own (as in Integrations)
+    for (i32 g = 0; g < AMG_COUNT; g++)
+        if (pc[g] == AM_PC_HERE) game_row(g, false);
+
+    // Plugins that send events: a card each, its switch the plugin's own (as in Integrations)
     for (i32 i = 0; i < g_plugins.count; i++) {
         Plugin &p = g_plugins.p[i];
         if (!p.events) continue;
         AmChoice choices[COUNT(labels)];
-        i32 n = 0;
+        i32 n = 0, ticked = 0;
+        u32 ev = plugin_ticks(&c, &p);
         for (i32 b = 0; b < COUNT(labels); b++)
-            if (p.events & (1u << b)) choices[n++] = {1u << b, labels[b]};
+            if (p.events & (1u << b)) {
+                if (ev & (1u << b)) ticked++;
+                choices[n++] = {1u << b, labels[b]};
+            }
         bool on = !word_list_has(c.plugins_off, p.folder), broken = p.state == PLUGIN_BROKEN || p.state == PLUGIN_FAILED;
-        char sub[128];
+        char sub[128], key[96], count[16];
         if (p.state == PLUGIN_BROKEN) snprintf(sub, sizeof sub, "%s", p.why);
         else if (p.state == PLUGIN_FAILED) snprintf(sub, sizeof sub, "Stopped: it kept ending");
         else if (p.game[0]) snprintf(sub, sizeof sub, "From a plugin, while %s runs", p.game);
         else snprintf(sub, sizeof sub, "From a plugin");
+        snprintf(key, sizeof key, "plugin:%s", p.folder);
+        snprintf(count, sizeof count, "%d / %d", ticked, n);
         ImGui::PushID(i);
-        if (opt_am_row_begin(p.name, sub, broken ? COL_WARN : COL_DIM, &on, kit_px(20))) {
+        bool flipped;
+        bool open = opt_am_row_begin(key, p.name, p.name, sub, broken ? COL_WARN : COL_DIM, &on, count, false, true, &flipped);
+        if (flipped) {
             word_list_toggle(c.plugins_off, sizeof c.plugins_off, p.folder);
             log_line("options: plugin %s %s", p.folder, on ? "on" : "off");
             marks = true;
         }
-        u32 ev = plugin_ticks(&c, &p);
-        if (opt_am_events(p.name, &ev, choices, n)) {
+        if (open && opt_am_events(p.name, &ev, choices, n)) {
             AmPluginTicks *t = am_plugin_ticks(&c, p.folder, true);
             if (t) t->events = ev;
             log_line("options: plugin %s marks 0x%x", p.folder, ev);
@@ -4346,29 +4488,55 @@ static void options_automarks()
         ImGui::PopID();
     }
 
-    if (opt_am_row_begin("Steam achievements", "A marker when Steam gives you a rare one, in any game", COL_DIM, &c.ach_marks, ImGui::GetFrameHeight())) {
-        log_line("options: achievement markers %s", c.ach_marks ? "on" : "off");
-        ach = true;
-    }
     {
         static const char *rarer[] = {"1%", "5%", "10%", "Any"};
         static const i32 rarer_v[] = {1, 5, 10, 100};
         i32 r = 1;
         for (i32 i = 0; i < 4; i++)
             if (c.ach_rarer == rarer_v[i]) r = i;
-        f32 fh = ImGui::GetFrameHeight();
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        f32 label_w = ImGui::CalcTextSize("Rarer than").x + dp(14);
-        opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(p.x, floorf(p.y + (fh - g_font->FontSize) / 2)), COL_DIM,
-                    "Rarer than", p.x + label_w);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + label_w, p.y));
-        if (kit_segmented("##achrarer", rarer, 4, &r, dp(64))) {
-            c.ach_rarer = rarer_v[r];
-            log_line("options: achievement markers for under %d%%", c.ach_rarer);
+        bool flipped;
+        bool open = opt_am_row_begin("ach", "Steam achievements", "Steam achievements", "A marker when Steam gives you a rare one, in any game", COL_DIM,
+                                     &c.ach_marks, rarer[r], false, true, &flipped);
+        if (flipped) {
+            log_line("options: achievement markers %s", c.ach_marks ? "on" : "off");
             ach = true;
         }
+        if (open) {
+            f32 fh = ImGui::GetFrameHeight();
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            f32 label_w = ImGui::CalcTextSize("Rarer than").x + dp(14);
+            opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(p.x, floorf(p.y + (fh - g_font->FontSize) / 2)), COL_DIM,
+                        "Rarer than", p.x + label_w);
+            ImGui::SetCursorScreenPos(ImVec2(p.x + label_w, p.y));
+            if (kit_segmented("##achrarer", rarer, 4, &r, dp(64))) {
+                c.ach_rarer = rarer_v[r];
+                log_line("options: achievement markers for under %d%%", c.ach_rarer);
+                ach = true;
+            }
+        }
+        opt_am_row_end();
     }
-    opt_am_row_end();
+
+    // The supported games not seen on this PC, in one card that holds theirs
+    i32 others = 0;
+    for (i32 g = 0; g < AMG_COUNT; g++) others += pc[g] == AM_PC_NONE;
+    if (others) {
+        char count[16];
+        snprintf(count, sizeof count, "%d", others);
+        bool flipped;
+        bool open = opt_am_row_begin("other", 0, "Other supported games", "Not seen on this PC yet", COL_DIM, 0, count, false, false, &flipped);
+        opt_am_row_end();
+        if (open) {
+            ImGui::Indent(dp(24));
+            for (i32 g = 0; g < AMG_COUNT; g++)
+                if (pc[g] == AM_PC_NONE) game_row(g, false);
+            ImGui::Unindent(dp(24));
+        }
+    }
+
+    // Games set to not include in Apps, out of the way
+    for (i32 g = 0; g < AMG_COUNT; g++)
+        if (pc[g] == AM_PC_LEFT_OUT) game_row(g, true);
 
     ImGui::EndDisabled();
 

@@ -4242,6 +4242,30 @@ static void test_markers()
     T(ms.count == MARKER_MAX && ms.items[0].t_us == 1000 && ms.items[MARKER_MAX - 1].t_us == 1000 + MARKER_MAX - 1); // the oldest went
 }
 
+// Auto markers finds a game by an exe Apps heard, or a part of its path, and a game whose every app is Ignored in
+// Apps is left out.
+static void test_am_pc()
+{
+    for (i32 g = 0; g < AMG_COUNT; g++) T(!strcmp(AM_FIND[g].key, AM_GAMES[g].key));
+    static Config c;
+    c = {};
+    T(am_pc_apps(c, AMG_CS2) == AM_PC_NONE);
+    c.app_count = 3;
+    str_set(c.apps[0].exe.s, "cs2.exe");
+    c.apps[0].category = CAT_GAME;
+    str_set(c.apps[1].exe.s, "pathofexilesteam.exe");
+    str_set(c.apps[1].path, "D:\\SteamLibrary\\steamapps\\common\\Path of Exile 2\\PathOfExileSteam.exe");
+    str_set(c.apps[2].exe.s, "rustclient.exe");
+    c.apps[2].category = CAT_IGNORED;
+    T(am_pc_apps(c, AMG_CS2) == AM_PC_HERE);
+    T(am_pc_apps(c, AMG_POE2) == AM_PC_HERE && am_pc_apps(c, AMG_POE) == AM_PC_NONE);
+    T(am_pc_apps(c, AMG_RUST) == AM_PC_LEFT_OUT && am_pc_apps(c, AMG_DOTA2) == AM_PC_NONE);
+    // One app of the game kept is enough
+    c.app_count = 4;
+    str_set(c.apps[3].exe.s, "RustClient.exe");
+    T(am_pc_apps(c, AMG_RUST) == AM_PC_HERE);
+}
+
 // House Flipper 2's Player.log: lines copied from a real one
 static void test_house_flipper_2()
 {
@@ -6163,6 +6187,7 @@ int main()
     test_rust();
     test_star_citizen();
     test_house_flipper_2();
+    test_am_pc();
     test_achievements();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
