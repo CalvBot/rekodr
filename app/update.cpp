@@ -4,7 +4,7 @@
 //
 // The manifest is text, one "key value" per line, with the signature last:
 //   version 0.3.0
-//   url https://github.com/CalvBot/rekodr/releases/download/v0.3.0/rekodr-0.3.0.exe
+//   url https://cloud.calvfletch.dev/s/<share>/download?path=%2F&files=rekodr-0.3.0.exe
 //   size 3502080
 //   sha256 <64 hex digits>
 //   sig <128 hex digits>
@@ -19,8 +19,13 @@
 
 // TODO: the manifest's address, once it's decided where releases go. Empty means no checks.
 static const wchar_t UPDATE_MANIFEST_URL[] = L"";
-// TODO: the release key's public half (X then Y, 32 bytes each). All zeros verifies nothing.
-static const u8 UPDATE_PUBLIC_KEY[64] = {};
+// The release key's public half, X then Y (the private half signs in release.ps1)
+static const u8 UPDATE_PUBLIC_KEY[64] = {
+    0xa7, 0x8f, 0xe3, 0x41, 0xe9, 0x06, 0xc5, 0xb1, 0x48, 0x1d, 0xac, 0x67, 0x02, 0xda, 0x3e, 0x4b,
+    0xec, 0xf9, 0xc9, 0x16, 0x92, 0x5a, 0xd8, 0xe0, 0x8d, 0x80, 0xc0, 0x7c, 0xd3, 0x56, 0xb6, 0x9f,
+    0xcf, 0xba, 0x09, 0x84, 0xfa, 0xcb, 0xc5, 0x76, 0xf0, 0x4c, 0xed, 0xc1, 0x93, 0xf8, 0xfe, 0x75,
+    0x27, 0xd6, 0x5f, 0xaa, 0x43, 0x13, 0xe9, 0x76, 0x7e, 0xef, 0xda, 0x4c, 0x8d, 0x9d, 0x4b, 0x9e,
+};
 static const i64 UPDATE_MAX_EXE = 64ll << 20;
 
 enum UpdateState : LONG { UPDATE_IDLE, UPDATE_CHECKING, UPDATE_DOWNLOADING, UPDATE_READY, UPDATE_FAILED };
@@ -90,12 +95,15 @@ static bool update_test_copy_override(const wchar_t *name, wchar_t *out, i32 cap
 static i64 update_get(const wchar_t *url, i64 max, char *body, FILE *file, BCRYPT_HASH_HANDLE hash)
 {
     URL_COMPONENTS uc = {sizeof uc};
-    wchar_t host[256], path[2048];
+    wchar_t host[256], path[2048], query[1024];
     uc.lpszHostName = host;
     uc.dwHostNameLength = COUNT(host);
     uc.lpszUrlPath = path;
     uc.dwUrlPathLength = COUNT(path);
+    uc.lpszExtraInfo = query;
+    uc.dwExtraInfoLength = COUNT(query);
     if (!WinHttpCrackUrl(url, 0, 0, &uc)) return update_fail("a bad address: %ls", url), -1;
+    if (wcscat_s(path, query)) return update_fail("too long an address: %ls", url), -1; // with its ?query
     if (uc.nScheme != INTERNET_SCHEME_HTTPS && !is_test_copy()) return update_fail("not https: %ls", url), -1;
     i64 total = -1;
     HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
