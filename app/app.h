@@ -300,7 +300,7 @@ struct Config {
     bool auto_marks_on[AMG_COUNT];     // each of AM_GAMES marks its events on the timeline (on)
     u32  auto_marks_events[AMG_COUNT]; // AmEvent bits: what it marks while on (all it has)
     char wt_name[64];                  // the player's War Thunder name, whose kills and deaths are marked ("")
-    bool rust_print_on_death;          // a death in Rust presses F15 there, bound to combatlog, for its kills (off)
+    u8   rust_combatlog;               // the key that prints Rust's combat log, for its kills: RUST_LOG_* (off)
     bool ach_marks;       // a Steam achievement rarer than ach_rarer gets a marker (achievements.cpp; on)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), else 1 to LINK_DAYS_MAX; the
@@ -1259,7 +1259,10 @@ enum AmState { AM_OFF, AM_READY, AM_NOT_FOUND, AM_PORT_BUSY };
 static void automarks_apply();
 static AmState automarks_state(i32 game);
 static void automarks_uninstall();
-static i32 rust_bind_state(); // rustlog.cpp: 1 when Rust's keys.cfg binds F15 to combatlog, 0 not, -1 no keys.cfg
+// The key that prints Rust's combat log (Config.rust_combatlog): none, F15 pressed by Rekodr on a death, Space or Tab
+enum { RUST_LOG_OFF, RUST_LOG_DEATH, RUST_LOG_SPACE, RUST_LOG_TAB, RUST_LOG_COUNT };
+static const char *const RUST_LOG_WORDS[RUST_LOG_COUNT] = {"off", "death", "space", "tab"};
+static i32 rust_bind_state(i32 choice, char *line, i32 cap); // rustlog.cpp
 static void achievements_apply(); // achievements.cpp
 
 // Webcam (webcam.cpp). A saved clip carries the webcam as its second video stream, titled CAM_STREAM_TITLE.

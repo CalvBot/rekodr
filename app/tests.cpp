@@ -1399,8 +1399,10 @@ static void test_settings_round_trip()
     a.inputs[1] = {"{0.0.1.00000000}.{b}", "Off one", INPUT_OFF}; // off isn't saved
 
     str_set(a.link_uploaders, "mine"); // one uploader on
+    a.rust_combatlog = RUST_LOG_SPACE;
     T(config_save(a, paths));
     T(config_load(&b, paths));
+    T(b.rust_combatlog == RUST_LOG_SPACE);
     T(!strcmp(b.link_uploaders, "mine"));
     {
         // An empty bucket name reads as the default
@@ -4076,11 +4078,16 @@ static void test_markers()
 // Rust's output_log.txt: deaths with who, kills and downs out of the combat log, each once across its prints
 static void test_rust()
 {
-    // Lines from a real log (names in it escaped), and a fall
-    static const char log[] =
+    // Lines from a real log, and a fall. Its two non-ASCII names go in as UTF-8 bytes: a Cyrillic one, "<ru> RAMPAGE",
+    // and a Korean one
+    static const u8 ru[] = {0xD0, 0x9F, 0xD0, 0xB5, 0xD1, 0x82, 0xD1, 0x8F, 0};
+    static const u8 ko[] = {0xED, 0x95, 0x98, 0xEB, 0x8A, 0x98, 0};
+    char ru_name[32];
+    snprintf(ru_name, sizeof ru_name, "%s RAMPAGE", (const char *)ru);
+    static const char form[] =
         "2026-11-25T11:32:14.389Z|0x5c28|You died: killed by Marlow (76561198000000011)\n"
         "2026-11-25T11:50:46.587Z|0x5c28|You died: killed by Captain Wobble (76561198000000012)\n"
-        "2026-11-25T12:20:20.446Z|0x5c28|You died: killed by \xD0\x9F\xD0\xB5\xD1\x82\xD1\x8F RAMPAGE (76561198000000013)\n"
+        "2026-11-25T12:20:20.446Z|0x5c28|You died: killed by %s RAMPAGE (76561198000000013)\n"
         "2026-11-25T13:40:59.375Z|0x5c28|time    attacker       target                      weapon                 ammo                      area    distance old_hp new_hp info   hits integrity travel mismatch desync \n"
         "468.07s you            player_505050               pistol_semiauto.entity pistolbullet              head    16.8m    52.6   0.0    killed 0    1.00      0.06s  0.00m    48     \n"
         "+ 5 events in the last 10 seconds\n"
@@ -4092,8 +4099,10 @@ static void test_rust()
         "27.16s  you            player_6060606              pistol_semiauto.entity pistolbullet              stomach 33.9m    89.5   79.6           0    1.00      0.12s  0.00m    108    \n"
         "14.52s  player_6060606 you                         ak47u.entity           riflebullet               arm     17.4m    11.8   7.0    wounded 0    1.00      0.05s  0.00m    38     \n"
         "UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)\n"
-        "2026-11-25T13:41:11.284Z|0x5c28|You died: killed by \xED\x95\x98\xEB\x8A\x98 (76561198000000014)\n"
+        "2026-11-25T13:41:11.284Z|0x5c28|You died: killed by %s (76561198000000014)\n"
         "2026-11-25T13:45:00.000Z|0x5c28|You died: Fall\n";
+    static char log[sizeof form + 64];
+    snprintf(log, sizeof log, form, (const char *)ru, (const char *)ko);
     static RustMark m[16];
     T(rust_marks(log, m, 16) == 7);
     char v[128];
@@ -4101,7 +4110,7 @@ static void test_rust()
     T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "Marlow"));
     T(marker_detail_get(m[0].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000011"));
     T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Captain Wobble"));
-    T(marker_detail_get(m[2].detail, "killer", v, sizeof v) && !strcmp(v, "\xD0\x9F\xD0\xB5\xD1\x82\xD1\x8F RAMPAGE"));
+    T(marker_detail_get(m[2].detail, "killer", v, sizeof v) && !strcmp(v, ru_name));
     T(marker_detail_get(m[2].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000013"));
     // The kill, in three prints, is one: a headshot, at the first print less its age
     T(m[3].event == AM_KILL && !strcmp(m[3].note, "Headshot") && m[3].t_us == rust_time("2026-11-25T13:40:59.375Z|") - 468070000);
@@ -4110,7 +4119,7 @@ static void test_rust()
     T(marker_detail_get(m[3].detail, "distance", v, sizeof v) && !strcmp(v, "16.8m"));
     T(m[4].event == AM_DOWNED && !strcmp(m[4].note, "Downed") && m[4].t_us == rust_time("2026-11-25T13:41:08.644Z|") - 14520000);
     T(marker_detail_get(m[4].detail, "attacker", v, sizeof v) && !strcmp(v, "player_6060606"));
-    T(marker_detail_get(m[5].detail, "killer", v, sizeof v) && !strcmp(v, "\xED\x95\x98\xEB\x8A\x98"));
+    T(marker_detail_get(m[5].detail, "killer", v, sizeof v) && !strcmp(v, (const char *)ko));
     T(m[6].event == AM_DEATH && !strcmp(m[6].note, "Death: Fall") && !m[6].detail[0]);
     T(rust_time("2026-11-25 13:45:00|x") == 0 && rust_marks("", m, 16) == 0 && rust_marks(log, m, 2) == 2);
     // A name with brackets of its own, and no id
@@ -4120,11 +4129,15 @@ static void test_rust()
     T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Scientist"));
     T(!marker_detail_get(m[1].detail, "steam_id", v, sizeof v));
 
-    // The F15 bind, as Rust writes keys.cfg
-    T(rust_bind_found("bind f1 consoletoggle;combatlog\nbind f15 combatlog\n"));
-    T(rust_bind_found("bind f2 x\r\nbind f15 chat.open;combatlog\r\n"));
-    T(!rust_bind_found("bind f1 consoletoggle;combatlog\nbind f15 demo.resume\n"));
-    T(!rust_bind_found("bind f15 combatlogs\nbind f150 combatlog\n") && !rust_bind_found(""));
+    // The bind line for the picked key, from keys.cfg as Rust writes it: the key keeps what it does
+    char bl[160];
+    const char *cfg = "bind f1 consoletoggle;combatlog\r\nbind space +jump\r\nbind f15 demo.resume\r\n";
+    T(!rust_bind_line(cfg, "space", bl, sizeof bl) && !strcmp(bl, "bind space +jump;combatlog"));
+    T(rust_bind_line(cfg, "f1", bl, sizeof bl) && !strcmp(bl, "bind f1 consoletoggle;combatlog"));
+    T(!rust_bind_line(cfg, "f15", bl, sizeof bl) && !strcmp(bl, "bind f15 combatlog"));
+    T(!rust_bind_line(cfg, "tab", bl, sizeof bl) && !strcmp(bl, "bind tab combatlog"));
+    T(rust_bind_line("bind space +jump\nbind space \"+jump; combatlog\"\n", "space", bl, sizeof bl));
+    T(!rust_bind_line("bind f15 combatlogs\nbind f150 combatlog\n", "f15", bl, sizeof bl) && !rust_bind_line("", "f15", bl, sizeof bl));
     // The press: down then up, due from its moment for RUST_EVERY
     INPUT in[2];
     rust_f15_inputs(in);
@@ -4140,7 +4153,7 @@ static void test_rust()
     g_app.paths.local_dir = home;
     swprintf(file, MAX_PATH, L"%s\\output_log.txt", home.s);
     FILE *o = _wfopen(file, L"wb");
-    fwrite(log, 1, sizeof log - 1, o);
+    fwrite(log, 1, strlen(log), o);
     fclose(o);
     Event e;
     while (event_take(&e)) {}

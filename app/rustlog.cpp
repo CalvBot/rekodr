@@ -14,8 +14,9 @@
 // game runs and once it closes. Marks made are kept in <local_dir>\rust.tsv, so none is made twice. Each goes in at
 // its moment, into the clips and sessions saved over it too (EV_MARKER, markers_add_late).
 //
-// With rust_print_on_death on, a death read as it happens presses F15 RUST_PRINT_AFTER later, only while Rust is the
-// window in front, so that the player's "bind f15 combatlog" prints the table. Rekodr never writes the game's files.
+// The player picks the key that prints the table (rust_combatlog), one pressed often like Space, and pastes the bind
+// line Options builds from keys.cfg. With F15 picked, a death read as it happens presses F15 RUST_PRINT_AFTER later,
+// only while Rust is the window in front, so that "bind f15 combatlog" prints it. Rekodr never writes the game's files.
 // A test copy (REKODR_HOME) reads <home>\Rust and presses nothing.
 
 static const i64 RUST_EVERY = 2000000;
@@ -36,7 +37,7 @@ struct RustSeen { u64 key; i64 t_us; };
 
 static struct {
     wchar_t dir[MAX_PATH]; // the game's folder; "" while off or not installed (main thread sets it)
-    bool print;            // rust_print_on_death (main thread sets it)
+    bool print;            // rust_combatlog is RUST_LOG_DEATH (main thread sets it)
     bool loaded;
     RustSeen seen[RUST_SEEN_MAX];
     i32 seen_count;
@@ -188,10 +189,13 @@ static i32 rust_marks(const char *text, RustMark *out, i32 cap)
     return n;
 }
 
-// Whether a keys.cfg binds F15 to combatlog, as Rust writes a bind: "bind f15 <command>[;<command>...]".
-static bool rust_bind_found(const char *cfg)
+// The bind line that makes `key` print the combat log, from a keys.cfg as Rust writes it ("bind <key> <command>[;
+// <command>...]"): the key's own commands kept and combatlog added, as "bind space +jump;combatlog". F15, which no
+// one presses, is "bind f15 combatlog". True when the key prints it already (the line is then the bind as it is).
+static bool rust_bind_line(const char *cfg, const char *key, char *out, i32 cap)
 {
-    char line[1024];
+    char want[32], line[1024], cmds[1024] = "";
+    i32 wl = snprintf(want, sizeof want, "bind %s ", key);
     for (const char *p = cfg; *p;) {
         size_t len = strcspn(p, "\r\n");
         snprintf(line, sizeof line, "%.*s", (int)(len < sizeof line ? len : sizeof line - 1), p);
@@ -199,21 +203,26 @@ static bool rust_bind_found(const char *cfg)
         while (*p == '\r' || *p == '\n') p++;
         char *s = line;
         while (*s == ' ') s++;
-        if (_strnicmp(s, "bind f15 ", 9)) continue;
-        for (char *cmd = s + 9; *cmd;) {
-            size_t w = strcspn(cmd, ";");
-            char one[64];
-            snprintf(one, sizeof one, "%.*s", (int)(w < sizeof one ? w : sizeof one - 1), cmd);
-            char *a = one;
-            while (*a == ' ' || *a == '"') a++;
-            size_t l = strlen(a);
-            while (l && (a[l - 1] == ' ' || a[l - 1] == '"')) a[--l] = 0;
-            if (!_stricmp(a, "combatlog")) return true;
-            cmd += w;
-            if (*cmd) cmd++;
-        }
+        if (_strnicmp(s, want, wl)) continue;
+        str_set(cmds, trim(s + wl));
     }
-    return false;
+    bool found = false;
+    for (char *cmd = cmds; *cmd && !found;) {
+        size_t w = strcspn(cmd, ";");
+        char one[64];
+        snprintf(one, sizeof one, "%.*s", (int)(w < sizeof one ? w : sizeof one - 1), cmd);
+        char *a = one;
+        while (*a == ' ' || *a == '"') a++;
+        size_t l = strlen(a);
+        while (l && (a[l - 1] == ' ' || a[l - 1] == '"')) a[--l] = 0;
+        found = !_stricmp(a, "combatlog");
+        cmd += w;
+        if (*cmd) cmd++;
+    }
+    if (found) snprintf(out, cap, "bind %s %s", key, cmds);
+    else if (!_stricmp(key, "f15") || !cmds[0]) snprintf(out, cap, "bind %s combatlog", key);
+    else snprintf(out, cap, "bind %s %s;combatlog", key, cmds);
+    return found;
 }
 
 // The game's folder: a test copy's <home>\Rust, else Steam's <library>\common\<installdir>. "" when it isn't there.
@@ -239,17 +248,23 @@ static void rust_dir(wchar_t (&out)[MAX_PATH])
     if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) out[0] = 0;
 }
 
-// Whether the game's cfg\keys.cfg binds F15 to combatlog: 1 yes, 0 no, -1 no keys.cfg (or no game). Main thread.
-static i32 rust_bind_state()
+// The key Options offers for each rust_combatlog choice (RUST_LOG_*), "" for off.
+static const char *const RUST_LOG_KEYS[RUST_LOG_COUNT] = {"", "f15", "space", "tab"};
+
+// The bind line for the key of a rust_combatlog choice, from the game's cfg\keys.cfg: 1 when the key prints the combat
+// log already, 0 not, -1 no keys.cfg (or no game). Main thread.
+static i32 rust_bind_state(i32 choice, char *line, i32 cap)
 {
-    if (!g_rust.dir[0]) return -1;
-    wchar_t p[MAX_PATH];
-    swprintf(p, MAX_PATH, L"%s\\cfg\\keys.cfg", g_rust.dir);
-    char *text = read_file(p, 0);
-    if (!text) return -1;
-    bool found = rust_bind_found(text);
+    const char *key = choice > 0 && choice < RUST_LOG_COUNT ? RUST_LOG_KEYS[choice] : "f15";
+    char *text = 0;
+    if (g_rust.dir[0]) {
+        wchar_t p[MAX_PATH];
+        swprintf(p, MAX_PATH, L"%s\\cfg\\keys.cfg", g_rust.dir);
+        text = read_file(p, 0);
+    }
+    bool had = text != 0, found = rust_bind_line(had ? text : "", key, line, cap);
     free(text);
-    return found;
+    return had ? found : -1;
 }
 
 static Path rust_seen_path() { return path_join(g_app.paths.local_dir, L"rust.tsv"); }
@@ -382,6 +397,6 @@ static void rust_apply()
     wchar_t d[MAX_PATH] = L"";
     if (g_am.events[AMG_RUST]) rust_dir(d);
     wcscpy_s(g_rust.dir, d); // the worker reads it whole or not at all
-    g_rust.print = g_app.config.rust_print_on_death;
+    g_rust.print = g_app.config.rust_combatlog == RUST_LOG_DEATH;
     InterlockedExchange(&g_am.state[AMG_RUST], !g_am.events[AMG_RUST] ? AM_OFF : d[0] ? AM_READY : AM_NOT_FOUND);
 }

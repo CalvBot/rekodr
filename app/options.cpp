@@ -4173,8 +4173,8 @@ static bool opt_am_events(const char *game, u32 *events, const AmChoice *choices
     return changed;
 }
 
-// Rust's row under its ticks: where kills come from, and the F15 print on death with the bind it needs. True when
-// the setting changed.
+// Rust's row under its ticks: the key that prints the combat log for kills, the bind line for it, made from the
+// game's keys.cfg so the key keeps what it does, and whether the bind is there. True when the setting changed.
 static bool g_opt_show_rust; // "show rust": Auto markers scrolled to Rust's row
 
 static bool opt_am_rust(AmState st)
@@ -4184,28 +4184,41 @@ static bool opt_am_rust(AmState st)
     f32 lh = g_font_small->FontSize + dp(3);
     ImGui::Dummy(ImVec2(0, dp(2)));
     ImVec2 p = ImGui::GetCursorScreenPos();
-    opt_text_at(dl, g_font_small, p, COL_DIM, "Deaths mark on their own. Kills come from the combat log: bind it to a key", g_am_text_end);
-    opt_text_at(dl, g_font_small, ImVec2(p.x, p.y + lh), COL_DIM, "you already press, as  bind f1 consoletoggle;combatlog", g_am_text_end);
+    opt_text_at(dl, g_font_small, p, COL_DIM, "Deaths mark on their own. Kills come from the combat log: pick a key that", g_am_text_end);
+    opt_text_at(dl, g_font_small, ImVec2(p.x, p.y + lh), COL_DIM, "prints it, or On death for F15, pressed by Rekodr when you die", g_am_text_end);
     ImGui::Dummy(ImVec2(0, 2 * lh + dp(6)));
-    bool changed = lib_dialog_check("Print combat log on death", &c.rust_print_on_death, true);
-    if (changed) log_line("options: Rust print on death %s", c.rust_print_on_death ? "on" : "off");
-
+    static const char *const keys[RUST_LOG_COUNT] = {"Off", "On death", "Space", "Tab"};
+    i32 sel = c.rust_combatlog < RUST_LOG_COUNT ? c.rust_combatlog : RUST_LOG_OFF;
+    bool changed = kit_segmented("##rustlog", keys, RUST_LOG_COUNT, &sel);
     static i64 next;
+    if (changed) {
+        c.rust_combatlog = (u8)sel;
+        next = 0;
+        log_line("options: Rust combat log key %s", RUST_LOG_WORDS[sel]);
+    }
+
     static i32 bind = -1;
+    static char line[160];
     if (now_us() >= next) {
         next = now_us() + 2000000;
-        bind = rust_bind_state();
+        bind = rust_bind_state(sel, line, sizeof line);
     }
-    ImGui::BeginDisabled(!c.rust_print_on_death);
+    ImGui::Dummy(ImVec2(0, dp(4)));
+    ImGui::BeginDisabled(sel == RUST_LOG_OFF);
     f32 fh = ImGui::GetFrameHeight();
     p = ImGui::GetCursorScreenPos();
-    const char *line = "bind f15 combatlog";
     f32 tw = ImGui::CalcTextSize(line).x, pad = dp(10);
     dl->AddRectFilled(p, ImVec2(p.x + tw + 2 * pad, p.y + fh), col32(COL_FAINT, 0.18f), kit_px(6));
     opt_text_at(dl, g_font, ImVec2(p.x + pad, floorf(p.y + (fh - g_font->FontSize) / 2)), COL_TEXT, line, p.x + tw + pad + 1);
     ImGui::SetCursorScreenPos(ImVec2(p.x + tw + 2 * pad + dp(8), p.y));
-    if (kit_button(ICON_COPY "  Copy##rustbind", KIT_GHOST)) {
+    // One width for both labels, so the status after it stays put while "Copied" shows.
+    static i64 copied_at;
+    bool copied = copied_at && now_us() - copied_at < 2500000;
+    ImGuiStyle &gs = ImGui::GetStyle();
+    f32 bw = fmaxf(ImGui::CalcTextSize(ICON_COPY "  Copy").x, ImGui::CalcTextSize(ICON_CHECK "  Copied").x) + 2 * gs.FramePadding.x;
+    if (kit_button(copied ? ICON_CHECK "  Copied###rustbind" : ICON_COPY "  Copy###rustbind", KIT_GHOST, ImVec2(bw, 0))) {
         ImGui::SetClipboardText(line);
+        copied_at = now_us();
         log_line("options: Rust bind line copied");
     }
     ImGui::SameLine(0, dp(12));
