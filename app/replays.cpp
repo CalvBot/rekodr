@@ -3,8 +3,8 @@
 // over it (markers_add_late), so it comes late but in its place.
 //
 //   Rainbow Six Siege  <game>\MatchReplay\<match>\*.rec, a file a round: a "dissect" header (the round's start in
-//                      UTC, the recording player's id, the players' names and ids) and zstd frames holding the
-//                      round's packets. The round clock and the kill feed are found by their byte patterns, as
+//                      the PC's local time, the recording player's id, the players' names and ids) and zstd frames
+//                      holding the round's packets. The round clock and the kill feed are found by their byte patterns, as
 //                      r6-dissect (github.com/redraskal/r6-dissect, MIT) finds them.
 //
 // The files are untrusted data: every read is checked against the end.
@@ -22,6 +22,16 @@ static void replay_push(ReplayMark *out, i32 cap, i32 *n, i64 t_us, u8 colour, c
     m.t_us = t_us;
     m.colour = colour;
     str_set(m.note, note);
+}
+
+// A time in the PC's local time zone, on the wall clock (UTC). 0 if it isn't one.
+static i64 replay_local_us(const SYSTEMTIME &local)
+{
+    SYSTEMTIME us;
+    FILETIME uf;
+    if (!TzSpecificLocalTimeToSystemTime(0, &local, &us) || !SystemTimeToFileTime(&us, &uf)) return 0;
+    i64 t = ((i64)uf.dwHighDateTime << 32) | uf.dwLowDateTime;
+    return (t - 116444736000000000LL) / 10;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -108,12 +118,9 @@ static i64 r6_datetime(const char *s)
 {
     SYSTEMTIME st = {};
     int y, mo, d, h, mi, se;
-    if (sscanf_s(s, "%d-%d-%d-%d-%d-%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+    if (sscanf_s(s, "%d-%d-%d-%d-%d-%d", &y, &mo, &d, &h, &mi, &se) != 6 || y < 2015) return 0;
     st.wYear = (WORD)y, st.wMonth = (WORD)mo, st.wDay = (WORD)d, st.wHour = (WORD)h, st.wMinute = (WORD)mi, st.wSecond = (WORD)se;
-    FILETIME ft;
-    if (y < 2015 || !SystemTimeToFileTime(&st, &ft)) return 0;
-    i64 t = ((i64)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-    return (t - 116444736000000000LL) / 10;
+    return replay_local_us(st);
 }
 
 struct R6Round {
@@ -135,17 +142,22 @@ static size_t r6_header(const u8 *d, size_t len, R6Round *r)
         if (d[at]) zeros = 0;
         else if (++zeros == 7) zeros = 0, runs++;
     }
-    char k[64], v[256], me_id[32] = "", player_id[32] = "";
+    char k[64], v[256], me_id[32] = "";
+    struct { char id[32], name[64]; } players[16];
+    i32 np = 0;
     for (i32 i = 0; i < 2000; i++) {
         if (!r6_header_string(d, len, &at, k, sizeof k) || !r6_header_string(d, len, &at, v, sizeof v)) return 0;
         if (!strcmp(k, "code")) r->code = atoi(v);
         else if (!strcmp(k, "datetime")) r->start_us = r6_datetime(v);
         else if (!strcmp(k, "recordingplayerid")) str_set(me_id, v);
-        else if (!strcmp(k, "playerid")) str_set(player_id, v);
-        else if (!strcmp(k, "playername") && player_id[0] && me_id[0] && !strcmp(player_id, me_id) && !r->me[0]) str_set(r->me, v);
-        else if (!strcmp(k, "teamscore1")) return r->start_us && r->me[0] && r->code >= R6_Y9S1 ? at : 0;
+        else if (!strcmp(k, "playerid") && np < COUNT(players)) str_set(players[np].id, v), players[np++].name[0] = 0;
+        else if (!strcmp(k, "playername") && np && !players[np - 1].name[0]) str_set(players[np - 1].name, v);
+        else if (!strcmp(k, "teamscore1")) break;
     }
-    return 0;
+    if (strcmp(k, "teamscore1")) return 0;
+    for (i32 i = 0; i < np && me_id[0]; i++)
+        if (!strcmp(players[i].id, me_id)) str_set(r->me, players[i].name);
+    return r->start_us && r->me[0] && r->code >= R6_Y9S1 ? at : 0;
 }
 
 static const u8 R6_TIME[] = {0x1F, 0x07, 0xEF, 0xC9};
@@ -284,12 +296,9 @@ static i64 fn_local_ticks_us(i64 ticks)
     const i64 to_1601 = 504911232000000000ll;
     if (ticks <= to_1601) return 0;
     i64 local = ticks - to_1601;
-    FILETIME lf = {(DWORD)local, (DWORD)(local >> 32)}, uf;
-    SYSTEMTIME ls, us;
-    if (!FileTimeToSystemTime(&lf, &ls) || !TzSpecificLocalTimeToSystemTime(0, &ls, &us) || !SystemTimeToFileTime(&us, &uf))
-        return 0;
-    i64 t = ((i64)uf.dwHighDateTime << 32) | uf.dwLowDateTime;
-    return (t - 116444736000000000LL) / 10;
+    FILETIME lf = {(DWORD)local, (DWORD)(local >> 32)};
+    SYSTEMTIME ls;
+    return FileTimeToSystemTime(&lf, &ls) ? replay_local_us(ls) : 0;
 }
 
 // The header. False if the bytes aren't a replay's.
@@ -628,32 +637,44 @@ static void replays_poll()
     }
 }
 
-// Siege's MatchReplay folder, from Steam or Ubisoft Connect. "" if the game isn't installed.
+// Siege's MatchReplay folder: in each Steam library's common folder (the game's app manifest may be missing) or
+// Ubisoft Connect's; of several, the one written last. "" if there is none.
 static void r6_replay_dir(wchar_t (&out)[MAX_PATH])
 {
     out[0] = 0;
-    Path lib;
-    wchar_t game[MAX_PATH] = L"";
-    if (steam_app_library(359550, &lib)) {
-        char *acf = read_file(path_join(lib, L"appmanifest_359550.acf").s, 0);
-        char dir[MAX_PATH] = "";
-        if (acf && vdf_value(acf, "installdir", dir, sizeof dir)) {
-            wchar_t wdir[MAX_PATH];
-            utf8_to_wide(dir, wdir, MAX_PATH);
-            swprintf(game, MAX_PATH, L"%s\\common\\%s", lib.s, wdir);
+    wchar_t games[17][MAX_PATH];
+    i32 n = 0;
+    Path root;
+    if (steam_root(&root)) {
+        char *vdf = read_file(path_join(root, L"steamapps\\libraryfolders.vdf").s, 0);
+        char libs[16][MAX_PATH * 2];
+        i32 k = vdf ? steam_libraries(vdf, libs, COUNT(libs)) : 0;
+        free(vdf);
+        for (i32 i = 0; i < k; i++) {
+            wchar_t lib[MAX_PATH];
+            utf8_to_wide(libs[i], lib, MAX_PATH);
+            swprintf(games[n++], MAX_PATH, L"%s\\steamapps\\common\\Tom Clancy's Rainbow Six Siege", lib);
         }
-        free(acf);
     }
-    DWORD bytes = sizeof game;
-    if (!game[0] && RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs\\635", L"InstallDir",
-                                 RRF_RT_REG_SZ, 0, game, &bytes) != ERROR_SUCCESS)
-        game[0] = 0;
-    for (wchar_t *c = game; *c; c++)
-        if (*c == '/') *c = '\\';
-    size_t k = wcslen(game);
-    if (k && game[k - 1] == '\\') game[k - 1] = 0;
-    if (!game[0] || GetFileAttributesW(game) == INVALID_FILE_ATTRIBUTES) return;
-    swprintf(out, MAX_PATH, L"%s\\MatchReplay", game);
+    DWORD bytes = sizeof games[n];
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs\\635", L"InstallDir",
+                     RRF_RT_REG_SZ, 0, games[n], &bytes) == ERROR_SUCCESS && games[n][0]) {
+        for (wchar_t *c = games[n]; *c; c++)
+            if (*c == '/') *c = '\\';
+        size_t k = wcslen(games[n]);
+        if (games[n][k - 1] == '\\') games[n][k - 1] = 0;
+        n++;
+    }
+    i64 newest = -1;
+    for (i32 i = 0; i < n; i++) {
+        wchar_t dir[MAX_PATH];
+        swprintf(dir, MAX_PATH, L"%s\\MatchReplay", games[i]);
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        bool is_dir = GetFileAttributesExW(dir, GetFileExInfoStandard, &a) && (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+        if (!is_dir) continue;
+        i64 t = filetime_to_us(a.ftLastWriteTime);
+        if (t > newest) newest = t, wcscpy_s(out, dir);
+    }
 }
 
 // Where the replays are, and each game's state for Options. From automarks_apply. Main thread.

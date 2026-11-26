@@ -4542,7 +4542,10 @@ static void test_r6_replay()
     f.frame(p1), f.put("junk", 4), f.frame(p2);
     ReplayMark m[8];
     const i64 start = r6_datetime("2024-05-04-02-14-08");
-    T(start == 1714788848ll * 1000000);
+    // The PC's local time: the same moment as Unreal's local ticks for it, a whole quarter hour off UTC
+    const i64 off = start - 1714788848ll * 1000000;
+    T(start == fn_local_ticks_us((1714788848ll + 62135596800ll) * 10000000));
+    T(off % (900ll * 1000000) == 0 && llabs(off) <= 14 * 3600ll * 1000000);
     T(r6_marks(f.b, f.n, m, 8) == 2);
     T(m[0].t_us == start + 3 * 1000000ll && m[0].colour == 4 && !strcmp(m[0].note, "Kill"));
     T(m[1].t_us == start + 5 * 1000000ll && m[1].colour == 1 && !strcmp(m[1].note, "Death"));
