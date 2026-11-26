@@ -2117,7 +2117,8 @@ static void test_gamedb()
         T(gamedb_find_local("minecraft", found, 4) == 1 && !strcmp(found[0], "Minecraft"));
         T(gamedb_find_local("Mine", found, 4) == 1 && !strcmp(found[0], "Minecraft"));
         T(gamedb_find_local("strike", found, 4) == 1 && !strcmp(found[0], "Counter-Strike 2"));
-        T(gamedb_find_local("u", found, 4) == 2 && !strcmp(found[0], "Rust") && !strcmp(found[1], "Counter-Strike 2"));
+        T(gamedb_find_local("u", found, 4) == 3 && !strcmp(found[0], "Rust") && !strcmp(found[1], "Wurm Online") &&
+          !strcmp(found[2], "Counter-Strike 2"));
         T(gamedb_find_local("zzz", found, 4) == 0 && gamedb_find_local("", found, 4) == 0);
         T(gamedb_find_local("u", found, 1) == 1 && !strcmp(found[0], "Rust"));
     }
