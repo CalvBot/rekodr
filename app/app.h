@@ -241,11 +241,12 @@ struct Config {
     bool share_kbps_custom; // Share uses share_kbps, else SHARE_KBPS_DEFAULT ("Use recommended", off)
     bool share_link_page; // a bucket link is a preview page that plays the clip, not the .mp4 itself (on)
     bool share_copy_on_close; // when a game closes, its clips' share copies are made while nothing else runs (off)
-    u32  auto_marks_cs2;  // AmEvent bits: what Counter-Strike 2 marks on the timeline (automarks.cpp; 0 = off)
-    u32  auto_marks_lol;  // AmEvent bits: what League of Legends marks (0 = off)
-    bool ach_clips;       // a Steam achievement rarer than ach_rarer gets a clip (achievements.cpp; off)
+    bool auto_marks;      // Options' Auto markers tab as a whole: games' and Steam achievements' markers (on)
+    bool auto_marks_cs2_on, auto_marks_lol_on; // the game marks its events on the timeline (automarks.cpp; on)
+    u32  auto_marks_cs2;  // AmEvent bits: what Counter-Strike 2 marks while on (all)
+    u32  auto_marks_lol;  // AmEvent bits: what League of Legends marks while on (all)
+    bool ach_marks;       // a Steam achievement rarer than ach_rarer gets a marker (achievements.cpp; on)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
-    i32  ach_secs;        // an achievement clip's length: 15, 30 (default) or 60 s
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), 7 or 1; the Share menu can
                           // pick another for one link
     u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
@@ -1097,7 +1098,7 @@ static void sessions_on_game(const char *exe); // audio.cpp tells sessions.cpp t
 // options.cpp: every setting. Lists are paged and their order is frozen while Options is open, so a row never
 // moves under the mouse after a click (sorting a new app doesn't send it to another page).
 enum OptionsTab : u8 {
-    OPT_APPS, OPT_RECORDING, OPT_HOTKEYS, OPT_INTEGRATIONS, OPT_GENERAL,
+    OPT_APPS, OPT_RECORDING, OPT_HOTKEYS, OPT_INTEGRATIONS, OPT_AUTOMARKS, OPT_GENERAL,
     OPT_TAB_COUNT,
 };
 

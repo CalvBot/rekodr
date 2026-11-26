@@ -3987,60 +3987,200 @@ static void options_sharing()
     opt_card_end();
 }
 
-// One game's card in Auto markers: its art across the top with its name, a status line and its switch, and the
-// events it can mark as chips below. The switch turns all of them on or off, a chip one. True when `events` changed.
+// Auto markers: a row for each game, its box art on the left, its name and a status line beside it, its events as
+// ticks in columns under them, and its switch on the right. What is under the name greys while the game is off and
+// keeps its ticks.
 struct AmChoice { u32 bit; const char *label; };
+static const f32 AM_ART_W = 64, AM_ART_H = 96, AM_PAD = 14;
+static ImVec2 g_am_row;
+static f32 g_am_text_end; // the right edge of what a row puts beside its art
 
-static bool opt_automarks_card(const char *game, const char *status, u32 status_col, u32 *events, u32 all,
-                               const AmChoice *choices, i32 n)
+// A game's box art in p0..p1, the middle of the cover cut to the box's shape; a game icon on a box without one.
+static void opt_am_art(ImDrawList *dl, const char *game, ImVec2 p0, ImVec2 p1, f32 alpha)
 {
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 w = ImGui::GetContentRegionAvail().x, art_h = dp(104), pad = dp(16), round = dp(10), fh = ImGui::GetFrameHeight();
-    f32 h = art_h + pad + fh + pad;
-    ImVec2 b(a.x + w, a.y + art_h);
-    bool on = *events != 0, changed = false;
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_PANEL), round);
+    f32 round = dp(6);
     i32 tw = 0, th = 0;
     ID3D11ShaderResourceView *art = game_db_cover(game, &tw, &th);
     if (art && tw > 0 && th > 0) {
-        f32 want = w / art_h, have = (f32)tw / th, u = 0, v = 0; // the middle, cut to the card's shape
+        f32 want = (p1.x - p0.x) / (p1.y - p0.y), have = (f32)tw / th, u = 0, v = 0;
         if (have > want) u = (1 - want / have) / 2;
         else v = (1 - have / want) / 2;
-        dl->AddImageRounded((ImTextureID)art, a, b, ImVec2(u, v), ImVec2(1 - u, 1 - v), col32(COL_WHITE, on ? 1 : 0.4f),
-                            round, ImDrawFlags_RoundCornersTop);
-    } else dl->AddRectFilled(a, b, col32(COL_PANEL2), round, ImDrawFlags_RoundCornersTop);
-    // A shade from the left edge under the name: the art's own rounded shape, its alpha falling off to the right
-    i32 from = dl->VtxBuffer.Size;
-    dl->AddRectFilled(a, b, col32(0x000000), round, ImDrawFlags_RoundCornersTop);
-    for (i32 i = from; i < dl->VtxBuffer.Size; i++) {
-        ImDrawVert &vx = dl->VtxBuffer[i];
-        f32 k = fminf(fmaxf((vx.pos.x - a.x) / (w * 0.65f), 0), 1);
-        u32 alpha = (vx.col >> IM_COL32_A_SHIFT) & 0xff;
-        vx.col = IM_COL32(0, 0, 0, (i32)(alpha * 0.8f * (1 - k)));
+        dl->AddImageRounded((ImTextureID)art, p0, p1, ImVec2(u, v), ImVec2(1 - u, 1 - v), col32(COL_WHITE, alpha), round);
+        return;
     }
-    f32 name_y = b.y - pad - g_font_big->FontSize - dp(2) - g_font_small->FontSize;
-    opt_text_at(dl, g_font_big, ImVec2(a.x + pad, name_y), COL_WHITE, game, b.x - pad - dp(60));
-    if (status) opt_text_at(dl, g_font_small, ImVec2(a.x + pad, name_y + g_font_big->FontSize + dp(2)), status_col, status, b.x - pad);
+    dl->AddRectFilled(p0, p1, col32(COL_PANEL2), round);
+    ImGui::PushFont(g_font_icon);
+    ImVec2 is = ImGui::CalcTextSize(ICON_GAME);
+    dl->AddText(ImVec2(floorf((p0.x + p1.x - is.x) / 2), floorf((p0.y + p1.y - is.y) / 2)), col32(COL_FAINT, alpha), ICON_GAME);
+    ImGui::PopFont();
+}
 
+// The row's art, name, status and switch. The cursor is left under the status for what the game does (body_h
+// tall), in a group that opt_am_row_end closes; the name, status and body sit in the middle of the art's height.
+// True when the switch flipped.
+static bool opt_am_row_begin(const char *game, const char *status, u32 status_col, bool *on, f32 body_h)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    g_am_row = a;
+    f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD);
+    dl->ChannelsSplit(2); // the card goes under what is drawn on it, once its height is known
+    dl->ChannelsSetCurrent(1);
+    ImVec2 p0(a.x + pad, a.y + pad), p1(p0.x + dp(AM_ART_W), p0.y + dp(AM_ART_H));
+    opt_am_art(dl, game, p0, p1, *on ? 1 : 0.5f);
+    f32 x = p1.x + dp(16), tog = kit_px(36);
+    g_am_text_end = a.x + w - pad - tog - dp(16);
+    f32 gap = dp(10), block = g_font_bold->FontSize + dp(2) + g_font_small->FontSize + gap + body_h;
+    f32 top = p0.y + fmaxf(0, floorf((dp(AM_ART_H) - block) / 2));
+    opt_text_at(dl, g_font_bold, ImVec2(x, top), COL_TEXT, game, g_am_text_end);
+    f32 y = top + g_font_bold->FontSize + dp(2);
+    if (status) opt_text_at(dl, g_font_small, ImVec2(x, y), status_col, status, g_am_text_end);
     ImGui::PushID(game);
-    ImGui::SetCursorScreenPos(ImVec2(b.x - pad - kit_px(36), a.y + dp(10)));
-    if (kit_toggle("##on", &on)) {
-        *events = on ? all : 0;
-        changed = true;
-    }
-    ImGui::SetCursorScreenPos(ImVec2(a.x + pad, b.y + pad));
+    ImGui::SetCursorScreenPos(ImVec2(a.x + w - pad - tog, floorf(p0.y + (dp(AM_ART_H) - ImGui::GetFrameHeight()) / 2)));
+    bool flipped = kit_toggle("##on", on);
+    ImGui::PopID();
+    ImGui::SetCursorScreenPos(ImVec2(x, y + g_font_small->FontSize + gap));
+    ImGui::BeginGroup();
+    ImGui::BeginDisabled(!*on);
+    return flipped;
+}
+
+static void opt_am_row_end()
+{
+    ImGui::EndDisabled();
+    ImGui::EndGroup();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a = g_am_row;
+    f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD);
+    f32 y = fmaxf(ImGui::GetItemRectMax().y, a.y + pad + dp(AM_ART_H)) + pad;
+    dl->ChannelsSetCurrent(0);
+    dl->AddRectFilled(a, ImVec2(a.x + w, y), col32(COL_PANEL), dp(10));
+    dl->ChannelsMerge();
+    ImGui::SetCursorScreenPos(ImVec2(a.x, y));
+    ImGui::Dummy(ImVec2(w, dp(8) - ImGui::GetStyle().ItemSpacing.y));
+}
+
+// A game's events as ticks in as many even columns as fit beside the art. True when one changed.
+static bool opt_am_events(const char *game, u32 *events, const AmChoice *choices, i32 n)
+{
+    bool changed = false;
+    ImVec2 o = ImGui::GetCursorScreenPos();
+    f32 colw = 0;
+    for (i32 i = 0; i < n; i++) colw = fmaxf(colw, lib_dialog_check_w(choices[i].label));
+    colw += dp(28);
+    i32 cols = (i32)((g_am_text_end - o.x) / colw);
+    cols = cols < 1 ? 1 : cols > n ? n : cols;
+    f32 rowh = kit_px(20) + dp(8);
+    ImGui::PushID(game);
     for (i32 i = 0; i < n; i++) {
-        if (i) ImGui::SameLine(0, kit_px(6));
-        if (kit_chip(choices[i].label, (*events & choices[i].bit) != 0)) {
+        ImGui::SetCursorScreenPos(ImVec2(o.x + (i % cols) * colw, o.y + (i / cols) * rowh));
+        bool v = (*events & choices[i].bit) != 0;
+        if (lib_dialog_check(choices[i].label, &v, true)) {
             *events ^= choices[i].bit;
             changed = true;
         }
     }
     ImGui::PopID();
-    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h));
-    ImGui::Dummy(ImVec2(w, dp(12) - ImGui::GetStyle().ItemSpacing.y));
     return changed;
+}
+
+// Games with an official local feed that get markers later, side by side in one greyed card: small art, the name
+// and the feed.
+static void opt_am_planned()
+{
+    static const char *const planned[][2] = {{"Dota 2", "Game State Integration"}, {"Rocket League", "Stats API"}};
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD), aw = dp(40), ah = dp(60);
+    f32 head = g_font_small->FontSize + dp(10), h = pad + head + ah + pad;
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_PANEL), dp(10));
+    opt_text_at(dl, g_font_small, ImVec2(a.x + pad, a.y + pad), COL_DIM, "COMING LATER", a.x + w - pad);
+    f32 tile = floorf((w - 2 * pad) / COUNT(planned));
+    for (i32 i = 0; i < COUNT(planned); i++) {
+        ImVec2 p0(a.x + pad + i * tile, a.y + pad + head), p1(p0.x + aw, p0.y + ah);
+        opt_am_art(dl, planned[i][0], p0, p1, 0.4f);
+        f32 x = p1.x + dp(12), end = p0.x + tile - dp(12);
+        f32 y = p0.y + (ah - g_font->FontSize - dp(2) - g_font_small->FontSize) / 2;
+        opt_text_at(dl, g_font, ImVec2(x, y), COL_DIM, planned[i][0], end);
+        opt_text_at(dl, g_font_small, ImVec2(x, y + g_font->FontSize + dp(2)), COL_FAINT, planned[i][1], end);
+    }
+    ImGui::Dummy(ImVec2(w, h));
+}
+
+// Options > Auto markers: markers put on the timeline by games and by rare Steam achievements, under one switch.
+static void options_automarks()
+{
+    Config &c = g_app.config;
+    bool marks = false, ach = false;
+    opt_card_begin();
+    if (opt_row_toggle("Auto markers", "Markers on the timeline from what happens in your games", "##automarks", &c.auto_marks)) {
+        log_line("options: auto markers %s", c.auto_marks ? "on" : "off");
+        marks = ach = true;
+    }
+    opt_card_end();
+
+    ImGui::BeginDisabled(!c.auto_marks);
+    static const AmChoice cs2[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
+                                   {AM_ROUND, "Round wins"}, {AM_WIN, "Match wins"}};
+    static const AmChoice lol[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
+                                   {AM_OBJECTIVE, "Objectives"}, {AM_WIN, "Wins"}};
+    AmCs2State st = automarks_cs2_state();
+    bool cs2_on = c.auto_marks && c.auto_marks_cs2_on;
+    const char *sub = !cs2_on ? "From the game's own feed"
+                      : st == AM_CS2_NOT_FOUND ? "Not installed on this PC"
+                      : st == AM_CS2_PORT_BUSY ? "Another program is using its port"
+                      : "From the game's next start";
+    bool bad = cs2_on && (st == AM_CS2_NOT_FOUND || st == AM_CS2_PORT_BUSY);
+    if (opt_am_row_begin("Counter-Strike 2", sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_cs2_on, kit_px(20))) {
+        log_line("options: Counter-Strike 2 markers %s", c.auto_marks_cs2_on ? "on" : "off");
+        marks = true;
+    }
+    if (opt_am_events("Counter-Strike 2", &c.auto_marks_cs2, cs2, COUNT(cs2))) {
+        log_line("options: Counter-Strike 2 marks 0x%x", c.auto_marks_cs2);
+        marks = true;
+    }
+    opt_am_row_end();
+
+    if (opt_am_row_begin("League of Legends", "While a match runs", COL_DIM, &c.auto_marks_lol_on, kit_px(20))) {
+        log_line("options: League of Legends markers %s", c.auto_marks_lol_on ? "on" : "off");
+        marks = true;
+    }
+    if (opt_am_events("League of Legends", &c.auto_marks_lol, lol, COUNT(lol))) {
+        log_line("options: League of Legends marks 0x%x", c.auto_marks_lol);
+        marks = true;
+    }
+    opt_am_row_end();
+
+    if (opt_am_row_begin("Steam achievements", "A marker when Steam gives you a rare one, in any game", COL_DIM, &c.ach_marks, ImGui::GetFrameHeight())) {
+        log_line("options: achievement markers %s", c.ach_marks ? "on" : "off");
+        ach = true;
+    }
+    {
+        static const char *rarer[] = {"1%", "5%", "10%", "Any"};
+        static const i32 rarer_v[] = {1, 5, 10, 100};
+        i32 r = 1;
+        for (i32 i = 0; i < 4; i++)
+            if (c.ach_rarer == rarer_v[i]) r = i;
+        f32 fh = ImGui::GetFrameHeight();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        f32 label_w = ImGui::CalcTextSize("Rarer than").x + dp(14);
+        opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(p.x, floorf(p.y + (fh - g_font->FontSize) / 2)), COL_DIM,
+                    "Rarer than", p.x + label_w);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + label_w, p.y));
+        if (kit_segmented("##achrarer", rarer, 4, &r, dp(64))) {
+            c.ach_rarer = rarer_v[r];
+            log_line("options: achievement markers for under %d%%", c.ach_rarer);
+            ach = true;
+        }
+    }
+    opt_am_row_end();
+
+    opt_am_planned();
+    ImGui::EndDisabled();
+
+    if (marks || ach) options_apply(0);
+    if (marks) automarks_apply();
+    if (ach) achievements_apply();
 }
 
 static void options_integrations()
@@ -4105,71 +4245,6 @@ static void options_integrations()
         opt_status(conn, keys ? COL_OK : sd_msg_error ? COL_WARN : COL_DIM, x + sw, x);
     }
     opt_row_end();
-    opt_card_end();
-
-    opt_section("AUTO MARKERS");
-    {
-        static const AmChoice cs2[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
-                                       {AM_ROUND, "Round wins"}, {AM_WIN, "Match wins"}};
-        static const AmChoice lol[] = {{AM_KILL, "Kills"}, {AM_MULTI, "Multi-kills"}, {AM_DEATH, "Deaths"},
-                                       {AM_OBJECTIVE, "Objectives"}, {AM_WIN, "Wins"}};
-        AmCs2State st = automarks_cs2_state();
-        const char *sub = !c.auto_marks_cs2 ? 0
-                          : st == AM_CS2_NOT_FOUND ? "Not installed on this PC"
-                          : st == AM_CS2_PORT_BUSY ? "Another program is using its port"
-                          : "From the game's next start";
-        bool bad = c.auto_marks_cs2 && (st == AM_CS2_NOT_FOUND || st == AM_CS2_PORT_BUSY);
-        bool changed = false;
-        if (opt_automarks_card("Counter-Strike 2", sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_cs2, AM_CS2_EVENTS, cs2, COUNT(cs2))) {
-            log_line("options: Counter-Strike 2 markers 0x%x", c.auto_marks_cs2);
-            changed = true;
-        }
-        if (opt_automarks_card("League of Legends", 0, COL_DIM, &c.auto_marks_lol, AM_LOL_EVENTS, lol, COUNT(lol))) {
-            log_line("options: League of Legends markers 0x%x", c.auto_marks_lol);
-            changed = true;
-        }
-        if (changed) {
-            options_apply(0);
-            automarks_apply();
-        }
-    }
-
-    opt_section("STEAM ACHIEVEMENTS");
-    opt_card_begin();
-    if (opt_row_toggle("Clip rare achievements", "A clip of the moment Steam gives you a rare one", "##achclips", &c.ach_clips)) {
-        log_line("options: achievement clips %s", c.ach_clips ? "on" : "off");
-        options_apply(0);
-        achievements_apply();
-    }
-    {
-        ImGui::BeginDisabled(!c.ach_clips);
-        static const char *rarer[] = {"1%", "5%", "10%", "Any"};
-        static const i32 rarer_v[] = {1, 5, 10, 100};
-        i32 r = 1;
-        for (i32 i = 0; i < 4; i++)
-            if (c.ach_rarer == rarer_v[i]) r = i;
-        opt_row_begin("Rarer than", "Of players who have it", 4 * dp(64) + 3 * kit_px(6));
-        if (kit_segmented("##achrarer", rarer, 4, &r, dp(64))) {
-            c.ach_rarer = rarer_v[r];
-            log_line("options: achievement clips for under %d%%", c.ach_rarer);
-            options_apply(0);
-            achievements_apply();
-        }
-        opt_row_end();
-        static const char *secs[] = {"15 s", "30 s", "60 s"};
-        static const i32 secs_v[] = {15, 30, 60};
-        i32 s = 1;
-        for (i32 i = 0; i < 3; i++)
-            if (c.ach_secs == secs_v[i]) s = i;
-        opt_row_begin("Clip length", 0, 3 * dp(64) + 2 * kit_px(6));
-        if (kit_segmented("##achsecs", secs, 3, &s, dp(64))) {
-            c.ach_secs = secs_v[s];
-            log_line("options: achievement clips %d s", c.ach_secs);
-            options_apply(0);
-        }
-        opt_row_end();
-        ImGui::EndDisabled();
-    }
     opt_card_end();
 
     opt_section("VIDEO EDITORS");
@@ -5223,8 +5298,8 @@ static void screen_options()
     // The sections down the left, like the Library's list: docked to the window's left edge from the top bar to the
     // bottom, a row each with its icon, the current one lit, Apps with how many apps wait to be sorted. The page
     // is right of it, in the screen's usual padding (the Options screen has none of its own, as the Library).
-    static const char *names[OPT_TAB_COUNT] = {"Apps", "Recording", "Hotkeys", "Integrations", "General"};
-    static const char *icons[OPT_TAB_COUNT] = {ICON_APPS, ICON_VIDEO, ICON_KEYBOARD, ICON_LINK, ICON_SLIDERS};
+    static const char *names[OPT_TAB_COUNT] = {"Apps", "Recording", "Hotkeys", "Integrations", "Auto markers", "General"};
+    static const char *icons[OPT_TAB_COUNT] = {ICON_APPS, ICON_VIDEO, ICON_KEYBOARD, ICON_LINK, ICON_PIN, ICON_SLIDERS};
     if (o.tab < 0 || o.tab >= OPT_TAB_COUNT) o.tab = OPT_APPS;
     i32 new_apps = 0;
     for (i32 i = 0; i < g_app.config.app_count; i++) // as the New chip counts: not ones a folder rule sorts
@@ -5270,6 +5345,7 @@ static void screen_options()
     case OPT_RECORDING: options_recording(); break;
     case OPT_HOTKEYS: options_hotkeys(); break;
     case OPT_INTEGRATIONS: options_integrations(); break;
+    case OPT_AUTOMARKS: options_automarks(); break;
     case OPT_GENERAL: options_general(); break;
     default: break;
     }

@@ -1,12 +1,12 @@
-// Clips of rare Steam achievements (ach_clips, off by default).
+// Markers for rare Steam achievements (ach_marks, on by default; in Options > Auto markers, under its switch).
 //
 // Steam keeps each player's stats for a game in <Steam>\appcache\stats\UserGameStats_<account>_<app>.bin and
 // rewrites the file when an achievement is earned; the achievement's unlock time is in it. A worker thread looks
 // at those files' times every 2 s, reads one that changed and finds achievements unlocked since it was last read
 // (and in the last 10 minutes). The achievement's name comes from UserGameStatsSchema_<app>.bin beside it, and how
 // rare it is from Steam's public GetGlobalAchievementPercentagesForApp (no key, no account). One rarer than
-// ach_rarer percent (unknown counts as rare) gets a clip of the ach_secs up to a few seconds after it, named
-// "<game> - <achievement>", and a yellow marker. Steam is never signed in to or written to.
+// ach_rarer percent (unknown counts as rare) gets a yellow marker at its unlock, its note the achievement's name.
+// Steam is never signed in to or written to.
 //
 // Both files are binary KeyValues: a type byte, a name ending in 0, then the value; type 0 opens a subtree and 8
 // closes one.
@@ -14,7 +14,6 @@
 //   UserGameStatsSchema: <app> / stats / <stat> / bits / <bit> / name (the API name), display / name [/ english]
 
 static const i64 ACH_RECENT_US = 10ll * 60 * 1000000; // an unlock older than this when seen is left alone
-static const i64 ACH_AFTER_US = 3ll * 1000000;        // a clip goes on this long past the unlock
 
 // Calls fn for each value: its path of names (path[0..depth-1], the last being the value's own name), its type
 // and the value (s for a string, v for a number). False if the data isn't binary KeyValues.
@@ -166,19 +165,10 @@ struct AchFile {
     i64 newest; // the newest unlock when last read
 };
 
-struct AchClip {
-    i64  t_us;      // the unlock
-    char label[200]; // "<game> - <achievement>"
-    char note[128];  // the achievement
-};
-
 static struct {
     HANDLE thread, wake;
     volatile bool stop, on;
     volatile i32 rarer; // Config.ach_rarer, copied by achievements_apply for the worker
-    SRWLOCK lock;       // clips
-    AchClip clips[16];  // found, waiting for their end to be recorded
-    i32 clip_count;
     AchFile files[512]; // worker only
     i32 file_count;
     bool seen;          // the files were looked at once (what's in them then is old)
@@ -212,7 +202,7 @@ static void ach_game_name(u32 app, char *out, i32 cap)
     out[n] = 0;
 }
 
-// What to do about one unlock: its names, its rarity, and a clip if it's rare enough.
+// What to do about one unlock: its names, its rarity, and a marker if it's rare enough.
 static void ach_found(const Path &dir, u32 app, const AchUnlock &u)
 {
     static u8 schema[4 << 20];
@@ -237,16 +227,10 @@ static void ach_found(const Path &dir, u32 app, const AchUnlock &u)
     char game[128];
     ach_game_name(app, game, sizeof game);
     log_line("achievements: %s%s%s (%s%.1f%% of players)%s", game, game[0] ? ": " : "", shown, pct < 0 ? "unknown, " : "",
-             pct < 0 ? 0.0 : pct, rare ? "" : ", not rare enough for a clip");
+             pct < 0 ? 0.0 : pct, rare ? "" : ", not rare enough for a marker");
     if (!rare) return;
-    AchClip c = {};
-    c.t_us = u.time * 1000000;
-    if (game[0]) snprintf(c.label, sizeof c.label, "%s - %s", game, shown);
-    else str_set(c.label, shown);
-    str_set(c.note, shown);
-    AcquireSRWLockExclusive(&g_ach.lock);
-    if (g_ach.clip_count < COUNT(g_ach.clips)) g_ach.clips[g_ach.clip_count++] = c;
-    ReleaseSRWLockExclusive(&g_ach.lock);
+    markers_add(u.time * 1000000, 3, shown);
+    event_post(Event{}); // the timeline shows it
 }
 
 // Looks at the stats files' times; reads the ones that changed.
@@ -310,34 +294,13 @@ static DWORD WINAPI ach_thread(void *)
 // At startup and when the switch changes. Main thread.
 static void achievements_apply()
 {
-    g_ach.on = g_app.config.ach_clips;
+    g_ach.on = g_app.config.auto_marks && g_app.config.ach_marks;
     g_ach.rarer = g_app.config.ach_rarer;
     if (g_ach.on && !g_ach.thread) {
-        InitializeSRWLock(&g_ach.lock);
         g_ach.wake = CreateEventW(0, FALSE, FALSE, 0);
         g_ach.thread = CreateThread(0, 0, ach_thread, 0, 0, 0);
     }
     if (g_ach.wake) SetEvent(g_ach.wake);
-}
-
-// Once a second on the main thread: a found achievement whose clip has all been recorded is saved and marked.
-static void achievements_tick()
-{
-    if (!g_ach.thread) return;
-    i64 now = now_us();
-    AcquireSRWLockExclusive(&g_ach.lock);
-    for (i32 i = 0; i < g_ach.clip_count;) {
-        AchClip c = g_ach.clips[i];
-        if (now < c.t_us + ACH_AFTER_US) { i++; continue; }
-        g_ach.clips[i] = g_ach.clips[--g_ach.clip_count];
-        ReleaseSRWLockExclusive(&g_ach.lock);
-        i64 to = c.t_us + ACH_AFTER_US;
-        markers_add(c.t_us, 3, c.note);
-        save_exact(to - (i64)g_app.config.ach_secs * 1000000, to, c.label);
-        ui_wake();
-        AcquireSRWLockExclusive(&g_ach.lock);
-    }
-    ReleaseSRWLockExclusive(&g_ach.lock);
 }
 
 static void achievements_stop()

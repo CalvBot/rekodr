@@ -1,5 +1,6 @@
 // Markers from games: kills, deaths, wins and objectives put on the timeline by the games' own official local feeds.
-// Options > Integrations > Auto markers picks, per game, which of them (AmEvent bits; none by default).
+// Options > Auto markers turns each game on and picks which of them it marks (AmEvent bits; all on by default); its
+// switch at the top turns them all off. A test copy (REKODR_HOME) keeps its cfg file in its own local folder.
 //
 //   Counter-Strike 2   Game State Integration. Turning it on writes gamestate_integration_rekodr.cfg into the
 //                      game's cfg folder (found through Steam's libraries); the game reads it when it starts and
@@ -238,6 +239,12 @@ static bool steam_app_library(u32 app, Path *out)
 // Where the cfg file goes. False if Counter-Strike 2 isn't installed.
 static bool cs2_cfg_path(Path *out)
 {
+    if (is_test_copy()) { // a test copy writes its cfg file into its own home, never into the game
+        Path dir = path_join(g_app.paths.local_dir, L"cs2cfg");
+        CreateDirectoryW(dir.s, 0);
+        *out = path_join(dir, AM_CS2_CFG);
+        return true;
+    }
     Path lib;
     if (!steam_app_library(AM_CS2_APP, &lib)) return false;
     wchar_t dir[MAX_PATH];
@@ -532,7 +539,9 @@ static bool am_cs2_cfg(bool on)
 static void automarks_apply()
 {
     const Config &c = g_app.config;
-    bool cs2 = c.auto_marks_cs2 != 0;
+    u32 cs2_events = c.auto_marks && c.auto_marks_cs2_on ? c.auto_marks_cs2 : 0;
+    u32 lol_events = c.auto_marks && c.auto_marks_lol_on ? c.auto_marks_lol : 0;
+    bool cs2 = cs2_events != 0;
     if (cs2 != g_am.cs2_applied || (cs2 && !g_am.token[0])) {
         bool found = am_cs2_cfg(cs2);
         g_am.cs2_applied = cs2;
@@ -541,10 +550,10 @@ static void automarks_apply()
             log_line("markers: Counter-Strike 2 isn't installed");
         } else if (!cs2) InterlockedExchange(&g_am.cs2_state, AM_CS2_OFF);
     }
-    g_am.cs2_events = c.auto_marks_cs2;
-    g_am.lol_events = c.auto_marks_lol;
+    g_am.cs2_events = cs2_events;
+    g_am.lol_events = lol_events;
     g_am.cs2_on = cs2 && g_am.token[0];
-    g_am.lol_on = c.auto_marks_lol != 0;
+    g_am.lol_on = lol_events != 0;
     if ((g_am.cs2_on || g_am.lol_on) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);
         g_am.thread = CreateThread(0, 0, am_thread, 0, 0, 0);

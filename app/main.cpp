@@ -147,12 +147,12 @@ static void run_command(const char *text)
         }
         else if (!strcmp(arg, "game-settings")) { // Apps with the first game's Recording settings open
             ui_show(SCREEN_OPTIONS);
-            g_app.options.tab = 0;
+            g_app.options.tab = OPT_APPS;
             g_opt_show_game = true;
         }
         else if (!strcmp(arg, "audio")) { // Recording, scrolled to its Audio
             ui_show(SCREEN_OPTIONS);
-            g_app.options.tab = 1;
+            g_app.options.tab = OPT_RECORDING;
             g_opt_show_audio = true;
         }
         else if (starts_with(arg, "game")) { // game [<text>]: the editor's game picker, with <text> typed
@@ -164,7 +164,7 @@ static void run_command(const char *text)
         else if (!strcmp(arg, "news")) g_app.ui.news_open = g_app.ui.news_since = true; // What's new since seen_version
         else if (!strcmp(arg, "folders")) { // General, scrolled to its Folders
             ui_show(SCREEN_OPTIONS);
-            g_app.options.tab = 4;
+            g_app.options.tab = OPT_GENERAL;
             g_opt_show_folders = true;
         }
         else if (!strcmp(arg, "setup")) { // the first-run setup
@@ -172,14 +172,14 @@ static void run_command(const char *text)
             g_app.ui.setup_open = true;
         }
         else {
-            static const char *const tabs[] = {"apps", "recording", "hotkeys", "integrations", "general"};
+            static const char *const tabs[OPT_TAB_COUNT] = {"apps", "recording", "hotkeys", "integrations", "auto-markers", "general"};
             i32 t = -1;
             for (i32 i = 0; i < COUNT(tabs); i++)
                 if (!strcmp(arg, tabs[i])) t = i;
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, audio, apps, recording, hotkeys, general, game-settings, setup)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "quit")) {
@@ -263,7 +263,6 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             telemetry_tick();
             render_tick();
             share_prep_tick();
-            achievements_tick();
             webcam_tick();
             pipe_publish();
         }
