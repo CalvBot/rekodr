@@ -38,11 +38,12 @@ app\test.bat      # builds and runs the tests
 ```
 The whole program is one translation unit, `app\rekodr.cpp`, which includes every other file in `app\`. With
 `REKODR_HOME` set to a folder, Rekodr runs as a separate copy that keeps everything under that folder.
-[SPEC.md](SPEC.md) describes what Rekodr does and how it is built.
+[docs/SPEC.md](docs/SPEC.md) describes what Rekodr does and how it is built.
 
 ## Commands and Stream Deck
 `rekodr.exe <command>` passes a command (`save 30s`, `mark`, `toggle`, `open`, `quit`) to the running copy.
-Programs on the same PC can send the same commands over a named pipe. [SCRIPTING.md](SCRIPTING.md) lists them.
+Programs on the same PC can send the same commands over a named pipe.
+[docs/SCRIPTING.md](docs/SCRIPTING.md) lists them.
 
 `streamdeck\dev.calvbot.rekodr.sdPlugin` is a Stream Deck plugin with keys that save a clip, turn recording on
 and off, and open the window. `node streamdeck\pack.mjs` builds it.
