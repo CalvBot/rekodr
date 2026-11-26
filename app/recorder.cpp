@@ -721,8 +721,10 @@ static DWORD WINAPI recorder_thread(void *)
     u32 backoff = 2000;
     bool log_cleared = false;
     // Automatic capture uses Windows Graphics Capture until it fails to start twice running, or freezes twice
-    // within 2 minutes; then Desktop Duplication until the capture setting changes.
+    // within 2 minutes; then Desktop Duplication until the capture setting changes, or until Desktop Duplication
+    // fails to start twice running too (some GPUs and VMs refuse it), which goes back to Graphics Capture.
     i32 wgc_fails = 0;
+    i32 dxgi_fails = 0;
     i32 last_capture = -1;
     u64 last_frozen = 0;
     auto use_wgc = [&](const RecSettings &rs) {
@@ -803,6 +805,7 @@ static DWORD WINAPI recorder_thread(void *)
         if (s.capture != last_capture) {
             last_capture = s.capture;
             wgc_fails = 0;
+            dxgi_fails = 0;
         }
         bool wgc = use_wgc(s);
         capture_args(&base, vendor, s, wgc);
@@ -925,6 +928,7 @@ static DWORD WINAPI recorder_thread(void *)
                     last_frozen = tick;
                     if (again && now.s.capture == CAPTURE_AUTO) {
                         wgc_fails = 2;
+                        dxgi_fails = 0;
                         log_line("video frozen again while a game is played: switching to Desktop Duplication");
                     } else {
                         log_line("video frozen: no new frame for 10 s while a game is played; restarting the capture");
@@ -934,8 +938,9 @@ static DWORD WINAPI recorder_thread(void *)
                     break;
                 }
             }
-            if (!announced && GetTickCount64() - started > 4000) {
-                // Alive for 4 s: ddagrab got the desktop and the encoder took the frames.
+            if (!announced && GetTickCount64() - started > 4000 && (wgc || g_reader.segment_tick)) {
+                // Alive for 4 s: the capture got the screen and the encoder took the frames. Desktop Duplication
+                // must also have written a segment: its ffmpeg can fail to open the desktop and hang on.
                 log_line(healthy ? "recording video" : "recording video again");
                 char text[160], run8[64];
                 wide_to_utf8(run, run8, sizeof run8);
@@ -961,10 +966,20 @@ static DWORD WINAPI recorder_thread(void *)
             log_line("that game's window couldn't be recorded (%s): recording the monitor", frozen ? "no new frames" : g_reader.last);
         } else if (wgc && s.capture == CAPTURE_AUTO && !announced && !frozen && code >= 0) {
             // Didn't get going: an ffmpeg without gfxcapture, or a Windows without Graphics Capture.
-            if (++wgc_fails == 2)
+            if (++wgc_fails == 2) {
+                dxgi_fails = 0;
                 log_line("Windows Graphics Capture didn't start twice (%s): using Desktop Duplication", g_reader.last);
+            }
         } else if (wgc && announced && !frozen) {
             wgc_fails = 0;
+        } else if (!wgc && s.capture == CAPTURE_AUTO && !announced && code >= 0) {
+            if (++dxgi_fails == 2) {
+                wgc_fails = 0;
+                last_frozen = 0;
+                log_line("Desktop Duplication didn't start twice (%s): back to Windows Graphics Capture", g_reader.last);
+            }
+        } else if (!wgc && announced) {
+            dxgi_fails = 0;
         }
 
         if (frozen || renewed) {
