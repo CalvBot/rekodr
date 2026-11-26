@@ -300,7 +300,7 @@ struct Config {
     bool auto_marks_on[AMG_COUNT];     // each of AM_GAMES marks its events on the timeline (on)
     u32  auto_marks_events[AMG_COUNT]; // AmEvent bits: what it marks while on (all it has)
     char wt_name[64];                  // the player's War Thunder name, whose kills and deaths are marked ("")
-    u8   rust_combatlog;               // the key that prints Rust's combat log, for its kills: RUST_LOG_* (off)
+    u8   rust_binds;                   // the keys Rekodr binds in Rust to print its combat log: 1 << RUST_BIND_* bits
     bool ach_marks;       // a Steam achievement rarer than ach_rarer gets a marker (achievements.cpp; on)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), else 1 to LINK_DAYS_MAX; the
@@ -1259,10 +1259,19 @@ enum AmState { AM_OFF, AM_READY, AM_NOT_FOUND, AM_PORT_BUSY };
 static void automarks_apply();
 static AmState automarks_state(i32 game);
 static void automarks_uninstall();
-// The key that prints Rust's combat log (Config.rust_combatlog): none, F15 pressed by Rekodr on a death, Space or Tab
-enum { RUST_LOG_OFF, RUST_LOG_DEATH, RUST_LOG_SPACE, RUST_LOG_TAB, RUST_LOG_COUNT };
-static const char *const RUST_LOG_WORDS[RUST_LOG_COUNT] = {"off", "death", "space", "tab"};
-static i32 rust_bind_state(i32 choice, char *line, i32 cap); // rustlog.cpp
+// The keys Rekodr binds in Rust's keys.cfg to print the combat log (Config.rust_binds): one Rekodr presses on a death
+// (F15) and Space, which the player presses
+enum { RUST_BIND_DEATH, RUST_BIND_SPACE, RUST_BIND_COUNT };
+static const char *const RUST_BIND_WORDS[RUST_BIND_COUNT] = {"death", "space"};
+// A bind's state for Options: off, in keys.cfg, waiting for Rust to close to go in or out, or not in and not waiting
+enum { RUST_SHOW_OFF, RUST_SHOW_BOUND, RUST_SHOW_PENDING, RUST_SHOW_UNBIND, RUST_SHOW_NOT_BOUND };
+struct RustBindView {
+    i32  show;      // RUST_SHOW_*
+    char key[16];   // the key, as keys.cfg names it
+    char line[160]; // the bind line to paste in the game's console
+};
+static void rust_binds_sync();                        // rustlog.cpp
+static void rust_bind_view(i32 bind, RustBindView *v); // rustlog.cpp
 static void achievements_apply(); // achievements.cpp
 
 // Webcam (webcam.cpp). A saved clip carries the webcam as its second video stream, titled CAM_STREAM_TITLE.

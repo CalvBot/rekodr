@@ -1485,10 +1485,10 @@ static void test_settings_round_trip()
     a.inputs[1] = {"{0.0.1.00000000}.{b}", "Off one", INPUT_OFF}; // off isn't saved
 
     str_set(a.link_uploaders, "mine"); // one uploader on
-    a.rust_combatlog = RUST_LOG_SPACE;
+    a.rust_binds = (1u << RUST_BIND_DEATH) | (1u << RUST_BIND_SPACE);
     T(config_save(a, paths));
     T(config_load(&b, paths));
-    T(b.rust_combatlog == RUST_LOG_SPACE);
+    T(b.rust_binds == a.rust_binds);
     T(!strcmp(b.link_uploaders, "mine"));
     {
         // An empty bucket name reads as the default
@@ -4272,18 +4272,60 @@ static void test_rust()
     T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Scientist"));
     T(!marker_detail_get(m[1].detail, "steam_id", v, sizeof v));
 
-    // The bind line for the picked key, from keys.cfg as Rust writes it: the key keeps what it does
+    // The bind line for a key, from keys.cfg as Rust writes it: the key keeps what it does
     char bl[160];
-    const char *cfg = "bind f1 consoletoggle;combatlog\r\nbind space +jump\r\nbind f15 demo.resume\r\n";
+    const char *cfg = "bind space +jump\r\nbind tab inventory.togglecrafting\r\n"
+                      "bind e +use;+nextskin;+nextskin\r\nbind f1 consoletoggle;combatlog\r\nbind f13 no_input\r\n"
+                      "bind f14 demo.pause\r\nbind f15 demo.resume\r\nbind mouse0 +attack\r\n"
+                      "bind backquote consoletoggle\r\nbind joy0 +rocket.maxfishpertype 0\r\n";
     T(!rust_bind_line(cfg, "space", bl, sizeof bl) && !strcmp(bl, "bind space +jump;combatlog"));
     T(rust_bind_line(cfg, "f1", bl, sizeof bl) && !strcmp(bl, "bind f1 consoletoggle;combatlog"));
-    T(!rust_bind_line(cfg, "f15", bl, sizeof bl) && !strcmp(bl, "bind f15 combatlog"));
-    T(!rust_bind_line(cfg, "tab", bl, sizeof bl) && !strcmp(bl, "bind tab combatlog"));
+    T(!rust_bind_line(cfg, "f15", bl, sizeof bl) && !strcmp(bl, "bind f15 demo.resume;combatlog"));
+    T(!rust_bind_line(cfg, "f16", bl, sizeof bl) && !strcmp(bl, "bind f16 combatlog"));
     T(rust_bind_line("bind space +jump\nbind space \"+jump; combatlog\"\n", "space", bl, sizeof bl));
+    T(!rust_bind_line("bind space \"+jump\"\n", "space", bl, sizeof bl) && !strcmp(bl, "bind space \"+jump;combatlog\""));
     T(!rust_bind_line("bind f15 combatlogs\nbind f150 combatlog\n", "f15", bl, sizeof bl) && !rust_bind_line("", "f15", bl, sizeof bl));
+
+    // keys.cfg written: combatlog added to the key's own line and nothing else changed, then taken out to give the
+    // file back as it was
+    typedef char Cfg[1024];
+    auto set = [&](Cfg &out, const char *text, const char *key, bool on) -> const char * {
+        char *o = rust_cfg_set(text, key, on);
+        str_set(out, o ? o : "(none)");
+        free(o);
+        return out;
+    };
+    Cfg sp, f15, f16, t1, t2, want;
+    set(sp, cfg, "space", true);
+    snprintf(want, sizeof want, "bind space +jump;combatlog\r\n%s", cfg + strlen("bind space +jump\r\n"));
+    T(!strcmp(sp, want));
+    T(!strcmp(set(t1, sp, "space", true), "(none)") && !strcmp(set(t1, sp, "space", false), cfg));
+    set(f15, sp, "f15", true);
+    T(strstr(f15, "\r\nbind f15 demo.resume;combatlog\r\nbind mouse0 +attack\r\n") && strlen(f15) == strlen(sp) + 10);
+    set(t1, f15, "f15", false);
+    T(!strcmp(set(t2, t1, "space", false), cfg));
+    snprintf(want, sizeof want, "%.*sbind f1 consoletoggle\r\n%s", (int)(strstr(cfg, "bind f1 ") - cfg), cfg, strstr(cfg, "bind f13"));
+    T(!strcmp(set(t1, cfg, "f1", false), want));
+    T(!strcmp(set(t1, cfg, "tab", false), "(none)"));
+    // A key with no line gets one at the end, in the file's line breaks, and goes again whole
+    set(f16, cfg, "f16", true);
+    snprintf(want, sizeof want, "%sbind f16 combatlog\r\n", cfg);
+    T(!strcmp(f16, want) && !strcmp(set(t1, f16, "f16", false), cfg));
+    T(!strcmp(set(t1, "bind a +left", "f15", true), "bind a +left\nbind f15 combatlog\n"));
+    T(!strcmp(set(t1, "bind f15 \"combatlog\"\r\nbind a b\r\n", "f15", false), "bind a b\r\n"));
+    T(!strcmp(set(t1, "bind space \"+jump; combatlog\"\n", "space", false), "bind space \"+jump\"\n"));
+    T(!strcmp(set(t1, "bind space combatlog;+jump;combatlog\n", "space", false), "bind space +jump\n"));
+    T(!strcmp(set(t1, "bind space \"+jump\"\n", "space", true), "bind space \"+jump;combatlog\"\n"));
+    // The key pressed after a death: F15 when bound, else one bound to combatlog alone, else F15
+    char dk[16];
+    T(!rust_death_key(cfg, dk) && !strcmp(dk, "f15"));
+    T(rust_death_key(f15, dk) && !strcmp(dk, "f15"));
+    T(rust_death_key("bind f1 consoletoggle;combatlog\nbind mouse3 combatlog\nbind f13 combatlog\n", dk) && !strcmp(dk, "f13"));
+    T(rust_key_vk("f15") == VK_F15 && rust_key_vk("f1") == VK_F1 && rust_key_vk("f24") == VK_F24 && rust_key_vk("k") == 'K' &&
+      rust_key_vk("7") == '7' && !rust_key_vk("f25") && !rust_key_vk("mouse3") && !rust_key_vk("f1x"));
     // The press: down then up, due from its moment for RUST_EVERY
     INPUT in[2];
-    rust_f15_inputs(in);
+    rust_key_inputs(VK_F15, in);
     T(in[0].type == INPUT_KEYBOARD && in[0].ki.wVk == VK_F15 && !in[0].ki.dwFlags && in[1].ki.wVk == VK_F15 && in[1].ki.dwFlags == KEYEVENTF_KEYUP);
     T(!rust_press_due(99, 100) && rust_press_due(100, 100) && rust_press_due(100 + RUST_EVERY, 100) && !rust_press_due(101 + RUST_EVERY, 100) && !rust_press_due(5, 0));
 

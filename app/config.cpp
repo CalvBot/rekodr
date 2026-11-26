@@ -834,9 +834,15 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_copy_on_close")) boolean(&c->share_copy_on_close);
     else if (!strcmp(key, "auto_marks")) boolean(&c->auto_marks);
     else if (!strcmp(key, "war_thunder_name")) str_set(c->wt_name, value);
-    else if (!strcmp(key, "rust_combatlog")) {
-        for (i32 i = 0; i < RUST_LOG_COUNT; i++)
-            if (!strcmp(value, RUST_LOG_WORDS[i])) c->rust_combatlog = (u8)i;
+    else if (!strcmp(key, "rust_binds")) {
+        c->rust_binds = 0;
+        for (const char *w = value; *w;) {
+            size_t l = strcspn(w, ",");
+            for (i32 i = 0; i < RUST_BIND_COUNT; i++)
+                if (strlen(RUST_BIND_WORDS[i]) == l && !strncmp(w, RUST_BIND_WORDS[i], l)) c->rust_binds |= (u8)(1u << i);
+            w += l;
+            if (*w) w++;
+        }
     }
     else if (!strncmp(key, "am_events_plugin_", 17)) {
         AmPluginTicks *t = am_plugin_ticks(c, key + 17, true);
@@ -1065,7 +1071,10 @@ static bool config_save(const Config &c, const Paths &paths)
                 AM_GAMES[g].key, ev);
     }
     fprintf(f, "war_thunder_name = %s\n", c.wt_name);
-    fprintf(f, "rust_combatlog = %s\n", RUST_LOG_WORDS[c.rust_combatlog < RUST_LOG_COUNT ? c.rust_combatlog : 0]);
+    fprintf(f, "rust_binds = ");
+    for (i32 i = 0, n = 0; i < RUST_BIND_COUNT; i++)
+        if (c.rust_binds & (1u << i)) fprintf(f, "%s%s", n++ ? "," : "", RUST_BIND_WORDS[i]);
+    fprintf(f, "\n");
     for (i32 i = 0; i < c.am_plugin_count; i++) {
         char ev[256];
         am_events_text(c.am_plugin[i].events, ev, sizeof ev);

@@ -14,10 +14,14 @@
 // game runs and once it closes. Marks made are kept in <local_dir>\rust.tsv, so none is made twice. Each goes in at
 // its moment, into the clips and sessions saved over it too (EV_MARKER, markers_add_late).
 //
-// The player picks the key that prints the table (rust_combatlog), one pressed often like Space, and pastes the bind
-// line Options builds from keys.cfg. With F15 picked, a death read as it happens presses F15 RUST_PRINT_AFTER later,
-// only while Rust is the window in front, so that "bind f15 combatlog" prints it. Rekodr never writes the game's files.
-// A test copy (REKODR_HOME) reads <home>\Rust and presses nothing.
+// The keys that print the table are the player's to turn on in Options (rust_binds), each on its own: Space, pressed
+// often, and one Rekodr presses RUST_PRINT_AFTER after a death read as it happens, only while Rust is the window in
+// front and only while that key is bound or its bind waits (F15, or a key the player bound to combatlog alone). Rekodr
+// puts each bind in cfg\keys.cfg, adding combatlog to what the key does ("bind space +jump;combatlog") and changing
+// nothing else in the file, and takes out only what it added when one is turned off. Rust writes keys.cfg as it quits,
+// so while RustClient.exe runs the file is left alone: the change waits for it to close, and Options shows the bind
+// line to paste in the game's console meanwhile. The keys Rekodr added are kept in <local_dir>\rust-binds.txt. A test
+// copy (REKODR_HOME) reads and writes <home>\Rust and presses nothing.
 
 static const i64 RUST_EVERY = 2000000;
 static const i64 RUST_SAME_US = 500000;
@@ -37,7 +41,8 @@ struct RustSeen { u64 key; i64 t_us; };
 
 static struct {
     wchar_t dir[MAX_PATH]; // the game's folder; "" while off or not installed (main thread sets it)
-    bool print;            // rust_combatlog is RUST_LOG_DEATH (main thread sets it)
+    u32 want;              // the binds asked for, 1 << RUST_BIND_* (main thread sets it)
+    u16 press_vk;          // the key pressed after a death, 0 for none (rust_binds_sync sets it)
     bool loaded;
     RustSeen seen[RUST_SEEN_MAX];
     i32 seen_count;
@@ -189,40 +194,153 @@ static i32 rust_marks(const char *text, RustMark *out, i32 cap)
     return n;
 }
 
-// The bind line that makes `key` print the combat log, from a keys.cfg as Rust writes it ("bind <key> <command>[;
-// <command>...]"): the key's own commands kept and combatlog added, as "bind space +jump;combatlog". F15, which no
-// one presses, is "bind f15 combatlog". True when the key prints it already (the line is then the bind as it is).
+// keys.cfg as Rust writes it: a line a key, "bind <key> <command>[;<command>...]", the commands at times in quotes.
+// Where a key's last bind line is in it, by offset: the line, its end, the end of its line break, its commands' span
+// (trailing spaces left out), and whether one of them is combatlog. `line` is -1 when the key has none.
+struct RustBindAt { i32 line, end, next, cmd, cmd_end; bool found; };
+
+// Each command in cfg[from, to), split at ';': f(start, a, b, sep) with [a, b) the command without spaces or
+// quotes around it and sep the ';' after it (or `to`).
+template <typename F> static void rust_cmds(const char *cfg, i32 from, i32 to, F &&f)
+{
+    for (i32 s = from; s <= to;) {
+        i32 e = s;
+        while (e < to && cfg[e] != ';') e++;
+        i32 a = s, b = e;
+        while (a < b && (cfg[a] == ' ' || cfg[a] == '"')) a++;
+        while (b > a && (cfg[b - 1] == ' ' || cfg[b - 1] == '"')) b--;
+        f(s, a, b, e);
+        s = e + 1;
+    }
+}
+
+static bool rust_is_combatlog(const char *cfg, i32 a, i32 b) { return b - a == 9 && !_strnicmp(cfg + a, "combatlog", 9); }
+
+static RustBindAt rust_bind_find(const char *cfg, const char *key)
+{
+    RustBindAt at = {-1, 0, 0, 0, 0, false};
+    char want[32];
+    i32 wl = snprintf(want, sizeof want, "bind %s ", key);
+    for (i32 p = 0; cfg[p];) {
+        i32 end = p + (i32)strcspn(cfg + p, "\r\n"), next = end;
+        if (cfg[next] == '\r') next++;
+        if (cfg[next] == '\n') next++;
+        i32 s = p;
+        while (cfg[s] == ' ') s++;
+        if (!_strnicmp(cfg + s, want, wl)) {
+            at = {p, end, next, s + wl, end, false};
+            while (at.cmd_end > at.cmd && cfg[at.cmd_end - 1] == ' ') at.cmd_end--;
+        }
+        p = next;
+    }
+    if (at.line >= 0)
+        rust_cmds(cfg, at.cmd, at.cmd_end, [&](i32, i32 a, i32 b, i32) { at.found |= rust_is_combatlog(cfg, a, b); });
+    return at;
+}
+
+// Whether a bind's commands are only spaces and quotes.
+static bool rust_cmds_empty(const char *cfg, const RustBindAt &at)
+{
+    for (i32 i = at.cmd; i < at.cmd_end; i++)
+        if (cfg[i] != ' ' && cfg[i] != '"') return false;
+    return true;
+}
+
+// The bind line that makes `key` print the combat log: the key's own commands kept and combatlog added, as "bind space
+// +jump;combatlog". True when the key prints it already (the line is then the bind as it is).
 static bool rust_bind_line(const char *cfg, const char *key, char *out, i32 cap)
 {
-    char want[32], line[1024], cmds[1024] = "";
-    i32 wl = snprintf(want, sizeof want, "bind %s ", key);
+    RustBindAt at = rust_bind_find(cfg, key);
+    i32 n = at.cmd_end - at.cmd;
+    if (at.line < 0 || rust_cmds_empty(cfg, at)) snprintf(out, cap, "bind %s combatlog", key);
+    else if (at.found) snprintf(out, cap, "bind %s %.*s", key, n, cfg + at.cmd);
+    else if (n >= 2 && cfg[at.cmd] == '"' && cfg[at.cmd_end - 1] == '"')
+        snprintf(out, cap, "bind %s %.*s;combatlog\"", key, n - 1, cfg + at.cmd);
+    else snprintf(out, cap, "bind %s %.*s;combatlog", key, n, cfg + at.cmd);
+    return at.found;
+}
+
+// keys.cfg with combatlog added to `key`'s bind (on) or taken out of it, the rest of the file as it was: a new line
+// goes at the end with the file's own line break, and a bind left with no commands goes. 0 when nothing changes.
+static char *rust_cfg_set(const char *cfg, const char *key, bool on)
+{
+    RustBindAt at = rust_bind_find(cfg, key);
+    if (on == at.found) return 0;
+    i32 len = (i32)strlen(cfg), cap = len + 64;
+    char *out = (char *)malloc((size_t)cap);
+    if (!out) return 0;
+    if (on && at.line < 0) {
+        const char *eol = strstr(cfg, "\r\n") ? "\r\n" : "\n";
+        snprintf(out, cap, "%s%sbind %s combatlog%s", cfg, len && cfg[len - 1] != '\n' ? eol : "", key, eol);
+    } else if (on) {
+        bool quoted = at.cmd_end - at.cmd >= 2 && cfg[at.cmd] == '"' && cfg[at.cmd_end - 1] == '"';
+        i32 ins = quoted ? at.cmd_end - 1 : at.cmd_end;
+        snprintf(out, cap, "%.*s%s%s", ins, cfg, rust_cmds_empty(cfg, at) ? "combatlog" : ";combatlog", cfg + ins);
+    } else {
+        // The first combatlog goes with the ';' before it, or the one after it when it comes first; then the next
+        i32 cut = -1, cut_end = -1;
+        rust_cmds(cfg, at.cmd, at.cmd_end, [&](i32 s, i32 a, i32 b, i32 sep) {
+            if (cut >= 0 || !rust_is_combatlog(cfg, a, b)) return;
+            if (s > at.cmd) cut = s - 1, cut_end = b;
+            else if (sep < at.cmd_end) cut = a, cut_end = sep + 1;
+            else cut = a, cut_end = b;
+        });
+        snprintf(out, cap, "%.*s%s", cut, cfg, cfg + cut_end);
+        RustBindAt left = rust_bind_find(out, key);
+        if (left.found) {
+            char *again = rust_cfg_set(out, key, false);
+            free(out);
+            return again;
+        }
+        if (left.line >= 0 && rust_cmds_empty(out, left)) memmove(out + left.line, out + left.next, strlen(out + left.next) + 1);
+    }
+    return out;
+}
+
+// A key's virtual key code by its keys.cfg name (f1 to f24, a letter or a digit), 0 for others.
+static u16 rust_key_vk(const char *key)
+{
+    if ((key[0] == 'f' || key[0] == 'F') && key[1] >= '1' && key[1] <= '9') {
+        char *end;
+        long n = strtol(key + 1, &end, 10);
+        return !*end && n >= 1 && n <= 24 ? (u16)(VK_F1 + n - 1) : 0;
+    }
+    if (key[0] && !key[1] && ((key[0] >= 'a' && key[0] <= 'z') || (key[0] >= 'A' && key[0] <= 'Z'))) return (u16)toupper(key[0]);
+    if (key[0] >= '0' && key[0] <= '9' && !key[1]) return (u16)key[0];
+    return 0;
+}
+
+// The key Rekodr presses after a death: F15 when it prints the combat log, else a key bound to combatlog alone that it
+// can press, else F15, which is the one it binds. True when that key prints it.
+static bool rust_death_key(const char *cfg, char (&key)[16])
+{
+    str_set(key, "f15");
+    if (rust_bind_find(cfg, "f15").found) return true;
     for (const char *p = cfg; *p;) {
         size_t len = strcspn(p, "\r\n");
-        snprintf(line, sizeof line, "%.*s", (int)(len < sizeof line ? len : sizeof line - 1), p);
+        const char *s = p;
         p += len;
         while (*p == '\r' || *p == '\n') p++;
-        char *s = line;
         while (*s == ' ') s++;
-        if (_strnicmp(s, want, wl)) continue;
-        str_set(cmds, trim(s + wl));
+        if (_strnicmp(s, "bind ", 5)) continue;
+        char k[16];
+        size_t kl = strcspn(s + 5, " \r\n");
+        if (kl >= sizeof k) continue;
+        snprintf(k, sizeof k, "%.*s", (int)kl, s + 5);
+        if (!rust_key_vk(k)) continue;
+        RustBindAt at = rust_bind_find(cfg, k);
+        i32 cmds = 0;
+        bool only = at.found;
+        rust_cmds(cfg, at.cmd, at.cmd_end, [&](i32, i32 a, i32 b, i32) {
+            cmds++;
+            only &= rust_is_combatlog(cfg, a, b);
+        });
+        if (only && cmds == 1) {
+            str_set(key, k);
+            return true;
+        }
     }
-    bool found = false;
-    for (char *cmd = cmds; *cmd && !found;) {
-        size_t w = strcspn(cmd, ";");
-        char one[64];
-        snprintf(one, sizeof one, "%.*s", (int)(w < sizeof one ? w : sizeof one - 1), cmd);
-        char *a = one;
-        while (*a == ' ' || *a == '"') a++;
-        size_t l = strlen(a);
-        while (l && (a[l - 1] == ' ' || a[l - 1] == '"')) a[--l] = 0;
-        found = !_stricmp(a, "combatlog");
-        cmd += w;
-        if (*cmd) cmd++;
-    }
-    if (found) snprintf(out, cap, "bind %s %s", key, cmds);
-    else if (!_stricmp(key, "f15") || !cmds[0]) snprintf(out, cap, "bind %s combatlog", key);
-    else snprintf(out, cap, "bind %s %s;combatlog", key, cmds);
-    return found;
+    return false;
 }
 
 // The game's folder: a test copy's <home>\Rust, else Steam's <library>\common\<installdir>. "" when it isn't there.
@@ -248,23 +366,137 @@ static void rust_dir(wchar_t (&out)[MAX_PATH])
     if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) out[0] = 0;
 }
 
-// The key Options offers for each rust_combatlog choice (RUST_LOG_*), "" for off.
-static const char *const RUST_LOG_KEYS[RUST_LOG_COUNT] = {"", "f15", "space", "tab"};
+// The binds' state, from rust_binds_sync for Options, under g_rust_lock; and the binds Rekodr added (1 << RUST_BIND_*).
+static SRWLOCK g_rust_lock = SRWLOCK_INIT;
+static RustBindView g_rust_view[RUST_BIND_COUNT];
+static u32 g_rust_ours;
+static bool g_rust_ours_loaded;
 
-// The bind line for the key of a rust_combatlog choice, from the game's cfg\keys.cfg: 1 when the key prints the combat
-// log already, 0 not, -1 no keys.cfg (or no game). Main thread.
-static i32 rust_bind_state(i32 choice, char *line, i32 cap)
+static Path rust_ours_path() { return path_join(g_app.paths.local_dir, L"rust-binds.txt"); }
+
+static void rust_ours_load()
 {
-    const char *key = choice > 0 && choice < RUST_LOG_COUNT ? RUST_LOG_KEYS[choice] : "f15";
-    char *text = 0;
-    if (g_rust.dir[0]) {
-        wchar_t p[MAX_PATH];
-        swprintf(p, MAX_PATH, L"%s\\cfg\\keys.cfg", g_rust.dir);
-        text = read_file(p, 0);
+    g_rust_ours_loaded = true;
+    g_rust_ours = 0;
+    char *text = read_file(rust_ours_path().s, 0);
+    for (i32 i = 0; text && i < RUST_BIND_COUNT; i++) {
+        char w[24];
+        snprintf(w, sizeof w, "%s\n", RUST_BIND_WORDS[i]);
+        if (strstr(text, w)) g_rust_ours |= 1u << i;
     }
-    bool had = text != 0, found = rust_bind_line(had ? text : "", key, line, cap);
     free(text);
-    return had ? found : -1;
+}
+
+static void rust_ours_save()
+{
+    Path p = rust_ours_path();
+    if (!g_rust_ours) {
+        DeleteFileW(p.s);
+        return;
+    }
+    FILE *f = _wfopen(p.s, L"wb");
+    if (!f) return;
+    for (i32 i = 0; i < RUST_BIND_COUNT; i++)
+        if (g_rust_ours & (1u << i)) fprintf(f, "%s\n", RUST_BIND_WORDS[i]);
+    fclose(f);
+}
+
+// Whether RustClient.exe runs.
+static bool rust_running()
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W e = {sizeof e};
+    bool found = false;
+    for (BOOL ok = Process32FirstW(snap, &e); ok && !found; ok = Process32NextW(snap, &e)) found = !_wcsicmp(e.szExeFile, L"RustClient.exe");
+    CloseHandle(snap);
+    return found;
+}
+
+// Writes keys.cfg whole: into a file beside it, then over it.
+static bool rust_cfg_write(const wchar_t *path, const char *text)
+{
+    wchar_t tmp[MAX_PATH];
+    swprintf(tmp, MAX_PATH, L"%s.rekodr", path);
+    FILE *f = _wfopen(tmp, L"wb");
+    if (!f) return false;
+    size_t n = strlen(text);
+    bool ok = fwrite(text, 1, n, f) == n;
+    ok &= fclose(f) == 0;
+    ok = ok && MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING);
+    if (!ok) DeleteFileW(tmp);
+    return ok;
+}
+
+// Brings keys.cfg in line with the binds asked for (g_rust.want): adds each one on, and takes out each one off that
+// Rekodr added, unless Rust runs, when the change waits. Sets the binds' state and the key pressed after a death. From
+// the worker every RUST_EVERY, and from Options when a bind is turned on or off.
+static void rust_binds_sync()
+{
+    AcquireSRWLockExclusive(&g_rust_lock);
+    if (!g_rust_ours_loaded) rust_ours_load();
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    wcscpy_s(dir, g_rust.dir);
+    swprintf(path, MAX_PATH, L"%s\\cfg\\keys.cfg", dir);
+    u32 want = g_rust.want, ours = g_rust_ours;
+    char *text = dir[0] ? read_file(path, 0) : 0;
+    bool running = text && rust_running();
+    RustBindView view[RUST_BIND_COUNT];
+    u32 changed = 0;
+    u16 vk = 0;
+    for (i32 i = 0; i < RUST_BIND_COUNT; i++) {
+        u32 bit = 1u << i;
+        const char *own = i == RUST_BIND_DEATH ? "f15" : "space"; // the key Rekodr binds
+        char key[16];
+        str_set(key, own);
+        bool found = false;
+        if (text) found = i == RUST_BIND_DEATH ? rust_death_key(text, key) : rust_bind_find(text, own).found;
+        bool on = want & bit, mine = !_stricmp(key, own);
+        if (on && !found && text) ours |= bit; // asked for now, so Rekodr's to take out, pasted or written
+        if (text && !running && on != found && (on || ((ours & bit) && mine))) {
+            if (char *next = rust_cfg_set(text, key, on)) {
+                free(text);
+                text = next;
+                changed |= bit;
+                found = on;
+            }
+        }
+        if (!on && !found) ours &= ~bit;
+        RustBindView &v = view[i];
+        v.show = on ? (found ? RUST_SHOW_BOUND : running ? RUST_SHOW_PENDING : RUST_SHOW_NOT_BOUND)
+                    : (found && (ours & bit) && mine) ? RUST_SHOW_UNBIND : RUST_SHOW_OFF;
+        str_set(v.key, key);
+        if (i == RUST_BIND_DEATH && on && (found || running)) vk = rust_key_vk(key);
+    }
+    if (changed && !rust_cfg_write(path, text)) {
+        log_line("markers: Rust: keys.cfg not written (%lu)", GetLastError());
+        for (i32 i = 0; i < RUST_BIND_COUNT; i++) {
+            if (!(changed & (1u << i))) continue;
+            bool on = want & (1u << i);
+            view[i].show = on ? RUST_SHOW_NOT_BOUND : RUST_SHOW_OFF;
+            if (on && i == RUST_BIND_DEATH) vk = 0;
+            if (!on) ours |= 1u << i; // still there, still Rekodr's
+        }
+        free(text);
+        text = dir[0] ? read_file(path, 0) : 0;
+    } else if (changed) log_line("markers: Rust: keys.cfg binds written");
+    for (i32 i = 0; i < RUST_BIND_COUNT; i++) rust_bind_line(text ? text : "", view[i].key, view[i].line, sizeof view[i].line);
+    memcpy(g_rust_view, view, sizeof view);
+    g_rust.press_vk = vk;
+    if (ours != g_rust_ours) {
+        g_rust_ours = ours;
+        rust_ours_save();
+    }
+    free(text);
+    ReleaseSRWLockExclusive(&g_rust_lock);
+}
+
+// A bind's state, for Options. Main thread.
+static void rust_bind_view(i32 bind, RustBindView *v)
+{
+    AcquireSRWLockShared(&g_rust_lock);
+    *v = g_rust_view[bind];
+    ReleaseSRWLockShared(&g_rust_lock);
 }
 
 static Path rust_seen_path() { return path_join(g_app.paths.local_dir, L"rust.tsv"); }
@@ -308,13 +540,13 @@ static void rust_seen_write()
     fclose(f);
 }
 
-// The F15 press: down and up, by virtual key and scan code.
-static void rust_f15_inputs(INPUT (&in)[2])
+// A key's press: down and up, by virtual key and scan code.
+static void rust_key_inputs(u16 vk, INPUT (&in)[2])
 {
     memset(in, 0, sizeof in);
     in[0].type = INPUT_KEYBOARD;
-    in[0].ki.wVk = VK_F15;
-    in[0].ki.wScan = (WORD)MapVirtualKeyW(VK_F15, MAPVK_VK_TO_VSC);
+    in[0].ki.wVk = vk;
+    in[0].ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
     in[1] = in[0];
     in[1].ki.dwFlags = KEYEVENTF_KEYUP;
 }
@@ -347,22 +579,25 @@ static void rust_post(const RustMark &m)
     event_post(e);
 }
 
-// The worker's look at the log, and the F15 press when one is due.
+// The worker's look at the log and at the binds, and the press after a death when one is due.
 static void rust_poll()
 {
     u32 ev = g_am.events[AMG_RUST];
     i64 now = now_us();
     if (g_rust.press_at && rust_press_due(now, g_rust.press_at)) {
         g_rust.press_at = 0;
-        if (g_rust.print && !is_test_copy() && rust_in_front()) {
+        u16 vk = g_rust.press_vk;
+        if (vk && !is_test_copy() && rust_in_front()) {
             INPUT in[2];
-            rust_f15_inputs(in);
+            rust_key_inputs(vk, in);
             SendInput(2, in, sizeof in[0]);
-            log_line("markers: Rust: F15 pressed for the combat log");
+            log_line("markers: Rust: key %u pressed for the combat log", vk);
         }
     } else if (g_rust.press_at && now > g_rust.press_at) g_rust.press_at = 0;
-    if (!ev || !g_rust.dir[0] || now < g_rust.next) return;
+    if (now < g_rust.next) return;
     g_rust.next = now + RUST_EVERY;
+    if (g_rust.dir[0] && (g_rust.want || g_rust_ours)) rust_binds_sync();
+    if (!ev || !g_rust.dir[0]) return;
     wchar_t log[MAX_PATH];
     swprintf(log, MAX_PATH, L"%s\\output_log.txt", g_rust.dir);
     WIN32_FILE_ATTRIBUTE_DATA a;
@@ -383,7 +618,7 @@ static void rust_poll()
         rust_post(m);
         rust_seen_add(m);
         made++;
-        if (m.event == AM_DEATH && g_rust.print && llabs(now - m.t_us) <= RUST_LIVE_US) g_rust.press_at = m.t_us + RUST_PRINT_AFTER;
+        if (m.event == AM_DEATH && g_rust.press_vk && llabs(now - m.t_us) <= RUST_LIVE_US) g_rust.press_at = m.t_us + RUST_PRINT_AFTER;
     }
     if (made) {
         rust_seen_write();
@@ -391,12 +626,20 @@ static void rust_poll()
     }
 }
 
-// The game's folder and its state for Options. From automarks_apply. Main thread.
+// The game's folder, the binds asked for (none while Rust's markers are off) and the game's state for Options. From
+// automarks_apply. Main thread.
 static void rust_apply()
 {
+    if (!g_rust_ours_loaded) {
+        AcquireSRWLockExclusive(&g_rust_lock);
+        if (!g_rust_ours_loaded) rust_ours_load();
+        ReleaseSRWLockExclusive(&g_rust_lock);
+    }
+    u32 want = g_am.events[AMG_RUST] ? g_app.config.rust_binds : 0;
     wchar_t d[MAX_PATH] = L"";
-    if (g_am.events[AMG_RUST]) rust_dir(d);
+    if (g_am.events[AMG_RUST] || g_rust_ours) rust_dir(d);
     wcscpy_s(g_rust.dir, d); // the worker reads it whole or not at all
-    g_rust.print = g_app.config.rust_combatlog == RUST_LOG_DEATH;
+    g_rust.want = want;
+    rust_binds_sync();
     InterlockedExchange(&g_am.state[AMG_RUST], !g_am.events[AMG_RUST] ? AM_OFF : d[0] ? AM_READY : AM_NOT_FOUND);
 }

@@ -4173,62 +4173,75 @@ static bool opt_am_events(const char *game, u32 *events, const AmChoice *choices
     return changed;
 }
 
-// Rust's row under its ticks: the key that prints the combat log for kills, the bind line for it, made from the
-// game's keys.cfg so the key keeps what it does, and whether the bind is there. True when the setting changed.
+// Rust's row under its ticks: the keys that print the combat log for kills, a row each with its switch and whether
+// keys.cfg has it, and while it doesn't, the bind line to paste in the game's console. True when the setting changed.
 static bool g_opt_show_rust; // "show rust": Auto markers scrolled to Rust's row
 
 static bool opt_am_rust(AmState st)
 {
+    (void)st;
     Config &c = g_app.config;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    f32 lh = g_font_small->FontSize + dp(3);
     ImGui::Dummy(ImVec2(0, dp(2)));
     ImVec2 p = ImGui::GetCursorScreenPos();
-    opt_text_at(dl, g_font_small, p, COL_DIM, "Deaths mark on their own. Kills come from the combat log: pick a key that", g_am_text_end);
-    opt_text_at(dl, g_font_small, ImVec2(p.x, p.y + lh), COL_DIM, "prints it, or On death for F15, pressed by Rekodr when you die", g_am_text_end);
-    ImGui::Dummy(ImVec2(0, 2 * lh + dp(6)));
-    static const char *const keys[RUST_LOG_COUNT] = {"Off", "On death", "Space", "Tab"};
-    i32 sel = c.rust_combatlog < RUST_LOG_COUNT ? c.rust_combatlog : RUST_LOG_OFF;
-    bool changed = kit_segmented("##rustlog", keys, RUST_LOG_COUNT, &sel);
-    static i64 next;
-    if (changed) {
-        c.rust_combatlog = (u8)sel;
-        next = 0;
-        log_line("options: Rust combat log key %s", RUST_LOG_WORDS[sel]);
-    }
-
-    static i32 bind = -1;
-    static char line[160];
-    if (now_us() >= next) {
-        next = now_us() + 2000000;
-        bind = rust_bind_state(sel, line, sizeof line);
-    }
-    ImGui::Dummy(ImVec2(0, dp(4)));
-    ImGui::BeginDisabled(sel == RUST_LOG_OFF);
-    f32 fh = ImGui::GetFrameHeight();
-    p = ImGui::GetCursorScreenPos();
-    f32 tw = ImGui::CalcTextSize(line).x, pad = dp(10);
-    dl->AddRectFilled(p, ImVec2(p.x + tw + 2 * pad, p.y + fh), col32(COL_FAINT, 0.18f), kit_px(6));
-    opt_text_at(dl, g_font, ImVec2(p.x + pad, floorf(p.y + (fh - g_font->FontSize) / 2)), COL_TEXT, line, p.x + tw + pad + 1);
-    ImGui::SetCursorScreenPos(ImVec2(p.x + tw + 2 * pad + dp(8), p.y));
-    // One width for both labels, so the status after it stays put while "Copied" shows.
-    static i64 copied_at;
-    bool copied = copied_at && now_us() - copied_at < 2500000;
+    opt_text_at(dl, g_font_small, p, COL_DIM, "Deaths mark on their own. Kills come from the combat log, printed by", g_am_text_end);
+    ImGui::Dummy(ImVec2(0, g_font_small->FontSize + dp(8)));
+    bool changed = false;
+    f32 fh = ImGui::GetFrameHeight(), gap = dp(8);
     ImGuiStyle &gs = ImGui::GetStyle();
+    // One width for both labels, so what follows stays put while "Copied" shows
     f32 bw = fmaxf(ImGui::CalcTextSize(ICON_COPY "  Copy").x, ImGui::CalcTextSize(ICON_CHECK "  Copied").x) + 2 * gs.FramePadding.x;
-    if (kit_button(copied ? ICON_CHECK "  Copied###rustbind" : ICON_COPY "  Copy###rustbind", KIT_GHOST, ImVec2(bw, 0))) {
-        ImGui::SetClipboardText(line);
-        copied_at = now_us();
-        log_line("options: Rust bind line copied");
+    f32 label_w = fmaxf(ImGui::CalcTextSize("Print on death (F15)").x, ImGui::CalcTextSize("Space").x) + dp(24);
+    static i64 copied_at[RUST_BIND_COUNT];
+    for (i32 i = 0; i < RUST_BIND_COUNT; i++) {
+        ImGui::PushID(i);
+        RustBindView v;
+        rust_bind_view(i, &v);
+        bool on = c.rust_binds & (1u << i);
+        p = ImGui::GetCursorScreenPos();
+        if (kit_toggle("##bind", &on)) {
+            c.rust_binds = (u8)(on ? c.rust_binds | (1u << i) : c.rust_binds & ~(1u << i));
+            changed = true;
+            log_line("options: Rust bind %s %s", RUST_BIND_WORDS[i], on ? "on" : "off");
+        }
+        f32 x = p.x + kit_px(36) + dp(12), ty = floorf(p.y + (fh - g_font->FontSize) / 2);
+        char label[48];
+        if (i == RUST_BIND_DEATH) {
+            char key[16];
+            str_set(key, v.key[0] ? v.key : "f15");
+            for (char *k = key; *k; k++) *k = (char)toupper(*k);
+            snprintf(label, sizeof label, "Print on death (%s)", key);
+        } else str_set(label, "Space");
+        opt_text_at(dl, g_font, ImVec2(x, ty), on ? COL_TEXT : COL_DIM, label, g_am_text_end);
+        static const char *const shows[] = {"", "Bound", "Will bind when Rust closes", "Will unbind when Rust closes", "Not bound"};
+        i32 show = v.show >= 0 && v.show < (i32)COUNT(shows) ? v.show : 0;
+        f32 sx = x + label_w;
+        opt_text_at(dl, g_font_small, ImVec2(sx, floorf(p.y + (fh - g_font_small->FontSize) / 2)),
+                    show == RUST_SHOW_BOUND ? COL_OK : COL_DIM, shows[show], g_am_text_end);
+        // While keys.cfg hasn't the bind, the line to paste after the status, at one place whatever the status says
+        if (on && (show == RUST_SHOW_PENDING || show == RUST_SHOW_NOT_BOUND)) {
+            ImGui::PushFont(g_font_small);
+            f32 cx = sx + ImGui::CalcTextSize(shows[RUST_SHOW_UNBIND]).x + dp(16);
+            ImGui::PopFont();
+            f32 tw = ImGui::CalcTextSize(v.line).x, pad = dp(10);
+            dl->AddRectFilled(ImVec2(cx, p.y), ImVec2(cx + tw + 2 * pad, p.y + fh), col32(COL_FAINT, 0.18f), kit_px(6));
+            opt_text_at(dl, g_font, ImVec2(cx + pad, floorf(p.y + (fh - g_font->FontSize) / 2)), COL_TEXT, v.line, cx + tw + pad + 1);
+            ImGui::SetCursorScreenPos(ImVec2(cx + tw + 2 * pad + dp(8), p.y));
+            bool copied = copied_at[i] && now_us() - copied_at[i] < 2500000;
+            if (kit_button(copied ? ICON_CHECK "  Copied###copy" : ICON_COPY "  Copy###copy", KIT_GHOST, ImVec2(bw, 0))) {
+                ImGui::SetClipboardText(v.line);
+                copied_at[i] = now_us();
+                log_line("options: Rust bind line copied");
+            }
+            ImGui::SameLine(0, dp(12));
+            ImVec2 q = ImGui::GetCursorScreenPos();
+            opt_text_at(dl, g_font_small, ImVec2(q.x, floorf(q.y + (fh - g_font_small->FontSize) / 2)), COL_DIM,
+                        "paste in F1 console", g_am_text_end);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + fh + gap));
+        ImGui::Dummy(ImVec2(0, 0));
+        ImGui::PopID();
     }
-    ImGui::SameLine(0, dp(12));
-    ImVec2 q = ImGui::GetCursorScreenPos();
-    f32 ty = floorf(q.y + (fh - g_font_small->FontSize) / 2);
-    const char *found = st == AM_NOT_FOUND || bind < 0 ? "paste once in Rust's F1 console"
-                        : bind ? "Bind found" : "Not bound yet: paste once in Rust's F1 console";
-    opt_text_at(dl, g_font_small, ImVec2(q.x, ty), bind > 0 ? COL_OK : COL_DIM, found, g_am_text_end);
-    ImGui::Dummy(ImVec2(0, fh));
-    ImGui::EndDisabled();
     return changed;
 }
 
