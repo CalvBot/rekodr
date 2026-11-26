@@ -1506,15 +1506,39 @@ static void tl_span(const TlCanvas &c, i64 a, i64 b, f32 y, f32 h, ImU32 col)
 // Spans that touch, or whose gap is under a pixel and couldn't be seen anyway, are drawn as one.
 struct TlRun { i64 a, z; };
 
-static void tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h, ImU32 col)
+// Returns the run it drew to make room for [a, z] (a = 0 when it drew none).
+static TlRun tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h, ImU32 col)
 {
+    TlRun drawn = {};
     if (r->a && (a - r->z <= 50000 || (f64)(a - r->z) * c.px_per_us < 1)) {
         if (z > r->z) r->z = z;
-        return;
+        return drawn;
     }
-    if (r->a) tl_span(c, r->a, r->z, y, h, col);
+    if (r->a) tl_span(c, r->a, r->z, y, h, col), drawn = *r;
     r->a = a;
     r->z = z;
+    return drawn;
+}
+
+// Where a block's label goes, inside the block from xa to xb: the icon (when there is one and it fits) and the room
+// left for the name. A block too narrow for its icon shows nothing at all.
+struct TlLabelFit {
+    bool icon;
+    f32  icon_x, text_x, text_w; // text_w <= 0: no name
+};
+
+static TlLabelFit tl_label_fit(f32 xa, f32 xb, f32 isz, f32 s, bool has_icon)
+{
+    TlLabelFit f = {};
+    f32 pad = 6 * s;
+    f.icon_x = f.text_x = xa + pad;
+    if (has_icon) {
+        if (xb - xa < isz + 2 * pad) return f;
+        f.icon = true;
+        f.text_x += isz + 5 * s;
+    }
+    f.text_w = xb - pad - f.text_x;
+    return f;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2609,27 +2633,31 @@ static void screen_timeline()
             i64 end = i + 1 < b.activity_count ? b.activity[i + 1].us : now;
             if (!e.exe[0] || end < c.start || e.us > view_end) continue;
             ImU32 gc = col32(tl_game_colour(e.exe), 0.9f);
+            char name[64];
+            audio_display_name(g_app.config, e.exe, name, sizeof name);
+            ID3D11ShaderResourceView *icon = game_db_icon(name);
+            if (!icon) icon = app_icon(e.exe);
+            // Each block drawn (the game's time with footage) carries its own label, kept inside it
+            auto label = [&](TlRun r) {
+                f32 xa = ImMax(tl_x(c, r.a), c.x0), xb = ImMin(tl_x(c, r.z), c.x1);
+                TlLabelFit f = tl_label_fit(xa, xb, isz, s, icon != 0);
+                if (f.icon) {
+                    ImVec2 ia(f.icon_x, floorf(y + (h - isz) / 2));
+                    dl->AddImage((ImTextureID)icon, ia, ImVec2(ia.x + isz, ia.y + isz));
+                }
+                if (f.icon || !icon)
+                    tl_text_fit(dl, ImVec2(f.text_x, floorf(y + (h - ImGui::GetTextLineHeight()) / 2)), f.text_w,
+                                col32(0xffffff), name);
+            };
             TlRun gr = {};
             i64 lo = e.us > c.start ? e.us : c.start, hi = end < view_end ? end : view_end;
             for (i32 k = tl_seg_after(b, lo); k < b.seg_count && b.segs[k].start_us < hi; k++) {
                 i64 sa = b.segs[k].start_us > e.us ? b.segs[k].start_us : e.us, sz = b.segs[k].end_us < end ? b.segs[k].end_us : end;
-                if (sz > sa) tl_run_add(c, &gr, sa, sz, y, h, gc);
+                if (sz <= sa) continue;
+                TlRun drawn = tl_run_add(c, &gr, sa, sz, y, h, gc);
+                if (drawn.a) label(drawn);
             }
-            if (gr.a) tl_span(c, gr.a, gr.z, y, h, gc);
-            f32 xa = tl_x(c, e.us), xb = tl_x(c, end);
-            if (xa < c.x0) xa = c.x0;
-            if (xb > c.x1) xb = c.x1;
-            char name[64];
-            audio_display_name(g_app.config, e.exe, name, sizeof name);
-            f32 nx = xa + 6 * s;
-            ID3D11ShaderResourceView *icon = game_db_icon(name);
-            if (!icon) icon = app_icon(e.exe);
-            if (icon && xb - xa > isz + 10 * s) {
-                ImVec2 ia(nx, floorf(y + (h - isz) / 2));
-                dl->AddImage((ImTextureID)icon, ia, ImVec2(ia.x + isz, ia.y + isz));
-                nx += isz + 5 * s;
-            }
-            tl_text_fit(dl, ImVec2(nx, floorf(y + (h - ImGui::GetTextLineHeight()) / 2)), xb - nx - 6 * s, col32(0xffffff), name);
+            if (gr.a) tl_span(c, gr.a, gr.z, y, h, gc), label(gr);
         }
         ImGui::PopFont();
     }

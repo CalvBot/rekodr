@@ -4680,6 +4680,22 @@ struct TestReplay : TestBytes {
     }
 };
 
+// A game block's label stays inside the block: icon and name, the icon alone, or nothing
+static void test_label_fit()
+{
+    f32 isz = 16, s = 1;
+    TlLabelFit f = tl_label_fit(100, 300, isz, s, true);
+    T(f.icon && f.icon_x == 106 && f.text_x == 127 && f.text_x + f.text_w == 294);
+    f = tl_label_fit(100, 128, isz, s, true); // just room for the icon
+    T(f.icon && f.text_x + f.text_w == 122 && f.text_w < 1);
+    f = tl_label_fit(100, 127, isz, s, true); // a pixel short of the icon: nothing
+    T(!f.icon && f.text_w <= 0);
+    f = tl_label_fit(100, 140, isz, s, false); // no icon: the name gets the room
+    T(!f.icon && f.text_x == 106 && f.text_w == 28);
+    f = tl_label_fit(100, 105, isz, s, false);
+    T(f.text_w <= 0);
+}
+
 // The Busy layer's count: presses (not a held key's repeats), buttons, wheel notches, and the tenths the mouse moved in
 static void test_busy()
 {
@@ -5527,6 +5543,7 @@ int main()
     test_r6_replay();
     test_fn_replay();
     test_busy();
+    test_label_fit();
     test_plugins();
     test_lanes();
     test_share();
