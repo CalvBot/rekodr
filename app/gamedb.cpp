@@ -8,7 +8,7 @@
 // they sit in and, for an exe many programs share, the command line that tells them apart), and art from
 // SteamGridDB with the player's own key ("sgdb_key"), else Discord's image server. Discord's list is also what is
 // used when the service can't be asked. All of it is kept under <local>\gamedb:
-//   detectable.json   Discord's list as fetched, again after a week
+//   detectable.json   Discord's list as fetched, again after a day
 //   games.tsv         the same, one game a line, which is what is loaded:
 //                     id, name, icon, cover, Steam id, other names (|), exes (|; "!" first marks a launcher,
 //                     ">" a shared exe; the command line it needs follows a \x1f)
@@ -1994,7 +1994,7 @@ static bool gamedb_fetch_looks()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The worker: load what is on disk, fetch the list if there is none or it is a week old, then look up games and
+// The worker: load what is on disk, fetch the list if there is none or it is a day old, then look up games and
 // fetch art as asked.
 
 static void gamedb_publish(GameIndex *ix)
@@ -2192,7 +2192,7 @@ static DWORD WINAPI gamedb_thread(void *)
     FILETIME now;
     GetSystemTimeAsFileTime(&now);
     i64 age = have ? (((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - ((i64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime)) / 10000000 : 0;
-    if (g_gamedb.online && (!have || age > 7 * 24 * 3600)) {
+    if (g_gamedb.online && (!have || age > 24 * 3600)) {
         if (http_get_file(L"discord.com", L"/api/v10/applications/detectable", json)) {
             i32 n = gamedb_convert(json, tsv);
             log_line("games list fetched: %d games", n);
