@@ -2521,7 +2521,7 @@ static void test_r2()
     // without one
     T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" download>"));
     T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/rekodr\"><svg viewBox=\"0 0 607 607\"") &&
-      strstr(html, "</svg>via <b>Rekodr</b></a>") && !strstr(html, "emojis/1574532567124803645"));
+      strstr(html, "</svg>via <b>Rekodr</b></a>") && !strstr(html, "emojis/1575548227070201897"));
     T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
     // the accent, in the CSS and as the theme colour: the default, or the one picked
     T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)") &&
@@ -2633,7 +2633,7 @@ static void test_r2()
     T(strstr(cj, "\"content\":\"**ace \\u003c\\\"round\\\"\\\\\\u003e \\\\*1\\\\* caf\\u00e9 \\ud83c\\udfae**\"}") != 0);
     T(strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}") != 0);
     T(strstr(cj, "{\"type\":12,\"items\":[{\"media\":{\"url\":\"https://x.dev/rekodr/abc/social.mp4?v=2\"}}]}") != 0);
-    T(strstr(cj, "\"-# \\u003c:rekodr:1574532567124803645\\u003e [via Rekodr](\\u003chttps://github.com/CalvBot/"
+    T(strstr(cj, "\"-# \\u003c:rekodr:1575548227070201897\\u003e [via Rekodr](\\u003chttps://github.com/CalvBot/"
                  "rekodr\\u003e)\"}]}}") != 0);
     T(!strstr(cj, "thumb.jpg") && !strstr(cj, "\"type\":9"));
     card.player = false; // nothing small enough: the picture
@@ -2650,7 +2650,7 @@ static void test_r2()
     card.icon = false;
     cn = r2_card_json(card, "https://x.dev/v.mp4", "https://x.dev/t.jpg", "<:g_s5:1>", "", "", cj, sizeof cj);
     T(cn > 0 && strstr(cj, "{\"type\":10,\"content\":\"Valorant\"}"));
-    T(emoji_ok("<:rekodr:1574532567124803645>") && emoji_ok("<:a_1:9>") && emoji_ok("<a:spin:9>"));
+    T(emoji_ok("<:rekodr:1575548227070201897>") && emoji_ok("<:a_1:9>") && emoji_ok("<a:spin:9>"));
     T(!emoji_ok("") && !emoji_ok(0) && !emoji_ok("<:a:1>") && !emoji_ok("<b:ab:1>") && !emoji_ok("<a:a:1>"));
     T(!emoji_ok("<:ab:>") && !emoji_ok("<:ab:1> ") && !emoji_ok("<:a b:1>") && !emoji_ok("<:ab:x1>"));
     T(!emoji_ok("<:abcdefghijabcdefghijabcdefghijabc:1>") && !emoji_ok("<:ab:123456789012345678901>"));
