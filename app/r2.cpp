@@ -567,7 +567,7 @@ static void r2_html_text(const char *s, char *out, i32 cap, i32 *len)
 
 #define R2_HOME_URL "https://github.com/CalvBot/rekodr"
 enum { R2_CARD_MAX = 3000 };          // Discord's limit on the card's JSON, in bytes
-// The logo as a Discord emoji, at the start of the card's "via" line; it is in Calvin's own server.
+// The logo as a Discord emoji, at the start of the card's "via" line; it is kept in a Discord server of Rekodr's.
 // TODO: a new id if it moves
 #define R2_LOGO_EMOJI "<:rekodr:1574532567124803645>"
 

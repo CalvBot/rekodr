@@ -1,84 +1,39 @@
 # Rekodr
 
-A hands-off long replay buffer for Windows. It records the screen all the time into a rolling buffer on disk
-(hours, not minutes), with every app's audio recorded separately. A hotkey or a command saves the last stretch as
-a file, and the window turns parts of the buffer into clips and whole game sessions.
+Rekodr is a replay buffer for Windows that runs on its own. It records the screen all the time into a rolling
+buffer on disk that holds hours, not minutes, with every app's sound recorded separately. A hotkey (Alt+F6 by
+default), a Stream Deck key or a command saves the last stretch as a file, and the window turns any part of the
+buffer into clips and whole game sessions.
 
-[SPEC.md](SPEC.md) says what it does and how it is put together.
+Game names and art come from Discord's public list of games, Steam's images and Rekodr's own service,
+[rekodr-api](https://github.com/CalvBot/rekodr-api). [SPEC.md](SPEC.md) describes what Rekodr does and how it is
+built.
 
-## Install and update
-Download `rekodr-setup.exe` and run it. It installs Rekodr for your Windows account only, in
-`%LOCALAPPDATA%\Programs\Rekodr`, with no admin prompt, adds it to the Start menu and starts it with Windows
-(Options > General > Start with Windows turns that off).
+## Install
+Run `rekodr-setup.exe`. It installs Rekodr for your Windows account only, with no admin prompt, and starts it with
+Windows. Rekodr updates itself: it checks each new version's signature and asks before restarting into it, and if
+a new version crashes in its first minute, it goes back to the one before. Uninstall it from Windows Settings >
+Apps.
 
-Rekodr updates itself: it fetches each new version in the background, checks its signature, and asks before
-restarting into it. Options > General > Update by itself turns that off. If a new version crashes in its first
-minute, Rekodr goes back to the one before.
+It needs Windows 10 or 11 and ffmpeg 7 or later. If it finds no ffmpeg, it downloads a pinned build (FFmpeg 8.1.1,
+GPL) on first start.
 
-To uninstall, use Windows Settings > Apps. It asks whether to delete your clips, sessions, buffer and settings
-too (they go to the Recycle Bin); by default it keeps them.
-
-## Requirements
-- Windows 10 or 11.
-- ffmpeg 7 or later. Rekodr uses one set in Options or found on the PATH; with none, it downloads a pinned build (FFmpeg 8.1.1, GPL) on first start.
-- To build: Visual Studio's C++ build tools.
-
-## Build and run
+## Build
+With Visual Studio's C++ build tools:
 ```
-app\build.bat                 # builds app\build\rekodr.exe
-app\build\rekodr.exe        # starts Rekodr: a tray icon, recording, no window
-app\build\rekodr.exe open   # opens the window (of the running copy, if there is one)
+app\build.bat     # builds app\build\rekodr.exe
+app\test.bat      # builds and runs the tests
 ```
-The whole program is one translation unit, `app\rekodr.cpp`, which includes every other file in `app\`.
+The whole program is one translation unit, `app\rekodr.cpp`, which includes every other file in `app\`. With
+`REKODR_HOME` set to a folder, Rekodr runs as a separate copy that keeps everything under that folder.
 
-## Commands
-`rekodr.exe <command>` hands the command to the running copy (`save 30s`, `mark`, `toggle`, `quit`), and
-programs on this PC can send the same commands over a named pipe. [SCRIPTING.md](SCRIPTING.md) lists them and
-describes the pipe.
+## Commands and Stream Deck
+`rekodr.exe <command>` passes a command (`save 30s`, `mark`, `toggle`, `open`, `quit`) to the running copy.
+Programs on the same PC can send the same commands over a named pipe. [SCRIPTING.md](SCRIPTING.md) lists them.
 
-The default hotkey is Alt+F6, which saves the last 30 seconds. Hotkeys are set in Options.
-
-## Stream Deck
-`streamdeck\dev.calvbot.rekodr.sdPlugin` is a Stream Deck plugin with three actions:
-
-- **Save clip** saves the last 30 seconds, 2 minutes or any length set on the key. The key shows SAVING, then a
-  tick when the file is written or a cross if the save failed.
-- **Recording** shows whether Rekodr is recording and how much the buffer holds. A press turns recording on
-  or off.
-- **Open Rekodr** opens the window on the clips, the timeline or the options.
-
-If Rekodr isn't running, the keys say so, and a press starts it.
-
-Options > Integrations installs it (copying it into Stream Deck's plugins and restarting Stream Deck) and shows
-whether the keys are connected. To work on the plugin, link the folder instead:
-```
-mklink /J "%APPDATA%\Elgato\StreamDeck\Plugins\dev.calvbot.rekodr.sdPlugin" streamdeck\dev.calvbot.rekodr.sdPlugin
-```
-It needs Stream Deck 7.1 or later and has no dependencies. `node streamdeck\pack.mjs` checks it and builds
-the installable `streamdeck\build\dev.calvbot.rekodr.streamDeckPlugin`. The plugin talks to Rekodr over a named pipe
-(`app\pipe.cpp`), which only programs on this PC can reach. `node streamdeck\make-imgs.mjs` redraws its icons.
+`streamdeck\dev.calvbot.rekodr.sdPlugin` is a Stream Deck plugin with keys that save a clip, turn recording on
+and off, and open the window. `node streamdeck\pack.mjs` builds it.
 
 ## Files
-- Settings: `%APPDATA%\Rekodr\settings.txt`. Options writes it; there is no need to edit it by hand.
-- Clips: `<Videos>\Rekodr\Clips\<year>\` unless changed in Options.
-- Games given by hand: `%APPDATA%\Rekodr\games.txt`, for clips that don't carry a game of their own (renamed files, or videos
-  Rekodr didn't make). A line each of `<key> | <game> | <file name>`.
-- Games list and art: `%LOCALAPPDATA%\Rekodr\gamedb`. Rekodr fetches these itself so games get their proper
-  names and icons: from Discord's public list of games, Steam's images, and Rekodr's own service,
-  [rekodr-api](https://github.com/CalvBot/rekodr-api), which names games the list doesn't know and finds their
-  art. Options > General turns it off.
-- Log: `%LOCALAPPDATA%\Rekodr\rekodr-native.log`. Crash and hang dumps (`crash-*.dmp`, `hang-*.dmp`) are
-  written next to it.
-
-## When something goes wrong
-A crash writes its stack trace to the log and a dump next to it, then Rekodr starts itself again. If the window
-freezes for 3 seconds, the log shows where it is stuck.
-
-For more detail, turn on the detailed log: Options > General > Developer, or `rekodr.exe dev`. It records every
-control used, key presses, screen changes, commands and events.
-
-## Development
-- `app\test.bat` builds and runs the tests for the plain logic (parsing, folder rules, the settings file).
-- Setting `REKODR_HOME` to a folder makes Rekodr keep everything under it (settings, log, buffer, clips) and
-  run next to the real copy, leaving the hotkeys and the Windows startup entry alone.
-- The app and tray icons are drawn by `assets/make_icons.py` (Pillow).
+Settings are kept in `%APPDATA%\Rekodr`. The log, crash dumps and the game art cache are in
+`%LOCALAPPDATA%\Rekodr`. Clips and sessions are saved in `<Videos>\Rekodr` unless Options says otherwise.

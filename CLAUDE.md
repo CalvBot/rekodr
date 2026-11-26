@@ -16,7 +16,7 @@ Rekodr is not released. One PC runs it. Write for the program as it is going to 
   https://github.com/CalvBot/rekodr-api.
 
 ## Builds
-- Builds run locally (`app\build.bat`). A release happens only when Calvin asks. While the repo is private its
+- Builds run locally (`app\build.bat`). A release happens only when the maintainer asks. While the repo is private its
   releases are built locally too; once public, a release is built on GitHub Actions, once, never on every push.
 
 ## The service (rekodr-api)
