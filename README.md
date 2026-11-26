@@ -30,15 +30,28 @@ version crashes in its first minute, it goes back to the one before. Uninstall i
 It needs Windows 10 or 11. If it finds no ffmpeg 7 or later, it downloads a pinned build (FFmpeg 8.1.1, GPL) on
 first start.
 
-## Build
-With Visual Studio's C++ build tools:
+## Building
+You need:
+- Windows 10 or 11, x64
+- Visual Studio 2022, Community or the Build Tools alone, with the C++ desktop workload: the MSVC v143 x64/x86
+  build tools and a Windows 11 SDK (Rekodr is built with 10.0.26100)
+
+Nothing else: no CMake, no package manager. Dear ImGui is vendored in `app\vendor`. From any prompt:
 ```
-app\build.bat     # builds app\build\rekodr.exe
-app\test.bat      # builds and runs the tests
+app\build.bat           # optimised build: app\build\rekodr.exe
+app\build.bat debug     # debug build, same place
+app\test.bat            # builds app\build\tests.exe and runs the tests
 ```
+`build.bat` finds Visual Studio by itself with vswhere. `build.bat release` also writes the signed installer and
+update manifest to `dist\`; it needs the maintainer's release key.
+
+The build has no ffmpeg in it. At runtime Rekodr uses the one set in Options, or one on the PATH, and if it finds
+no ffmpeg 7 or later it downloads a pinned build (FFmpeg 8.1.1, GPL) on first start.
+
 The whole program is one translation unit, `app\rekodr.cpp`, which includes every other file in `app\`. With
-`REKODR_HOME` set to a folder, Rekodr runs as a separate copy that keeps everything under that folder.
-[docs/SPEC.md](docs/SPEC.md) describes what Rekodr does and how it is built.
+`REKODR_HOME` set to a folder, Rekodr runs as a separate copy that keeps everything under that folder, which is
+handy for trying a build next to the installed one. [docs/SPEC.md](docs/SPEC.md) describes what Rekodr does and
+how it is built.
 
 ## Commands and Stream Deck
 `rekodr.exe <command>` passes a command (`save 30s`, `mark`, `toggle`, `open`, `quit`) to the running copy.
