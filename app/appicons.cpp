@@ -366,6 +366,8 @@ static const FixedCover g_fixed_covers[] = {
     {"Path of Exile", {"b18f9c54e6efde8a08b8b478b0806587.png", "b762ab8b6d4b6845861b3a7fc6ed5a91.png", "e47278fe2669e7b284c7b75c76f02b12.jpg"}},
     {"Path of Exile 2", {"579b8ed826a6b614ac5654924627477d.jpg", "602dc7261c04c9ae1d85e4ef3d191f0a.png", "494b08f5ba3e464e99d3ffa5ed13535a.jpg"}},
     {"Hearthstone", {"f30259f76102eefd8b482ee4b68b1ef7.png", "3128463b233d51bd542a59d9cf49a5f6.jpg", "fb50a80a148e6facff6f7bb1241180ad.png"}},
+    {"Rainbow Six Siege", {"6df0f11ac980d2c59e5b4dab6a8e7611.png", "c32d0e02132a853fdf5b8010aa71602e.png", "e65aa1b7ed722fc2d3cabe14f5cd3fe7.png"}},
+    {"Fortnite", {"6c4d541fc68d426aa028bc05f38164d1.png", "6dc3399d124d4cf965d4d62d0663228e.png", "6e94aaaaa650e631109fee66a94385fb.png"}},
     {"Steam achievements", {"39c2966989c4f0091a99eef7f1d09c09.png", "c5174327c1975f78b7ffc788ed60b80e.png", "dba324d3fb4b6d4ddd559fb5a70ff362.jpg"}},
 };
 enum { GAMEDB_FIXED_COVER = 5 }; // gamedb_on_event: the worker has settled one of the hand-picked covers
