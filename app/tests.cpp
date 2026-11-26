@@ -2640,16 +2640,45 @@ static void test_r2()
     pp.accent = 0;
     // #t= starts the clip there; no preview, no markers
     T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "var CB={pv:0.000,m:[]};"));
-    // a preview and markers go to the player, the notes made safe for the script tag
+    // a preview and markers go to the player, the labels made safe for the script tag; each marker's icon once, in
+    // a sheet, from the app's own; a dot for one with no icon or a name that isn't plain; no icon lane without markers
+    T(!strstr(html, "id=\"ln\"") && !strstr(html, "id=\"ei\""));
     pp.preview = 210;
-    char marks[96];
-    snprintf(marks, sizeof marks, "12.400 First kill%c17.000 </script>%c25.5 ", R2_MARK_SEP, R2_MARK_SEP);
+    char marks[128];
+    snprintf(marks, sizeof marks, "12.400 kill First kill%c17.000 - </script>%c25.5 Bad\"key x%c30 kill Kill: AK", R2_MARK_SEP,
+             R2_MARK_SEP, R2_MARK_SEP);
     pp.marks = marks;
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "var CB={pv:210.000,m:[[12.400,\"First kill\"],[17.000,\"\\u003c/script\\u003e\"],"
-                             "[25.500,\"\"]]};</script>"));
+    T(hn > 0 && strstr(html, "var CB={pv:210.000,m:[[12.400,\"First kill\",\"kill\"],[17.000,\"\\u003c/script\\u003e\",\"dot\"],"
+                             "[25.500,\"x\",\"dot\"],[30.000,\"Kill: AK\",\"kill\"]]};</script>"));
+    T(strstr(html, "<div class=\"lane\" id=\"ln\"><span class=\"lbl\" id=\"lb\" hidden></span></div><div class=\"scrub\""));
+    const char *sheet = strstr(html, "<svg id=\"ei\"");
+    T(sheet && strstr(sheet, "<symbol id=\"ei-kill\" viewBox=\"0 0 14 14\"><circle stroke=\"currentColor\" fill=\"none\" "
+                             "cx=\"7\" cy=\"7\" r=\"4\" stroke-width=\"2\"/><rect x=\"6\" y=\"0\" width=\"2\" height=\"3\"/>"));
+    T(sheet && strstr(sheet, "<symbol id=\"ei-dot\"") && !strstr(strstr(sheet, "ei-kill") + 1, "id=\"ei-kill\""));
     pp.preview = 0;
     pp.marks = 0;
+    // A page marker: its icon from the detail (a kill by its weapon's class, a headshot), the weapon after the note
+    char me[400];
+    r2_mark_entry(9.862, "Kill", "event=kill;weapon=MP-133 12ga shotgun;name=Someone", me, sizeof me);
+    T(!strcmp(me, "9.862 shotgun Kill: MP-133 12ga shotgun"));
+    r2_mark_entry(1, "Headshot", "event=kill;area=head;weapon=ak47", me, sizeof me);
+    T(!strcmp(me, "1.000 headshot Headshot: ak47"));
+    r2_mark_entry(2, "Kill (AK-74N)", "event=kill;weapon=AK-74N", me, sizeof me);
+    T(!strcmp(me, "2.000 rifle Kill (AK-74N)"));
+    r2_mark_entry(3, "", "", me, sizeof me);
+    T(!strcmp(me, "3.000 - Marker"));
+    r2_mark_entry(4, "Raid start (Customs)", "event=raid_start;span=raid", me, sizeof me);
+    T(!strcmp(me, "4.000 raid-start Raid start (Customs)"));
+    // every icon has its SVG, and small; an unknown name has none
+    for (i32 i = 1; i < EVI_COUNT; i++) {
+        char key[32], svg[2048];
+        evi_key((EvIcon)i, key, sizeof key);
+        i32 sn = evi_svg(key, svg, sizeof svg);
+        T(sn > 20 && sn < 1200 && sn == (i32)strlen(svg) && !strchr(svg, '\''));
+    }
+    char nosvg[64];
+    T(!evi_svg("nope", nosvg, sizeof nosvg) && !evi_svg("", nosvg, sizeof nosvg) && !evi_svg("death", nosvg, 16));
     // the heading and the game line with its emoji
     pp.heading = "Ace";
     pp.line = "Valorant";

@@ -220,3 +220,93 @@ static void evi_draw(ImDrawList *dl, EvIcon icon, ImVec2 c, f32 size, ImU32 col,
         }
     }
 }
+
+// An icon's name in a clip page's markers: its EVI_NAMES in lower case, spaces as dashes ("raid-start"). "" for
+// EVI_NONE.
+static void evi_key(EvIcon icon, char *out, i32 cap)
+{
+    i32 n = 0;
+    for (const char *c = icon > EVI_NONE && icon < EVI_COUNT ? EVI_NAMES[icon] : ""; *c && n < cap - 1; c++)
+        out[n++] = *c == ' ' ? '-' : (char)tolower((u8)*c);
+    out[n] = 0;
+}
+
+// A marker's icon name (evi_key of evi_of_marker); "" for none.
+static void evi_key_of_marker(const char *detail, char *out, i32 cap)
+{
+    evi_key(evi_of_marker(detail), out, cap);
+}
+
+// The icon named `key` (evi_key) as the inside of an SVG with viewBox 0 0 14 14, from its EVI_SHAPES: its own parts
+// in the SVG's colour (currentColor), the parts cut out of it of class "h" (a fill) or "hs" (a line), for the page
+// to give the colour behind it. Returns the length; 0 for an unknown key or when it doesn't fit.
+static i32 evi_svg(const char *key, char *out, i32 cap)
+{
+    EvIcon icon = EVI_NONE;
+    char k[32];
+    for (i32 i = 1; i < EVI_COUNT && !icon; i++) {
+        evi_key((EvIcon)i, k, sizeof k);
+        if (!strcmp(k, key)) icon = (EvIcon)i;
+    }
+    if (!icon || cap < 1) return 0;
+    const char *s = EVI_SHAPES[icon];
+    i32 len = 0;
+    auto put = [&](const char *fmt, auto... a) { len += snprintf(out + len, len < cap ? cap - len : 0, fmt, a...); };
+    auto num = [&]() { char *e; f32 f = strtof(s, &e); s = e; return f; };
+    while (*s) {
+        while (*s == ' ') s++;
+        char op = *s;
+        if (!op) break;
+        s++;
+        bool hole = !isupper((u8)op);
+        f32 v[4];
+        switch (toupper((u8)op)) {
+        case 'R':
+            for (i32 i = 0; i < 4; i++) v[i] = num();
+            put("<rect%s x=\"%g\" y=\"%g\" width=\"%g\" height=\"%g\"/>", hole ? " class=\"h\"" : "", v[0], v[1],
+                v[2] - v[0], v[3] - v[1]);
+            break;
+        case 'D':
+            for (i32 i = 0; i < 3; i++) v[i] = num();
+            put("<circle%s cx=\"%g\" cy=\"%g\" r=\"%g\"/>", hole ? " class=\"h\"" : "", v[0], v[1], v[2]);
+            break;
+        case 'O':
+            for (i32 i = 0; i < 4; i++) v[i] = num();
+            put("<circle%s fill=\"none\" cx=\"%g\" cy=\"%g\" r=\"%g\" stroke-width=\"%g\"/>",
+                hole ? " class=\"hs\"" : " stroke=\"currentColor\"", v[0], v[1], v[2] - v[3] / 2, v[3]);
+            break;
+        case 'P': case 'S': {
+            bool line = toupper((u8)op) == 'S';
+            f32 w = line ? num() : 0;
+            i32 n = (i32)num();
+            n = n > 16 ? 16 : n;
+            if (line)
+                put("<polyline%s fill=\"none\" stroke-width=\"%g\" stroke-linejoin=\"round\" points=\"",
+                    hole ? " class=\"hs\"" : " stroke=\"currentColor\"", w);
+            else put("<polygon%s points=\"", hole ? " class=\"h\"" : "");
+            for (i32 i = 0; i < n; i++) {
+                f32 x = num(), y = num();
+                put("%s%g %g", i ? " " : "", x, y);
+            }
+            put("\"/>");
+            break;
+        }
+        case 'T': {
+            for (i32 i = 0; i < 4; i++) v[i] = num();
+            put("<polygon%s points=\"", hole ? " class=\"h\"" : "");
+            for (i32 i = 0; i < 10; i++) {
+                f32 a = -IM_PI / 2 + i * IM_PI / 5, r = (i & 1) ? v[3] : v[2];
+                put("%s%.2f %.2f", i ? " " : "", v[0] + r * cosf(a), v[1] + r * sinf(a));
+            }
+            put("\"/>");
+            break;
+        }
+        default: s = "";
+        }
+    }
+    if (len >= cap) {
+        out[0] = 0;
+        return 0;
+    }
+    return len;
+}

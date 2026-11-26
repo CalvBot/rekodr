@@ -23,6 +23,9 @@
 #pragma comment(lib, "ws2_32.lib")
 
 static void open_url(const char *url); // setup.cpp
+static void evi_key_of_marker(const char *detail, char *out, i32 cap); // evicons.cpp
+static i32 evi_svg(const char *key, char *out, i32 cap);                // evicons.cpp
+static bool marker_detail_get(const char *d, const char *key, char *out, i32 cap); // markers.cpp
 static void r2_resume(const char *key);
 static void r2_auto_pause();
 struct R2Usage;
@@ -85,7 +88,7 @@ struct R2Share {
     f32  seconds;     // how long the clip plays, for the page's title
     f32  preview;     // the small copy is the clip's first this many seconds (save_social_copy), 0 = all of it
     i64  expires_us;  // R2: when the link ends and cleanup deletes it from the bucket, pinned or not; 0 = never
-    char marks[1024]; // the clip's markers for its page: "<seconds> <note>" each, split by R2_MARK_SEP (r2_probe_marks)
+    char marks[1024]; // the clip's markers for its page: r2_mark_entry each, split by R2_MARK_SEP (r2_probe_marks)
     // Not kept in the history:
     bool moving;      // a pause or resume is running
     i64  plays_today, plays_month, plays_24h; // GET requests for the file (local day, this month, the last 24
@@ -775,7 +778,7 @@ struct R2PageParts {
     const char *emoji;   // the game's Discord emoji ("<:name:id>", emoji_ok), shown from Discord's CDN without an
                          // icon; "" or 0 = none
     f64 preview;         // cards play the clip's first this many seconds; 0 = all of it
-    const char *marks;   // the clip's markers: "<seconds> <note>" each, split by R2_MARK_SEP; "" or 0 = none
+    const char *marks;   // the clip's markers: r2_mark_entry each, split by R2_MARK_SEP; "" or 0 = none
     const char *icon;    // the game's icon before the game line, as a data: address (r2_icon_data); "" or 0 = none
     u32 accent;          // the page's accent, 0xRRGGBB (config.accent); 0 = the default
     const char *art;     // the game's art for behind the page, as a data: address (r2_icon_data); "" or 0 = the
@@ -817,8 +820,9 @@ static bool r2_accent_ink(u32 c)
 }
 
 // The page for a link, in the app's look: the game's art (else the clip's picture) grey, blurred and faint behind
-// it all; the clip first, in Rekodr's own player (its markers as ticks on the seek bar, a wide volume slider), as
-// wide as the screen's height leaves room for; under it the name and the game line (after the game's icon, else its
+// it all; the clip first, in Rekodr's own player (its markers as ticks on the seek bar, each with its event icon
+// over the bar, which names it beside the icon on hover or tap; a wide volume slider), as wide as the screen's
+// height leaves room for; on a phone the player runs edge to edge with big buttons and no volume slider; under it the name and the game line (after the game's icon, else its
 // emoji) with Download and Copy link beside them, then "via Rekodr" (a link to the project). The accent fills the
 // played part, the volume and the main buttons. The head has the tags chat
 // apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and
@@ -826,6 +830,25 @@ static bool r2_accent_ink(u32 c)
 // which is where a card's preview tag links to; when cards play a preview, a button and a green tick mark where it
 // stops. Paused, the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the
 // length, 0 if it didn't fit.
+// A page marker's parts (r2_mark_entry): its time, its icon (`key`, "" for none or one that isn't a plain name) and
+// its label. False when it isn't one.
+static bool r2_mark_split(const char *m, size_t n, f64 *at, char *key, i32 key_cap, char *label, i32 label_cap)
+{
+    char one[400];
+    snprintf(one, sizeof one, "%.*s", (int)(n < sizeof one ? n : sizeof one - 1), m);
+    char *k = strchr(one, ' ');
+    if (!k) return false;
+    *k++ = 0;
+    char *l = strchr(k, ' ');
+    if (l) *l++ = 0;
+    *at = atof(one);
+    bool plain = *k != 0;
+    for (const char *c = k; *c; c++) plain = plain && ((*c >= 'a' && *c <= 'z') || *c == '-');
+    snprintf(key, key_cap, "%s", plain && strcmp(k, "-") ? k : "");
+    snprintf(label, label_cap, "%s", l ? l : "");
+    return true;
+}
+
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
 {
     if (cap < 2) return 0;
@@ -883,11 +906,12 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     // Room the page keeps above and below the picture: its padding, the controls, the title and game line, the
     // via line. The player is as wide as the screen's height leaves room for, at the clip's shape.
     r2_page_put(
-        "--mark:#fff;--prev:#4cc985;--room:280px;--hot:color-mix(in srgb,var(--accent) 85%,#fff);"
+        "--mark:#fff;--prev:#4cc985;--room:306px;--hot:color-mix(in srgb,var(--accent) 85%,#fff);"
         "color-scheme:dark}"
         "html{background:#0a0a0a}body{margin:0;min-height:100vh;min-height:100svh;color:var(--fg);"
         "font:15px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif;-webkit-font-smoothing:antialiased}"
-        "body{display:grid;place-items:center;padding:24px;box-sizing:border-box;overflow-x:hidden}"
+        "body{display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding:24px;box-sizing:border-box;"
+        "overflow-x:hidden}"
         ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(48px);opacity:.16;"
         "z-index:-1}"
         "main{width:min(100%,1600px,max(640px,calc((100vh - var(--room)) * var(--w) / var(--h))));"
@@ -915,7 +939,15 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         ".scrub:hover .rail,.scrub:hover .done{top:8px;height:6px}"
         ".head{top:4px;width:14px;height:14px;margin-left:-7px;border-radius:50%;background:#fff}"
         "#tk{inset:0}.tick{position:absolute;top:6px;width:2px;height:10px;margin-left:-1px;background:var(--mark)}"
-        ".tick.pv{background:var(--prev);top:3px;height:16px}"
+        ".tick.pv{background:var(--prev);top:3px;height:16px}.tick.on{background:var(--accent)}"
+        ".lane{position:relative;height:24px;margin-top:4px}"
+        ".ev{position:absolute;top:2px;width:20px;height:20px;margin-left:-10px;border:0;border-radius:4px;padding:0;"
+        "background:none;color:var(--fg);cursor:pointer;display:grid;place-items:center}"
+        ".ev svg{width:14px;height:14px}.ev:hover,.ev.on{color:var(--accent)}"
+        "#ei .h{fill:var(--panel)}#ei .hs{stroke:var(--panel)}"
+        ".lbl{position:absolute;top:0;height:24px;line-height:24px;padding:0 10px;border-radius:999px;"
+        "background:var(--raised);color:var(--fg);font-size:13px;font-weight:600;white-space:nowrap;"
+        "pointer-events:none;z-index:1}"
         ".row{display:flex;align-items:center;gap:4px;font-size:14px;color:var(--dim);"
         "font-variant-numeric:tabular-nums}"
         ".ic{flex:none;width:40px;height:40px;border:0;border-radius:999px;background:none;color:var(--fg);"
@@ -951,9 +983,16 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         ".btn.p:hover{background:var(--hot)}.btn svg{width:18px;height:18px}"
         "button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
         "p{margin:0;color:var(--dim)}"
-        "@media(max-width:600px){body{padding:16px 12px;place-items:start center}main{width:100%;gap:14px}"
-        "h1{font-size:22px}.ctrl{padding:4px 8px 8px}#fb,#ff,.spd{display:none}.vol{flex:1 1 auto}"
-        ".time{margin:0 0 0 auto}.info{gap:14px}.acts{width:100%}.acts .btn{flex:1;justify-content:center}}"
+        "@media(pointer:coarse){.lane{height:30px}.ev{top:2px;width:26px;height:26px;margin-left:-13px}"
+        ".ev svg{width:16px;height:16px}.lbl{height:30px;line-height:30px}.scrub{height:30px}"
+        ".rail,.done{top:13px}.scrub:hover .rail,.scrub:hover .done{top:12px}.head{top:7px;width:16px;height:16px;"
+        "margin-left:-8px}.tick{top:10px}.tick.pv{top:7px}.view{touch-action:pan-y}}"
+        "@media(max-width:600px){body{padding:0 0 20px;place-items:start center}main{width:100%;gap:14px}"
+        ".player{border-radius:0}.info{padding:0 16px;gap:14px}.via{margin-left:16px}h1{font-size:22px}"
+        ".ctrl{padding:2px 8px 6px}#fb,#ff,.spd,.vol input{display:none}.vol{flex:none;min-width:0}"
+        ".ic{width:44px;height:44px}.time{margin:0 0 0 6px;font-size:13px}"
+        ".pill{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:6px}#fs{margin-left:auto}"
+        ".acts{width:100%}.acts .btn{flex:1;justify-content:center;padding:0 12px}}"
         "</style>\n"
         "</head><body>\n",
         p, out, cap, &len);
@@ -973,7 +1012,12 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "</video>"
             "<div class=\"tag\" id=\"zt\" style=\"right:10px\" hidden><span id=\"zv\"></span>"
             "<button id=\"zr\" type=\"button\">Reset</button></div></div>\n"
-            "<div class=\"ctrl\" id=\"ct\" hidden><div class=\"scrub\" id=\"sc\"><i class=\"rail\"></i>"
+            "<div class=\"ctrl\" id=\"ct\" hidden>",
+            p, out, cap, &len);
+        if (p.marks && p.marks[0])
+            r2_page_put("<div class=\"lane\" id=\"ln\"><span class=\"lbl\" id=\"lb\" hidden></span></div>", p, out, cap, &len);
+        r2_page_put(
+            "<div class=\"scrub\" id=\"sc\"><i class=\"rail\"></i>"
             "<i class=\"done\" id=\"dn\"></i><span id=\"tk\"></span><i class=\"head\" id=\"hd\"></i></div>\n"
             "<div class=\"row\">"
             "<button class=\"ic\" id=\"pb\" aria-label=\"Play\"><svg viewBox=\"0 0 24 24\"><path id=\"pi\" "
@@ -1033,19 +1077,49 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         // The player's facts, then the player: own controls (the browser's stay without script), a scroll zooms
         // into the picture and a drag moves it, , and . step a frame, [ and ] change the speed, markers and the
         // end of the cards' preview jump there, and a #t= in the address (seconds, m:ss or h:mm:ss) starts there.
-        if (len + 64 < cap) len += snprintf(out + len, cap - len, "<script>var CB={pv:%.3f,m:[", p.preview);
-        const char *m = p.marks ? p.marks : "";
-        for (bool first = true; *m && len + 32 < cap;) {
+        // the markers' icons, each once, from the app's own (evi_svg); a dot for one with none
+        char keys[48][32];
+        i32 nkeys = 0;
+        bool dot = false;
+        for (const char *m = p.marks ? p.marks : ""; *m;) {
             const char *end = strchr(m, R2_MARK_SEP);
             size_t n = end ? (size_t)(end - m) : strlen(m);
-            char one[300];
-            snprintf(one, sizeof one, "%.*s", (int)(n < sizeof one ? n : sizeof one - 1), m);
-            char *note = strchr(one, ' ');
-            if (note) *note++ = 0;
-            len += snprintf(out + len, cap - len, "%s[%.3f,\"", first ? "" : ",", atof(one));
-            r2_json_text(note ? note : "", false, out, cap, &len);
-            if (len + 4 < cap) len += snprintf(out + len, cap - len, "\"]");
-            first = false;
+            f64 at;
+            char key[32], label[300];
+            if (r2_mark_split(m, n, &at, key, sizeof key, label, sizeof label)) {
+                bool have = !key[0];
+                dot = dot || !key[0];
+                for (i32 i = 0; i < nkeys && !have; i++) have = !strcmp(keys[i], key);
+                if (!have && nkeys < COUNT(keys)) str_set(keys[nkeys++], key);
+            }
+            m += n;
+            if (*m) m++;
+        }
+        if (nkeys || dot) {
+            r2_page_put("<svg id=\"ei\" width=\"0\" height=\"0\" style=\"position:absolute\" aria-hidden=\"true\">", p, out, cap, &len);
+            for (i32 i = 0; i < nkeys; i++) {
+                char svg[2048];
+                if (!evi_svg(keys[i], svg, sizeof svg) || len + (i32)strlen(svg) + 80 >= cap) continue;
+                len += snprintf(out + len, cap - len, "<symbol id=\"ei-%s\" viewBox=\"0 0 14 14\">%s</symbol>", keys[i], svg);
+            }
+            if (dot) r2_page_put("<symbol id=\"ei-dot\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"3\"/></symbol>", p, out, cap, &len);
+            r2_page_put("</svg>\n", p, out, cap, &len);
+        }
+        if (len + 64 < cap) len += snprintf(out + len, cap - len, "<script>var CB={pv:%.3f,m:[", p.preview);
+        bool first = true;
+        for (const char *m = p.marks ? p.marks : ""; *m && len + 32 < cap;) {
+            const char *end = strchr(m, R2_MARK_SEP);
+            size_t n = end ? (size_t)(end - m) : strlen(m);
+            f64 at;
+            char key[32], label[300];
+            if (r2_mark_split(m, n, &at, key, sizeof key, label, sizeof label)) {
+                bool drawn = false; // an icon the sheet has
+                for (i32 i = 0; i < nkeys && !drawn; i++) drawn = !strcmp(keys[i], key);
+                len += snprintf(out + len, cap - len, "%s[%.3f,\"", first ? "" : ",", at);
+                r2_json_text(label, false, out, cap, &len);
+                if (len + 48 < cap) len += snprintf(out + len, cap - len, "\",\"%s\"]", drawn ? key : "dot");
+                first = false;
+            }
             m += n;
             if (*m) m++;
         }
@@ -1053,7 +1127,8 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         r2_page_put(
             "<script>(function(){"
             "var $=function(i){return document.getElementById(i)},v=document.querySelector('video'),pl=$('pl'),"
-            "vw=$('vw'),sc=$('sc'),S=[.1,.25,.5,1,1.5,2],si=3,fps=60,z=1,x=0,y=0,lastMT=-1,best=0,ticks=[];"
+            "vw=$('vw'),sc=$('sc'),ln=$('ln'),lb=$('lb'),S=[.1,.25,.5,1,1.5,2],si=3,fps=60,z=1,x=0,y=0,lastMT=-1,"
+            "best=0,ticks=[],evs=[],quiet=0;"
             "function clock(s){s=Math.max(0,Math.floor(s));var h=Math.floor(s/3600),m=Math.floor(s/60)%60,r=s%60;"
             "return(h?h+':'+(m<10?'0':''):'')+m+':'+(r<10?'0':'')+r}"
             "v.controls=false;$('ct').hidden=false;"
@@ -1068,10 +1143,26 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "9.5a3.5 3.5 0 0 1 0 5':'M4 9h4l5-4v14l-5-4H4zM16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10')}"
             "function marks(){var d=D(),tk=$('tk');if(!d||tk.childNodes.length)return;"
             "function add(t,pv){if(t<0||t>d)return;var i=document.createElement('i');"
-            "i.className='tick'+(pv?' pv':'');i.style.left=t/d*100+'%';tk.appendChild(i);ticks.push(t)}"
+            "i.className='tick'+(pv?' pv':'');i.style.left=t/d*100+'%';tk.appendChild(i);ticks.push(t);return i}"
             "if(CB.pv>0&&CB.pv<d){add(CB.pv,1);var k=$('kw');k.hidden=false;"
             "k.textContent='Keep watching from '+clock(CB.pv);k.onclick=function(){go(CB.pv);v.play()}}"
-            "CB.m.forEach(function(m){add(m[0])})}"
+            "CB.m.forEach(function(m){var i=add(m[0]);if(!i||!ln)return;var b=document.createElement('button'),"
+            "e={t:m[0],b:b,i:i,l:m[1],x:0};b.className='ev';b.type='button';b.setAttribute('aria-label',m[1]);"
+            "b.innerHTML='<svg viewBox=\"0 0 14 14\"><use href=\"#ei-'+m[2]+'\"/></svg>';"
+            "b.onclick=function(){go(e.t);say(e,1)};b.onpointerenter=function(){say(e)};"
+            "b.onpointerleave=function(p){if(p.pointerType=='mouse')hush()};ln.appendChild(b);evs.push(e)});"
+            "evs.sort(function(a,b){return a.t-b.t});lay()}"
+            // Each icon over its moment on the bar, nudged apart where they would overlap, and kept inside the bar
+            "function lay(){if(!evs.length)return;var W=ln.clientWidth,g=evs[0].b.offsetWidth+2,h=g/2,d=D(),i;"
+            "for(i=0;i<evs.length;i++){var e=evs[i];e.x=Math.max(h,e.t/d*W,i?evs[i-1].x+g:0)}"
+            "for(i=evs.length-1;i>=0;i--)evs[i].x=Math.max(h,Math.min(evs[i].x,W-h,i<evs.length-1?evs[i+1].x-g:W));"
+            "evs.forEach(function(e){e.b.style.left=e.x+'px'})}"
+            // The label beside its icon: to its right, or to its left where the bar ends
+            "function say(e,tap){hush();lb.textContent=e.l;lb.hidden=false;e.b.classList.add('on');"
+            "e.i.classList.add('on');var w=lb.offsetWidth,W=ln.clientWidth,g=e.b.offsetWidth/2+4,"
+            "l=e.x+g+w<=W?e.x+g:Math.max(0,e.x-g-w);lb.style.left=l+'px';if(tap)quiet=setTimeout(hush,2500)}"
+            "function hush(){clearTimeout(quiet);if(lb)lb.hidden=true;evs.forEach(function(e){"
+            "e.b.classList.remove('on');e.i.classList.remove('on')})}"
             "function go(t){v.currentTime=Math.min(D()||t,Math.max(0,t));ui()}"
             "function step(n){v.pause();go(Math.round(v.currentTime*fps+n)/fps)}"
             "function speed(n){si=Math.min(S.length-1,Math.max(0,si+n));v.playbackRate=S[si];"
@@ -1103,7 +1194,8 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "vw.onpointermove=function(e){if(!pan)return;var dx=e.clientX-pan.x,dy=e.clientY-pan.y;"
             "if(Math.abs(dx)+Math.abs(dy)>4)pan.m=1;if(pan.m&&z>1){vw.classList.add('d');x=pan.ox+dx;y=pan.oy+dy;zoom()}};"
             "vw.onpointerup=function(){if(pan&&!pan.m)toggle();pan=null;vw.classList.remove('d')};"
-            "vw.ondblclick=unzoom;$('zr').onclick=unzoom;window.addEventListener('resize',zoom);"
+            "vw.onpointercancel=function(){pan=null;vw.classList.remove('d')};"
+            "vw.ondblclick=unzoom;$('zr').onclick=unzoom;window.addEventListener('resize',function(){zoom();lay()});"
             "$('pb').onclick=toggle;$('fb').onclick=function(){step(-1)};$('ff').onclick=function(){step(1)};"
             "$('sl').onclick=function(){speed(-1)};$('sf').onclick=function(){speed(1)};"
             "function mute(){if(v.muted||!v.volume){v.muted=false;if(!v.volume)v.volume=1}else v.muted=true}"
@@ -2115,32 +2207,31 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
                      copy ? s.social_h : s.page_h, tw, th, json, card.title, card.line, emoji,
                      copy && s.preview > 0 && s.seconds > s.preview ? s.preview : 0, s.marks, icon,
                      g_app.config.accent, art};
-    static thread_local char html[131072];
+    static thread_local char html[262144];
     i32 n = r2_page_html(p, paused, html, sizeof html);
     free(icon);
     free(art);
     return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
 }
 
-// Whether a page's marker list has one titled `note` within a tenth of a second of `at`
-static bool r2_marks_have(const char *marks, f64 at, const char *note)
+// One of a page's markers: "<seconds> <icon> <label>", the icon the marker's evi_key ("-" for none), the label its
+// note ("Marker" for none) then ": <weapon>" when its detail names a weapon the note doesn't ("Kill: MP-133").
+static void r2_mark_entry(f64 at, const char *note, const char *detail, char *out, i32 cap)
 {
-    for (const char *p = marks; *p;) {
-        const char *end = strchr(p, '\x1f');
-        size_t len = end ? (size_t)(end - p) : strlen(p);
-        char *after = 0;
-        f64 t = strtod(p, &after);
-        if (after && *after == ' ' && fabs(t - at) < 0.1 && strlen(note) == len - (size_t)(after + 1 - p) &&
-            !strncmp(after + 1, note, len - (size_t)(after + 1 - p)))
-            return true;
-        p += len + (end ? 1 : 0);
-    }
-    return false;
+    char key[32], weapon[64];
+    evi_key_of_marker(detail ? detail : "", key, sizeof key);
+    const char *label = note && note[0] ? note : "Marker";
+    bool armed = detail && marker_detail_get(detail, "weapon", weapon, sizeof weapon) && weapon[0] && !strstr(label, weapon);
+    snprintf(out, cap, "%.3f %s %s%s%s", at, key[0] ? key : "-", label, armed ? ": " : "", armed ? weapon : "");
+    for (char *c = out; *c; c++)
+        if ((u8)*c < 0x20) *c = ' ';
 }
 
-// The clip's markers, from its chapters (save.cpp writes one per marker, and in a session one where each game
-// starts): "<seconds> <title>" each, split by R2_MARK_SEP. A chapter at the very start is left out: it is only the
-// lead-in. "" when there are none or ffprobe can't.
+// The clip's markers for its page, r2_mark_entry each, split by R2_MARK_SEP: its chapters (save.cpp writes one per
+// marker, and in a session one where each game starts), then the markers that came after a Rekodr video was saved
+// (its layers file) that a render doesn't have already. A marker's icon and weapon come from its detail: the
+// markers in the clip's time, found through its layers file. A chapter at the very start is left out: it is only
+// the lead-in. "" when there are none or ffprobe can't.
 static void r2_probe_marks(const Path &file, const Path &ffmpeg, char *out, i32 cap)
 {
     out[0] = 0;
@@ -2152,32 +2243,49 @@ static void r2_probe_marks(const Path &file, const Path &ffmpeg, char *out, i32 
     arg_list(args, COUNT(args), head, COUNT(head));
     cmd_arg(args, COUNT(args), file.s);
     if (proc_run(ffprobe_for(ffmpeg).s, args, 20000, text, sizeof text) != 0) return;
-    i32 len = 0;
+    // The markers in the clip, in its time, with their details; and the late ones
+    static thread_local Marker known[512], late[256], found[256];
+    static thread_local Piece pieces[512];
+    i32 nk = 0, nl = 0, nf = 0;
+    const Path &save_dir = g_app.config.save_dir;
+    size_t root = wcslen(save_dir.s);
+    if (root && !_wcsnicmp(file.s, save_dir.s, root) && file.s[root] == L'\\') {
+        Path layers = layers_video_path(save_dir, file);
+        i32 np = 0, unused = 0;
+        if (layers_file_marks(layers, pieces, COUNT(pieces), &np, late, COUNT(late), &unused))
+            for (i32 k = 0; k < np && nk < COUNT(known); k++) {
+                i32 got = markers_in(pieces[k].start_us, pieces[k].end_us, known + nk, COUNT(known) - nk);
+                for (i32 i = 0; i < got; i++) known[nk + i].t_us = file_time(pieces, np, known[nk + i].t_us);
+                nk += got;
+            }
+        nl = layers_marks_read(layers, late, COUNT(late));
+    }
+    auto same = [](const Marker &m, f64 at, const char *note) {
+        return fabs(m.t_us / 1e6 - at) < 0.1 && !strcmp(m.note[0] ? m.note : "Marker", note);
+    };
     f64 start = -1;
     char *ctx = 0;
     for (char *line = strtok_s(text, "\r\n", &ctx); line; line = strtok_s(0, "\r\n", &ctx)) {
         if (!strncmp(line, "start_time=", 11)) start = atof(line + 11);
-        else if (!strncmp(line, "TAG:title=", 10) && start >= 0.05) {
-            char one[300];
-            snprintf(one, sizeof one, "%.3f %s", start, line + 10);
-            for (char *c = one; *c; c++)
-                if ((u8)*c < 0x20) *c = ' ';
-            i32 n = (i32)strlen(one) + (len ? 1 : 0);
-            if (len + n < cap) len += snprintf(out + len, cap - len, "%s%s", len ? "\x1f" : "", one);
+        else if (!strncmp(line, "TAG:title=", 10) && start >= 0.05 && nf < COUNT(found)) {
+            Marker &m = found[nf++];
+            m = {};
+            m.t_us = (i64)llround(start * 1e6);
+            str_set(m.note, line + 10);
+            for (i32 i = 0; i < nk; i++)
+                if (same(known[i], start, m.note)) str_set(m.detail, known[i].detail);
             start = -1;
         } else if (!strcmp(line, "[/CHAPTER]")) start = -1;
     }
-    // The markers that came after a Rekodr video was saved (its layers file), unless a render has them already
-    const Path &save_dir = g_app.config.save_dir;
-    size_t root = wcslen(save_dir.s);
-    if (!root || _wcsnicmp(file.s, save_dir.s, root) || file.s[root] != L'\\') return;
-    static thread_local Marker late[256];
-    i32 nl = layers_marks_read(layers_video_path(save_dir, file), late, COUNT(late));
-    for (i32 i = 0; i < nl; i++) {
-        char one[300];
-        snprintf(one, sizeof one, "%.3f %s", late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker");
-        if (late[i].t_us < 50000 || marker_local(late[i].detail) || r2_marks_have(out, late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker"))
-            continue;
+    for (i32 i = 0; i < nl && nf < COUNT(found); i++) {
+        bool have = false;
+        for (i32 j = 0; j < nf && !have; j++) have = same(found[j], late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker");
+        if (late[i].t_us >= 50000 && !marker_local(late[i].detail) && !have) found[nf++] = late[i];
+    }
+    i32 len = 0;
+    for (i32 i = 0; i < nf; i++) {
+        char one[400];
+        r2_mark_entry(found[i].t_us / 1e6, found[i].note, found[i].detail, one, sizeof one);
         i32 n = (i32)strlen(one) + (len ? 1 : 0);
         if (len + n < cap) len += snprintf(out + len, cap - len, "%s%s", len ? "\x1f" : "", one);
     }
