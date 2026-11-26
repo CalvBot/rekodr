@@ -105,7 +105,7 @@ static bool install_shortcut(const InstallPlace &p)
     link->SetPath(p.exe.s);
     link->SetWorkingDirectory(p.dir.s);
     link->SetIconLocation(p.exe.s, 0);
-    link->SetDescription(L"Save clips from the last minutes of play");
+    link->SetDescription(L"Save clips from the last hours of play");
     IPersistFile *file = 0;
     bool ok = SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&file))) && SUCCEEDED(file->Save(p.shortcut.s, TRUE));
     if (file) file->Release();
