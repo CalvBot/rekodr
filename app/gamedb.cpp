@@ -680,20 +680,30 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// A running copy of an exe: its command line and the title of its window, for the exes several games share.
+// A running copy of an exe, for the exes several games share: its command line, the title of its window, and when
+// asked for, where it runs from (UTF-8) and the file name of the program that started it ("" when it has ended).
 
-static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *title, i32 title_cap)
+static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *title, i32 title_cap, char *image = 0,
+                          i32 image_cap = 0, char *parent = 0, i32 parent_cap = 0)
 {
     cmdline[0] = title[0] = 0;
+    if (image) image[0] = 0;
+    if (parent) parent[0] = 0;
     wchar_t want[MAX_PATH];
     utf8_to_wide(exe, want, MAX_PATH);
-    DWORD pid = 0;
+    DWORD pid = 0, ppid = 0;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return false;
     PROCESSENTRY32W pe = {};
     pe.dwSize = sizeof pe;
     for (BOOL ok = Process32FirstW(snap, &pe); ok && !pid; ok = Process32NextW(snap, &pe))
-        if (!_wcsicmp(pe.szExeFile, want)) pid = pe.th32ProcessID;
+        if (!_wcsicmp(pe.szExeFile, want)) pid = pe.th32ProcessID, ppid = pe.th32ParentProcessID;
+    if (pid && parent && ppid)
+        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe))
+            if (pe.th32ProcessID == ppid) {
+                wide_to_utf8(pe.szExeFile, parent, parent_cap);
+                break;
+            }
     CloseHandle(snap);
     if (!pid) return false;
 
@@ -701,6 +711,11 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     typedef LONG(WINAPI * QueryFn)(HANDLE, ULONG, void *, ULONG, ULONG *);
     static QueryFn query = (QueryFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
     HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (p && image) {
+        wchar_t full[MAX_PATH * 2];
+        DWORD n = COUNT(full);
+        if (QueryFullProcessImageNameW(p, 0, full, &n)) wide_to_utf8(full, image, image_cap);
+    }
     if (p && query) {
         static thread_local u8 buf[65552]; // the most a UNICODE_STRING holds, and itself
         ULONG got = 0;
@@ -729,6 +744,61 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     }, (LPARAM)&find);
     wide_to_utf8(find.title, title, title_cap);
     return true;
+}
+
+// Games other than Minecraft that run as java.exe or javaw.exe. Which one a running java is goes by where it runs
+// from (the Java each ships in its own folder), then by the program that started it, then by its command line;
+// each test is tried on every game before the next. Lists are |-separated, lower case, with / for \. A java that
+// is one of these is never taken for Minecraft.
+struct JavaGame {
+    const char *name;
+    u32 steam;
+    const char *folders, *parents, *args;
+};
+static const JavaGame g_java_games[] = {
+    {"Starsector", 0, "/starsector/", "starsector.exe", "com.fs.starfarer."},
+    {"Slay the Spire", 646570, "/slaythespire/jre/", "", "mts-launcher.jar|modthespire"}, // played with mods
+    {"Spiral Knights", 99900, "/spiral knights/java_vm/", "", "com.threerings.projectx."},
+    {"Puzzle Pirates", 99910, "/puzzle pirates/java_vm/", "", "com.threerings.yohoho."},
+    {"Wakfu", 215080, "/wakfu/jre/", "ankama launcher.exe", ""},
+    {"StarMade", 244770, "/starmade/", "", "starmade.jar"},
+    {"Wurm Unlimited", 366220, "/wurm unlimited/", "", ""},
+    {"Wurm Online", 1179680, "/wurm online/", "wurmlauncher64.exe|wurmlauncher.exe", ""},
+};
+
+static bool is_java_exe(const char *exe) { return !_stricmp(exe, "java.exe") || !_stricmp(exe, "javaw.exe"); }
+
+// Whether any of a |-separated list is in `s` (`whole`: is all of it).
+static bool java_list_has(const char *list, const char *s, bool whole)
+{
+    for (const char *p = list; *p;) {
+        const char *e = strchr(p, '|');
+        i32 n = (i32)(e ? e - p : strlen(p));
+        char one[96];
+        snprintf(one, sizeof one, "%.*s", n, p);
+        if (one[0] && (whole ? !strcmp(s, one) : strstr(s, one) != 0)) return true;
+        p = e ? e + 1 : p + n;
+    }
+    return false;
+}
+
+// The Java game a running java is, from where it runs from, its parent's file name and its command line (any may
+// be ""). 0 if none of them.
+static const JavaGame *java_game(const char *image, const char *parent, const char *cmdline)
+{
+    static thread_local char low[3][32768];
+    const char *in[3] = {image, parent, cmdline};
+    for (i32 k = 0; k < 3; k++) {
+        i32 n = 0;
+        for (; in[k][n] && n < (i32)sizeof low[k] - 1; n++) low[k][n] = in[k][n] == '\\' ? '/' : (char)tolower((u8)in[k][n]);
+        low[k][n] = 0;
+    }
+    for (i32 k = 0; k < 3; k++)
+        for (const JavaGame &g : g_java_games) {
+            const char *list = k == 0 ? g.folders : k == 1 ? g.parents : g.args;
+            if (low[k][0] && java_list_has(list, low[k], k == 1)) return &g;
+        }
+    return 0;
 }
 
 static void sessions_game_renamed(const char *exe); // sessions.cpp
@@ -1007,7 +1077,7 @@ static void gamedb_clip_game(const LibItem &it, const char *from, const char *to
 // one only a Game folder rule sorts becomes an App (steam_type_check). With the service on, a game is looked up
 // there; Discord's list names it while it is asked, and when the service can't be. An exe several games share is
 // told apart by its command line: by the strings the service asks about, or by Discord's entries (else its window
-// naming a game in the list). One neither knows goes by its exe's name until it is named by hand. Main thread. True if something about it changed.
+// naming a game in the list). A java that is one of the Java games (java_game) is that game, without asking. One neither knows goes by its exe's name until it is named by hand. Main thread. True if something about it changed.
 static bool gamedb_name_app(AppInfo *a)
 {
     GameInfo g;
@@ -1015,8 +1085,22 @@ static bool gamedb_name_app(AppInfo *a)
     static char cmd[32768];
     char title[256];
     cmd[0] = title[0] = 0;
+    bool java = false;
+    if (!known && is_java_exe(a->exe.s)) {
+        char image[MAX_PATH * 2], parent[MAX_PATH];
+        facts = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title, image, sizeof image, parent, sizeof parent);
+        const JavaGame *j = facts ? java_game(image, parent, cmd) : 0;
+        if (j) {
+            if (!gamedb_by_name(j->name, &g)) {
+                g = {};
+                str_set(g.name, j->name);
+            }
+            if (!g.steam) g.steam = j->steam;
+            known = java = true;
+        }
+    }
     if (!known && shared) {
-        facts = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title);
+        if (!facts) facts = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title);
         if (facts) {
             DEV_LOG("gamedb: %s is shared; its window is \"%s\", its command line ends \"%s\"", a->exe.s, title,
                     strlen(cmd) > 400 ? cmd + strlen(cmd) - 400 : cmd);
@@ -1025,7 +1109,7 @@ static bool gamedb_name_app(AppInfo *a)
     }
     AppCategory cat = app_category(g_app.config, *a);
     bool software = false, sorted = false;
-    if (gamedb_service_on() && a->path[0] && (cat == CAT_GAME || cat == CAT_NONE)) {
+    if (!java && gamedb_service_on() && a->path[0] && (cat == CAT_GAME || cat == CAT_NONE)) {
         static char body[16384], has[2048];
         LookAnswer ans = {};
         bool game = cat == CAT_GAME || known || shared;

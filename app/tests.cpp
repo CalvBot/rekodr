@@ -2049,6 +2049,26 @@ static void test_gamedb()
     // Its window naming the game is a fair guess when the command line doesn't say
     T(gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "javaw org.launcher.EntryPoint", "Minecraft 1.7.10", &g) && !strcmp(g.id, "1"));
     T(gamedb_by_exe("hl2.exe", "D:\\steamapps\\common\\GarrysMod\\hl2.exe", "hl2.exe -game garrysmod", "", &g) && !strcmp(g.id, "4"));
+    // A Java game: by the Java in its folder, then by what started it, then by its command line
+    {
+        auto jg = [](const char *image, const char *parent, const char *cmd) {
+            const JavaGame *j = java_game(image, parent, cmd);
+            return j ? j->name : "";
+        };
+        T(!strcmp(jg("D:\\SteamLibrary\\steamapps\\common\\Spiral Knights\\java_vm\\bin\\javaw.exe", "steam.exe", ""), "Spiral Knights"));
+        T(!strcmp(jg("C:\\Games\\SteamApps\\common\\SlayTheSpire\\jre\\bin\\javaw.exe", "", "javaw -jar mts-launcher.jar"), "Slay the Spire"));
+        T(!strcmp(jg("E:\\Steam\\steamapps\\common\\Wurm Unlimited\\jre\\bin\\java.exe", "WurmLauncher64.exe", ""), "Wurm Unlimited"));
+        T(!strcmp(jg("C:\\Program Files\\Java\\bin\\java.exe", "WurmLauncher64.exe", ""), "Wurm Online"));
+        T(!strcmp(jg("C:\\Program Files\\Java\\bin\\java.exe", "Starsector.exe", ""), "Starsector"));
+        T(!strcmp(jg("C:\\Program Files\\Java\\bin\\java.exe", "", "java -cp x com.fs.starfarer.StarfarerLauncher"), "Starsector"));
+        T(!strcmp(jg("C:\\Java\\bin\\javaw.exe", "cmd.exe", "javaw -jar StarMade.jar -force"), "StarMade"));
+        T(!strcmp(jg("C:\\Users\\x\\AppData\\Local\\Ankama\\Wakfu\\jre\\bin\\java.exe", "", ""), "Wakfu"));
+        T(!strcmp(jg("", "", "javaw com.threerings.yohoho.client.YoClient"), "Puzzle Pirates"));
+        // Minecraft, and a parent's name only as a whole file name
+        T(!strcmp(jg("C:\\java\\bin\\javaw.exe", "MinecraftLauncher.exe", "javaw net.minecraft.client.main.Main"), ""));
+        T(!strcmp(jg("C:\\java\\bin\\javaw.exe", "notstarsector.exe", ""), ""));
+        T(!strcmp(jg("", "", ""), ""));
+    }
     // A game the list doesn't have still gets an id for its art, the same for the same letters
     GameInfo h;
     T(gamedb_for_art("Hollow Knight", &g) && g.id[0] == 'n' && !strcmp(g.name, "Hollow Knight"));
