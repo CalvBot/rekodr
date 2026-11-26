@@ -345,15 +345,143 @@ static void buffer_for_free(f64 free_gb, f32 *buffer_gb, f32 *min_free_gb)
     *min_free_gb = (f32)fmin(50, floor(free_gb / 5));
 }
 
+// The apps sorted on first start, each only when it is installed for this user (first_app_installed). `where`
+// lists the places that show it is, separated by ';':
+//   %VAR%\path       a file that exists, environment variables expanded
+//   pkg:<family>     a Store package family registered for this user
+//   reg:<key>|<val>  a value under HKEY_CURRENT_USER holding the path of a file that exists
+// An exe registered under App Paths (for this user or the PC) counts too. Exes are lower case, as heard.
+#include <appmodel.h> // GetPackagesByPackageFamily
+struct FirstApp {
+    const char *exe, *name;
+    AppCategory category;
+    const char *where;
+};
+static const FirstApp FIRST_APPS[] = {
+    // Chat
+    {"discord.exe", "Discord", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Discord\\Update.exe"},
+    {"discordptb.exe", "Discord PTB", CAT_COMMUNICATION, "%LOCALAPPDATA%\\DiscordPTB\\Update.exe"},
+    {"discordcanary.exe", "Discord Canary", CAT_COMMUNICATION, "%LOCALAPPDATA%\\DiscordCanary\\Update.exe"},
+    {"vesktop.exe", "Vesktop", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Programs\\vesktop\\Vesktop.exe"},
+    {"ms-teams.exe", "Microsoft Teams", CAT_COMMUNICATION, "pkg:MSTeams_8wekyb3d8bbwe"},
+    {"zoom.exe", "Zoom", CAT_COMMUNICATION, "%APPDATA%\\Zoom\\bin\\Zoom.exe;%ProgramFiles%\\Zoom\\bin\\Zoom.exe"},
+    {"slack.exe", "Slack", CAT_COMMUNICATION,
+     "%LOCALAPPDATA%\\slack\\slack.exe;%ProgramFiles%\\Slack\\slack.exe;pkg:91750D7E.Slack_8she8kybcnzg4"},
+    {"ts3client_win64.exe", "TeamSpeak 3", CAT_COMMUNICATION,
+     "%ProgramFiles%\\TeamSpeak 3 Client\\ts3client_win64.exe;%LOCALAPPDATA%\\TeamSpeak 3 Client\\ts3client_win64.exe"},
+    {"teamspeak.exe", "TeamSpeak", CAT_COMMUNICATION,
+     "%LOCALAPPDATA%\\Programs\\TeamSpeak\\TeamSpeak.exe;%ProgramFiles%\\TeamSpeak\\TeamSpeak.exe"},
+    {"telegram.exe", "Telegram", CAT_COMMUNICATION,
+     "%APPDATA%\\Telegram Desktop\\Telegram.exe;pkg:TelegramMessengerLLP.TelegramDesktop_t4vj0pshhgkwm"},
+    {"whatsapp.exe", "WhatsApp", CAT_COMMUNICATION, "pkg:5319275A.WhatsAppDesktop_cv1g1gvanyjgm"},
+    {"whatsapp.root.exe", "WhatsApp", CAT_COMMUNICATION, "pkg:5319275A.WhatsAppDesktop_cv1g1gvanyjgm"},
+    {"signal.exe", "Signal", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Programs\\signal-desktop\\Signal.exe"},
+    {"mumble.exe", "Mumble", CAT_COMMUNICATION,
+     "%ProgramFiles%\\Mumble\\client\\mumble.exe;%ProgramFiles%\\Mumble\\mumble.exe"},
+    {"guilded.exe", "Guilded", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Programs\\Guilded\\Guilded.exe"},
+    {"element.exe", "Element", CAT_COMMUNICATION, "%LOCALAPPDATA%\\element-desktop\\Element.exe"},
+    // Music and Windows' media apps, each on a track of its own
+    {"spotify.exe", "Spotify", CAT_APP, "%APPDATA%\\Spotify\\Spotify.exe;pkg:SpotifyAB.SpotifyMusic_zpdnekdrzrea0"},
+    {"applemusic.exe", "Apple Music", CAT_APP, "pkg:AppleInc.AppleMusicWin_nzyj5cx40ttqa"},
+    {"microsoft.media.player.exe", "Media Player", CAT_APP, "pkg:Microsoft.ZuneMusic_8wekyb3d8bbwe"},
+    {"photos.exe", "Photos", CAT_APP, "pkg:Microsoft.Windows.Photos_8wekyb3d8bbwe"},
+    {"video.ui.exe", "Movies & TV", CAT_APP, "pkg:Microsoft.ZuneVideo_8wekyb3d8bbwe"},
+    // Launchers, overlays and Windows itself: never recorded
+    {"steam.exe", "Steam", CAT_IGNORED, "reg:Software\\Valve\\Steam|SteamExe;%ProgramFiles(x86)%\\Steam\\steam.exe"},
+    {"steamwebhelper.exe", "Steam", CAT_IGNORED,
+     "reg:Software\\Valve\\Steam|SteamExe;%ProgramFiles(x86)%\\Steam\\steam.exe"},
+    {"epicgameslauncher.exe", "Epic Games Launcher", CAT_IGNORED,
+     "%ProgramFiles(x86)%\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe;"
+     "%ProgramFiles%\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe"},
+    {"battle.net.exe", "Battle.net", CAT_IGNORED,
+     "%ProgramFiles(x86)%\\Battle.net\\Battle.net.exe;%ProgramFiles%\\Battle.net\\Battle.net.exe"},
+    {"riot client.exe", "Riot Client", CAT_IGNORED, "%SystemDrive%\\Riot Games\\Riot Client\\RiotClientServices.exe"},
+    {"nvidia overlay.exe", "NVIDIA Overlay", CAT_IGNORED,
+     "%ProgramFiles%\\NVIDIA Corporation\\NVIDIA app\\CEF\\NVIDIA Overlay.exe;"
+     "%ProgramFiles%\\NVIDIA Corporation\\NVIDIA GeForce Experience\\NVIDIA Overlay.exe"},
+    {"obs64.exe", "OBS Studio", CAT_IGNORED, "%ProgramFiles%\\obs-studio\\bin\\64bit\\obs64.exe"},
+    {"xboxpcapp.exe", "Xbox", CAT_IGNORED, "pkg:Microsoft.GamingApp_8wekyb3d8bbwe"},
+    {"gamebar.exe", "Game Bar", CAT_IGNORED, "pkg:Microsoft.XboxGamingOverlay_8wekyb3d8bbwe"},
+    {"phoneexperiencehost.exe", "Phone Link", CAT_IGNORED, "pkg:Microsoft.YourPhone_8wekyb3d8bbwe"},
+    {"clipchamp.exe", "Clipchamp", CAT_IGNORED, "pkg:Clipchamp.Clipchamp_yxz26nhyzhsrt"},
+    {"systemsettings.exe", "Settings", CAT_IGNORED, "%WINDIR%\\ImmersiveControlPanel\\SystemSettings.exe"},
+    {"explorer.exe", "File Explorer", CAT_IGNORED, "%WINDIR%\\explorer.exe"},
+};
+
+static bool file_exists_w(const wchar_t *path)
+{
+    DWORD a = GetFileAttributesW(path);
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// Whether one place in a FirstApp's `where` shows it installed.
+static bool first_app_place(const char *place)
+{
+    wchar_t w[MAX_PATH * 2], path[MAX_PATH * 2];
+    if (starts_with(place, "pkg:")) {
+        utf8_to_wide(place + 4, w, COUNT(w));
+        UINT32 count = 0, buf = 0;
+        LONG r = GetPackagesByPackageFamily(w, &count, 0, &buf, 0);
+        return (r == ERROR_SUCCESS || r == ERROR_INSUFFICIENT_BUFFER) && count > 0;
+    }
+    if (starts_with(place, "reg:")) {
+        utf8_to_wide(place + 4, w, COUNT(w));
+        wchar_t *bar = wcschr(w, L'|');
+        if (!bar) return false;
+        *bar = 0;
+        DWORD bytes = sizeof path;
+        if (RegGetValueW(HKEY_CURRENT_USER, w, bar + 1, RRF_RT_REG_SZ, 0, path, &bytes) != ERROR_SUCCESS) return false;
+        for (wchar_t *p = path; *p; p++) // Steam writes its path with forward slashes
+            if (*p == L'/') *p = L'\\';
+        return file_exists_w(path);
+    }
+    utf8_to_wide(place, w, COUNT(w));
+    DWORD n = ExpandEnvironmentStringsW(w, path, COUNT(path));
+    return n && n <= COUNT(path) && !wcschr(path, L'%') && file_exists_w(path);
+}
+
+// Whether a FirstApp is installed for this user: one of its places, or its exe under App Paths.
+static bool first_app_installed(const FirstApp &a)
+{
+    char place[MAX_PATH * 2];
+    for (const char *p = a.where; *p;) {
+        const char *end = strchr(p, ';');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        snprintf(place, sizeof place, "%.*s", (int)len, p);
+        if (place[0] && first_app_place(place)) return true;
+        p += len + (end ? 1 : 0);
+    }
+    wchar_t key[MAX_PATH], exe[64], path[MAX_PATH * 2];
+    utf8_to_wide(a.exe, exe, COUNT(exe));
+    swprintf(key, COUNT(key), L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\%s", exe);
+    static const HKEY roots[] = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    for (i32 r = 0; r < COUNT(roots); r++) {
+        DWORD bytes = sizeof path;
+        if (RegGetValueW(roots[r], key, 0, RRF_RT_REG_SZ, 0, path, &bytes) != ERROR_SUCCESS) continue;
+        wchar_t *from = path[0] == L'"' ? path + 1 : path;
+        if (wchar_t *q = wcschr(from, L'"')) *q = 0;
+        if (file_exists_w(from)) return true;
+    }
+    return false;
+}
+
+// Sorts the FIRST_APPS that `installed` says are on this PC, with their names. Nothing for the others.
+static void config_first_apps(Config *c, bool (*installed)(const FirstApp &))
+{
+    for (i32 i = 0; i < COUNT(FIRST_APPS); i++) {
+        const FirstApp &f = FIRST_APPS[i];
+        if (!installed(f)) continue;
+        AppInfo *a = config_app(c, f.exe);
+        if (!a) continue;
+        a->category = f.category;
+        str_set(a->name.s, f.name);
+    }
+}
+
 // The first settings, when there's no settings.txt yet: the defaults, the buffer sized to the free space on its
-// drive, and the usual chat apps sorted as Chat. The caller saves them.
+// drive, and the installed FIRST_APPS sorted. The caller saves them.
 static void config_first_run(Config *c, const Paths &paths)
 {
-    static const char *const chat[] = {
-        "discord.exe", "discordptb.exe", "discordcanary.exe", "ms-teams.exe", "teams.exe", "zoom.exe", "slack.exe",
-        "ts3client_win64.exe", "teamspeak.exe", "skype.exe", "telegram.exe", "whatsapp.exe", "signal.exe",
-        "mumble.exe", "guilded.exe", "element.exe", "vesktop.exe",
-    };
     config_defaults(c, paths);
     wchar_t root[4] = {c->buffer_dir.s[0], L':', L'\\', 0};
     ULARGE_INTEGER free_bytes;
@@ -364,10 +492,7 @@ static void config_first_run(Config *c, const Paths &paths)
         log_line("first start: %.0f GB free on %ls, buffer %.0f GB, keeping %.0f GB free", free_gb, root, c->buffer_gb,
                  c->min_free_gb);
     }
-    for (i32 i = 0; i < COUNT(chat); i++) {
-        AppInfo *a = config_app(c, chat[i]);
-        if (a) a->category = CAT_COMMUNICATION;
-    }
+    config_first_apps(c, first_app_installed);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

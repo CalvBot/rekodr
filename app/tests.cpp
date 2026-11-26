@@ -772,6 +772,57 @@ static void test_first_run()
     T(setup_clip_key(c, keys, sizeof keys, &secs) && !strcmp(keys, "Alt+F7") && secs == 45);
 }
 
+static bool test_has_spotify_steam(const FirstApp &a) { return strstr(a.where, "Spotify") || strstr(a.where, "Valve"); }
+static bool test_has_none(const FirstApp &) { return false; }
+
+static void test_first_apps()
+{
+    // Only what is installed is added, with its category and name
+    Config c = {};
+    config_first_apps(&c, test_has_none);
+    T(c.app_count == 0);
+    config_first_apps(&c, test_has_spotify_steam);
+    T(c.app_count == 3);
+    const AppInfo *spotify = 0, *steam = 0, *helper = 0;
+    for (i32 i = 0; i < c.app_count; i++) {
+        if (!strcmp(c.apps[i].exe.s, "spotify.exe")) spotify = &c.apps[i];
+        if (!strcmp(c.apps[i].exe.s, "steam.exe")) steam = &c.apps[i];
+        if (!strcmp(c.apps[i].exe.s, "steamwebhelper.exe")) helper = &c.apps[i];
+    }
+    T(spotify && spotify->category == CAT_APP && !strcmp(spotify->name.s, "Spotify"));
+    T(steam && steam->category == CAT_IGNORED && helper && helper->category == CAT_IGNORED);
+
+    // Every entry: a lower-case exe, listed once, with at least one place to look
+    for (i32 i = 0; i < COUNT(FIRST_APPS); i++) {
+        const FirstApp &f = FIRST_APPS[i];
+        bool lower = true;
+        for (const char *p = f.exe; *p; p++) lower &= !(*p >= 'A' && *p <= 'Z');
+        size_t n = strlen(f.exe);
+        T(lower && n > 4 && !strcmp(f.exe + n - 4, ".exe") && f.name[0] && f.where[0]);
+        for (i32 k = 0; k < i; k++) T(strcmp(FIRST_APPS[k].exe, f.exe) != 0);
+    }
+
+    // The places: a file after expanding variables, a Store package, a registry value
+    wchar_t temp[MAX_PATH], file[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(file, MAX_PATH, L"%srekodr_first_app.exe", temp);
+    DeleteFileW(file);
+    SetEnvironmentVariableW(L"REKODR_TEST_DIR", temp);
+    FirstApp probe = {"rekodr_first_app.exe", "Probe", CAT_APP, "%REKODR_TEST_DIR%\\rekodr_first_app.exe"};
+    T(!first_app_installed(probe));
+    FILE *f = _wfopen(file, L"wb");
+    T(f != 0);
+    if (f) fclose(f);
+    T(first_app_installed(probe));
+    DeleteFileW(file);
+    T(!first_app_installed(probe));
+    T(!first_app_place("%REKODR_NO_SUCH_VAR%\\x.exe")); // an unknown variable is never a match
+    T(!first_app_place("pkg:Rekodr.NoSuchPackage_0000000000000"));
+    T(!first_app_place("reg:Software\\Rekodr\\NoSuchKey|Path"));
+    T(first_app_place("%WINDIR%\\explorer.exe"));
+    SetEnvironmentVariableW(L"REKODR_TEST_DIR", 0);
+}
+
 static void test_game_guess()
 {
     char g[64];
@@ -4371,6 +4422,7 @@ int main()
     test_game_from_name();
     test_game_guess();
     test_first_run();
+    test_first_apps();
     test_telemetry();
     test_backup();
     test_backup_places();
