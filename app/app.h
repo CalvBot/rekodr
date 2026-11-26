@@ -275,6 +275,10 @@ struct Config {
     i32 timeline_names; // Timeline: the track names' column, in pixels at 100% (its edge is dragged); 0 = the default
     i32 timeline_lane; // Timeline: a sound lane's height, in pixels at 100% (Shift+wheel); 0 = as tall as fits
     bool timeline_simple; // Timeline: the sound in four lanes (Mic, Game, Chat, Apps) instead of one per app
+    // Timeline: the rows shown, |-separated: "Clips", "Sessions", and layers by name (Clips|Sessions)
+    char timeline_show[512];
+    bool front_window;      // the Front window layer is recorded (on)
+    char plugins_off[512];  // plugin folders switched off, |-separated
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default
     f32 editor_top;     // Editor: the share of its height above the timeline (the splitter); 0 = the default
     i32 editor_lane;    // Editor: a timeline lane's height, in pixels at 100% (Shift + wheel); 0 = the default
@@ -534,18 +538,22 @@ struct ItemKey {
 };
 
 // Layers (layers.cpp): samples from a source on the wall clock, kept beside the buffer and written into each clip
-enum LayerKind : u8 { LAYER_VALUE, LAYER_TEXT, LAYER_INPUT, LAYER_KINDS };
-enum { LAYER_MAX = 16, LAYER_NAME_MAX = 32, LAYER_TEXT_MAX = 512 };
+// Spans are Text's shape (a start, an end, a label) drawn as a band of named stretches instead of captions.
+enum LayerKind : u8 { LAYER_VALUE, LAYER_TEXT, LAYER_INPUT, LAYER_SPANS, LAYER_KINDS };
+enum { LAYER_MAX = 16, LAYER_NAME_MAX = 32, LAYER_UNIT_MAX = 16, LAYER_TEXT_MAX = 512 };
 struct LayerSample {
     i64   t_us;   // when: the wall clock in the buffer, the time into the video in a clip's layers
-    i64   end_us; // Text: when the line ends, on the same clock
+    i64   end_us; // Text, Spans: when it ends, on the same clock; 0 in the buffer = it holds until the next one
     f64   value;  // Value: the number; Input: 1 down, 0 up
     u32   code;   // Input: the key or button
-    char *text;   // Text: the line, UTF-8, owned by the layer
+    char *text;   // Text, Spans: the line or label, UTF-8, owned by the layer; "" = nothing there
 };
 struct Layer {
-    char         name[LAYER_NAME_MAX];
-    u8           kind; // LayerKind
+    char         name[LAYER_NAME_MAX];  // unique: "Front window", or "<plugin folder>/<id>"
+    char         label[LAYER_NAME_MAX]; // what the player sees
+    char         unit[LAYER_UNIT_MAX];  // Value: "bpm", or ""
+    f64          lo, hi;                // Value: the range its colours run over; equal = taken from the samples
+    u8           kind;                  // LayerKind
     i32          count, cap;
     LayerSample *s; // oldest first
 };
@@ -554,6 +562,8 @@ struct LayerSet { // owns its samples: layer_set_free
     Layer layers[LAYER_MAX];
 };
 static void layers_prune(i64 before_us); // drops what is older than the buffer; main thread
+static i32  layer_register(const char *name, LayerKind kind, const char *label, const char *unit, f64 lo, f64 hi);
+static bool layer_hold(i32 id, i64 t_us, const char *text); // a Text or Spans line until the next one
 
 // An edit never changes the original: it's this small record, kept in Data\<video name>.edit.txt.
 // A Simple edit is the pieces, keys and volumes; an Advanced one is the items and their keys, with muted[] per audio

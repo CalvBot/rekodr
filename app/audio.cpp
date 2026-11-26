@@ -774,6 +774,7 @@ struct AudioWatch {
     Path          activity_file;
     Str64         focus;         // the program in front, as last written to focus.tsv
     Path          focus_file;
+    i32           front_layer;   // the Front window layer's id + 1, 0 until registered
     HWND          window;        // the game window being recorded, 0 = the monitor
     Str64         window_exe;    // whose it is
     char          window_path[MAX_PATH];
@@ -1098,6 +1099,14 @@ static void audio_tick_activity()
             buffer_log_append(file, focus.s);
             g_aw.focus = focus;
             g_aw.focus_file = file;
+            // The Front window layer: the app's display name, never its window title; Rekodr itself and nothing
+            // in front are a gap
+            if (cfg.front_window) {
+                if (!g_aw.front_layer) g_aw.front_layer = layer_register("Front window", LAYER_SPANS, 0, 0, 0, 0) + 1;
+                char label[64] = "";
+                if (focus.s[0] && fg_pid != GetCurrentProcessId()) audio_display_name(cfg, focus.s, label, sizeof label);
+                layer_hold(g_aw.front_layer - 1, now_us(), label);
+            }
         }
     }
 

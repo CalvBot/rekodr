@@ -83,6 +83,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "buffer.cpp"
 #include "layers.cpp"
 #include "save.cpp"
+#include "plugins.cpp"
 #include "erase.cpp"
 #include "r2.cpp"
 #include "share.cpp"

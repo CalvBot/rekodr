@@ -265,6 +265,7 @@ static LRESULT msg_wndproc_body(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             render_tick();
             share_prep_tick();
             webcam_tick();
+            plugins_tick();
             pipe_publish();
         }
         if (wp == TIMER_HOLD) hotkey_hold_tick(hwnd);

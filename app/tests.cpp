@@ -4296,12 +4296,17 @@ static void test_layers()
     };
     fresh_store();
     const i64 T0 = 1000000000000ll, S = 1000000;
-    i32 hr = layer_register("test heart", LAYER_VALUE), words = layer_register("test words", LAYER_TEXT),
-        keys = layer_register("test keys", LAYER_INPUT);
+    i32 hr = layer_register("test heart", LAYER_VALUE, "Heart rate", "bpm", 50, 190),
+        words = layer_register("test words", LAYER_TEXT, 0, 0, 0, 0), keys = layer_register("test keys", LAYER_INPUT, 0, 0, 0, 0);
     T(hr == 0 && words == 1 && keys == 2);
-    T(layer_register("test heart", LAYER_VALUE) == hr && layer_register("test heart", LAYER_TEXT) == -1);
-    T(layer_register("", LAYER_VALUE) == -1 && layer_register(" x", LAYER_VALUE) == -1 &&
-      layer_register("a\tb", LAYER_VALUE) == -1 && layer_register("x", LAYER_KINDS) == -1);
+    T(layer_register("test heart", LAYER_VALUE, "Heart rate", "bpm", 50, 190) == hr &&
+      layer_register("test heart", LAYER_TEXT, 0, 0, 0, 0) == -1);
+    T(layer_register("", LAYER_VALUE, 0, 0, 0, 0) == -1 && layer_register(" x", LAYER_VALUE, 0, 0, 0, 0) == -1 &&
+      layer_register("a\tb", LAYER_VALUE, 0, 0, 0, 0) == -1 && layer_register("x", LAYER_KINDS, 0, 0, 0, 0) == -1 &&
+      layer_register("a|b", LAYER_VALUE, 0, 0, 0, 0) == -1);
+    // The label is the name when none is given; a range only on a Value, and only when it is one
+    T(!strcmp(g_layers.set.layers[words].label, "test words") && g_layers.set.layers[words].hi == 0);
+    T(!strcmp(g_layers.set.layers[hr].label, "Heart rate") && !strcmp(g_layers.set.layers[hr].unit, "bpm"));
     // A minute: the heart every 10 s from 80, a line every 20 s, W held from 5 s to 25 s and Space tapped at 40 s
     for (i32 i = 0; i < 6; i++) T(layer_value(hr, T0 + i * 10 * S, 80 + i));
     layer_text(words, T0, T0 + 4 * S, "first words");
@@ -4320,8 +4325,13 @@ static void test_layers()
 
     // Read again from its files, as after a restart: the same samples, each layer under its own name
     fresh_store();
-    hr = layer_register("test heart", LAYER_VALUE), words = layer_register("test words", LAYER_TEXT);
-    keys = layer_register("test keys", LAYER_INPUT);
+    layers_load_locked(&g_layers); // the header as read back, before a register could set it again
+    const Layer *heart = test_layer_named(g_layers.set, "test heart");
+    T(g_layers.set.count == 3 && heart && heart->lo == 50 && heart->hi == 190 && !strcmp(heart->label, "Heart rate") &&
+      !strcmp(heart->unit, "bpm"));
+    hr = layer_register("test heart", LAYER_VALUE, "Heart rate", "bpm", 50, 190);
+    words = layer_register("test words", LAYER_TEXT, 0, 0, 0, 0);
+    keys = layer_register("test keys", LAYER_INPUT, 0, 0, 0, 0);
     T(g_layers.set.count == 3 && hr >= 0 && words >= 0 && keys >= 0);
     const Layer &w0 = g_layers.set.layers[words];
     T(g_layers.set.layers[hr].count == 6 && w0.count == 4 && g_layers.set.layers[keys].count == 4);
@@ -4354,6 +4364,14 @@ static void test_layers()
     str_set(it.name, "Test clip");
     Path data = save_data_dir(save_dir);
     T(!wcscmp(lib_layers_path(it).s, path_join(data, L"Test clip.layers.txt").s));
+    { // on disk: the wall clock in UTC microseconds, and the pieces that place it in the video
+        static char text[8192];
+        FILE *lf = _wfopen(lib_layers_path(it).s, L"rb");
+        text[0] = 0;
+        if (lf) text[fread(text, 1, sizeof text - 1, lf)] = 0, fclose(lf);
+        T(strstr(text, "piece = 1000008000000 1000020000000 0\n") && strstr(text, "piece = 1000030000000 1000050000000 12000000\n"));
+        T(strstr(text, "v = 1000000000000 80\n") && strstr(text, "i = 1000025000000 87 0\n"));
+    }
     static LayerSet clip;
     T(lib_layers_read(it, &clip) && clip.count == 3);
     Path files[LIB_ITEM_FILES];
@@ -4366,6 +4384,7 @@ static void test_layers()
         T(t->count == 1 && t->s[0].t_us == 22 * S && t->s[0].end_us == 26 * S && !strcmp(t->s[0].text, "last words"));
         T(k->count == 4 && k->s[0].t_us == 0 && k->s[1].t_us == 12 * S && k->s[1].value == 0 && k->s[2].code == VK_SPACE);
         T(k->s[3].t_us == 22 * S + S / 10);
+        T(!strcmp(h->label, "Heart rate") && !strcmp(h->unit, "bpm") && h->lo == 50 && h->hi == 190);
     }
     // Nothing in a slice (before the first sample), no file
     swprintf(video.s, MAX_PATH, L"%s\\Clips\\2026\\Empty clip.mp4", save_dir.s);
@@ -4441,13 +4460,61 @@ static void test_layers()
     layer_set_free(&two);
     layer_set_free(&clip);
 
+    // Spans held until the next: Discord 0-10 s, a 1 s flick to Steam, Discord on to 20 s, nothing in front 20-30 s,
+    // then the game from 30 s on. Shown steady: Discord 0-20 s whole, a gap, the game from 30 s.
+    i32 front = layer_register("test front", LAYER_SPANS, "Front window", 0, 0, 0);
+    T(front >= 0);
+    layer_hold(front, T0, "Discord");
+    layer_hold(front, T0 + 10 * S, "Steam");
+    layer_hold(front, T0 + 11 * S, "Discord");
+    layer_hold(front, T0 + 20 * S, "");
+    layer_hold(front, T0 + 30 * S, "Overwatch");
+    const Layer &fl = g_layers.set.layers[front];
+    T(fl.count == 5 && fl.s[0].end_us == 0 && layer_end_of(fl, 0, 0) == T0 + 10 * S && layer_end_of(fl, 4, 7) == 7);
+    LayerRun runs[8];
+    i32 nr = layer_steady_runs(fl, T0, T0 + 60 * S, T0 + 60 * S, LAYER_STEADY_US, runs, COUNT(runs));
+    T(nr == 2 && runs[0].a == T0 && runs[0].z == T0 + 20 * S && !strcmp(runs[0].label, "Discord"));
+    T(runs[1].a == T0 + 30 * S && runs[1].z == T0 + 60 * S && !strcmp(runs[1].label, "Overwatch"));
+    // Unsteady, every switch shows; a view starting mid-run keeps the run's start
+    T(layer_steady_runs(fl, T0, T0 + 60 * S, T0 + 60 * S, 0, runs, COUNT(runs)) == 4);
+    T(layer_steady_runs(fl, T0 + 15 * S, T0 + 16 * S, T0 + 60 * S, LAYER_STEADY_US, runs, COUNT(runs)) == 1 &&
+      runs[0].a == T0 && runs[0].z == T0 + 20 * S);
+    // A save of 5-40 s: the held lines get their ends, the last one the save's end; in the clip they are spans again
+    layers_slice(T0 + 5 * S, T0 + 40 * S, &set);
+    const Layer *fs = test_layer_named(set, "test front");
+    T(fs && fs->kind == LAYER_SPANS && fs->count == 5 && fs->s[0].end_us == T0 + 10 * S && fs->s[4].end_us == T0 + 40 * S);
+    T(fs && !strcmp(fs->label, "Front window"));
+    layer_set_free(&set);
+    swprintf(video.s, MAX_PATH, L"%s\\Clips\\2026\\Front clip.mp4", save_dir.s);
+    w->piece_count = 1;
+    w->pieces[0] = {T0 + 5 * S, T0 + 40 * S, 0};
+    save_layers(w, T0 + 5 * S, T0 + 40 * S, video);
+    w->piece_count = 0;
+    str_set(it.name, "Front clip");
+    T(lib_layers_read(it, &clip));
+    fs = test_layer_named(clip, "test front");
+    T(fs && fs->kind == LAYER_SPANS && fs->count == 5 && fs->s[0].t_us == 0 && fs->s[0].end_us == 5 * S);
+    T(fs && fs->s[3].text && !fs->s[3].text[0] && !strcmp(fs->s[4].text, "Overwatch") && fs->s[4].end_us == 35 * S);
+    // Burned in at the top left, steady
+    char on_front[1][LAYER_NAME_MAX] = {"test front"};
+    LayerSpan whole[] = {{0, 35, 0}};
+    f = _wfopen(ass.s, L"wb");
+    if (f) layers_ass(f, clip, on_front, 1, whole, 1, 35, 1920, 1080), fclose(f);
+    f = _wfopen(ass.s, L"rb");
+    text[0] = 0;
+    if (f) text[fread(text, 1, sizeof text - 1, f)] = 0, fclose(f);
+    DeleteFileW(ass.s);
+    T(strstr(text, "Style: Spans,") != 0 && strstr(text, "0:00:00.00,0:00:15.00,Spans,,0,0,36,,Discord\n") != 0);
+    T(strstr(text, "0:00:25.00,0:00:35.00,Spans,,0,0,36,,Overwatch\n") != 0 && strstr(text, "Steam") == 0);
+    layer_set_free(&clip);
+
     // Pruned as the buffer moves on: not until the oldest is well behind, then all but the heart's last
     layers_prune(T0 + 45 * S);
     T(g_layers.set.layers[hr].count == 6 && g_layers.set.layers[keys].count == 4);
     layers_prune(T0 + 700 * S);
     fresh_store();
-    hr = layer_register("test heart", LAYER_VALUE), words = layer_register("test words", LAYER_TEXT);
-    keys = layer_register("test keys", LAYER_INPUT);
+    hr = layer_register("test heart", LAYER_VALUE, "Heart rate", "bpm", 50, 190), words = layer_register("test words", LAYER_TEXT, 0, 0, 0, 0);
+    keys = layer_register("test keys", LAYER_INPUT, 0, 0, 0, 0);
     T(g_layers.set.layers[hr].count == 1 && g_layers.set.layers[hr].s[0].value == 85);
     T(g_layers.set.layers[words].count == 0 && g_layers.set.layers[keys].count == 0);
 
@@ -4457,6 +4524,131 @@ static void test_layers()
     test_remove_dir(data);
     RemoveDirectoryW(save_dir.s);
     w->cfg.save_dir = keep_save, g_app.config.save_dir = keep_lib;
+}
+
+// Plugins: plugin.txt read and refused, and the lines a plugin sends kept or dropped
+static void test_plugins()
+{
+    char list[64] = "";
+    word_list_toggle(list, sizeof list, "heart");
+    word_list_toggle(list, sizeof list, "keys");
+    T(!strcmp(list, "heart|keys") && word_list_has(list, "keys") && !word_list_has(list, "key"));
+    word_list_toggle(list, sizeof list, "heart");
+    T(!strcmp(list, "keys") && !word_list_has(list, "heart") && !word_list_has(list, ""));
+
+    Plugin p;
+    T(plugin_manifest_parse("heart", "# a test\r\nname = Heart\r\nexe = heart.exe\r\nrun = game\r\n"
+                                     "layer = bpm | value | Heart rate | bpm | 50-190\r\n"
+                                     "layer = song | text\nlayer = app | spans | Window\n"
+                                     "layer = keys | input | Keys | 0x57 65, 32\n", &p));
+    T(!strcmp(p.name, "Heart") && !wcscmp(p.exe, L"heart.exe") && p.game_only && p.layer_count == 4);
+    T(p.layers[0].kind == LAYER_VALUE && !strcmp(p.layers[0].unit, "bpm") && p.layers[0].lo == 50 &&
+      p.layers[0].hi == 190 && !strcmp(p.layers[0].label, "Heart rate"));
+    T(p.layers[1].kind == LAYER_TEXT && !strcmp(p.layers[1].label, "song") && p.layers[2].kind == LAYER_SPANS);
+    T(p.layers[3].code_count == 3 && p.layers[3].codes[0] == 'W' && p.layers[3].codes[1] == 'A' &&
+      p.layers[3].codes[2] == ' ');
+    T(plugin_manifest_parse("x", "exe = x.exe\nlayer = a | value\n", &p) && !strcmp(p.name, "x") && !p.game_only);
+    const char *bad[] = {
+        "layer = a | value\n",                                  // no exe
+        "exe = x.exe\n",                                        // no layers
+        "exe = ..\\x.exe\nlayer = a | value\n",                 // not in the folder
+        "exe = x.bat\nlayer = a | value\n",                     // not a program
+        "exe = x.exe\nrun = sometimes\nlayer = a | value\n",
+        "exe = x.exe\nlayer = a b | value\n",                   // the id has a space
+        "exe = x.exe\nlayer = a | sound\n",
+        "exe = x.exe\nlayer = a | value | A | u | 9-3\n",       // the range runs backwards
+        "exe = x.exe\nlayer = a | input | A\n",                 // no codes
+        "exe = x.exe\nlayer = a | input | A | W\n",             // a code that isn't a number
+        "exe = x.exe\nlayer = a | value\nlayer = a | text\n",   // twice
+        "exe = x.exe\nlayer = a | value\nlayer = b | value\nlayer = c | value\nlayer = d | value\nlayer = e | value\n",
+        "exe = x.exe\nwhat\nlayer = a | value\n",
+    };
+    for (const char *b : bad) T(!plugin_manifest_parse("x", b, &p) && p.why[0]);
+    T(!plugin_manifest_parse("a folder name far too long", "exe = x.exe\nlayer = a | value\n", &p));
+
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    Path dir = {};
+    swprintf(dir.s, MAX_PATH, L"%srekodr-test-plugins-%u", tmp, GetCurrentProcessId());
+    for (i32 k = 0; k < g_layers.set.count; k++) layer_free_samples(&g_layers.set.layers[k]);
+    g_layers = {};
+    g_layers.dir = dir;
+    T(plugin_manifest_parse("heart", "exe = heart.exe\nlayer = bpm | value | Heart rate | bpm | 50-190\n"
+                                     "layer = song | text\nlayer = app | spans\nlayer = keys | input | Keys | 87 65\n",
+                            &p));
+    T(plugin_register(&p));
+    const Layer *bpm = test_layer_named(g_layers.set, "heart/bpm");
+    T(bpm && bpm->kind == LAYER_VALUE && bpm->lo == 50 && bpm->hi == 190 && !strcmp(bpm->label, "Heart rate"));
+    T(test_layer_named(g_layers.set, "heart/keys") != 0);
+    const i64 T0 = 1000000000000ll, MS = 1000;
+    auto line = [&](const char *s, i64 t) { return plugin_line(&p, s, (i32)strlen(s), t); };
+    T(line("v bpm 80", T0) == PDROP_NONE && line("v bpm 81.5 ", T0 + 150 * MS) == PDROP_NONE);
+    T(line("v bpm 99", T0 + 200 * MS) == PDROP_FAST);          // under 100 ms after the last one kept
+    T(line("v bpm x", T0 + 400 * MS) == PDROP_BAD && line("v bpm", T0 + 400 * MS) == PDROP_BAD &&
+      line("v bpm 1e999", T0 + 400 * MS) == PDROP_BAD && line("v song 3", T0 + 400 * MS) == PDROP_BAD);
+    T(line("v pulse 80", T0) == PDROP_ID && line("x bpm 80", T0) == PDROP_BAD && line("v  80", T0) == PDROP_BAD);
+    T(line("t song Some song", T0) == PDROP_NONE && line("t app Discord", T0) == PDROP_NONE &&
+      line("t song", T0 + 5000 * MS) == PDROP_NONE && line("t bpm 3", T0) == PDROP_BAD);
+    T(line("k keys 87 down", T0) == PDROP_NONE && line("k keys 0x57 up", T0 + 50 * MS) == PDROP_NONE);
+    T(line("k keys 32 down", T0) == PDROP_CODE && line("k keys 87 held", T0) == PDROP_BAD &&
+      line("k keys down", T0) == PDROP_BAD);
+    char lng[700];
+    memset(lng, 'a', sizeof lng);
+    memcpy(lng, "t song ", 7);
+    lng[sizeof lng - 1] = 0;
+    T(line(lng, T0) == PDROP_LONG);
+    bpm = test_layer_named(g_layers.set, "heart/bpm");
+    const Layer *song = test_layer_named(g_layers.set, "heart/song"), *keys = test_layer_named(g_layers.set, "heart/keys");
+    T(bpm->count == 2 && bpm->s[1].value == 81.5 && bpm->s[1].t_us == T0 + 150 * MS);
+    T(song->count == 2 && !strcmp(song->s[0].text, "Some song") && song->s[0].end_us == 0 && (!song->s[1].text || !song->s[1].text[0]));
+    T(keys->count == 2 && keys->s[0].code == 87 && keys->s[0].value == 1 && keys->s[1].value == 0);
+
+    // Spikes on 50-190: a jump of 18% of the range (25.2) over the mean of the samples 3-6 before, held while 9%
+    // (12.6) over it. 80 steady, up to 110 and 120, 100 (still 20 over), then 85: one spike, its peak 120.
+    {
+        Layer v = {};
+        v.kind = LAYER_VALUE, v.lo = 50, v.hi = 190;
+        f64 vals[] = {80, 80, 80, 80, 80, 80, 104, 110, 120, 100, 85, 80, 80, 80, 80, 80, 80, 80};
+        for (i32 i = 0; i < COUNT(vals); i++) {
+            LayerSample sm = {};
+            sm.t_us = T0 + i * 1000 * MS, sm.value = vals[i];
+            layer_insert(&v, sm);
+        }
+        LayerSpike sp[4];
+        f64 lo, hi;
+        layer_range(v, &lo, &hi);
+        T(lo == 50 && hi == 190);
+        T(layer_spikes(v, lo, hi, sp, COUNT(sp)) == 1 && sp[0].a == T0 + 7000 * MS && sp[0].z == T0 + 9000 * MS &&
+          sp[0].peak == 120 && sp[0].peak_us == T0 + 8000 * MS);
+        v.lo = v.hi = 0; // no range of its own: the samples' 80-120
+        layer_range(v, &lo, &hi);
+        T(lo == 80 && hi == 120);
+        layer_free_samples(&v);
+    }
+
+    // Lines as they come down a pipe: split at \n, \r\n taken off, a long one whole in length, the last unended
+    HANDLE r, w;
+    CreatePipe(&r, &w, 0, 1 << 16);
+    char big[1200];
+    memset(big, 'b', sizeof big);
+    DWORD put;
+    WriteFile(w, "v bpm 80\r\nt song x\n\n", 20, &put, 0);
+    WriteFile(w, big, sizeof big, &put, 0);
+    WriteFile(w, "\nk keys 87 up", 13, &put, 0);
+    CloseHandle(w);
+    char got[4][40] = {};
+    i32 lens[4] = {}, n = 0;
+    plugin_read_lines(r, [&](const char *s, i32 len) {
+        if (n < 4) snprintf(got[n], sizeof got[n], "%s", s), lens[n] = len;
+        n++;
+    });
+    CloseHandle(r);
+    T(n == 4 && !strcmp(got[0], "v bpm 80") && lens[0] == 8 && !strcmp(got[1], "t song x"));
+    T(lens[2] == 1200 && !strcmp(got[3], "k keys 87 up"));
+
+    for (i32 k = 0; k < g_layers.set.count; k++) layer_free_samples(&g_layers.set.layers[k]);
+    g_layers = {};
+    test_remove_dir(dir);
 }
 
 // The social copy: whole when it fits, else a preview as long as the budget allows; the edit cut to its first part
@@ -4696,6 +4888,7 @@ int main()
     test_edit_advanced();
     test_cam_layer();
     test_layers();
+    test_plugins();
     test_lanes();
     test_share();
     test_render();

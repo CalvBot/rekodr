@@ -182,6 +182,8 @@ static void config_defaults(Config *c, const Paths &paths)
     c->render_edits = true;
     memcpy(c->share_kbps, SHARE_KBPS_DEFAULT, sizeof c->share_kbps);
     c->share_link_page = true;
+    str_set(c->timeline_show, "Clips|Sessions");
+    c->front_window = true;
     c->share_link_days = 0;
     c->share_copy_on_close = false;
     c->auto_marks = true;
@@ -732,6 +734,9 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "timeline_names")) c->timeline_names = atoi(value);
     else if (!strcmp(key, "timeline_lane")) c->timeline_lane = atoi(value);
     else if (!strcmp(key, "timeline_simple")) c->timeline_simple = atoi(value) != 0;
+    else if (!strcmp(key, "timeline_show")) str_set(c->timeline_show, value);
+    else if (!strcmp(key, "front_window")) c->front_window = atoi(value) != 0;
+    else if (!strcmp(key, "plugins_off")) str_set(c->plugins_off, value);
     else if (!strcmp(key, "editor_top")) real(&c->editor_top);
     else if (!strcmp(key, "editor_side")) real(&c->editor_side);
     else if (!strcmp(key, "editor_lane")) c->editor_lane = atoi(value);
@@ -1057,6 +1062,8 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "timeline_lane = %d\n", c.timeline_lane);
     fprintf(f, "timeline_top = %g\ntimeline_names = %d\ntimeline_simple = %d\n", c.timeline_top, c.timeline_names,
             c.timeline_simple ? 1 : 0);
+    fprintf(f, "timeline_show = %s\nfront_window = %d\nplugins_off = %s\n", c.timeline_show, c.front_window ? 1 : 0,
+            c.plugins_off);
     fprintf(f, "editor_top = %g\neditor_side = %g\neditor_lane = %d\neditor_zoom_view = %d\n", c.editor_top, c.editor_side,
             c.editor_lane, c.editor_zoom_view);
     fprintf(f, "\n# hotkey = keys | action | action when held | the one game it's for\n");

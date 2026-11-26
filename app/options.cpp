@@ -4320,6 +4320,46 @@ static void options_integrations()
     }
     opt_card_end();
 
+    // Layers: the Front window, then each plugin in <config_dir>\Plugins with its switch
+    opt_section("LAYERS");
+    opt_card_begin();
+    if (opt_row_toggle("Front window", "The app in front, as a band on the timeline", "##frontwin", &c.front_window)) {
+        log_line("options: front window %s", c.front_window ? "on" : "off");
+        options_apply(0);
+    }
+    for (i32 i = 0; i < g_plugins.count; i++) {
+        Plugin &p = g_plugins.p[i];
+        char sub[160] = "";
+        for (i32 k = 0; k < p.layer_count; k++) {
+            if (k) strncat_s(sub, ", ", _TRUNCATE);
+            strncat_s(sub, p.layers[k].label, _TRUNCATE);
+        }
+        bool on = !word_list_has(c.plugins_off, p.folder);
+        PluginState st = p.state;
+        const char *status = st == PLUGIN_BROKEN ? p.why : st == PLUGIN_FAILED ? "Stopped: it kept ending"
+                           : st == PLUGIN_RUNNING ? "Running" : st == PLUGIN_WAITING ? "Starting again"
+                           : on && p.game_only ? "Waits for a game" : on ? "Starting" : "Off";
+        u32 col = st == PLUGIN_BROKEN || st == PLUGIN_FAILED ? COL_WARN : st == PLUGIN_RUNNING ? COL_OK : COL_DIM;
+        ImGui::PushID(i);
+        opt_row_begin(p.name, st == PLUGIN_BROKEN ? "plugin.txt" : sub, sw + dp(12) + dp(36));
+        f32 x = ImGui::GetCursorScreenPos().x;
+        opt_status(status, col, x + sw, x);
+        ImGui::SetCursorScreenPos(ImVec2(x + sw + dp(12), opt_row_frame_y()));
+        ImGui::BeginDisabled(st == PLUGIN_BROKEN);
+        if (kit_toggle("##plugon", &on)) {
+            word_list_toggle(c.plugins_off, sizeof c.plugins_off, p.folder);
+            log_line("options: plugin %s %s", p.folder, on ? "on" : "off");
+            options_apply(0);
+        }
+        ImGui::EndDisabled();
+        opt_row_end();
+        ImGui::PopID();
+    }
+    opt_row_begin("Plugins folder", g_plugins.count ? "Read when " APP_NAME " starts" : "None yet: each is a folder here, read when " APP_NAME " starts", bw);
+    if (kit_button("Open folder##plugdir", KIT_SECONDARY, ImVec2(bw, 0))) opt_open_dir(plugins_dir());
+    opt_row_end();
+    opt_card_end();
+
     options_sharing();
 
     if (others > 0) {

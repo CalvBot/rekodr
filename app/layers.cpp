@@ -1,12 +1,15 @@
 // layers.cpp: things that happen while the buffer records, kept beside it and written into each clip.
 //
-// A layer is one stream of samples from one source, on the wall clock like markers, of one of three kinds:
+// A layer is one stream of samples from one source, on the wall clock like markers, of one of four kinds:
 //   Value  a number over time; each sample holds until the next
 //   Text   lines, each with a start and an end
 //   Input  key and button downs and ups, by code
-// A source registers its layer by name, pushes samples as they come, and may later replace a span of its own
-// samples (a better transcript of the same minute, say). The store keeps them for as long as the buffer keeps
-// footage: <local>\layers\<hash of the name>.tsv, a line of <kind> <tab> <name>, then a line per sample of
+//   Spans  named stretches (the program in front), each with a start and an end
+// A Text or Spans sample pushed with layer_hold has no end yet (0): it lasts until the layer's next sample.
+// A source registers its layer by name with a label (and for a Value its unit and range), pushes samples as they
+// come, and may later replace a span of its own samples (a better transcript of the same minute, say). The store
+// keeps them for as long as the buffer keeps footage: <local>\layers\<hash of the name>.tsv, a line of
+// <kind> <tab> <name> <tab> <label> <tab> <unit> <tab> <lo> <tab> <hi>, then a line per sample of
 // <time in us> <tab> <end in us> <tab> <value> <tab> <code> <tab> <text>, oldest first.
 //
 // A save takes the clip's slice (layers_slice) and writes it, in the clip's own time, to
@@ -21,7 +24,7 @@ struct LayerStore {
 };
 static LayerStore g_layers;
 
-static const char *const LAYER_KIND_NAMES[LAYER_KINDS] = {"value", "text", "input"};
+static const char *const LAYER_KIND_NAMES[LAYER_KINDS] = {"value", "text", "input", "spans"};
 
 static i32 layer_kind_named(const char *word)
 {
@@ -30,14 +33,34 @@ static i32 layer_kind_named(const char *word)
     return -1;
 }
 
-// A name a layer can have: 1 to LAYER_NAME_MAX - 1 bytes of printable text, no tab, nothing around it.
+// A name a layer can have: 1 to LAYER_NAME_MAX - 1 bytes of printable text, no tab or |, nothing around it.
 static bool layer_name_ok(const char *name)
 {
     size_t n = name ? strlen(name) : 0;
     if (!n || n >= LAYER_NAME_MAX || name[0] == ' ' || name[n - 1] == ' ') return false;
     for (size_t i = 0; i < n; i++)
-        if ((u8)name[i] < 0x20 || name[i] == 0x7f) return false;
+        if ((u8)name[i] < 0x20 || name[i] == 0x7f || name[i] == '|') return false;
     return true;
+}
+
+// A label or unit as it is kept: printable, no tab or |, trimmed, cut to fit.
+static void layer_word_set(char *out, i32 cap, const char *in)
+{
+    if (!in) in = "";
+    while (*in == ' ') in++;
+    i32 n = 0;
+    for (; *in && n < cap - 1; in++) out[n++] = (u8)*in < 0x20 || *in == 0x7f || *in == '|' ? ' ' : *in;
+    while (n && out[n - 1] == ' ') n--;
+    out[n] = 0;
+}
+
+static bool layer_has_lines(u8 kind) { return kind == LAYER_TEXT || kind == LAYER_SPANS; }
+
+// When sample i ends: its own end, or for one still held the next sample's start, else `open_end`.
+static i64 layer_end_of(const Layer &l, i32 i, i64 open_end)
+{
+    if (l.s[i].end_us) return l.s[i].end_us;
+    return i + 1 < l.count ? l.s[i + 1].t_us : open_end;
 }
 
 // A line of text as it is kept: one line, no tabs, at most LAYER_TEXT_MAX - 1 bytes. Malloc'd.
@@ -88,8 +111,8 @@ static LayerSample layer_sample_clean(u8 kind, const LayerSample &in)
     LayerSample s = {};
     s.t_us = in.t_us;
     if (kind == LAYER_VALUE) s.value = in.value;
-    else if (kind == LAYER_TEXT) {
-        s.end_us = in.end_us > in.t_us ? in.end_us : in.t_us;
+    else if (layer_has_lines(kind)) {
+        s.end_us = !in.end_us ? 0 : in.end_us > in.t_us ? in.end_us : in.t_us;
         s.text = layer_text_dup(in.text);
     } else {
         s.code = in.code;
@@ -122,7 +145,7 @@ static void layer_write_locked(LayerStore *ls, const Layer &l)
     wcscat_s(tmp.s, L".tmp");
     FILE *f = _wfopen(tmp.s, L"wb");
     if (!f) { log_line("layers: couldn't write %s (%d)", l.name, (int)GetLastError()); return; }
-    fprintf(f, "%s\t%s\n", LAYER_KIND_NAMES[l.kind], l.name);
+    fprintf(f, "%s\t%s\t%s\t%s\t%.9g\t%.9g\n", LAYER_KIND_NAMES[l.kind], l.name, l.label, l.unit, l.lo, l.hi);
     static char line[LAYER_TEXT_MAX + 128];
     for (i32 i = 0; i < l.count; i++) {
         i32 n = layer_sample_line(l.s[i], line, sizeof line);
@@ -164,12 +187,15 @@ static void layer_load_file(LayerStore *ls, const Path &file)
     Layer *l = 0;
     if (fgets(line, sizeof line, f) && ls->set.count < LAYER_MAX) {
         line[strcspn(line, "\r\n")] = 0;
-        char *fld[2];
-        i32 kind = layer_fields(line, fld, 2) == 2 ? layer_kind_named(fld[0]) : -1;
+        char *fld[6];
+        i32 kind = layer_fields(line, fld, 6) == 6 ? layer_kind_named(fld[0]) : -1;
         if (kind >= 0 && layer_name_ok(fld[1]) && !wcscmp(layer_file(ls, fld[1]).s, file.s)) {
             l = &ls->set.layers[ls->set.count++];
             *l = {};
             str_set(l->name, fld[1]);
+            layer_word_set(l->label, sizeof l->label, fld[2]);
+            layer_word_set(l->unit, sizeof l->unit, fld[3]);
+            l->lo = strtod(fld[4], 0), l->hi = strtod(fld[5], 0);
             l->kind = (u8)kind;
         }
     }
@@ -204,23 +230,35 @@ static void layers_load_locked(LayerStore *ls)
 // The source interface. Any thread.
 
 // A source's layer: the id to push to, the same one again for a name already registered with this kind (a source
-// carries on after a restart). -1 if the name won't do, it is taken by another kind, or there are LAYER_MAX.
-static i32 layer_register(const char *name, LayerKind kind)
+// carries on after a restart; a new label, unit or range replaces the old). The label is the name when empty.
+// -1 if the name won't do, it is taken by another kind, or there are LAYER_MAX.
+static i32 layer_register(const char *name, LayerKind kind, const char *label, const char *unit, f64 lo, f64 hi)
 {
     if (!layer_name_ok(name) || kind >= LAYER_KINDS) return -1;
+    Layer head = {};
+    str_set(head.name, name);
+    layer_word_set(head.label, sizeof head.label, label && *label ? label : name);
+    layer_word_set(head.unit, sizeof head.unit, unit);
+    if (kind == LAYER_VALUE && hi > lo) head.lo = lo, head.hi = hi;
+    head.kind = (u8)kind;
     LayerStore *ls = &g_layers;
     AcquireSRWLockExclusive(&ls->lock);
     layers_load_locked(ls);
     i32 id = -1;
     for (i32 i = 0; i < ls->set.count && id < 0; i++)
         if (!strcmp(ls->set.layers[i].name, name)) id = ls->set.layers[i].kind == kind ? i : -2;
-    if (id == -1 && ls->set.count < LAYER_MAX) {
-        id = ls->set.count++;
+    if (id >= 0) {
         Layer &l = ls->set.layers[id];
-        l = {};
-        str_set(l.name, name);
-        l.kind = (u8)kind;
-        layer_write_locked(ls, l);
+        if (strcmp(l.label, head.label) || strcmp(l.unit, head.unit) || l.lo != head.lo || l.hi != head.hi) {
+            str_set(l.label, head.label);
+            str_set(l.unit, head.unit);
+            l.lo = head.lo, l.hi = head.hi;
+            layer_write_locked(ls, l);
+        }
+    } else if (id == -1 && ls->set.count < LAYER_MAX) {
+        id = ls->set.count++;
+        ls->set.layers[id] = head;
+        layer_write_locked(ls, head);
     }
     ReleaseSRWLockExclusive(&ls->lock);
     return id < 0 ? -1 : id;
@@ -254,6 +292,13 @@ static bool layer_text(i32 id, i64 t_us, i64 end_us, const char *text)
 {
     LayerSample s = {};
     s.t_us = t_us, s.end_us = end_us, s.text = (char *)text;
+    return layer_push(id, s);
+}
+
+static bool layer_hold(i32 id, i64 t_us, const char *text)
+{
+    LayerSample s = {};
+    s.t_us = t_us, s.text = (char *)text;
     return layer_push(id, s);
 }
 
@@ -300,7 +345,8 @@ static void layers_prune(i64 before_us)
     for (i32 k = 0; k < ls->set.count; k++) {
         Layer &l = ls->set.layers[k];
         i32 drop = 0; // a Text line goes once it has ended, and not before one ahead of it has
-        while (drop < l.count && (l.kind == LAYER_TEXT ? l.s[drop].end_us : l.s[drop].t_us) < before_us) drop++;
+        while (drop < l.count && (layer_has_lines(l.kind) ? layer_end_of(l, drop, INT64_MAX) : l.s[drop].t_us) < before_us)
+            drop++;
         if (l.kind == LAYER_VALUE && drop) drop--;
         if (!drop || l.s[0].t_us >= before_us - LAYER_PRUNE_SLACK_US) continue;
         for (i32 i = 0; i < drop; i++) free(l.s[i].text);
@@ -312,7 +358,8 @@ static void layers_prune(i64 before_us)
 }
 
 // The samples that bear on [from, to), on the wall clock, as a set of its own (layer_set_free): a Value's last one
-// before `from` as well, the Text lines that overlap, and an Input's keys held at `from` as downs at `from`.
+// before `from` as well, the Text and Spans lines that overlap (a held one given its end, `to` for the last), and an
+// Input's keys held at `from` as downs at `from`.
 // Layers with nothing in it are left out. Any thread.
 static void layers_slice(i64 from, i64 to, LayerSet *out)
 {
@@ -323,9 +370,9 @@ static void layers_slice(i64 from, i64 to, LayerSet *out)
     for (i32 k = 0; k < ls->set.count; k++) {
         const Layer &l = ls->set.layers[k];
         Layer &o = out->layers[out->count];
-        o = {};
-        str_set(o.name, l.name);
-        o.kind = l.kind;
+        o = l;
+        o.count = o.cap = 0;
+        o.s = 0;
         i32 first = 0;
         while (first < l.count && l.s[first].t_us < from) first++;
         if (l.kind == LAYER_VALUE && first) layer_insert(&o, l.s[first - 1]);
@@ -346,7 +393,10 @@ static void layers_slice(i64 from, i64 to, LayerSet *out)
         }
         for (i32 i = 0; i < l.count && l.s[i].t_us < to; i++) {
             LayerSample s = l.s[i];
-            if (l.kind == LAYER_TEXT ? s.end_us <= from : i < first) continue;
+            if (layer_has_lines(l.kind)) {
+                s.end_us = layer_end_of(l, i, to);
+                if (s.end_us <= from) continue;
+            } else if (i < first) continue;
             if (s.text) s.text = layer_text_dup(s.text);
             layer_insert(&o, s);
         }
@@ -357,7 +407,51 @@ static void layers_slice(i64 from, i64 to, LayerSet *out)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// A clip's layers: <save_dir>\Data\<video's name>.layers.txt, times in seconds into the video
+// A clip's layers: <save_dir>\Data\<video's name>.layers.txt. Its times are the wall clock (UTC microseconds since
+// 1970), with the clip's pieces, which place the wall clock in the video; read back, they are in the video's time.
+
+// A stretch of the wall clock in a saved file
+struct Piece {
+    i64 start_us, end_us; // wall clock
+    i64 offset_us;        // where it starts in the saved file
+};
+
+// Where a wall-clock moment lands in the saved file, one in a gap where the file carries on after it (the end for
+// one after the last piece)
+static i64 file_time_held(const Piece *pieces, i32 piece_count, i64 t_us)
+{
+    for (i32 k = 0; k < piece_count; k++) {
+        if (t_us < pieces[k].start_us) return pieces[k].offset_us;
+        if (t_us < pieces[k].end_us) return pieces[k].offset_us + t_us - pieces[k].start_us;
+    }
+    return piece_count ? pieces[piece_count - 1].offset_us + pieces[piece_count - 1].end_us - pieces[piece_count - 1].start_us : 0;
+}
+
+// A slice of the layers (layers_slice) moved from the wall clock to the saved file's time. Text and Spans lines
+// wholly in a gap go, and layers left with nothing.
+static void layers_to_file_time(LayerSet *set, const Piece *pieces, i32 piece_count)
+{
+    i32 kept_layers = 0;
+    for (i32 k = 0; k < set->count; k++) {
+        Layer &l = set->layers[k];
+        i32 kept = 0;
+        for (i32 i = 0; i < l.count; i++) {
+            LayerSample s = l.s[i];
+            s.t_us = file_time_held(pieces, piece_count, s.t_us);
+            if (layer_has_lines(l.kind)) {
+                s.end_us = file_time_held(pieces, piece_count, s.end_us);
+                if (s.end_us - s.t_us < 1000) { free(s.text); continue; }
+            }
+            l.s[kept++] = s;
+        }
+        l.count = kept;
+        if (!kept) { layer_free_samples(&l); continue; }
+        if (kept_layers != k) set->layers[kept_layers] = l, l = {};
+        kept_layers++;
+    }
+    set->count = kept_layers;
+}
+
 
 static Path layers_clip_path(const Path &save_dir, const wchar_t *stem)
 {
@@ -366,7 +460,7 @@ static Path layers_clip_path(const Path &save_dir, const wchar_t *stem)
     return p;
 }
 
-static bool layers_write(const Path &file, const LayerSet &set)
+static bool layers_write(const Path &file, const LayerSet &set, const Piece *pieces, i32 piece_count)
 {
     Path dir = file;
     wchar_t *slash = wcsrchr(dir.s, L'\\');
@@ -376,29 +470,38 @@ static bool layers_write(const Path &file, const LayerSet &set)
     swprintf(tmp.s, MAX_PATH, L"%s.tmp", file.s);
     FILE *f = _wfopen(tmp.s, L"wb");
     if (!f) return false;
-    fprintf(f, "# Rekodr layers: each layer (kind name), then its samples, seconds into the video:\n"
-               "# v = time value; t = time end text; i = time code down (1) or up (0)\n");
+    fprintf(f, "# Rekodr layers. Times are UTC microseconds since 1970. piece = start end offset: the wall clock from start\n"
+               "# to end is in the video from offset. Then each layer (kind | name | label | unit | lo | hi) and its\n"
+               "# samples: v = time value; t = time end text; i = time code down (1) or up (0); s = time end label\n");
+    for (i32 k = 0; k < piece_count; k++)
+        fprintf(f, "piece = %lld %lld %lld\n", (long long)pieces[k].start_us, (long long)pieces[k].end_us,
+                (long long)pieces[k].offset_us);
     for (i32 k = 0; k < set.count; k++) {
         const Layer &l = set.layers[k];
-        fprintf(f, "layer = %s %s\n", LAYER_KIND_NAMES[l.kind], l.name);
+        fprintf(f, "layer = %s | %s | %s | %s | %.9g | %.9g\n", LAYER_KIND_NAMES[l.kind], l.name, l.label, l.unit, l.lo,
+                l.hi);
         for (i32 i = 0; i < l.count; i++) {
             const LayerSample &s = l.s[i];
-            if (l.kind == LAYER_VALUE) fprintf(f, "v = %.3f %.9g\n", s.t_us / 1e6, s.value);
-            else if (l.kind == LAYER_TEXT) fprintf(f, "t = %.3f %.3f %s\n", s.t_us / 1e6, s.end_us / 1e6, s.text ? s.text : "");
-            else fprintf(f, "i = %.3f %u %d\n", s.t_us / 1e6, s.code, s.value != 0 ? 1 : 0);
+            if (l.kind == LAYER_VALUE) fprintf(f, "v = %lld %.9g\n", (long long)s.t_us, s.value);
+            else if (layer_has_lines(l.kind))
+                fprintf(f, "%c = %lld %lld %s\n", l.kind == LAYER_TEXT ? 't' : 's', (long long)s.t_us, (long long)s.end_us,
+                        s.text ? s.text : "");
+            else fprintf(f, "i = %lld %u %d\n", (long long)s.t_us, s.code, s.value != 0 ? 1 : 0);
         }
     }
     fclose(f);
     return MoveFileExW(tmp.s, file.s, MOVEFILE_REPLACE_EXISTING) != 0;
 }
 
-// A clip's layers, into a set of their own (layer_set_free). False when it has none.
+// A clip's layers in the video's time, into a set of their own (layer_set_free). False when it has none.
 static bool layers_read(const Path &file, LayerSet *set)
 {
     *set = {};
     FILE *f = _wfopen(file.s, L"rb");
     if (!f) return false;
     static char line[LAYER_TEXT_MAX + 128];
+    static Piece pieces[512];
+    i32 piece_count = 0;
     Layer *l = 0;
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\r\n")] = 0;
@@ -407,38 +510,140 @@ static bool layers_read(const Path &file, LayerSet *set)
         *eq = 0;
         char *k = trim(line), *v = eq + 1;
         if (*v == ' ') v++;
+        if (!strcmp(k, "piece")) {
+            long long a = 0, z = 0, at = 0;
+            if (sscanf_s(v, "%lld %lld %lld", &a, &z, &at) == 3 && z > a && at >= 0 && piece_count < COUNT(pieces))
+                pieces[piece_count++] = {a, z, at};
+            continue;
+        }
         if (!strcmp(k, "layer")) {
             l = 0;
-            char *sp = strchr(v, ' ');
-            if (!sp || set->count == LAYER_MAX) continue;
-            *sp = 0;
-            i32 kind = layer_kind_named(v);
-            if (kind < 0 || !layer_name_ok(sp + 1)) continue;
+            char *fld[6];
+            i32 n = 0;
+            fld[n++] = v;
+            for (char *c = v; *c && n < 6; c++)
+                if (*c == '|') *c = 0, fld[n++] = c + 1;
+            if (n != 6 || set->count == LAYER_MAX) continue;
+            for (i32 i = 0; i < n; i++) fld[i] = trim(fld[i]);
+            i32 kind = layer_kind_named(fld[0]);
+            if (kind < 0 || !layer_name_ok(fld[1])) continue;
             l = &set->layers[set->count++];
             *l = {};
-            str_set(l->name, sp + 1);
+            str_set(l->name, fld[1]);
+            layer_word_set(l->label, sizeof l->label, fld[2][0] ? fld[2] : fld[1]);
+            layer_word_set(l->unit, sizeof l->unit, fld[3]);
+            l->lo = strtod(fld[4], 0), l->hi = strtod(fld[5], 0);
             l->kind = (u8)kind;
             continue;
         }
-        if (!l || strlen(k) != 1 || *k != "vti"[l->kind]) continue;
+        if (!l || strlen(k) != 1 || *k != "vtis"[l->kind]) continue;
         LayerSample s = {};
-        f64 t = 0, end = 0;
+        long long t = 0, end = 0;
         i32 down = 0, used = 0;
         if (l->kind == LAYER_VALUE) {
-            if (sscanf_s(v, "%lf %lf", &t, &s.value) != 2) continue;
-        } else if (l->kind == LAYER_TEXT) {
-            if (sscanf_s(v, "%lf %lf %n", &t, &end, &used) < 2 || !used) continue;
-            s.end_us = (i64)llround(end * 1e6);
+            if (sscanf_s(v, "%lld %lf", &t, &s.value) != 2) continue;
+        } else if (layer_has_lines(l->kind)) {
+            if (sscanf_s(v, "%lld %lld %n", &t, &end, &used) < 2 || !used || end <= t) continue;
+            s.end_us = end;
             s.text = v + used;
         } else {
-            if (sscanf_s(v, "%lf %u %d", &t, &s.code, &down) != 3) continue;
+            if (sscanf_s(v, "%lld %u %d", &t, &s.code, &down) != 3) continue;
             s.value = down ? 1 : 0;
         }
-        s.t_us = (i64)llround(t * 1e6);
-        if (t >= 0) layer_insert(l, layer_sample_clean(l->kind, s));
+        s.t_us = t;
+        if (t > 0) layer_insert(l, layer_sample_clean(l->kind, s));
     }
     fclose(f);
+    layers_to_file_time(set, pieces, piece_count);
     return set->count > 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Values as they are shown: the range and the spikes
+
+// The range a Value's colours run over: its own, or else what its samples reach.
+static void layer_range(const Layer &l, f64 *lo, f64 *hi)
+{
+    *lo = l.lo, *hi = l.hi;
+    if (l.hi > l.lo) return;
+    for (i32 i = 0; i < l.count; i++) {
+        if (!i || l.s[i].value < *lo) *lo = l.s[i].value;
+        if (!i || l.s[i].value > *hi) *hi = l.s[i].value;
+    }
+    if (*hi <= *lo) *hi = *lo + 1;
+}
+
+// A sudden rise: a sample at least LAYER_SPIKE_JUMP of the range over the mean of the samples 3 to 6 before it,
+// lasting while the samples stay LAYER_SPIKE_HOLD of the range over that mean.
+struct LayerSpike {
+    i64 a, z;    // its first and last sample
+    i64 peak_us; // its highest
+    f64 peak;
+};
+static const f64 LAYER_SPIKE_JUMP = 0.18, LAYER_SPIKE_HOLD = 0.09;
+
+static i32 layer_spikes(const Layer &l, f64 lo, f64 hi, LayerSpike *out, i32 cap)
+{
+    i32 n = 0;
+    f64 range = hi - lo;
+    for (i32 i = 6; i < l.count && n < cap; i++) {
+        f64 base = (l.s[i - 6].value + l.s[i - 5].value + l.s[i - 4].value + l.s[i - 3].value) / 4;
+        if (l.s[i].value - base < LAYER_SPIKE_JUMP * range) continue;
+        LayerSpike sp = {l.s[i].t_us, l.s[i].t_us, l.s[i].t_us, l.s[i].value};
+        i32 j = i + 1;
+        for (; j < l.count && l.s[j].value - base >= LAYER_SPIKE_HOLD * range; j++) {
+            sp.z = l.s[j].t_us;
+            if (l.s[j].value > sp.peak) sp.peak = l.s[j].value, sp.peak_us = l.s[j].t_us;
+        }
+        out[n++] = sp;
+        i = j - 1;
+    }
+    return n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Spans as they are shown: steady runs
+
+// What a Spans layer shows over a stretch: one run per label.
+struct LayerRun {
+    i64         a, z;
+    const char *label; // the layer's own text, never ""
+};
+
+// The runs of a Spans (or Text) layer that reach into [from, to): a sample shorter than `least_us` is left out and
+// the run before it carries on over it, and runs of one label next to each other join. "" (nothing in front) is a
+// gap. A held last sample lasts until `open_end`. Returns how many, at most `cap`.
+static const i64 LAYER_STEADY_US = 2000000;
+static i32 layer_steady_runs(const Layer &l, i64 from, i64 to, i64 open_end, i64 least_us, LayerRun *out, i32 cap)
+{
+    i32 n = 0;
+    LayerRun cur = {};
+    bool have = false;
+    // Back from the sample in force at `from` to where its run starts, so a run reaching in from before keeps it
+    i32 lo = 0, hi = l.count;
+    while (lo < hi) {
+        i32 mid = (lo + hi) / 2;
+        if (l.s[mid].t_us < from) lo = mid + 1;
+        else hi = mid;
+    }
+    i32 i = lo > 0 ? lo - 1 : 0;
+    auto short_at = [&](i32 k) { return layer_end_of(l, k, open_end) - l.s[k].t_us < least_us; };
+    auto label_at = [&](i32 k) { return l.s[k].text ? l.s[k].text : ""; };
+    while (i > 0 && (short_at(i - 1) || short_at(i) || !strcmp(label_at(i - 1), label_at(i)))) i--;
+    for (; i < l.count && l.s[i].t_us < to; i++) {
+        i64 a = l.s[i].t_us, z = layer_end_of(l, i, open_end);
+        const char *label = l.s[i].text ? l.s[i].text : "";
+        if (z <= a) continue;
+        if (have && (z - a < least_us || !strcmp(cur.label, label)) && a <= cur.z + least_us) {
+            if (z > cur.z) cur.z = z;
+            continue;
+        }
+        if (have && cur.label[0] && cur.z > from && n < cap) out[n++] = cur;
+        cur = {a, z, label};
+        have = true;
+    }
+    if (have && cur.label[0] && cur.z > from && cur.a < to && n < cap) out[n++] = cur;
+    return n;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -507,7 +712,7 @@ static void layer_keys_text(const u32 *held, i32 n, char *out, i32 cap)
 
 // The layers switched on, as an .ass file for a w x h picture `dur` seconds long whose source plays through `spans`:
 // a Value at the top right as its number, a Text as captions at the bottom, an Input at the bottom left as the keys
-// held; more than one of a kind stack. Returns how many events it holds; f = 0 only counts them.
+// held, Spans at the top left as the steady runs' labels; more than one of a kind stack. Returns how many events it holds; f = 0 only counts them.
 static i32 layers_ass(FILE *f, const LayerSet &set, const char (*on)[LAYER_NAME_MAX], i32 on_count,
                       const LayerSpan *spans, i32 n, f64 dur, i32 w, i32 h)
 {
@@ -518,7 +723,8 @@ static i32 layers_ass(FILE *f, const LayerSet &set, const char (*on)[LAYER_NAME_
                    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
                    "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
                    "Alignment, MarginL, MarginR, MarginV, Encoding\n", w, h);
-        static const struct { const char *name; i32 align; } styles[] = {{"Value", 9}, {"Text", 2}, {"Input", 1}};
+        static const struct { const char *name; i32 align; } styles[] = {{"Value", 9}, {"Text", 2}, {"Input", 1},
+                                                                         {"Spans", 7}};
         for (auto &s : styles)
             fprintf(f, "Style: %s,Segoe UI,%d,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,%d,0,"
                        "%d,%d,%d,%d,1\n", s.name, size, size / 14 > 1 ? size / 14 : 1, s.align, margin, margin, margin);
@@ -545,6 +751,12 @@ static i32 layers_ass(FILE *f, const LayerSet &set, const char (*on)[LAYER_NAME_
             for (i32 i = 0; i < l.count; i++)
                 if (l.s[i].text && l.s[i].text[0])
                     count += ass_event(f, spans, n, l.s[i].t_us / 1e6, l.s[i].end_us / 1e6, "Text", mv, l.s[i].text);
+        } else if (l.kind == LAYER_SPANS) {
+            static LayerRun runs[4096];
+            i64 end_us = (i64)llround(src_end * 1e6);
+            i32 nr = layer_steady_runs(l, 0, end_us, end_us, LAYER_STEADY_US, runs, COUNT(runs));
+            for (i32 i = 0; i < nr; i++)
+                count += ass_event(f, spans, n, runs[i].a / 1e6, runs[i].z / 1e6, "Spans", mv, runs[i].label);
         } else {
             u32 held[32];
             i32 nh = 0;

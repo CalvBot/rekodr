@@ -73,11 +73,6 @@ static SaveQueue g_save_q;
 // ---------------------------------------------------------------------------------------------------------------
 // Worker side. There's one worker, so its data is plain statics.
 
-struct Piece {
-    i64 start_us, end_us; // wall clock
-    i64 offset_us;        // where it starts in the saved file
-};
-
 struct Track {
     char title[128];
     char exe[64]; // app tracks: the exe; input tracks: the device's endpoint id
@@ -293,56 +288,19 @@ static i64 file_time(const Piece *pieces, i32 piece_count, i64 t_us)
     return -1;
 }
 
-// Where a wall-clock moment lands in the saved file, one in a gap where the file carries on after it (the end for
-// one after the last piece)
-static i64 file_time_held(const Piece *pieces, i32 piece_count, i64 t_us)
-{
-    for (i32 k = 0; k < piece_count; k++) {
-        if (t_us < pieces[k].start_us) return pieces[k].offset_us;
-        if (t_us < pieces[k].end_us) return pieces[k].offset_us + t_us - pieces[k].start_us;
-    }
-    return piece_count ? pieces[piece_count - 1].offset_us + pieces[piece_count - 1].end_us - pieces[piece_count - 1].start_us : 0;
-}
-
-// A slice of the layers (layers_slice) moved from the wall clock to the saved file's time. Text lines wholly in a
-// gap go, and layers left with nothing.
-static void layers_to_file_time(LayerSet *set, const Piece *pieces, i32 piece_count)
-{
-    i32 kept_layers = 0;
-    for (i32 k = 0; k < set->count; k++) {
-        Layer &l = set->layers[k];
-        i32 kept = 0;
-        for (i32 i = 0; i < l.count; i++) {
-            LayerSample s = l.s[i];
-            s.t_us = file_time_held(pieces, piece_count, s.t_us);
-            if (l.kind == LAYER_TEXT) {
-                s.end_us = file_time_held(pieces, piece_count, s.end_us);
-                if (s.end_us - s.t_us < 1000) { free(s.text); continue; }
-            }
-            l.s[kept++] = s;
-        }
-        l.count = kept;
-        if (!kept) { layer_free_samples(&l); continue; }
-        if (kept_layers != k) set->layers[kept_layers] = l, l = {};
-        kept_layers++;
-    }
-    set->count = kept_layers;
-}
-
-// The clip's layers, [from, to) of the buffer's, written beside its edit as Data\<video's name>.layers.txt. None
-// is written when no layer has anything in it.
+// The clip's layers, [from, to) of the buffer's, written beside its edit as Data\<video's name>.layers.txt with
+// its pieces. None is written when no layer has anything in it.
 static void save_layers(const SaveWork *w, i64 from, i64 to, const Path &video)
 {
     static LayerSet set;
     layers_slice(from, to, &set);
-    layers_to_file_time(&set, w->pieces, w->piece_count);
     if (set.count) {
         wchar_t stem[MAX_PATH];
         const wchar_t *name = wcsrchr(video.s, L'\\');
         wcscpy_s(stem, name ? name + 1 : video.s);
         wchar_t *dot = wcsrchr(stem, L'.');
         if (dot) *dot = 0;
-        if (!layers_write(layers_clip_path(w->cfg.save_dir, stem), set)) log_line("save %u: couldn't write its layers", w->req.id);
+        if (!layers_write(layers_clip_path(w->cfg.save_dir, stem), set, w->pieces, w->piece_count)) log_line("save %u: couldn't write its layers", w->req.id);
     }
     layer_set_free(&set);
 }
