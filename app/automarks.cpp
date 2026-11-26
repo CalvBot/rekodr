@@ -59,7 +59,7 @@ static const AmGsi AM_GSI[] = {
 struct AutoMark {
     u8   colour;
     bool amend;
-    char note[32];
+    char note[64];
     char detail[256]; // the marker's detail (marker_detail_add), "" for none
 };
 
@@ -462,19 +462,56 @@ static i32 hs_line(HsSeen *s, u32 events, const char *line, bool old, AutoMark *
     return n;
 }
 
-// Escape from Tarkov's logs, each line "<date> <time>|<version>|<level>|<channel>|<message>", some followed by lines
-// of JSON or of a stack trace. Kills, deaths and extracts aren't logged. A raid's map: application's "scene preset
-// path:maps/<scene>.bundle" as it loads, then "TRACE-NetworkGameCreate ... Location: <map>, ..." once a server
-// holds it (online raids only). "GameStarted:" starts it. It ends at the first of output's OnGameSessionEnd stack
-// line or "Reason:Stop game", backend's /client/match/local/end (PvE) and the "UserMatchOver" notification. A
-// quest done: a "ChatMessageReceived" notification whose JSON has a templateId "<id> successMessageText". A group
+// Escape from Tarkov's output log, each line "<date> <time>|<version>|<level>|output|<message>", some followed by
+// lines of JSON or of a stack trace. It holds every line of the game's other logs too, in order, as
+// "...|output|<channel>|<message>", so it is the only one read. Kills, deaths and extracts aren't logged. A raid's
+// map: application's "scene preset path:maps/<scene>.bundle" as it loads, then "TRACE-NetworkGameCreate ...
+// Location: <map>, ..." once a server holds it (online raids only); its length: "GameTimer ... start:<utc>
+// escape:<utc>". "GameStarted:" starts it. It ends at the first of the OnGameSessionEnd stack line or "Reason:Stop
+// game", backend's /client/match/local/end (PvE) and the "UserMatchOver" notification. A quest done: backend's
+// response to /client/quest/complete, or a "ChatMessageReceived" notification whose JSON has a templateId "<id>
+// successMessageText"; one quest may say both, so each answers one of the other within EFT_QUEST_SAME_US. A group
 // joined: "GroupMatchInviteAccept", someone taking the player's invite.
+static const i64 EFT_QUEST_SAME_US = 60ll * 1000000;
+
 struct EftSeen {
-    char map[32];     // the raid's map, "" if not known
-    bool in_raid;     // started and not ended
-    bool chat;        // in a ChatMessageReceived notification's JSON
-    bool quest_said;  // and its quest is marked
+    char map[32];       // the raid's map, "" if not known
+    i32  minutes;       // the raid's length from its GameTimer, 0 if not known
+    bool in_raid;       // started and not ended
+    bool chat;          // in a ChatMessageReceived notification's JSON
+    bool quest_said;    // and its quest is marked
+    i64  t_us;          // the last dated line's time
+    i32  quest_owed[2]; // quests marked from the backend [0] or a chat message [1] that the other may still say
+    i64  quest_at[2];   // when the last of each was marked
 };
+
+// A line's date and time ("2026-11-27 03:43:16.259|"), 0 if it has none.
+static i64 eft_time(const char *line)
+{
+    int y, mo, d, h, mi, se, ms;
+    if (sscanf(line, "%4d-%2d-%2d %2d:%2d:%2d.%3d", &y, &mo, &d, &h, &mi, &se, &ms) != 7) return 0;
+    SYSTEMTIME st = {(WORD)y, (WORD)mo, 0, (WORD)d, (WORD)h, (WORD)mi, (WORD)se, (WORD)ms};
+    FILETIME ft;
+    return SystemTimeToFileTime(&st, &ft) ? filetime_to_us(ft) : 0;
+}
+
+// A raid's length in minutes from its GameTimer line's "start:<M/D/Y h:m:s> escape:<M/D/Y h:m:s>"; 0 if it
+// isn't there or isn't 1 to 300 minutes.
+static i32 eft_raid_minutes(const char *line)
+{
+    const char *a = strstr(line, " start:"), *b = strstr(line, " escape:");
+    int m1, d1, y1, h1, n1, s1, m2, d2, y2, h2, n2, s2;
+    if (!a || !b || sscanf(a + 7, "%d/%d/%d %d:%d:%d", &m1, &d1, &y1, &h1, &n1, &s1) != 6 ||
+        sscanf(b + 8, "%d/%d/%d %d:%d:%d", &m2, &d2, &y2, &h2, &n2, &s2) != 6)
+        return 0;
+    SYSTEMTIME t1 = {(WORD)y1, (WORD)m1, 0, (WORD)d1, (WORD)h1, (WORD)n1, (WORD)s1, 0};
+    SYSTEMTIME t2 = {(WORD)y2, (WORD)m2, 0, (WORD)d2, (WORD)h2, (WORD)n2, (WORD)s2, 0};
+    FILETIME f1, f2;
+    if (!SystemTimeToFileTime(&t1, &f1) || !SystemTimeToFileTime(&t2, &f2)) return 0;
+    i64 secs = (filetime_to_us(f2) - filetime_to_us(f1)) / 1000000;
+    i32 min = (i32)((secs + 30) / 60);
+    return min >= 1 && min <= 300 ? min : 0;
+}
 
 // A map's name from its location id or its scene's bundle name, 0 if not known.
 static const char *eft_map(const char *id, size_t len)
@@ -496,6 +533,7 @@ static const char *eft_map(const char *id, size_t len)
 static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
 {
     i32 n = 0;
+    if (i64 t = eft_time(line)) s->t_us = t;
     auto end = [&]() {
         if (!s->in_raid) return;
         s->in_raid = false;
@@ -509,11 +547,24 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
         if (!strncmp(g, "UserMatchOver", 13)) end();
         return n;
     }
+    // A quest done, from the backend (from = 0) or a chat message (1): marked unless the other said it just now.
+    auto quest = [&](i32 from) {
+        i32 other = !from;
+        if (s->quest_owed[other] > 0 && s->t_us - s->quest_at[other] <= EFT_QUEST_SAME_US) {
+            s->quest_owed[other]--;
+            return;
+        }
+        s->quest_owed[other] = 0;
+        if (s->t_us - s->quest_at[from] > EFT_QUEST_SAME_US) s->quest_owed[from] = 0;
+        s->quest_owed[from]++;
+        s->quest_at[from] = s->t_us;
+        if (!old && (events & AM_QUEST)) am_push(out, cap, &n, 3, "Quest done");
+    };
     bool head = isdigit((u8)line[0]) && isdigit((u8)line[3]) && line[4] == '-';
     if (!head) { // a line of JSON or of a stack trace
         if (s->chat && !s->quest_said && strstr(line, " successMessageText\"")) {
             s->quest_said = true;
-            if (!old && (events & AM_QUEST)) am_push(out, cap, &n, 3, "Quest done");
+            quest(1);
         }
         if (strstr(line, "OnGameSessionEnd(")) end();
         return n;
@@ -524,6 +575,7 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
         size_t l = strcspn(p, ". ");
         const char *m = eft_map(p, l);
         str_set(s->map, m ? m : "");
+        s->minutes = 0;
         s->in_raid = false;
     } else if (strstr(line, "|TRACE-NetworkGameCreate ")) {
         if (const char *at = strstr(line, "Location: ")) {
@@ -532,16 +584,23 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
             if (const char *m = eft_map(at, l)) str_set(s->map, m);
             else if (l && l < sizeof s->map) memcpy(s->map, at, l), s->map[l] = 0;
         }
+    } else if (strstr(line, "|GameTimer ")) {
+        if (i32 m = eft_raid_minutes(line)) s->minutes = m;
     } else if (strstr(line, "|GameStarted:")) {
         s->in_raid = true;
         if (!old && (events & AM_RAID_START)) {
-            char note[32];
-            if (s->map[0]) snprintf(note, sizeof note, "Raid start (%s)", s->map);
+            char note[64];
+            if (s->map[0] && s->minutes) snprintf(note, sizeof note, "Raid start (%s, %d min)", s->map, s->minutes);
+            else if (s->map[0]) snprintf(note, sizeof note, "Raid start (%s)", s->map);
+            else if (s->minutes) snprintf(note, sizeof note, "Raid start (%d min)", s->minutes);
             else str_set(note, "Raid start");
             am_push(out, cap, &n, 5, note);
         }
+        s->minutes = 0;
     } else if (strstr(line, "Reason:Stop game") || strstr(line, "/client/match/local/end")) {
         end();
+    } else if (strstr(line, "|<--- Response HTTPS, id [") && strstr(line, "/client/quest/complete")) {
+        quest(0);
     }
     return n;
 }
@@ -1435,7 +1494,7 @@ static void eft_dir(wchar_t *out)
 
 // The logs of a run of Escape from Tarkov, by what each file's name ends in: "<name>.log" or "<name>_<n>.log",
 // after the name's start, a space or a '_'.
-static const char *const EFT_LOGS[] = {"application", "output", "backend", "push-notifications"};
+static const char *const EFT_LOGS[] = {"output"}; // it holds the other logs' lines too (eft_line)
 enum { EFT_LOG_COUNT = COUNT(EFT_LOGS) };
 
 // Which of EFT_LOGS a file is, -1 for none.

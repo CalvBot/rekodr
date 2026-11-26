@@ -2099,11 +2099,12 @@ static void test_gamedb()
         fprintf(f, "2\tCounter-Strike 2\tbb\tcc\t730\t\twin64/cs2.exe\n");
         fprintf(f, "3\tRust\t\t\t252490\tRust\t!rust.exe|rustclient.exe\n");
         fprintf(f, "4\tGarry's Mod\t\t\t0\t\tgarrysmod/hl2.exe\x1f-game garrysmod|>hl2.exe\x1f-game garrysmod\n");
+        fprintf(f, "5\tWurm Online\t\t\t1179680\tWurm Online\twurm online/wurmlauncher64.exe|wurmlauncher64.exe\n");
         fclose(f);
     }
     InitializeSRWLock(&g_gamedb.lock);
     g_gamedb.index = gamedb_load(tsv);
-    T(g_gamedb.index && g_gamedb.index->row_count == 4);
+    T(g_gamedb.index && g_gamedb.index->row_count == 5);
     GameInfo g;
     bool shared = false;
     // A name, whatever its case and punctuation, and another name of the same game
@@ -2134,6 +2135,10 @@ static void test_gamedb()
     // Its window naming the game is a fair guess when the command line doesn't say
     T(gamedb_by_exe("javaw.exe", "C:\\java\\bin\\javaw.exe", "javaw org.launcher.EntryPoint", "Minecraft 1.7.10", &g) && !strcmp(g.id, "1"));
     T(gamedb_by_exe("hl2.exe", "D:\\steamapps\\common\\GarrysMod\\hl2.exe", "hl2.exe -game garrysmod", "", &g) && !strcmp(g.id, "4"));
+    // Wurm Online as its own setup installs it: WurmLauncher64.exe loads the JVM itself, so the launcher's login
+    // window and the game are that one process. The command line of a logged-in client is unverified.
+    T(gamedb_by_exe("WurmLauncher64.exe", "C:\\Users\\x\\AppData\\Local\\Programs\\Wurm Online\\WurmLauncher64.exe", "", "", &g) &&
+      !strcmp(g.name, "Wurm Online") && g.steam == 1179680);
     // A Java game: by the Java in its folder, then by what started it, then by its command line
     {
         auto jg = [](const char *image, const char *parent, const char *cmd) {
@@ -2144,6 +2149,7 @@ static void test_gamedb()
         T(!strcmp(jg("C:\\Games\\SteamApps\\common\\SlayTheSpire\\jre\\bin\\javaw.exe", "", "javaw -jar mts-launcher.jar"), "Slay the Spire"));
         T(!strcmp(jg("E:\\Steam\\steamapps\\common\\Wurm Unlimited\\jre\\bin\\java.exe", "WurmLauncher64.exe", ""), "Wurm Unlimited"));
         T(!strcmp(jg("C:\\Program Files\\Java\\bin\\java.exe", "WurmLauncher64.exe", ""), "Wurm Online"));
+        T(!strcmp(jg("C:\\Users\\x\\AppData\\Local\\Programs\\Wurm Online\\21-win64\\runtime\\bin\\java.exe", "", ""), "Wurm Online"));
         T(!strcmp(jg("C:\\Program Files\\Java\\bin\\java.exe", "Starsector.exe", ""), "Starsector"));
         T(!strcmp(jg("C:\\Program Files\\Java\\bin\\java.exe", "", "java -cp x com.fs.starfarer.StarfarerLauncher"), "Starsector"));
         T(!strcmp(jg("C:\\Java\\bin\\javaw.exe", "cmd.exe", "javaw -jar StarMade.jar -force"), "StarMade"));
@@ -3948,15 +3954,40 @@ static void test_automarks()
         T(eft_line(&es, AM_RAID_START, "2026-10-11 13:20:00.000|1.2.0.0.47965|Info|output|x Reason:Stop game", false, em, 4) == 0); // its tick off
         T(!es.in_raid);
 
-        // Each run's log files by name, with or without the run's name before them
-        T(eft_log_kind("application_000.log") == 0);
-        T(eft_log_kind("2026.10.11_11-03-07_1.2.0.0.47965 application_000.log") == 0);
-        T(eft_log_kind("2026.10.11_11-03-07_1.2.0.0.47965 output_001.log") == 1);
-        T(eft_log_kind("backend.log") == 2);
-        T(eft_log_kind("x push-notifications_000.log") == 3);
-        T(eft_log_kind("notifications_000.log") == -1);
-        T(eft_log_kind("errors_000.log") == -1 && eft_log_kind("application_000.txt") == -1);
-        T(eft_log_kind("myapplication_000.log") == -1);
+        // A PvE raid as output_000.log has it: other logs' lines copied in, the length from GameTimer, the quest
+        // done from the backend's answer, and a chat message about the same quest marking nothing more
+        es = {};
+        const char *o = "2026-11-27 03:36:32.696|1.3.5.0.48914|Info|output|";
+        char ob[512];
+        auto out = [&](const char *msg) {
+            snprintf(ob, sizeof ob, "%s%s", o, msg);
+            return line(ob);
+        };
+        T(out("application|scene preset path:maps/sandbox_start_preset.bundle rcid:Sandbox_SL.ScenesPreset.asset") == 0);
+        T(out("GameTimer utcNow:11/26/2026 19:37:30 start:11/26/2026 19:37:30 escape:11/26/2026 20:07:30 PastTime:00:00:00 stop:01/01/0001 00:00:00 (startTime:, sessionTime:)") == 0);
+        T(line("EFT.GameTimer:Start(Nullable`1, Nullable`1)") == 0);
+        T(out("application|GameStarted:43.51(0) real:58.51(0) diff:15") == 1 && !strcmp(em[0].note, "Raid start (Ground Zero, 30 min)"));
+        T(es.minutes == 0); // the next raid reads its own
+        T(line("2026-11-27 03:43:14.662|1.3.5.0.48914|Info|output|backend|---> Request HTTPS, id [78]: URL: https://gw-pve.escapefromtarkov.com/client/quest/complete. ") == 0);
+        T(line("2026-11-27 03:43:16.259|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [78]: URL: https://gw-pve.escapefromtarkov.com/client/quest/complete, DownloadSeconds: 1.572, ParseSeconds: 0.024, SumSeconds: 1.596, ") == 1 &&
+          !strcmp(em[0].note, "Quest done"));
+        T(line("2026-11-27 03:43:20.000|1.3.5.0.48914|Info|output|push-notifications|Got notification | ChatMessageReceived") == 0);
+        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 0); // the same quest
+        T(line("2026-11-27 03:43:30.000|1.3.5.0.48914|Info|output|push-notifications|Got notification | ChatMessageReceived") == 0);
+        T(line("    \"templateId\": \"6a successMessageText\",") == 1); // another
+        T(line("2026-11-27 03:43:31.000|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [80]: URL: https://x/client/quest/complete, ") == 0); // its answer
+        T(line("2026-11-27 03:50:00.000|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [90]: URL: https://x/client/quest/complete, ") == 1);
+        T(line("2026-11-27 03:52:00.000|1.3.5.0.48914|Info|output|push-notifications|Got notification | ChatMessageReceived") == 0);
+        T(line("    \"templateId\": \"6b successMessageText\",") == 1); // too long after it to be its message
+        T(eft_raid_minutes("GameTimer start:11/26/2026 23:50:00 escape:11/27/2026 00:35:00") == 45);
+        T(eft_raid_minutes("GameTimer start:11/26/2026 19:37:30 escape:11/26/2026 19:37:30") == 0 && eft_raid_minutes("GameTimer x") == 0);
+
+        // Only the output log is read, with or without the run's name before it
+        T(eft_log_kind("output_000.log") == 0);
+        T(eft_log_kind("2026.10.11_11-03-07_1.2.0.0.47965 output_001.log") == 0);
+        T(eft_log_kind("application_000.log") == -1 && eft_log_kind("backend.log") == -1);
+        T(eft_log_kind("errors_000.log") == -1 && eft_log_kind("output_000.txt") == -1);
+        T(eft_log_kind("myoutput_000.log") == -1);
     }
 
     // Hearthstone: the player is whoever this PC sent the mulligan for; their win is said once a game
