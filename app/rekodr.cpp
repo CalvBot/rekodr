@@ -49,6 +49,16 @@ static void imgui_debug_print(const char *fmt, ...);
 #include "vendor/imgui/imgui_impl_win32.cpp"
 #include "vendor/imgui/imgui_impl_dx11.cpp"
 
+// Zstandard's decoder (v1.5.6, build/single_file_libs), for Rainbow Six Siege's match replays (replays.cpp)
+#pragma warning(push, 0)
+#define ZSTD_NO_INLINE_API
+#define ZSTD_STATIC_LINKING_ONLY
+#include "vendor/zstd/zstddeclib.c"
+#undef KB
+#undef MB
+#undef GB
+#pragma warning(pop)
+
 #include "base.h"
 #include "app.h"
 #include "version.h"
@@ -96,6 +106,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "ui.cpp"
 #include "markers.cpp"
 #include "automarks.cpp"
+#include "replays.cpp"
 #include "achievements.cpp"
 #include "webcam.cpp"
 #include "toast.cpp"

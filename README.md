@@ -37,7 +37,7 @@ You need:
 - Visual Studio 2022, Community or the Build Tools alone, with the C++ desktop workload: the MSVC v143 x64/x86
   build tools and a Windows 11 SDK (Rekodr is built with 10.0.26100)
 
-Nothing else: no CMake, no package manager. Dear ImGui is vendored in `app\vendor`. From any prompt:
+Nothing else: no CMake, no package manager. Dear ImGui and the Zstandard decoder are vendored in `app\vendor`. From any prompt:
 ```
 app\build.bat           # optimised build: app\build\rekodr.exe
 app\build.bat debug     # debug build, same place

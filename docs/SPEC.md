@@ -328,8 +328,8 @@ One window with a header (status, pause, Help, Options):
   No CMake or Ninja.
 - **Style:** plain structs that are valid when zeroed (ZII), and functions that operate on them. No class
   hierarchies or RAII wrappers. Data-oriented: fixed arrays where the maximum is known.
-- **Dependencies:** the Windows SDK (D3D11, DXGI, Media Foundation, WASAPI, Shell) and Dear ImGui (vendored
-  source). ffmpeg and ffprobe are found on the PATH or set in settings; with no ffmpeg 7 or later, Rekodr
+- **Dependencies:** the Windows SDK (D3D11, DXGI, Media Foundation, WASAPI, Shell), Dear ImGui and the Zstandard
+  decoder (vendored source). ffmpeg and ffprobe are found on the PATH or set in settings; with no ffmpeg 7 or later, Rekodr
   downloads a pinned build (FFmpeg 8.1.1, GPL) from GitHub on first start.
 - **Games database** (`gamedb.cpp`): which exe is which game, its proper name, its icon and cover. Nothing is
   shipped; Rekodr fetches Discord's public list of detectable games (about 25,000, with each game's exe names,

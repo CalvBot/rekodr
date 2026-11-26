@@ -4357,6 +4357,54 @@ static void test_remove_dir(const Path &dir)
 // Layers, through a test source: one of each kind registered, pushed to and a span replaced; the store read back
 // from its files and pruned; a save's slice in the clip's time through its pieces, read back by the library; an
 // edit's switches kept; and the render's .ass drawing what is switched on where the pieces play it
+// A Siege round built by hand: its header, then the packets in zstd frames of raw blocks, with junk between them
+struct TestBytes {
+    u8 b[4096];
+    size_t n;
+    void put(const void *p, size_t k) { memcpy(b + n, p, k), n += k; }
+    void byte(u8 v) { b[n++] = v; }
+    void zeros(size_t k) { memset(b + n, 0, k), n += k; }
+    void hstr(const char *s) { byte((u8)strlen(s)), zeros(7), put(s, strlen(s)); }
+    void str(const char *s) { byte((u8)strlen(s)), put(s, strlen(s)); }
+    void clock(u32 left) { put(R6_TIME, 4), byte(4), put(&left, 4); }
+    void feed(const char *killer, const char *target)
+    {
+        put(R6_FEED, 5), zeros(38), byte(0), put(R6_KILL, 5), str(killer), zeros(15), str(target), zeros(56), byte(1);
+    }
+    void frame(const TestBytes &in) // a single-segment frame, one raw block
+    {
+        put(R6_ZSTD_MAGIC, 4);
+        if (in.n < 256) byte(0x20), byte((u8)in.n); // its size in a byte
+        else byte(0x60), byte((u8)(in.n - 256)), byte((u8)((in.n - 256) >> 8)); // in two, less 256
+        u32 h = (u32)in.n << 3 | 1;
+        byte((u8)h), byte((u8)(h >> 8)), byte((u8)(h >> 16));
+        put(in.b, in.n);
+    }
+};
+
+static void test_r6_replay()
+{
+    static TestBytes f, p1, p2;
+    f = {}, p1 = {}, p2 = {};
+    f.put("dissect", 7), f.byte(8), f.zeros(7), f.put("UNKNOWN", 7), f.zeros(7);
+    const char *head[] = {"version", "Y9S1", "code", "8211379", "datetime", "2024-05-04-02-14-08", "recordingplayerid", "7",
+                          "playerid", "5", "playername", "Other", "playerid", "7", "playername", "Me", "teamscore1", "0"};
+    for (const char *h : head) f.hstr(h);
+    // The prep clock, then the action phase: a kill 3 s in, a kill of someone else's, the same kill again, a death
+    p1.clock(45), p1.clock(44), p1.clock(180), p1.clock(179), p1.feed("Me", "Other");
+    p2.feed("Other", "Someone"), p2.feed("Me", "Other"), p2.clock(178), p2.clock(177), p2.feed("Other", "Me");
+    f.frame(p1), f.put("junk", 4), f.frame(p2);
+    ReplayMark m[8];
+    const i64 start = r6_datetime("2024-05-04-02-14-08");
+    T(start == 1714788848ll * 1000000);
+    T(r6_marks(f.b, f.n, m, 8) == 2);
+    T(m[0].t_us == start + 3 * 1000000ll && m[0].colour == 4 && !strcmp(m[0].note, "Kill"));
+    T(m[1].t_us == start + 5 * 1000000ll && m[1].colour == 1 && !strcmp(m[1].note, "Death"));
+    // Cut short: what is whole is read; not a round, -1
+    T(r6_marks(f.b, f.n - 20, m, 8) == 2 && r6_marks(f.b, f.n - 70, m, 8) == 1);
+    T(r6_marks(f.b, 300, m, 8) == -1 && r6_marks((const u8 *)"dissect", 7, m, 8) == -1 && r6_marks(f.b, 0, m, 8) == -1);
+}
+
 static void test_layers()
 {
     wchar_t tmp[MAX_PATH];
@@ -4993,6 +5041,7 @@ int main()
     test_edit_advanced();
     test_cam_layer();
     test_layers();
+    test_r6_replay();
     test_plugins();
     test_lanes();
     test_share();
