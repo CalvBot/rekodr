@@ -27,7 +27,7 @@ then runs the command.
 | `timeline` | Shows the timeline. |
 | `quick` | Shows the timeline with the last 30 s picked. |
 | `options` | Shows Options. |
-| `show <page>` | Shows a page: `clips`, `sessions`, `player`, `timeline`, `help`, or an Options tab (`apps`, `recording`, `hotkeys`, `integrations`, `general`). |
+| `show <page>` | Shows a page: `clips`, `sessions`, `player`, `timeline`, `help`, or an Options tab (`apps`, `recording`, `hotkeys`, `integrations`, `auto-markers`, `general`). |
 | `edit <path>` | Opens a saved file in the editor. |
 | `folder` | Opens this year's clips folder. |
 | `dev [off]` | Turns the detailed log on or off. |
