@@ -1867,11 +1867,14 @@ static void tl_draw_value(const TlCanvas &c, const Layer &l, f32 y, f32 h, f32 s
     }
 }
 
-// The busy bar's colour for a second's value: near black for nothing, then the value line's colours up to red
+// The busy bar's colour for a second's value: grey when idle, warming to red as it gets busier
 static u32 tl_busy_colour(f64 v)
 {
-    if (v <= 0) return 0x2a2d31;
-    return tl_value_colour(0.15 + 0.85 * ImClamp(v / BUSY_HI, 0.0, 1.0));
+    static const u8 idle[3] = {74, 79, 85}, busy[3] = {232, 32, 20};
+    f64 f = ImClamp(v / BUSY_HI, 0.0, 1.0);
+    u32 out = 0;
+    for (i32 k = 0; k < 3; k++) out = out << 8 | (u32)(idle[k] + (busy[k] - idle[k]) * f + 0.5);
+    return out;
 }
 
 // The Busy layer as a bar filling the band, each column the busiest second in it. A column with no second of its
