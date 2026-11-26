@@ -3267,16 +3267,16 @@ static void test_automarks()
     T(cs2_feed(&e, "7656", "gameover", "over", "CT", 3, 1, 0, 13, 0, m, AM_ROUND) == 1 && !strcmp(m[0].note, "Round won"));
 
     LolSeen l = {};
-    str_set(l.me, "Calv#EUW");
+    str_set(l.me, "Sam#EUW");
     const char *start = "{\"Events\":[{\"EventID\":0,\"EventName\":\"GameStart\",\"EventTime\":0.02}]}";
     T(lol_marks(&l, AM_LOL_EVENTS, start, (i64)strlen(start), m, 16) == 0 && l.have && l.last_id == 0);
     const char *more =
         "{\"Events\":[{\"EventID\":0,\"EventName\":\"GameStart\",\"EventTime\":0.02},"
-        "{\"EventID\":1,\"EventName\":\"ChampionKill\",\"EventTime\":300.1,\"VictimName\":\"Other\",\"KillerName\":\"Calv\",\"Assisters\":[\"A\",\"B\"]},"
-        "{\"EventID\":2,\"EventName\":\"ChampionKill\",\"EventTime\":302.5,\"VictimName\":\"Third\",\"KillerName\":\"calv\",\"Assisters\":[]},"
-        "{\"EventID\":3,\"EventName\":\"Multikill\",\"EventTime\":302.5,\"KillerName\":\"Calv\",\"KillStreak\":2},"
-        "{\"EventID\":4,\"EventName\":\"ChampionKill\",\"EventTime\":400,\"VictimName\":\"Calv#EUW\",\"KillerName\":\"Other\",\"Assisters\":[]},"
-        "{\"EventID\":5,\"EventName\":\"ChampionKill\",\"EventTime\":401,\"VictimName\":\"Calvin\",\"KillerName\":\"Other\",\"Assisters\":[]}]}";
+        "{\"EventID\":1,\"EventName\":\"ChampionKill\",\"EventTime\":300.1,\"VictimName\":\"Other\",\"KillerName\":\"Sam\",\"Assisters\":[\"A\",\"B\"]},"
+        "{\"EventID\":2,\"EventName\":\"ChampionKill\",\"EventTime\":302.5,\"VictimName\":\"Third\",\"KillerName\":\"sam\",\"Assisters\":[]},"
+        "{\"EventID\":3,\"EventName\":\"Multikill\",\"EventTime\":302.5,\"KillerName\":\"Sam\",\"KillStreak\":2},"
+        "{\"EventID\":4,\"EventName\":\"ChampionKill\",\"EventTime\":400,\"VictimName\":\"Sam#EUW\",\"KillerName\":\"Other\",\"Assisters\":[]},"
+        "{\"EventID\":5,\"EventName\":\"ChampionKill\",\"EventTime\":401,\"VictimName\":\"Samuel\",\"KillerName\":\"Other\",\"Assisters\":[]}]}";
     i32 n = lol_marks(&l, AM_LOL_EVENTS, more, (i64)strlen(more), m, 16);
     T(n == 4 && !strcmp(m[0].note, "Kill") && !m[1].amend && m[2].amend && !strcmp(m[2].note, "Double kill") &&
       m[3].colour == 1 && !strcmp(m[3].note, "Death"));
@@ -3285,13 +3285,13 @@ static void test_automarks()
     T(lol_marks(&l, AM_LOL_EVENTS, end, (i64)strlen(end), m, 16) == 1 && m[0].colour == 3 && !strcmp(m[0].note, "Win"));
     T(lol_marks(&l, AM_LOL_EVENTS, start, (i64)strlen(start), m, 16) == 0 && l.last_id == 0); // a new match
     LolSeen lm = {};
-    str_set(lm.me, "Calv#EUW");
+    str_set(lm.me, "Sam#EUW");
     lol_marks(&lm, AM_MULTI, start, (i64)strlen(start), m, 16);
     T(lol_marks(&lm, AM_MULTI, more, (i64)strlen(more), m, 16) == 1 && !m[0].amend && !strcmp(m[0].note, "Double kill"));
     const char *obj =
-        "{\"Events\":[{\"EventID\":6,\"EventName\":\"DragonKill\",\"EventTime\":600,\"DragonType\":\"Fire\",\"Stolen\":\"False\",\"KillerName\":\"Calv\",\"Assisters\":[]},"
+        "{\"Events\":[{\"EventID\":6,\"EventName\":\"DragonKill\",\"EventTime\":600,\"DragonType\":\"Fire\",\"Stolen\":\"False\",\"KillerName\":\"Sam\",\"Assisters\":[]},"
         "{\"EventID\":7,\"EventName\":\"TurretKilled\",\"EventTime\":610,\"TurretKilled\":\"Turret_T2_L_03_A\",\"KillerName\":\"Minion_T100L0S0N0001\",\"Assisters\":[]},"
-        "{\"EventID\":8,\"EventName\":\"BaronKill\",\"EventTime\":1300,\"Stolen\":\"False\",\"KillerName\":\"Calv\",\"Assisters\":[]}]}";
+        "{\"EventID\":8,\"EventName\":\"BaronKill\",\"EventTime\":1300,\"Stolen\":\"False\",\"KillerName\":\"Sam\",\"Assisters\":[]}]}";
     LolSeen lo = lm;
     T(lol_marks(&lo, AM_LOL_EVENTS, obj, (i64)strlen(obj), m, 16) == 2 && m[0].colour == 5 && !strcmp(m[0].note, "Dragon") &&
       !strcmp(m[1].note, "Baron"));
