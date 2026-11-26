@@ -1956,6 +1956,34 @@ static bool marker_detail_next(const char **at, char *key, i32 key_cap, char *va
 static bool marker_detail_get(const char *d, const char *key, char *out, i32 cap);                  // markers.cpp
 static const i64 TL_SPAN_MAX_US = 4 * 3600 * 1000000ll; // the longest a band between paired markers is drawn
 
+// How much a marker matters when a crowd of them shows one: a kill (any kind), then a death, then any other game
+// event; 0 for one with no event icon (the player's own)
+static i32 tl_mark_rank(const char *detail)
+{
+    if (!evi_of_marker(detail)) return 0;
+    char v[32] = "";
+    marker_detail_get(detail, "event", v, sizeof v);
+    return !strcmp(v, "kill") || !strcmp(v, "multi") || !strcmp(v, "headshot") ? 3 : !strcmp(v, "death") ? 2 : 1;
+}
+
+// Crowds of markers on the ruler: neighbours closer than `room` (x: each marker's place) are one crowd. lead[i] is
+// the marker i's crowd shows: the one that matters most (tl_mark_rank, the first of equals), i itself when it stands
+// alone, or -1 when no marker in its crowd has an event icon.
+static void tl_marker_crowds(const Marker *m, i32 n, const f32 *x, f32 room, i16 *lead)
+{
+    for (i32 a = 0; a < n;) {
+        i32 z = a + 1;
+        while (z < n && x[z] - x[z - 1] < room) z++;
+        i32 best = a, rank = -1;
+        for (i32 i = a; i < z; i++) {
+            i32 r = tl_mark_rank(m[i].detail);
+            if (r > rank) rank = r, best = i;
+        }
+        for (i32 i = a; i < z; i++) lead[i] = (i16)(z - a == 1 ? a : rank > 0 ? best : -1);
+        a = z;
+    }
+}
+
 // Where a span that starts at a paired marker ends. The start's detail says span=<kind>, its end's span_end=<kind>
 // (`after`: the markers after it, oldest first). With no end, it stops where the game played at its start stopped
 // being played (activity), at the next start of its kind, or after TL_SPAN_MAX_US, whichever is first; one whose
@@ -2217,18 +2245,45 @@ static void screen_timeline()
     static ImVec2 mark_show_at; // where `show timeline-at` opens it; (0, 0) = at the mouse
     i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
     i32 mark_hit = -1;
-    for (i32 i = 0; g_tl_mark_show && i < mark_count; i++)
+    // Crowds (tl_marker_crowds): markers too close for an icon each show as their lead's icon on a small stack, one
+    // outline behind it for two markers and two for more. A click on a crowd lists its markers.
+    const f32 icon_r = 7 * s, icon_room = 2 * icon_r + 3 * s, stack_off = 2 * s;
+    static i16 mark_lead[COUNT(marks)], mark_crowd[COUNT(marks)]; // mark_crowd: at a crowd's lead, its size
+    {
+        static f32 xs[COUNT(marks)];
+        for (i32 i = 0; i < mark_count; i++) xs[i] = tl_x(c, marks[i].t_us), mark_crowd[i] = 0;
+        tl_marker_crowds(marks, mark_count, xs, icon_room, mark_lead);
+        for (i32 i = 0; i < mark_count; i++)
+            if (mark_lead[i] >= 0) mark_crowd[mark_lead[i]]++;
+    }
+    auto stack_of = [&](i32 i) { return ImClamp(mark_crowd[i] - 1, 0, 2); };
+    static Marker crowd_open[COUNT(marks)]; // the crowd whose list is open
+    static i32 crowd_open_n;
+    static ImVec2 crowd_at;
+    auto open_crowd = [&](i32 l) {
+        crowd_open_n = 0;
+        for (i32 i = 0; i < mark_count; i++)
+            if (mark_lead[i] == l) crowd_open[crowd_open_n++] = marks[i];
+        crowd_at = ImVec2(tl_x(c, marks[l].t_us) - 12 * s, y_tracks);
+        ImGui::OpenPopup("##markcrowd");
+    };
+    for (i32 i = 0; g_tl_mark_show && i < mark_count; i++) // `show timeline-at`: its note, or its crowd's list
         if (marks[i].t_us == g_tl_mark_show) {
+            g_tl_mark_show = 0;
+            if (mark_lead[i] >= 0 && mark_crowd[mark_lead[i]] > 1) {
+                open_crowd(mark_lead[i]);
+                break;
+            }
             mark_open = marks[i];
             tl.marker_pick = mark_open.t_us;
             ImGui::OpenPopup("##marknote");
             mark_show_at = ImVec2(tl_x(c, mark_open.t_us), y_tracks);
-            g_tl_mark_show = 0;
         }
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_ruler &&
         io.MousePos.y < y_tracks && (tl.drag == TL_DRAG_NONE || !tl.dragged)) { // the timeline's own click is active
         f32 best = 8 * s;
         for (i32 i = 0; i < mark_count; i++) {
+            if (mark_lead[i] >= 0 && mark_lead[i] != i) continue; // a crowd is hit at its icon
             f32 d = fabsf(io.MousePos.x - tl_x(c, marks[i].t_us));
             if (d <= best) { best = d; mark_hit = i; }
         }
@@ -2509,7 +2564,8 @@ static void screen_timeline()
             }
             tl_clamp_selection();
         }
-        if (tl.drag == TL_DRAG_PAN && click && mark_hit >= 0) { // a right (or middle) click
+        if (tl.drag == TL_DRAG_PAN && click && mark_hit >= 0 && mark_crowd[mark_hit] > 1) open_crowd(mark_hit);
+        else if (tl.drag == TL_DRAG_PAN && click && mark_hit >= 0) { // a right (or middle) click
             mark_open = marks[mark_hit];
             tl.marker_pick = mark_open.t_us;
             ImGui::OpenPopup("##marknote");
@@ -2518,6 +2574,8 @@ static void screen_timeline()
             ImGui::OpenPopup("##savedmenu");
         } else if (tl.drag == TL_DRAG_PAN && click && has_sel && on_ruler && mouse_t >= tl.sel_in && mouse_t <= tl.sel_out) {
             ImGui::OpenPopup("##selmenu"); // a right click on the selection
+        } else if (tl.drag == TL_DRAG_MARK && click && mark_hit >= 0 && mark_crowd[mark_hit] > 1) {
+            open_crowd(mark_hit);
         } else if (tl.drag == TL_DRAG_MARK && click && mark_hit >= 0) {
             tl.playhead_us = marks[mark_hit].t_us;
             tl.marker_pick = marks[mark_hit].t_us;
@@ -2635,16 +2693,14 @@ static void screen_timeline()
     }
     dl->PopClipRect();
 
-    // Which markers show their event's icon (evicons.cpp): a game's, with room on both sides for it. A ruler label
-    // an icon would cover isn't drawn.
-    const f32 icon_r = 7 * s, icon_room = 2 * icon_r + 3 * s;
+    // Which markers show their event's icon (evicons.cpp): a game's that stands alone or leads its crowd. A ruler
+    // label or tick an icon or its stack would touch isn't drawn.
     static EvIcon mark_icon[COUNT(marks)];
-    for (i32 i = 0; i < mark_count; i++) {
-        f32 x = tl_x(c, marks[i].t_us);
-        bool roomy = (i == 0 || x - tl_x(c, marks[i - 1].t_us) >= icon_room) &&
-                     (i + 1 == mark_count || tl_x(c, marks[i + 1].t_us) - x >= icon_room);
-        mark_icon[i] = roomy ? evi_of_marker(marks[i].detail) : EVI_NONE;
-    }
+    for (i32 i = 0; i < mark_count; i++) mark_icon[i] = mark_lead[i] == i ? evi_of_marker(marks[i].detail) : EVI_NONE;
+    auto icon_near = [&](i32 i, f32 a, f32 z) { // whether [a, z] touches marker i's icon and stack
+        f32 bx = tl_x(c, marks[i].t_us);
+        return mark_icon[i] && a < bx + icon_r + 2 * s + stack_of(i) * stack_off && z > bx - icon_r - 2 * s;
+    };
 
     // Ruler, ticks on round local times, and their lines faintly through the tracks. A tick or label a marker's icon
     // would touch isn't drawn on the ruler.
@@ -2657,8 +2713,7 @@ static void screen_timeline()
         for (i64 t = ((c.start + off) / step + 1) * step - off; t < view_end; t += step) {
             f32 x = floorf(tl_x(c, t)) + 0.5f;
             bool under = false; // an icon's tick isn't drawn
-            for (i32 i = 0; i < mark_count && !under; i++)
-                under = mark_icon[i] && fabsf(x - tl_x(c, marks[i].t_us)) < icon_r + 2 * s;
+            for (i32 i = 0; i < mark_count && !under; i++) under = icon_near(i, x, x);
             if (!under) dl->AddLine(ImVec2(x, y_ruler + ruler_h - 7 * s), ImVec2(x, y_ruler + ruler_h), col32(COL_FAINT));
             dl->AddLine(ImVec2(x, y_tracks), ImVec2(x, y_bottom), col32(COL_LINE, 0.55f));
             char label[16];
@@ -2669,10 +2724,7 @@ static void screen_timeline()
             f32 lw = ImGui::CalcTextSize(label).x;
             if (x + 5 * s < pill_x + pill_half && x + 5 * s + lw > pill_x - pill_half) continue; // under the time pill
             bool covered = false;
-            for (i32 i = 0; i < mark_count && !covered; i++) {
-                f32 bx = tl_x(c, marks[i].t_us);
-                covered = mark_icon[i] && x + 5 * s < bx + icon_r + 2 * s && x + 5 * s + lw > bx - icon_r - 2 * s;
-            }
+            for (i32 i = 0; i < mark_count && !covered; i++) covered = icon_near(i, x + 5 * s, x + 5 * s + lw);
             if (covered) continue;
             dl->AddText(ImVec2(x + 5 * s, floorf(y_ruler + (ruler_h - 7 * s - sh) / 2)), col32(COL_DIM), label);
         }
@@ -2941,15 +2993,23 @@ static void screen_timeline()
     }
 
     // Markers: a diamond on the ruler in the marker's colour (the playhead's is a white triangle), bigger when picked
-    // or under the mouse. A game's marker with room on both sides is its event's icon in that colour instead. The
-    // line down through the tracks shows only while the mouse is on it.
+    // or under the mouse. A game's marker standing alone is its event's icon in that colour instead, and a crowd its
+    // lead's icon on a stack of outlines, up and to the right behind it. The line down through the tracks shows only
+    // while the mouse is on it.
     for (i32 i = 0; i < mark_count; i++) {
+        if (mark_lead[i] >= 0 && mark_lead[i] != i) continue; // shown by its crowd's lead
         f32 x = floorf(tl_x(c, marks[i].t_us)) + 0.5f;
         u32 rgb = MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb;
         bool picked = marks[i].t_us == tl.marker_pick, hot = i == mark_hit;
         if (hot) dl->AddLine(ImVec2(x, y_tracks), ImVec2(x, y_bottom), col32(rgb, 0.8f), 1 * s);
         if (mark_icon[i]) {
             f32 cy = y_ruler + ruler_h - icon_r - 1 * s, r = icon_r;
+            for (i32 k = stack_of(i); k >= 1; k--) {
+                ImVec2 o(x + k * stack_off, cy - k * stack_off), h(r + 1 * s, r + 1 * s);
+                dl->AddRectFilled(o - h, o + h, col32(COL_PANEL), 3 * s);
+                dl->AddRect(o - h, o + h, col32(rgb, k == 1 ? 0.75f : 0.45f), 3 * s, 0, 1.2f * s);
+            }
+            if (stack_of(i)) dl->AddRectFilled(ImVec2(x - r - 1 * s, cy - r - 1 * s), ImVec2(x + r + 1 * s, cy + r + 1 * s), col32(COL_PANEL), 3 * s);
             if (hot || picked) dl->AddRectFilled(ImVec2(x - r - 2 * s, cy - r - 2 * s), ImVec2(x + r + 2 * s, cy + r + 1 * s), col32(rgb, 0.2f), 3 * s);
             evi_draw(dl, mark_icon[i], ImVec2(x, cy), 2 * r, col32(rgb), col32(COL_PANEL));
             if (picked) dl->AddRect(ImVec2(x - r - 2 * s, cy - r - 2 * s), ImVec2(x + r + 2 * s, cy + r + 1 * s), col32(COL_TEXT), 3 * s, 0, 1.5f * s);
@@ -2993,6 +3053,54 @@ static void screen_timeline()
                 col32(MARKER_COLOURS[marks[i].colour < COUNT(MARKER_COLOURS) ? marks[i].colour : 0].rgb, 0.9f), col32(0x000000));
         ImGui::PopFont();
     }
+    // A crowd's list: each of its markers with its icon, time, note and the player it names (a kill's). A click on one
+    // puts the playhead there and picks it.
+    ImGui::SetNextWindowPos(crowd_at, ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(320 * s, 0));
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("##markcrowd")) {
+        ImGui::PushFont(g_font_small);
+        f32 rh = 26 * s;
+        f32 gap = ImGui::GetStyle().ItemSpacing.y;
+        ImGui::BeginChild("##markcrowd_rows", ImVec2(0, ImMin(crowd_open_n * (rh + gap) - gap, 260 * s)));
+        for (i32 i = 0; i < crowd_open_n; i++) {
+            const Marker &m = crowd_open[i];
+            char at[16], id[24];
+            tl_clock(m.t_us, true, at, sizeof at);
+            snprintf(id, sizeof id, "##mc%d", i);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            f32 w = ImGui::GetContentRegionAvail().x;
+            if (ImGui::Selectable(id, m.t_us == tl.marker_pick, 0, ImVec2(w, rh))) {
+                tl.playhead_us = m.t_us;
+                tl.marker_pick = m.t_us;
+                ImGui::CloseCurrentPopup();
+            }
+            ImDrawList *pd = ImGui::GetWindowDrawList();
+            u32 rgb = MARKER_COLOURS[m.colour < COUNT(MARKER_COLOURS) ? m.colour : 0].rgb;
+            ImVec2 ic(p.x + 8 * s + icon_r, p.y + rh / 2);
+            EvIcon icon = evi_of_marker(m.detail);
+            if (icon) evi_draw(pd, icon, ic, 2 * icon_r, col32(rgb), col32(COL_PANEL));
+            else {
+                f32 r = 4.5f * s;
+                ImVec2 d[4] = {ImVec2(ic.x, ic.y - r), ImVec2(ic.x + r, ic.y), ImVec2(ic.x, ic.y + r), ImVec2(ic.x - r, ic.y)};
+                pd->AddConvexPolyFilled(d, 4, col32(rgb));
+            }
+            f32 ty = floorf(p.y + (rh - ImGui::GetTextLineHeight()) / 2);
+            pd->AddText(ImVec2(p.x + 34 * s, ty), col32(COL_DIM), at);
+            const char *note = m.note[0] ? m.note : "Marker";
+            char who[96] = "";
+            if (!marker_detail_get(m.detail, "achievement", who, sizeof who)) marker_detail_get(m.detail, "name", who, sizeof who);
+            else who[0] = 0;
+            f32 nw = ImMin(ImGui::CalcTextSize(note).x, who[0] ? 110 * s : w - 112 * s);
+            tl_text_fit(pd, ImVec2(p.x + 104 * s, ty), nw, col32(COL_TEXT), note);
+            if (who[0]) tl_text_fit(pd, ImVec2(p.x + 104 * s + nw + 10 * s, ty), w - 122 * s - nw, col32(COL_DIM), who);
+        }
+        ImGui::EndChild();
+        ImGui::PopFont();
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+
     // A save's right-click menu
     lib_popup_style_push(6);
     if (ImGui::BeginPopup("##savedmenu")) {

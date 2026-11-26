@@ -4606,6 +4606,27 @@ static void test_marker_spans()
     T(!tl_marker_span(start, after, 2, act, 3, T0 + 100 * M, &z));
 }
 
+// Crowded markers on the ruler: one icon a crowd, a kill's before a death's before any other, the first of equals
+static void test_marker_crowds()
+{
+    Marker m[8] = {};
+    const char *details[8] = {"event=quest", "event=death", "event=kill;weapon=MPX", "event=kill;weapon=MPX", "",
+                              "event=raid_end;span_end=raid", "", ""};
+    for (i32 i = 0; i < 8; i++) str_set(m[i].detail, details[i]);
+    f32 x[8] = {0, 5, 9, 12, 100, 200, 300, 305};
+    i16 lead[8];
+    tl_marker_crowds(m, 8, x, 17, lead);
+    T(lead[0] == 2 && lead[1] == 2 && lead[2] == 2 && lead[3] == 2); // the first kill leads the crowd
+    T(lead[4] == 4 && lead[5] == 5);                                  // alone, each shows itself
+    T(lead[6] == -1 && lead[7] == -1);                                // a crowd of the player's own: diamonds
+    str_set(m[2].detail, "event=round"), str_set(m[3].detail, "event=round");
+    tl_marker_crowds(m, 4, x, 17, lead);
+    T(lead[0] == 1 && lead[3] == 1); // no kill: the death
+    tl_marker_crowds(m, 4, x, 3, lead);
+    T(lead[0] == 0 && lead[1] == 1 && lead[2] == 2 && lead[3] == 3); // zoomed in, they split
+    T(tl_mark_rank("event=multi") == 3 && tl_mark_rank("event=death") == 2 && tl_mark_rank("event=quest") == 1 && tl_mark_rank("") == 0);
+}
+
 // Star Citizen's Game.log: lines from a real log and in the shapes public trackers read, with neutral names
 static void test_star_citizen()
 {
@@ -6668,6 +6689,7 @@ int main()
     test_rust();
     test_star_citizen();
     test_marker_spans();
+    test_marker_crowds();
     test_event_icons();
     test_house_flipper_2();
     test_am_pc();

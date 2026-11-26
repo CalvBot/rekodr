@@ -104,7 +104,7 @@ static void run_command(const char *text)
             g_lib_share_ask = !strcmp(arg, "share-menu");
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
         else if (starts_with(arg, "timeline-at")) { // timeline-at <from> <to> [<marker>]: the timeline showing
-            // [from, to] (Unix seconds), [with the note of the marker made at <marker> (microseconds) open]
+            // [from, to] (Unix seconds), [with the note of the marker made at <marker> (microseconds) open, or its crowd's list]
             long long from = 0, to = 0, mark = 0;
             if (sscanf(arg + 11, "%lld %lld %lld", &from, &to, &mark) >= 2 && to > from) {
                 ui_show(SCREEN_TIMELINE);
