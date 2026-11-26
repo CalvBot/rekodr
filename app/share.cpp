@@ -514,6 +514,22 @@ static bool share_ready_link(u64 lib_key, u64 source, char *url, i32 cap)
 // next share_start takes it and sets it back.
 static i32 g_share_link_days = -1;
 
+// How long a link lasts as the sliders show it: days 1 to LINK_DAYS_MAX, and Forever at the stop past the last day
+static f32 link_days_slider(i32 days) { return days > 0 ? (f32)days : (f32)(LINK_DAYS_MAX + 1); }
+static i32 link_days_from_slider(f32 v)
+{
+    i32 d = (i32)(v + 0.5f);
+    return d > LINK_DAYS_MAX ? 0 : d < 1 ? 1 : d;
+}
+// "Forever", "1 day", "1 week" or "<n> days"
+static void link_days_text(i32 days, char *s, i32 cap)
+{
+    if (!days) snprintf(s, cap, "Forever");
+    else if (days == 1) snprintf(s, cap, "1 day");
+    else if (days == 7) snprintf(s, cap, "1 week");
+    else snprintf(s, cap, "%d days", days);
+}
+
 // Starts a Share. A clip with a ready link (share_ready_link) gets that link on the clipboard at once, whatever the
 // kind, unless a host is picked.
 static u32 share_start(ShareKind kind, const wchar_t *path, const MediaInfo &m, const EditRecord *edit,

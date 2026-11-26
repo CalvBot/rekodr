@@ -150,6 +150,7 @@ static const char GAME_DESKTOP[] = "Desktop";
 static const char GAME_NOT_OURS[] = "Other";
 
 enum { WATCH_MAX = 8 }; // other apps' folders the library shows (Config.watch_dirs)
+enum { LINK_DAYS_MAX = 90 }; // the most days a bucket link can last short of forever (Config.share_link_days)
 enum { FOLDER_MAX = 128 }; // folder rules (Config.folders), and store folders added as rules (Config.store_seen)
 
 // Games that mark their events on the timeline (automarks.cpp). Each marks the AmEvent bits it has, saved as the
@@ -298,8 +299,8 @@ struct Config {
     char wt_name[64];                  // the player's War Thunder name, whose kills and deaths are marked ("")
     bool ach_marks;       // a Steam achievement rarer than ach_rarer gets a marker (achievements.cpp; on)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
-    i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), 7 or 1; the Share menu can
-                          // pick another for one link
+    i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), else 1 to LINK_DAYS_MAX; the
+                          // Share menu can pick another for one link
     u8   embed_style;      // the look of a link's card, an index of the styles in r2.cpp (embed_style_id); saved
                            // by its id ("classic")
     f32 folder_warn_gb;  // the Library warns once its clips and sessions hold more than this; 0 = never. Nothing

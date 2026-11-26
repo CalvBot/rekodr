@@ -3517,6 +3517,61 @@ static void opt_read_cap_row()
     opt_row_end();
 }
 
+// Links last: a slider of days with ticks at 1 day, 1 week and 30 days that a drag snaps to, Forever at its right
+// end, and a box for the number of days (empty or 0 is Forever).
+static i32 g_link_days_saved = -1;
+static void opt_link_days_row()
+{
+    Config &c = g_app.config;
+    static const f32 snaps[] = {1, 7, 30, LINK_DAYS_MAX + 1};
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), box_w = dp(92);
+    f32 slider_w = cw - box_w - gap;
+    opt_row_begin("Links last", "Then they're deleted from the bucket. The Share menu can pick another", cw, dp(52));
+    f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+    i32 d = c.share_link_days;
+    f32 v = link_days_slider(d);
+    ImGui::SetCursorScreenPos(ImVec2(x, floorf(y + (fh - dp(24)) / 2)));
+    if (lib_slider("##linkdays", &v, 1, LINK_DAYS_MAX + 1, slider_w, dp(24), -1e9f, true, COL_ACCENT, snaps, COUNT(snaps)))
+        d = link_days_from_slider(v);
+    bool slid = ImGui::IsItemDeactivated();
+    // The days, with "days" inside the box, or "Forever" greyed in an empty one
+    static char typed[8];
+    static bool editing;
+    if (!editing) {
+        if (d) snprintf(typed, sizeof typed, "%d", d);
+        else typed[0] = 0;
+    }
+    f32 pad = dp(8);
+    ImVec2 box(x + slider_w + gap, y);
+    ImGui::SetCursorScreenPos(box);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, ImGui::GetStyle().FramePadding.y));
+    ImGui::SetNextItemWidth(box_w);
+    ImGui::InputTextWithHint("##linkdaystype", "Forever", typed, sizeof typed,
+                             ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+    editing = ImGui::IsItemActive();
+    bool typed_done = ImGui::IsItemDeactivated();
+    ImGui::PopStyleVar();
+    if (typed[0]) {
+        const char *unit = atoi(typed) == 1 ? "day" : "days";
+        opt_text_at(ImGui::GetWindowDrawList(), g_font,
+                    ImVec2(box.x + box_w - pad - text_w(g_font, unit), floorf(box.y + (fh - g_font->FontSize) / 2)), COL_DIM,
+                    unit, box.x + box_w);
+    }
+    if (typed_done) {
+        i32 t = atoi(typed);
+        d = t < 1 ? 0 : t > LINK_DAYS_MAX ? LINK_DAYS_MAX : t;
+    }
+    c.share_link_days = d;
+    if ((slid || typed_done) && c.share_link_days != g_link_days_saved) {
+        g_link_days_saved = c.share_link_days;
+        char s[24];
+        link_days_text(d, s, sizeof s);
+        log_line("options: bucket links last %s", s);
+        options_apply(0);
+    }
+    opt_row_end();
+}
+
 // A small underlined link in the dim small font at `at`; true when clicked.
 static bool opt_link_at(const char *id, ImVec2 at, const char *text)
 {
@@ -3872,17 +3927,7 @@ static void options_sharing()
                              g_space_draft >= 0 ? g_space_draft : c.r2_space_gb, r2_others_now()),
                   g_budget_draft >= 0 || g_space_draft >= 0);
     opt_reads_row();
-    {
-        static const char *const lives[] = {"Forever", "1 week", "1 day"};
-        static const i32 days[] = {0, 7, 1};
-        i32 life = c.share_link_days == 7 ? 1 : c.share_link_days == 1 ? 2 : 0;
-        if (opt_row_combo("Links last", "Then they're deleted from the bucket. The Share menu can pick another",
-                          "##linklife", lives, 0, 3, &life, dp(200))) {
-            c.share_link_days = days[life];
-            log_line("options: bucket links last %s", lives[life]);
-            options_apply(0);
-        }
-    }
+    opt_link_days_row();
 
     // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made
     // by hand. Each link has a slot as wide as its longer wording, so neither moves when the other is clicked.

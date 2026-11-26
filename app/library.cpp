@@ -3796,6 +3796,47 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
                 dl->AddText(ImVec2(a.x + padx, floorf(a.y + (ph - sfs) / 2)), col32(on ? COL_BG : COL_DIM), names[i]);
                 x -= kit_px(4);
             }
+            // Left of them, a box for another number of days, filled and lit when the length is none of those
+            {
+                static char typed[8];
+                static bool editing;
+                bool custom = cur != 0 && cur != 1 && cur != 7, on = custom && !editing;
+                if (!editing) {
+                    if (custom) snprintf(typed, sizeof typed, "%d", cur);
+                    else typed[0] = 0;
+                }
+                f32 bw = kit_px(72);
+                x -= bw;
+                ImVec2 a(x, y);
+                ImGui::SetCursorScreenPos(a);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padx, (ph - sfs) / 2));
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ph / 2);
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0);
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, col32(COL_WHITE, on ? 1 : 0.06f));
+                ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, col32(COL_WHITE, on ? 1 : 0.14f));
+                ImGui::PushStyleColor(ImGuiCol_FrameBgActive, col32(COL_WHITE, 0.14f));
+                ImGui::PushStyleColor(ImGuiCol_Text, col32(on ? COL_BG : COL_TEXT));
+                ImGui::PushStyleColor(ImGuiCol_TextDisabled, col32(COL_DIM));
+                ImGui::SetNextItemWidth(bw);
+                ImGui::InputTextWithHint("##lifedays", "Days", typed, sizeof typed,
+                                         ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+                editing = ImGui::IsItemActive();
+                if (ImGui::IsItemDeactivated()) {
+                    i32 t = atoi(typed);
+                    if (t >= 1) {
+                        g_share_link_days = t > LINK_DAYS_MAX ? LINK_DAYS_MAX : t;
+                        dev_click("chip", "days");
+                    }
+                }
+                ImGui::PopStyleColor(5);
+                ImGui::PopStyleVar(3);
+                if (typed[0]) {
+                    const char *unit = atoi(typed) == 1 ? "day" : "days";
+                    dl->AddText(ImVec2(a.x + bw - padx - ImGui::CalcTextSize(unit).x, floorf(a.y + (ph - sfs) / 2)),
+                                col32(on ? COL_BG : COL_DIM), unit);
+                }
+                x -= kit_px(4);
+            }
             kit_tip_rect(ImVec2(x, y), ImVec2(o.x + W, y + ph), "How long a link to your bucket lasts");
         }
         ImGui::PopFont();

@@ -3164,6 +3164,18 @@ static void test_share_ready_edit()
     T(slider_snap(10.4f, 0.6f, 1, 100, 10, 0, 0) == 10 && slider_snap(11, 0.6f, 1, 100, 10, 0, 0) == 11);
     T(slider_snap(6.7f, 0.5f, 0, 30, -1e9f, snaps, 2) == 7 && slider_snap(4, 0.5f, 0, 30, -1e9f, snaps, 2) == 4);
     T(slider_snap(0.5f, 1, 2, 30, -1e9f, snaps, 2) == 0.5f); // a tick outside the range is none
+    // Links last: days 1 to LINK_DAYS_MAX on the slider, Forever (0) at the stop past them
+    {
+        char t[24];
+        T(link_days_slider(0) == LINK_DAYS_MAX + 1 && link_days_slider(3) == 3);
+        T(link_days_from_slider(LINK_DAYS_MAX + 0.8f) == 0 && link_days_from_slider(2.6f) == 3 && link_days_from_slider(0.2f) == 1);
+        link_days_text(0, t, sizeof t);
+        T(!strcmp(t, "Forever"));
+        link_days_text(7, t, sizeof t);
+        T(!strcmp(t, "1 week"));
+        link_days_text(12, t, sizeof t);
+        T(!strcmp(t, "12 days"));
+    }
 
     // The library's note shows the link glyph only for a link that went on the clipboard
     lib_note_link("clip");

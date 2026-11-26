@@ -849,7 +849,7 @@ static void config_set(Config *c, const char *key, char *value)
     }
     else if (!strcmp(key, "ach_marks")) boolean(&c->ach_marks);
     else if (!strcmp(key, "ach_rarer")) { i32 r = atoi(value); c->ach_rarer = r == 1 || r == 10 || r == 100 ? r : 5; }
-    else if (!strcmp(key, "share_link_days")) { i32 d = atoi(value); c->share_link_days = d == 1 || d == 7 ? d : 0; }
+    else if (!strcmp(key, "share_link_days")) { i32 d = atoi(value); c->share_link_days = d >= 1 && d <= LINK_DAYS_MAX ? d : 0; }
     else if (!strcmp(key, "embed_style")) { i32 i = embed_style_find(value); c->embed_style = (u8)(i < 0 ? 0 : i); }
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
