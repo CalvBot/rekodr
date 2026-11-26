@@ -4184,7 +4184,7 @@ static bool opt_am_rust(AmState st)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImGui::Dummy(ImVec2(0, dp(2)));
     ImVec2 p = ImGui::GetCursorScreenPos();
-    opt_text_at(dl, g_font_small, p, COL_DIM, "Deaths mark on their own. Kills come from the combat log, printed by", g_am_text_end);
+    opt_text_at(dl, g_font_small, p, COL_DIM, "Keys that print the combat log, for kills", g_am_text_end);
     ImGui::Dummy(ImVec2(0, g_font_small->FontSize + dp(8)));
     bool changed = false;
     f32 fh = ImGui::GetFrameHeight(), gap = dp(8);
@@ -4303,11 +4303,12 @@ static void options_automarks()
             }
         }
         if (g == AMG_RUST && opt_am_rust(st)) marks = true;
+        opt_am_row_end();
+        // The whole row in view, its bottom clear of the page's fade
         if (g == AMG_RUST && g_opt_show_rust) {
-            ImGui::SetScrollHereY(1);
+            ImGui::SetScrollFromPosY(ImGui::GetCursorScreenPos().y - ImGui::GetWindowPos().y + dp(64), 1);
             g_opt_show_rust = false;
         }
-        opt_am_row_end();
     }
 
     // Plugins that send events: a row each, its switch the plugin's own (as in Integrations)
