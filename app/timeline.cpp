@@ -1720,6 +1720,164 @@ static f32 tl_peak_in(const TlPeaks &p, i64 start_us, i64 a, i64 z)
     return m / 255.f;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Data rows: the layers switched on in timeline_show, a band each between the video and the sound. A Value is a
+// line over its range whose colour follows the value, each pixel column its highest, with spikes drawn thicker and
+// a dot at each peak. Spans and Text are named stretches, one colour per name. Input layers aren't drawn.
+
+struct TlData {
+    Layer   heads[LAYER_MAX]; // the rows, in the order registered
+    i32     count;
+    LayerSet set;             // a slice of the view, taken again as it moves
+    i64     from, to;
+    u64     at_ms;
+};
+static TlData g_tl_data;
+
+static bool tl_data_shown(const Config &cfg, const Layer &l)
+{
+    return l.kind != LAYER_INPUT && word_list_has(cfg.timeline_show, l.name);
+}
+
+// The rows to draw now
+static void tl_data_rows(const Config &cfg)
+{
+    Layer all[LAYER_MAX];
+    i32 n = layers_heads(all, LAYER_MAX);
+    g_tl_data.count = 0;
+    for (i32 i = 0; i < n; i++)
+        if (tl_data_shown(cfg, all[i])) g_tl_data.heads[g_tl_data.count++] = all[i];
+}
+
+// The view's samples, sliced again when the view has moved a little or half a second has gone by
+static void tl_data_slice(i64 from, i64 to)
+{
+    TlData &d = g_tl_data;
+    u64 ms = GetTickCount64();
+    i64 slack = (to - from) / 200;
+    if (d.at_ms && ms - d.at_ms < 500 && llabs(from - d.from) <= slack && llabs(to - d.to) <= slack) return;
+    layer_set_free(&d.set);
+    layers_slice(from, to, &d.set);
+    d.from = from, d.to = to, d.at_ms = ms;
+}
+
+static const Layer *tl_data_layer(const char *name)
+{
+    for (i32 k = 0; k < g_tl_data.set.count; k++)
+        if (!strcmp(g_tl_data.set.layers[k].name, name)) return &g_tl_data.set.layers[k];
+    return 0;
+}
+
+// The value line's colour at `f` (0-1 of the range): grey, blue, green, yellow, orange, red
+static u32 tl_value_colour(f64 f)
+{
+    static const f32 at[] = {0, 0.22f, 0.42f, 0.6f, 0.78f, 1};
+    static const u8 rgb[][3] = {{150, 160, 168}, {60, 130, 230}, {60, 190, 90}, {240, 200, 40}, {245, 130, 30}, {232, 32, 20}};
+    f32 v = (f32)ImClamp(f, 0.0, 1.0);
+    i32 k = 0;
+    while (k < 4 && v > at[k + 1]) k++;
+    f32 u = (v - at[k]) / (at[k + 1] - at[k]);
+    u32 out = 0;
+    for (i32 ch = 0; ch < 3; ch++) out = out << 8 | (u32)(rgb[k][ch] + (rgb[k + 1][ch] - rgb[k][ch]) * u + 0.5f);
+    return out;
+}
+
+// A Value's line in the band [y, y + h). Returns the value under `mouse_x` in `*hover` (NAN when none there).
+static void tl_draw_value(const TlCanvas &c, const Layer &l, f32 y, f32 h, f32 s, f32 mouse_x, f64 *hover)
+{
+    *hover = NAN;
+    if (!l.count) return;
+    f64 lo, hi;
+    layer_range(l, &lo, &hi);
+    const i64 held = 5 * TL_SEC; // a column with no sample of its own shows the last one this long
+    f32 wstep = floorf(2 * s) > 1 ? floorf(2 * s) : 1;
+    i32 columns = (i32)((c.x1 - c.x0) / wstep) + 1;
+    if (columns > 2048) columns = 2048;
+    static f32 col_v[2048];
+    i32 i = 0;
+    for (i32 k = 0; k < columns; k++) {
+        i64 a = tl_t(c, c.x0 + k * wstep), z = tl_t(c, c.x0 + (k + 1) * wstep);
+        f32 most = NAN;
+        while (i < l.count && l.s[i].t_us < a) i++;
+        for (i32 j = i; j < l.count && l.s[j].t_us < z; j++)
+            if (isnan(most) || l.s[j].value > most) most = (f32)l.s[j].value;
+        if (isnan(most) && i > 0 && a - l.s[i - 1].t_us < held) most = (f32)l.s[i - 1].value;
+        col_v[k] = most;
+    }
+    auto vy = [&](f64 v) { return y + h - 2 * s - (f32)ImClamp((v - lo) / (hi - lo), 0.0, 1.0) * (h - 4 * s); };
+    LayerSpike spikes[64];
+    i32 ns = layer_spikes(l, lo, hi, spikes, COUNT(spikes));
+    for (i32 k = 1; k < columns; k++) {
+        if (isnan(col_v[k - 1]) || isnan(col_v[k])) continue;
+        f32 xa = c.x0 + (k - 1) * wstep, xb = c.x0 + k * wstep;
+        i64 t = tl_t(c, xb);
+        bool spike = false;
+        for (i32 q = 0; q < ns && !spike; q++) spike = t >= spikes[q].a - (i64)(wstep / c.px_per_us) && t <= spikes[q].z;
+        c.dl->AddLine(ImVec2(xa, vy(col_v[k - 1])), ImVec2(xb, vy(col_v[k])),
+                      col32(tl_value_colour((col_v[k] - lo) / (hi - lo))), (spike ? 3 : 1.5f) * s);
+    }
+    // A dot at each spike's peak; dots closer than 8 px are one, at the higher
+    f32 last_x = -1e9f, last_v = 0;
+    i32 dots = 0;
+    ImVec2 dot_p[64];
+    f64 dot_v[64];
+    for (i32 q = 0; q < ns; q++) {
+        f32 x = tl_x(c, spikes[q].peak_us);
+        if (x < c.x0 - 8 * s || x > c.x1 + 8 * s) continue;
+        if (dots && x - last_x < 8 * s) {
+            if (spikes[q].peak > last_v) dot_p[dots - 1] = ImVec2(x, vy(spikes[q].peak)), dot_v[dots - 1] = spikes[q].peak;
+            last_v = (f32)fmax(last_v, spikes[q].peak);
+            continue;
+        }
+        dot_p[dots] = ImVec2(x, vy(spikes[q].peak));
+        dot_v[dots++] = spikes[q].peak;
+        last_x = x, last_v = (f32)spikes[q].peak;
+    }
+    for (i32 q = 0; q < dots; q++) {
+        c.dl->AddCircleFilled(dot_p[q], 3.5f * s, col32(tl_value_colour((dot_v[q] - lo) / (hi - lo))));
+        c.dl->AddCircle(dot_p[q], 3.5f * s, col32(0xffffff), 0, 1.2f * s);
+    }
+    if (mouse_x >= c.x0 && mouse_x <= c.x1) {
+        i32 k = (i32)((mouse_x - c.x0) / wstep);
+        if (k >= 0 && k < columns && !isnan(col_v[k])) *hover = col_v[k];
+    }
+}
+
+// The stretches of a Spans or Text layer in view. Spans switches under LAYER_STEADY_US are left out.
+static i32 tl_data_runs(const Layer &l, const TlCanvas &c, i64 open_end, LayerRun *out, i32 cap)
+{
+    return layer_steady_runs(l, c.start, c.start + c.span, open_end, l.kind == LAYER_SPANS ? LAYER_STEADY_US : 0, out,
+                             cap);
+}
+
+// Stretches drawn as named blocks. Returns the one under `mouse_x`, or -1.
+static i32 tl_draw_runs(const TlCanvas &c, const LayerRun *runs, i32 n, f32 y, f32 h, f32 s, f32 mouse_x)
+{
+    i32 hit = -1;
+    ImGui::PushFont(g_font_small);
+    for (i32 i = 0; i < n; i++) {
+        f32 xa = ImMax(tl_x(c, runs[i].a), c.x0), xb = ImMin(tl_x(c, runs[i].z), c.x1);
+        if (mouse_x >= xa && mouse_x < xb) hit = i;
+        tl_span(c, runs[i].a, runs[i].z, y, h, col32(tl_game_colour(runs[i].label), hit == i ? 1.0f : 0.85f));
+        tl_text_fit(c.dl, ImVec2(xa + 5 * s, floorf(y + (h - ImGui::GetTextLineHeight()) / 2)), xb - xa - 10 * s,
+                    col32(0xffffff), runs[i].label);
+    }
+    ImGui::PopFont();
+    return hit;
+}
+
+// A small box by the mouse: what is under it on a data row
+static void tl_pin(ImDrawList *dl, ImVec2 mouse, f32 s, const char *text)
+{
+    ImGui::PushFont(g_font_small);
+    ImVec2 ts = ImGui::CalcTextSize(text);
+    ImVec2 a(mouse.x + 12 * s, mouse.y - ts.y - 14 * s), z(a.x + ts.x + 12 * s, a.y + ts.y + 8 * s);
+    dl->AddRectFilled(a, z, col32(COL_PANEL2), 4 * s);
+    dl->AddRect(a, z, col32(COL_LINE), 4 * s);
+    dl->AddText(ImVec2(a.x + 6 * s, a.y + 4 * s), col32(COL_TEXT), text);
+    ImGui::PopFont();
+}
+
 // The sound lanes: a lane for each app, or every app of a kind summed into one of four (the quick clip timeline
 // always, the main one in Simple).
 static const i32 TL_LANES = 4;
@@ -1762,11 +1920,14 @@ static void screen_timeline()
     const f32 pad_r = 14 * s, ruler_h = wa_ruler_h(), saved_h = 9 * s, game_h = 22 * s, video_h = 36 * s;
     const f32 zoom_bar_h = wa_viewbar_h(), zoom_bar_room = zoom_bar_h + 6 * s;
     const f32 line_max = 40 * s, line_min = 20 * s; // a sound lane: as tall as fits, between these
-    const f32 min_tracks = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_min + 10 * s;
+    tl_data_rows(cfg);
+    const i32 data_n = tl.quick ? 0 : g_tl_data.count;
+    const f32 data_row_h = 22 * s, data_h = data_n * data_row_h;
+    const f32 min_tracks = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + data_h + 3 * s + TL_LANES * line_min + 10 * s;
     const f32 top_min = 160 * s;
     auto top_height = [&]() {
         // By default the tracks get what they use at their tallest and the preview the rest
-        const f32 tracks_full = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + 3 * s + TL_LANES * line_max + 10 * s;
+        const f32 tracks_full = 8 * s + zoom_bar_room + ruler_h + saved_h + game_h + video_h + data_h + 3 * s + TL_LANES * line_max + 10 * s;
         f32 h = cfg.timeline_top > 0 ? avail.y * cfg.timeline_top : avail.y - fh - 2 * gap - tracks_full;
         if (h > avail.y - fh - 2 * gap - min_tracks) h = avail.y - fh - 2 * gap - min_tracks;
         if (h < top_min) h = top_min;
@@ -1814,7 +1975,7 @@ static void screen_timeline()
     c.x1 = card_z.x - pad_r;
     f32 y_zoom = origin.y + 8 * s, y_ruler = y_zoom + zoom_bar_room, y_tracks = y_ruler + ruler_h;
     f32 y_saved = y_tracks + 2 * s, y_game = y_saved + saved_h + 1 * s, y_video = y_game + game_h;
-    f32 y_snd = y_video + video_h; // each row is inset 1 px, so every gap is 2
+    f32 y_data = y_video + video_h, y_snd = y_data + data_h; // each row is inset 1 px, so every gap is 2
     f32 y_bottom = card_z.y - 10 * s;
     bool names_hot = false;
     {
@@ -1886,6 +2047,13 @@ static void screen_timeline()
     static TlSaved saved[COUNT(sv.saved) + COUNT(g_app.sessions.items)];
     static TlSaved saved_open; // the one whose menu is open
     i32 saved_count = tl_saved_make(saved, COUNT(saved), c.start - c.span, c.start + 2 * c.span); // room for a pan
+    { // only the kinds switched on in the rows menu
+        bool show_clips = word_list_has(cfg.timeline_show, "Clips"), show_sessions = word_list_has(cfg.timeline_show, "Sessions");
+        i32 kept = 0;
+        for (i32 i = 0; i < saved_count; i++)
+            if (saved[i].session ? show_sessions : show_clips) saved[kept++] = saved[i];
+        saved_count = kept;
+    }
     i32 saved_hit = -1;
     if (ImGui::IsWindowHovered() && io.MousePos.y >= y_saved - 2 * s && io.MousePos.y < y_saved + saved_h + 2 * s &&
         io.MousePos.x >= c.x0 && io.MousePos.x <= c.x1 && tl.drag == TL_DRAG_NONE) {
@@ -1908,6 +2076,14 @@ static void screen_timeline()
             }
         }
     }
+
+    // The data rows' samples in view, and the row under the mouse. A click on a row opens its list.
+    if (data_n) tl_data_slice(c.start - c.span / 20, ImMin(c.start + c.span, now));
+    i32 data_hit = -1;
+    if (data_n && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_data &&
+        io.MousePos.y < y_data + data_h && io.MousePos.x >= c.x0 && io.MousePos.x <= c.x1)
+        data_hit = ImClamp((i32)((io.MousePos.y - y_data) / data_row_h), 0, data_n - 1);
+    static char data_open[LAYER_NAME_MAX]; // the row whose list is open
 
     // Markers in view, on the ruler. A click on one puts the playhead there and shows its note; a right click opens
     // the whole note.
@@ -2034,6 +2210,10 @@ static void screen_timeline()
             f32 y = a.y + (7 + 4.5f * k) * s;
             dl->AddRectFilled(ImVec2(a.x + bars[k][0] * s, floorf(y)), ImVec2(a.x + bars[k][1] * s, floorf(y) + 2 * s), ink, 1 * s);
         }
+        // Beside it, the rows menu: which data rows show
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 14 * s + bs + 4 * s, floorf(y_ruler + (ruler_h - bs) / 2) - 2 * s));
+        kit_next_tip("Rows");
+        if (kit_icon_button(ICON_VIEW, "##rows", KIT_GHOST, true, false, bs)) ImGui::OpenPopup("##rowsmenu");
     }
 
     // --- The mouse on the bars: one invisible button, so ImGui keeps the drag even outside it ---------------------
@@ -2214,6 +2394,9 @@ static void screen_timeline()
             if (tl.sel_out <= tl.sel_in) tl.sel_out = tl.sel_in + TL_SEC;
             tl_clamp_selection();
             tl.playhead_us = tl.sel_in;
+        } else if (click && data_hit >= 0 && (tl.drag == TL_DRAG_SEEK || tl.drag == TL_DRAG_NEW)) {
+            str_set(data_open, g_tl_data.heads[data_hit].name);
+            ImGui::OpenPopup("##datalist");
         }
         tl.drag = TL_DRAG_NONE;
     }
@@ -2257,6 +2440,13 @@ static void screen_timeline()
         dl->AddText(ImVec2(tx, floorf(y_game + (game_h - sh) / 2)), col32(COL_FAINT), ICON_GAME);
         dl->AddText(ImVec2(tx + 22 * s, floorf(y_game + (game_h - sh) / 2)), col32(COL_DIM), "Game");
         dl->AddText(ImVec2(tx + 22 * s, floorf(y_saved + (saved_h - sh) / 2)), col32(COL_DIM), "Saved");
+        for (i32 k = 0; k < data_n; k++) {
+            const Layer &l = g_tl_data.heads[k];
+            f32 y = floorf(y_data + k * data_row_h + (data_row_h - sh) / 2);
+            const char *icon = l.kind == LAYER_SPANS ? ICON_WINDOW : l.kind == LAYER_TEXT ? ICON_CHAT : ICON_SLIDERS;
+            dl->AddText(ImVec2(tx, y), col32(COL_FAINT), icon);
+            tl_text_fit(dl, ImVec2(tx + 22 * s, y), name_w - 22 * s, col32(COL_DIM), l.label);
+        }
         ImGui::PopFont();
         dl->AddText(ImVec2(tx + 22 * s, floorf(y_video + (video_h - th) / 2)), col32(COL_DIM), "Video");
     }
@@ -2299,6 +2489,10 @@ static void screen_timeline()
     dl->AddRectFilled(ImVec2(c.x0, y_saved), ImVec2(c.x1, y_saved + saved_h), col32(TL_COL_LANE), 3 * s);
     dl->AddRectFilled(ImVec2(c.x0, y_game), ImVec2(c.x1, y_game + game_h), col32(TL_COL_LANE), lane_r);
     dl->AddRectFilled(ImVec2(c.x0, y_video + 1 * s), ImVec2(c.x1, y_video + video_h - 1 * s), col32(TL_COL_LANE), lane_r);
+    for (i32 k = 0; k < data_n; k++) {
+        f32 y = y_data + k * data_row_h;
+        dl->AddRectFilled(ImVec2(c.x0, y + 1 * s), ImVec2(c.x1, y + data_row_h - 1 * s), col32(TL_COL_LANE), lane_r);
+    }
     dl->PushClipRect(ImVec2(c.x0 - 6 * s, y_snd - 4 * s), ImVec2(c.x1 + 6 * s, y_bottom), true);
     for (i32 k = 0; k < lanes; k++) {
         f32 y = y_lanes + k * line_h;
@@ -2394,6 +2588,32 @@ static void screen_timeline()
         }
         ImGui::PopFont();
     }
+
+    // The data rows. What is under the mouse goes in a small box by it.
+    char data_pin[LAYER_NAME_MAX + LAYER_TEXT_MAX + 48] = "";
+    for (i32 k = 0; k < data_n; k++) {
+        const Layer &head = g_tl_data.heads[k];
+        const Layer *l = tl_data_layer(head.name);
+        if (!l) continue;
+        f32 y = y_data + k * data_row_h + 1 * s, h = data_row_h - 2 * s;
+        f32 mouse_x = k == data_hit && bar_hovered ? io.MousePos.x : -1e9f;
+        if (l->kind == LAYER_VALUE) {
+            f64 v;
+            tl_draw_value(c, *l, y, h, s, mouse_x, &v);
+            if (!isnan(v)) snprintf(data_pin, sizeof data_pin, "%s  %.0f %s", head.label, v, head.unit);
+        } else {
+            static LayerRun runs[512];
+            i32 n = tl_data_runs(*l, c, now, runs, COUNT(runs));
+            i32 hit = tl_draw_runs(c, runs, n, y, h, s, mouse_x);
+            if (hit >= 0) {
+                char len[32];
+                tl_length(runs[hit].z - runs[hit].a, len, sizeof len);
+                snprintf(data_pin, sizeof data_pin, "%s  %s", runs[hit].label, len);
+            }
+        }
+    }
+
+    if (data_pin[0]) tl_pin(ImGui::GetForegroundDrawList(), io.MousePos, s, data_pin);
 
     // Saved, a thin stripe at the top: sessions faint, clips solid over them
     for (i32 i = 0; i < saved_count; i++) {
@@ -2585,6 +2805,80 @@ static void screen_timeline()
             utf8_to_wide(saved_open.path, w.s, COUNT(w.s));
             show_in_folder(w.s);
         }
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+
+    // A data row's list, under the timeline: every switch or line in view, or a value's spikes. A click on one puts
+    // the playhead there.
+    ImGui::SetNextWindowPos(ImVec2(c.x0, card_z.y + 4 * s));
+    ImGui::SetNextWindowSize(ImVec2(ImMin(420 * s, c.x1 - c.x0), 0));
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("##datalist")) {
+        const Layer *l = tl_data_layer(data_open);
+        ImGui::BeginChild("##datalist_rows", ImVec2(0, 240 * s));
+        ImGui::PushFont(g_font_small);
+        i32 shown = 0;
+        auto row = [&](i64 t, const char *what, const char *right) {
+            char at[16], id[40];
+            tl_clock(t, true, at, sizeof at);
+            snprintf(id, sizeof id, "##dl%d", shown++);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            f32 w = ImGui::GetContentRegionAvail().x, rh = 24 * s;
+            if (ImGui::Selectable(id, false, 0, ImVec2(w, rh))) {
+                tl.playhead_us = t;
+                ImGui::CloseCurrentPopup();
+            }
+            ImDrawList *pd = ImGui::GetWindowDrawList();
+            f32 ty = floorf(p.y + (rh - ImGui::GetTextLineHeight()) / 2), rw = ImGui::CalcTextSize(right).x;
+            pd->AddText(ImVec2(p.x + 8 * s, ty), col32(COL_DIM), at);
+            tl_text_fit(pd, ImVec2(p.x + 90 * s, ty), w - 110 * s - rw, col32(COL_TEXT), what);
+            pd->AddText(ImVec2(p.x + w - 8 * s - rw, ty), col32(COL_DIM), right);
+        };
+        if (l && l->kind == LAYER_VALUE) {
+            f64 lo, hi;
+            layer_range(*l, &lo, &hi);
+            static LayerSpike spikes[256];
+            i32 n = layer_spikes(*l, lo, hi, spikes, COUNT(spikes));
+            for (i32 i = 0; i < n; i++) {
+                if (spikes[i].peak_us < c.start || spikes[i].peak_us > c.start + c.span) continue;
+                char v[48];
+                snprintf(v, sizeof v, "%.0f %s", spikes[i].peak, l->unit);
+                row(spikes[i].peak_us, "Spike", v);
+            }
+        } else if (l) {
+            static LayerRun runs[512];
+            i32 n = tl_data_runs(*l, c, now, runs, COUNT(runs));
+            for (i32 i = 0; i < n; i++) {
+                char len[32];
+                tl_length(runs[i].z - runs[i].a, len, sizeof len);
+                row(runs[i].a, runs[i].label, len);
+            }
+        }
+        if (!shown) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(col32(COL_DIM)), "Nothing in view");
+        ImGui::PopFont();
+        ImGui::EndChild();
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+
+    // The rows menu: which data rows the timeline shows
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("##rowsmenu")) {
+        auto toggle = [&](const char *name, const char *label) {
+            bool on = word_list_has(cfg.timeline_show, name);
+            if (lib_menu_item(on ? ICON_CHECK : "", label)) {
+                word_list_toggle(cfg.timeline_show, sizeof cfg.timeline_show, name);
+                config_save(cfg, g_app.paths);
+                log_line("timeline: row %s %s", name, on ? "off" : "on");
+            }
+        };
+        toggle("Clips", "Clips");
+        toggle("Sessions", "Sessions");
+        Layer heads[LAYER_MAX];
+        i32 n = layers_heads(heads, LAYER_MAX);
+        for (i32 i = 0; i < n; i++)
+            if (heads[i].kind != LAYER_INPUT) toggle(heads[i].name, heads[i].label);
         ImGui::EndPopup();
     }
     lib_popup_style_pop();

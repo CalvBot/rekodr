@@ -558,6 +558,22 @@ static bool layers_read(const Path &file, LayerSet *set)
     return set->count > 0;
 }
 
+// The layers there are, without their samples, in the order registered. Any thread.
+static i32 layers_heads(Layer *out, i32 cap)
+{
+    LayerStore *ls = &g_layers;
+    AcquireSRWLockExclusive(&ls->lock);
+    layers_load_locked(ls);
+    i32 n = 0;
+    for (i32 k = 0; k < ls->set.count && n < cap; k++) {
+        out[n] = ls->set.layers[k];
+        out[n].count = out[n].cap = 0;
+        out[n++].s = 0;
+    }
+    ReleaseSRWLockExclusive(&ls->lock);
+    return n;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Values as they are shown: the range and the spikes
 
