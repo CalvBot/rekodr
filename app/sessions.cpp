@@ -38,6 +38,8 @@ static const AppInfo *sessions_app(const char *exe)
 static bool sessions_game_ok(const char *exe)
 {
     const AppInfo *a = exe[0] ? sessions_app(exe) : 0;
+    // A java that isn't one of the games (a launcher's Java check, a tool) has no game name: not a game's session
+    if (a && is_java_exe(exe) && !a->name.s[0] && !a->desc.s[0]) return false;
     return a && app_category(g_app.config, *a) == CAT_GAME && a->session_mode != SESSION_NEVER;
 }
 
