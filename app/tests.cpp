@@ -3601,6 +3601,10 @@ static void test_mcpack()
     T(mc_game_dir(cmd, got, sizeof got) && strstr(got, ".minecraft"));
     T(mc_clues(cmd, body, sizeof body) && strstr(body, "\"launcher\":\"prism\",\"mc\":\"1.21.1\""));
     T(!mc_game_dir("javaw -Djava.library.path=C:/x/natives -cp x some.other.Main", got, sizeof got));
+    // An instance name with spaces: Prism quotes the whole -D argument
+    T(mc_arg("javaw \"-Djava.library.path=C:/i/Cobblemon Official Modpack [Fabric]/natives\" -cp x", "-Djava.library.path",
+             got, sizeof got) && !strcmp(got, "C:/i/Cobblemon Official Modpack [Fabric]/natives"));
+    T(mc_arg("x --gameDir \"C:/a b\" --version 1", "--gameDir", got, sizeof got) && !strcmp(got, "C:/a b"));
 
     // The service's answer for a pack its launcher named: the pack, keyed by its platform's project
     static const char answer[] = "{\"game\":{\"key\":\"p:modrinth:1KVo5zza\",\"name\":\"Fabulously Optimized\"},\"matched_by\":\"mc_pack\","

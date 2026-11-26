@@ -31,7 +31,9 @@ static bool mc_arg(const char *cmd, const char *name, char *out, i32 cap)
         if (*v != ' ' && *v != '=') continue;
         while (*v == ' ' || *v == '=') v++;
         i32 n = 0;
-        if (*v == '"') {
+        if (p > cmd && p[-1] == '"') { // "-Dname=a value with spaces"
+            while (*v && *v != '"' && n < cap - 1) out[n++] = *v++;
+        } else if (*v == '"') {
             for (v++; *v && *v != '"' && n < cap - 1;) out[n++] = *v++;
         } else {
             while (*v && *v != ' ' && n < cap - 1) out[n++] = *v++;
