@@ -208,7 +208,7 @@ static void config_defaults(Config *c, const Paths &paths)
                    wcschr(time_format, L'H') != 0; // "HH:mm:ss" is 24-hour, "h:mm:ss tt" 12-hour
     c->accent = ACCENT_DEFAULT;
     c->card_width = 270;
-    // One hotkey, on keys no other clip tool (NVIDIA, AMD, Medal, Steam, Game Bar) or common game binding uses.
+    // One hotkey, on keys no other clip tool (NVIDIA, AMD, Steam, Game Bar and others) or common game binding uses.
     str_set(c->hotkeys[0].keys.s, "Alt+F6");
     str_set(c->hotkeys[0].action.s, "save 30s");
     c->hotkey_count = 1;

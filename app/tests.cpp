@@ -2551,7 +2551,7 @@ static void test_r2()
     // The social copy: none when the clip fits cards; else the whole clip at 1080p when it fits at the floor, or a
     // preview
     const i64 mb = 1000 * 1000;
-    T(r2_social_height(30, 1920, 1080, 60, true, 50 * mb, 150 * mb) == 0);     // ~13 Mbps, Medal's rate
+    T(r2_social_height(30, 1920, 1080, 60, true, 50 * mb, 150 * mb) == 0);     // ~13 Mbps, under SOCIAL_MAX_KBPS
     T(r2_social_height(30, 1920, 1080, 60, true, 60 * mb, 150 * mb) == 1080);  // ~16 Mbps, over SOCIAL_MAX_KBPS
     T(r2_social_height(30, 2560, 1440, 60, true, 50 * mb, 150 * mb) == 1080);  // too big a picture
     T(r2_social_height(200, 1920, 1080, 60, true, 300 * mb, 150 * mb) == 1080); // ~5.5 Mbps fits
