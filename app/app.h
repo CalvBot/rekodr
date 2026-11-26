@@ -178,7 +178,7 @@ static const char *const AM_EVENT_NOTES[] = {"Kill", "Multi-kill", "Death", "Rou
 static_assert(sizeof AM_EVENT_COLOURS == sizeof AM_EVENT_WORDS / sizeof *AM_EVENT_WORDS, "a colour for each event");
 static_assert(sizeof AM_EVENT_NOTES == sizeof AM_EVENT_WORDS, "a note for each event");
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
-                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_TARKOV, AMG_RUST, AMG_STAR_CITIZEN, AMG_COUNT };
+                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_TARKOV, AMG_RUST, AMG_STAR_CITIZEN, AMG_HOUSE_FLIPPER_2, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
 // or listening.
 struct AmGame { const char *key, *name, *feed; u32 events; };
@@ -201,6 +201,7 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"tarkov", "Escape from Tarkov", "From the game's logs", AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP},
     {"rust", "Rust", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED},
     {"star_citizen", "Star Citizen", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED | AM_SPAWN | AM_CONTRACT | AM_QUEST | AM_ZONE | AM_TRAVEL},
+    {"house_flipper_2", "House Flipper 2", "From the game's log", AM_ADVANCEMENT | AM_QUEST},
 };
 
 // A plugin's event ticks in Options > Auto markers, saved as am_events_plugin_<folder> (plugins.cpp). A plugin
@@ -338,6 +339,7 @@ struct Config {
     bool input_busy;        // the Busy layer is recorded: how many keys and mouse moves a second, never which (off)
     f32  afk_after_min;     // no input this long with a game in front is AFK on the Busy row (2)
     char plugins_off[512];  // plugin folders switched off, |-separated
+    char am_open[512];      // Auto markers: the rows shown open, |-separated: game keys, plugin:<folder>, ach, other
     AmPluginTicks am_plugin[AM_PLUGIN_TICKS]; // plugins' event ticks, newest last
     i32  am_plugin_count;
     f32 editor_side;    // Editor: the side panel's width in points (the splitter); 0 = the default

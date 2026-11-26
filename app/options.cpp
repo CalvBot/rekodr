@@ -4275,6 +4275,8 @@ static void options_automarks()
             if ((1u << i) == AM_WIN && (game.events & AM_ROUND)) l = "Match wins";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_KILL) l = "Demolitions";
             if (g == AMG_STAR_CITIZEN && (1u << i) == AM_QUEST) l = "Contracts done";
+            if (g == AMG_HOUSE_FLIPPER_2 && (1u << i) == AM_QUEST) l = "Jobs done";
+            if (g == AMG_HOUSE_FLIPPER_2 && (1u << i) == AM_ADVANCEMENT) l = "Achievements";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_DEATH) l = "Demolished";
             if (g == AMG_WAR_THUNDER && (1u << i) == AM_WIN) l = "Mission results";
             choices[n++] = {1u << i, l};

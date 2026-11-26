@@ -110,6 +110,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "replays.cpp"
 #include "rustlog.cpp"
 #include "sclog.cpp"
+#include "hf2log.cpp"
 #include "achievements.cpp"
 #include "webcam.cpp"
 #include "toast.cpp"

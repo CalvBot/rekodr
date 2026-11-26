@@ -4242,6 +4242,26 @@ static void test_markers()
     T(ms.count == MARKER_MAX && ms.items[0].t_us == 1000 && ms.items[MARKER_MAX - 1].t_us == 1000 + MARKER_MAX - 1); // the oldest went
 }
 
+// House Flipper 2's Player.log: lines copied from a real one
+static void test_house_flipper_2()
+{
+    u32 ev = AM_GAMES[AMG_HOUSE_FLIPPER_2].events;
+    Hf2Seen s = {};
+    AutoMark m[8];
+    T(hf2_line(&s, ev, "Steam achievement: TheFastAndTheCleanest unlocked", true, m, 8) == 0);
+    T(hf2_line(&s, ev, "Steam achievement: TheFastAndTheCleanest unlocked", false, m, 8) == 1 && !strcmp(m[0].note, "The Fast And The Cleanest") &&
+      m[0].colour == 6 && !strcmp(m[0].detail, "achievement=TheFastAndTheCleanest"));
+    T(hf2_line(&s, ev, "Steam achievement: ItAintThatEasy unlocked", false, m, 8) == 1 && !strcmp(m[0].note, "It Aint That Easy"));
+    T(hf2_line(&s, AM_QUEST, "Steam achievement: Hello unlocked", false, m, 8) == 0);
+    T(hf2_line(&s, ev, "Unlock Buyers On Activate Profile", false, m, 8) == 0);
+    const char *job = "CaptureAllPhotos for: E:\\SteamLibrary\\steamapps\\common\\House Flipper 2\\HouseFlipper2_Data\\StreamingAssets\\bd\\Houses\\1-1 Racoon trouble.house";
+    T(hf2_line(&s, ev, job, false, m, 8) == 1 && !strcmp(m[0].note, "Job done") && m[0].colour == 3 && !strcmp(m[0].detail, "job=Racoon trouble"));
+    T(hf2_line(&s, ev, job, false, m, 8) == 0); // its photos again
+    T(hf2_line(&s, ev, "CaptureAllPhotos for: C:\\Users\\x\\AppData\\LocalLow\\Frozen District\\House Flipper 2/Profiles/1/Jobs/1-4 Jack went to Japan@20261115_150554.house",
+               false, m, 8) == 1 && !strcmp(m[0].detail, "job=Jack went to Japan"));
+    T(hf2_line(&s, ev, "Collapsed Log: CaptureAllPhotos for: E:\\x\\Houses\\3-8 Old dream.house", true, m, 8) == 0);
+}
+
 // Star Citizen's Game.log: lines in the shapes public trackers read, with neutral names
 static void test_star_citizen()
 {
@@ -6142,6 +6162,7 @@ int main()
     test_automarks();
     test_rust();
     test_star_citizen();
+    test_house_flipper_2();
     test_achievements();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
