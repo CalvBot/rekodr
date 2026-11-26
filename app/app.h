@@ -181,29 +181,29 @@ static_assert(sizeof AM_EVENT_COLOURS == sizeof AM_EVENT_WORDS / sizeof *AM_EVEN
 static_assert(sizeof AM_EVENT_NOTES == sizeof AM_EVENT_WORDS, "a note for each event");
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
                 AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_TARKOV, AMG_RUST, AMG_STAR_CITIZEN, AMG_HOUSE_FLIPPER_2, AMG_COUNT };
-// key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
-// or listening.
-struct AmGame { const char *key, *name, *feed; u32 events; };
+// key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); need: what the player has to do in the
+// game for its markers, or 0.
+struct AmGame { const char *key, *name, *need; u32 events; };
 static const AmGame AM_GAMES[AMG_COUNT] = {
-    {"cs2", "Counter-Strike 2", "From the game's own feed", AM_KILL | AM_MULTI | AM_DEATH | AM_ROUND | AM_WIN},
+    {"cs2", "Counter-Strike 2", 0, AM_KILL | AM_MULTI | AM_DEATH | AM_ROUND | AM_WIN},
     {"dota2", "Dota 2", "Add -gamestateintegration to its launch options", AM_KILL | AM_DEATH | AM_ASSIST | AM_WIN},
-    {"lol", "League of Legends", "While a match runs", AM_KILL | AM_MULTI | AM_DEATH | AM_OBJECTIVE | AM_WIN},
-    {"minecraft", "Minecraft", "From the game's log", AM_KILL | AM_DEATH | AM_ADVANCEMENT},
-    {"poe", "Path of Exile", "From the game's log", AM_DEATH | AM_LEVEL},
-    {"poe2", "Path of Exile 2", "From the game's log", AM_DEATH | AM_LEVEL},
-    {"tf2", "Team Fortress 2", "From the game's console log", AM_KILL | AM_DEATH},
+    {"lol", "League of Legends", 0, AM_KILL | AM_MULTI | AM_DEATH | AM_OBJECTIVE | AM_WIN},
+    {"minecraft", "Minecraft", 0, AM_KILL | AM_DEATH | AM_ADVANCEMENT},
+    {"poe", "Path of Exile", 0, AM_DEATH | AM_LEVEL},
+    {"poe2", "Path of Exile 2", 0, AM_DEATH | AM_LEVEL},
+    {"tf2", "Team Fortress 2", 0, AM_KILL | AM_DEATH},
     {"f1_25", "F1 25", "Turn on UDP Telemetry in the game's settings", AM_LAP | AM_OVERTAKE | AM_INCIDENT | AM_WIN},
-    {"iracing", "iRacing", "From the sim's telemetry", AM_LAP | AM_INCIDENT | AM_WIN},
-    {"acc", "Assetto Corsa Competizione", "From the sim's shared memory", AM_LAP | AM_OVERTAKE},
-    {"fortnite", "Fortnite", "From its replays, after the match (Record Replays on)", AM_KILL | AM_DEATH},
-    {"siege", "Rainbow Six Siege", "From its match replays, after each round", AM_KILL | AM_DEATH},
-    {"rocket_league", "Rocket League", "From the game's Stats API", AM_GOAL | AM_SAVE | AM_ASSIST | AM_KILL | AM_DEATH | AM_WIN},
-    {"hearthstone", "Hearthstone", "From the game's log", AM_WIN},
-    {"war_thunder", "War Thunder", "From the game's map server, for the name below", AM_KILL | AM_DEATH | AM_WIN},
-    {"tarkov", "Escape from Tarkov", "From the game's logs", AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP},
-    {"rust", "Rust", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED | AM_SERVER | AM_ACCOUNT},
-    {"star_citizen", "Star Citizen", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED | AM_SPAWN | AM_CONTRACT | AM_QUEST | AM_ZONE | AM_TRAVEL},
-    {"house_flipper_2", "House Flipper 2", "From the game's log", AM_ADVANCEMENT | AM_QUEST},
+    {"iracing", "iRacing", 0, AM_LAP | AM_INCIDENT | AM_WIN},
+    {"acc", "Assetto Corsa Competizione", 0, AM_LAP | AM_OVERTAKE},
+    {"fortnite", "Fortnite", "Turn on Record Replays in the game", AM_KILL | AM_DEATH},
+    {"siege", "Rainbow Six Siege", 0, AM_KILL | AM_DEATH},
+    {"rocket_league", "Rocket League", 0, AM_GOAL | AM_SAVE | AM_ASSIST | AM_KILL | AM_DEATH | AM_WIN},
+    {"hearthstone", "Hearthstone", 0, AM_WIN},
+    {"war_thunder", "War Thunder", 0, AM_KILL | AM_DEATH | AM_WIN},
+    {"tarkov", "Escape from Tarkov", 0, AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP},
+    {"rust", "Rust", 0, AM_KILL | AM_DEATH | AM_DOWNED | AM_SERVER | AM_ACCOUNT},
+    {"star_citizen", "Star Citizen", 0, AM_KILL | AM_DEATH | AM_DOWNED | AM_SPAWN | AM_CONTRACT | AM_QUEST | AM_ZONE | AM_TRAVEL},
+    {"house_flipper_2", "House Flipper 2", 0, AM_ADVANCEMENT | AM_QUEST},
 };
 
 // A plugin's event ticks in Options > Auto markers, saved as am_events_plugin_<folder> (plugins.cpp). A plugin

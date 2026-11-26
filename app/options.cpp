@@ -4083,6 +4083,7 @@ static ImVec2 g_am_row;
 static bool g_am_row_open;
 static f32 g_am_row_alpha;
 static f32 g_am_text_end; // the right edge of what a row puts in its body
+static f32 g_am_grid_x, g_am_grid_w; // the page's tick grid: where its first column starts, and a column's width
 
 // How Auto markers knows a game is on this PC: an exe Apps has heard (or, for a token with a \ in it, a part of the
 // path it was heard from), or its Steam app in a Steam library.
@@ -4262,14 +4263,12 @@ static void opt_am_row_end()
     ImGui::Dummy(ImVec2(w, dp(8) - ImGui::GetStyle().ItemSpacing.y));
 }
 
-// A game's events as ticks in as many even columns as fit beside the art. True when one changed.
+// A game's events as ticks on the page's grid, so every card's ticks sit in the same columns. True when one changed.
 static bool opt_am_events(const char *game, u32 *events, const AmChoice *choices, i32 n)
 {
     bool changed = false;
-    ImVec2 o = ImGui::GetCursorScreenPos();
-    f32 colw = 0;
-    for (i32 i = 0; i < n; i++) colw = fmaxf(colw, lib_dialog_check_w(choices[i].label));
-    colw += dp(28);
+    ImVec2 o(g_am_grid_x, ImGui::GetCursorScreenPos().y);
+    f32 colw = g_am_grid_w;
     i32 cols = (i32)((g_am_text_end - o.x) / colw);
     cols = cols < 1 ? 1 : cols > n ? n : cols;
     f32 rowh = kit_px(20) + dp(8);
@@ -4282,6 +4281,8 @@ static bool opt_am_events(const char *game, u32 *events, const AmChoice *choices
             changed = true;
         }
     }
+    ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + ((n + cols - 1) / cols - 1) * rowh + kit_px(20)));
+    ImGui::Dummy(ImVec2(0, 0));
     ImGui::PopID();
     return changed;
 }
@@ -4295,10 +4296,12 @@ static bool opt_am_rust(AmState st)
     (void)st;
     Config &c = g_app.config;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImGui::Dummy(ImVec2(0, dp(2)));
     ImVec2 p = ImGui::GetCursorScreenPos();
-    opt_text_at(dl, g_font_small, p, COL_DIM, "Keys that print the combat log, for kills", g_am_text_end);
-    ImGui::Dummy(ImVec2(0, g_font_small->FontSize + dp(8)));
+    opt_text_at(dl, g_font_small, p, COL_DIM, "Kills show only when Rust's combat log has them", g_am_text_end);
+    ImGui::Dummy(ImVec2(0, g_font_small->FontSize + dp(6)));
+    p = ImGui::GetCursorScreenPos();
+    opt_text_at(dl, g_font_small, p, COL_DIM, "Keys that print it", g_am_text_end);
+    ImGui::Dummy(ImVec2(0, g_font_small->FontSize + dp(2)));
     bool changed = false;
     f32 fh = ImGui::GetFrameHeight(), gap = dp(8);
     ImGuiStyle &gs = ImGui::GetStyle();
@@ -4390,6 +4393,16 @@ static void options_automarks()
                                          "Raid starts", "Raid ends", "Quests done", "Group joins", "Downs",
                                          "Contracts taken", "Zones", "Jumps", "Spawns", "Server joins", "Playing as"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
+    // The tick grid: one column width for every label a card can show, from where a top-level card's body starts
+    {
+        static const char *const renamed[] = {"Match wins", "Demolitions", "Demolished", "Contracts done", "Jobs done",
+                                              "Achievements", "Mission results"};
+        f32 cw = 0;
+        for (const char *l : labels) cw = fmaxf(cw, lib_dialog_check_w(l));
+        for (const char *l : renamed) cw = fmaxf(cw, lib_dialog_check_w(l));
+        g_am_grid_w = cw + dp(28);
+        g_am_grid_x = ImGui::GetCursorScreenPos().x + dp(AM_PAD) + dp(28) + dp(AM_ART_W) + dp(14);
+    }
     auto game_row = [&](i32 g, bool dim) {
         const AmGame &game = AM_GAMES[g];
         AmChoice choices[COUNT(labels)];
@@ -4412,7 +4425,7 @@ static void options_automarks()
                           : st == AM_PORT_BUSY ? "Another program is using its port"
                           : st == AM_READY && g == AMG_WAR_THUNDER && !c.wt_name[0] ? "Type your in-game name below"
                           : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2 || g == AMG_ROCKET_LEAGUE || g == AMG_HEARTHSTONE) ? "From the game's next start"
-                          : game.feed;
+                          : game.need;
         bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY || (st == AM_READY && g == AMG_WAR_THUNDER && !c.wt_name[0]);
         char count[16];
         snprintf(count, sizeof count, "%d / %d", ticked, n);
@@ -4466,13 +4479,12 @@ static void options_automarks()
         char sub[128], key[96], count[16];
         if (p.state == PLUGIN_BROKEN) snprintf(sub, sizeof sub, "%s", p.why);
         else if (p.state == PLUGIN_FAILED) snprintf(sub, sizeof sub, "Stopped: it kept ending");
-        else if (p.game[0]) snprintf(sub, sizeof sub, "From a plugin, while %s runs", p.game);
-        else snprintf(sub, sizeof sub, "From a plugin");
+        else sub[0] = 0;
         snprintf(key, sizeof key, "plugin:%s", p.folder);
         snprintf(count, sizeof count, "%d / %d", ticked, n);
         ImGui::PushID(i);
         bool flipped;
-        bool open = opt_am_row_begin(key, p.name, p.name, sub, broken ? COL_WARN : COL_DIM, &on, count, false, true, &flipped);
+        bool open = opt_am_row_begin(key, p.name, p.name, sub[0] ? sub : 0, broken ? COL_WARN : COL_DIM, &on, count, false, true, &flipped);
         if (flipped) {
             word_list_toggle(c.plugins_off, sizeof c.plugins_off, p.folder);
             log_line("options: plugin %s %s", p.folder, on ? "on" : "off");
