@@ -3711,6 +3711,39 @@ static void test_automarks()
         T(!strcmp(hcfg, own));
     }
 
+    // War Thunder: the battle log's lines of the typed name, read once each, and the mission's end
+    {
+        WtSeen ws = {};
+        ws.last = -1;
+        str_set(ws.me, "Me");
+        AutoMark wm[8];
+        u32 wte = AM_GAMES[AMG_WAR_THUNDER].events;
+        const char *first = "{\"events\":[],\"damage\":[{\"id\":1,\"msg\":\"Me (Tiger E) destroyed Them (T-34)\",\"sender\":\"\",\"enemy\":false,\"mode\":\"\"}]}";
+        T(wt_hudmsg(&ws, wte, first, (i64)strlen(first), wm, 8) == 0 && ws.last == 1); // there before: old
+        const char *wmore = "{\"events\":[],\"damage\":["
+                           "{\"id\":1,\"msg\":\"Me (Tiger E) destroyed Them (T-34)\"},"
+                           "{\"id\": 2,\"msg\":\"=SQD= Me (Spitfire) shot down Them (Bf 109)\"},"
+                           "{\"id\":3,\"msg\":\"Me (Spitfire) set afire Them (Bf 109)\"},"
+                           "{\"id\":4,\"msg\":\"Them (Bf 109) shot down Me (Spitfire)\"},"
+                           "{\"id\":5,\"msg\":\"NotMe (Spitfire) shot down Them (Bf 109)\"},"
+                           "{\"id\":6,\"msg\":\"Me (Spitfire) has crashed.\"}]}";
+        T(wt_hudmsg(&ws, wte, wmore, (i64)strlen(wmore), wm, 8) == 3 && ws.last == 6);
+        T(wm[0].colour == 4 && !strcmp(wm[0].note, "Kill") && wm[1].colour == 1 && wm[2].colour == 1);
+        T(wt_hudmsg(&ws, wte, "{\"damage\":[]}", 13, wm, 8) == 0 && ws.last == 6); // nothing newer
+        const char *next = "{\"damage\":[{\"id\":1,\"msg\":\"Me (Tiger E) destroyed Them (T-34)\"}]}";
+        T(wt_hudmsg(&ws, wte, next, (i64)strlen(next), wm, 8) == 1 && ws.last == 1); // a new battle
+        T(wt_hudmsg(&ws, wte & ~AM_KILL, wmore, (i64)strlen(wmore), wm, 8) == 2); // kills unticked
+
+        const char *run = "{\"objectives\":[],\"status\":\"running\"}", *won = "{\"objectives\":[],\"status\":\"success\"}",
+                   *lost = "{\"status\":\"fail\"}";
+        T(wt_mission(&ws, wte, won, (i64)strlen(won), wm, 8) == 0); // not seen running
+        T(wt_mission(&ws, wte, run, (i64)strlen(run), wm, 8) == 0);
+        T(wt_mission(&ws, wte, won, (i64)strlen(won), wm, 8) == 1 && wm[0].colour == 3 && !strcmp(wm[0].note, "Mission won"));
+        T(wt_mission(&ws, wte, won, (i64)strlen(won), wm, 8) == 0);
+        wt_mission(&ws, wte, run, (i64)strlen(run), wm, 8);
+        T(wt_mission(&ws, wte, lost, (i64)strlen(lost), wm, 8) == 1 && wm[0].colour == 1);
+    }
+
     // autoexec.cfg: Rekodr's line in and out, the player's lines as they were
     char ax[512];
     T(tf2_autoexec("", true, ax, sizeof ax) > 0 && !strcmp(ax, "con_logfile console.log // " APP_NAME " reads it for markers\n"));

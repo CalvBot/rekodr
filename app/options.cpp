@@ -4150,14 +4150,16 @@ static void options_automarks()
             if ((1u << i) == AM_WIN && (game.events & AM_ROUND)) l = "Match wins";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_KILL) l = "Demolitions";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_DEATH) l = "Demolished";
+            if (g == AMG_WAR_THUNDER && (1u << i) == AM_WIN) l = "Mission results";
             choices[n++] = {1u << i, l};
         }
         AmState st = c.auto_marks && c.auto_marks_on[g] ? automarks_state(g) : AM_OFF;
         const char *sub = st == AM_NOT_FOUND ? "Not installed on this PC"
                           : st == AM_PORT_BUSY ? "Another program is using its port"
+                          : st == AM_READY && g == AMG_WAR_THUNDER && !c.wt_name[0] ? "Type your in-game name below"
                           : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2 || g == AMG_ROCKET_LEAGUE || g == AMG_HEARTHSTONE) ? "From the game's next start"
                           : game.feed;
-        bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY;
+        bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY || (st == AM_READY && g == AMG_WAR_THUNDER && !c.wt_name[0]);
         if (opt_am_row_begin(game.name, sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_on[g], kit_px(20))) {
             log_line("options: %s markers %s", game.name, c.auto_marks_on[g] ? "on" : "off");
             marks = true;
@@ -4165,6 +4167,16 @@ static void options_automarks()
         if (opt_am_events(game.name, &c.auto_marks_events[g], choices, n)) {
             log_line("options: %s marks 0x%x", game.name, c.auto_marks_events[g]);
             marks = true;
+        }
+        if (g == AMG_WAR_THUNDER) {
+            char name[64];
+            ImGui::Dummy(ImVec2(0, dp(2)));
+            if (opt_text("##wtname", c.wt_name, fminf(dp(260), g_am_text_end - ImGui::GetCursorScreenPos().x), 0,
+                         "Your name in War Thunder", name, sizeof name)) {
+                str_set(c.wt_name, trim(name));
+                log_line("options: War Thunder name set");
+                marks = true;
+            }
         }
         opt_am_row_end();
     }

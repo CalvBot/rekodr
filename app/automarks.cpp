@@ -26,6 +26,8 @@
 //   Hearthstone        Logs\Hearthstone_<started>\Power.log in its folder, the newest run's. Turning it on adds a
 //                      [Power] section to %LOCALAPPDATA%\Blizzard\Hearthstone\log.config when there is none, read
 //                      when the game starts; turning it off takes out only that section.
+//   War Thunder        Its map server, http://127.0.0.1:8111, once a second while the game runs: the battle's log
+//                      and the mission's state. The player's name is the one typed in Options.
 //
 // Only what the player did counts: kills, deaths and objectives of the player themself, rounds and matches their
 // team won.
@@ -414,6 +416,98 @@ static i32 hs_line(HsSeen *s, u32 events, const char *line, bool old, AutoMark *
             s->won_said = true;
             if (!old && (events & AM_WIN)) am_push(out, cap, &n, 3, "Win");
         }
+    }
+    return n;
+}
+
+// War Thunder's map server, http://127.0.0.1:8111, while a battle runs. /hudmsg's damage list is the battle's log,
+// each {"id": n, "msg": text}: "<who> (<vehicle>) destroyed <who> (<vehicle>)", "... shot down ...", "<who>
+// (<vehicle>) has crashed." and the like, a name maybe after a squadron tag ("=TAG= Name"). Nothing there says
+// which name is the player's, so the player types it in Options. /mission.json's status goes from "running" to
+// "success" or "fail".
+struct WtSeen {
+    char me[64];
+    i32 last;       // the newest damage id read
+    bool have;      // a battle's list has been read once (what was in it then is old)
+    bool running;   // the mission was running
+};
+
+// Whether a "<tag> <name> (" side of a message is the player's: the name before " (" is theirs, after the start
+// or a space.
+static bool wt_is(const char *side, size_t len, const char *me)
+{
+    size_t m = strlen(me);
+    if (!m || len < m || strncmp(side + len - m, me, m)) return false;
+    return len == m || side[len - m - 1] == ' ';
+}
+
+static i32 wt_damage(WtSeen *s, u32 events, const char *msg, AutoMark *out, i32 cap)
+{
+    i32 n = 0;
+    const char *open = strstr(msg, " (");
+    const char *close = open ? strchr(open, ')') : 0;
+    if (!close || close[1] != ' ') return 0;
+    bool mine = wt_is(msg, open - msg, s->me);
+    const char *rest = close + 2;
+    static const char *const kills[] = {"destroyed ", "shot down "};
+    for (const char *k : kills) {
+        size_t kl = strlen(k);
+        if (strncmp(rest, k, kl)) continue;
+        const char *them = rest + kl, *t_open = strstr(them, " (");
+        bool me_hit = wt_is(them, t_open ? (size_t)(t_open - them) : strlen(them), s->me);
+        if (mine && !me_hit && (events & AM_KILL)) am_push(out, cap, &n, 4, "Kill");
+        else if (me_hit && !mine && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
+        return n;
+    }
+    if (mine && (!strcmp(rest, "has crashed.") || !strcmp(rest, "has been wrecked.")) && (events & AM_DEATH))
+        am_push(out, cap, &n, 1, "Death");
+    return n;
+}
+
+// /hudmsg?lastEvt=0&lastDmg=<last>: the damage it hasn't read. A list from a new battle (ids lower than the last
+// one read) is read from its start. The first list read is old: it was there before Rekodr looked.
+static i32 wt_hudmsg(WtSeen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
+{
+    Json j = {body, body + len};
+    if (!j_find(&j, "damage") || !j_eat(&j, '[')) return 0;
+    i32 n = 0, top = -1;
+    bool fresh = s->have;
+    while (j_eat(&j, '{')) {
+        i32 id = -1;
+        char key[16], msg[512] = "";
+        while (!j_eat(&j, '}') && j.p < j.end) {
+            if (!j_string(&j, key, sizeof key)) return n;
+            j_eat(&j, ':');
+            if (!strcmp(key, "msg")) j_string(&j, msg, sizeof msg) || (j_skip(&j), 0);
+            else if (!strcmp(key, "id")) {
+                j_ws(&j);
+                id = j.p < j.end && *j.p >= '0' && *j.p <= '9' ? atoi(j.p) : -1;
+                j_skip(&j);
+            } else j_skip(&j);
+            j_eat(&j, ',');
+        }
+        j_eat(&j, ',');
+        if (id < 0) continue;
+        if (top < 0 && id < s->last) s->last = -1; // a new battle's list
+        if (id <= s->last) continue;
+        if (id > top) top = id;
+        if (fresh && msg[0] && s->me[0]) n += wt_damage(s, events, msg, out + n, cap - n);
+    }
+    if (top > s->last) s->last = top;
+    s->have = true;
+    return n;
+}
+
+// /mission.json: the mission's end, once.
+static i32 wt_mission(WtSeen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
+{
+    char st[32];
+    if (!j_get(body, len, "status", st, sizeof st)) return 0;
+    i32 n = 0;
+    if (!strcmp(st, "running")) s->running = true;
+    else if (s->running && (!strcmp(st, "success") || !strcmp(st, "fail"))) {
+        s->running = false, s->last = -1, s->have = false; // the next battle's log starts afresh
+        if (events & AM_WIN) am_push(out, cap, &n, st[0] == 's' ? 3 : 1, st[0] == 's' ? "Mission won" : "Mission lost");
     }
     return n;
 }
@@ -1207,6 +1301,10 @@ static struct {
     IrSeen ir;
     AccSeen acc;
     RlSeen rl;
+    WtSeen wt;
+    char wt_me[64];                  // the War Thunder name typed in Options (main thread sets it)
+    bool wt_running;
+    i64 wt_next;
     HsSeen hs;
     AmTail hs_tail;
     wchar_t hs_dir[MAX_PATH];        // Hearthstone's install; "" when it isn't installed (main thread sets it)
@@ -1288,15 +1386,17 @@ static void am_gsi_client(SOCKET c)
 
 // A GET to League's local API. The game serves it with its own certificate, which Windows doesn't know, so the
 // certificate isn't checked; it is only ever 127.0.0.1.
-static bool am_lol_get(HINTERNET session, const wchar_t *path, char *out, i32 cap, i32 *len)
+static bool am_local_get(HINTERNET session, u16 port, bool secure, const wchar_t *path, char *out, i32 cap, i32 *len)
 {
     *len = 0;
-    HINTERNET conn = WinHttpConnect(session, L"127.0.0.1", 2999, 0);
-    HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
+    HINTERNET conn = WinHttpConnect(session, L"127.0.0.1", port, 0);
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, L"GET", path, 0, 0, 0, secure ? WINHTTP_FLAG_SECURE : 0) : 0;
     bool ok = false;
     if (req) {
-        DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
-        WinHttpSetOption(req, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof flags);
+        if (secure) {
+            DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
+            WinHttpSetOption(req, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof flags);
+        }
         WinHttpSetTimeouts(req, 1000, 1000, 2000, 3000);
         DWORD status = 0, sl = sizeof status;
         if (WinHttpSendRequest(req, 0, 0, 0, 0, 0, 0) && WinHttpReceiveResponse(req, 0) &&
@@ -1323,7 +1423,7 @@ static void am_lol_poll(HINTERNET session)
     static char buf[512 * 1024];
     i32 len = 0;
     if (!g_am.lol.me[0]) {
-        if (!am_lol_get(session, L"/liveclientdata/activeplayername", buf, sizeof buf, &len)) {
+        if (!am_local_get(session, 2999, true, L"/liveclientdata/activeplayername", buf, sizeof buf, &len)) {
             g_am.lol.have = false;
             return;
         }
@@ -1331,7 +1431,7 @@ static void am_lol_poll(HINTERNET session)
         if (!j_string(&j, g_am.lol.me, sizeof g_am.lol.me)) return;
         log_line("markers: League match as %s", g_am.lol.me);
     }
-    if (!am_lol_get(session, L"/liveclientdata/eventdata", buf, sizeof buf, &len)) {
+    if (!am_local_get(session, 2999, true, L"/liveclientdata/eventdata", buf, sizeof buf, &len)) {
         g_am.lol = {};
         return;
     }
@@ -1342,6 +1442,37 @@ static void am_lol_poll(HINTERNET session)
 
 // Minecraft's latest.log: in the folder on the running game's command line (--gameDir). Looked for every 5 s while
 // it isn't known.
+// War Thunder's battle, once a second while aces.exe runs (looked for every 5 s).
+static void am_wt_poll(HINTERNET session)
+{
+    WtSeen &s = g_am.wt;
+    i64 now = now_us();
+    if (now >= g_am.wt_next) {
+        static char cmd[4096];
+        char title[8];
+        g_am.wt_running = process_facts("aces.exe", cmd, sizeof cmd, title, sizeof title);
+        g_am.wt_next = now + 5000000;
+    }
+    str_set(s.me, (const char *)g_am.wt_me);
+    if (!g_am.wt_running || !s.me[0]) {
+        s.have = s.running = false, s.last = -1;
+        return;
+    }
+    static char buf[256 * 1024];
+    i32 len = 0;
+    AutoMark marks[16];
+    u32 ev = g_am.events[AMG_WAR_THUNDER];
+    wchar_t path[64];
+    swprintf(path, COUNT(path), L"/hudmsg?lastEvt=0&lastDmg=%d", s.last < 0 ? 0 : s.last);
+    if (!am_local_get(session, 8111, false, path, buf, sizeof buf, &len)) {
+        s.have = s.running = false, s.last = -1;
+        return;
+    }
+    am_put(marks, wt_hudmsg(&s, ev, buf, len, marks, COUNT(marks)), AMG_WAR_THUNDER);
+    if (am_local_get(session, 8111, false, L"/mission.json", buf, sizeof buf, &len))
+        am_put(marks, wt_mission(&s, ev, buf, len, marks, COUNT(marks)), AMG_WAR_THUNDER);
+}
+
 static void mc_log_path(wchar_t *out)
 {
     out[0] = 0;
@@ -1521,7 +1652,7 @@ static DWORD WINAPI am_thread(void *)
     SOCKET ls = INVALID_SOCKET, f1 = INVALID_SOCKET, rl = INVALID_SOCKET;
     i64 f1_next = 0, rl_next = 0;
     HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_NO_PROXY, 0, 0, 0);
-    i64 lol_next = 0, gsi_retry = 0, logs_next = 0;
+    i64 lol_next = 0, gsi_retry = 0, logs_next = 0, wt_next = 0;
     bool busy_said = false;
     while (!g_am.stop) {
         if (g_am.gsi_on && ls == INVALID_SOCKET && now_us() >= gsi_retry) {
@@ -1559,6 +1690,7 @@ static DWORD WINAPI am_thread(void *)
         if (!g_am.events[AMG_IRACING]) g_am.ir = {};
         if (!g_am.events[AMG_ACC]) g_am.acc = {};
         if (!g_am.events[AMG_ROCKET_LEAGUE]) g_am.rl.me[0] = 0;
+        if (!g_am.events[AMG_WAR_THUNDER]) g_am.wt = {}, g_am.wt.last = -1, g_am.wt_running = false, g_am.wt_next = 0;
         if (!g_am.events[AMG_HEARTHSTONE]) g_am.hs = {}, g_am.hs_tail = {}, g_am.hs_log[0] = 0, g_am.hs_next = 0;
 
         i64 now = now_us();
@@ -1605,6 +1737,10 @@ static DWORD WINAPI am_thread(void *)
             }
         } else {
             WaitForSingleObject(g_am.wake, (DWORD)wait_ms);
+        }
+        if (g_am.events[AMG_WAR_THUNDER] && session && now_us() >= wt_next) {
+            am_wt_poll(session);
+            wt_next = now_us() + 1000000;
         }
         if (lol_on && now_us() >= lol_next) {
             am_lol_poll(session);
@@ -1751,6 +1887,8 @@ static void automarks_apply()
         InterlockedExchange(&g_am.state[AMG_HEARTHSTONE], !hs ? AM_OFF : hd[0] ? AM_READY : AM_NOT_FOUND);
     }
     wcscpy_s(g_am.hs_dir, hd);
+    str_set(g_am.wt_me, c.wt_name);
+    InterlockedExchange(&g_am.state[AMG_WAR_THUNDER], g_am.events[AMG_WAR_THUNDER] ? AM_READY : AM_OFF);
     static const i32 waiting[] = {AMG_MINECRAFT, AMG_IRACING, AMG_ACC};
     for (i32 g : waiting) InterlockedExchange(&g_am.state[g], g_am.events[g] ? AM_READY : AM_OFF);
     if (!g_am.events[AMG_F1_25]) InterlockedExchange(&g_am.state[AMG_F1_25], AM_OFF);
@@ -1758,7 +1896,7 @@ static void automarks_apply()
 
     bool logs = false;
     replays_apply();
-    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE};
+    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER};
     for (i32 g : log_games) logs |= g_am.events[g] != 0;
     if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);

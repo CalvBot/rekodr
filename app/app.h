@@ -165,7 +165,7 @@ enum AmEvent : u32 {
 static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level",
                                              "lap", "overtake", "incident", "goal", "save"};
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
-                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_COUNT };
+                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
 // or listening.
 struct AmGame { const char *key, *name, *feed; u32 events; };
@@ -184,6 +184,7 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"siege", "Rainbow Six Siege", "From its match replays, after each round", AM_KILL | AM_DEATH},
     {"rocket_league", "Rocket League", "From the game's Stats API", AM_GOAL | AM_SAVE | AM_ASSIST | AM_KILL | AM_DEATH | AM_WIN},
     {"hearthstone", "Hearthstone", "From the game's log", AM_WIN},
+    {"war_thunder", "War Thunder", "From the game's map server, for the name below", AM_KILL | AM_DEATH | AM_WIN},
 };
 
 struct Config {
@@ -281,6 +282,7 @@ struct Config {
     bool auto_marks;      // Options' Auto markers tab as a whole: games' and Steam achievements' markers (on)
     bool auto_marks_on[AMG_COUNT];     // each of AM_GAMES marks its events on the timeline (on)
     u32  auto_marks_events[AMG_COUNT]; // AmEvent bits: what it marks while on (all it has)
+    char wt_name[64];                  // the player's War Thunder name, whose kills and deaths are marked ("")
     bool ach_marks;       // a Steam achievement rarer than ach_rarer gets a marker (achievements.cpp; on)
     i32  ach_rarer;       // percent of players: 1, 5 (default), 10 or 100 (any)
     i32  share_link_days; // how long a new bucket link lasts, in days: 0 forever (0), 7 or 1; the Share menu can

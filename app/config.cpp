@@ -814,6 +814,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_link_page")) boolean(&c->share_link_page);
     else if (!strcmp(key, "share_copy_on_close")) boolean(&c->share_copy_on_close);
     else if (!strcmp(key, "auto_marks")) boolean(&c->auto_marks);
+    else if (!strcmp(key, "war_thunder_name")) str_set(c->wt_name, value);
     else if (!strncmp(key, "auto_marks_", 11)) {
         for (i32 g = 0; g < AMG_COUNT; g++) {
             const char *k = AM_GAMES[g].key, *rest = key + 11;
@@ -1036,6 +1037,7 @@ static bool config_save(const Config &c, const Paths &paths)
         fprintf(f, "auto_marks_%s_on = %s\nauto_marks_%s = %s\n", AM_GAMES[g].key, c.auto_marks_on[g] ? "true" : "false",
                 AM_GAMES[g].key, ev);
     }
+    fprintf(f, "war_thunder_name = %s\n", c.wt_name);
     boolean("ach_marks", c.ach_marks);
     fprintf(f, "ach_rarer = %d\n", c.ach_rarer);
     fprintf(f, "share_link_days = %d\n", c.share_link_days);
