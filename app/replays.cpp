@@ -113,7 +113,7 @@ static bool r6_string(const u8 *d, size_t len, size_t *at, char *out, i32 cap)
     return true;
 }
 
-// "2024-05-04-02-14-08", UTC, in microseconds since 1970. 0 if it isn't one.
+// "2024-05-04-02-14-08", the PC's local time, in UTC microseconds since 1970. 0 if it isn't one.
 static i64 r6_datetime(const char *s)
 {
     SYSTEMTIME st = {};

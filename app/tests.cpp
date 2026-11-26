@@ -2337,21 +2337,24 @@ static void test_r2()
     }
 
     // Automatic pause: a link read too often in 24 hours, every link near the cap; not one resumed by hand today
+    i64 paused_at = 1795000000000000; // 2026-11-18
+    i64 day = r2_day(paused_at), next = r2_day(paused_at + 86400000000LL);
+    T(day > 0 && next == day + 1 && r2_day(0) == -1);
     R2Share ap = {};
     ap.host = HOST_R2;
     ap.plays_24h = 50;
-    T(r2_auto_action(ap, 50, false, 20261121) == 2 && r2_auto_action(ap, 51, false, 20261121) == 0);
-    T(r2_auto_action(ap, 0, false, 20261121) == 0);
-    T(r2_auto_action(ap, 0, true, 20261121) == 3 && r2_auto_action(ap, 50, true, 20261121) == 3);
-    ap.pause_day = 20261121; // resumed by hand today
-    T(r2_auto_action(ap, 50, true, 20261121) == 0 && r2_auto_action(ap, 50, false, 20261122) == 2);
+    T(r2_auto_action(ap, 50, false, day) == 2 && r2_auto_action(ap, 51, false, day) == 0);
+    T(r2_auto_action(ap, 0, false, day) == 0);
+    T(r2_auto_action(ap, 0, true, day) == 3 && r2_auto_action(ap, 50, true, day) == 3);
+    ap.pause_us = paused_at; // resumed by hand today
+    T(r2_auto_action(ap, 50, true, day) == 0 && r2_auto_action(ap, 50, false, next) == 2);
     ap.paused = 2; // paused for its rate today: back tomorrow, unless the cap holds it
-    T(r2_auto_action(ap, 50, false, 20261121) == 0 && r2_auto_action(ap, 50, false, 20261122) == -1);
-    T(r2_auto_action(ap, 50, true, 20261122) == 0);
+    T(r2_auto_action(ap, 50, false, day) == 0 && r2_auto_action(ap, 50, false, next) == -1);
+    T(r2_auto_action(ap, 50, true, next) == 0);
     ap.paused = 3; // paused for the cap: back when the month's reads are under it
-    T(r2_auto_action(ap, 50, true, 20261122) == 0 && r2_auto_action(ap, 50, false, 20261121) == -1);
+    T(r2_auto_action(ap, 50, true, next) == 0 && r2_auto_action(ap, 50, false, day) == -1);
     ap.paused = 1;
-    T(r2_auto_action(ap, 50, false, 20261122) == 0 && r2_auto_action(ap, 50, true, 20261122) == 0); // by hand: stays
+    T(r2_auto_action(ap, 50, false, next) == 0 && r2_auto_action(ap, 50, true, next) == 0); // by hand: stays
     ap.paused = 0;
     ap.moving = true;
     T(r2_auto_action(ap, 1, true, 1) == 0);
@@ -2424,7 +2427,7 @@ static void test_r2()
     w[1].host = HOST_CUSTOM;
     w[0].paused = 2;
     str_set(w[0].hidden, "rekodr/qrstuvwxyzabcdef/clip.mp4");
-    w[0].pause_day = 20261121;
+    w[0].pause_us = 1795000000000000;
     w[0].page_w = 1920;
     w[0].page_h = 1080;
     w[0].social = 1;
@@ -2442,7 +2445,7 @@ static void test_r2()
     T(r[0].uploaded_us == w[0].uploaded_us && r[0].pinned && !r[0].removed && r[0].version == 2);
     T(r[0].lib_key == w[0].lib_key && r[1].removed && !r[1].pinned && !strcmp(r[1].key, "def.mp4"));
     T(r[0].host == HOST_R2 && r[1].host == HOST_CUSTOM);
-    T(r[0].paused == 2 && !strcmp(r[0].hidden, w[0].hidden) && r[0].pause_day == 20261121 && !r[1].paused);
+    T(r[0].paused == 2 && !strcmp(r[0].hidden, w[0].hidden) && r[0].pause_us == w[0].pause_us && !r[1].paused);
     T(r[0].plays_today == -1 && r[0].plays_month == -1 && r[0].plays_24h == -1);
     T(r[0].page_w == 1920 && r[0].page_h == 1080 && !r[1].page_w && !r[1].page_h);
     T(!strcmp(r2_object_key(r[0]), w[0].hidden) && !strcmp(r2_object_key(r[1]), "def.mp4"));

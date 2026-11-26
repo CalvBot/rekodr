@@ -151,13 +151,10 @@ static void session_write_record(Session *s)
         log_line("session %u: couldn't write its record %s (%d)", s->id, rel, (int)GetLastError());
         return;
     }
-    char a[32], b[32];
-    fmt_stamp(s->start_us, a, sizeof a);
-    fmt_stamp(s->end_us, b, sizeof b);
-    fprintf(f, "# Rekodr session record. Its video, if saved, has the same name with .mp4 in Sessions.\n");
+    fprintf(f, "# Rekodr session record. Its video, if saved, has the same name with .mp4 in Sessions. Times are UTC\n"
+               "# microseconds since 1970.\n");
     fprintf(f, "name = %s\nkind = %s\ngame = %s\n", s->name, s->custom ? "custom" : "game", s->exe);
-    fprintf(f, "start = %s\nend = %s\nstart_us = %lld\nend_us = %lld\n", a, b, (long long)s->start_us,
-            (long long)s->end_us);
+    fprintf(f, "start_us = %lld\nend_us = %lld\n", (long long)s->start_us, (long long)s->end_us);
     fprintf(f, "footage_start_us = %lld\nfootage_end_us = %lld\n", (long long)foot_from, (long long)foot_to);
     fprintf(f, "video = %s\n", s->video);
     if (s->display_name[0]) fprintf(f, "display_name = %s\n", s->display_name);

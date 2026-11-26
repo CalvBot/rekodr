@@ -77,7 +77,7 @@ struct R2Share {
     u8   paused;      // R2: 0 plays, 1 paused by hand, 2 too many reads in a day (r2_read_rate), 3 the account
                       // near its month's reads (r2_read_cap)
     char hidden[R2_KEY_MAX]; // while paused: where the file is in the bucket instead, a new random name
-    i32  pause_day;   // yyyymmdd (local): the day it was paused for its reads, or resumed by hand
+    i64  pause_us;    // when it was paused for its reads, or resumed by hand (UTC us); 0 = never
     i32  page_w, page_h; // R2 with a preview page (share_link_page): the video's size; 0 = the link is the .mp4
     i8   social;      // what chat apps' cards play: 1 a small copy, "<the file's folder>/social.mp4" (r2_social_key);
                       // 0 the clip itself; -1 nothing, the clip is too long for a small copy and cards show the picture
@@ -295,12 +295,15 @@ static bool r2_share_live(const R2Share &s) { return r2_share_live(s, now_us());
 // Where the share's file is in the bucket: its own name, or the hidden one while paused.
 static const char *r2_object_key(const R2Share &s) { return s.paused ? s.hidden : s.key; }
 
-// Today as yyyymmdd, local time.
-static i32 r2_today()
+// The PC's local day a time falls on (days since 1601), for "the same day"; -1 for none.
+static i64 r2_day(i64 us)
 {
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    return t.wYear * 10000 + t.wMonth * 100 + t.wDay;
+    if (!us) return -1;
+    SYSTEMTIME t = local_time(us);
+    t.wHour = t.wMinute = t.wSecond = t.wMilliseconds = 0;
+    FILETIME ft;
+    if (!SystemTimeToFileTime(&t, &ft)) return -1;
+    return (i64)((((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 864000000000ull);
 }
 
 // Whether the account's reads this month are near `cap` (0 = no cap). R2's free reads are counted per account and
@@ -315,12 +318,12 @@ static bool r2_capped(i64 reads, i64 cap)
 // `rate` (0 = no limit), 3 pause while the account is `capped`. A link paused for its rate comes back the next day,
 // one paused for the cap when the month's reads are under it again (the 1st). One resumed by hand keeps playing for
 // the rest of that day; a link paused by hand stays paused.
-static i32 r2_auto_action(const R2Share &s, i32 rate, bool capped, i32 today)
+static i32 r2_auto_action(const R2Share &s, i32 rate, bool capped, i64 today)
 {
     if (s.host != HOST_R2 || s.removed || s.moving || s.paused == 1) return 0;
     if (s.paused == 3) return capped ? 0 : -1;
-    if (s.paused == 2) return s.pause_day != today && !capped ? -1 : 0;
-    if (s.pause_day == today) return 0;
+    if (s.paused == 2) return r2_day(s.pause_us) != today && !capped ? -1 : 0;
+    if (r2_day(s.pause_us) == today) return 0;
     if (capped) return 3;
     return rate > 0 && s.plays_24h >= rate ? 2 : 0;
 }
@@ -1688,7 +1691,7 @@ static bool r2_put_file(const R2Conf &c, const char *key, const Path &file, u32 
 
 // ---------------------------------------------------------------------------------------------------------------
 // History: <config_dir>\shares.tsv, one share a line, oldest first:
-//   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  paused  hidden  pause_day  page_w  page_h  url
+//   key  version  pinned  removed  bytes  uploaded_us  lib_key  host  paused  hidden  pause_us  page_w  page_h  url
 //   title  game  path  social  social_w  social_h  seconds  preview  marks
 
 static void r2_tsv_field(FILE *f, const char *s, bool last)
@@ -1704,9 +1707,9 @@ static bool r2_history_write(const Path &file, const R2Share *s, i32 n)
     FILE *f = _wfopen(part.s, L"wb");
     if (!f) return false;
     for (i32 i = 0; i < n; i++) {
-        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%d\t%s\t%d\t%d\t%d\t", s[i].key, s[i].version,
+        fprintf(f, "%s\t%d\t%d\t%d\t%lld\t%lld\t%llu\t%d\t%d\t%s\t%lld\t%d\t%d\t", s[i].key, s[i].version,
                 s[i].pinned ? 1 : 0, s[i].removed ? 1 : 0, s[i].bytes, s[i].uploaded_us, s[i].lib_key, (int)s[i].host,
-                (int)s[i].paused, s[i].hidden, s[i].pause_day, s[i].page_w, s[i].page_h);
+                (int)s[i].paused, s[i].hidden, s[i].pause_us, s[i].page_w, s[i].page_h);
         r2_tsv_field(f, s[i].url, false);
         r2_tsv_field(f, s[i].title, false);
         r2_tsv_field(f, s[i].game, false);
@@ -1750,7 +1753,7 @@ static i32 r2_history_read(const Path &file, R2Share *out, i32 max)
             s.host = (LinkHost)atoi(f[7]);
             s.paused = (u8)atoi(f[8]);
             str_set(s.hidden, f[9]);
-            s.pause_day = atoi(f[10]);
+            s.pause_us = _atoi64(f[10]);
             if (s.paused > 3 || (s.paused && !s.hidden[0])) s.paused = 0;
             s.page_w = atoi(f[11]);
             s.page_h = atoi(f[12]);
@@ -3957,7 +3960,7 @@ static void r2_run_move(const R2Task &t)
         if (ok) {
             sh.paused = pause ? t.pause : 0;
             str_set(sh.hidden, pause ? to : "");
-            if (t.pause == 2 || (!pause && t.pause == 1)) sh.pause_day = r2_today();
+            if (t.pause == 2 || (!pause && t.pause == 1)) sh.pause_us = now_us();
         }
         r2_save_locked();
     }
@@ -4654,7 +4657,8 @@ static void r2_auto_pause()
     struct Act { char key[R2_KEY_MAX]; i32 a; i64 month; };
     static Act acts[R2_MAX_SHARES];
     const Config &c = g_app.config;
-    i32 n = 0, today = r2_today();
+    i32 n = 0;
+    i64 today = r2_day(now_us());
     AcquireSRWLockShared(&g_r2.lock);
     bool capped = g_r2.usage_us && r2_capped(g_r2.fetched.account_reads, c.r2_read_cap);
     for (i32 i = 0; i < g_r2.count; i++) {
