@@ -346,9 +346,10 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
     return slot->srv;
 }
 
-// Box art picked by hand for the games of Options > Auto markers: SteamGridDB grids (600 x 900), the main one first,
-// then two backups taken in turn when the one before can't be had. Fetched from SteamGridDB's own address by a worker
-// thread, once a start, into gamedb\art\grid-<file>; one fetched before is used as it is.
+// Box art picked by hand for the cards of Options > Auto markers, Steam achievements too: SteamGridDB grids
+// (600 x 900), the main one first, then two backups taken in turn when the one before can't be had. Fetched from
+// SteamGridDB's own address by a worker thread, once a start, into gamedb\art\grid-<file>; one fetched before is used
+// as it is.
 struct FixedCover { const char *game; const char *grid[3]; };
 static const FixedCover g_fixed_covers[] = {
     {"Counter-Strike 2", {"0662aa1719017e0efa5fa8daf0880c6e.png", "96b4fb6dee79d9f1d0703e15a13c58a1.jpg", "7c1a285fb1e76489437c3c780dd8dc85.png"}},
@@ -365,6 +366,7 @@ static const FixedCover g_fixed_covers[] = {
     {"Path of Exile", {"b18f9c54e6efde8a08b8b478b0806587.png", "b762ab8b6d4b6845861b3a7fc6ed5a91.png", "e47278fe2669e7b284c7b75c76f02b12.jpg"}},
     {"Path of Exile 2", {"579b8ed826a6b614ac5654924627477d.jpg", "602dc7261c04c9ae1d85e4ef3d191f0a.png", "494b08f5ba3e464e99d3ffa5ed13535a.jpg"}},
     {"Hearthstone", {"f30259f76102eefd8b482ee4b68b1ef7.png", "3128463b233d51bd542a59d9cf49a5f6.jpg", "fb50a80a148e6facff6f7bb1241180ad.png"}},
+    {"Steam achievements", {"39c2966989c4f0091a99eef7f1d09c09.png", "c5174327c1975f78b7ffc788ed60b80e.png", "dba324d3fb4b6d4ddd559fb5a70ff362.jpg"}},
 };
 enum { GAMEDB_FIXED_COVER = 5 }; // gamedb_on_event: the worker has settled one of the hand-picked covers
 // Per cover: which grid is there (1-3), 0 while not settled, -1 when none could be had.
