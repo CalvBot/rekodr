@@ -3609,6 +3609,68 @@ static void test_automarks()
         T(acc_marks(&as, acce, g, sizeof g, m, 8) == 0); // practice: no places
     }
 
+    // Rocket League: the Stats API's stream, split into its messages, and what they mark
+    {
+        static RlSeen rs;
+        rs = {};
+        u32 rle = AM_GAMES[AMG_ROCKET_LEAGUE].events;
+        AutoMark rm[8];
+        i32 got = 0, msgs = 0;
+        auto feed = [&](const char *text) {
+            rl_feed(&rs, text, (i32)strlen(text), [&](const char *msg, i64 len) {
+                msgs++;
+                got += rl_message(&rs, rle, msg, len, rm + got, 8 - got);
+            });
+        };
+        // Data as a string, the way the game sends it, and two messages in one read
+        feed("{\"Event\":\"UpdateState\",\"Data\":\"{\\\"Game\\\":{\\\"bHasTarget\\\":true,\\\"Target\\\":{\\\"Name\\\":\\\"Me {1}\\\","
+             "\\\"Shortcut\\\":3,\\\"TeamNum\\\":1}}}\"}{\"Event\":\"StatfeedEvent\",\"Data\":\"{\\\"EventName\\\":\\\"Goal\\\","
+             "\\\"Type\\\":\\\"Goal\\\",\\\"MainTarget\\\":{\\\"Name\\\":\\\"Me {1}\\\",\\\"TeamNum\\\":1}}\"}");
+        T(msgs == 2 && !strcmp(rs.me, "Me {1}") && rs.team == 1);
+        T(got == 1 && rm[0].colour == 4 && !strcmp(rm[0].note, "Goal"));
+        // Data as an object, split across reads
+        got = 0;
+        feed("{\"Event\":\"StatfeedEvent\",\"Data\":{\"EventName\":\"Demolish\",\"Type\":\"Demolition\",\"MainTarget\":{\"Na");
+        T(got == 0);
+        feed("me\":\"Me {1}\"},\"SecondaryTarget\":{\"Name\":\"Them\"}}}");
+        T(got == 1 && !strcmp(rm[0].note, "Demolition"));
+        got = 0;
+        feed("{\"Event\":\"StatfeedEvent\",\"Data\":{\"EventName\":\"Demolish\",\"MainTarget\":{\"Name\":\"Them\"},"
+             "\"SecondaryTarget\":{\"Name\":\"Me {1}\"}}}");
+        T(got == 1 && rm[0].colour == 1 && !strcmp(rm[0].note, "Demolished"));
+        got = 0;
+        feed("{\"Event\":\"StatfeedEvent\",\"Data\":{\"EventName\":\"EpicSave\",\"Type\":\"Epic Save\",\"MainTarget\":{\"Name\":\"Me {1}\"}}}"
+             "{\"Event\":\"StatfeedEvent\",\"Data\":{\"EventName\":\"AerialGoal\",\"Type\":\"Aerial Goal\",\"MainTarget\":{\"Name\":\"Them\"}}}"
+             "{\"Event\":\"StatfeedEvent\",\"Data\":{\"EventName\":\"Assist\",\"MainTarget\":{\"Name\":\"Me {1}\"}}}");
+        T(got == 2 && !strcmp(rm[0].note, "Epic Save") && !strcmp(rm[1].note, "Assist")); // the other's goal isn't mine
+        got = 0;
+        const char *goal = "{\"Event\":\"StatfeedEvent\",\"Data\":{\"EventName\":\"Goal\",\"MainTarget\":{\"Name\":\"Me {1}\"}}}";
+        rl_feed(&rs, goal, (i32)strlen(goal), [&](const char *msg, i64 len) { got += rl_message(&rs, rle & ~AM_GOAL, msg, len, rm, 8); });
+        T(got == 0); // goals unticked
+        feed("{\"Event\":\"MatchEnded\",\"Data\":{\"WinnerTeamNum\":1}}");
+        T(got == 1 && rm[0].colour == 3 && !strcmp(rm[0].note, "Win") && !rs.me[0]);
+        got = 0;
+        feed("{\"Event\":\"MatchEnded\",\"Data\":{\"WinnerTeamNum\":1}}");
+        T(got == 0); // no player seen since
+
+        // Its ini: the rate set when there is none or it is 0, put back only from Rekodr's rate
+        char ini[1024], back[1024];
+        rl_ini("", true, ini, sizeof ini);
+        T(!strcmp(ini, "[TAGame.MatchStatsExporter_TA]\nPort=49123\nPacketSendRate=30\n"));
+        rl_ini(ini, false, back, sizeof back);
+        T(!strcmp(back, "[TAGame.MatchStatsExporter_TA]\nPort=49123\nPacketSendRate=0\n"));
+        rl_ini("[TAGame.MatchStatsExporter_TA]\r\nPort=49200\r\nPacketSendRate=0\r\n[Other]\r\nX=1\r\n", true, ini, sizeof ini);
+        T(!strcmp(ini, "[TAGame.MatchStatsExporter_TA]\r\nPort=49200\r\nPacketSendRate=30\r\n[Other]\r\nX=1\r\n"));
+        T(rl_port(ini) == 49200);
+        rl_ini("[TAGame.MatchStatsExporter_TA]\nPort=49123\n[Other]\nX=1", true, ini, sizeof ini);
+        T(!strcmp(ini, "[TAGame.MatchStatsExporter_TA]\nPort=49123\nPacketSendRate=30\n[Other]\nX=1"));
+        rl_ini("[TAGame.MatchStatsExporter_TA]\nPacketSendRate=60\n", true, ini, sizeof ini);
+        T(!strcmp(ini, "[TAGame.MatchStatsExporter_TA]\nPacketSendRate=60\n")); // the player's own rate
+        rl_ini(ini, false, back, sizeof back);
+        T(!strcmp(back, ini));
+        T(rl_port("[Other]\nPort=1\n") == 49123);
+    }
+
     // autoexec.cfg: Rekodr's line in and out, the player's lines as they were
     char ax[512];
     T(tf2_autoexec("", true, ax, sizeof ax) > 0 && !strcmp(ax, "con_logfile console.log // " APP_NAME " reads it for markers\n"));

@@ -20,6 +20,10 @@
 //   Assetto Corsa      Its shared memory, Local\acpmf_graphics, read once a second.
 //   Competizione
 //
+//   Rocket League      Its Stats API, a JSON stream from 127.0.0.1:49123 (the Port in its ini). Turning it on sets
+//                      PacketSendRate in TAGame\Config\DefaultStatsAPI.ini (and the player's TAStatsAPI.ini) when
+//                      the API is off there, read when the game starts; turning it off puts back only what it set.
+//
 // Only what the player did counts: kills, deaths and objectives of the player themself, rounds and matches their
 // team won.
 // Markers go in at the moment Rekodr hears of them. Everything runs on one worker thread.
@@ -543,6 +547,152 @@ static i32 acc_marks(AccSeen *s, u32 events, const u8 *m, i64 size, AutoMark *ou
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Rocket League: the Stats API
+
+// The game streams JSON objects one after another over TCP with nothing between them, each
+// {"Event": name, "Data": its data}, Data being the data's JSON as a string (or the object itself). The player is
+// the one the game is showing: UpdateState's Data.Game.Target while Data.Game.bHasTarget. StatfeedEvent says what
+// happened (EventName: Goal, AerialGoal, Save, EpicSave, Assist, Demolish, ...; Type: its label) to whom
+// (MainTarget, and for a demolition the car demolished as SecondaryTarget); MatchEnded has WinnerTeamNum.
+struct RlSeen {
+    char me[64];
+    i32 team;
+    char part[256 * 1024]; // the object being read
+    i32 part_n, depth;
+    bool in_str, esc;
+};
+
+static i32 rl_message(RlSeen *s, u32 events, const char *msg, i64 len, AutoMark *out, i32 cap)
+{
+    char ev[32];
+    if (!j_get(msg, len, "Event", ev, sizeof ev)) return 0;
+    static char data[256 * 1024];
+    const char *d = msg;
+    i64 dl = len;
+    const char *pre = "Data.";
+    if (j_get(msg, len, "Data", data, sizeof data)) { // a string: the data's JSON
+        d = data, dl = (i64)strlen(data), pre = "";
+    }
+    char key[64], v[64], name[64];
+    auto get = [&](const char *path, char *o, i32 c) {
+        snprintf(key, sizeof key, "%s%s", pre, path);
+        return j_get(d, dl, key, o, c);
+    };
+    i32 n = 0;
+    if (!strcmp(ev, "UpdateState")) {
+        if (get("Game.bHasTarget", v, sizeof v) && !strcmp(v, "true") && get("Game.Target.Name", name, sizeof name)) {
+            str_set(s->me, name);
+            s->team = get("Game.Target.TeamNum", v, sizeof v) ? atoi(v) : -1;
+        }
+    } else if (!strcmp(ev, "StatfeedEvent") && s->me[0]) {
+        char what[32] = "", label[32] = "", main[64] = "", second[64] = "";
+        get("EventName", what, sizeof what);
+        get("Type", label, sizeof label);
+        get("MainTarget.Name", main, sizeof main);
+        get("SecondaryTarget.Name", second, sizeof second);
+        bool mine = !strcmp(main, s->me);
+        if (!strcmp(what, "Demolish")) {
+            if (mine && (events & AM_KILL)) am_push(out, cap, &n, 4, "Demolition");
+            else if (!strcmp(second, s->me) && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Demolished");
+        } else if (mine && strstr(what, "Goal") && (events & AM_GOAL)) am_push(out, cap, &n, 4, label[0] ? label : "Goal");
+        else if (mine && strstr(what, "Save") && (events & AM_SAVE)) am_push(out, cap, &n, 5, label[0] ? label : "Save");
+        else if (mine && !strcmp(what, "Assist") && (events & AM_ASSIST)) am_push(out, cap, &n, 5, "Assist");
+    } else if (!strcmp(ev, "MatchEnded")) {
+        if (s->me[0] && s->team >= 0 && get("WinnerTeamNum", v, sizeof v) && atoi(v) == s->team && (events & AM_WIN))
+            am_push(out, cap, &n, 3, "Win");
+        s->me[0] = 0;
+    } else if (!strcmp(ev, "MatchDestroyed")) {
+        s->me[0] = 0;
+    }
+    return n;
+}
+
+// Bytes from the socket, split into whole objects by their braces (strings skipped over). A message too big to
+// keep is dropped whole.
+template <typename F> static void rl_feed(RlSeen *s, const char *b, i32 len, F each)
+{
+    for (i32 i = 0; i < len; i++) {
+        char c = b[i];
+        if (!s->depth && c != '{') continue;
+        if (s->part_n < (i32)sizeof s->part - 1) s->part[s->part_n] = c;
+        s->part_n++;
+        if (s->in_str) {
+            if (s->esc) s->esc = false;
+            else if (c == '\\') s->esc = true;
+            else if (c == '"') s->in_str = false;
+        } else if (c == '"') s->in_str = true;
+        else if (c == '{') s->depth++;
+        else if (c == '}' && !--s->depth) {
+            if (s->part_n < (i32)sizeof s->part) {
+                s->part[s->part_n] = 0;
+                each(s->part, (i64)s->part_n);
+            }
+            s->part_n = 0;
+        }
+    }
+}
+
+// The Stats API's settings, section [TAGame.MatchStatsExporter_TA]: Port (49123) and PacketSendRate, 0 (the
+// default) turning the API off. Rekodr sets a rate of RL_RATE when there is none and puts 0 back when it is
+// turned off; a rate the player set is left as it is.
+static const char RL_SECTION[] = "[TAGame.MatchStatsExporter_TA]";
+static const i32 RL_RATE = 30;
+
+// The ini's text with the rate on (none or 0 made RL_RATE) or off (RL_RATE made 0). Returns its length.
+static i32 rl_ini(const char *text, bool on, char *out, i32 cap)
+{
+    const char *eol = strstr(text, "\r\n") ? "\r\n" : "\n";
+    i32 n = 0;
+    bool in = false, have_section = false, have_rate = false;
+    auto put = [&](const char *p, size_t l) {
+        if (n + (i32)l < cap) memcpy(out + n, p, l), n += (i32)l;
+    };
+    auto rate_line = [&](i32 r) {
+        char l[40];
+        snprintf(l, sizeof l, "PacketSendRate=%d%s", r, eol);
+        put(l, strlen(l));
+    };
+    for (const char *p = text; *p;) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) + 1 : strlen(p), body = len;
+        while (body && (p[body - 1] == '\n' || p[body - 1] == '\r')) body--;
+        if (body && p[0] == '[') {
+            if (in && !have_rate && on) rate_line(RL_RATE), have_rate = true;
+            in = body == strlen(RL_SECTION) && !_strnicmp(p, RL_SECTION, body);
+            have_section |= in;
+        } else if (in && body > 15 && !_strnicmp(p, "PacketSendRate=", 15)) {
+            have_rate = true;
+            f64 r = atof(p + 15);
+            if (on && r <= 0) { rate_line(RL_RATE); p += len; continue; }
+            if (!on && r == RL_RATE) { rate_line(0); p += len; continue; }
+        }
+        put(p, len);
+        if (!e && on && !have_rate && in) put(eol, strlen(eol));
+        p += len;
+    }
+    if (on && in && !have_rate) rate_line(RL_RATE);
+    if (on && !have_section) {
+        if (n && out[n - 1] != '\n') put(eol, strlen(eol));
+        char s[128];
+        snprintf(s, sizeof s, "%s%sPort=49123%sPacketSendRate=%d%s", RL_SECTION, eol, eol, RL_RATE, eol);
+        put(s, strlen(s));
+    }
+    out[n < cap ? n : cap - 1] = 0;
+    return n;
+}
+
+// The Port in the ini's section, 49123 when it doesn't say.
+static u16 rl_port(const char *text)
+{
+    bool in = false;
+    for (const char *p = text; p && *p; p = strchr(p, '\n') ? strchr(p, '\n') + 1 : 0) {
+        if (*p == '[') in = !_strnicmp(p, RL_SECTION, strlen(RL_SECTION));
+        else if (in && !_strnicmp(p, "Port=", 5) && atoi(p + 5) > 0 && atoi(p + 5) < 65536) return (u16)atoi(p + 5);
+    }
+    return 49123;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Finding the Game State Integration games
 
 // The steamapps folder of the library an app is installed in, from Steam's libraryfolders.vdf. Any thread (the
@@ -793,6 +943,99 @@ static void tf2_name(const wchar_t *tf, char *out, i32 cap)
     free(text);
 }
 
+// Rocket League's install folder, from Steam or the Epic launcher's manifests. "" if it isn't installed.
+static void rl_dir(wchar_t *out)
+{
+    out[0] = 0;
+    Path lib;
+    if (steam_app_library(252950, &lib)) {
+        swprintf(out, MAX_PATH, L"%s\\common\\rocketleague", lib.s);
+        if (GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES) return;
+        out[0] = 0;
+    }
+    wchar_t data[MAX_PATH];
+    DWORD dn = GetEnvironmentVariableW(L"ProgramData", data, COUNT(data));
+    if (!dn || dn >= COUNT(data)) return;
+    Path dir = {};
+    swprintf(dir.s, MAX_PATH, L"%ls\\Epic\\EpicGamesLauncher\\Data\\Manifests", data);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(path_join(dir, L"*.item").s, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.nFileSizeHigh || fd.nFileSizeLow > 1024 * 1024) continue;
+        i64 len = 0;
+        char *t = read_file(path_join(dir, fd.cFileName).s, &len);
+        if (!t) continue;
+        char name[128], at[MAX_PATH * 3];
+        if (len > 0 && j_get(t, len, "DisplayName", name, sizeof name) && !strcmp(name, "Rocket League") &&
+            j_get(t, len, "InstallLocation", at, sizeof at) && at[0]) {
+            utf8_to_wide(at, out, MAX_PATH);
+            if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) out[0] = 0;
+        }
+        free(t);
+    } while (!out[0] && FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+// Turns the Stats API on or back off: the game's DefaultStatsAPI.ini, and the player's own TAStatsAPI.ini (Documents\My
+// Games), which the game reads first, when there is one. A file in local_dir says Rekodr turned it on, so only then
+// is it turned off. A test copy changes a copy in its own home. Returns the port the game sends on, 0 if the game
+// isn't installed. The game reads the files when it starts.
+static u16 am_rl_cfg(const wchar_t *dir, bool on)
+{
+    Path files[2];
+    i32 nf = 0;
+    if (is_test_copy()) {
+        Path d = path_join(g_app.paths.local_dir, L"gsicfg");
+        CreateDirectoryW(d.s, 0);
+        files[nf++] = path_join(d, L"rl_DefaultStatsAPI.ini");
+    } else {
+        if (!dir[0]) return 0;
+        swprintf(files[nf].s, COUNT(files[nf].s), L"%s\\TAGame\\Config", dir);
+        if (GetFileAttributesW(files[nf].s) == INVALID_FILE_ATTRIBUTES) return 0;
+        wcscat_s(files[nf++].s, L"\\DefaultStatsAPI.ini");
+        PWSTR docs = 0;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, 0, &docs))) {
+            swprintf(files[nf].s, COUNT(files[nf].s), L"%s\\My Games\\Rocket League\\TAGame\\Config\\TAStatsAPI.ini", docs);
+            if (GetFileAttributesW(files[nf].s) != INVALID_FILE_ATTRIBUTES) nf++;
+        }
+        CoTaskMemFree(docs);
+    }
+    Path flag = path_join(g_app.paths.local_dir, L"rl_statsapi_on");
+    bool ours = GetFileAttributesW(flag.s) != INVALID_FILE_ATTRIBUTES;
+    u16 port = 49123;
+    bool changed = false;
+    for (i32 i = 0; i < nf; i++) {
+        i64 size = 0;
+        char *text = read_file(files[i].s, &size);
+        static char out[64 * 1024];
+        if (size >= (i64)sizeof out - 256) {
+            free(text);
+            continue;
+        }
+        if (on || ours) {
+            i32 n = rl_ini(text ? text : "", on, out, sizeof out);
+            if (!(text && n == size && !memcmp(text, out, n)) && (text || on)) {
+                if (FILE *f = _wfopen(files[i].s, L"wb")) {
+                    fwrite(out, 1, n, f);
+                    fclose(f);
+                    changed = true;
+                }
+            }
+            if (i == nf - 1) port = rl_port(out);
+        } else if (text && i == nf - 1) port = rl_port(text);
+        free(text);
+    }
+    if (on && changed && !ours) {
+        if (FILE *f = _wfopen(flag.s, L"wb")) fclose(f);
+        log_line("markers: Rocket League's Stats API turned on; the game reads it when it starts");
+    } else if (!on && ours) {
+        DeleteFileW(flag.s);
+        log_line("markers: Rocket League's Stats API turned back off");
+    }
+    return port;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The worker
 
@@ -813,6 +1056,8 @@ static struct {
     Tf2Seen tf2;
     IrSeen ir;
     AccSeen acc;
+    RlSeen rl;
+    volatile LONG rl_port;           // the port Rocket League's Stats API sends on (main thread sets it)
     AmTail mc_tail, poe_tail[2], tf2_tail;
     wchar_t mc_log[MAX_PATH];        // the running Minecraft's latest.log; "" until found
     i64 mc_next;                     // when to look for it again
@@ -1067,6 +1312,35 @@ static void am_f1_socket(SOCKET *s, i64 *next)
     log_line("markers: listening for F1 25 on port %u", F1_PORT);
 }
 
+// Rocket League's Stats API: a connection to 127.0.0.1:rl_port, tried every 5 s while the game runs. A closed one
+// starts a new stream.
+static void am_rl_socket(SOCKET *s, i64 *next)
+{
+    if (!g_am.events[AMG_ROCKET_LEAGUE]) {
+        if (*s != INVALID_SOCKET) closesocket(*s), *s = INVALID_SOCKET;
+        *next = 0;
+        return;
+    }
+    if (*s != INVALID_SOCKET || now_us() < *next) return;
+    *next = now_us() + 5000000;
+    static char cmd[4096];
+    char title[8];
+    if (!process_facts("RocketLeague.exe", cmd, sizeof cmd, title, sizeof title)) return;
+    SOCKET c = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in a = {};
+    a.sin_family = AF_INET;
+    a.sin_port = htons((u16)g_am.rl_port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (c == INVALID_SOCKET || connect(c, (sockaddr *)&a, sizeof a)) {
+        if (c != INVALID_SOCKET) closesocket(c);
+        return;
+    }
+    RlSeen &r = g_am.rl;
+    r.part_n = r.depth = 0, r.in_str = r.esc = false;
+    *s = c;
+    log_line("markers: reading Rocket League's Stats API on port %d", (int)g_am.rl_port);
+}
+
 // Sets the state of each GSI game that is on.
 static void am_gsi_state(AmState st)
 {
@@ -1079,8 +1353,8 @@ static DWORD WINAPI am_thread(void *)
 {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
-    SOCKET ls = INVALID_SOCKET, f1 = INVALID_SOCKET;
-    i64 f1_next = 0;
+    SOCKET ls = INVALID_SOCKET, f1 = INVALID_SOCKET, rl = INVALID_SOCKET;
+    i64 f1_next = 0, rl_next = 0;
     HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_NO_PROXY, 0, 0, 0);
     i64 lol_next = 0, gsi_retry = 0, logs_next = 0;
     bool busy_said = false;
@@ -1119,6 +1393,7 @@ static DWORD WINAPI am_thread(void *)
         if (!g_am.events[AMG_TF2]) g_am.tf2 = {}, g_am.tf2_tail = {};
         if (!g_am.events[AMG_IRACING]) g_am.ir = {};
         if (!g_am.events[AMG_ACC]) g_am.acc = {};
+        if (!g_am.events[AMG_ROCKET_LEAGUE]) g_am.rl.me[0] = 0;
 
         i64 now = now_us();
         i64 wait_ms = 1000;
@@ -1128,11 +1403,13 @@ static DWORD WINAPI am_thread(void *)
             if (until < wait_ms) wait_ms = until < 0 ? 0 : until;
         }
         am_f1_socket(&f1, &f1_next);
-        if (ls != INVALID_SOCKET || f1 != INVALID_SOCKET) {
+        am_rl_socket(&rl, &rl_next);
+        if (ls != INVALID_SOCKET || f1 != INVALID_SOCKET || rl != INVALID_SOCKET) {
             fd_set fds;
             FD_ZERO(&fds);
             if (ls != INVALID_SOCKET) FD_SET(ls, &fds);
             if (f1 != INVALID_SOCKET) FD_SET(f1, &fds);
+            if (rl != INVALID_SOCKET) FD_SET(rl, &fds);
             timeval tv = {(long)(wait_ms / 1000), (long)(wait_ms % 1000) * 1000};
             if (select(0, &fds, 0, 0, &tv) > 0) {
                 if (ls != INVALID_SOCKET && FD_ISSET(ls, &fds)) {
@@ -1144,6 +1421,20 @@ static DWORD WINAPI am_thread(void *)
                     i32 got = recv(f1, (char *)pkt, sizeof pkt, 0);
                     AutoMark marks[4];
                     if (got > 0) am_put(marks, f1_packet(g_am.events[AMG_F1_25], pkt, got, marks, COUNT(marks)), AMG_F1_25);
+                }
+                if (rl != INVALID_SOCKET && FD_ISSET(rl, &fds)) {
+                    static char buf[16 * 1024];
+                    i32 got = recv(rl, buf, sizeof buf, 0);
+                    if (got <= 0) {
+                        closesocket(rl), rl = INVALID_SOCKET;
+                        log_line("markers: Rocket League's Stats API closed");
+                    } else {
+                        u32 ev = g_am.events[AMG_ROCKET_LEAGUE];
+                        rl_feed(&g_am.rl, buf, got, [&](const char *msg, i64 len) {
+                            AutoMark marks[4];
+                            am_put(marks, rl_message(&g_am.rl, ev, msg, len, marks, COUNT(marks)), AMG_ROCKET_LEAGUE);
+                        });
+                    }
                 }
             }
         } else {
@@ -1161,6 +1452,7 @@ static DWORD WINAPI am_thread(void *)
     }
     if (ls != INVALID_SOCKET) closesocket(ls);
     if (f1 != INVALID_SOCKET) closesocket(f1);
+    if (rl != INVALID_SOCKET) closesocket(rl);
     if (session) WinHttpCloseHandle(session);
     WSACleanup();
     return 0;
@@ -1275,6 +1567,15 @@ static void automarks_apply()
         InterlockedExchange(&g_am.state[AMG_TF2], !tf2 ? AM_OFF : found ? AM_READY : AM_NOT_FOUND);
     }
     wcscpy_s(g_am.tf2_dir, tf2 ? tf : L"");
+    bool rl_on = g_am.events[AMG_ROCKET_LEAGUE] != 0;
+    if (rl_on || g_am.gsi_applied[AMG_ROCKET_LEAGUE] || !c.auto_marks_on[AMG_ROCKET_LEAGUE]) {
+        wchar_t rd[MAX_PATH];
+        rl_dir(rd);
+        u16 port = am_rl_cfg(rd, rl_on);
+        if (port) InterlockedExchange(&g_am.rl_port, port);
+        g_am.gsi_applied[AMG_ROCKET_LEAGUE] = rl_on;
+        InterlockedExchange(&g_am.state[AMG_ROCKET_LEAGUE], !rl_on ? AM_OFF : port ? AM_READY : AM_NOT_FOUND);
+    }
     static const i32 waiting[] = {AMG_MINECRAFT, AMG_IRACING, AMG_ACC};
     for (i32 g : waiting) InterlockedExchange(&g_am.state[g], g_am.events[g] ? AM_READY : AM_OFF);
     if (!g_am.events[AMG_F1_25]) InterlockedExchange(&g_am.state[AMG_F1_25], AM_OFF);
@@ -1282,7 +1583,7 @@ static void automarks_apply()
 
     bool logs = false;
     replays_apply();
-    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE};
+    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE};
     for (i32 g : log_games) logs |= g_am.events[g] != 0;
     if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);
@@ -1304,11 +1605,15 @@ static void automarks_stop()
     g_am.thread = 0;
 }
 
-// Uninstall: the cfg files and Team Fortress 2's autoexec line go, whatever the switches say.
+// Uninstall: the cfg files and Team Fortress 2's autoexec line go, and Rocket League's Stats API is turned back off
+// if Rekodr turned it on, whatever the switches say.
 static void automarks_uninstall()
 {
     for (i32 i = 0; i < COUNT(AM_GSI); i++) am_gsi_cfg(AM_GSI[i], false);
     wchar_t tf[MAX_PATH];
     tf2_dir(tf);
     am_tf2_cfg(tf, false);
+    wchar_t rd[MAX_PATH];
+    rl_dir(rd);
+    am_rl_cfg(rd, false);
 }

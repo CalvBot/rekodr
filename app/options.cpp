@@ -4122,29 +4122,6 @@ static bool opt_am_events(const char *game, u32 *events, const AmChoice *choices
     return changed;
 }
 
-// Games with an official local feed that get markers later, side by side in one greyed card: small art, the name
-// and the feed.
-static void opt_am_planned()
-{
-    static const char *const planned[][2] = {{"Rocket League", "Stats API"}};
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImVec2 a = ImGui::GetCursorScreenPos();
-    f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD), aw = dp(40), ah = dp(60);
-    f32 head = g_font_small->FontSize + dp(10), h = pad + head + ah + pad;
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), col32(COL_PANEL), dp(10));
-    opt_text_at(dl, g_font_small, ImVec2(a.x + pad, a.y + pad), COL_DIM, "COMING LATER", a.x + w - pad);
-    f32 tile = floorf((w - 2 * pad) / COUNT(planned));
-    for (i32 i = 0; i < COUNT(planned); i++) {
-        ImVec2 p0(a.x + pad + i * tile, a.y + pad + head), p1(p0.x + aw, p0.y + ah);
-        opt_am_art(dl, planned[i][0], p0, p1, 0.4f);
-        f32 x = p1.x + dp(12), end = p0.x + tile - dp(12);
-        f32 y = p0.y + (ah - g_font->FontSize - dp(2) - g_font_small->FontSize) / 2;
-        opt_text_at(dl, g_font, ImVec2(x, y), COL_DIM, planned[i][0], end);
-        opt_text_at(dl, g_font_small, ImVec2(x, y + g_font->FontSize + dp(2)), COL_FAINT, planned[i][1], end);
-    }
-    ImGui::Dummy(ImVec2(w, h));
-}
-
 // Options > Auto markers: markers put on the timeline by games and by rare Steam achievements, under one switch.
 static void options_automarks()
 {
@@ -4158,21 +4135,27 @@ static void options_automarks()
     opt_card_end();
 
     ImGui::BeginDisabled(!c.auto_marks);
-    // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins
+    // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins, and Rocket League's
+    // kills and deaths are demolitions
     static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists",
-                                         "Advancements", "Level-ups", "Best laps", "Overtakes", "Incidents"};
+                                         "Advancements", "Level-ups", "Best laps", "Overtakes", "Incidents", "Goals", "Saves"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
     for (i32 g = 0; g < AMG_COUNT; g++) {
         const AmGame &game = AM_GAMES[g];
         AmChoice choices[COUNT(labels)];
         i32 n = 0;
-        for (i32 i = 0; i < COUNT(labels); i++)
-            if (game.events & (1u << i))
-                choices[n++] = {1u << i, (1u << i) == AM_WIN && (game.events & AM_ROUND) ? "Match wins" : labels[i]};
+        for (i32 i = 0; i < COUNT(labels); i++) {
+            if (!(game.events & (1u << i))) continue;
+            const char *l = labels[i];
+            if ((1u << i) == AM_WIN && (game.events & AM_ROUND)) l = "Match wins";
+            if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_KILL) l = "Demolitions";
+            if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_DEATH) l = "Demolished";
+            choices[n++] = {1u << i, l};
+        }
         AmState st = c.auto_marks && c.auto_marks_on[g] ? automarks_state(g) : AM_OFF;
         const char *sub = st == AM_NOT_FOUND ? "Not installed on this PC"
                           : st == AM_PORT_BUSY ? "Another program is using its port"
-                          : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2) ? "From the game's next start"
+                          : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2 || g == AMG_ROCKET_LEAGUE) ? "From the game's next start"
                           : game.feed;
         bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY;
         if (opt_am_row_begin(game.name, sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_on[g], kit_px(20))) {
@@ -4210,7 +4193,6 @@ static void options_automarks()
     }
     opt_am_row_end();
 
-    opt_am_planned();
     ImGui::EndDisabled();
 
     if (marks || ach) options_apply(0);
