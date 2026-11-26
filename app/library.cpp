@@ -3118,12 +3118,12 @@ static ClipShareState lib_clip_state(const LibItem &it)
     return s.st;
 }
 
-// How a Share button looks for what one click gives, at the same size and place whatever it is: filled in the accent
+// How a Share button looks for what one click gives, at the same size and place whatever it is: tinted in the accent
 // when a share is ready (the link glyph for a link that plays, which Share copies; the share glyph for a copy on
 // disk), else `plain`.
 static KitKind share_ready_kind(const ClipShareState &cs, KitKind plain)
 {
-    return cs.link_ready || cs.file ? KIT_ACCENT : plain;
+    return cs.link_ready || cs.file ? KIT_TINT : plain;
 }
 static const char *share_ready_icon(const ClipShareState &cs) { return cs.link_ready ? ICON_LINK : ICON_SHARE; }
 
@@ -4894,9 +4894,10 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     ImGui::PopID();
     {
         KitKind sk = share_running || share_big ? KIT_SECONDARY : share_ready_kind(share_cs, KIT_SECONDARY);
-        u32 sfill = sk == KIT_ACCENT ? (share_hot ? COL_ACCENT_HOVER : COL_ACCENT)
-                                     : share_hot && !share_big ? COL_HOVER : COL_PANEL2;
+        u32 sfill = share_hot && !share_big ? COL_HOVER : COL_PANEL2;
         dl->AddRectFilled(s0, s1, col32(sfill, share_held ? 0.8f : 1.f), ImGui::GetStyle().FrameRounding);
+        if (sk == KIT_TINT)
+            dl->AddRectFilled(s0, s1, col32(COL_ACCENT, share_hot ? 0.3f : 0.2f), ImGui::GetStyle().FrameRounding);
         if (share_running) {
             share_cancel_ring(dl, ImVec2(floorf((s0.x + s1.x) / 2), floorf((s0.y + s1.y) / 2)), kit_px(8), sj.progress,
                               COL_TEXT);
@@ -4904,7 +4905,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         } else {
             f32 is = g_font_icon->FontSize;
             const char *sicon = share_big ? ICON_SHARE : share_ready_icon(share_cs);
-            u32 ink = share_big ? COL_FAINT : sk == KIT_ACCENT ? COL_WHITE : COL_TEXT;
+            u32 ink = share_big ? COL_FAINT : sk == KIT_TINT ? COL_ACCENT_HOVER : COL_TEXT;
             ImVec2 ts = g_font_icon->CalcTextSizeA(is, FLT_MAX, 0, sicon);
             dl->AddText(g_font_icon, is, ImVec2(floorf(s0.x + (sw - ts.x) / 2), floorf(s0.y + (sh - ts.y) / 2)),
                         col32(ink), sicon);

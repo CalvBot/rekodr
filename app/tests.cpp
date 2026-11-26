@@ -3152,10 +3152,10 @@ static void test_share_ready_edit()
     T(!st.file && !st.link_ready);
     st = share_clip_state(9, clip.s, m, &a);
     T(st.file && st.link_ready);
-    // A ready copy and a ready link fill the Share button alike; only the glyph tells them apart
+    // A ready copy and a ready link tint the Share button alike; only the glyph tells them apart
     ClipShareState only_file = {};
     only_file.file = true;
-    T(share_ready_kind(only_file, KIT_SECONDARY) == KIT_ACCENT && share_ready_kind(st, KIT_SECONDARY) == KIT_ACCENT);
+    T(share_ready_kind(only_file, KIT_SECONDARY) == KIT_TINT && share_ready_kind(st, KIT_SECONDARY) == KIT_TINT);
     T(share_ready_kind(ClipShareState{}, KIT_SECONDARY) == KIT_SECONDARY);
     T(!strcmp(share_ready_icon(only_file), ICON_SHARE) && !strcmp(share_ready_icon(st), ICON_LINK));
     // The library's note shows the link glyph only for a link that went on the clipboard
