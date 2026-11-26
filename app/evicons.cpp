@@ -63,6 +63,19 @@ static EvIcon evi_weapon_class(const char *weapon)
         {"rifle", EVI_RIFLE, false}, {"ak-", EVI_RIFLE, false}, {"m4a1", EVI_RIFLE, false}, {"akm", EVI_RIFLE, false},
         {"carbine", EVI_RIFLE, false}, {"lmg", EVI_RIFLE, false}, {"hk 416", EVI_RIFLE, false}, {"mdr", EVI_RIFLE, false},
         {"sks", EVI_RIFLE, false}, {"vss", EVI_RIFLE, false}, {"m249", EVI_RIFLE, false},
+        // Tarkov's
+        {"mpx", EVI_SMG, false}, {"pp-19", EVI_SMG, false}, {"pp-91", EVI_SMG, false}, {"pp-9 ", EVI_SMG, false},
+        {"saiga-9", EVI_SMG, false}, {"vityaz", EVI_SMG, false}, {"kriss", EVI_SMG, false}, {"stm-9", EVI_SMG, false},
+        {"sr-2m", EVI_SMG, false}, {"p90", EVI_SMG, false}, {"mp-9", EVI_SMG, false},
+        {"grach", EVI_PISTOL, false}, {"mp-443", EVI_PISTOL, false}, {"pl-15", EVI_PISTOL, false}, {"m9a3", EVI_PISTOL, false},
+        {"p226", EVI_PISTOL, false}, {"tt-33", EVI_PISTOL, false}, {"five-seven", EVI_PISTOL, false}, {"usp", EVI_PISTOL, false},
+        {"sr-1mp", EVI_PISTOL, false}, {"rsh-12", EVI_PISTOL, false}, {"m45", EVI_PISTOL, false}, {"aps", EVI_PISTOL, true},
+        {"svd", EVI_SNIPER, false}, {"rsass", EVI_SNIPER, false}, {"sr-25", EVI_SNIPER, false}, {"m1a", EVI_SNIPER, false},
+        {"axmc", EVI_SNIPER, false}, {"sa-58", EVI_RIFLE, false}, {"adar", EVI_RIFLE, false}, {"tx-15", EVI_RIFLE, false},
+        {"mk47", EVI_RIFLE, false}, {"mcx", EVI_RIFLE, false}, {"scar", EVI_RIFLE, false}, {"ash-12", EVI_RIFLE, false},
+        {"g36", EVI_RIFLE, false}, {"as val", EVI_RIFLE, false}, {"vpo", EVI_RIFLE, false}, {"rd-704", EVI_RIFLE, false},
+        {"saiga-12", EVI_SHOTGUN, false}, {"mp-155", EVI_SHOTGUN, false}, {"590a1", EVI_SHOTGUN, false},
+        {"ks-23", EVI_SHOTGUN, false}, {"aa-12", EVI_SHOTGUN, false}, {"ksg", EVI_SHOTGUN, false},
     };
     for (const Word &x : words)
         if (x.whole ? !strcmp(w, x.word) : strstr(w, x.word) != 0) return (EvIcon)x.icon;

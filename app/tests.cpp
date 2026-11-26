@@ -4567,6 +4567,7 @@ static void test_event_icons()
     T(evi_weapon_class("hegrenade") == EVI_GRENADE && evi_weapon_class("mp9") == EVI_SMG);
     T(evi_weapon_class("AK-74N") == EVI_RIFLE && evi_weapon_class("Mosin rifle (infantry)") == EVI_SNIPER);
     T(evi_weapon_class("Makarov PM") == EVI_PISTOL && evi_weapon_class("MP-133 12ga shotgun") == EVI_SHOTGUN);
+    T(evi_weapon_class("MPX") == EVI_SMG && evi_weapon_class("MP-443 Grach") == EVI_PISTOL && evi_weapon_class("SA-58") == EVI_RIFLE);
     T(evi_weapon_class("") == EVI_NONE);
     for (i32 i = 0; i < COUNT(AM_EVENT_WORDS); i++) T(EVI_OF_EVENT[i] != EVI_NONE && EVI_NAMES[EVI_OF_EVENT[i]][0]);
 }
