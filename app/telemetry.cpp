@@ -3,6 +3,8 @@
 //                 and height, and how many clips, saves, shares, links and slow-PC warnings since the last report
 //                 that went through. The counts are kept in <local_dir>\stats.txt so they outlive a restart.
 //   /v1/feedback  what the player writes in Options > General > Feedback, with its kind.
+//   /v1/artreport a game whose icon, hero or cover looks wrong, from the same card: the game's service key, the
+//                 name shown, the kind and a short note.
 // With "Look up games online" off, neither is sent. The version is REKODR_VERSION (version.h).
 
 struct StatCounts { i32 clips, saves, shares, links, strain; };
@@ -17,13 +19,15 @@ struct Telemetry {
     volatile LONG stats_busy;
     HANDLE stats_thread;
     StatCounts sending; // the counts the report in flight carries
-    // Feedback, from the Options box
+    // Feedback and art reports, from the Options card: one in flight at a time
     volatile LONG fb_busy;
     HANDLE fb_thread;
     char fb_body[4400];
     char fb_result[160]; // "Sent", or why not; read once fb_busy is 0
     bool fb_ok;
-    u64  fb_sent_ms; // GetTickCount64 when the last one went, for the wait after it (memory only); 0 = none yet
+    bool fb_art;     // the last one sent was an art report
+    u64  fb_sent_ms; // GetTickCount64 when the last feedback went, for the wait after it (memory only); 0 = none yet
+    u64  art_sent_ms; // the same for art reports
 };
 static Telemetry g_tel;
 
@@ -213,10 +217,29 @@ static f32 feedback_wait_left(u64 sent_ms, u64 now_ms)
     return 1 - (f32)(now_ms - sent_ms) / FEEDBACK_WAIT_MS;
 }
 
+static const char *const ART_KINDS[] = {"icon", "hero", "cover"};
+enum { ART_NOTE_MAX = 120 };
+
+// The art report body: the game's service key and shown name, the kind of picture and the note, cut to
+// ART_NOTE_MAX bytes at a character's start.
+static void tel_art_json(const char *key, const char *name, i32 kind, const char *note, char *out, i32 cap)
+{
+    char cut[ART_NOTE_MAX + 1], esc_note[ART_NOTE_MAX * 2 + 1], esc_key[160], esc_name[260];
+    size_t len = strlen(note), n = len < ART_NOTE_MAX ? len : ART_NOTE_MAX;
+    while (n > 0 && n < len && ((u8)note[n] & 0xc0) == 0x80) n--;
+    memcpy(cut, note, n);
+    cut[n] = 0;
+    json_escape(trim(cut), esc_note, sizeof esc_note);
+    json_escape(key, esc_key, sizeof esc_key);
+    json_escape(name, esc_name, sizeof esc_name);
+    snprintf(out, cap, "{\"version\":\"%s\",\"key\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"note\":\"%s\"}", REKODR_VERSION,
+             esc_key, esc_name, ART_KINDS[kind], esc_note);
+}
+
 static DWORD WINAPI tel_feedback_thread(void *)
 {
-    u32 status = tel_post("/v1/feedback", g_tel.fb_body);
-    log_line("feedback: sent, the service answered %u", status);
+    u32 status = tel_post(g_tel.fb_art ? "/v1/artreport" : "/v1/feedback", g_tel.fb_body);
+    log_line("%s: sent, the service answered %u", g_tel.fb_art ? "art report" : "feedback", status);
     g_tel.fb_ok = status == 200;
     if (status == 200) str_set(g_tel.fb_result, "Sent. Thank you");
     else if (status == 0) str_set(g_tel.fb_result, "Couldn't reach " APP_NAME "'s service");
@@ -227,18 +250,33 @@ static DWORD WINAPI tel_feedback_thread(void *)
     return 0;
 }
 
-static bool feedback_send(i32 kind, const char *text)
+// Starts the send of what fb_body holds, an art report when `art`.
+static void tel_feedback_start(bool art)
 {
-    if (g_tel.fb_busy || feedback_wait_left(g_tel.fb_sent_ms, GetTickCount64()) > 0) return false;
     if (g_tel.fb_thread) {
         WaitForSingleObject(g_tel.fb_thread, INFINITE);
         CloseHandle(g_tel.fb_thread);
     }
-    tel_feedback_json(kind, text, g_tel.fb_body, sizeof g_tel.fb_body);
+    g_tel.fb_art = art;
     g_tel.fb_result[0] = 0;
-    g_tel.fb_sent_ms = GetTickCount64();
+    (art ? g_tel.art_sent_ms : g_tel.fb_sent_ms) = GetTickCount64();
     InterlockedExchange(&g_tel.fb_busy, 1);
     g_tel.fb_thread = thread_start(tel_feedback_thread, 0);
+}
+
+static bool feedback_send(i32 kind, const char *text)
+{
+    if (g_tel.fb_busy || feedback_wait_left(g_tel.fb_sent_ms, GetTickCount64()) > 0) return false;
+    tel_feedback_json(kind, text, g_tel.fb_body, sizeof g_tel.fb_body);
+    tel_feedback_start(false);
+    return true;
+}
+
+static bool art_report_send(const char *key, const char *name, i32 kind, const char *note)
+{
+    if (g_tel.fb_busy || feedback_wait_left(g_tel.art_sent_ms, GetTickCount64()) > 0) return false;
+    tel_art_json(key, name, kind, note, g_tel.fb_body, sizeof g_tel.fb_body);
+    tel_feedback_start(true);
     return true;
 }
 

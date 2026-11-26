@@ -5102,6 +5102,100 @@ static void opt_watch_rows(Config &c)
 
 static bool g_opt_show_folders; // "show folders": General scrolled to its Folders
 
+// Odd art: a game from the player's list (the ones heard last first, the one in front among them) that the service
+// knows, which picture looks wrong, an optional note and Send. The answer shows under it, where room is kept for it.
+static void options_art_report(Config &c)
+{
+    enum { MAX_GAMES = 40 };
+    struct Pick { char name[64], key[64]; i64 heard; };
+    static Pick games[MAX_GAMES];
+    static const char *names[MAX_GAMES];
+    static i32 count, at;
+    static u64 read_ms;
+    static char chosen_key[64];
+    static i32 kind = 0;
+    static char note[ART_NOTE_MAX + 1];
+    u64 now = GetTickCount64();
+    if (!read_ms || now - read_ms > 2000) { // the list, made again every 2 s, keeps the pick by its key
+        read_ms = now;
+        count = 0;
+        for (i32 i = 0; i < c.app_count; i++) {
+            const AppInfo &a = c.apps[i];
+            char key[64];
+            if (a.category != CAT_GAME || !a.name.s[0] || !gamedb_key_for(a.name.s, key, sizeof key)) continue;
+            i64 heard = !_stricmp(a.exe.s, g_app.audio.game.s) ? INT64_MAX : a.last_heard_us;
+            i32 slot = -1;
+            for (i32 j = 0; j < count && slot < 0; j++) if (!strcmp(games[j].key, key)) slot = j; // one row a game
+            if (slot < 0 && count < MAX_GAMES) slot = count++, games[slot].heard = INT64_MIN;
+            if (slot < 0) { // full: it takes the place of the one heard longest ago
+                slot = 0;
+                for (i32 j = 1; j < count; j++) if (games[j].heard < games[slot].heard) slot = j;
+            }
+            if (games[slot].heard >= heard) continue;
+            Pick &g = games[slot];
+            str_set(g.name, a.name.s);
+            str_set(g.key, key);
+            g.heard = heard;
+        }
+        for (i32 i = 1; i < count; i++) // the ones heard last first
+            for (i32 j = i; j > 0 && games[j].heard > games[j - 1].heard; j--) {
+                Pick t = games[j];
+                games[j] = games[j - 1];
+                games[j - 1] = t;
+            }
+        at = 0;
+        for (i32 i = 0; i < count; i++) {
+            names[i] = games[i].name;
+            if (!strcmp(games[i].key, chosen_key)) at = i;
+        }
+    }
+    if (count) str_set(chosen_key, games[at].key);
+
+    bool busy = g_tel.fb_busy != 0, sending = busy && g_tel.fb_art;
+    f32 combo_w = dp(220), chip_w = dp(64), send_w = text_w(g_font, "Sending") + dp(32), gap = dp(8);
+    opt_card_begin();
+    opt_row_begin("Odd or wrong game art", !c.game_lookup ? "Needs Look up games online" : count ? "Sent with the game and the version number"
+                  : "No game " APP_NAME " has art for yet", combo_w + dp(16) + 3 * chip_w + 2 * gap + dp(16) + send_w);
+    ImGui::BeginDisabled(!count);
+    if (opt_combo("##artgame", names, 0, count, &at, combo_w, 0, count ? 0 : "")) str_set(chosen_key, games[at].key);
+    ImGui::EndDisabled();
+    ImGui::SameLine(0, dp(16));
+    static const char *const labels[] = {"Icon##artkind", "Hero##artkind", "Cover##artkind"};
+    for (i32 i = 0; i < 3; i++) {
+        if (i) ImGui::SameLine(0, gap);
+        if (kit_chip(labels[i], kind == i, 0, chip_w)) kind = i;
+    }
+    ImGui::SameLine(0, dp(16));
+    f32 wait = busy ? 0 : feedback_wait_left(g_tel.art_sent_ms, now);
+    bool can = c.game_lookup && count && !busy && wait <= 0;
+    if (kit_button(sending ? "Sending##artsend" : wait > 0 ? "##artsend" : "Send##artsend", KIT_PRIMARY, ImVec2(send_w, 0), can)) {
+        dev_click("art report", ART_KINDS[kind]);
+        if (art_report_send(games[at].key, games[at].name, kind, note)) note[0] = 0;
+    }
+    if (wait > 0) { // the wait after a send: a ring that empties, in the greyed button
+        ImVec2 a = ImGui::GetItemRectMin(), z = ImGui::GetItemRectMax();
+        ImVec2 mid((a.x + z.x) / 2, (a.y + z.y) / 2);
+        f32 r = (z.y - a.y) * 0.28f, top = -IM_PI / 2;
+        ImDrawList *rl = ImGui::GetWindowDrawList();
+        rl->AddCircle(mid, r, col32(COL_FAINT, 0.5f), 32, dp(2));
+        rl->PathArcTo(mid, r, top, top + 2 * IM_PI * wait, 32);
+        rl->PathStroke(col32(COL_DIM), 0, dp(2));
+        ui_wake(2);
+    }
+    opt_row_end();
+    f32 x0 = g_card.a.x + dp(OPT_PAD), box_w = g_card.w - 2 * dp(OPT_PAD);
+    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y + dp(4)));
+    ImGui::BeginDisabled(!c.game_lookup || busy || !count);
+    ImGui::SetNextItemWidth(box_w);
+    ImGui::InputTextWithHint("##artnote", "A note (optional)", note, sizeof note);
+    ImGui::EndDisabled();
+    f32 ly = ImGui::GetCursorScreenPos().y + dp(4);
+    if (!busy && g_tel.fb_result[0] && g_tel.fb_art)
+        opt_text_at(ImGui::GetWindowDrawList(), g_font_small, ImVec2(x0, ly), g_tel.fb_ok ? COL_OK : 0xff8a92, g_tel.fb_result, x0 + box_w);
+    ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, ly + g_font_small->FontSize + dp(10)));
+    opt_card_end();
+}
+
 static void options_general()
 {
     Config &c = g_app.config;
@@ -5478,7 +5572,7 @@ static void options_general()
         ImGui::InputTextMultiline("##fbtext", text, sizeof text, ImVec2(box_w, dp(96)));
         ImGui::EndDisabled();
         static bool cleared;
-        if (!busy && g_tel.fb_ok && !cleared) { // sent: the box empties once
+        if (!busy && g_tel.fb_ok && !g_tel.fb_art && !cleared) { // sent: the box empties once
             text[0] = 0;
             cleared = true;
         }
@@ -5487,13 +5581,14 @@ static void options_general()
         char count[48];
         snprintf(count, sizeof count, "%d of %d", (int)strlen(text), FB_TEXT_MAX);
         ImDrawList *dl = ImGui::GetWindowDrawList();
-        if (!busy && g_tel.fb_result[0])
+        if (!busy && g_tel.fb_result[0] && !g_tel.fb_art)
             opt_text_at(dl, g_font_small, ImVec2(x0, ly), g_tel.fb_ok ? COL_OK : 0xff8a92, g_tel.fb_result, x0 + box_w - dp(100));
         f32 cw = text_w(g_font_small, count);
         opt_text_at(dl, g_font_small, ImVec2(x0 + box_w - cw, ly), COL_DIM, count, x0 + box_w + 1);
         ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, ly + g_font_small->FontSize + dp(10)));
     }
     opt_card_end();
+    options_art_report(c);
 
     opt_section("ABOUT");
     opt_card_begin();

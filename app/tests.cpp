@@ -776,6 +776,14 @@ static void test_telemetry()
     T(fabsf(feedback_wait_left(1000, 31000) - 0.5f) < 0.001f);     // half way
     T(feedback_wait_left(1000, 60999) > 0 && feedback_wait_left(1000, 61000) == 0);
     T(feedback_wait_left(5000, 1000) == 0);                        // a clock before the send
+    // An art report: the game's key and name, the kind and the note, nothing about the player
+    tel_art_json("d123", "Game \"X\"", 2, "  too dark\n", out, sizeof out);
+    T(!strcmp(out, "{\"version\":\"" REKODR_VERSION "\",\"key\":\"d123\",\"name\":\"Game \\\"X\\\"\",\"kind\":\"cover\",\"note\":\"too dark\"}"));
+    memset(longer, 'b', 300);
+    longer[300] = 0;
+    tel_art_json("s1", "G", 0, longer, out, sizeof out);
+    t = strstr(out, "\"note\":\"") + 8;
+    T((i32)(strrchr(out, '"') - t) == ART_NOTE_MAX && strstr(out, "\"kind\":\"icon\""));
 }
 
 static void test_first_run()
