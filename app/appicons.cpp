@@ -346,6 +346,90 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
     return slot->srv;
 }
 
+// Box art picked by hand for the games of Options > Auto markers: SteamGridDB grids (600 x 900), the main one first,
+// then two backups taken in turn when the one before can't be had. Fetched from SteamGridDB's own address by a worker
+// thread, once a start, into gamedb\art\grid-<file>; one fetched before is used as it is.
+struct FixedCover { const char *game; const char *grid[3]; };
+static const FixedCover g_fixed_covers[] = {
+    {"Counter-Strike 2", {"0662aa1719017e0efa5fa8daf0880c6e.png", "96b4fb6dee79d9f1d0703e15a13c58a1.jpg", "7c1a285fb1e76489437c3c780dd8dc85.png"}},
+    {"League of Legends", {"8e65aff4b74febf52c314c22e34c2d32.png", "739ba8f780c1b9a7bc5e17d61cb8cb41.png", "cf29ee336b07c0572c810f62f5543525.png"}},
+    {"Dota 2", {"f92e37859ddb71005399deb36970c8fb.jpg", "d19fd02ced4e8e9ccc0994d8dfee171f.png", "11cb2bd8917c92619467198cdec4f708.png"}},
+    {"Rocket League", {"e4e4005042cf598805d581754fe9256f.png", "a94595e22a11a0e271943269b1605e8d.png", "5fe5b01f95f050c99c170481f6dc88fb.png"}},
+    {"War Thunder", {"f69aa2b8ef6276214e009a37a7914043.jpg", "5d8ad96f48f8cada0a4d6564d7ece178.png", "f1eb69485d261b0d71297d3b7a617ce6.png"}},
+    {"F1 25", {"fb9d97ffedbaa16cae0906034a254afd.png", "da8f17df33b392e61af87eedc7a02773.png", "8eb9469f949e95b6574695b77ee2b9ab.jpg"}},
+    {"iRacing", {"22b7de72c07203f1425e06b010bbe95c.png", "3498e9a5704fcc4e89c62455d9d020e5.png", "489d3e1fa4d57d880d7e88a3f3cc9f85.png"}},
+    {"Assetto Corsa Competizione", {"efaa0ec2e8906a9e6e6988ec6bf3a658.png", "708250b08aff2266b6c3d6df7ab6b2bb.png", "a257950fdafaaa29c59c853567aae00b.png"}},
+    {"Deadlock", {"267d0674eaa904611272755c4d16c0f9.png", "f27f07335126e279da5d9b411265ec29.png", "ddd7c343a60f163d840180440802b280.png"}},
+    {"Minecraft", {"a73027901f88055aaa0fd1a9e25d36c7.png", "ee897a8699b37568c5c8dd72f78c2bf1.png", "7344bcd24a4a0393f45cad1a212c62e7.png"}},
+    {"Team Fortress 2", {"139b23924c6bb8418a337b563518d83a.jpg", "41dfccda9b5b255be17050bf5fb959f3.png", "22de0bf85202126667cb67ede1da08b7.png"}},
+    {"Path of Exile", {"b18f9c54e6efde8a08b8b478b0806587.png", "b762ab8b6d4b6845861b3a7fc6ed5a91.png", "e47278fe2669e7b284c7b75c76f02b12.jpg"}},
+    {"Path of Exile 2", {"579b8ed826a6b614ac5654924627477d.jpg", "602dc7261c04c9ae1d85e4ef3d191f0a.png", "494b08f5ba3e464e99d3ffa5ed13535a.jpg"}},
+    {"Hearthstone", {"f30259f76102eefd8b482ee4b68b1ef7.png", "3128463b233d51bd542a59d9cf49a5f6.jpg", "fb50a80a148e6facff6f7bb1241180ad.png"}},
+};
+enum { GAMEDB_FIXED_COVER = 5 }; // gamedb_on_event: the worker has settled one of the hand-picked covers
+// Per cover: which grid is there (1-3), 0 while not settled, -1 when none could be had.
+static struct {
+    volatile LONG started;
+    volatile LONG got[COUNT(g_fixed_covers)];
+    AppIcon slot[COUNT(g_fixed_covers)];
+} g_fixed;
+
+static Path fixed_cover_file(const char *grid)
+{
+    wchar_t name[96];
+    swprintf(name, COUNT(name), L"art\\grid-%hs", grid);
+    return path_join(gamedb_dir(), name);
+}
+
+static DWORD WINAPI fixed_covers_worker(void *)
+{
+    for (i32 i = 0; i < COUNT(g_fixed_covers); i++) {
+        LONG got = -1;
+        for (i32 k = 0; k < 3 && got < 0; k++) {
+            Path p = fixed_cover_file(g_fixed_covers[i].grid[k]);
+            WIN32_FILE_ATTRIBUTE_DATA fa;
+            bool have = GetFileAttributesExW(p.s, GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 0;
+            char url[128];
+            snprintf(url, sizeof url, "https://cdn2.steamgriddb.com/grid/%s", g_fixed_covers[i].grid[k]);
+            if (have || (g_gamedb.online && http_get_url(url, p))) got = k + 1;
+            else DEV_LOG("gamedb: cover %s for %s didn't come", g_fixed_covers[i].grid[k], g_fixed_covers[i].game);
+        }
+        InterlockedExchange(&g_fixed.got[i], got);
+        Event e = {};
+        e.kind = EV_GAMEDB;
+        e.a = GAMEDB_FIXED_COVER;
+        event_post(e);
+    }
+    return 0;
+}
+
+// A game's hand-picked cover (g_fixed_covers) and its size. *fixed is false for a game without one, or when none of
+// its grids could be had; with it true, null means the cover is still coming.
+static ID3D11ShaderResourceView *game_fixed_cover(const char *name, i32 *w, i32 *h, bool *fixed)
+{
+    *fixed = false;
+    i32 i = 0;
+    while (i < COUNT(g_fixed_covers) && strcmp(g_fixed_covers[i].game, name)) i++;
+    if (i == COUNT(g_fixed_covers)) return 0;
+    if (!InterlockedExchange(&g_fixed.started, 1)) {
+        HANDLE t = CreateThread(0, 0, fixed_covers_worker, 0, 0, 0);
+        if (t) CloseHandle(t);
+    }
+    LONG got = g_fixed.got[i];
+    if (got < 0) return 0;
+    *fixed = true;
+    AppIcon *slot = &g_fixed.slot[i];
+    if (got > 0 && !slot->srv && !slot->tried) {
+        slot->tried = true;
+        slot->srv = image_file_texture(fixed_cover_file(g_fixed_covers[i].grid[got - 1]), &slot->w, &slot->h);
+        if (!slot->srv) *fixed = false;
+    }
+    if (slot->tried && !slot->srv) *fixed = false;
+    *w = slot->w;
+    *h = slot->h;
+    return slot->srv;
+}
+
 // A game's art for behind the window (ui_art_texture) and the toasts (game_art_picture): its SteamGridDB hero, else
 // its grid (gamedb_art's ART_COVER), in grey, shrunk to g_art_look.w across, Gaussian blurred (g_art_look.blur
 // texels) until only its big light and dark masses are left, and its levels stretched so its darkest and lightest
@@ -699,7 +783,7 @@ static void library_rescan(); // library.cpp
 // The games list has loaded, art has arrived, or a modpack has been named. Main thread.
 static void gamedb_on_event(const Event &e)
 {
-    if (e.a == GAMEDB_ART_TEXTURE) {
+    if (e.a == GAMEDB_ART_TEXTURE || e.a == GAMEDB_FIXED_COVER) {
         ui_wake();
         return;
     }

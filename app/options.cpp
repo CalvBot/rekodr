@@ -4030,12 +4030,15 @@ static const f32 AM_ART_W = 64, AM_ART_H = 96, AM_PAD = 14;
 static ImVec2 g_am_row;
 static f32 g_am_text_end; // the right edge of what a row puts beside its art
 
-// A game's box art in p0..p1, the middle of the cover cut to the box's shape; a game icon on a box without one.
+// A game's box art in p0..p1, the middle of the cover cut to the box's shape: its hand-picked cover, else the games
+// database's; a game icon on a box without one.
 static void opt_am_art(ImDrawList *dl, const char *game, ImVec2 p0, ImVec2 p1, f32 alpha)
 {
     f32 round = dp(6);
     i32 tw = 0, th = 0;
-    ID3D11ShaderResourceView *art = game_db_cover(game, &tw, &th);
+    bool fixed = false;
+    ID3D11ShaderResourceView *art = game_fixed_cover(game, &tw, &th, &fixed);
+    if (!fixed) art = game_db_cover(game, &tw, &th);
     if (art && tw > 0 && th > 0) {
         f32 want = (p1.x - p0.x) / (p1.y - p0.y), have = (f32)tw / th, u = 0, v = 0;
         if (have > want) u = (1 - want / have) / 2;
