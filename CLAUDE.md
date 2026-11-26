@@ -12,8 +12,8 @@ Rekodr is not released. One PC runs it. Write for the program as it is going to 
 - No history ("used to", "no longer", "the Rust version did", "X agreed on <date>") and no plans or stages.
   History goes in commit messages. A plain `TODO:` is fine.
 - READMEs are short: what the program is and how it works. No action plans, no lists that restate settings.
-- Rekodr and its service link to each other: https://github.com/CalvBot/rekodr and
-  https://github.com/CalvBot/rekodr-api.
+- rekodr-api stays private during the beta: Rekodr's README names the service but doesn't link it. The service's
+  README links https://github.com/CalvBot/rekodr.
 
 ## Builds
 - Builds run locally (`app\build.bat`). A release happens only when the maintainer asks. While the repo is private its
