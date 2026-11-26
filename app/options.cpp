@@ -4388,7 +4388,7 @@ static void options_automarks()
     static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists",
                                          "Advancements", "Level-ups", "Best laps", "Overtakes", "Incidents", "Goals", "Saves",
                                          "Raid starts", "Raid ends", "Quests done", "Group joins", "Downs",
-                                         "Contracts taken", "Zones", "Jumps", "Spawns"};
+                                         "Contracts taken", "Zones", "Jumps", "Spawns", "Server joins", "Playing as"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
     auto game_row = [&](i32 g, bool dim) {
         const AmGame &game = AM_GAMES[g];

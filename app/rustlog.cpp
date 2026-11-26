@@ -9,6 +9,12 @@
 //           info "killed" is a kill, a headshot when the area is "head"; one against the player with "wounded" is
 //           the player downed. The table holds the last 30 hits and leaves out the last 10 seconds', so a hit comes
 //           again in later prints: it is known by its moment (within RUST_SAME_US), its kind, target and weapon.
+//   Joins   "Loading custom map from <url>" as the player joins a server, at that moment, the server's name from
+//           its welcome ("<size=45>...Welcome to</color> <color=...>Name</color></size>", tags taken out) and the map's
+//           address in the detail. A join waits for the welcome until the log runs RUST_WELCOME_US past it. A
+//           server without a custom map is joined at its welcome.
+//   Account "SteamID: <SteamID64> (<name>)" at the game's start: the account played as, a marker kept on this PC
+//           (local=1), its SteamID64 in the detail.
 //
 // The log is read whole whenever it changes: when Rekodr starts (so a session saved before is filled in), while the
 // game runs and once it closes. Marks made are kept in <local_dir>\rust.tsv, so none is made twice. Each goes in at
@@ -27,13 +33,14 @@ static const i64 RUST_EVERY = 2000000;
 static const i64 RUST_SAME_US = 500000;
 static const i64 RUST_PRINT_AFTER = 11000000; // past the table's hidden last 10 seconds
 static const i64 RUST_LIVE_US = 15000000;     // a death this recent is happening now
+static const i64 RUST_WELCOME_US = 90000000;  // how long after a map's load its welcome may come
 enum { RUST_SEEN_MAX = 4096, RUST_COLS = 20 };
 
 struct RustMark {
     i64  t_us; // when, on the wall clock
-    u32  event; // AM_KILL, AM_DEATH or AM_DOWNED
+    u32  event; // AM_KILL, AM_DEATH, AM_DOWNED, AM_SERVER or AM_ACCOUNT
     u64  key;   // its kind, target and weapon
-    char note[32];
+    char note[64];
     char detail[256];
 };
 
@@ -118,7 +125,7 @@ static void rust_field(const char *row, const RustCols &c, const char *name, cha
 // "You died: ..." after its "You died: ".
 static void rust_death(const char *r, i64 t, RustMark *out, i32 cap, i32 *n)
 {
-    char detail[256] = "", note[32];
+    char detail[256] = "", note[64];
     if (!strncmp(r, "killed by ", 10)) {
         char name[128];
         str_set(name, r + 10);
@@ -165,12 +172,55 @@ static void rust_row(const char *row, const RustCols &c, i64 printed, RustMark *
     else rust_push(out, cap, n, t, AM_DOWNED, "downed", attacker, weapon, "Downed", detail);
 }
 
+// Text with its <...> tags taken out and the spaces at its ends trimmed.
+static void rust_untag(const char *s, char *out, i32 cap)
+{
+    i32 n = 0;
+    for (; *s && n < cap - 1; s++) {
+        if (*s == '<' && strchr(s, '>')) s = strchr(s, '>');
+        else out[n++] = *s;
+    }
+    out[n] = 0;
+    char *t = trim(out);
+    memmove(out, t, strlen(t) + 1);
+}
+
+// A server joined at `t`, from the map at `map` ("" for none), named `server` ("" when it gave no welcome).
+static void rust_join(i64 t, const char *map, const char *server, RustMark *out, i32 cap, i32 *n)
+{
+    char detail[256] = "";
+    marker_detail_add(detail, "server", server);
+    marker_detail_add(detail, "map", map);
+    rust_push(out, cap, n, t, AM_SERVER, "server", map[0] ? map : server, "", "Joined server", detail);
+}
+
+// "SteamID: ..." after its "SteamID: ".
+static void rust_account(const char *r, i64 t, RustMark *out, i32 cap, i32 *n)
+{
+    char id[24] = "", name[128] = "";
+    i32 l = 0;
+    while (r[l] >= '0' && r[l] <= '9' && l < 20) l++;
+    if (l < 15 || r[l] != ' ' || r[l + 1] != '(') return;
+    snprintf(id, sizeof id, "%.*s", l, r);
+    str_set(name, r + l + 2);
+    size_t nl = strlen(name);
+    if (!nl || name[nl - 1] != ')') return;
+    name[nl - 1] = 0;
+    char detail[256] = "", note[64];
+    marker_detail_add(detail, "steam_id", id);
+    marker_detail_add(detail, "local", "1");
+    snprintf(note, sizeof note, "Playing as %s", name);
+    rust_push(out, cap, n, t, AM_ACCOUNT, "account", id, "", note, detail);
+}
+
 // The marks in a whole output_log.txt, each once, in the order read. How many.
 static i32 rust_marks(const char *text, RustMark *out, i32 cap)
 {
     i32 n = 0;
     RustCols cols = {};
     i64 printed = 0; // the table's print time while its rows run
+    i64 join_t = 0, last_t = 0; // a map loaded at join_t waits for its welcome
+    char map[256] = "";
     char line[1024];
     for (const char *p = text; *p;) {
         size_t len = strcspn(p, "\r\n");
@@ -180,10 +230,26 @@ static i32 rust_marks(const char *text, RustMark *out, i32 cap)
         i64 t = rust_time(line);
         if (t) {
             printed = 0;
+            last_t = t;
+            if (join_t && t - join_t > RUST_WELCOME_US) {
+                rust_join(join_t, map, "", out, cap, &n);
+                join_t = 0;
+            }
             const char *msg = strchr(line + 25, '|');
             if (!msg) continue;
             msg++;
+            char plain[256];
             if (!strncmp(msg, "You died: ", 10)) rust_death(msg + 10, t, out, cap, &n);
+            else if (!strncmp(msg, "SteamID: ", 9)) rust_account(msg + 9, t, out, cap, &n);
+            else if (!strncmp(msg, "Loading custom map from ", 24)) {
+                if (join_t) rust_join(join_t, map, "", out, cap, &n);
+                join_t = t;
+                str_set(map, trim(line + (msg - line) + 24));
+            } else if (msg[0] == '<' && (rust_untag(msg, plain, sizeof plain), !strncmp(plain, "Welcome to ", 11))) {
+                char *server = trim(plain + 11);
+                rust_join(join_t ? join_t : t, join_t ? map : "", server, out, cap, &n);
+                join_t = 0;
+            }
             else if (!strncmp(msg, "time ", 5) && strstr(msg, " attacker ") && strstr(msg, " target ")) {
                 rust_cols(msg, &cols);
                 printed = t;
@@ -191,6 +257,7 @@ static i32 rust_marks(const char *text, RustMark *out, i32 cap)
         } else if (printed && line[0] >= '0' && line[0] <= '9' && strchr(line, 's')) rust_row(line, cols, printed, out, cap, &n);
         else printed = 0;
     }
+    if (join_t && last_t - join_t > RUST_WELCOME_US) rust_join(join_t, map, "", out, cap, &n);
     return n;
 }
 
@@ -574,7 +641,9 @@ static void rust_post(const RustMark &m)
     Event e = {};
     e.kind = EV_MARKER;
     e.a = m.t_us;
-    e.b = AM_EVENT_COLOURS[m.event == AM_KILL ? 0 : m.event == AM_DEATH ? 2 : 18];
+    i32 bit = 0;
+    while (bit < 31 && !(m.event & (1u << bit))) bit++;
+    e.b = AM_EVENT_COLOURS[bit];
     snprintf(e.text, sizeof e.text, "%s%s%s", m.note, m.detail[0] ? "\t" : "", m.detail);
     event_post(e);
 }

@@ -4404,6 +4404,27 @@ static void test_rust()
     T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "[AB] (x)"));
     T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Scientist"));
     T(!marker_detail_get(m[1].detail, "steam_id", v, sizeof v));
+    // The account played as, kept on this PC; a join at its map's load, named by its welcome
+    T(rust_marks("2026-11-25T11:25:28.375Z|0x1|SteamID: 76561198000000002 (A Name That Is Thirty-Two Chars)\n"
+                 "2026-11-25T11:25:58.517Z|0x1|Loading custom map from https://maps.example/a.map\n"
+                 "2026-11-25T11:26:28.867Z|0x1|<size=45><color=#ffff00>Welcome to</color> <color=#FF5B33>Some.GG</color></size>\n",
+                 m, 16) == 2);
+    T(m[0].event == AM_ACCOUNT && !strcmp(m[0].note, "Playing as A Name That Is Thirty-Two Chars") && marker_local(m[0].detail));
+    T(marker_detail_get(m[0].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000002"));
+    T(m[1].event == AM_SERVER && !strcmp(m[1].note, "Joined server") && m[1].t_us == rust_time("2026-11-25T11:25:58.517Z|"));
+    T(marker_detail_get(m[1].detail, "server", v, sizeof v) && !strcmp(v, "Some.GG"));
+    T(marker_detail_get(m[1].detail, "map", v, sizeof v) && !strcmp(v, "https://maps.example/a.map"));
+    T(!marker_local(m[1].detail) && marker_local("x=1;local=1") && !marker_local("x=1"));
+    // A map whose welcome never comes is joined unnamed once the log runs on; a welcome with no map is a join
+    T(rust_marks("2026-11-25T11:00:00.000Z|0x1|Loading custom map from https://maps.example/b.map\n"
+                 "2026-11-25T11:05:00.000Z|0x1|<color=#fff>Welcome to Other</color>\n", m, 16) == 2);
+    T(m[0].t_us == rust_time("2026-11-25T11:00:00.000Z|") && !marker_detail_get(m[0].detail, "server", v, sizeof v));
+    T(marker_detail_get(m[0].detail, "map", v, sizeof v) && !strcmp(v, "https://maps.example/b.map"));
+    T(m[1].t_us == rust_time("2026-11-25T11:05:00.000Z|") && marker_detail_get(m[1].detail, "server", v, sizeof v) &&
+      !strcmp(v, "Other") && !marker_detail_get(m[1].detail, "map", v, sizeof v));
+    // A map just loaded still waits; a SteamID line without its name is not an account
+    T(rust_marks("2026-11-25T11:00:00.000Z|0x1|Loading custom map from https://maps.example/c.map\n"
+                 "2026-11-25T11:00:30.000Z|0x1|SteamID: 76561198000000002\n", m, 16) == 0);
 
     // The bind line for a key, from keys.cfg as Rust writes it: the key keeps what it does
     char bl[160];

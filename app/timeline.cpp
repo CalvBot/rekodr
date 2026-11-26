@@ -1955,7 +1955,7 @@ static const char *tl_detail_label(const char *key)
 {
     static const char *const names[][2] = {{"killer", "Killed by"}, {"target", "Target"}, {"attacker", "By"},
                                            {"weapon", "Weapon"}, {"area", "Hit"}, {"distance", "Distance"},
-                                           {"cause", "Cause"}};
+                                           {"cause", "Cause"}, {"server", "Server"}, {"map", "Map"}};
     for (auto &n : names)
         if (!strcmp(key, n[0])) return n[1];
     return key;
@@ -3014,7 +3014,7 @@ static void screen_timeline()
                 else if (!strcmp(k, "app")) str_set(app, v);
                 else if (!strcmp(k, "player")) str_set(player, v);
                 if (!strcmp(k, "steam_id") || !strcmp(k, "app") || !strcmp(k, "player") || !strcmp(k, "achievement") ||
-                    !strcmp(k, "name") || !strcmp(k, "icon"))
+                    !strcmp(k, "name") || !strcmp(k, "icon") || !strcmp(k, "local"))
                     continue;
                 for (char *ch = v; *ch; ch++)
                     if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker")) *ch = ' ';

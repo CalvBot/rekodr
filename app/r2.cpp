@@ -2176,7 +2176,7 @@ static void r2_probe_marks(const Path &file, const Path &ffmpeg, char *out, i32 
     for (i32 i = 0; i < nl; i++) {
         char one[300];
         snprintf(one, sizeof one, "%.3f %s", late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker");
-        if (late[i].t_us < 50000 || r2_marks_have(out, late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker"))
+        if (late[i].t_us < 50000 || marker_local(late[i].detail) || r2_marks_have(out, late[i].t_us / 1e6, late[i].note[0] ? late[i].note : "Marker"))
             continue;
         i32 n = (i32)strlen(one) + (len ? 1 : 0);
         if (len + n < cap) len += snprintf(out + len, cap - len, "%s%s", len ? "\x1f" : "", one);

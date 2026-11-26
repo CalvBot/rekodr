@@ -965,7 +965,8 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         }
         fclose(f);
     }
-    // Chapters: the markers in the clip, titled by their notes, and in a session where each game starts.
+    // Chapters: the markers in the clip, titled by their notes (not those kept on this PC), and in a session where
+    // each game starts.
     static Chapter chapters[256];
     static char chapter_meta[1 << 17];
     i32 chapter_count = 0;
@@ -973,6 +974,7 @@ static i64 save_run(SaveWork *w, char *out, i32 out_cap)
         static Marker marks[COUNT(chapters)];
         i32 mark_count = markers_in(clip_start, clip_end, marks, COUNT(marks));
         for (i32 i = 0; i < mark_count; i++) {
+            if (marker_local(marks[i].detail)) continue;
             chapters[chapter_count].t_us = marks[i].t_us;
             str_set(chapters[chapter_count++].title, marks[i].note[0] ? marks[i].note : "Marker");
         }
@@ -2624,7 +2626,8 @@ static i32 edit_chapters(const SaveWork *w, const EditJob &j, const LayerSpan *s
         static Marker late[256];
         i32 nl = layers_marks_read(layers_video_path(w->cfg.save_dir, j.src), late, COUNT(late));
         for (i32 i = 0; i < nl && n < COUNT(ch); i++)
-            ch[n].t_us = late[i].t_us, str_set(ch[n++].title, late[i].note[0] ? late[i].note : "Marker");
+            if (!marker_local(late[i].detail))
+                ch[n].t_us = late[i].t_us, str_set(ch[n++].title, late[i].note[0] ? late[i].note : "Marker");
     }
     i32 kept = 0;
     for (i32 i = 0; i < n; i++) {

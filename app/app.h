@@ -159,22 +159,24 @@ enum { FOLDER_MAX = 128 }; // folder rules (Config.folders), and store folders a
 // AM_INCIDENT is contact, a penalty or iRacing's incident points. In Rocket League AM_KILL is a demolition the
 // player made and AM_DEATH one they took. AM_QUEST is a quest finished; AM_GROUP someone joining the player's group.
 // AM_DOWNED is the player knocked down (Rust's wounded). AM_CONTRACT a contract taken, AM_ZONE a zone entered or left,
-// AM_TRAVEL a jump (quantum or to another system), AM_SPAWN the player spawning (Star Citizen).
+// AM_TRAVEL a jump (quantum or to another system), AM_SPAWN the player spawning (Star Citizen). AM_SERVER the
+// player joining a server, AM_ACCOUNT the account they play as (Rust); an account's marker stays on this PC.
 enum AmEvent : u32 {
     AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32, AM_ASSIST = 64,
     AM_ADVANCEMENT = 128, AM_LEVEL = 256, AM_LAP = 512, AM_OVERTAKE = 1024, AM_INCIDENT = 2048, AM_GOAL = 4096,
     AM_SAVE = 8192, AM_RAID_START = 16384, AM_RAID_END = 32768, AM_QUEST = 65536, AM_GROUP = 131072,
-    AM_DOWNED = 262144, AM_CONTRACT = 524288, AM_ZONE = 1048576, AM_TRAVEL = 2097152, AM_SPAWN = 4194304
+    AM_DOWNED = 262144, AM_CONTRACT = 524288, AM_ZONE = 1048576, AM_TRAVEL = 2097152, AM_SPAWN = 4194304,
+    AM_SERVER = 8388608, AM_ACCOUNT = 16777216
 };
 static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level",
                                              "lap", "overtake", "incident", "goal", "save", "raid_start", "raid_end", "quest", "group", "downed",
-                                             "contract", "zone", "travel", "spawn"};
+                                             "contract", "zone", "travel", "spawn", "server", "account"};
 // Each event's marker colour (MARKER_COLOURS) and the note it gets when its source gives none: a plugin's events.
-static const u8 AM_EVENT_COLOURS[] = {4, 4, 1, 3, 3, 5, 5, 6, 6, 6, 4, 1, 4, 5, 5, 5, 3, 6, 2, 5, 6, 5, 3};
+static const u8 AM_EVENT_COLOURS[] = {4, 4, 1, 3, 3, 5, 5, 6, 6, 6, 4, 1, 4, 5, 5, 5, 3, 6, 2, 5, 6, 5, 3, 5, 6};
 static const char *const AM_EVENT_NOTES[] = {"Kill", "Multi-kill", "Death", "Round won", "Win", "Objective", "Assist",
                                              "Advancement", "Level up", "Best lap", "Overtake", "Incident", "Goal", "Save",
                                              "Raid start", "Raid end", "Quest done", "Group joined", "Downed",
-                                             "Contract accepted", "Zone", "Travel", "Spawned"};
+                                             "Contract accepted", "Zone", "Travel", "Spawned", "Joined server", "Playing as"};
 static_assert(sizeof AM_EVENT_COLOURS == sizeof AM_EVENT_WORDS / sizeof *AM_EVENT_WORDS, "a colour for each event");
 static_assert(sizeof AM_EVENT_NOTES == sizeof AM_EVENT_WORDS, "a note for each event");
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
@@ -199,7 +201,7 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"hearthstone", "Hearthstone", "From the game's log", AM_WIN},
     {"war_thunder", "War Thunder", "From the game's map server, for the name below", AM_KILL | AM_DEATH | AM_WIN},
     {"tarkov", "Escape from Tarkov", "From the game's logs", AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP},
-    {"rust", "Rust", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED},
+    {"rust", "Rust", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED | AM_SERVER | AM_ACCOUNT},
     {"star_citizen", "Star Citizen", "From the game's log", AM_KILL | AM_DEATH | AM_DOWNED | AM_SPAWN | AM_CONTRACT | AM_QUEST | AM_ZONE | AM_TRAVEL},
     {"house_flipper_2", "House Flipper 2", "From the game's log", AM_ADVANCEMENT | AM_QUEST},
 };
@@ -1241,6 +1243,13 @@ static App g_app;
 static SRWLOCK g_activity_lock = SRWLOCK_INIT;
 
 // Markers (markers.cpp): moments marked in the buffer, each with an optional colour and note
+
+// Whether a marker's detail has local=1: the marker stays on this PC, out of chapters, shared pages and cards.
+static bool marker_local(const char *detail)
+{
+    return !strncmp(detail, "local=1", 7) || strstr(detail, ";local=1");
+}
+
 struct Marker {
     i64  t_us;      // when, on the wall clock; no two markers share one, so it also says which marker
     u8   colour;    // an index into MARKER_COLOURS; 0 = none
