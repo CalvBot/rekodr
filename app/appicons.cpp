@@ -336,7 +336,7 @@ static ID3D11ShaderResourceView *game_db_cover(const char *name, i32 *w, i32 *h,
         slot->waiting = false;
         GameInfo g;
         Path p = {};
-        if (gamedb_for_art(name, &g) && gamedb_art(g, ART_COVER, &p, &slot->waiting))
+        if (gamedb_for_art(name, &g) && gamedb_art(g, ART_HERO, &p, &slot->waiting))
             slot->srv = image_file_texture(p, &slot->w, &slot->h, &slot->blur);
         ui_wake();
     }
@@ -432,8 +432,8 @@ static ID3D11ShaderResourceView *game_fixed_cover(const char *name, i32 *w, i32 
     return slot->srv;
 }
 
-// A game's art for behind the window (ui_art_texture) and the toasts (game_art_picture): its SteamGridDB hero, else
-// its grid (gamedb_art's ART_COVER), in grey, shrunk to g_art_look.w across, Gaussian blurred (g_art_look.blur
+// A game's art for behind the window (ui_art_texture) and the toasts (game_art_picture): its hero, else its cover
+// (gamedb_art's ART_HERO), in grey, shrunk to g_art_look.w across, Gaussian blurred (g_art_look.blur
 // texels) until only its big light and dark masses are left, and its levels stretched so its darkest and lightest
 // parts reach black and white. Stretched over the window, drawing it smooths between the texels. Its colour, shrunk
 // and blurred the same, is kept beside it for the toasts, which show some of it (g_art_look.toast_colour); the window
@@ -677,7 +677,7 @@ static u8 *game_art_picture(const char *name, i32 *w, i32 *h)
     if (g_app.config.flat_look || !name[0] || game_is_none(name) || game_is_custom(name)) return 0;
     GameInfo g;
     Path art = {};
-    if (!gamedb_for_art(name, &g) || !gamedb_art(g, ART_COVER, &art)) return 0;
+    if (!gamedb_for_art(name, &g) || !gamedb_art(g, ART_HERO, &art)) return 0;
     u8 *pic = (u8 *)malloc(ART_PLANES * ART_W_MAX * ART_H_MAX);
     if (pic && art_grey_read(art_cache_path(g), art, pic, w, h)) return pic;
     free(pic);
@@ -713,7 +713,7 @@ static void art_textures_update()
         GameInfo g;
         Path p = {};
         t->waiting = false;
-        if (!gamedb_for_art(name, &g) || !gamedb_art(g, ART_COVER, &p, &t->waiting)) {
+        if (!gamedb_for_art(name, &g) || !gamedb_art(g, ART_HERO, &p, &t->waiting)) {
             t->state = ART_DONE;
             continue;
         }

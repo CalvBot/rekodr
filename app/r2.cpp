@@ -2029,11 +2029,11 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     Path icon_file;
     if (icon && (!card.line[0] || !gamedb_sgdb_icon(s.game, &icon_file) || !r2_icon_data(icon_file, icon, ICON_CAP)))
         icon[0] = 0;
-    // Behind the page: the game's art (its SteamGridDB hero, else its grid), small and grey
+    // Behind the page: the game's art (its hero, else its cover), small and grey
     char *art = (char *)malloc(ICON_CAP);
     GameInfo g;
     Path art_file;
-    if (art && (!s.game[0] || !gamedb_for_art(s.game, &g) || !gamedb_art(g, ART_COVER, &art_file) ||
+    if (art && (!s.game[0] || !gamedb_for_art(s.game, &g) || !gamedb_art(g, ART_HERO, &art_file) ||
                 !r2_icon_data(art_file, art, ICON_CAP, R2_ART_PX, true)))
         art[0] = 0;
     R2PageParts p = {title, page, video, embed, image, s.page_w, s.page_h, copy ? s.social_w : s.page_w,

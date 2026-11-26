@@ -1,8 +1,8 @@
-// The games database: which exe is which game, its proper name, and where its icon and cover are.
+// The games database: which exe is which game, its proper name, and where its icon and hero are.
 //
 // Rekodr fetches it itself; nothing is shipped with it. With Rekodr's service on (ART_SERVICE_HOST; "art_service"
 // in settings.txt names another, "" none), a game that starts is looked up there (POST /v1/lookup): the service
-// names it and says where its icon, grid and hero are. Only a game is asked about: one sorted as a Game, one
+// names it and says where its icon and hero (a cover for a game with no hero) are. Only a game is asked about: one sorted as a Game, one
 // Discord's list knows, or one a store installed (storeids.cpp). With the service off nothing goes to it: names
 // come from Discord's public list of the games it can detect (about 25,000, each with its exe names, the folders
 // they sit in and, for an exe many programs share, the command line that tells them apart), and art from
@@ -53,7 +53,7 @@ struct GameIndex {
 };
 
 enum { GAMEDB_LOADED = 1, GAMEDB_ART = 2, GAMEDB_RESOLVED = 3 };
-enum GameArt { ART_ICON, ART_COVER };
+enum GameArt { ART_ICON, ART_HERO };
 
 // What the service said to a lookup. `failed`: it couldn't be asked and nothing it said before is kept, so Discord's
 // list decides.
@@ -1078,7 +1078,8 @@ static bool gamedb_name_app(AppInfo *a)
 // ---------------------------------------------------------------------------------------------------------------
 // The service (rekodr-api), which holds Discord's list and the SteamGridDB and IGDB keys. Its calls, all signed:
 //   POST /v1/lookup  an exe's clues -> {"game":{"key","name",...}|null, "matched_by", "confidence",
-//                    "art":{"icon":{"url","w","h","from"}|null,"grid":..,"hero":..}, "v", "ask_args"?}
+//                    "art":{"icon":{"url","w","h","from"}|null,"hero":..,"cover":..}, "v", "ask_args"?}
+//                    (a cover only for a game with no hero)
 //   GET /v1/art/<key>                -> {"key","art":{...},"v"}
 //   GET /v1/search?q=<name>          -> {"games":[{"id":"s5367951","name":"...","year":2017}, ...]}
 //   POST /v1/rename  a name the player gave -> 204
@@ -1205,13 +1206,13 @@ static bool art_pick_search(const char *json, i64 len, const char *name, char *i
     return id[0] != 0;
 }
 
-// From an answer's "art", the address of a game's icon, or of its cover (its hero, a wide picture with no title on
-// it, else its grid), and with `from` where the service had it. False if it has neither.
+// From an answer's "art", the address of a game's icon, or of its hero (a wide picture with no title on it, else
+// the cover sent in its place), and with `from` where the service had it. False if it has neither.
 static bool art_pick_url(const char *json, i64 len, GameArt kind, char *url, i32 cap, char *from = 0, i32 from_cap = 0)
 {
     url[0] = 0;
     if (from) from[0] = 0;
-    const char *const kinds[2] = {kind == ART_ICON ? "art.icon" : "art.hero", kind == ART_ICON ? 0 : "art.grid"};
+    const char *const kinds[2] = {kind == ART_ICON ? "art.icon" : "art.hero", kind == ART_ICON ? 0 : "art.cover"};
     for (const char *k : kinds) {
         char path[32];
         if (!k) break;
@@ -1346,8 +1347,9 @@ static void sgdb_first_url(const char *json, i64 len, const char *field, char *u
 }
 
 // What SteamGridDB has for a game, found by its Steam id, else by its name, in the shape of the service's answers:
-// {"art":{"icon":{"url","from":"sgdb"}|null,"grid":..,"hero":null}}. Its icon (as a PNG: an icon itself may be an
-// .ico of many sizes) and its first wide grid. Into a malloc'd *out; false if it couldn't be asked.
+// {"art":{"icon":{"url","from":"sgdb"}|null,"hero":..,"cover":..}}. Its icon (as a PNG: an icon itself may be an
+// .ico of many sizes), its first hero, and only with no hero its first wide grid as the cover. Into a malloc'd *out;
+// false if it couldn't be asked.
 static bool sgdb_art_json(u32 steam, const char *name, char **out, i64 *out_len)
 {
     char path[400], *text = 0, sid[24] = "";
@@ -1374,12 +1376,13 @@ static bool sgdb_art_json(u32 steam, const char *name, char **out, i64 *out_len)
         free(text);
         text = 0;
     }
-    char icon[512] = "", grid[512] = "";
+    char icon[512] = "", hero[512] = "", cover[512] = "";
     if (sid[0]) {
-        static const char *const kinds[2][2] = {{"/icons/game/%s?nsfw=false&humor=false", "thumb"},
+        static const char *const kinds[3][2] = {{"/icons/game/%s?nsfw=false&humor=false", "thumb"},
+                                                {"/heroes/game/%s?nsfw=false&humor=false", "url"},
                                                 {"/grids/game/%s?dimensions=920x430,460x215&nsfw=false&humor=false", "url"}};
-        char *urls[2] = {icon, grid};
-        for (i32 i = 0; i < 2; i++) {
+        char *urls[3] = {icon, hero, cover};
+        for (i32 i = 0; i < 3 && !(i == 2 && hero[0]); i++) {
             snprintf(path, sizeof path, kinds[i][0], sid + 1);
             status = sgdb_get(path, &text, &tl);
             if (status != 200 && status != 404) { free(text); return false; }
@@ -1393,9 +1396,12 @@ static bool sgdb_art_json(u32 steam, const char *name, char **out, i64 *out_len)
     if (!*out) return false;
     i32 n = snprintf(*out, cap, "{\"key\":\"%s\",\"art\":{\"icon\":", sid);
     n += icon[0] ? snprintf(*out + n, cap - n, "{\"url\":\"%s\",\"from\":\"sgdb\"}", icon) : snprintf(*out + n, cap - n, "null");
-    n += snprintf(*out + n, cap - n, ",\"grid\":");
-    n += grid[0] ? snprintf(*out + n, cap - n, "{\"url\":\"%s\",\"from\":\"sgdb\"}", grid) : snprintf(*out + n, cap - n, "null");
-    n += snprintf(*out + n, cap - n, ",\"hero\":null}}");
+    for (i32 i = 1; i < 3; i++) {
+        const char *u = i == 1 ? hero : cover;
+        n += snprintf(*out + n, cap - n, ",\"%s\":", i == 1 ? "hero" : "cover");
+        n += u[0] ? snprintf(*out + n, cap - n, "{\"url\":\"%s\",\"from\":\"sgdb\"}", u) : snprintf(*out + n, cap - n, "null");
+    }
+    n += snprintf(*out + n, cap - n, "}}");
     *out_len = n;
     return true;
 }
@@ -1637,7 +1643,7 @@ static bool art_settled(const char *id, GameArt kind)
     return CompareFileTime(&fu.ftLastWriteTime, &fj.ftLastWriteTime) >= 0 && !file_older_than(fj, art_json_days() * 24 * 3600);
 }
 
-// Where a game's icon or cover is: true if there is a picture. One not settled (art_settled) is asked for; while
+// Where a game's icon or hero is: true if there is a picture. One not settled (art_settled) is asked for; while
 // it comes, one there from before is shown, and with none there *coming is set.
 static bool gamedb_art(const GameInfo &g, GameArt kind, Path *out, bool *coming = 0)
 {
@@ -1751,7 +1757,7 @@ static bool art_settle(const char *id, const char *key, const char *name, const 
         if (url[0] && !http_get_url(url, pic)) return false;
         if (!url[0]) DeleteFileW(pic.s);
         *replaced = have;
-        DEV_LOG("gamedb: %s for %s %s", kind == ART_ICON ? "icon" : "cover", id, url[0] ? "fetched" : "none");
+        DEV_LOG("gamedb: %s for %s %s", kind == ART_ICON ? "icon" : "hero", id, url[0] ? "fetched" : "none");
     }
     return write_whole(side, now, (i64)strlen(now));
 }

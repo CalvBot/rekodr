@@ -2095,19 +2095,21 @@ static void test_gamedb()
         sgdb_first_url(0, 0, "url", pic, sizeof pic);
         T(!pic[0]);
     }
-    // Its art: the icon for an icon; the hero for a cover, else the grid; nothing that isn't https
-    static const char art[] = "{\"key\":\"s2\",\"art\":{\"icon\":{\"url\":\"http://x/i.png\",\"from\":\"sgdb\"},"
-                              "\"grid\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"w\":920,\"h\":430,\"from\":\"sgdb\"},\"hero\":null}}";
+    // Its art: the icon for an icon; the hero, else the cover sent in its place; nothing that isn't https
+    static const char art[] = "{\"key\":\"s2\",\"art\":{\"icon\":{\"url\":\"http://x/i.png\",\"from\":\"sgdb\"},\"hero\":null,"
+                              "\"cover\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"w\":920,\"h\":430,\"from\":\"sgdb\"}}}";
     char url[512], from[16];
-    T(art_pick_url(art, sizeof art - 1, ART_COVER, url, sizeof url, from, sizeof from) &&
+    T(art_pick_url(art, sizeof art - 1, ART_HERO, url, sizeof url, from, sizeof from) &&
       !strcmp(url, "https://cdn2.steamgriddb.com/grid/g.png") && !strcmp(from, "sgdb"));
     T(!art_pick_url(art, sizeof art - 1, ART_ICON, url, sizeof url));
-    static const char art2[] = "{\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"hero\":{\"url\":\"https://a/h.png\",\"w\":1920},"
+    static const char art2[] = "{\"art\":{\"cover\":{\"url\":\"https://a/g.png\"},\"hero\":{\"url\":\"https://a/h.png\",\"w\":1920},"
                                "\"icon\":{\"url\":\"https://a/i.png\",\"from\":\"discord\"}}}";
-    T(art_pick_url(art2, sizeof art2 - 1, ART_COVER, url, sizeof url) && !strcmp(url, "https://a/h.png"));
+    T(art_pick_url(art2, sizeof art2 - 1, ART_HERO, url, sizeof url) && !strcmp(url, "https://a/h.png"));
+    static const char art3[] = "{\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"hero\":null}}";
+    T(!art_pick_url(art3, sizeof art3 - 1, ART_HERO, url, sizeof url));
     T(art_pick_url(art2, sizeof art2 - 1, ART_ICON, url, sizeof url, from, sizeof from) && !strcmp(url, "https://a/i.png") &&
       !strcmp(from, "discord"));
-    T(!art_pick_url("{}", 2, ART_COVER, url, sizeof url));
+    T(!art_pick_url("{}", 2, ART_HERO, url, sizeof url));
     gamedb_free(g_gamedb.index);
     g_gamedb.index = 0;
     DeleteFileW(json.s);
@@ -3313,7 +3315,7 @@ static void test_mcpack()
 
     // The service's answer for a pack its launcher named: the pack, keyed by its platform's project
     static const char answer[] = "{\"game\":{\"key\":\"p:modrinth:1KVo5zza\",\"name\":\"Fabulously Optimized\"},\"matched_by\":\"mc_pack\","
-                                 "\"confidence\":0.95,\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"icon\":null,\"hero\":null},\"v\":\"3\"}";
+                                 "\"confidence\":0.95,\"art\":{\"icon\":null,\"hero\":null,\"cover\":{\"url\":\"https://a/g.png\"}},\"v\":\"3\"}";
     LookAnswer ans;
     T(lookup_parse(answer, sizeof answer - 1, &ans) && !strcmp(ans.name, "Fabulously Optimized") &&
       !strcmp(ans.key, "p:modrinth:1KVo5zza") && !strcmp(ans.how, "mc_pack"));
@@ -3691,7 +3693,7 @@ static void test_storeids()
     // A lookup's answer: the game's name and key, how it was matched, and for a shared exe what to look for
     LookAnswer ans;
     static const char by_id[] = "{\"game\":{\"key\":\"d356875221482618880\",\"name\":\"Hollow Knight\"},\"matched_by\":\"store_id\","
-                                "\"confidence\":0.99,\"art\":{\"icon\":null,\"grid\":null,\"hero\":null},\"v\":\"7\"}";
+                                "\"confidence\":0.99,\"art\":{\"icon\":null,\"hero\":null,\"cover\":null},\"v\":\"7\"}";
     T(lookup_parse(by_id, sizeof by_id - 1, &ans) && !strcmp(ans.name, "Hollow Knight") && !strcmp(ans.key, "d356875221482618880") &&
       !strcmp(ans.how, "store_id") && ans.confidence > 0.98f && !ans.ask_args[0] && !ans.software);
     static const char software[] = "{\"game\":{\"key\":\"s1\",\"name\":\"Wallpaper Engine\"},\"matched_by\":\"store_id\","
@@ -3699,7 +3701,7 @@ static void test_storeids()
     T(lookup_parse(software, sizeof software - 1, &ans) && ans.software);
     const char *art_at;
     i64 art_len;
-    T(answer_art(by_id, sizeof by_id - 1, &art_at, &art_len) && art_len == 37 && art_at[0] == '{');
+    T(answer_art(by_id, sizeof by_id - 1, &art_at, &art_len) && art_len == 38 && art_at[0] == '{');
     static const char shared_exe[] = "{\"game\":null,\"ask_args\":[\"-game garrysmod\",\"-game cstrike\"],\"v\":\"7\"}";
     T(lookup_parse(shared_exe, sizeof shared_exe - 1, &ans) && !ans.name[0] && !strcmp(ans.ask_args, "-game garrysmod\n-game cstrike"));
     char has[256];
