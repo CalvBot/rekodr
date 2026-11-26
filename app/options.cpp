@@ -4159,7 +4159,8 @@ static void options_automarks()
 
     ImGui::BeginDisabled(!c.auto_marks);
     // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins
-    static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists"};
+    static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists",
+                                         "Advancements", "Level-ups"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
     for (i32 g = 0; g < AMG_COUNT; g++) {
         const AmGame &game = AM_GAMES[g];
@@ -4171,7 +4172,7 @@ static void options_automarks()
         AmState st = c.auto_marks && c.auto_marks_on[g] ? automarks_state(g) : AM_OFF;
         const char *sub = st == AM_NOT_FOUND ? "Not installed on this PC"
                           : st == AM_PORT_BUSY ? "Another program is using its port"
-                          : st == AM_READY && g == AMG_CS2 ? "From the game's next start"
+                          : st == AM_READY && (g == AMG_CS2 || g == AMG_TF2) ? "From the game's next start"
                           : game.feed;
         bool bad = st == AM_NOT_FOUND || st == AM_PORT_BUSY;
         if (opt_am_row_begin(game.name, sub, bad ? COL_WARN : COL_DIM, &c.auto_marks_on[g], kit_px(20))) {

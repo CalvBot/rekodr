@@ -10,6 +10,11 @@
 //   League of Legends  The Live Client Data API, https://127.0.0.1:2999, which the game serves while a match runs.
 //                      Its event list is read once a second.
 //
+//   Minecraft          logs\latest.log in the running game's folder (--gameDir), read once a second.
+//   Path of Exile 1, 2 logs\Client.txt in the game's folder (Steam, else Grinding Gear Games' install).
+//   Team Fortress 2    tf\console.log. Turning it on adds a con_logfile line to tf\cfg\autoexec.cfg, read when the
+//                      game starts; turning it off takes only that line out.
+//
 // Only what the player did counts: kills, deaths and objectives of the player themself, rounds and matches their
 // team won.
 // Markers go in at the moment Rekodr hears of them. Everything runs on one worker thread.
@@ -242,6 +247,129 @@ static i32 lol_marks(LolSeen *s, u32 events, const char *body, i64 len, AutoMark
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Games that write what happens to a log: one line at a time. `old` is a line that was there before Rekodr looked,
+// read only to learn who the player is.
+
+// Whether `s` holds `name` as a whole word: after the start or a space, before the end, a space or . , !
+static bool am_word(const char *s, const char *name)
+{
+    size_t n = strlen(name);
+    if (!n) return false;
+    for (const char *p = strstr(s, name); p; p = strstr(p + 1, name)) {
+        char after = p[n];
+        if ((p == s || p[-1] == ' ') && (!after || after == ' ' || after == '.' || after == ',' || after == '!')) return true;
+    }
+    return false;
+}
+
+struct McSeen { char me[32]; }; // the player's name, from "Setting user:"
+
+// Whether the words after a player's name are a vanilla death message: "was slain by", "drowned", "fell from".
+static bool mc_death_words(const char *rest)
+{
+    static const char *const first[] = {"was ", "drowned", "fell ", "burned ", "blew up", "hit the ground", "went ",
+                                        "tried to swim", "starved", "suffocated", "walked into", "experienced kinetic",
+                                        "froze to death", "withered away", "died", "discovered the floor",
+                                        "didn't want to live", "left the confines"};
+    for (i32 i = 0; i < COUNT(first); i++)
+        if (!strncmp(rest, first[i], strlen(first[i]))) return true;
+    return false;
+}
+
+// Minecraft's latest.log: the player's deaths and advancements, and the players whose death message names the
+// player (a kill). Chat lines (<name> ...) and other players' advancements are passed over.
+static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
+{
+    if (const char *u = strstr(line, "]: Setting user: ")) {
+        str_set(s->me, u + 17);
+        return 0;
+    }
+    const char *c = strstr(line, "[CHAT] ");
+    if (old || !s->me[0] || !c) return 0;
+    c += 7;
+    const char *sp = strchr(c, ' ');
+    if (*c == '<' || *c == '[' || !sp) return 0;
+    size_t me = strlen(s->me);
+    bool mine = (size_t)(sp - c) == me && !strncmp(c, s->me, me);
+    const char *rest = sp + 1;
+    i32 n = 0;
+    static const char *const adv[] = {"has made the advancement [", "has completed the challenge [", "has reached the goal ["};
+    for (i32 i = 0; i < COUNT(adv); i++) {
+        size_t l = strlen(adv[i]);
+        if (strncmp(rest, adv[i], l)) continue;
+        if (mine && (events & AM_ADVANCEMENT)) {
+            char note[32];
+            i32 k = 0;
+            for (const char *p = rest + l; *p && *p != ']' && k < (i32)sizeof note - 1; p++) note[k++] = *p;
+            note[k] = 0;
+            am_push(out, cap, &n, 6, note[0] ? note : "Advancement");
+        }
+        return n;
+    }
+    if (!mc_death_words(rest)) return 0;
+    if (mine) {
+        if (events & AM_DEATH) am_push(out, cap, &n, 1, "Death");
+    } else if ((events & AM_KILL) && am_word(rest, s->me)) {
+        am_push(out, cap, &n, 4, "Kill");
+    }
+    return n;
+}
+
+struct PoeSeen { char me[64]; }; // the player's character, from its level-ups
+
+// Path of Exile's Client.txt (both games): "<char> (<class>) is now level N" and "<char> has been slain.", after
+// the line's "] : ".
+static i32 poe_line(PoeSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
+{
+    const char *t = strstr(line, "] : ");
+    if (!t) return 0;
+    t += 4;
+    i32 n = 0;
+    if (const char *lv = strstr(t, ") is now level ")) {
+        const char *open = strstr(t, " (");
+        if (!open || open > lv) return 0;
+        i32 k = (i32)(open - t) < (i32)sizeof s->me - 1 ? (i32)(open - t) : (i32)sizeof s->me - 1;
+        memcpy(s->me, t, k);
+        s->me[k] = 0;
+        if (!old && (events & AM_LEVEL)) {
+            char note[32];
+            snprintf(note, sizeof note, "Level %d", atoi(lv + 15));
+            am_push(out, cap, &n, 6, note);
+        }
+        return n;
+    }
+    size_t me = strlen(s->me);
+    if (!old && me && (events & AM_DEATH) && !strncmp(t, s->me, me) && !strcmp(t + me, " has been slain."))
+        am_push(out, cap, &n, 1, "Death");
+    return n;
+}
+
+struct Tf2Seen { char me[64]; }; // the player's name, from the name cvar in config.cfg
+
+// Team Fortress 2's console.log: "<attacker> killed <victim> with <weapon>." (and " (crit)"), "<name> suicided.".
+static i32 tf2_line(Tf2Seen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
+{
+    size_t me = strlen(s->me);
+    if (old || !me) return 0;
+    i32 n = 0;
+    bool starts = !strncmp(line, s->me, me);
+    if (starts && !strcmp(line + me, " suicided.")) {
+        if (events & AM_DEATH) am_push(out, cap, &n, 1, "Death");
+        return n;
+    }
+    const char *with = strstr(line, " with ");
+    if (!with) return 0;
+    if (starts && !strncmp(line + me, " killed ", 8)) {
+        if (events & AM_KILL) am_push(out, cap, &n, 4, "Kill");
+        return n;
+    }
+    const char *k = strstr(line, " killed ");
+    if (k && k < with && (size_t)(with - (k + 8)) == me && !strncmp(k + 8, s->me, me) && (events & AM_DEATH))
+        am_push(out, cap, &n, 1, "Death");
+    return n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Finding the Game State Integration games
 
 // The steamapps folder of the library an app is installed in, from Steam's libraryfolders.vdf. Any thread (the
@@ -317,6 +445,182 @@ static i32 gsi_cfg_text(const AmGsi &g, const char *token, char *out, i32 cap)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Following a log
+
+// A log being followed. A new file (another path, another file at the same path, or one shorter than where it was
+// read up to) has its last AM_TAIL_BACK bytes read as old lines, then is followed from there.
+static const i64 AM_TAIL_BACK = 2 << 20;
+struct AmTail {
+    wchar_t path[MAX_PATH];
+    DWORD index_hi, index_lo; // the file's id: a new latest.log at the same path is another file
+    i64 at;                   // read up to here
+    char part[1024];          // a line not finished yet
+    i32 part_n;
+};
+
+// Calls each(line, old) for every whole line. False when the file isn't there.
+template <typename F> static bool am_tail(AmTail *t, const wchar_t *path, F each)
+{
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
+    if (f == INVALID_HANDLE_VALUE) {
+        t->path[0] = 0;
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION info = {};
+    GetFileInformationByHandle(f, &info);
+    i64 size = ((i64)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+    i64 old_end = -1;
+    if (wcscmp(t->path, path) || info.nFileIndexHigh != t->index_hi || info.nFileIndexLow != t->index_lo || size < t->at) {
+        wcscpy_s(t->path, path);
+        t->index_hi = info.nFileIndexHigh;
+        t->index_lo = info.nFileIndexLow;
+        t->at = size > AM_TAIL_BACK ? size - AM_TAIL_BACK : 0;
+        t->part_n = 0;
+        old_end = size;
+        if (t->at) t->part_n = -1; // the first line is cut: passed over
+    }
+    static char buf[64 * 1024];
+    while (t->at < size) {
+        LARGE_INTEGER pos;
+        pos.QuadPart = t->at;
+        SetFilePointerEx(f, pos, 0, FILE_BEGIN);
+        DWORD want = (DWORD)(size - t->at < (i64)sizeof buf ? size - t->at : (i64)sizeof buf), got = 0;
+        if (!ReadFile(f, buf, want, &got, 0) || !got) break;
+        for (DWORD i = 0; i < got; i++) {
+            char ch = buf[i];
+            if (ch == '\n') {
+                if (t->part_n > 0 && t->part[t->part_n - 1] == '\r') t->part_n--;
+                if (t->part_n >= 0) {
+                    t->part[t->part_n] = 0;
+                    each(t->part, t->at + (i64)i < old_end);
+                }
+                t->part_n = 0;
+            } else if (t->part_n >= 0 && t->part_n < (i32)sizeof t->part - 1) {
+                t->part[t->part_n++] = ch;
+            }
+        }
+        t->at += got;
+    }
+    CloseHandle(f);
+    return true;
+}
+
+// Path of Exile's Client.txt: under its Steam folder, else Grinding Gear Games' own install. "" when neither is
+// there.
+static void poe_log_path(u32 app, const wchar_t *dir, wchar_t *out)
+{
+    out[0] = 0;
+    Path lib;
+    wchar_t p[MAX_PATH];
+    if (steam_app_library(app, &lib)) {
+        swprintf(p, MAX_PATH, L"%s\\common\\%s\\logs", lib.s, dir);
+        if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) {
+            swprintf(out, MAX_PATH, L"%s\\Client.txt", p);
+            return;
+        }
+    }
+    wchar_t pf[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"ProgramFiles(x86)", pf, MAX_PATH)) return;
+    swprintf(p, MAX_PATH, L"%s\\Grinding Gear Games\\%s\\logs", pf, dir);
+    if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) swprintf(out, MAX_PATH, L"%s\\Client.txt", p);
+}
+
+// Team Fortress 2's tf folder, "" when it isn't installed.
+static void tf2_dir(wchar_t *out)
+{
+    out[0] = 0;
+    Path lib;
+    if (!steam_app_library(440, &lib)) return;
+    wchar_t p[MAX_PATH];
+    swprintf(p, MAX_PATH, L"%s\\common\\Team Fortress 2\\tf\\cfg", lib.s);
+    if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) swprintf(out, MAX_PATH, L"%s\\common\\Team Fortress 2\\tf", lib.s);
+}
+
+// The line Rekodr adds to Team Fortress 2's autoexec.cfg so the game writes its console to tf\console.log.
+static const char TF2_LINE[] = "con_logfile console.log // " APP_NAME " reads it for markers";
+
+// autoexec.cfg's text with Rekodr's line put in (on) or taken out, every other line as it was. Returns its length.
+static i32 tf2_autoexec(const char *text, bool on, char *out, i32 cap)
+{
+    i32 n = 0;
+    bool have = false;
+    for (const char *p = text; *p;) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p), body = len && p[len - 1] == '\r' ? len - 1 : len;
+        bool ours = body == strlen(TF2_LINE) && !strncmp(p, TF2_LINE, body);
+        have |= ours;
+        if ((!ours || on) && n + (i32)len + 1 < cap) {
+            memcpy(out + n, p, len);
+            n += (i32)len;
+            if (e) out[n++] = '\n';
+        }
+        p += len + (e ? 1 : 0);
+    }
+    if (on && !have) {
+        if (n && out[n - 1] != '\n' && n + 1 < cap) out[n++] = '\n';
+        n += snprintf(out + n, cap - n, "%s\n", TF2_LINE);
+    }
+    out[n] = 0;
+    return n;
+}
+
+// Writes or takes out Rekodr's line in autoexec.cfg; a file left with nothing in it goes. A test copy keeps its file
+// in its own home. False if the game isn't installed.
+static bool am_tf2_cfg(const wchar_t *tf, bool on)
+{
+    Path cfg;
+    if (is_test_copy()) {
+        Path dir = path_join(g_app.paths.local_dir, L"gsicfg");
+        CreateDirectoryW(dir.s, 0);
+        cfg = path_join(dir, L"tf2_autoexec.cfg");
+    } else {
+        if (!tf[0]) return false;
+        swprintf(cfg.s, COUNT(cfg.s), L"%s\\cfg\\autoexec.cfg", tf);
+    }
+    i64 size = 0;
+    char *text = read_file(cfg.s, &size);
+    if (!text && !on) return true;
+    static char out[256 * 1024];
+    if (size >= (i64)sizeof out - 256) {
+        free(text);
+        log_line("markers: Team Fortress 2's autoexec.cfg is too big to change");
+        return true;
+    }
+    i32 n = tf2_autoexec(text ? text : "", on, out, sizeof out);
+    bool same = text && n == size && !memcmp(text, out, n);
+    free(text);
+    if (same) return true;
+    bool empty = true;
+    for (i32 i = 0; i < n; i++) empty &= out[i] == ' ' || out[i] == '\t' || out[i] == '\r' || out[i] == '\n';
+    if (empty) {
+        DeleteFileW(cfg.s);
+    } else if (FILE *f = _wfopen(cfg.s, L"wb")) {
+        fwrite(out, 1, n, f);
+        fclose(f);
+    }
+    log_line("markers: Team Fortress 2's autoexec.cfg %s", on ? "has Rekodr's line" : "no longer has Rekodr's line");
+    return true;
+}
+
+// The name cvar in Team Fortress 2's config.cfg: name "<the player>".
+static void tf2_name(const wchar_t *tf, char *out, i32 cap)
+{
+    out[0] = 0;
+    wchar_t p[MAX_PATH];
+    swprintf(p, MAX_PATH, L"%s\\cfg\\config.cfg", tf);
+    char *text = read_file(p, 0);
+    if (!text) return;
+    for (const char *l = text; l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : 0) {
+        if (strncmp(l, "name \"", 6)) continue;
+        i32 k = 0;
+        for (const char *c = l + 6; *c && *c != '"' && k < cap - 1; c++) out[k++] = *c;
+        out[k] = 0;
+        break;
+    }
+    free(text);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // The worker
 
 static struct {
@@ -331,6 +635,14 @@ static struct {
     Cs2Seen cs2;
     DotaSeen dota;
     LolSeen lol;
+    McSeen mc;
+    PoeSeen poe[2];                  // Path of Exile, Path of Exile 2
+    Tf2Seen tf2;
+    AmTail mc_tail, poe_tail[2], tf2_tail;
+    wchar_t mc_log[MAX_PATH];        // the running Minecraft's latest.log; "" until found
+    i64 mc_next;                     // when to look for it again
+    wchar_t poe_log[2][MAX_PATH];    // each Client.txt; "" when the game isn't installed (main thread sets them)
+    wchar_t tf2_dir[MAX_PATH];       // the tf folder; "" when it isn't installed (main thread sets it)
     i64 last_kill[AMG_COUNT];        // the last kill marker of each (its time), for an amend
 } g_am;
 
@@ -453,6 +765,65 @@ static void am_lol_poll(HINTERNET session)
     am_put(marks, n, AMG_LOL);
 }
 
+// Minecraft's latest.log: in the folder on the running game's command line (--gameDir). Looked for every 5 s while
+// it isn't known.
+static void mc_log_path(wchar_t *out)
+{
+    out[0] = 0;
+    static char cmd[32768];
+    char title[8], dir[MAX_PATH * 2];
+    static const char *const exes[] = {"javaw.exe", "java.exe"};
+    for (const char *exe : exes) {
+        if (!process_facts(exe, cmd, sizeof cmd, title, sizeof title) || !strstr(cmd, "minecraft")) continue;
+        if (!mc_arg(cmd, "--gameDir", dir, sizeof dir)) continue;
+        wchar_t w[MAX_PATH];
+        utf8_to_wide(dir, w, MAX_PATH);
+        swprintf(out, MAX_PATH, L"%s\\logs\\latest.log", w);
+        return;
+    }
+}
+
+// Once a second: the lines each log game on has added.
+static void am_logs_poll()
+{
+    AutoMark marks[8];
+    auto feed = [&](i32 game, i32 n) { am_put(marks, n, game); };
+    if (u32 ev = g_am.events[AMG_MINECRAFT]) {
+        i64 now = now_us();
+        if (!g_am.mc_tail.path[0] && now >= g_am.mc_next) {
+            wchar_t p[MAX_PATH];
+            mc_log_path(p);
+            if (p[0]) wcscpy_s(g_am.mc_log, p);
+            g_am.mc_next = now + 5000000;
+        }
+        if (g_am.mc_log[0] && !am_tail(&g_am.mc_tail, g_am.mc_log, [&](const char *l, bool old) {
+                feed(AMG_MINECRAFT, mc_line(&g_am.mc, ev, l, old, marks, COUNT(marks)));
+            }))
+            g_am.mc_log[0] = 0;
+    }
+    static const i32 poe_games[] = {AMG_POE, AMG_POE2};
+    for (i32 i = 0; i < 2; i++) {
+        i32 g = poe_games[i];
+        u32 ev = g_am.events[g];
+        if (ev && g_am.poe_log[i][0])
+            am_tail(&g_am.poe_tail[i], g_am.poe_log[i], [&](const char *l, bool old) {
+                feed(g, poe_line(&g_am.poe[i], ev, l, old, marks, COUNT(marks)));
+            });
+    }
+    if (u32 ev = g_am.events[AMG_TF2]) {
+        if (g_am.tf2_dir[0]) {
+            wchar_t p[MAX_PATH];
+            swprintf(p, MAX_PATH, L"%s\\console.log", g_am.tf2_dir);
+            bool was = g_am.tf2_tail.path[0] != 0;
+            am_tail(&g_am.tf2_tail, p, [&](const char *l, bool old) {
+                if (!was && !g_am.tf2.me[0]) tf2_name(g_am.tf2_dir, g_am.tf2.me, sizeof g_am.tf2.me);
+                was = true;
+                feed(AMG_TF2, tf2_line(&g_am.tf2, ev, l, old, marks, COUNT(marks)));
+            });
+        }
+    }
+}
+
 // Sets the state of each GSI game that is on.
 static void am_gsi_state(AmState st)
 {
@@ -467,7 +838,7 @@ static DWORD WINAPI am_thread(void *)
     WSAStartup(MAKEWORD(2, 2), &wsa);
     SOCKET ls = INVALID_SOCKET;
     HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_NO_PROXY, 0, 0, 0);
-    i64 lol_next = 0, gsi_retry = 0;
+    i64 lol_next = 0, gsi_retry = 0, logs_next = 0;
     bool busy_said = false;
     while (!g_am.stop) {
         if (g_am.gsi_on && ls == INVALID_SOCKET && now_us() >= gsi_retry) {
@@ -498,6 +869,10 @@ static DWORD WINAPI am_thread(void *)
         if (!g_am.events[AMG_CS2]) g_am.cs2 = {};
         if (!g_am.events[AMG_DOTA2]) g_am.dota = {};
         if (!g_am.events[AMG_LOL]) g_am.lol = {};
+        if (!g_am.events[AMG_MINECRAFT]) g_am.mc = {}, g_am.mc_tail = {}, g_am.mc_log[0] = 0;
+        for (i32 i = 0; i < 2; i++)
+            if (!g_am.events[i ? AMG_POE2 : AMG_POE]) g_am.poe[i] = {}, g_am.poe_tail[i] = {};
+        if (!g_am.events[AMG_TF2]) g_am.tf2 = {}, g_am.tf2_tail = {};
 
         i64 now = now_us();
         i64 wait_ms = 1000;
@@ -521,6 +896,10 @@ static DWORD WINAPI am_thread(void *)
         if (lol_on && now_us() >= lol_next) {
             am_lol_poll(session);
             lol_next = now_us() + (g_am.lol.have ? 1000000 : 3000000);
+        }
+        if (now_us() >= logs_next) {
+            am_logs_poll();
+            logs_next = now_us() + 1000000;
         }
     }
     if (ls != INVALID_SOCKET) closesocket(ls);
@@ -617,7 +996,33 @@ static void automarks_apply()
         }
     }
     g_am.gsi_on = gsi;
-    if ((g_am.gsi_on || g_am.events[AMG_LOL]) && !g_am.thread) {
+
+    // The log games: where their logs are, and Team Fortress 2's autoexec line
+    static const i32 poe_games[] = {AMG_POE, AMG_POE2};
+    static const u32 poe_apps[] = {238960, 2694490};
+    static const wchar_t *const poe_dirs[] = {L"Path of Exile", L"Path of Exile 2"};
+    for (i32 i = 0; i < 2; i++) {
+        i32 g = poe_games[i];
+        wchar_t p[MAX_PATH] = L"";
+        if (g_am.events[g]) poe_log_path(poe_apps[i], poe_dirs[i], p);
+        if (wcscmp(p, g_am.poe_log[i])) wcscpy_s(g_am.poe_log[i], p); // the worker reads it whole or not at all
+        InterlockedExchange(&g_am.state[g], !g_am.events[g] ? AM_OFF : p[0] ? AM_READY : AM_NOT_FOUND);
+    }
+    bool tf2 = g_am.events[AMG_TF2] != 0;
+    wchar_t tf[MAX_PATH];
+    tf2_dir(tf);
+    if (tf2 || g_am.gsi_applied[AMG_TF2] || !c.auto_marks_on[AMG_TF2]) {
+        bool found = am_tf2_cfg(tf, tf2);
+        g_am.gsi_applied[AMG_TF2] = tf2;
+        InterlockedExchange(&g_am.state[AMG_TF2], !tf2 ? AM_OFF : found ? AM_READY : AM_NOT_FOUND);
+    }
+    wcscpy_s(g_am.tf2_dir, tf2 ? tf : L"");
+    InterlockedExchange(&g_am.state[AMG_MINECRAFT], g_am.events[AMG_MINECRAFT] ? AM_READY : AM_OFF);
+
+    bool logs = false;
+    static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2};
+    for (i32 g : log_games) logs |= g_am.events[g] != 0;
+    if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);
         g_am.thread = CreateThread(0, 0, am_thread, 0, 0, 0);
     }
@@ -637,8 +1042,11 @@ static void automarks_stop()
     g_am.thread = 0;
 }
 
-// Uninstall: the cfg files go, whatever the switches say.
+// Uninstall: the cfg files and Team Fortress 2's autoexec line go, whatever the switches say.
 static void automarks_uninstall()
 {
     for (i32 i = 0; i < COUNT(AM_GSI); i++) am_gsi_cfg(AM_GSI[i], false);
+    wchar_t tf[MAX_PATH];
+    tf2_dir(tf);
+    am_tf2_cfg(tf, false);
 }

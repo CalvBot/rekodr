@@ -3487,6 +3487,56 @@ static void test_automarks()
     const char *watch = "{\"provider\":{\"appid\":570},\"map\":{\"matchid\":\"9\"},\"player\":{\"team2\":{}}}";
     T(dota_marks(&ds, AM_GAMES[AMG_DOTA2].events, watch, (i64)strlen(watch), m, 8) == 0 && !ds.have);
     T(am_events_parse("assist", AM_GAMES[AMG_DOTA2].events) == AM_ASSIST && am_events_parse("assist", AM_GAMES[AMG_CS2].events) == 0);
+
+    // Minecraft's latest.log
+    u32 mce = AM_GAMES[AMG_MINECRAFT].events;
+    McSeen mc = {};
+    T(mc_line(&mc, mce, "[12:00:00] [Render thread/INFO]: Setting user: Steve", true, m, 8) == 0 && !strcmp(mc.me, "Steve"));
+    T(mc_line(&mc, mce, "[12:00:01] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", true, m, 8) == 0);
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Death") && m[0].colour == 1);
+    T(mc_line(&mc, mce, "[12:00:03] [Render thread/INFO]: [System] [CHAT] Steve has made the advancement [Stone Age]", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Stone Age") && m[0].colour == 6);
+    T(mc_line(&mc, mce, "[12:00:04] [Render thread/INFO]: [System] [CHAT] Alex has made the advancement [Stone Age]", false, m, 8) == 0);
+    T(mc_line(&mc, mce, "[12:00:05] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steve", false, m, 8) == 1 && !strcmp(m[0].note, "Kill"));
+    T(mc_line(&mc, mce, "[12:00:06] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steven", false, m, 8) == 0);
+    T(mc_line(&mc, mce, "[12:00:07] [Render thread/INFO]: [System] [CHAT] <Alex> Steve was slain by me", false, m, 8) == 0);
+    T(mc_line(&mc, AM_KILL, "[12:00:08] [Render thread/INFO]: [System] [CHAT] Steve drowned", false, m, 8) == 0);
+
+    // Path of Exile's Client.txt
+    u32 poee = AM_GAMES[AMG_POE].events;
+    PoeSeen poe = {};
+    T(poe_line(&poe, poee, "2026/11/26 12:00:00 1 abc [INFO Client 1] : Grub (Marauder) is now level 4", true, m, 8) == 0 &&
+      !strcmp(poe.me, "Grub"));
+    T(poe_line(&poe, poee, "2026/11/26 12:00:01 1 abc [INFO Client 1] : Grub (Marauder) is now level 5", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Level 5"));
+    T(poe_line(&poe, poee, "2026/11/26 12:00:02 1 abc [INFO Client 1] : Grub has been slain.", false, m, 8) == 1 && !strcmp(m[0].note, "Death"));
+    T(poe_line(&poe, poee, "2026/11/26 12:00:03 1 abc [INFO Client 1] : Grubby has been slain.", false, m, 8) == 0);
+    T(poe_line(&poe, poee, "2026/11/26 12:00:04 1 abc [INFO Client 1] : #Grub: has been slain.", false, m, 8) == 0);
+
+    // Team Fortress 2's console.log
+    u32 tfe = AM_GAMES[AMG_TF2].events;
+    Tf2Seen tf = {};
+    str_set(tf.me, "Pyro Main");
+    T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower.", false, m, 8) == 1 && !strcmp(m[0].note, "Kill"));
+    T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower. (crit)", false, m, 8) == 1);
+    T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Main with scattergun.", false, m, 8) == 1 && !strcmp(m[0].note, "Death"));
+    T(tf2_line(&tf, tfe, "Pyro Main suicided.", false, m, 8) == 1 && !strcmp(m[0].note, "Death"));
+    T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Mainer with scattergun.", false, m, 8) == 0);
+    T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower.", true, m, 8) == 0);
+
+    // autoexec.cfg: Rekodr's line in and out, the player's lines as they were
+    char ax[512];
+    T(tf2_autoexec("", true, ax, sizeof ax) > 0 && !strcmp(ax, "con_logfile console.log // " APP_NAME " reads it for markers\n"));
+    T(tf2_autoexec(ax, false, ax + 256, 256) == 0);
+    const char *own = "bind f \"say hi\"\r\nfov_desired 90";
+    tf2_autoexec(own, true, ax, sizeof ax);
+    T(!strncmp(ax, "bind f \"say hi\"\r\nfov_desired 90\ncon_logfile", 43));
+    char back[512];
+    tf2_autoexec(ax, true, back, sizeof back);
+    T(!strcmp(ax, back)); // on twice: one line
+    tf2_autoexec(ax, false, back, sizeof back);
+    T(!strcmp(back, "bind f \"say hi\"\r\nfov_desired 90\n"));
 }
 
 // Binary KeyValues, as Steam writes them, for the achievement tests.
