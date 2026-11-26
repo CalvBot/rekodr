@@ -5157,7 +5157,7 @@ static void test_plugins()
     for (const char *b : bad_events) T(!plugin_manifest_parse("x", b, &p) && p.why[0]);
     // The sample plugin in docs reads
     {
-        char *sample = read_file(L"..\\docs\\examples\\log-markers\\plugin.txt", 0);
+        char *sample = read_file(test_repo_file(L"docs\\examples\\log-markers\\plugin.txt").s, 0);
         T(sample && plugin_manifest_parse("log-markers", sample, &p) && !strcmp(p.game, "mygame.exe") &&
           p.events == (AM_KILL | AM_DEATH | AM_WIN));
         free(sample);
