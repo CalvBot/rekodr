@@ -471,9 +471,13 @@ static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *
         mc_death_detail(d, rest);
         if (events & AM_DEATH) am_push(out, cap, &n, AM_DEATH, 1, "Death", false, d);
     } else if ((events & AM_KILL) && am_word(rest, s->me)) {
+        char said[256], weapon[96] = "";
+        mc_death_detail(said, rest); // the weapon the victim's message names is the player's
+        marker_detail_get(said, "weapon", weapon, sizeof weapon);
         snprintf(victim, sizeof victim, "%.*s", (int)(sp - c), c);
         str_set(d, "");
         marker_detail_add(d, "target", victim);
+        marker_detail_add(d, "weapon", weapon);
         am_push(out, cap, &n, AM_KILL, 4, "Kill", false, d);
     }
     return n;
@@ -523,13 +527,23 @@ static i32 tf2_line(Tf2Seen *s, u32 events, const char *line, bool old, AutoMark
     }
     const char *with = strstr(line, " with ");
     if (!with) return 0;
+    char weapon[64], who[64], d[256] = "";
+    snprintf(weapon, sizeof weapon, "%s", with + 6);
+    if (char *dot = strchr(weapon, '.')) *dot = 0;
     if (starts && !strncmp(line + me, " killed ", 8)) {
-        if (events & AM_KILL) am_push(out, cap, &n, AM_KILL, 4, "Kill");
+        snprintf(who, sizeof who, "%.*s", (int)(with - (line + me + 8)), line + me + 8);
+        marker_detail_add(d, "target", who);
+        marker_detail_add(d, "weapon", weapon);
+        if (events & AM_KILL) am_push(out, cap, &n, AM_KILL, 4, "Kill", false, d);
         return n;
     }
     const char *k = strstr(line, " killed ");
-    if (k && k < with && (size_t)(with - (k + 8)) == me && !strncmp(k + 8, s->me, me) && (events & AM_DEATH))
-        am_push(out, cap, &n, AM_DEATH, 1, "Death");
+    if (k && k < with && (size_t)(with - (k + 8)) == me && !strncmp(k + 8, s->me, me) && (events & AM_DEATH)) {
+        snprintf(who, sizeof who, "%.*s", (int)(k - line), line);
+        marker_detail_add(d, "killer", who);
+        marker_detail_add(d, "weapon", weapon);
+        am_push(out, cap, &n, AM_DEATH, 1, "Death", false, d);
+    }
     return n;
 }
 
@@ -1724,7 +1738,11 @@ static void am_put(const AutoMark *marks, i32 n, i32 game)
                 markers_colour_set(t, m.colour);
                 if (g_am.last_end[game] > t) markers_colour_set(g_am.last_end[game], m.colour);
             }
-        } else if (m.amend && *last_kill) markers_set(*last_kill, m.colour, m.note);
+        } else if (m.amend && *last_kill) { // a kill that turns out to be a multi-kill
+            markers_set(*last_kill, m.colour, m.note);
+            for (i32 b = 0; b < COUNT(AM_EVENT_WORDS); b++)
+                if (m.event == 1u << b) markers_detail_put(*last_kill, "event", AM_EVENT_WORDS[b]);
+        }
         else if (!m.amend) {
             char d[256];
             marker_detail_event(d, m.event, m.detail);

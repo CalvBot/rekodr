@@ -3856,6 +3856,8 @@ static void test_automarks()
     T(mc_line(&mc, mce, "[12:00:04] [Render thread/INFO]: [System] [CHAT] Alex has made the advancement [Stone Age]", false, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:05] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steve", false, m, 8) == 1 && !strcmp(m[0].note, "Kill") &&
       !strcmp(m[0].detail, "target=Alex"));
+    T(mc_line(&mc, mce, "[12:00:05] [Render thread/INFO]: [System] [CHAT] Alex was slain by Steve using [Netherite Sword]", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "target=Alex;weapon=Netherite Sword") && evi_weapon_class("Netherite Sword") == EVI_MELEE);
     T(mc_line(&mc, mce, "[12:00:06] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steven", false, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:07] [Render thread/INFO]: [System] [CHAT] <Alex> Steve was slain by me", false, m, 8) == 0);
     T(mc_line(&mc, AM_KILL, "[12:00:08] [Render thread/INFO]: [System] [CHAT] Steve drowned", false, m, 8) == 0);
@@ -3876,8 +3878,11 @@ static void test_automarks()
     Tf2Seen tf = {};
     str_set(tf.me, "Pyro Main");
     T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower.", false, m, 8) == 1 && !strcmp(m[0].note, "Kill"));
-    T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower. (crit)", false, m, 8) == 1);
-    T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Main with scattergun.", false, m, 8) == 1 && !strcmp(m[0].note, "Death"));
+    T(!strcmp(m[0].detail, "target=Scout Guy;weapon=flamethrower"));
+    T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with sniperrifle. (crit)", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "target=Scout Guy;weapon=sniperrifle"));
+    T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Main with scattergun.", false, m, 8) == 1 && !strcmp(m[0].note, "Death") &&
+      !strcmp(m[0].detail, "killer=Scout Guy;weapon=scattergun"));
     T(tf2_line(&tf, tfe, "Pyro Main suicided.", false, m, 8) == 1 && !strcmp(m[0].note, "Death"));
     T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Mainer with scattergun.", false, m, 8) == 0);
     T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower.", true, m, 8) == 0);
@@ -4609,6 +4614,27 @@ static void test_event_icons()
     T(evi_of_marker("achievement=ACH_1;name=First") == EVI_ACHIEVEMENT);
     T(evi_of_marker("") == EVI_NONE && evi_of_marker("event=frag") == EVI_NONE && evi_of_marker("map=Customs") == EVI_NONE);
     T(evi_weapon_class("usp_silencer") == EVI_PISTOL && evi_weapon_class("mag7") == EVI_SHOTGUN);
+    // Team Fortress 2's kill icon names
+    struct { const char *w; EvIcon i; } kinds[] = {
+        {"scattergun", EVI_SHOTGUN}, {"shotgun_soldier", EVI_SHOTGUN}, {"tf_projectile_rocket", EVI_LAUNCHER},
+        {"tf_projectile_pipe_remote", EVI_LAUNCHER}, {"sniperrifle", EVI_SNIPER}, {"minigun", EVI_LMG}, {"smg", EVI_SMG},
+        {"pistol_scout", EVI_PISTOL}, {"revolver", EVI_PISTOL}, {"knife", EVI_MELEE}, {"bat", EVI_MELEE},
+        {"fireaxe", EVI_MELEE}, {"wrench", EVI_MELEE}, {"flamethrower", EVI_NONE}, {"combat", EVI_NONE},
+        // Rust's combat log (".entity" taken off)
+        {"ak47u", EVI_RIFLE}, {"lr300", EVI_RIFLE}, {"semi_auto_rifle", EVI_RIFLE}, {"bolt_rifle", EVI_SNIPER},
+        {"l96", EVI_SNIPER}, {"m39", EVI_RIFLE}, {"mp5", EVI_SMG}, {"thompson", EVI_SMG}, {"m249", EVI_LMG},
+        {"hmlmg", EVI_LMG}, {"spas12", EVI_SHOTGUN}, {"shotgun_waterpipe", EVI_SHOTGUN}, {"pistol_eoka", EVI_SHOTGUN},
+        {"python", EVI_PISTOL}, {"m92", EVI_PISTOL}, {"pistol_semiauto", EVI_PISTOL}, {"rocket_basic", EVI_LAUNCHER},
+        {"grenade.f1", EVI_GRENADE}, {"grenade.beancan", EVI_GRENADE}, {"knife_bone", EVI_MELEE}, {"rock", EVI_MELEE},
+        {"salvaged_cleaver", EVI_MELEE}, {"mace", EVI_MELEE},
+        // Star Citizen's weapon classes
+        {"behr_rifle_ballistic_01", EVI_RIFLE}, {"klwe_pistol_energy_01", EVI_PISTOL}, {"gmni_lmg_energy_01", EVI_LMG},
+        {"behr_sniper_ballistic_01", EVI_SNIPER}, {"ksar_shotgun_energy_01", EVI_SHOTGUN}, {"klwe_smg_energy_01", EVI_SMG},
+        {"behr_glauncher_ballistic_01", EVI_LAUNCHER},
+    };
+    for (auto &k : kinds) {
+        T(evi_weapon_class(k.w) == k.i);
+    }
     T(evi_weapon_class("hegrenade") == EVI_GRENADE && evi_weapon_class("mp9") == EVI_SMG);
     T(evi_weapon_class("AK-74N") == EVI_RIFLE && evi_weapon_class("Mosin rifle (infantry)") == EVI_SNIPER);
     T(evi_weapon_class("Makarov PM") == EVI_PISTOL && evi_weapon_class("MP-133 12ga shotgun") == EVI_SHOTGUN);
