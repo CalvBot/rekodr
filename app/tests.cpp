@@ -2626,10 +2626,10 @@ static void test_r2()
     T(strstr(html, "<input id=\"vl\" type=\"range\" min=\"0\" max=\"1\"") && strstr(html, "v.volume=+this.value"));
     // Download (in the accent), Copy link, and "via Rekodr" linking to the project, after the name; no game line
     // without one
-    T(strstr(html, "<a class=\"btn p\" href=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" download>"));
+    T(strstr(html, "<a class=\"btn p ib\" href=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" download aria-label=\"Download\">"));
     T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/rekodr\"><svg viewBox=\"0 0 607 607\"") &&
       strstr(html, "</svg>via <b>Rekodr</b></a>") && !strstr(html, "emojis/1575548227070201897"));
-    T(strstr(html, "Copy link") && !strstr(html, "class=\"game\""));
+    T(strstr(html, "aria-label=\"Copy link\"") && !strstr(html, "class=\"game\""));
     // the accent, in the CSS and as the theme colour: the default, or the one picked
     T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)") &&
       strstr(html, "<meta name=\"theme-color\" content=\"#00897b\">"));
@@ -2661,9 +2661,11 @@ static void test_r2()
     // A page marker: its icon from the detail (a kill by its weapon's class, a headshot), the weapon after the note
     char me[400];
     r2_mark_entry(9.862, "Kill", "event=kill;weapon=MP-133 12ga shotgun;name=Someone", me, sizeof me);
-    T(!strcmp(me, "9.862 shotgun Kill: MP-133 12ga shotgun"));
+    T(!strcmp(me, "9.862 shotgun MP-133 12ga shotgun kill"));
     r2_mark_entry(1, "Headshot", "event=kill;area=head;weapon=ak47", me, sizeof me);
-    T(!strcmp(me, "1.000 headshot Headshot: ak47"));
+    T(!strcmp(me, "1.000 headshot ak47 headshot"));
+    r2_mark_entry(1, "MPX kill on Scav", "event=kill;weapon=MPX;side=Scav", me, sizeof me);
+    T(!strcmp(me, "1.000 smg MPX kill on Scav"));
     r2_mark_entry(2, "Kill (AK-74N)", "event=kill;weapon=AK-74N", me, sizeof me);
     T(!strcmp(me, "2.000 assault-rifle Kill (AK-74N)"));
     r2_mark_entry(3, "", "", me, sizeof me);

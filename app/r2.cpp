@@ -975,12 +975,15 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         ".via{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--dim);text-decoration:none;"
         "justify-self:start}"
         ".via b{color:var(--fg);font-weight:600}.via:hover b{color:var(--accent)}"
-        ".acts{display:flex;gap:10px;flex-wrap:wrap}"
+        ".acts{display:flex;gap:10px}"
         ".btn{font:inherit;font-size:15px;font-weight:600;color:var(--fg);background:var(--raised);border:0;"
         "border-radius:999px;height:42px;padding:0 20px;box-sizing:border-box;cursor:pointer;display:inline-flex;"
         "gap:8px;align-items:center;text-decoration:none;white-space:nowrap}"
         ".btn:hover{background:var(--hover)}.btn.p{background:var(--accent);color:var(--ink)}"
         ".btn.p:hover{background:var(--hot)}.btn svg{width:18px;height:18px}"
+        ".btn.ib{width:42px;padding:0;justify-content:center;position:relative}.btn.ib svg{width:20px;height:20px}"
+        ".said{position:absolute;bottom:calc(100% + 8px);right:0;background:var(--raised);color:var(--fg);"
+        "font-size:13px;padding:4px 10px;border-radius:999px;white-space:nowrap;pointer-events:none}"
         "button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
         "p{margin:0;color:var(--dim)}"
         "@media(pointer:coarse){.lane{height:30px}.ev{top:2px;width:26px;height:26px;margin-left:-13px}"
@@ -992,7 +995,12 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         ".ctrl{padding:2px 8px 6px}#fb,#ff,.spd,.vol input{display:none}.vol{flex:none;min-width:0}"
         ".ic{width:44px;height:44px}.time{margin:0 0 0 6px;font-size:13px}"
         ".pill{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:6px}#fs{margin-left:auto}"
-        ".acts{width:100%}.acts .btn{flex:1;justify-content:center;padding:0 12px}}"
+        ".info{flex-wrap:nowrap}.info>:first-child{flex:1 1 0}}"
+        // A short screen (a phone on its side): the video leaves room for the controls only, the rest scrolls
+        "@media(max-height:500px){:root{--room:130px}body{padding-top:0}.player{border-radius:0 0 10px 10px}}"
+        // Full screen: the video takes what the controls leave
+        ".player.full{display:flex;flex-direction:column;width:100%;height:100%;border-radius:0}"
+        ".player.full .view{flex:1;min-height:0;max-height:none;width:100%;aspect-ratio:auto!important}"
         "</style>\n"
         "</head><body>\n",
         p, out, cap, &len);
@@ -1056,13 +1064,14 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     if (paused) r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
     r2_page_put("</div><div class=\"acts\">", p, out, cap, &len);
     if (!paused)
-        r2_page_put("<a class=\"btn p\" href=\"%V\" download><svg viewBox=\"0 0 24 24\"><path d=\"M11 3h2v10l4-4 1.4 "
-                    "1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg>Download</a>"
-                    "<button class=\"btn\" id=\"cp\" type=\"button\"><svg viewBox=\"0 0 24 24\"><path d=\"M10.6 "
+        r2_page_put("<a class=\"btn p ib\" href=\"%V\" download aria-label=\"Download\"><svg viewBox=\"0 0 24 24\" "
+                    "aria-hidden=\"true\"><path d=\"M11 3h2v10l4-4 1.4 1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg></a>"
+                    "<button class=\"btn ib\" id=\"cp\" type=\"button\" aria-label=\"Copy link\"><svg viewBox=\"0 0 24 24\" "
+                    "aria-hidden=\"true\"><path d=\"M10.6 "
                     "13.4a1 1 0 0 1 0-1.4l3.5-3.5a1 1 0 1 1 1.4 1.4L12 13.4a1 1 0 0 1-1.4 0zM7.1 20.5a4 4 0 0 "
                     "1-2.8-6.8l2.8-2.8 1.4 1.4-2.8 2.8a2 2 0 1 0 2.8 2.8l2.8-2.8 1.4 1.4-2.8 2.8a4 4 0 0 1-2.8 "
                     "1.2zM16.9 13.1l-1.4-1.4 2.8-2.8a2 2 0 1 0-2.8-2.8l-2.8 2.8-1.4-1.4 2.8-2.8a4 4 0 0 1 5.6 "
-                    "5.6z\"/></svg><span id=\"cl\">Copy link</span></button>",
+                    "5.6z\"/></svg><span class=\"said\" id=\"cl\" role=\"status\" hidden></span></button>",
                     p, out, cap, &len);
     // the via line: Rekodr's mono logo (assets/icons/rekodr-logo.svg) in the text's colour
     r2_page_put("</div></div>\n<a class=\"via\" href=\"" R2_HOME_URL "\"><svg viewBox=\"0 0 607 607\" aria-hidden=\"true\">"
@@ -1202,10 +1211,12 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             "function mute(){if(v.muted||!v.volume){v.muted=false;if(!v.volume)v.volume=1}else v.muted=true}"
             "$('mu').onclick=mute;$('vl').oninput=function(){v.volume=+this.value;v.muted=!v.volume;ui()};"
             "$('fs').onclick=function(){if(document.fullscreenElement)document.exitFullscreen();"
-            "else if(pl.requestFullscreen)pl.requestFullscreen()};"
+            "else if(pl.requestFullscreen)pl.requestFullscreen();else if(v.webkitEnterFullscreen)v.webkitEnterFullscreen()};"
+            "document.addEventListener('fullscreenchange',function(){pl.classList.toggle('full',"
+            "document.fullscreenElement==pl);zoom();lay()});"
             "$('cp').onclick=function(){var u=location.href.split('#')[0],t=Math.floor(v.currentTime);"
-            "if(t>0)u+='#t='+t;function said(s){$('cl').textContent=s;setTimeout(function(){"
-            "$('cl').textContent='Copy link'},1500)}"
+            "if(t>0)u+='#t='+t;function said(s){var c=$('cl');c.textContent=s;c.hidden=false;clearTimeout(c.q);"
+            "c.q=setTimeout(function(){c.hidden=true},1500)}"
             "if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){said(t>0?'Copied at '+clock(t):"
             "'Copied')},function(){prompt('Link',u)});else prompt('Link',u)};"
             "document.addEventListener('keydown',function(e){var k=e.key,b=e.target.tagName=='BUTTON';"
@@ -2216,14 +2227,16 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
 }
 
 // One of a page's markers: "<seconds> <icon> <label>", the icon the marker's evi_key ("-" for none), the label its
-// note ("Marker" for none) then ": <weapon>" when its detail names a weapon the note doesn't ("Kill: MP-133").
+// note ("Marker" for none), led by the weapon when its detail names one the note doesn't ("MP-133 kill").
 static void r2_mark_entry(f64 at, const char *note, const char *detail, char *out, i32 cap)
 {
     char key[32], weapon[64];
     evi_key_of_marker(detail ? detail : "", key, sizeof key);
     const char *label = note && note[0] ? note : "Marker";
     bool armed = detail && marker_detail_get(detail, "weapon", weapon, sizeof weapon) && weapon[0] && !strstr(label, weapon);
-    snprintf(out, cap, "%.3f %s %s%s%s", at, key[0] ? key : "-", label, armed ? ": " : "", armed ? weapon : "");
+    if (armed)
+        snprintf(out, cap, "%.3f %s %s %c%s", at, key[0] ? key : "-", weapon, (char)tolower((u8)label[0]), label + 1);
+    else snprintf(out, cap, "%.3f %s %s", at, key[0] ? key : "-", label);
     for (char *c = out; *c; c++)
         if ((u8)*c < 0x20) *c = ' ';
 }
