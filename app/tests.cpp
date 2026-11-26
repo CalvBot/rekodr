@@ -4635,6 +4635,43 @@ struct TestReplay : TestBytes {
     }
 };
 
+// The Busy layer's count: presses (not a held key's repeats), buttons, wheel notches, and the tenths the mouse moved in
+static void test_busy()
+{
+    BusyCount b = {};
+    RAWINPUT in = {};
+    auto key = [&](USHORT vk, bool up) {
+        in = {};
+        in.header.dwType = RIM_TYPEKEYBOARD;
+        in.data.keyboard.VKey = vk;
+        in.data.keyboard.Flags = up ? RI_KEY_BREAK : RI_KEY_MAKE;
+        busy_feed(&b, in, 0);
+    };
+    auto mouse = [&](USHORT flags, USHORT data, LONG dx, i64 t_us) {
+        in = {};
+        in.header.dwType = RIM_TYPEMOUSE;
+        in.data.mouse.usButtonFlags = flags;
+        in.data.mouse.usButtonData = data;
+        in.data.mouse.lLastX = dx;
+        busy_feed(&b, in, t_us);
+    };
+    T(busy_take(&b) == 0);
+    key('W', false), key('W', false), key('W', false); // held: its repeats aren't presses
+    key('A', false), key('W', true), key('W', false);
+    key(0, false), key(255, false);
+    T(busy_take(&b) == 3);
+    key('A', true);
+    T(busy_take(&b) == 0);
+    mouse(RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_RIGHT_BUTTON_DOWN, 0, 0, 0);
+    mouse(RI_MOUSE_LEFT_BUTTON_UP, 0, 0, 0);
+    mouse(RI_MOUSE_WHEEL, (USHORT)(SHORT)(-3 * WHEEL_DELTA), 0, 0);
+    mouse(RI_MOUSE_WHEEL, 30, 0, 0); // a fine wheel's part notch is one
+    T(busy_take(&b) == 6);
+    mouse(0, 0, 5, 1000000), mouse(0, 0, -2, 1050000), mouse(0, 0, 1, 1250000), mouse(0, 0, 0, 1500000);
+    T(busy_take(&b) == 2);
+    T(busy_take(&b) == 0);
+}
+
 static void test_fn_replay()
 {
     static TestReplay f;
@@ -5363,6 +5400,7 @@ int main()
     test_layers();
     test_r6_replay();
     test_fn_replay();
+    test_busy();
     test_plugins();
     test_lanes();
     test_share();

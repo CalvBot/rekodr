@@ -1843,6 +1843,32 @@ static void tl_draw_value(const TlCanvas &c, const Layer &l, f32 y, f32 h, f32 s
     }
 }
 
+// The busy bar's colour for a second's value: near black for nothing, then the value line's colours up to red
+static u32 tl_busy_colour(f64 v)
+{
+    if (v <= 0) return 0x2a2d31;
+    return tl_value_colour(0.15 + 0.85 * ImClamp(v / BUSY_HI, 0.0, 1.0));
+}
+
+// The Busy layer as a bar filling the band, each column the busiest second in it. A column with no second of its
+// own (not recorded then) is left empty. Returns the value under `mouse_x` in `*hover` (NAN when none there).
+static void tl_draw_busy(const TlCanvas &c, const Layer &l, f32 y, f32 h, f32 s, f32 mouse_x, f64 *hover)
+{
+    *hover = NAN;
+    f32 wstep = floorf(2 * s) > 1 ? floorf(2 * s) : 1;
+    i32 i = 0;
+    for (f32 x = c.x0; x < c.x1; x += wstep) {
+        i64 a = tl_t(c, x), z = tl_t(c, x + wstep);
+        while (i < l.count && l.s[i].t_us + TL_SEC <= a) i++;
+        f64 most = NAN;
+        for (i32 j = i; j < l.count && l.s[j].t_us < z; j++)
+            if (isnan(most) || l.s[j].value > most) most = l.s[j].value;
+        if (isnan(most)) continue;
+        c.dl->AddRectFilled(ImVec2(x, y + 2 * s), ImVec2(ImMin(x + wstep, c.x1), y + h - 2 * s), col32(tl_busy_colour(most)));
+        if (mouse_x >= x && mouse_x < x + wstep) *hover = most;
+    }
+}
+
 // The stretches of a Spans or Text layer in view. Spans switches under LAYER_STEADY_US are left out.
 static i32 tl_data_runs(const Layer &l, const TlCanvas &c, i64 open_end, LayerRun *out, i32 cap)
 {
@@ -2599,7 +2625,8 @@ static void screen_timeline()
         f32 mouse_x = k == data_hit && bar_hovered ? io.MousePos.x : -1e9f;
         if (l->kind == LAYER_VALUE) {
             f64 v;
-            tl_draw_value(c, *l, y, h, s, mouse_x, &v);
+            if (!strcmp(l->name, BUSY_LAYER)) tl_draw_busy(c, *l, y, h, s, mouse_x, &v);
+            else tl_draw_value(c, *l, y, h, s, mouse_x, &v);
             if (!isnan(v)) snprintf(data_pin, sizeof data_pin, "%s  %.0f %s", head.label, v, head.unit);
         } else {
             static LayerRun runs[512];

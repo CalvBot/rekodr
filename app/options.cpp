@@ -4306,6 +4306,13 @@ static void options_integrations()
         log_line("options: front window %s", c.front_window ? "on" : "off");
         options_apply(0);
     }
+    if (opt_row_toggle("Busy", "How busy your keys and mouse are, as a bar on the timeline", "##busy", &c.input_busy)) {
+        log_line("options: busy %s", c.input_busy ? "on" : "off");
+        if (c.input_busy && !word_list_has(c.timeline_show, BUSY_LAYER))
+            word_list_toggle(c.timeline_show, sizeof c.timeline_show, BUSY_LAYER);
+        options_apply(0);
+        busy_apply();
+    }
     for (i32 i = 0; i < g_plugins.count; i++) {
         Plugin &p = g_plugins.p[i];
         char sub[160] = "";
