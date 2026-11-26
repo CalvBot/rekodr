@@ -3926,8 +3926,9 @@ static void test_automarks()
         T(app("LocationLoaded:12.5 real:13.1 diff:0.6") == 0);
         T(app("GameStarting:") == 0);
         T(app("GameStarted:60.69(0) real:61.02 diff:0.33") == 1 && !strcmp(em[0].note, "Raid start (Interchange)") && em[0].colour == 5);
-        T(!strcmp(em[0].detail, "map=Interchange;mode=PvE"));
-        T(line("EFT.LocalPlayer:OnGameSessionEnd(ExitStatus, Single, String, String)") == 1 && !strcmp(em[0].note, "Raid end"));
+        T(!strcmp(em[0].detail, "map=Interchange;mode=PvE;span=raid"));
+        T(line("EFT.LocalPlayer:OnGameSessionEnd(ExitStatus, Single, String, String)") == 1 && !strcmp(em[0].note, "Raid end") &&
+          !strcmp(em[0].detail, "span_end=raid"));
         T(line("2026-10-11 11:30:00.000|1.2.0.0.47965|Info|backend|---> Request HTTPS, id [1001]: URL: https://x/client/match/local/end. ") == 0); // the same end
         T(line("2026-10-11 11:30:01.000|1.2.0.0.47965|Info|backend|<--- Response HTTPS, id [1001]: URL: https://x/client/match/local/end") == 0);
 
@@ -3975,7 +3976,7 @@ static void test_automarks()
         T(out("GameTimer utcNow:11/26/2026 19:37:30 start:11/26/2026 19:37:30 escape:11/26/2026 20:07:30 PastTime:00:00:00 stop:01/01/0001 00:00:00 (startTime:, sessionTime:)") == 0);
         T(line("EFT.GameTimer:Start(Nullable`1, Nullable`1)") == 0);
         T(out("application|GameStarted:43.51(0) real:58.51(0) diff:15") == 1 && !strcmp(em[0].note, "Raid start (Ground Zero, 30 min)"));
-        T(!strcmp(em[0].detail, "map=Ground Zero;mode=PvE;time left=30 min"));
+        T(!strcmp(em[0].detail, "map=Ground Zero;mode=PvE;time left=30 min;span=raid"));
         T(es.minutes == 0); // the next raid reads its own
         T(line("2026-11-27 03:43:14.662|1.3.5.0.48914|Info|output|backend|---> Request HTTPS, id [78]: URL: https://gw-pve.escapefromtarkov.com/client/quest/complete. ") == 0);
         T(line("2026-11-27 03:43:16.259|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [78]: URL: https://gw-pve.escapefromtarkov.com/client/quest/complete, DownloadSeconds: 1.572, ParseSeconds: 0.024, SumSeconds: 1.596, ") == 1 &&
@@ -4003,7 +4004,7 @@ static void test_automarks()
         T(pvp("application|TRACE-NetworkGameCreate profileStatus: 'Profileid: <id>, Status: Busy, RaidMode: Online, Ip: <ip>, Port: <port>, Location: factory4_day, Sid: <sid>, GameMode: deathmatch, shortId: <id>'") == 0);
         T(pvp("GameTimer utcNow:11/26/2026 20:05:07 start:11/26/2026 19:58:38 escape:11/26/2026 20:18:38 PastTime:00:06:28.38 stop:01/01/0001 00:00:00 (startTime:, sessionTime:00:20:00)") == 0);
         T(pvp("application|GameStarted:92.06(92.06) real:92.10(92.10) diff:0.04") == 1 && !strcmp(em[0].note, "Raid start (Factory, 14 min)"));
-        T(!strcmp(em[0].detail, "map=Factory;mode=PvP;time left=14 min"));
+        T(!strcmp(em[0].detail, "map=Factory;mode=PvP;time left=14 min;span=raid"));
         T(pvp("backend|WebSocketSharp - binary message received: type=Notification, id=<id>, payloadType=userMatchOver, payloadLength=396") == 1 && !strcmp(em[0].note, "Raid end"));
         T(pvp("output|Connection.Disconnect() TransportId:0 address:<ip> Reason:Stop game") == 0);
         T(pvp("output|DevLog FinishScavSession") == 1 && !strcmp(em[0].note, "Scav raid") && !strcmp(em[0].detail, "side=Scav") && em[0].colour == 5);
@@ -4284,6 +4285,41 @@ static void test_house_flipper_2()
     T(hf2_line(&s, ev, "CaptureAllPhotos for: C:\\Users\\x\\AppData\\LocalLow\\Frozen District\\House Flipper 2/Profiles/1/Jobs/1-4 Jack went to Japan@20261115_150554.house",
                false, m, 8) == 1 && !strcmp(m[0].detail, "job=Jack went to Japan"));
     T(hf2_line(&s, ev, "Collapsed Log: CaptureAllPhotos for: E:\\x\\Houses\\3-8 Old dream.house", true, m, 8) == 0);
+}
+
+// Bands between paired markers: to the end, else to where the game stopped being played, the next start, the cap
+static void test_marker_spans()
+{
+    const i64 T0 = 1000000000000ll, M = 60 * 1000000ll;
+    Marker start = {}, after[3] = {};
+    start.t_us = T0;
+    str_set(start.detail, "map=Customs;span=raid");
+    ActivityEntry act[3] = {};
+    act[0].us = T0 - 10 * M, str_set(act[0].exe, "escapefromtarkov.exe");
+    act[1].us = T0 + 50 * M; // the game closed
+    act[2].us = T0 + 60 * M, str_set(act[2].exe, "escapefromtarkov.exe");
+    i64 z = 0;
+    // An end, with other markers between
+    after[0].t_us = T0 + 5 * M, str_set(after[0].detail, "killer=x");
+    after[1].t_us = T0 + 30 * M, str_set(after[1].detail, "span_end=raid");
+    T(tl_marker_span(start, after, 2, act, 3, T0 + 100 * M, &z) && z == T0 + 30 * M);
+    // No end: cut where the game closed, and never past now
+    T(tl_marker_span(start, after, 1, act, 3, T0 + 100 * M, &z) && z == T0 + 50 * M);
+    T(tl_marker_span(start, after, 1, act, 3, T0 + 20 * M, &z) && z == T0 + 20 * M);
+    // The game still played: to now, at most the cap
+    T(tl_marker_span(start, after, 1, act, 1, T0 + 20 * M, &z) && z == T0 + 20 * M);
+    T(tl_marker_span(start, after, 1, act, 1, T0 + TL_SPAN_MAX_US * 2, &z) && z == T0 + TL_SPAN_MAX_US);
+    // The next start of its kind ends it; another kind's end doesn't
+    after[1].t_us = T0 + 40 * M, str_set(after[1].detail, "span_end=match");
+    after[2].t_us = T0 + 45 * M, str_set(after[2].detail, "span=raid");
+    T(tl_marker_span(start, after, 3, act, 1, T0 + 100 * M, &z) && z == T0 + 45 * M);
+    // No game known: only an end makes a band
+    after[1].t_us = T0 + 30 * M, str_set(after[1].detail, "span_end=raid");
+    T(!tl_marker_span(start, after, 1, 0, 0, T0 + 100 * M, &z));
+    T(tl_marker_span(start, after, 2, 0, 0, T0 + 100 * M, &z) && z == T0 + 30 * M);
+    // Not a start
+    str_set(start.detail, "map=Customs");
+    T(!tl_marker_span(start, after, 2, act, 3, T0 + 100 * M, &z));
 }
 
 // Star Citizen's Game.log: lines in the shapes public trackers read, with neutral names
@@ -6257,6 +6293,7 @@ int main()
     test_automarks();
     test_rust();
     test_star_citizen();
+    test_marker_spans();
     test_house_flipper_2();
     test_am_pc();
     test_achievements();

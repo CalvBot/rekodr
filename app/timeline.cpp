@@ -1948,6 +1948,42 @@ static void tl_pin(ImDrawList *dl, ImVec2 mouse, f32 s, const char *text)
 }
 
 static bool marker_detail_next(const char **at, char *key, i32 key_cap, char *value, i32 value_cap); // markers.cpp
+static bool marker_detail_get(const char *d, const char *key, char *out, i32 cap);                  // markers.cpp
+static const i64 TL_SPAN_MAX_US = 4 * 3600 * 1000000ll; // the longest a band between paired markers is drawn
+
+// Where a span that starts at a paired marker ends. The start's detail says span=<kind>, its end's span_end=<kind>
+// (`after`: the markers after it, oldest first). With no end, it stops where the game played at its start stopped
+// being played (activity), at the next start of its kind, or after TL_SPAN_MAX_US, whichever is first; one whose
+// game isn't known stops only at an end. Never past `now`. False when it isn't a span or has no length.
+static bool tl_marker_span(const Marker &start, const Marker *after, i32 n, const ActivityEntry *activity, i32 activity_count,
+                           i64 now, i64 *end)
+{
+    char kind[32], k[32];
+    if (!marker_detail_get(start.detail, "span", kind, sizeof kind) || !kind[0]) return false;
+    i64 a = start.t_us, z = a + TL_SPAN_MAX_US;
+    bool ended = false;
+    for (i32 j = 0; j < n; j++) {
+        if (after[j].t_us <= a) continue;
+        bool fin = marker_detail_get(after[j].detail, "span_end", k, sizeof k) && !strcmp(k, kind);
+        bool again = marker_detail_get(after[j].detail, "span", k, sizeof k) && !strcmp(k, kind);
+        if (fin || again) {
+            if (after[j].t_us < z) z = after[j].t_us, ended = fin;
+            break;
+        }
+    }
+    i64 game_end = 0;
+    for (i32 g = activity_count - 1; g >= 0; g--)
+        if (activity[g].us <= a) {
+            if (activity[g].exe[0]) game_end = g + 1 < activity_count ? activity[g + 1].us : now;
+            break;
+        }
+    if (game_end && game_end < z) z = game_end;
+    else if (!game_end && !ended) return false;
+    if (z > now) z = now;
+    if (z <= a) return false;
+    *end = z;
+    return true;
+}
 static void open_url(const char *url); // setup.cpp
 
 // What a marker's detail key is called in its popup.
@@ -2849,6 +2885,25 @@ static void screen_timeline()
         }
     }
 
+    // Spans between paired markers (a raid's start and end): a see-through band on the ruler, behind the diamonds,
+    // in the start's colour.
+    {
+        static Marker around[1024], after[256];
+        i32 nn = markers_in(c.start - TL_SPAN_MAX_US, view_end, around, COUNT(around));
+        f32 r = 4.5f * s, cy = y_ruler + ruler_h - r - 1 * s;
+        for (i32 i = 0; i < nn; i++) {
+            char kind[32];
+            if (!marker_detail_get(around[i].detail, "span", kind, sizeof kind) || !kind[0]) continue;
+            i64 a = around[i].t_us, z = 0;
+            i32 later = markers_in(a + 1, a + TL_SPAN_MAX_US, after, COUNT(after));
+            if (!tl_marker_span(around[i], after, later, b.activity, b.activity_count, now, &z)) continue;
+            if (z < c.start || a > view_end) continue;
+            u32 rgb = MARKER_COLOURS[around[i].colour < COUNT(MARKER_COLOURS) ? around[i].colour : 0].rgb;
+            f32 xa = ImMax(tl_x(c, a), c.x0), xb = ImMin(tl_x(c, z), c.x1);
+            if (xb - xa >= 1) dl->AddRectFilled(ImVec2(xa, cy - r), ImVec2(xb, cy + r), col32(rgb, 0.3f), r);
+        }
+    }
+
     // Markers: a diamond on the ruler in the marker's colour (the playhead's is a white triangle), bigger when picked
     // or under the mouse. The line down through the tracks shows only while the mouse is on it.
     for (i32 i = 0; i < mark_count; i++) {
@@ -3014,7 +3069,8 @@ static void screen_timeline()
                 else if (!strcmp(k, "app")) str_set(app, v);
                 else if (!strcmp(k, "player")) str_set(player, v);
                 if (!strcmp(k, "steam_id") || !strcmp(k, "app") || !strcmp(k, "player") || !strcmp(k, "achievement") ||
-                    !strcmp(k, "name") || !strcmp(k, "icon") || !strcmp(k, "local"))
+                    !strcmp(k, "name") || !strcmp(k, "icon") || !strcmp(k, "local") || !strcmp(k, "span") ||
+                    !strcmp(k, "span_end"))
                     continue;
                 for (char *ch = v; *ch; ch++)
                     if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker")) *ch = ' ';

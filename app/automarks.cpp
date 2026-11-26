@@ -526,7 +526,7 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
         if (!s->in_raid) return;
         s->in_raid = false;
         s->after = true;
-        if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, 5, "Raid end");
+        if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, 5, "Raid end", false, "span_end=raid");
     };
     if (const char *g = strstr(line, "Got notification | ")) {
         g += 19;
@@ -570,6 +570,7 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
             marker_detail_add(detail, "map", s->map);
             marker_detail_add(detail, "mode", s->mode);
             marker_detail_add(detail, "time left", left);
+            marker_detail_add(detail, "span", "raid");
             am_push(out, cap, &n, 5, note, false, detail);
         }
         s->minutes = 0;
