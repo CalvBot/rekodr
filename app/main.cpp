@@ -193,6 +193,8 @@ static void run_command(const char *text)
             } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
         }
         ui_wake();
+    } else if (!strcmp(cmd, "gsi-dump")) {
+        automarks_gsi_dump();
     } else if (!strcmp(cmd, "quit")) {
         g_app.quitting = true;
         PostQuitMessage(0);

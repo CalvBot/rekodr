@@ -49,7 +49,8 @@ struct AmGsi {
     bool make_dir;
     const char *const *data;
 };
-static const char *const AM_CS2_DATA[] = {"provider", "map", "round", "player_id", "player_state", "player_match_stats", 0};
+static const char *const AM_CS2_DATA[] = {"provider", "map", "round", "player_id", "player_state", "player_weapons",
+                                          "player_match_stats", 0};
 static const char *const AM_DOTA_DATA[] = {"provider", "map", "player", 0};
 static const AmGsi AM_GSI[] = {
     {AMG_CS2, 730, L"Counter-Strike Global Offensive", L"game\\csgo\\cfg", false, AM_CS2_DATA},
@@ -78,12 +79,19 @@ static void am_push(AutoMark *out, i32 cap, i32 *n, u8 colour, const char *note,
 // ---------------------------------------------------------------------------------------------------------------
 // Counter-Strike 2: what one state says, against the one before
 
+// What the last states said. A state may leave a part out: what it leaves out stays as it was.
 struct Cs2Seen {
-    bool have;      // a match's state is known (false in the menus)
+    bool have;        // a match's state is known (false in the menus)
     char map[64];
-    i32  kills, deaths;
-    char round[16]; // round.phase: live, over, freezetime
-    char phase[16]; // map.phase: warmup, live, intermission, gameover
+    i32  kills, deaths, assists, mvps, score; // player.match_stats
+    i32  round_kills, round_hs; // player.state: this round's kills, and those by headshot
+    bool c4, c4_gone; // the player carries the bomb; they stopped carrying it in the last state
+    char weapon[32];  // the weapon in hand, without its "weapon_"
+    char team[8];     // player.team: CT or T
+    i32  health;
+    char round[16];   // round.phase: live, over, freezetime
+    char bomb[16];    // round.bomb: planted, exploded, defused, or ""
+    char phase[16];   // map.phase: warmup, live, intermission, gameover
 };
 
 static const char *am_kill_note(i32 in_a_row, bool league)
@@ -98,12 +106,29 @@ static const char *am_kill_note(i32 in_a_row, bool league)
     }
 }
 
-// The markers a state brings, of the AmEvent bits in `events`. A kill that is the second or later of its round is a
-// multi-kill: with AM_MULTI it is marked as one (Double kill, Ace), with only AM_KILL as a plain Kill. A state about
-// another player (the one being watched after a death) changes nothing.
+// Whether a state has a part at `path`, of any kind.
+static bool j_has(const char *body, i64 len, const char *path)
+{
+    Json j = {body, body + len};
+    return j_find(&j, path);
+}
+
+// The number at `path`, or `keep` when the state leaves it out.
+static i32 j_int(const char *body, i64 len, const char *path, i32 keep)
+{
+    char v[32];
+    return j_get(body, len, path, v, sizeof v) ? atoi(v) : keep;
+}
+
+// The markers a state brings, of the AmEvent bits in `events`. Each kill is a marker, however many one state brings.
+// A kill that is the second or later of its round is a multi-kill: with AM_MULTI it is marked as one (Double kill,
+// Ace), else as a Headshot (with AM_HEADSHOT, when round_killhs went up with it) or a Kill. Its detail holds the
+// weapon in hand and, for a headshot, area=head. The bomb is the player's plant when they stopped carrying it as it
+// was planted, or when their score went up then without a kill or assist; a defuse is theirs when they are a live
+// CT whose score went up so. A state about another player (the one being watched after a death) changes nothing.
 static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
 {
-    char me[32], player[32], map[64], v[32];
+    char me[32], player[32], map[64];
     if (!j_get(body, len, "map.name", map, sizeof map)) {
         s->have = false;
         return 0;
@@ -111,39 +136,82 @@ static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark
     if (!j_get(body, len, "provider.steamid", me, sizeof me) || !j_get(body, len, "player.steamid", player, sizeof player) ||
         strcmp(me, player))
         return 0;
-    if (!j_get(body, len, "player.match_stats.kills", v, sizeof v)) return 0;
-    i32 kills = atoi(v);
-    i32 deaths = j_get(body, len, "player.match_stats.deaths", v, sizeof v) ? atoi(v) : 0;
-    char round[16] = "", phase[16] = "", team[8] = "", win[8] = "";
-    j_get(body, len, "round.phase", round, sizeof round);
-    j_get(body, len, "map.phase", phase, sizeof phase);
-    j_get(body, len, "player.team", team, sizeof team);
+    bool same = s->have && !strcmp(s->map, map);
+    Cs2Seen was = *s;
+    if (!same) was = {};
+    Cs2Seen now = was;
+    now.kills = j_int(body, len, "player.match_stats.kills", was.kills);
+    now.deaths = j_int(body, len, "player.match_stats.deaths", was.deaths);
+    now.assists = j_int(body, len, "player.match_stats.assists", was.assists);
+    now.mvps = j_int(body, len, "player.match_stats.mvps", was.mvps);
+    now.score = j_int(body, len, "player.match_stats.score", was.score);
+    now.round_kills = j_int(body, len, "player.state.round_kills", was.round_kills);
+    now.round_hs = j_int(body, len, "player.state.round_killhs", was.round_hs);
+    now.health = j_int(body, len, "player.state.health", was.health);
+    char got[16];
+    if (j_get(body, len, "player.team", got, sizeof got)) str_set(now.team, got);
+    if (j_has(body, len, "player.weapons")) {
+        now.c4 = false;
+        now.weapon[0] = 0;
+        for (i32 i = 0; i < 16; i++) {
+            char path[48], name[48], state[16];
+            snprintf(path, sizeof path, "player.weapons.weapon_%d.name", i);
+            if (!j_get(body, len, path, name, sizeof name)) continue;
+            snprintf(path, sizeof path, "player.weapons.weapon_%d.state", i);
+            if (!strcmp(name, "weapon_c4")) now.c4 = true;
+            if (j_get(body, len, path, state, sizeof state) && strcmp(state, "holstered"))
+                str_set(now.weapon, starts_with(name, "weapon_") ? name + 7 : name);
+        }
+    }
+    now.c4_gone = was.c4 && !now.c4;
+    if (j_has(body, len, "round")) {
+        now.round[0] = now.bomb[0] = 0;
+        j_get(body, len, "round.phase", now.round, sizeof now.round);
+        j_get(body, len, "round.bomb", now.bomb, sizeof now.bomb);
+    }
+    if (j_get(body, len, "map.phase", got, sizeof got)) str_set(now.phase, got);
+    char win[8] = "";
     j_get(body, len, "round.win_team", win, sizeof win);
 
     i32 n = 0;
-    if (s->have && !strcmp(s->map, map) && strcmp(phase, "warmup")) {
-        if (kills > s->kills) {
-            i32 in_round = j_get(body, len, "player.state.round_kills", v, sizeof v) ? atoi(v) : 1;
-            bool multi = in_round >= 2 && (events & AM_MULTI);
-            if (multi || (events & AM_KILL)) am_push(out, cap, &n, 4, am_kill_note(multi ? in_round : 1, false));
+    if (same && strcmp(now.phase, "warmup")) {
+        i32 k = now.kills - was.kills;
+        k = k < 0 ? 0 : k > 5 ? 5 : k;
+        // Headshots among them: round_killhs starts again at 0 with each round, as round_kills does
+        i32 hs = now.round_kills < was.round_kills ? now.round_hs : now.round_hs - was.round_hs;
+        hs = hs < 0 ? 0 : hs > k ? k : hs;
+        for (i32 i = 0; i < k; i++) {
+            i32 in_round = now.round_kills - (k - 1 - i);
+            bool head = i >= k - hs;
+            bool multi = in_round >= 2 && (events & AM_MULTI), shot = head && (events & AM_HEADSHOT);
+            if (!multi && !shot && !(events & AM_KILL)) continue;
+            char detail[256] = "";
+            marker_detail_add(detail, "weapon", now.weapon);
+            if (head) marker_detail_add(detail, "area", "head");
+            am_push(out, cap, &n, 4, multi ? am_kill_note(in_round, false) : shot ? "Headshot" : "Kill", false, detail);
         }
-        if (deaths > s->deaths && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
+        if (now.deaths > was.deaths && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
+        if (now.mvps > was.mvps && (events & AM_MVP)) am_push(out, cap, &n, 3, "MVP");
+        bool scored = now.score > was.score && now.kills == was.kills && now.assists == was.assists;
+        if (!strcmp(now.bomb, "planted") && strcmp(was.bomb, "planted") && (events & AM_PLANT) &&
+            (now.c4_gone || was.c4_gone || (scored && !strcmp(now.team, "T"))))
+            am_push(out, cap, &n, 5, "Bomb planted");
+        if (!strcmp(now.bomb, "defused") && strcmp(was.bomb, "defused") && (events & AM_DEFUSE) && scored &&
+            !strcmp(now.team, "CT") && now.health > 0)
+            am_push(out, cap, &n, 5, "Bomb defused");
         bool match_won = false;
-        if (!strcmp(phase, "gameover") && strcmp(s->phase, "gameover") && team[0]) {
-            i32 ct = j_get(body, len, "map.team_ct.score", v, sizeof v) ? atoi(v) : 0;
-            i32 t = j_get(body, len, "map.team_t.score", v, sizeof v) ? atoi(v) : 0;
-            match_won = !strcmp(team, "CT") ? ct > t : t > ct;
+        if (!strcmp(now.phase, "gameover") && strcmp(was.phase, "gameover") && now.team[0]) {
+            i32 ct = j_int(body, len, "map.team_ct.score", 0), t = j_int(body, len, "map.team_t.score", 0);
+            match_won = !strcmp(now.team, "CT") ? ct > t : t > ct;
             if (match_won && (events & AM_WIN)) am_push(out, cap, &n, 3, "Match won");
         }
-        if (!(match_won && (events & AM_WIN)) && (events & AM_ROUND) && !strcmp(round, "over") && strcmp(s->round, "over") && team[0] && !strcmp(win, team))
+        if (!(match_won && (events & AM_WIN)) && (events & AM_ROUND) && !strcmp(now.round, "over") && strcmp(was.round, "over") &&
+            now.team[0] && !strcmp(win, now.team))
             am_push(out, cap, &n, 3, "Round won");
     }
-    s->have = true;
-    str_set(s->map, map);
-    s->kills = kills;
-    s->deaths = deaths;
-    str_set(s->round, round);
-    str_set(s->phase, phase);
+    now.have = true;
+    str_set(now.map, map);
+    *s = now;
     return n;
 }
 
@@ -1046,17 +1114,18 @@ static bool gsi_cfg_path(const AmGsi &g, Path *out)
     return true;
 }
 
-// A cfg file's text, with the token the game sends back so the listener knows the state is the game's.
+// A cfg file's text, with the token the game sends back so the listener knows the state is the game's. ASCII, no
+// byte order mark. The heartbeat also sets how soon the game sends the player's state on joining a match.
 static i32 gsi_cfg_text(const AmGsi &g, const char *token, char *out, i32 cap)
 {
     i32 n = snprintf(out, cap,
                      "\"" APP_NAME "\"\n"
                      "{\n"
                      "    \"uri\"       \"http://127.0.0.1:%u/\"\n"
-                     "    \"timeout\"   \"1.0\"\n"
-                     "    \"buffer\"    \"0.0\"\n"
+                     "    \"timeout\"   \"1.1\"\n"
+                     "    \"buffer\"    \"0.1\"\n"
                      "    \"throttle\"  \"0.1\"\n"
-                     "    \"heartbeat\" \"30.0\"\n"
+                     "    \"heartbeat\" \"5.0\"\n"
                      "    \"auth\"\n"
                      "    {\n"
                      "        \"token\" \"%s\"\n"
@@ -1543,6 +1612,7 @@ static struct {
     volatile LONG state[AMG_COUNT];  // AmState (app.h), for Options
     bool gsi_applied[AMG_COUNT];     // whether automarks_apply last left the game's cfg file written
     char token[40];                  // the cfg files' token
+    volatile i64 gsi_dump_until;     // until then each state a game sends is kept in gsi-dump.txt ("gsi-dump")
     Cs2Seen cs2;
     DotaSeen dota;
     LolSeen lol;
@@ -1590,6 +1660,25 @@ static void am_put(const AutoMark *marks, i32 n, i32 game)
     if (n) event_post(Event{}); // the timeline shows it
 }
 
+// A state as it came, at the end of gsi-dump.txt in local_dir, after a line with the time.
+static void am_gsi_dump(const char *body, i32 len)
+{
+    Path p = path_join(g_app.paths.local_dir, L"gsi-dump.txt");
+    FILE *f = _wfopen(p.s, L"ab");
+    if (!f) return;
+    fprintf(f, "--- %lld\n", (long long)now_us());
+    fwrite(body, 1, (size_t)len, f);
+    fputs("\n", f);
+    fclose(f);
+}
+
+// The pipe's "gsi-dump": the states games send in the next ten minutes, kept as they come (am_gsi_dump).
+static void automarks_gsi_dump()
+{
+    g_am.gsi_dump_until = now_us() + 600000000;
+    log_line("markers: keeping game states in gsi-dump.txt for ten minutes");
+}
+
 // One POST from a game: the request is read, answered and the state looked at. provider.appid says whose it is.
 static void am_gsi_client(SOCKET c)
 {
@@ -1629,7 +1718,8 @@ static void am_gsi_client(SOCKET c)
     char token[64], app[16];
     if (!j_get(body, body_len, "auth.token", token, sizeof token) || strcmp(token, g_am.token)) return;
     if (!j_get(body, body_len, "provider.appid", app, sizeof app)) return;
-    AutoMark marks[8];
+    if (now_us() < g_am.gsi_dump_until) am_gsi_dump(body, body_len);
+    AutoMark marks[16];
     for (i32 i = 0; i < COUNT(AM_GSI); i++) {
         const AmGsi &g = AM_GSI[i];
         u32 events = g_am.events[g.game];

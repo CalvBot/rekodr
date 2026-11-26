@@ -3648,6 +3648,55 @@ static void test_automarks()
     T(cs2_feed(&e, "7656", "live", "live", "", 3, 1, 0, 1, 0, m, AM_ROUND) == 0);
     T(cs2_feed(&e, "7656", "gameover", "over", "CT", 3, 1, 0, 13, 0, m, AM_ROUND) == 1 && !strcmp(m[0].note, "Round won"));
 
+    // Headshots, the weapon, MVPs and the bomb, from a fuller state; a kill each, however many one state brings
+    auto cs2 = [](Cs2Seen *s, const char *team, i32 kills, i32 assists, i32 mvps, i32 score, i32 rk, i32 rhs, i32 health,
+                  const char *weapons, const char *bomb, AutoMark *out, u32 events = AM_GAMES[AMG_CS2].events) {
+        char body[2048];
+        snprintf(body, sizeof body,
+                 "{\"provider\":{\"appid\":730,\"steamid\":\"7656\"},\"map\":{\"name\":\"de_inferno\",\"phase\":\"live\"},"
+                 "\"round\":{\"phase\":\"live\"%s%s%s},"
+                 "\"player\":{\"steamid\":\"7656\",\"team\":\"%s\",\"state\":{\"health\":%d,\"round_kills\":%d,\"round_killhs\":%d},"
+                 "\"weapons\":{%s},\"match_stats\":{\"kills\":%d,\"assists\":%d,\"deaths\":0,\"mvps\":%d,\"score\":%d}},"
+                 "\"previously\":{\"player\":{\"match_stats\":{\"kills\":0}}}}",
+                 bomb[0] ? ",\"bomb\":\"" : "", bomb, bomb[0] ? "\"" : "", team, health, rk, rhs, weapons, kills, assists, mvps, score);
+        return cs2_marks(s, events, body, (i64)strlen(body), out, 16);
+    };
+    const char *ak = "\"weapon_0\":{\"name\":\"weapon_knife\",\"state\":\"holstered\"},\"weapon_1\":{\"name\":\"weapon_ak47\",\"state\":\"active\"}";
+    const char *ak_c4 = "\"weapon_0\":{\"name\":\"weapon_ak47\",\"state\":\"holstered\"},\"weapon_1\":{\"name\":\"weapon_c4\",\"state\":\"active\"}";
+    char dv[64];
+    Cs2Seen h = {};
+    T(cs2(&h, "T", 5, 0, 0, 10, 0, 0, 100, ak, "", m) == 0);
+    T(cs2(&h, "T", 7, 0, 0, 14, 2, 1, 100, ak, "", m) == 2 && !strcmp(m[0].note, "Kill") && !strcmp(m[1].note, "Double kill"));
+    T(marker_detail_get(m[0].detail, "weapon", dv, sizeof dv) && !strcmp(dv, "ak47") && !marker_detail_get(m[0].detail, "area", dv, sizeof dv));
+    T(marker_detail_get(m[1].detail, "area", dv, sizeof dv) && !strcmp(dv, "head"));
+    Cs2Seen h2 = {};
+    T(cs2(&h2, "T", 0, 0, 0, 0, 0, 0, 100, ak, "", m) == 0);
+    T(cs2(&h2, "T", 1, 0, 0, 2, 1, 1, 100, ak, "", m) == 1 && !strcmp(m[0].note, "Headshot"));
+    T(cs2(&h2, "T", 2, 0, 0, 4, 2, 2, 100, ak, "", m, AM_HEADSHOT) == 1 && !strcmp(m[0].note, "Headshot")); // no multi tick
+    T(cs2(&h2, "T", 3, 0, 0, 6, 3, 2, 100, ak, "", m, AM_HEADSHOT) == 0); // not a headshot, no kill tick
+    T(cs2(&h2, "T", 3, 0, 1, 6, 3, 2, 100, ak, "", m) == 1 && m[0].colour == 3 && !strcmp(m[0].note, "MVP"));
+    // A partial state leaves its match_stats out: nothing changes
+    const char *part = "{\"provider\":{\"steamid\":\"7656\"},\"map\":{\"name\":\"de_inferno\",\"phase\":\"live\"},"
+                       "\"player\":{\"steamid\":\"7656\",\"state\":{\"health\":90}}}";
+    T(cs2_marks(&h2, AM_GAMES[AMG_CS2].events, part, (i64)strlen(part), m, 16) == 0 && h2.kills == 3 && h2.mvps == 1);
+    T(cs2(&h2, "T", 4, 0, 1, 8, 4, 2, 100, ak, "", m) == 1 && !strcmp(m[0].note, "Quad kill"));
+    // The bomb: planted as the player stops carrying it; a teammate's plant isn't theirs
+    Cs2Seen bp = {};
+    T(cs2(&bp, "T", 0, 0, 0, 0, 0, 0, 100, ak_c4, "", m) == 0);
+    T(cs2(&bp, "T", 0, 0, 0, 0, 0, 0, 100, ak, "planted", m) == 1 && m[0].colour == 5 && !strcmp(m[0].note, "Bomb planted"));
+    T(cs2(&bp, "T", 0, 0, 0, 0, 0, 0, 100, ak, "planted", m) == 0);
+    Cs2Seen bp2 = {};
+    T(cs2(&bp2, "T", 0, 0, 0, 0, 0, 0, 100, ak, "", m) == 0);
+    T(cs2(&bp2, "T", 0, 0, 0, 0, 0, 0, 100, ak, "planted", m) == 0);
+    // Defused by the player: a live CT whose score went up without a kill; not when someone else defuses
+    Cs2Seen d = {};
+    T(cs2(&d, "CT", 1, 0, 0, 2, 0, 0, 40, ak, "planted", m) == 0);
+    T(cs2(&d, "CT", 1, 0, 0, 2, 0, 0, 40, ak, "defused", m) == 0);
+    Cs2Seen d2 = {};
+    T(cs2(&d2, "CT", 1, 0, 0, 2, 0, 0, 40, ak, "planted", m) == 0);
+    T(cs2(&d2, "CT", 1, 0, 0, 4, 0, 0, 40, ak, "defused", m) == 1 && !strcmp(m[0].note, "Bomb defused"));
+    T(cs2(&d2, "CT", 1, 0, 0, 4, 0, 0, 40, ak, "defused", m, AM_KILL) == 0);
+
     LolSeen l = {};
     str_set(l.me, "Sam#EUW");
     const char *start = "{\"Events\":[{\"EventID\":0,\"EventName\":\"GameStart\",\"EventTime\":0.02}]}";
@@ -3687,7 +3736,7 @@ static void test_automarks()
 
     char cfg[2048];
     gsi_cfg_text(AM_GSI[0], "abc123", cfg, sizeof cfg);
-    T(strstr(cfg, "\"uri\"       \"http://127.0.0.1:29771/\"") && strstr(cfg, "\"token\" \"abc123\"") && strstr(cfg, "\"player_match_stats\" \"1\"") &&
+    T(strstr(cfg, "\"uri\"       \"http://127.0.0.1:29771/\"") && strstr(cfg, "\"token\" \"abc123\"") && strstr(cfg, "\"player_match_stats\" \"1\"") && strstr(cfg, "\"player_weapons\" \"1\"") && strstr(cfg, "\"heartbeat\" \"5.0\"") &&
       !strcmp(cfg + strlen(cfg) - 8, "    }\n}\n"));
     gsi_cfg_text(AM_GSI[1], "abc123", cfg, sizeof cfg);
     T(AM_GSI[1].game == AMG_DOTA2 && strstr(cfg, "\"player\" \"1\"") && !strstr(cfg, "\"round\""));

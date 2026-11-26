@@ -4391,7 +4391,8 @@ static void options_automarks()
     static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists",
                                          "Advancements", "Level-ups", "Best laps", "Overtakes", "Incidents", "Goals", "Saves",
                                          "Raid starts", "Raid ends", "Quests done", "Group joins", "Downs",
-                                         "Contracts taken", "Zones", "Jumps", "Spawns", "Server joins", "Playing as"};
+                                         "Contracts taken", "Zones", "Jumps", "Spawns", "Server joins", "Playing as",
+                                         "Headshots", "MVPs", "Bomb plants", "Bomb defuses"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
     // The tick grid: one column width for every label a card can show, from where a top-level card's body starts
     {
@@ -4403,11 +4404,17 @@ static void options_automarks()
         g_am_grid_w = cw + dp(28);
         g_am_grid_x = ImGui::GetCursorScreenPos().x + dp(AM_PAD) + dp(28) + dp(AM_ART_W) + dp(14);
     }
+    // The order a game's ticks show in: each event by its kin (Headshots after Multi-kills, a round's MVP and the
+    // bomb before round wins), else in bit order
+    static const u8 AM_TICK_ORDER[] = {0, 1, 25, 2, 26, 27, 28, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                                       19, 20, 21, 22, 23, 24};
+    static_assert(COUNT(AM_TICK_ORDER) == COUNT(labels), "a place for each tick");
     auto game_row = [&](i32 g, bool dim) {
         const AmGame &game = AM_GAMES[g];
         AmChoice choices[COUNT(labels)];
         i32 n = 0, ticked = 0;
-        for (i32 i = 0; i < COUNT(labels); i++) {
+        for (i32 o = 0; o < COUNT(labels); o++) {
+            i32 i = AM_TICK_ORDER[o];
             if (!(game.events & (1u << i))) continue;
             const char *l = labels[i];
             if ((1u << i) == AM_WIN && (game.events & AM_ROUND)) l = "Match wins";
