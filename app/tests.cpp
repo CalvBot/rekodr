@@ -1179,10 +1179,13 @@ static void test_sessions_other_game()
     s = session_new("javaw.exe", "javaw", t, t + 600000000ll);
     sessions_game_renamed("javaw.exe", false);
     T(s->state == SES_OPEN && !strcmp(s->name, "Puzzle Pirates"));
-    // A java that is no game (Prism's Java check) once the game's name is gone: its session ends, none starts
+    // A java not yet told apart (no name, no description: Rekodr just started, Prism's Java check): the session
+    // keeps the game's name and no "Javaw" session starts
     str_set(c.apps[0].desc.s, "");
     sessions_game_renamed("javaw.exe", true);
-    T(s->state == SES_ASKING);
+    sessions_game_renamed("javaw.exe", false);
+    T(s->state == SES_OPEN && !strcmp(s->name, "Puzzle Pirates"));
+    s->state = SES_ASKING;
     sessions_observe(t + 1200000000ll, "javaw.exe");
     open = 0;
     for (const Session &o : ss.items) open += o.state == SES_OPEN;

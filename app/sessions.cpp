@@ -640,6 +640,9 @@ static void sessions_tick()
 // session ends where it was, and the next look at what's played starts one for the new game.
 static void sessions_game_renamed(const char *exe, bool other_game)
 {
+    // No name and no description: only its file name is known (a java not yet told apart). Its sessions keep theirs.
+    const AppInfo *a = sessions_app(exe);
+    if (a && !a->name.s[0] && !a->desc.s[0]) return;
     Sessions &ss = g_app.sessions;
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         Session *s = &ss.items[i];
