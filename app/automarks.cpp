@@ -464,42 +464,29 @@ static i32 hs_line(HsSeen *s, u32 events, const char *line, bool old, AutoMark *
 
 // Escape from Tarkov's output log, each line "<date> <time>|<version>|<level>|output|<message>", some followed by
 // lines of JSON or of a stack trace. It holds every line of the game's other logs too, in order, as
-// "...|output|<channel>|<message>", so it is the only one read. Kills, deaths and extracts aren't logged. A raid's
-// map: application's "scene preset path:maps/<scene>.bundle" as it loads, then "TRACE-NetworkGameCreate ...
-// Location: <map>, ..." once a server holds it (online raids only); its length: "GameTimer ... start:<utc>
-// escape:<utc>". "GameStarted:" starts it. It ends at the first of the OnGameSessionEnd stack line or "Reason:Stop
-// game", backend's /client/match/local/end (PvE) and the "UserMatchOver" notification. A quest done: backend's
-// response to /client/quest/complete, or a "ChatMessageReceived" notification whose JSON has a templateId "<id>
-// successMessageText"; one quest may say both, so each answers one of the other within EFT_QUEST_SAME_US. A group
-// joined: "GroupMatchInviteAccept", someone taking the player's invite.
-static const i64 EFT_QUEST_SAME_US = 60ll * 1000000;
-
+// "...|output|<channel>|<message>", so it is the only one read. Kills, deaths and extracts aren't logged. The mode:
+// "Session mode: Pve" or "Session mode: Regular" (PvP). A raid's map: application's "scene preset
+// path:maps/<scene>.bundle" as it loads, then "TRACE-NetworkGameCreate ... Location: <map>, ..." once a server holds
+// it (online raids only); its time left: "GameTimer utcNow:<utc> ... escape:<utc>" (less than the whole raid for a
+// Scav who joins late). "GameStarted:" starts it. It ends at the first of the OnGameSessionEnd stack line, "Reason:Stop
+// game", backend's /client/match/local/end (PvE), the "UserMatchOver" notification and the "payloadType=userMatchOver"
+// WebSocket message (PvP). After a Scav raid the game says "FinishScavSession" and asks for
+// /client/game/profile/savage/regenerate. A quest done: backend's response to /client/quest/complete (a chat message
+// about a quest may be a reward mail, so it marks nothing). A group joined: "GroupMatchInviteAccept", someone taking
+// the player's invite.
 struct EftSeen {
-    char map[32];       // the raid's map, "" if not known
-    i32  minutes;       // the raid's length from its GameTimer, 0 if not known
-    bool in_raid;       // started and not ended
-    bool chat;          // in a ChatMessageReceived notification's JSON
-    bool quest_said;    // and its quest is marked
-    i64  t_us;          // the last dated line's time
-    i32  quest_owed[2]; // quests marked from the backend [0] or a chat message [1] that the other may still say
-    i64  quest_at[2];   // when the last of each was marked
+    char map[32];   // the raid's map, "" if not known
+    char mode[4];   // "PvE" or "PvP", "" if not known
+    i32  minutes;   // the raid's time left from its GameTimer, 0 if not known
+    bool in_raid;   // started and not ended
+    bool after;     // the raid has ended and isn't known to be a Scav's yet
 };
 
-// A line's date and time ("2026-11-27 03:43:16.259|"), 0 if it has none.
-static i64 eft_time(const char *line)
-{
-    int y, mo, d, h, mi, se, ms;
-    if (sscanf(line, "%4d-%2d-%2d %2d:%2d:%2d.%3d", &y, &mo, &d, &h, &mi, &se, &ms) != 7) return 0;
-    SYSTEMTIME st = {(WORD)y, (WORD)mo, 0, (WORD)d, (WORD)h, (WORD)mi, (WORD)se, (WORD)ms};
-    FILETIME ft;
-    return SystemTimeToFileTime(&st, &ft) ? filetime_to_us(ft) : 0;
-}
-
-// A raid's length in minutes from its GameTimer line's "start:<M/D/Y h:m:s> escape:<M/D/Y h:m:s>"; 0 if it
-// isn't there or isn't 1 to 300 minutes.
+// The minutes left in a raid from its GameTimer line's "utcNow:<M/D/Y h:m:s> ... escape:<M/D/Y h:m:s>"; 0 if they
+// aren't there or aren't 1 to 300 minutes.
 static i32 eft_raid_minutes(const char *line)
 {
-    const char *a = strstr(line, " start:"), *b = strstr(line, " escape:");
+    const char *a = strstr(line, "utcNow:"), *b = strstr(line, " escape:");
     int m1, d1, y1, h1, n1, s1, m2, d2, y2, h2, n2, s2;
     if (!a || !b || sscanf(a + 7, "%d/%d/%d %d:%d:%d", &m1, &d1, &y1, &h1, &n1, &s1) != 6 ||
         sscanf(b + 8, "%d/%d/%d %d:%d:%d", &m2, &d2, &y2, &h2, &n2, &s2) != 6)
@@ -533,50 +520,32 @@ static const char *eft_map(const char *id, size_t len)
 static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
 {
     i32 n = 0;
-    if (i64 t = eft_time(line)) s->t_us = t;
     auto end = [&]() {
         if (!s->in_raid) return;
         s->in_raid = false;
+        s->after = true;
         if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, 5, "Raid end");
     };
     if (const char *g = strstr(line, "Got notification | ")) {
         g += 19;
-        s->chat = !strncmp(g, "ChatMessageReceived", 19);
-        s->quest_said = false;
         if (!strncmp(g, "GroupMatchInviteAccept", 22) && !old && (events & AM_GROUP)) am_push(out, cap, &n, 6, "Group joined");
         if (!strncmp(g, "UserMatchOver", 13)) end();
         return n;
     }
-    // A quest done, from the backend (from = 0) or a chat message (1): marked unless the other said it just now.
-    auto quest = [&](i32 from) {
-        i32 other = !from;
-        if (s->quest_owed[other] > 0 && s->t_us - s->quest_at[other] <= EFT_QUEST_SAME_US) {
-            s->quest_owed[other]--;
-            return;
-        }
-        s->quest_owed[other] = 0;
-        if (s->t_us - s->quest_at[from] > EFT_QUEST_SAME_US) s->quest_owed[from] = 0;
-        s->quest_owed[from]++;
-        s->quest_at[from] = s->t_us;
-        if (!old && (events & AM_QUEST)) am_push(out, cap, &n, 3, "Quest done");
-    };
     bool head = isdigit((u8)line[0]) && isdigit((u8)line[3]) && line[4] == '-';
     if (!head) { // a line of JSON or of a stack trace
-        if (s->chat && !s->quest_said && strstr(line, " successMessageText\"")) {
-            s->quest_said = true;
-            quest(1);
-        }
         if (strstr(line, "OnGameSessionEnd(")) end();
         return n;
     }
-    if (strstr(line, "|push-notifications|")) s->chat = false;
     if (const char *p = strstr(line, "|scene preset path:maps/")) {
         p += 24;
         size_t l = strcspn(p, ". ");
         const char *m = eft_map(p, l);
         str_set(s->map, m ? m : "");
         s->minutes = 0;
-        s->in_raid = false;
+        s->in_raid = s->after = false;
+    } else if (const char *sm = strstr(line, "|Session mode: ")) {
+        str_set(s->mode, !strncmp(sm + 15, "Pve", 3) ? "PvE" : !strncmp(sm + 15, "Regular", 7) ? "PvP" : "");
     } else if (strstr(line, "|TRACE-NetworkGameCreate ")) {
         if (const char *at = strstr(line, "Location: ")) {
             at += 10;
@@ -588,19 +557,30 @@ static i32 eft_line(EftSeen *s, u32 events, const char *line, bool old, AutoMark
         if (i32 m = eft_raid_minutes(line)) s->minutes = m;
     } else if (strstr(line, "|GameStarted:")) {
         s->in_raid = true;
+        s->after = false;
         if (!old && (events & AM_RAID_START)) {
-            char note[64];
+            char note[64], left[16] = "", detail[256] = "";
             if (s->map[0] && s->minutes) snprintf(note, sizeof note, "Raid start (%s, %d min)", s->map, s->minutes);
             else if (s->map[0]) snprintf(note, sizeof note, "Raid start (%s)", s->map);
             else if (s->minutes) snprintf(note, sizeof note, "Raid start (%d min)", s->minutes);
             else str_set(note, "Raid start");
-            am_push(out, cap, &n, 5, note);
+            if (s->minutes) snprintf(left, sizeof left, "%d min", s->minutes);
+            marker_detail_add(detail, "map", s->map);
+            marker_detail_add(detail, "mode", s->mode);
+            marker_detail_add(detail, "time left", left);
+            am_push(out, cap, &n, 5, note, false, detail);
         }
         s->minutes = 0;
-    } else if (strstr(line, "Reason:Stop game") || strstr(line, "/client/match/local/end")) {
+    } else if (strstr(line, "Reason:Stop game") || strstr(line, "/client/match/local/end") ||
+               strstr(line, "payloadType=userMatchOver")) {
         end();
+    } else if (strstr(line, "FinishScavSession") || strstr(line, "/client/game/profile/savage/regenerate")) {
+        if (s->after) {
+            s->after = false;
+            if (!old && (events & AM_RAID_END)) am_push(out, cap, &n, 5, "Scav raid", false, "side=Scav");
+        }
     } else if (strstr(line, "|<--- Response HTTPS, id [") && strstr(line, "/client/quest/complete")) {
-        quest(0);
+        if (!old && (events & AM_QUEST)) am_push(out, cap, &n, 3, "Quest done");
     }
     return n;
 }

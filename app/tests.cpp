@@ -3899,8 +3899,8 @@ static void test_automarks()
         T(rl_port("[Other]\nPort=1\n") == 49123);
     }
 
-    // Escape from Tarkov: a raid's start with its map, its end said once, quests finished and group joins, from
-    // lines in the shape of the game's logs
+    // Escape from Tarkov: a raid's start with its map, mode and time left, its end said once, a Scav raid, quests
+    // finished and group joins, from lines in the shape of the game's logs
     {
         EftSeen es = {};
         AutoMark em[4];
@@ -3912,12 +3912,13 @@ static void test_automarks()
             snprintf(b, sizeof b, "%sapplication|%s", pre, msg);
             return line(b, old);
         };
-        T(app("Session mode: Pve") == 0);
+        T(app("Session mode: Pve") == 0 && !strcmp(es.mode, "PvE"));
         T(app("scene preset path:maps/shopping_mall.bundle rcid:shopping_mall.scenespreset.asset") == 0);
         T(!strcmp(es.map, "Interchange"));
         T(app("LocationLoaded:12.5 real:13.1 diff:0.6") == 0);
         T(app("GameStarting:") == 0);
         T(app("GameStarted:60.69(0) real:61.02 diff:0.33") == 1 && !strcmp(em[0].note, "Raid start (Interchange)") && em[0].colour == 5);
+        T(!strcmp(em[0].detail, "map=Interchange;mode=PvE"));
         T(line("EFT.LocalPlayer:OnGameSessionEnd(ExitStatus, Single, String, String)") == 1 && !strcmp(em[0].note, "Raid end"));
         T(line("2026-10-11 11:30:00.000|1.2.0.0.47965|Info|backend|---> Request HTTPS, id [1001]: URL: https://x/client/match/local/end. ") == 0); // the same end
         T(line("2026-10-11 11:30:01.000|1.2.0.0.47965|Info|backend|<--- Response HTTPS, id [1001]: URL: https://x/client/match/local/end") == 0);
@@ -3936,19 +3937,13 @@ static void test_automarks()
         T(app("GameStarted:5.0(0) real:5.0 diff:0", true) == 0 && es.in_raid); // an old line marks nothing
         T(line("2026-10-11 12:30:00.000|1.2.0.0.47965|Info|push-notifications|Got notification | UserMatchOver") == 1);
 
-        // Notifications: a quest finished once per message, a quest started not, a group join
+        // Notifications: a chat message about a quest marks nothing, a group join does
         const char *note = "2026-10-11 12:40:00.000|1.2.0.0.47965|Info|push-notifications|Got notification | ";
         char b[256];
         snprintf(b, sizeof b, "%sChatMessageReceived", note);
         T(line(b) == 0);
-        T(line("{") == 0 && line("  \"type\": 10,") == 0);
-        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b description\",") == 0);
-        T(line(b) == 0);
-        T(line("    \"text\": \"quest finished\",") == 0);
-        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 1 && !strcmp(em[0].note, "Quest done") && em[0].colour == 3);
-        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 0);
-        T(line("2026-10-11 12:41:00.000|1.2.0.0.47965|Info|push-notifications|NotificationManager: something") == 0);
-        T(line("    \"templateId\": \"6a successMessageText\",") == 0); // not in a chat message now
+        T(line("{") == 0 && line("  \"type\": 12,") == 0 && line("    \"text\": \"quest started\",") == 0);
+        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 0); // a reward mail
         snprintf(b, sizeof b, "%sGroupMatchInviteAccept", note);
         T(line(b) == 1 && !strcmp(em[0].note, "Group joined") && em[0].colour == 6);
         T(line(b, true) == 0);
@@ -3958,8 +3953,8 @@ static void test_automarks()
         T(eft_line(&es, AM_RAID_START, "2026-10-11 13:20:00.000|1.2.0.0.47965|Info|output|x Reason:Stop game", false, em, 4) == 0); // its tick off
         T(!es.in_raid);
 
-        // A PvE raid as output_000.log has it: other logs' lines copied in, the length from GameTimer, the quest
-        // done from the backend's answer, and a chat message about the same quest marking nothing more
+        // A PvE raid as output_000.log has it: other logs' lines copied in, the time left from GameTimer, a quest
+        // done from the backend's answer
         es = {};
         const char *o = "2026-11-27 03:36:32.696|1.3.5.0.48914|Info|output|";
         char ob[512];
@@ -3967,24 +3962,45 @@ static void test_automarks()
             snprintf(ob, sizeof ob, "%s%s", o, msg);
             return line(ob);
         };
+        T(out("application|Session mode: Pve") == 0);
         T(out("application|scene preset path:maps/sandbox_start_preset.bundle rcid:Sandbox_SL.ScenesPreset.asset") == 0);
         T(out("GameTimer utcNow:11/26/2026 19:37:30 start:11/26/2026 19:37:30 escape:11/26/2026 20:07:30 PastTime:00:00:00 stop:01/01/0001 00:00:00 (startTime:, sessionTime:)") == 0);
         T(line("EFT.GameTimer:Start(Nullable`1, Nullable`1)") == 0);
         T(out("application|GameStarted:43.51(0) real:58.51(0) diff:15") == 1 && !strcmp(em[0].note, "Raid start (Ground Zero, 30 min)"));
+        T(!strcmp(em[0].detail, "map=Ground Zero;mode=PvE;time left=30 min"));
         T(es.minutes == 0); // the next raid reads its own
         T(line("2026-11-27 03:43:14.662|1.3.5.0.48914|Info|output|backend|---> Request HTTPS, id [78]: URL: https://gw-pve.escapefromtarkov.com/client/quest/complete. ") == 0);
         T(line("2026-11-27 03:43:16.259|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [78]: URL: https://gw-pve.escapefromtarkov.com/client/quest/complete, DownloadSeconds: 1.572, ParseSeconds: 0.024, SumSeconds: 1.596, ") == 1 &&
-          !strcmp(em[0].note, "Quest done"));
+          !strcmp(em[0].note, "Quest done") && em[0].colour == 3);
         T(line("2026-11-27 03:43:20.000|1.3.5.0.48914|Info|output|push-notifications|Got notification | ChatMessageReceived") == 0);
-        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 0); // the same quest
-        T(line("2026-11-27 03:43:30.000|1.3.5.0.48914|Info|output|push-notifications|Got notification | ChatMessageReceived") == 0);
-        T(line("    \"templateId\": \"6a successMessageText\",") == 1); // another
-        T(line("2026-11-27 03:43:31.000|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [80]: URL: https://x/client/quest/complete, ") == 0); // its answer
+        T(line("    \"templateId\": \"5936d90786f7742b1420ba5b successMessageText\",") == 0);
         T(line("2026-11-27 03:50:00.000|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [90]: URL: https://x/client/quest/complete, ") == 1);
-        T(line("2026-11-27 03:52:00.000|1.3.5.0.48914|Info|output|push-notifications|Got notification | ChatMessageReceived") == 0);
-        T(line("    \"templateId\": \"6b successMessageText\",") == 1); // too long after it to be its message
-        T(eft_raid_minutes("GameTimer start:11/26/2026 23:50:00 escape:11/27/2026 00:35:00") == 45);
-        T(eft_raid_minutes("GameTimer start:11/26/2026 19:37:30 escape:11/26/2026 19:37:30") == 0 && eft_raid_minutes("GameTimer x") == 0);
+        T(line("2026-11-27 03:55:00.000|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [91]: URL: https://x/client/match/local/end, ") == 1);
+        T(line("2026-11-27 03:55:05.000|1.3.5.0.48914|Info|output|backend|<--- Response HTTPS, id [92]: URL: https://x/client/game/profile/list, ") == 0);
+        T(out("application|scene preset path:maps/factory_day_preset.bundle rcid:x") == 0); // the next raid loading
+        T(out("backend|---> Request HTTPS, id [93]: URL: https://x/client/game/profile/savage/regenerate. ") == 0); // not after a raid
+        T(eft_raid_minutes("GameTimer utcNow:11/26/2026 23:50:00 start:11/26/2026 23:40:00 escape:11/27/2026 00:35:00") == 45);
+        T(eft_raid_minutes("GameTimer utcNow:11/26/2026 19:37:30 escape:11/26/2026 19:37:30") == 0 && eft_raid_minutes("GameTimer x") == 0);
+
+        // A PvP Scav raid joined late (Calvin's Factory raid, redacted): the time left, not the whole raid; the end
+        // from the WebSocket message, then once from the disconnect; Scav said once after it
+        es = {};
+        const char *v = "2026-11-27 04:01:14.000|1.3.5.0.48914|Info|output|";
+        auto pvp = [&](const char *msg) {
+            snprintf(ob, sizeof ob, "%s%s", v, msg);
+            return line(ob);
+        };
+        T(pvp("application|Session mode: Regular") == 0 && !strcmp(es.mode, "PvP"));
+        T(pvp("application|scene preset path:maps/factory_day_preset.bundle rcid:factory_day.scenespreset.asset") == 0);
+        T(pvp("application|TRACE-NetworkGameCreate profileStatus: 'Profileid: <id>, Status: Busy, RaidMode: Online, Ip: <ip>, Port: <port>, Location: factory4_day, Sid: <sid>, GameMode: deathmatch, shortId: <id>'") == 0);
+        T(pvp("GameTimer utcNow:11/26/2026 20:05:07 start:11/26/2026 19:58:38 escape:11/26/2026 20:18:38 PastTime:00:06:28.38 stop:01/01/0001 00:00:00 (startTime:, sessionTime:00:20:00)") == 0);
+        T(pvp("application|GameStarted:92.06(92.06) real:92.10(92.10) diff:0.04") == 1 && !strcmp(em[0].note, "Raid start (Factory, 14 min)"));
+        T(!strcmp(em[0].detail, "map=Factory;mode=PvP;time left=14 min"));
+        T(pvp("backend|WebSocketSharp - binary message received: type=Notification, id=<id>, payloadType=userMatchOver, payloadLength=396") == 1 && !strcmp(em[0].note, "Raid end"));
+        T(pvp("output|Connection.Disconnect() TransportId:0 address:<ip> Reason:Stop game") == 0);
+        T(pvp("output|DevLog FinishScavSession") == 1 && !strcmp(em[0].note, "Scav raid") && !strcmp(em[0].detail, "side=Scav") && em[0].colour == 5);
+        T(pvp("backend|---> Request HTTPS, id [120]: URL: https://gw-pvp.escapefromtarkov.com/client/game/profile/savage/regenerate. ") == 0);
+        T(pvp("backend|---> Request HTTPS, id [130]: URL: https://gw-pvp.escapefromtarkov.com/client/game/profile/savage/regenerate. ") == 0);
 
         // Only the output log is read, with or without the run's name before it
         T(eft_log_kind("output_000.log") == 0);
