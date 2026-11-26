@@ -4566,6 +4566,58 @@ static void test_fn_replay()
                       "Successfully logged in user. UserId=[123]\n";
     T(fn_log_owner(log, id) && !strcmp(id, "0123456789abcdef0123456789abcdef"));
     T(!fn_log_owner("LogOnline: nothing", id) && !id[0]);
+
+    // The watcher: a finished replay in Demos is read once, even after a restart, and sends the events asked for
+    Path keep = g_app.paths.local_dir, home;
+    wchar_t temp[MAX_PATH], demos[MAX_PATH], logs[MAX_PATH], file[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(home.s, MAX_PATH, L"%srekodr-tests-rp-%lu", temp, GetCurrentProcessId());
+    swprintf(demos, MAX_PATH, L"%s\\Saved\\Demos", home.s);
+    swprintf(logs, MAX_PATH, L"%s\\Saved\\Logs", home.s);
+    SHCreateDirectoryExW(0, demos, 0), SHCreateDirectoryExW(0, logs, 0);
+    g_app.paths.local_dir = home;
+    auto put = [](const wchar_t *path, const void *data, size_t n, i64 ago_us) {
+        FILE *o = _wfopen(path, L"wb");
+        fwrite(data, 1, n, o);
+        fclose(o);
+        HANDLE h = CreateFileW(path, FILE_WRITE_ATTRIBUTES, 0, 0, OPEN_EXISTING, 0, 0);
+        i64 t = (now_us() - ago_us) * 10 + 116444736000000000LL;
+        FILETIME ft = {(DWORD)t, (DWORD)(t >> 32)};
+        SetFileTime(h, 0, 0, &ft), CloseHandle(h);
+    };
+    swprintf(file, MAX_PATH, L"%s\\FortniteGame.log", logs);
+    put(file, log, strlen(log), 0); // the log says whose; its last login is 0123..., then A's below
+    const char *mine = "LogOnline: Successfully logged in user. UserId=[41414141414141414141414141414141]\n";
+    put(file, mine, strlen(mine), 0);
+    swprintf(file, MAX_PATH, L"%s\\done.replay", demos);
+    put(file, f.b, f.n, 3600000000ll);
+    swprintf(file, MAX_PATH, L"%s\\now.replay", demos);
+    put(file, f.b, f.n, 0);
+    swprintf(file, MAX_PATH, L"%s\\old.replay", demos);
+    put(file, f.b, f.n, 40ll * 86400 * 1000000);
+    Event e;
+    while (event_take(&e)) {}
+    auto poll = [&]() {
+        g_rp.next = 0;
+        replays_poll();
+        i32 n = 0;
+        while (event_take(&e)) n += e.kind == EV_MARKER && e.b == 4 && e.a >= start;
+        return n;
+    };
+    g_rp = {};
+    wcscpy_s(g_rp.fn_dir, demos);
+    g_am.events[AMG_FORTNITE] = AM_KILL;
+    T(poll() == 2 && poll() == 0);
+    g_rp.loaded = false; // a restart: replays.tsv says it was read
+    T(poll() == 0);
+    g_am.events[AMG_FORTNITE] = 0;
+    g_rp = {};
+    g_app.paths.local_dir = keep;
+    SHFILEOPSTRUCTW op = {};
+    wchar_t from[MAX_PATH + 1] = {};
+    wcscpy_s(from, home.s);
+    op.wFunc = FO_DELETE, op.pFrom = from, op.fFlags = FOF_NO_UI;
+    SHFileOperationW(&op);
 }
 
 static void test_layers()

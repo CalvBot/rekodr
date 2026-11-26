@@ -243,6 +243,7 @@ static void handle_event(const Event &e)
     case EV_LIBRARY: library_on_event(e); break;
     case EV_TIMELINE: timeline_on_event(e); break;
     case EV_ERASE: timeline_on_erase(e); break;
+    case EV_MARKER: markers_add_late(e.a, (u8)e.b, e.text), ui_wake(); break;
     case EV_GAMEDB: gamedb_on_event(e); break;
     case EV_R2: r2_on_event(e); library_r2_event(); break;
     default: break;

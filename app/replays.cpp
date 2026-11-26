@@ -444,3 +444,233 @@ static bool fn_log_owner(const char *log, char (&out)[40])
     }
     return out[0] != 0;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The watcher. On the auto markers worker (replays_poll, from am_logs_poll), every REPLAYS_EVERY while Fortnite's
+// or Siege's markers are on: each replay finished at least REPLAYS_SETTLE ago and newer than REPLAYS_KEEP is read
+// once, and its marks go to the main thread as EV_MARKER events (a = when, b = colour, text = note). The replays
+// read are kept in <local_dir>\replays.tsv (a key of the path, size and time it was written, and that time), so a
+// restart doesn't mark them again.
+
+static const i64 REPLAYS_EVERY = 30000000;
+static const i64 REPLAYS_SETTLE = 60000000;
+static const i64 REPLAYS_KEEP = 30ll * 86400 * 1000000;
+enum { REPLAYS_SEEN_MAX = 4096 };
+
+struct ReplaySeen { u64 key; i64 written_us; };
+
+static struct {
+    wchar_t fn_dir[MAX_PATH]; // Fortnite's Demos folder; "" while off or not installed (main thread sets it)
+    wchar_t r6_dir[MAX_PATH]; // Siege's MatchReplay folder; the same
+    bool loaded;
+    ReplaySeen seen[REPLAYS_SEEN_MAX];
+    i32 seen_count;
+    i64 next;
+} g_rp;
+
+static u64 replay_key(const wchar_t *path, i64 size, i64 written_us)
+{
+    u64 h = 1469598103934665603ull;
+    for (const wchar_t *c = path; *c; c++) h = (h ^ (u64)towlower(*c)) * 1099511628211ull;
+    h = (h ^ (u64)size) * 1099511628211ull;
+    return (h ^ (u64)written_us) * 1099511628211ull;
+}
+
+static Path replays_seen_path() { return path_join(g_app.paths.local_dir, L"replays.tsv"); }
+
+static void replays_seen_load()
+{
+    g_rp.loaded = true;
+    g_rp.seen_count = 0;
+    char *text = read_file(replays_seen_path().s, 0);
+    if (!text) return;
+    for (char *line = text; *line && g_rp.seen_count < REPLAYS_SEEN_MAX;) {
+        char *end = strchr(line, '\n');
+        if (end) *end = 0;
+        ReplaySeen s = {};
+        if (sscanf(line, "%llx\t%lld", &s.key, &s.written_us) == 2) g_rp.seen[g_rp.seen_count++] = s;
+        if (!end) break;
+        line = end + 1;
+    }
+    free(text);
+}
+
+// Adds a replay read, dropping those older than REPLAYS_KEEP, and writes the list.
+static void replays_seen_add(u64 key, i64 written_us)
+{
+    i64 old = now_us() - REPLAYS_KEEP;
+    i32 n = 0;
+    for (i32 i = 0; i < g_rp.seen_count; i++)
+        if (g_rp.seen[i].written_us >= old) g_rp.seen[n++] = g_rp.seen[i];
+    if (n == REPLAYS_SEEN_MAX) memmove(g_rp.seen, g_rp.seen + 1, sizeof g_rp.seen[0] * --n);
+    g_rp.seen[n++] = {key, written_us};
+    g_rp.seen_count = n;
+    FILE *f = _wfopen(replays_seen_path().s, L"wb");
+    if (!f) return;
+    for (i32 i = 0; i < n; i++) fprintf(f, "%016llx\t%lld\n", g_rp.seen[i].key, g_rp.seen[i].written_us);
+    fclose(f);
+}
+
+static bool replays_seen(u64 key)
+{
+    for (i32 i = 0; i < g_rp.seen_count; i++)
+        if (g_rp.seen[i].key == key) return true;
+    return false;
+}
+
+// A file mapped for reading; the game may still have it open. Replays run to hundreds of MB.
+struct ReplayFile { HANDLE file, map; const u8 *p; size_t len; };
+
+static bool replay_open(const wchar_t *path, ReplayFile *rf)
+{
+    *rf = {INVALID_HANDLE_VALUE, 0, 0, 0};
+    rf->file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, 0);
+    LARGE_INTEGER size = {};
+    if (rf->file == INVALID_HANDLE_VALUE || !GetFileSizeEx(rf->file, &size) || !size.QuadPart) return false;
+    rf->map = CreateFileMappingW(rf->file, 0, PAGE_READONLY, 0, 0, 0);
+    if (rf->map) rf->p = (const u8 *)MapViewOfFile(rf->map, FILE_MAP_READ, 0, 0, 0);
+    rf->len = (size_t)size.QuadPart;
+    return rf->p != 0;
+}
+
+static void replay_close(ReplayFile *rf)
+{
+    if (rf->p) UnmapViewOfFile(rf->p);
+    if (rf->map) CloseHandle(rf->map);
+    if (rf->file != INVALID_HANDLE_VALUE) CloseHandle(rf->file);
+    *rf = {INVALID_HANDLE_VALUE, 0, 0, 0};
+}
+
+// Sends the marks the game's events ask for to the main thread.
+static void replays_post(i32 game, const ReplayMark *m, i32 n, u32 events)
+{
+    for (i32 i = 0; i < n; i++) {
+        if (!(events & (m[i].colour == 1 ? AM_DEATH : AM_KILL))) continue;
+        Event e = {};
+        e.kind = EV_MARKER;
+        e.a = m[i].t_us;
+        e.b = m[i].colour;
+        str_set(e.text, m[i].note);
+        event_post(e);
+        log_line("markers: %s: %s, from its replay", AM_GAMES[game].name, m[i].note);
+    }
+}
+
+// Reads one replay unless it was read before or isn't finished. Fortnite's needs whose it is (owner).
+static void replays_file(i32 game, const wchar_t *path, const WIN32_FIND_DATAW &fd, const char *owner, u32 events)
+{
+    i64 written = filetime_to_us(fd.ftLastWriteTime), now = now_us();
+    i64 size = ((i64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+    if (written < now - REPLAYS_KEEP || written > now - REPLAYS_SETTLE) return;
+    u64 key = replay_key(path, size, written);
+    if (replays_seen(key)) return;
+    ReplayFile rf;
+    bool open = replay_open(path, &rf);
+    static ReplayMark marks[256];
+    i32 n = !open ? -2
+            : game == AMG_FORTNITE ? fn_marks(rf.p, rf.len, owner, marks, COUNT(marks))
+                                   : r6_marks(rf.p, rf.len, marks, COUNT(marks));
+    replay_close(&rf);
+    if (n == -2 || (n < 0 && game == AMG_FORTNITE)) return; // can't be read yet, or still recording
+    replays_seen_add(key, written);
+    if (n > 0) replays_post(game, marks, n, events);
+}
+
+static void replays_poll()
+{
+    u32 fn_ev = g_am.events[AMG_FORTNITE], r6_ev = g_am.events[AMG_SIEGE];
+    bool fn = fn_ev && g_rp.fn_dir[0], r6 = r6_ev && g_rp.r6_dir[0];
+    if ((!fn && !r6) || now_us() < g_rp.next) return;
+    g_rp.next = now_us() + REPLAYS_EVERY;
+    if (!g_rp.loaded) replays_seen_load();
+    WIN32_FIND_DATAW fd = {};
+    wchar_t pat[MAX_PATH], path[MAX_PATH];
+    if (fn) {
+        char owner[40] = "";
+        wchar_t log[MAX_PATH];
+        swprintf(log, MAX_PATH, L"%s\\..\\Logs\\FortniteGame.log", g_rp.fn_dir);
+        if (char *text = read_file(log, 0)) {
+            fn_log_owner(text, owner);
+            free(text);
+        }
+        swprintf(pat, MAX_PATH, L"%s\\*.replay", g_rp.fn_dir);
+        HANDLE h = owner[0] ? FindFirstFileW(pat, &fd) : INVALID_HANDLE_VALUE;
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                swprintf(path, MAX_PATH, L"%s\\%s", g_rp.fn_dir, fd.cFileName);
+                replays_file(AMG_FORTNITE, path, fd, owner, fn_ev);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    if (r6) {
+        swprintf(pat, MAX_PATH, L"%s\\*", g_rp.r6_dir);
+        HANDLE h = FindFirstFileW(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.') continue;
+            if (filetime_to_us(fd.ftLastWriteTime) < now_us() - REPLAYS_KEEP) continue;
+            wchar_t match[MAX_PATH];
+            swprintf(match, MAX_PATH, L"%s\\%s", g_rp.r6_dir, fd.cFileName);
+            swprintf(pat, MAX_PATH, L"%s\\*.rec", match);
+            WIN32_FIND_DATAW rd;
+            HANDLE r = FindFirstFileW(pat, &rd);
+            if (r == INVALID_HANDLE_VALUE) continue;
+            do {
+                swprintf(path, MAX_PATH, L"%s\\%s", match, rd.cFileName);
+                replays_file(AMG_SIEGE, path, rd, 0, r6_ev);
+            } while (FindNextFileW(r, &rd));
+            FindClose(r);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
+
+// Siege's MatchReplay folder, from Steam or Ubisoft Connect. "" if the game isn't installed.
+static void r6_replay_dir(wchar_t (&out)[MAX_PATH])
+{
+    out[0] = 0;
+    Path lib;
+    wchar_t game[MAX_PATH] = L"";
+    if (steam_app_library(359550, &lib)) {
+        char *acf = read_file(path_join(lib, L"appmanifest_359550.acf").s, 0);
+        char dir[MAX_PATH] = "";
+        if (acf && vdf_value(acf, "installdir", dir, sizeof dir)) {
+            wchar_t wdir[MAX_PATH];
+            utf8_to_wide(dir, wdir, MAX_PATH);
+            swprintf(game, MAX_PATH, L"%s\\common\\%s", lib.s, wdir);
+        }
+        free(acf);
+    }
+    DWORD bytes = sizeof game;
+    if (!game[0] && RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs\\635", L"InstallDir",
+                                 RRF_RT_REG_SZ, 0, game, &bytes) != ERROR_SUCCESS)
+        game[0] = 0;
+    for (wchar_t *c = game; *c; c++)
+        if (*c == '/') *c = '\\';
+    size_t k = wcslen(game);
+    if (k && game[k - 1] == '\\') game[k - 1] = 0;
+    if (!game[0] || GetFileAttributesW(game) == INVALID_FILE_ATTRIBUTES) return;
+    swprintf(out, MAX_PATH, L"%s\\MatchReplay", game);
+}
+
+// Where the replays are, and each game's state for Options. From automarks_apply. Main thread.
+static void replays_apply()
+{
+    wchar_t fn[MAX_PATH] = L"", r6[MAX_PATH] = L"";
+    if (g_am.events[AMG_FORTNITE]) {
+        wchar_t local[MAX_PATH], game[MAX_PATH];
+        DWORD k = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+        if (k && k < MAX_PATH) {
+            swprintf(game, MAX_PATH, L"%s\\FortniteGame", local);
+            if (GetFileAttributesW(game) != INVALID_FILE_ATTRIBUTES) swprintf(fn, MAX_PATH, L"%s\\Saved\\Demos", game);
+        }
+    }
+    if (g_am.events[AMG_SIEGE]) r6_replay_dir(r6);
+    if (wcscmp(fn, g_rp.fn_dir)) wcscpy_s(g_rp.fn_dir, fn); // the worker reads them whole or not at all
+    if (wcscmp(r6, g_rp.r6_dir)) wcscpy_s(g_rp.r6_dir, r6);
+    InterlockedExchange(&g_am.state[AMG_FORTNITE], !g_am.events[AMG_FORTNITE] ? AM_OFF : fn[0] ? AM_READY : AM_NOT_FOUND);
+    InterlockedExchange(&g_am.state[AMG_SIEGE], !g_am.events[AMG_SIEGE] ? AM_OFF : r6[0] ? AM_READY : AM_NOT_FOUND);
+}

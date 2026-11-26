@@ -162,7 +162,7 @@ enum AmEvent : u32 {
 };
 static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist", "advancement", "level",
                                              "lap", "overtake", "incident"};
-enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_COUNT };
+enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
 // or listening.
 struct AmGame { const char *key, *name, *feed; u32 events; };
@@ -177,6 +177,8 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"f1_25", "F1 25", "Turn on UDP Telemetry in the game's settings", AM_LAP | AM_OVERTAKE | AM_INCIDENT | AM_WIN},
     {"iracing", "iRacing", "From the sim's telemetry", AM_LAP | AM_INCIDENT | AM_WIN},
     {"acc", "Assetto Corsa Competizione", "From the sim's shared memory", AM_LAP | AM_OVERTAKE},
+    {"fortnite", "Fortnite", "From its replays, after the match (Record Replays on)", AM_KILL | AM_DEATH},
+    {"siege", "Rainbow Six Siege", "From its match replays, after each round", AM_KILL | AM_DEATH},
 };
 
 struct Config {
