@@ -4966,7 +4966,7 @@ static ID3D11ShaderResourceView *lib_track_icon(const char *title, TrackKind kin
         char dn[128];
         display_name_of(&c.apps[i], c.apps[i].exe.s, dn, sizeof dn);
         if (strcmp(dn, base)) continue;
-        return app_icon(!strncmp(c.apps[i].exe.s, "discord-", 8) ? "discord.exe" : c.apps[i].exe.s);
+        return app_icon(c.apps[i].exe.s);
     }
     return 0;
 }

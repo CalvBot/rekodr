@@ -661,7 +661,7 @@ static void default_app_name(const char *exe, char *out, i32 cap)
 }
 
 // Filters go by what an app ends up as, so an app sorted by its folder's rule is under that category, not New.
-// An app with no category of its own that a folder rule sorts: one per person in a VoiceStreams call.
+// An app with no category of its own that a folder rule sorts.
 static bool app_folder_only(const AppInfo &a)
 {
     return a.category == CAT_NONE && app_category(g_app.config, a) != CAT_NONE;
@@ -669,7 +669,7 @@ static bool app_folder_only(const AppInfo &a)
 
 static bool app_matches(const AppInfo &a, i32 filter, const char *search)
 {
-    if (app_folder_only(a)) return false; // its folder's row stands for it (one per person in a call)
+    if (app_folder_only(a)) return false; // its folder's row stands for it
     AppCategory cat = app_category(g_app.config, a);
     switch (filter) {
     case FILTER_NEW: if (cat != CAT_NONE) return false; break;

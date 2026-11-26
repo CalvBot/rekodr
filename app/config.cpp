@@ -345,7 +345,8 @@ static void buffer_for_free(f64 free_gb, f32 *buffer_gb, f32 *min_free_gb)
     *min_free_gb = (f32)fmin(50, floor(free_gb / 5));
 }
 
-// The apps sorted on first start, each only when it is installed for this user (first_app_installed). `where`
+// The apps sorted on first start: the chat apps and launchers most players have, each only when it is installed for
+// this user (first_app_installed). Any other app is New until the player sorts it. `where`
 // lists the places that show it is, separated by ';':
 //   %VAR%\path       a file that exists, environment variables expanded
 //   pkg:<family>     a Store package family registered for this user
@@ -360,9 +361,6 @@ struct FirstApp {
 static const FirstApp FIRST_APPS[] = {
     // Chat
     {"discord.exe", "Discord", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Discord\\Update.exe"},
-    {"discordptb.exe", "Discord PTB", CAT_COMMUNICATION, "%LOCALAPPDATA%\\DiscordPTB\\Update.exe"},
-    {"discordcanary.exe", "Discord Canary", CAT_COMMUNICATION, "%LOCALAPPDATA%\\DiscordCanary\\Update.exe"},
-    {"vesktop.exe", "Vesktop", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Programs\\vesktop\\Vesktop.exe"},
     {"ms-teams.exe", "Microsoft Teams", CAT_COMMUNICATION, "pkg:MSTeams_8wekyb3d8bbwe"},
     {"zoom.exe", "Zoom", CAT_COMMUNICATION, "%APPDATA%\\Zoom\\bin\\Zoom.exe;%ProgramFiles%\\Zoom\\bin\\Zoom.exe"},
     {"slack.exe", "Slack", CAT_COMMUNICATION,
@@ -371,21 +369,6 @@ static const FirstApp FIRST_APPS[] = {
      "%ProgramFiles%\\TeamSpeak 3 Client\\ts3client_win64.exe;%LOCALAPPDATA%\\TeamSpeak 3 Client\\ts3client_win64.exe"},
     {"teamspeak.exe", "TeamSpeak", CAT_COMMUNICATION,
      "%LOCALAPPDATA%\\Programs\\TeamSpeak\\TeamSpeak.exe;%ProgramFiles%\\TeamSpeak\\TeamSpeak.exe"},
-    {"telegram.exe", "Telegram", CAT_COMMUNICATION,
-     "%APPDATA%\\Telegram Desktop\\Telegram.exe;pkg:TelegramMessengerLLP.TelegramDesktop_t4vj0pshhgkwm"},
-    {"whatsapp.exe", "WhatsApp", CAT_COMMUNICATION, "pkg:5319275A.WhatsAppDesktop_cv1g1gvanyjgm"},
-    {"whatsapp.root.exe", "WhatsApp", CAT_COMMUNICATION, "pkg:5319275A.WhatsAppDesktop_cv1g1gvanyjgm"},
-    {"signal.exe", "Signal", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Programs\\signal-desktop\\Signal.exe"},
-    {"mumble.exe", "Mumble", CAT_COMMUNICATION,
-     "%ProgramFiles%\\Mumble\\client\\mumble.exe;%ProgramFiles%\\Mumble\\mumble.exe"},
-    {"guilded.exe", "Guilded", CAT_COMMUNICATION, "%LOCALAPPDATA%\\Programs\\Guilded\\Guilded.exe"},
-    {"element.exe", "Element", CAT_COMMUNICATION, "%LOCALAPPDATA%\\element-desktop\\Element.exe"},
-    // Music and Windows' media apps, each on a track of its own
-    {"spotify.exe", "Spotify", CAT_APP, "%APPDATA%\\Spotify\\Spotify.exe;pkg:SpotifyAB.SpotifyMusic_zpdnekdrzrea0"},
-    {"applemusic.exe", "Apple Music", CAT_APP, "pkg:AppleInc.AppleMusicWin_nzyj5cx40ttqa"},
-    {"microsoft.media.player.exe", "Media Player", CAT_APP, "pkg:Microsoft.ZuneMusic_8wekyb3d8bbwe"},
-    {"photos.exe", "Photos", CAT_APP, "pkg:Microsoft.Windows.Photos_8wekyb3d8bbwe"},
-    {"video.ui.exe", "Movies & TV", CAT_APP, "pkg:Microsoft.ZuneVideo_8wekyb3d8bbwe"},
     // Launchers, overlays and Windows itself: never recorded
     {"steam.exe", "Steam", CAT_IGNORED, "reg:Software\\Valve\\Steam|SteamExe;%ProgramFiles(x86)%\\Steam\\steam.exe"},
     {"steamwebhelper.exe", "Steam", CAT_IGNORED,
@@ -402,8 +385,6 @@ static const FirstApp FIRST_APPS[] = {
     {"obs64.exe", "OBS Studio", CAT_IGNORED, "%ProgramFiles%\\obs-studio\\bin\\64bit\\obs64.exe"},
     {"xboxpcapp.exe", "Xbox", CAT_IGNORED, "pkg:Microsoft.GamingApp_8wekyb3d8bbwe"},
     {"gamebar.exe", "Game Bar", CAT_IGNORED, "pkg:Microsoft.XboxGamingOverlay_8wekyb3d8bbwe"},
-    {"phoneexperiencehost.exe", "Phone Link", CAT_IGNORED, "pkg:Microsoft.YourPhone_8wekyb3d8bbwe"},
-    {"clipchamp.exe", "Clipchamp", CAT_IGNORED, "pkg:Clipchamp.Clipchamp_yxz26nhyzhsrt"},
     {"systemsettings.exe", "Settings", CAT_IGNORED, "%WINDIR%\\ImmersiveControlPanel\\SystemSettings.exe"},
     {"explorer.exe", "File Explorer", CAT_IGNORED, "%WINDIR%\\explorer.exe"},
 };
@@ -560,14 +541,6 @@ static void input_short_name(const char *name, char *out, i32 cap)
     else snprintf(out, cap, "%s", name);
 }
 
-// One person in a Discord call, as vencord-voicestreams plays them: "discord-sam-1234...exe". Chat unless set
-// otherwise, so each person gets a track of their own without sorting every new one by hand. (Discord's own exes
-// have no dash: discordptb.exe, discordcanary.exe.)
-static AppCategory voice_stream_category(const char *exe)
-{
-    return !strncmp(exe, "discord-", 8) ? CAT_COMMUNICATION : CAT_NONE;
-}
-
 // ffmpeg's own tools, Rekodr's copy or anyone's, are never an app to record or a game, whatever Options says.
 static bool exe_is_ffmpeg_tool(const char *exe)
 {
@@ -585,7 +558,7 @@ static AppCategory app_category_in(const AppInfo *apps, i32 app_count, const Fol
     if (a && a->category != CAT_NONE) return a->category;
     if ((!path || !path[0]) && a) path = a->path;
     i32 r = folder_rule_for(rules, rule_count, path);
-    return r >= 0 ? rules[r].category : voice_stream_category(exe);
+    return r >= 0 ? rules[r].category : CAT_NONE;
 }
 
 // A known app's category: its own, else its folder's (by where it was last heard from).
@@ -594,7 +567,7 @@ static AppCategory app_category(const Config &c, const AppInfo &a)
     if (exe_is_ffmpeg_tool(a.exe.s)) return CAT_IGNORED;
     if (a.category != CAT_NONE) return a.category;
     i32 r = folder_rule_for(c.folders, c.folder_count, a.path);
-    return r >= 0 ? c.folders[r].category : voice_stream_category(a.exe.s);
+    return r >= 0 ? c.folders[r].category : CAT_NONE;
 }
 
 static char *trim(char *s)

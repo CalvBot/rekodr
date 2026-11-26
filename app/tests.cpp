@@ -772,7 +772,7 @@ static void test_first_run()
     T(setup_clip_key(c, keys, sizeof keys, &secs) && !strcmp(keys, "Alt+F7") && secs == 45);
 }
 
-static bool test_has_spotify_steam(const FirstApp &a) { return strstr(a.where, "Spotify") || strstr(a.where, "Valve"); }
+static bool test_has_discord_steam(const FirstApp &a) { return strstr(a.where, "Discord") || strstr(a.where, "Valve"); }
 static bool test_has_none(const FirstApp &) { return false; }
 
 static void test_ffmpeg_check()
@@ -828,16 +828,22 @@ static void test_first_apps()
     Config c = {};
     config_first_apps(&c, test_has_none);
     T(c.app_count == 0);
-    config_first_apps(&c, test_has_spotify_steam);
+    config_first_apps(&c, test_has_discord_steam);
     T(c.app_count == 3);
-    const AppInfo *spotify = 0, *steam = 0, *helper = 0;
+    const AppInfo *discord = 0, *steam = 0, *helper = 0;
     for (i32 i = 0; i < c.app_count; i++) {
-        if (!strcmp(c.apps[i].exe.s, "spotify.exe")) spotify = &c.apps[i];
+        if (!strcmp(c.apps[i].exe.s, "discord.exe")) discord = &c.apps[i];
         if (!strcmp(c.apps[i].exe.s, "steam.exe")) steam = &c.apps[i];
         if (!strcmp(c.apps[i].exe.s, "steamwebhelper.exe")) helper = &c.apps[i];
     }
-    T(spotify && spotify->category == CAT_APP && !strcmp(spotify->name.s, "Spotify"));
+    T(discord && discord->category == CAT_COMMUNICATION && !strcmp(discord->name.s, "Discord"));
     T(steam && steam->category == CAT_IGNORED && helper && helper->category == CAT_IGNORED);
+    // An exe named like Discord's is New like any other
+    T(app_category_in(c.apps, c.app_count, c.folders, c.folder_count, "discord-sam-1234.exe", "") == CAT_NONE);
+
+    // The list is only Chat and Ignored: an app that isn't listed is sorted by the player
+    for (i32 i = 0; i < COUNT(FIRST_APPS); i++)
+        T(FIRST_APPS[i].category == CAT_COMMUNICATION || FIRST_APPS[i].category == CAT_IGNORED);
 
     // Every entry: a lower-case exe, listed once, with at least one place to look
     for (i32 i = 0; i < COUNT(FIRST_APPS); i++) {
