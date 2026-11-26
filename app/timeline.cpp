@@ -69,6 +69,8 @@ struct TlShared {
 
 static TlShared g_tl;
 
+static i64 g_tl_mark_show; // `show timeline-at`: the marker whose note to open, by its time; 0 = none
+
 // Main thread only: the batch's keys asked for and not taken back yet, and those that gave no frame (the last
 // TL_BATCH_MAX of them, not asked again until the screen is left).
 static i64 g_tl_batch_asked[TL_BATCH_MAX], g_tl_batch_failed[TL_BATCH_MAX];
@@ -2009,7 +2011,8 @@ static const char *tl_detail_label(const char *key)
 {
     static const char *const names[][2] = {{"killer", "Killed by"}, {"target", "Target"}, {"attacker", "By"},
                                            {"weapon", "Weapon"}, {"area", "Hit"}, {"distance", "Distance"},
-                                           {"cause", "Cause"}, {"server", "Server"}, {"map", "Map"}};
+                                           {"cause", "Cause"}, {"server", "Server"}, {"map", "Map"},
+                                           {"name", "Name"}, {"level", "Level"}, {"faction", "Faction"}};
     for (auto &n : names)
         if (!strcmp(key, n[0])) return n[1];
     return key;
@@ -2226,8 +2229,17 @@ static void screen_timeline()
     // the whole note.
     static Marker marks[256];
     static Marker mark_open; // the one whose note is open
+    static ImVec2 mark_show_at; // where `show timeline-at` opens it; (0, 0) = at the mouse
     i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
     i32 mark_hit = -1;
+    for (i32 i = 0; g_tl_mark_show && i < mark_count; i++)
+        if (marks[i].t_us == g_tl_mark_show) {
+            mark_open = marks[i];
+            tl.marker_pick = mark_open.t_us;
+            ImGui::OpenPopup("##marknote");
+            mark_show_at = ImVec2(tl_x(c, mark_open.t_us), y_tracks);
+            g_tl_mark_show = 0;
+        }
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && io.MousePos.y >= y_ruler &&
         io.MousePos.y < y_tracks && (tl.drag == TL_DRAG_NONE || !tl.dragged)) { // the timeline's own click is active
         f32 best = 8 * s;
@@ -3082,7 +3094,8 @@ static void screen_timeline()
     // A marker's whole note, with its time and a copy button on the top line. The note wraps at a reading width; a
     // short one gets a window just wide enough, a long one a taller window. Under it, its detail a line a pair, and a
     // Steam profile button when it names a player's SteamID64, or an Achievements button (the player's achievements
-    // page for the game) for an achievement. An achievement's own keys show as that button, not as lines.
+    // page for the game) for an achievement. An achievement's own keys (its name too) show as that button, not as
+    // lines. Player names keep their underscores.
     {
         const char *note = mark_open.note[0] ? mark_open.note : "No note";
         f32 pad = 12 * s, wrap = 300 * s, bs = fh;
@@ -3094,23 +3107,27 @@ static void screen_timeline()
         i32 nl = 0;
         {
             char k[32], v[128];
+            bool achievement = marker_detail_get(mark_open.detail, "achievement", v, sizeof v);
             for (const char *at = mark_open.detail; nl < COUNT(lines) && marker_detail_next(&at, k, sizeof k, v, sizeof v);) {
                 if (!v[0]) continue;
                 if (!strcmp(k, "steam_id")) str_set(steam_id, v);
                 else if (!strcmp(k, "app")) str_set(app, v);
                 else if (!strcmp(k, "player")) str_set(player, v);
                 if (!strcmp(k, "steam_id") || !strcmp(k, "app") || !strcmp(k, "player") || !strcmp(k, "achievement") ||
-                    !strcmp(k, "name") || !strcmp(k, "icon") || !strcmp(k, "local") || !strcmp(k, "span") ||
-                    !strcmp(k, "span_end"))
+                    (achievement && !strcmp(k, "name")) || !strcmp(k, "icon") || !strcmp(k, "local") ||
+                    !strcmp(k, "span") || !strcmp(k, "span_end"))
                     continue;
                 for (char *ch = v; *ch; ch++)
-                    if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker")) *ch = ' ';
+                    if (*ch == '_' && strcmp(k, "killer") && strcmp(k, "target") && strcmp(k, "attacker") &&
+                        strcmp(k, "name"))
+                        *ch = ' ';
                 snprintf(lines[nl++], sizeof lines[0], "%s  %s", tl_detail_label(k), v);
                 body = ImMax(body, ImGui::CalcTextSize(lines[nl - 1]).x);
             }
         }
         f32 w = ImClamp(ImMax(head, body), 160 * s, wrap);
         ImGui::SetNextWindowSize(ImVec2(w + 2 * pad, 0));
+        if (mark_show_at.x > 0) ImGui::SetNextWindowPos(mark_show_at), mark_show_at = ImVec2(0, 0);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8 * s, 6 * s));
         bool open = ImGui::BeginPopup("##marknote", ImGuiWindowFlags_AlwaysAutoResize);

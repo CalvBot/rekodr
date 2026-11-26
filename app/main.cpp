@@ -103,6 +103,17 @@ static void run_command(const char *text)
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]]);
             g_lib_share_ask = !strcmp(arg, "share-menu");
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
+        else if (starts_with(arg, "timeline-at")) { // timeline-at <from> <to> [<marker>]: the timeline showing
+            // [from, to] (Unix seconds), [with the note of the marker made at <marker> (microseconds) open]
+            long long from = 0, to = 0, mark = 0;
+            if (sscanf(arg + 11, "%lld %lld %lld", &from, &to, &mark) >= 2 && to > from) {
+                ui_show(SCREEN_TIMELINE);
+                g_app.timeline.follow = false;
+                g_app.timeline.view_end_us = to * 1000000;
+                g_app.timeline.view_span_us = (to - from) * 1000000;
+                g_tl_mark_show = mark;
+            }
+        }
         else if (!strcmp(arg, "erase")) { // the timeline with 20 s selected and its Delete footage confirm
             ui_show(SCREEN_TIMELINE);
             g_app.timeline.sel_out = now_us() - 5000000;
@@ -190,7 +201,7 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, timeline-at, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "gsi-dump")) {
