@@ -368,6 +368,8 @@ static const FixedCover g_fixed_covers[] = {
     {"Hearthstone", {"f30259f76102eefd8b482ee4b68b1ef7.png", "3128463b233d51bd542a59d9cf49a5f6.jpg", "fb50a80a148e6facff6f7bb1241180ad.png"}},
     {"Rainbow Six Siege", {"6df0f11ac980d2c59e5b4dab6a8e7611.png", "c32d0e02132a853fdf5b8010aa71602e.png", "e65aa1b7ed722fc2d3cabe14f5cd3fe7.png"}},
     {"Fortnite", {"6c4d541fc68d426aa028bc05f38164d1.png", "6dc3399d124d4cf965d4d62d0663228e.png", "6e94aaaaa650e631109fee66a94385fb.png"}},
+    {"Escape from Tarkov", {"1cf764f9ac1d084662f0c1dc8932a876.jpg", "dc0f04636741308dd78de552d345cc6b.png", "ea9dc69aa87d34bba96112dcd72b211e.png"}},
+    {"Rust", {"22c9fb3c8efd34dfb32c8cbf21ffb3d5.png", "35f6e50ae1b299f6efdf99b6490b712c.png", "c3ed3f768198b986e0a79be45cde4524.jpg"}},
     {"Steam achievements", {"39c2966989c4f0091a99eef7f1d09c09.png", "c5174327c1975f78b7ffc788ed60b80e.png", "dba324d3fb4b6d4ddd559fb5a70ff362.jpg"}},
 };
 enum { GAMEDB_FIXED_COVER = 5 }; // gamedb_on_event: the worker has settled one of the hand-picked covers
