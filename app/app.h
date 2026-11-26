@@ -155,14 +155,15 @@ enum { FOLDER_MAX = 128 }; // folder rules (Config.folders), and store folders a
 // Games that mark their events on the timeline (automarks.cpp). Each marks the AmEvent bits it has, saved as the
 // words of AM_EVENT_WORDS (bit i). AM_WIN is a won match; AM_OBJECTIVE is a dragon, Herald, Baron, turret or
 // inhibitor the player took in League.
-enum AmEvent : u32 { AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32 };
-static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective"};
-enum AmGameId { AMG_CS2, AMG_LOL, AMG_COUNT };
+enum AmEvent : u32 { AM_KILL = 1, AM_MULTI = 2, AM_DEATH = 4, AM_ROUND = 8, AM_WIN = 16, AM_OBJECTIVE = 32, AM_ASSIST = 64 };
+static const char *const AM_EVENT_WORDS[] = {"kill", "multi", "death", "round", "win", "objective", "assist"};
+enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); feed: what Options says of it while off
 // or listening.
 struct AmGame { const char *key, *name, *feed; u32 events; };
 static const AmGame AM_GAMES[AMG_COUNT] = {
     {"cs2", "Counter-Strike 2", "From the game's own feed", AM_KILL | AM_MULTI | AM_DEATH | AM_ROUND | AM_WIN},
+    {"dota2", "Dota 2", "Add -gamestateintegration to its launch options", AM_KILL | AM_DEATH | AM_ASSIST | AM_WIN},
     {"lol", "League of Legends", "While a match runs", AM_KILL | AM_MULTI | AM_DEATH | AM_OBJECTIVE | AM_WIN},
 };
 

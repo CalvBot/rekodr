@@ -4126,7 +4126,7 @@ static bool opt_am_events(const char *game, u32 *events, const AmChoice *choices
 // and the feed.
 static void opt_am_planned()
 {
-    static const char *const planned[][2] = {{"Dota 2", "Game State Integration"}, {"Rocket League", "Stats API"}};
+    static const char *const planned[][2] = {{"Rocket League", "Stats API"}};
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a = ImGui::GetCursorScreenPos();
     f32 w = ImGui::GetContentRegionAvail().x, pad = dp(AM_PAD), aw = dp(40), ah = dp(60);
@@ -4159,7 +4159,7 @@ static void options_automarks()
 
     ImGui::BeginDisabled(!c.auto_marks);
     // Each event's tick, in AmEvent bit order; a game with round wins calls its wins match wins
-    static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives"};
+    static const char *const labels[] = {"Kills", "Multi-kills", "Deaths", "Round wins", "Wins", "Objectives", "Assists"};
     static_assert(COUNT(labels) == COUNT(AM_EVENT_WORDS), "a label for each event");
     for (i32 g = 0; g < AMG_COUNT; g++) {
         const AmGame &game = AM_GAMES[g];

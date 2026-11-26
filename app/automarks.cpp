@@ -3,9 +3,10 @@
 // switch at the top turns them all off. A test copy (REKODR_HOME) keeps its cfg file in its own local folder.
 //
 //   Counter-Strike 2   Game State Integration. Turning it on writes gamestate_integration_rekodr.cfg into the
-//                      game's cfg folder (found through Steam's libraries); the game reads it when it starts and
-//                      then POSTs its state as JSON to a listener on 127.0.0.1:AM_CS2_PORT. Turning it off
-//                      deletes the file and closes the listener.
+//   Dota 2             game's GSI folder (found through Steam's libraries); the game reads it when it starts and
+//                      then POSTs its state as JSON to a listener on 127.0.0.1:AM_GSI_PORT, which both games
+//                      share. Turning a game off deletes its file; the listener closes when both are off. Dota 2
+//                      reads the file only with -gamestateintegration in its launch options, which the player adds.
 //   League of Legends  The Live Client Data API, https://127.0.0.1:2999, which the game serves while a match runs.
 //                      Its event list is read once a second.
 //
@@ -13,9 +14,24 @@
 // team won.
 // Markers go in at the moment Rekodr hears of them. Everything runs on one worker thread.
 
-static const u16 AM_CS2_PORT = 29771;
-static const wchar_t AM_CS2_CFG[] = L"gamestate_integration_rekodr.cfg";
-static const u32 AM_CS2_APP = 730;
+static const u16 AM_GSI_PORT = 29771;
+static const wchar_t AM_GSI_CFG[] = L"gamestate_integration_rekodr.cfg";
+
+// A Game State Integration game: its Steam app, its folder under steamapps\common, the folder in it for the cfg
+// file (made when make_dir), and the parts of its state the file asks for.
+struct AmGsi {
+    i32 game;
+    u32 app;
+    const wchar_t *game_dir, *cfg_dir;
+    bool make_dir;
+    const char *const *data;
+};
+static const char *const AM_CS2_DATA[] = {"provider", "map", "round", "player_id", "player_state", "player_match_stats", 0};
+static const char *const AM_DOTA_DATA[] = {"provider", "map", "player", 0};
+static const AmGsi AM_GSI[] = {
+    {AMG_CS2, 730, L"Counter-Strike Global Offensive", L"game\\csgo\\cfg", false, AM_CS2_DATA},
+    {AMG_DOTA2, 570, L"dota 2 beta", L"game\\dota\\cfg\\gamestate_integration", true, AM_DOTA_DATA},
+};
 
 // A marker to put in. `amend`: the note (and colour) of the last kill marker change instead, as when League says
 // the kill was a double kill.
@@ -107,6 +123,53 @@ static i32 cs2_marks(Cs2Seen *s, u32 events, const char *body, i64 len, AutoMark
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Dota 2: what one state says, against the one before
+
+static const char DOTA_POST_GAME[] = "DOTA_GAMERULES_STATE_POST_GAME";
+
+struct DotaSeen {
+    bool have;      // a match's state is known
+    char match[32];
+    i32  kills, deaths, assists;
+    char state[48]; // map.game_state
+};
+
+// The markers a state brings, of the AmEvent bits in `events`. Only a state of the player's own match counts: one
+// watched as a spectator lists both teams' players instead of the player, and changes nothing.
+static i32 dota_marks(DotaSeen *s, u32 events, const char *body, i64 len, AutoMark *out, i32 cap)
+{
+    char match[32], v[48];
+    if (!j_get(body, len, "map.matchid", match, sizeof match) || !j_get(body, len, "player.kills", v, sizeof v)) {
+        s->have = false;
+        return 0;
+    }
+    i32 kills = atoi(v);
+    i32 deaths = j_get(body, len, "player.deaths", v, sizeof v) ? atoi(v) : 0;
+    i32 assists = j_get(body, len, "player.assists", v, sizeof v) ? atoi(v) : 0;
+    char state[48] = "", team[16] = "", win[16] = "";
+    j_get(body, len, "map.game_state", state, sizeof state);
+    j_get(body, len, "player.team_name", team, sizeof team);
+    j_get(body, len, "map.win_team", win, sizeof win);
+
+    i32 n = 0;
+    if (s->have && !strcmp(s->match, match)) {
+        if (kills > s->kills && (events & AM_KILL)) am_push(out, cap, &n, 4, "Kill");
+        if (deaths > s->deaths && (events & AM_DEATH)) am_push(out, cap, &n, 1, "Death");
+        if (assists > s->assists && (events & AM_ASSIST)) am_push(out, cap, &n, 2, "Assist");
+        if ((events & AM_WIN) && !strcmp(state, DOTA_POST_GAME) && strcmp(s->state, DOTA_POST_GAME) && team[0] &&
+            !strcmp(win, team))
+            am_push(out, cap, &n, 3, "Win");
+    }
+    s->have = true;
+    str_set(s->match, match);
+    s->kills = kills;
+    s->deaths = deaths;
+    s->assists = assists;
+    str_set(s->state, state);
+    return n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // League of Legends: new events in the match's event list
 
 struct LolSeen {
@@ -179,7 +242,7 @@ static i32 lol_marks(LolSeen *s, u32 events, const char *body, i64 len, AutoMark
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Finding Counter-Strike 2
+// Finding the Game State Integration games
 
 // The steamapps folder of the library an app is installed in, from Steam's libraryfolders.vdf. Any thread (the
 // main one and the achievements worker), so the file is read into a buffer of the call's own.
@@ -204,51 +267,53 @@ static bool steam_app_library(u32 app, Path *out)
     return false;
 }
 
-// Where the cfg file goes. False if Counter-Strike 2 isn't installed.
-static bool cs2_cfg_path(Path *out)
+// Where a game's cfg file goes. False if the game isn't installed. Dota 2 reads its folder of GSI files only when
+// it is there, so it is made; Counter-Strike 2's is its cfg folder.
+static bool gsi_cfg_path(const AmGsi &g, Path *out)
 {
-    if (is_test_copy()) { // a test copy writes its cfg file into its own home, never into the game
-        Path dir = path_join(g_app.paths.local_dir, L"cs2cfg");
+    if (is_test_copy()) { // a test copy writes its cfg files into its own home, never into the game
+        Path dir = path_join(g_app.paths.local_dir, L"gsicfg");
         CreateDirectoryW(dir.s, 0);
-        *out = path_join(dir, AM_CS2_CFG);
+        wchar_t name[64];
+        swprintf(name, COUNT(name), L"%hs.cfg", AM_GAMES[g.game].key);
+        *out = path_join(dir, name);
         return true;
     }
     Path lib;
-    if (!steam_app_library(AM_CS2_APP, &lib)) return false;
-    wchar_t dir[MAX_PATH];
-    swprintf(dir, MAX_PATH, L"%s\\common\\Counter-Strike Global Offensive\\game\\csgo\\cfg", lib.s);
-    DWORD a = GetFileAttributesW(dir);
+    if (!steam_app_library(g.app, &lib)) return false;
+    wchar_t game[MAX_PATH], dir[MAX_PATH];
+    swprintf(game, MAX_PATH, L"%s\\common\\%s", lib.s, g.game_dir);
+    DWORD a = GetFileAttributesW(game);
     if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return false;
-    swprintf(out->s, COUNT(out->s), L"%s\\%s", dir, AM_CS2_CFG);
+    swprintf(dir, MAX_PATH, L"%s\\%s", game, g.cfg_dir);
+    if (g.make_dir) CreateDirectoryW(dir, 0);
+    a = GetFileAttributesW(dir);
+    if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    swprintf(out->s, COUNT(out->s), L"%s\\%s", dir, AM_GSI_CFG);
     return true;
 }
 
-// The cfg file's text, with the token the game sends back so the listener knows the state is the game's.
-static i32 cs2_cfg_text(const char *token, char *out, i32 cap)
+// A cfg file's text, with the token the game sends back so the listener knows the state is the game's.
+static i32 gsi_cfg_text(const AmGsi &g, const char *token, char *out, i32 cap)
 {
-    return snprintf(out, cap,
-                    "\"" APP_NAME "\"\n"
-                    "{\n"
-                    "    \"uri\"       \"http://127.0.0.1:%u/\"\n"
-                    "    \"timeout\"   \"1.0\"\n"
-                    "    \"buffer\"    \"0.0\"\n"
-                    "    \"throttle\"  \"0.1\"\n"
-                    "    \"heartbeat\" \"30.0\"\n"
-                    "    \"auth\"\n"
-                    "    {\n"
-                    "        \"token\" \"%s\"\n"
-                    "    }\n"
-                    "    \"data\"\n"
-                    "    {\n"
-                    "        \"provider\"           \"1\"\n"
-                    "        \"map\"                \"1\"\n"
-                    "        \"round\"              \"1\"\n"
-                    "        \"player_id\"          \"1\"\n"
-                    "        \"player_state\"       \"1\"\n"
-                    "        \"player_match_stats\" \"1\"\n"
-                    "    }\n"
-                    "}\n",
-                    AM_CS2_PORT, token);
+    i32 n = snprintf(out, cap,
+                     "\"" APP_NAME "\"\n"
+                     "{\n"
+                     "    \"uri\"       \"http://127.0.0.1:%u/\"\n"
+                     "    \"timeout\"   \"1.0\"\n"
+                     "    \"buffer\"    \"0.0\"\n"
+                     "    \"throttle\"  \"0.1\"\n"
+                     "    \"heartbeat\" \"30.0\"\n"
+                     "    \"auth\"\n"
+                     "    {\n"
+                     "        \"token\" \"%s\"\n"
+                     "    }\n"
+                     "    \"data\"\n"
+                     "    {\n",
+                     AM_GSI_PORT, token);
+    for (const char *const *d = g.data; *d && n < cap; d++) n += snprintf(out + n, cap - n, "        \"%s\" \"1\"\n", *d);
+    if (n < cap) n += snprintf(out + n, cap - n, "    }\n}\n");
+    return n < cap ? n : cap - 1;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -256,38 +321,40 @@ static i32 cs2_cfg_text(const char *token, char *out, i32 cap)
 
 static struct {
     HANDLE thread;
-    HANDLE wake;              // set to stop or to look at the switches again
+    HANDLE wake;                     // set to stop or to look at the switches again
     volatile bool stop;
-    volatile bool cs2_on, lol_on;
-    volatile u32 cs2_events, lol_events; // AmEvent bits, from the config
-    volatile LONG cs2_state;  // AmState (app.h), for Options
-    bool cs2_applied;         // cs2_on as automarks_apply last left the cfg file
-    char token[40];           // the cfg file's token
+    volatile bool gsi_on;            // a GSI game is on: the listener runs
+    volatile u32 events[AMG_COUNT];  // AmEvent bits each game marks; 0 while off
+    volatile LONG state[AMG_COUNT];  // AmState (app.h), for Options
+    bool gsi_applied[AMG_COUNT];     // whether automarks_apply last left the game's cfg file written
+    char token[40];                  // the cfg files' token
     Cs2Seen cs2;
+    DotaSeen dota;
     LolSeen lol;
-    i64 cs2_kill, lol_kill;   // the last kill marker of each (its time), for an amend
+    i64 last_kill[AMG_COUNT];        // the last kill marker of each (its time), for an amend
 } g_am;
 
-static void am_put(const AutoMark *marks, i32 n, i64 *last_kill, const char *game)
+static void am_put(const AutoMark *marks, i32 n, i32 game)
 {
     for (i32 i = 0; i < n; i++) {
         const AutoMark &m = marks[i];
+        i64 *last_kill = &g_am.last_kill[game];
         if (m.amend && *last_kill) markers_set(*last_kill, m.colour, m.note);
         else if (!m.amend) {
             i64 t = markers_add(now_us(), m.colour, m.note);
             if (m.colour == 4) *last_kill = t;
         }
-        log_line("markers: %s: %s", game, m.note);
+        log_line("markers: %s: %s", AM_GAMES[game].name, m.note);
     }
     if (n) event_post(Event{}); // the timeline shows it
 }
 
-// One POST from the game: the request is read, answered and the state looked at.
-static void am_cs2_client(SOCKET c)
+// One POST from a game: the request is read, answered and the state looked at. provider.appid says whose it is.
+static void am_gsi_client(SOCKET c)
 {
     DWORD wait = 2000;
     setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char *)&wait, sizeof wait);
-    static char buf[128 * 1024];
+    static char buf[256 * 1024];
     i32 used = 0, body_at = -1, body_len = 0;
     u64 until = GetTickCount64() + 3000; // the whole request, however slowly it trickles in
     for (;;) {
@@ -309,7 +376,7 @@ static void am_cs2_client(SOCKET c)
                 if (next) *next = '\r';
             }
             *end = '\r';
-            if (body_len > (i32)sizeof buf - 1 - body_at) break; // too big to read: not the game's
+            if (body_len > (i32)sizeof buf - 1 - body_at) break; // too big to read: not a game's
         }
         if (used - body_at >= body_len) break;
     }
@@ -318,11 +385,18 @@ static void am_cs2_client(SOCKET c)
     closesocket(c);
     if (body_at < 0 || used - body_at < body_len || body_len <= 0) return;
     const char *body = buf + body_at;
-    char token[64];
+    char token[64], app[16];
     if (!j_get(body, body_len, "auth.token", token, sizeof token) || strcmp(token, g_am.token)) return;
+    if (!j_get(body, body_len, "provider.appid", app, sizeof app)) return;
     AutoMark marks[8];
-    i32 n = cs2_marks(&g_am.cs2, g_am.cs2_events, body, body_len, marks, COUNT(marks));
-    am_put(marks, n, &g_am.cs2_kill, "Counter-Strike 2");
+    for (i32 i = 0; i < COUNT(AM_GSI); i++) {
+        const AmGsi &g = AM_GSI[i];
+        u32 events = g_am.events[g.game];
+        if ((u32)atoi(app) != g.app || !events) continue;
+        i32 n = g.game == AMG_CS2 ? cs2_marks(&g_am.cs2, events, body, body_len, marks, COUNT(marks))
+                                  : dota_marks(&g_am.dota, events, body, body_len, marks, COUNT(marks));
+        am_put(marks, n, g.game);
+    }
 }
 
 // A GET to League's local API. The game serves it with its own certificate, which Windows doesn't know, so the
@@ -375,8 +449,16 @@ static void am_lol_poll(HINTERNET session)
         return;
     }
     AutoMark marks[16];
-    i32 n = lol_marks(&g_am.lol, g_am.lol_events, buf, len, marks, COUNT(marks));
-    am_put(marks, n, &g_am.lol_kill, "League of Legends");
+    i32 n = lol_marks(&g_am.lol, g_am.events[AMG_LOL], buf, len, marks, COUNT(marks));
+    am_put(marks, n, AMG_LOL);
+}
+
+// Sets the state of each GSI game that is on.
+static void am_gsi_state(AmState st)
+{
+    for (i32 i = 0; i < COUNT(AM_GSI); i++)
+        if (g_am.gsi_applied[AM_GSI[i].game] && g_am.state[AM_GSI[i].game] != AM_NOT_FOUND)
+            InterlockedExchange(&g_am.state[AM_GSI[i].game], st);
 }
 
 static DWORD WINAPI am_thread(void *)
@@ -385,37 +467,42 @@ static DWORD WINAPI am_thread(void *)
     WSAStartup(MAKEWORD(2, 2), &wsa);
     SOCKET ls = INVALID_SOCKET;
     HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_NO_PROXY, 0, 0, 0);
-    i64 lol_next = 0, cs2_retry = 0;
+    i64 lol_next = 0, gsi_retry = 0;
+    bool busy_said = false;
     while (!g_am.stop) {
-        if (g_am.cs2_on && ls == INVALID_SOCKET && now_us() >= cs2_retry) {
+        if (g_am.gsi_on && ls == INVALID_SOCKET && now_us() >= gsi_retry) {
             ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
             sockaddr_in a = {};
             a.sin_family = AF_INET;
-            a.sin_port = htons(AM_CS2_PORT);
+            a.sin_port = htons(AM_GSI_PORT);
             a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
             BOOL excl = TRUE;
             if (ls != INVALID_SOCKET) setsockopt(ls, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&excl, sizeof excl);
             if (ls == INVALID_SOCKET || bind(ls, (sockaddr *)&a, sizeof a) || listen(ls, 4)) {
                 if (ls != INVALID_SOCKET) closesocket(ls);
                 ls = INVALID_SOCKET;
-                if (InterlockedExchange(&g_am.cs2_state, AM_PORT_BUSY) != AM_PORT_BUSY)
-                    log_line("markers: port %u is taken; Counter-Strike 2 can't reach " APP_NAME, AM_CS2_PORT);
-                cs2_retry = now_us() + 10000000;
+                am_gsi_state(AM_PORT_BUSY);
+                if (!busy_said) log_line("markers: port %u is taken; games can't reach " APP_NAME, AM_GSI_PORT);
+                busy_said = true;
+                gsi_retry = now_us() + 10000000;
             } else {
-                InterlockedExchange(&g_am.cs2_state, AM_READY);
-                log_line("markers: listening for Counter-Strike 2 on port %u", AM_CS2_PORT);
+                am_gsi_state(AM_READY);
+                busy_said = false;
+                log_line("markers: listening for games on port %u", AM_GSI_PORT);
             }
         }
-        if (!g_am.cs2_on && ls != INVALID_SOCKET) {
+        if (!g_am.gsi_on && ls != INVALID_SOCKET) {
             closesocket(ls);
             ls = INVALID_SOCKET;
-            g_am.cs2 = {};
         }
-        if (!g_am.lol_on) g_am.lol = {};
+        if (!g_am.events[AMG_CS2]) g_am.cs2 = {};
+        if (!g_am.events[AMG_DOTA2]) g_am.dota = {};
+        if (!g_am.events[AMG_LOL]) g_am.lol = {};
 
         i64 now = now_us();
         i64 wait_ms = 1000;
-        if (g_am.lol_on && session) {
+        bool lol_on = g_am.events[AMG_LOL] && session;
+        if (lol_on) {
             i64 until = (lol_next - now) / 1000;
             if (until < wait_ms) wait_ms = until < 0 ? 0 : until;
         }
@@ -426,12 +513,12 @@ static DWORD WINAPI am_thread(void *)
             timeval tv = {(long)(wait_ms / 1000), (long)(wait_ms % 1000) * 1000};
             if (select(0, &fds, 0, 0, &tv) > 0) {
                 SOCKET c = accept(ls, 0, 0);
-                if (c != INVALID_SOCKET) am_cs2_client(c);
+                if (c != INVALID_SOCKET) am_gsi_client(c);
             }
         } else {
             WaitForSingleObject(g_am.wake, (DWORD)wait_ms);
         }
-        if (g_am.lol_on && session && now_us() >= lol_next) {
+        if (lol_on && now_us() >= lol_next) {
             am_lol_poll(session);
             lol_next = now_us() + (g_am.lol.have ? 1000000 : 3000000);
         }
@@ -442,25 +529,30 @@ static DWORD WINAPI am_thread(void *)
     return 0;
 }
 
-// The cfg file's token, from the file if there is one, else the one already in use (the switch turned off and on
-// again), else a new one: a game already running keeps reaching Rekodr with the token it read when it started.
-// g_am.token only changes when the token does (the worker compares with it).
-static void am_cs2_token(const Path &cfg)
+// The cfg files' token: the one in a game's file if there is one, else the one already in use (a switch turned
+// off and on again), else a new one. A game already running keeps reaching Rekodr with the token it read when it
+// started. g_am.token only changes when the token does (the worker compares with it).
+static void am_gsi_token()
 {
     char tok[sizeof g_am.token] = {};
     i32 k = 0;
-    if (FILE *f = _wfopen(cfg.s, L"rb")) {
+    for (i32 i = 0; i < COUNT(AM_GSI) && k < 16; i++) {
+        Path cfg;
+        if (!gsi_cfg_path(AM_GSI[i], &cfg)) continue;
+        FILE *f = _wfopen(cfg.s, L"rb");
+        if (!f) continue;
         char text[4096];
         size_t n = fread(text, 1, sizeof text - 1, f);
         fclose(f);
         text[n] = 0;
+        k = 0;
         if (const char *t = strstr(text, "\"token\"")) {
             t = strchr(t + 7, '"');
             if (t)
                 for (t++; *t && *t != '"' && k < (i32)sizeof tok - 1; t++) tok[k++] = *t;
         }
+        tok[k] = 0;
     }
-    tok[k] = 0;
     if (k < 16) {
         if (strlen(g_am.token) >= 16) return;
         u8 raw[16];
@@ -470,21 +562,18 @@ static void am_cs2_token(const Path &cfg)
     if (strcmp(tok, g_am.token)) memcpy(g_am.token, tok, sizeof tok);
 }
 
-// Writes or deletes the cfg file as the switch says. False if the game wasn't found.
-static bool am_cs2_cfg(bool on)
+// Writes or deletes a game's cfg file as its switch says. False if the game wasn't found.
+static bool am_gsi_cfg(const AmGsi &g, bool on)
 {
+    const char *name = AM_GAMES[g.game].name;
     Path cfg;
-    if (!cs2_cfg_path(&cfg)) {
-        g_am.token[0] = 0;
-        return false;
-    }
+    if (!gsi_cfg_path(g, &cfg)) return false;
     if (!on) {
-        if (DeleteFileW(cfg.s)) log_line("markers: Counter-Strike 2's cfg file removed");
+        if (DeleteFileW(cfg.s)) log_line("markers: %s's cfg file removed", name);
         return true;
     }
-    am_cs2_token(cfg);
     char text[2048];
-    i32 n = cs2_cfg_text(g_am.token, text, sizeof text);
+    i32 n = gsi_cfg_text(g, g_am.token, text, sizeof text);
     char old[2048];
     size_t old_n = 0;
     if (FILE *f = _wfopen(cfg.s, L"rb")) {
@@ -494,12 +583,12 @@ static bool am_cs2_cfg(bool on)
     if (old_n == (size_t)n && !memcmp(old, text, (size_t)n)) return true;
     FILE *f = _wfopen(cfg.s, L"wb");
     if (!f) {
-        log_line("markers: couldn't write Counter-Strike 2's cfg file (%d)", (int)GetLastError());
+        log_line("markers: couldn't write %s's cfg file (%d)", name, (int)GetLastError());
         return true;
     }
     fwrite(text, 1, (size_t)n, f);
     fclose(f);
-    log_line("markers: Counter-Strike 2's cfg file written; the game reads it when it starts");
+    log_line("markers: %s's cfg file written; the game reads it when it starts", name);
     return true;
 }
 
@@ -507,29 +596,35 @@ static bool am_cs2_cfg(bool on)
 static void automarks_apply()
 {
     const Config &c = g_app.config;
-    auto events = [&](i32 g) { return c.auto_marks && c.auto_marks_on[g] ? c.auto_marks_events[g] : 0; };
-    u32 cs2_events = events(AMG_CS2), lol_events = events(AMG_LOL);
-    bool cs2 = cs2_events != 0;
-    if (cs2 != g_am.cs2_applied || (cs2 && !g_am.token[0])) {
-        bool found = am_cs2_cfg(cs2);
-        g_am.cs2_applied = cs2;
-        if (cs2 && !found) {
-            InterlockedExchange(&g_am.cs2_state, AM_NOT_FOUND);
-            log_line("markers: Counter-Strike 2 isn't installed");
-        } else if (!cs2) InterlockedExchange(&g_am.cs2_state, AM_OFF);
+    for (i32 g = 0; g < AMG_COUNT; g++) g_am.events[g] = c.auto_marks && c.auto_marks_on[g] ? c.auto_marks_events[g] : 0;
+    bool any_gsi = false;
+    for (i32 i = 0; i < COUNT(AM_GSI); i++) any_gsi |= g_am.events[AM_GSI[i].game] != 0;
+    if (any_gsi) am_gsi_token();
+    bool gsi = false;
+    for (i32 i = 0; i < COUNT(AM_GSI); i++) {
+        const AmGsi &g = AM_GSI[i];
+        bool on = g_am.events[g.game] != 0;
+        if (on != g_am.gsi_applied[g.game] || on) {
+            bool found = am_gsi_cfg(g, on);
+            if (on && !found) {
+                if (InterlockedExchange(&g_am.state[g.game], AM_NOT_FOUND) != AM_NOT_FOUND)
+                    log_line("markers: %s isn't installed", AM_GAMES[g.game].name);
+            } else if (!on) InterlockedExchange(&g_am.state[g.game], AM_OFF);
+            else if (g_am.state[g.game] == AM_OFF || g_am.state[g.game] == AM_NOT_FOUND)
+                InterlockedExchange(&g_am.state[g.game], AM_READY);
+            g_am.gsi_applied[g.game] = on;
+            gsi |= on && found;
+        }
     }
-    g_am.cs2_events = cs2_events;
-    g_am.lol_events = lol_events;
-    g_am.cs2_on = cs2 && g_am.token[0];
-    g_am.lol_on = lol_events != 0;
-    if ((g_am.cs2_on || g_am.lol_on) && !g_am.thread) {
+    g_am.gsi_on = gsi;
+    if ((g_am.gsi_on || g_am.events[AMG_LOL]) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);
         g_am.thread = CreateThread(0, 0, am_thread, 0, 0, 0);
     }
     if (g_am.wake) SetEvent(g_am.wake);
 }
 
-static AmState automarks_state(i32 game) { return game == AMG_CS2 ? (AmState)g_am.cs2_state : AM_READY; }
+static AmState automarks_state(i32 game) { return (AmState)g_am.state[game]; }
 
 static void automarks_stop()
 {
@@ -542,5 +637,8 @@ static void automarks_stop()
     g_am.thread = 0;
 }
 
-// Uninstall: the cfg file goes, whatever the switch says.
-static void automarks_uninstall() { am_cs2_cfg(false); }
+// Uninstall: the cfg files go, whatever the switches say.
+static void automarks_uninstall()
+{
+    for (i32 i = 0; i < COUNT(AM_GSI); i++) am_gsi_cfg(AM_GSI[i], false);
+}

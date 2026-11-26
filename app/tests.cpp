@@ -3460,8 +3460,33 @@ static void test_automarks()
     T(!strcmp(words, "kill,win") && am_events_parse(words, AM_GAMES[AMG_CS2].events) == (AM_KILL | AM_WIN));
 
     char cfg[2048];
-    cs2_cfg_text("abc123", cfg, sizeof cfg);
-    T(strstr(cfg, "\"uri\"       \"http://127.0.0.1:29771/\"") && strstr(cfg, "\"token\" \"abc123\"") && strstr(cfg, "\"player_match_stats\" \"1\""));
+    gsi_cfg_text(AM_GSI[0], "abc123", cfg, sizeof cfg);
+    T(strstr(cfg, "\"uri\"       \"http://127.0.0.1:29771/\"") && strstr(cfg, "\"token\" \"abc123\"") && strstr(cfg, "\"player_match_stats\" \"1\"") &&
+      !strcmp(cfg + strlen(cfg) - 8, "    }\n}\n"));
+    gsi_cfg_text(AM_GSI[1], "abc123", cfg, sizeof cfg);
+    T(AM_GSI[1].game == AMG_DOTA2 && strstr(cfg, "\"player\" \"1\"") && !strstr(cfg, "\"round\""));
+
+    // Dota 2: the player's own kills, deaths and assists, and a won match; a spectated match has no player kills
+    auto dota = [](DotaSeen *s, const char *match, const char *state, i32 k, i32 d, i32 a, const char *win, AutoMark *out,
+                   u32 events = AM_GAMES[AMG_DOTA2].events) {
+        char body[512];
+        snprintf(body, sizeof body, "{\"provider\":{\"appid\":570},\"map\":{\"matchid\":\"%s\",\"game_state\":\"%s\","
+                 "\"win_team\":\"%s\"},\"player\":{\"team_name\":\"radiant\",\"kills\":%d,\"deaths\":%d,\"assists\":%d}}",
+                 match, state, win, k, d, a);
+        return dota_marks(s, events, body, (i64)strlen(body), out, 8);
+    };
+    DotaSeen ds = {};
+    const char *live = "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS";
+    T(dota(&ds, "77", live, 0, 0, 0, "none", m) == 0 && ds.have);
+    T(dota(&ds, "77", live, 1, 0, 1, "none", m) == 2 && !strcmp(m[0].note, "Kill") && m[0].colour == 4 && !strcmp(m[1].note, "Assist"));
+    T(dota(&ds, "77", live, 1, 1, 1, "none", m) == 1 && !strcmp(m[0].note, "Death") && m[0].colour == 1);
+    T(dota(&ds, "77", "DOTA_GAMERULES_STATE_POST_GAME", 1, 1, 1, "radiant", m) == 1 && !strcmp(m[0].note, "Win") && m[0].colour == 3);
+    T(dota(&ds, "77", "DOTA_GAMERULES_STATE_POST_GAME", 1, 1, 1, "radiant", m) == 0); // said once
+    T(dota(&ds, "78", live, 5, 5, 5, "none", m) == 0); // a new match only says where it is up to
+    T(dota(&ds, "78", live, 6, 5, 5, "none", m, AM_DEATH) == 0);
+    const char *watch = "{\"provider\":{\"appid\":570},\"map\":{\"matchid\":\"9\"},\"player\":{\"team2\":{}}}";
+    T(dota_marks(&ds, AM_GAMES[AMG_DOTA2].events, watch, (i64)strlen(watch), m, 8) == 0 && !ds.have);
+    T(am_events_parse("assist", AM_GAMES[AMG_DOTA2].events) == AM_ASSIST && am_events_parse("assist", AM_GAMES[AMG_CS2].events) == 0);
 }
 
 // Binary KeyValues, as Steam writes them, for the achievement tests.
@@ -4529,6 +4554,22 @@ static void test_layers()
 // Plugins: plugin.txt read and refused, and the lines a plugin sends kept or dropped
 static void test_plugins()
 {
+    // The timeline's value colours run grey to red, through green
+    T(tl_value_colour(0) == 0x96a0a8 && tl_value_colour(1) == 0xe82014 && tl_value_colour(-3) == 0x96a0a8 &&
+      tl_value_colour(0.42) == 0x3cbe5a);
+    // Data rows: only those in timeline_show, never Input
+    {
+        Config rc = {};
+        Layer in = {}, val = {};
+        in.kind = LAYER_INPUT, val.kind = LAYER_VALUE;
+        str_set(in.name, "p/keys");
+        str_set(val.name, "p/heart");
+        str_set(rc.timeline_show, "Clips|p/keys|p/heart");
+        T(tl_data_shown(rc, val) && !tl_data_shown(rc, in));
+        str_set(rc.timeline_show, "Clips");
+        T(!tl_data_shown(rc, val));
+    }
+
     char list[64] = "";
     word_list_toggle(list, sizeof list, "heart");
     word_list_toggle(list, sizeof list, "keys");
