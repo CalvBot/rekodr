@@ -4458,6 +4458,11 @@ static void options_automarks()
                 }
             }
             if (g == AMG_RUST && opt_am_rust(st)) marks = true;
+            if (g == AMG_TARKOV) {
+                opt_text_at(ImGui::GetWindowDrawList(), g_font_small, ImGui::GetCursorScreenPos(), COL_DIM,
+                            "Open the kill list after the raid and scroll it, so Rekodr can read it", g_am_text_end);
+                ImGui::Dummy(ImVec2(0, g_font_small->FontSize + dp(6)));
+            }
         }
         opt_am_row_end();
         // The whole row in view, its bottom clear of the page's fade

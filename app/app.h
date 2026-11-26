@@ -205,7 +205,7 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"rocket_league", "Rocket League", 0, AM_GOAL | AM_SAVE | AM_ASSIST | AM_KILL | AM_DEATH | AM_WIN},
     {"hearthstone", "Hearthstone", 0, AM_WIN},
     {"war_thunder", "War Thunder", 0, AM_KILL | AM_DEATH | AM_WIN},
-    {"tarkov", "Escape from Tarkov", 0, AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP},
+    {"tarkov", "Escape from Tarkov", 0, AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP | AM_KILL},
     {"rust", "Rust", 0, AM_KILL | AM_DEATH | AM_DOWNED | AM_SERVER | AM_ACCOUNT},
     {"star_citizen", "Star Citizen", 0, AM_KILL | AM_DEATH | AM_DOWNED | AM_SPAWN | AM_CONTRACT | AM_QUEST | AM_ZONE | AM_TRAVEL},
     {"house_flipper_2", "House Flipper 2", 0, AM_ADVANCEMENT | AM_QUEST},

@@ -23,6 +23,10 @@
 #include <wincred.h>
 #include <tlhelp32.h>
 #include <shellscalingapi.h>
+#include <windows.media.ocr.h>
+#include <windows.graphics.imaging.h>
+#include <windows.globalization.h>
+#include <memorybuffer.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -108,6 +112,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "markers.cpp"
 #include "automarks.cpp"
 #include "replays.cpp"
+#include "eftkills.cpp"
 #include "rustlog.cpp"
 #include "sclog.cpp"
 #include "hf2log.cpp"

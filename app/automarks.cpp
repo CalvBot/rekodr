@@ -1841,6 +1841,8 @@ static void rust_poll(); // rustlog.cpp
 static void rust_apply();
 static void sc_poll(); // sclog.cpp
 static void hf2_poll(); // hf2log.cpp
+static void eftkills_poll(); // eftkills.cpp
+static void eftkills_apply(const wchar_t *eft_dir);
 static void hf2_apply();
 
 // Once a second: the lines each log game on has added, and the replays games have finished.
@@ -1907,6 +1909,7 @@ static void am_logs_poll()
     rust_poll();
     sc_poll();
     hf2_poll();
+    eftkills_poll();
 }
 
 // Once a second: iRacing's and Assetto Corsa Competizione's shared memory, while the sim has it open.
@@ -2259,6 +2262,7 @@ static void automarks_apply()
     wchar_t ed[MAX_PATH] = L"";
     if (g_am.events[AMG_TARKOV]) eft_dir(ed);
     wcscpy_s(g_am.eft_dir, ed);
+    eftkills_apply(ed);
     InterlockedExchange(&g_am.state[AMG_TARKOV], !g_am.events[AMG_TARKOV] ? AM_OFF : ed[0] ? AM_READY : AM_NOT_FOUND);
     str_set(g_am.wt_me, c.wt_name);
     InterlockedExchange(&g_am.state[AMG_WAR_THUNDER], g_am.events[AMG_WAR_THUNDER] ? AM_READY : AM_OFF);

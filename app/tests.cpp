@@ -4316,6 +4316,90 @@ static void test_am_pc()
     T(am_pc_apps(c, AMG_RUST) == AM_PC_HERE);
 }
 
+// A grey picture from a PNG in testdata, w by h; free() it. 0 if it can't be read.
+static u8 *test_png_grey(const wchar_t *name, i32 *w, i32 *h)
+{
+    wchar_t path[MAX_PATH];
+    swprintf(path, MAX_PATH, L"testdata\\%s", name);
+    IWICImagingFactory *wic = 0;
+    IWICBitmapDecoder *dec = 0;
+    IWICBitmapFrameDecode *frame = 0;
+    IWICFormatConverter *conv = 0;
+    u8 *px = 0;
+    UINT uw = 0, uh = 0;
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+        SUCCEEDED(wic->CreateDecoderFromFilename(path, 0, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) &&
+        SUCCEEDED(dec->GetFrame(0, &frame)) && SUCCEEDED(wic->CreateFormatConverter(&conv)) &&
+        SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat8bppGray, WICBitmapDitherTypeNone, 0, 0, WICBitmapPaletteTypeCustom)) &&
+        SUCCEEDED(conv->GetSize(&uw, &uh)) && (px = (u8 *)malloc((size_t)uw * uh)) != 0 &&
+        FAILED(conv->CopyPixels(0, uw, uw * uh, px))) {
+        free(px);
+        px = 0;
+    }
+    if (conv) conv->Release();
+    if (frame) frame->Release();
+    if (dec) dec->Release();
+    if (wic) wic->Release();
+    *w = (i32)uw, *h = (i32)uh;
+    return px;
+}
+
+// Escape from Tarkov's kills: log lines in the shapes of a real output log, a kill list frame from a real PvE raid's
+// footage, and the time cell of a PvP one
+static void test_eft_kills()
+{
+    static char log[] =
+        "2026-11-27 03:36:10.000|1.3.5.0.48914|Info|output|application|scene preset path:maps/sandbox_preset.bundle rcid:sandbox\r\n"
+        "2026-11-27 03:36:12.000|1.3.5.0.48914|Info|output|application|Session mode: Pve\r\n"
+        "2026-11-27 03:37:00.499|1.3.5.0.48914|Info|output|application|PlayerSpawnEvent:17.33(17.33) real:28.38(28.38) diff:11.04\r\n"
+        "2026-11-27 03:37:30.636|1.3.5.0.48914|Info|output|application|GameStarted:43.51(0) real:58.51(0) diff:15\r\n"
+        "2026-11-27 03:43:16.350|1.3.5.0.48914|Info|output|backend|---> Request HTTPS, id [99]: URL: https://x/client/match/local/end, crc: .\r\n"
+        "{\r\n"
+        "2026-11-27 03:43:24.783|1.3.5.0.48914|Warn|output|Unloading the last loaded scene Assets/Scenes/UI/SessionEndUIScene.unity(build index: 50), is not supported.\r\n";
+    auto local = [](WORD h, WORD m, WORD s, WORD ms) {
+        SYSTEMTIME st = {2026, 11, 0, 27, h, m, s, ms};
+        return replay_local_us(st);
+    };
+    EftSeen seen = {};
+    EkRaid raids[4];
+    EkLogMark marks[8];
+    i32 nr = 0, nm = 0;
+    ek_log_read(log, AM_RAID_START | AM_RAID_END, &seen, raids, COUNT(raids), &nr, marks, COUNT(marks), &nm);
+    T(nr == 1 && raids[0].spawn_us == local(3, 37, 0, 499) && raids[0].end_us == local(3, 43, 16, 350) &&
+      raids[0].close_us == local(3, 43, 24, 783) && !strcmp(raids[0].map, "Ground Zero"));
+    T(nm == 2 && marks[0].t_us == local(3, 37, 30, 636) && !strcmp(marks[0].note, "Raid start (Ground Zero)") &&
+      strstr(marks[0].detail, "mode=PvE") && marks[1].t_us == raids[0].end_us && !strcmp(marks[1].note, "Raid end"));
+
+    i32 w, h;
+    u8 *cell = test_png_grey(L"eft-kill-time.png", &w, &h);
+    T(cell && ek_time_secs(cell, w, w, h) == 100);
+    free(cell);
+
+    EkKill a = {173, "Bob_1x"}, b = {173, "Bob_lx"}, c = {174, "Bob_1x"}, d = {173, "Someone"};
+    T(ek_same_kill(a, b) && !ek_same_kill(a, c) && !ek_same_kill(a, d));
+    EkKill all[4];
+    i32 n = 0;
+    EkKill rows[] = {a, b, c, d};
+    ek_merge(all, COUNT(all), &n, rows, 4);
+    T(n == 3);
+
+    CoInitializeEx(0, COINIT_MULTITHREADED);
+    T(ek_ocr_open(L"en-US"));
+    u8 *frame = test_png_grey(L"eft-kill-list.png", &w, &h);
+    T(frame && w == EK_W && h == EK_H);
+    if (!frame) return;
+    EkKill got[16];
+    n = ek_kill_list(frame, EK_LANGS[0], got, COUNT(got));
+    static const i32 secs[] = {173, 174, 178, 209, 220, 223, 272, 333, 338, 360};
+    T(n == 10);
+    for (i32 i = 0; i < n && i < 10; i++) T(got[i].secs == secs[i] && !strcmp(got[i].faction, "SCAV") && !got[i].level[0]);
+    T(n == 10 && !strcmp(got[0].name, "Lyova Shambambulish") && !strcmp(got[0].weapon, "MPX") &&
+      !strcmp(got[9].name, "Trofim Neboskryob") && !strcmp(got[9].weapon, "MP-443 Grach"));
+    memset(frame, 0, (size_t)w * h);
+    T(ek_kill_list(frame, EK_LANGS[0], got, COUNT(got)) == -1);
+    free(frame);
+}
+
 // House Flipper 2's Player.log: lines copied from a real one
 static void test_house_flipper_2()
 {
@@ -6322,6 +6406,7 @@ int main()
     test_layers_held();
     test_r6_replay();
     test_fn_replay();
+    test_eft_kills();
     test_busy();
     test_label_fit();
     test_plugins();
