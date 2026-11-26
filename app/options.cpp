@@ -213,6 +213,24 @@ static void opt_text_at(ImDrawList *dl, ImFont *font, ImVec2 p, u32 col, const c
     ImGui::PopFont();
 }
 
+// The same, cut in the middle ("C:\Users\...\bin\ffmpeg.exe") when it is too long, for paths.
+static void opt_text_mid(ImDrawList *dl, ImFont *font, ImVec2 p, u32 col, const char *text, f32 max_x)
+{
+    f32 room = max_x - p.x, size = font->FontSize;
+    if (room <= 0) return;
+    char buf[1024];
+    const char *draw = text;
+    i32 n = (i32)strlen(text), head = n / 2, tail = n - head;
+    while (font->CalcTextSizeA(size, FLT_MAX, 0, draw).x > room && head + tail > 0) {
+        // Drop a whole character from the longer side, never half of a UTF-8 one
+        if (head >= tail) do head--; while (head > 0 && (text[head] & 0xC0) == 0x80);
+        else do tail--; while (tail > 0 && (text[n - tail] & 0xC0) == 0x80);
+        snprintf(buf, sizeof buf, "%.*s...%s", head, text, text + n - tail);
+        draw = buf;
+    }
+    dl->AddText(font, size, p, col32(col), draw);
+}
+
 // The same, ending at right_x (and starting no further left than min_x).
 static void opt_text_right(ImDrawList *dl, ImFont *font, f32 right_x, f32 y, u32 col, const char *text, f32 min_x)
 {
@@ -2371,9 +2389,28 @@ static bool ffget_running();
 static bool ffget_removing();
 static bool ffget_note(char *out, i32 cap, bool *failed);
 
-// Which ffmpeg records and saves, with its version: picked by hand, found on the PATH or by winget, or Rekodr's own
-// copy. Choose picks an ffmpeg.exe, which is checked and refused with the reason if it falls short; Auto goes back
-// to finding one. Below it, Rekodr's own copy: Download (and use it, even when another is found), Use, Uninstall.
+// Where a file really is: a link (winget's Links folder holds links) followed to its target. The path itself if it
+// can't be opened.
+static Path opt_real_path(const Path &p)
+{
+    Path out = p;
+    HANDLE h = CreateFileW(p.s, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, 0);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    wchar_t full[MAX_PATH + 8];
+    DWORD n = GetFinalPathNameByHandleW(h, full, COUNT(full), VOLUME_NAME_DOS);
+    CloseHandle(h);
+    if (n == 0 || n >= COUNT(full)) return out;
+    const wchar_t *s = full;
+    if (!wcsncmp(s, L"\\\\?\\UNC\\", 8)) swprintf(out.s, MAX_PATH, L"\\\\%s", s + 8);
+    else wcsncpy_s(out.s, s + (wcsncmp(s, L"\\\\?\\", 4) ? 0 : 4), _TRUNCATE);
+    return out;
+}
+
+// Which ffmpeg records and saves, with its version, where it came from (picked by hand, found on the PATH or by
+// winget, or Rekodr's own copy) and the full path of the file. Choose picks an ffmpeg.exe, which is checked and
+// refused with the reason if it falls short; Auto goes back to finding one. Below it, Rekodr's own copy: Download
+// (and use it, even when another is found), Use, Uninstall.
 static FfCheck g_ff_used, g_ff_pick;
 
 static void opt_rows_ffmpeg(Config &c)
@@ -2412,9 +2449,33 @@ static void opt_rows_ffmpeg(Config &c)
     else snprintf(sub, sizeof sub, "%s, %s", k->version, from);
     if (picked.s[0] || g_ff_used.busy || g_ff_pick.busy || (refused[0] && now < refused_until)) ui_wake();
 
+    // The file in use, a link followed to where it really is; the one picked by hand when it isn't there
+    static Path real_of, real;
+    Path shown = have ? found : c.ffmpeg;
+    if (_wcsicmp(real_of.s, shown.s)) {
+        real_of = shown;
+        real = shown.s[0] ? opt_real_path(shown) : Path{};
+    }
+    char where[MAX_PATH * 3];
+    wide_to_utf8(real.s, where, sizeof where);
+
+    // Three lines (name, version and source, path) in a row of one height, whatever they say
     f32 bgap = ImGui::GetStyle().ItemSpacing.x;
     f32 bw = text_w(g_font, "Download") + dp(32); // every button here is this wide
-    opt_row_begin("ffmpeg", sub, 2 * bw + bgap);
+    const char *warn = g_row_warn;
+    g_row_warn = 0;
+    opt_row_begin(0, 0, 2 * bw + bgap, dp(70));
+    {
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        f32 max_x = g_row.x1 - (2 * bw + bgap) - dp(20), x = g_row.x0;
+        f32 nh = g_font->FontSize, sh = g_font_small->FontSize, gap = dp(3);
+        f32 ty = floorf(g_row.y + (g_row.h - nh - 2 * (gap + sh)) / 2);
+        char line[340];
+        snprintf(line, sizeof line, warn ? ICON_WARNING "  %s" : "%s", sub);
+        opt_text_at(dl, g_font, ImVec2(x, ty), COL_TEXT, "ffmpeg", max_x);
+        opt_text_at(dl, g_font_small, ImVec2(x, ty + nh + gap), warn ? COL_WARN : COL_DIM, line, max_x);
+        opt_text_mid(dl, g_font_small, ImVec2(x, ty + nh + 2 * gap + sh), COL_FAINT, where, max_x);
+    }
     if (kit_button("Choose##ffpick", KIT_SECONDARY, ImVec2(bw, 0), !picked.s[0] && !g_ff_pick.busy)) {
         Path p = {};
         if (pick_file(have ? found : c.ffmpeg, &p, L"ffmpeg", L"ffmpeg.exe") && ffcheck_start(&g_ff_pick, p)) {
