@@ -4753,6 +4753,47 @@ static void test_house_flipper_2()
     T(hf2_line(&s, ev, "Collapsed Log: CaptureAllPhotos for: E:\\x\\Houses\\3-8 Old dream.house", true, m, 8) == 0);
 }
 
+// A picture with several frames loads its largest: an .ico storing 16x16 (red) before 64x64 (green) gives the 64x64.
+static void test_wic_largest_frame()
+{
+    static u8 ico[20000];
+    i32 n = 0;
+    auto put16 = [&](u32 v) { ico[n++] = (u8)v; ico[n++] = (u8)(v >> 8); };
+    auto put32 = [&](u32 v) { put16(v & 0xffff); put16(v >> 16); };
+    const u32 sizes[] = {16, 64}, colours[] = {0xffff0000, 0xff00ff00};
+    put16(0); put16(1); put16(2); // ICONDIR: an icon with two entries
+    u32 offset = 6 + 16 * 2;
+    for (i32 i = 0; i < 2; i++) {
+        u32 s = sizes[i], bytes = 40 + s * s * 4 + ((s + 31) / 32) * 4 * s;
+        ico[n++] = (u8)s; ico[n++] = (u8)s; ico[n++] = 0; ico[n++] = 0;
+        put16(1); put16(32); put32(bytes); put32(offset);
+        offset += bytes;
+    }
+    for (i32 i = 0; i < 2; i++) {
+        u32 s = sizes[i];
+        put32(40); put32(s); put32(s * 2); put16(1); put16(32); put32(0); put32(s * s * 4); put32(0); put32(0); put32(0); put32(0);
+        for (u32 p = 0; p < s * s; p++) put32(colours[i]);
+        for (u32 p = 0; p < ((s + 31) / 32) * 4 * s; p++) ico[n++] = 0; // AND mask: all shown
+    }
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path file = {};
+    swprintf(file.s, MAX_PATH, L"%srekodr-test-icon-%u.ico", temp, GetCurrentProcessId());
+    FILE *f = _wfopen(file.s, L"wb");
+    if (!f) { T(false); return; }
+    fwrite(ico, 1, (size_t)n, f);
+    fclose(f);
+    CoInitializeEx(0, COINIT_MULTITHREADED);
+    IWICImagingFactory *wic = 0;
+    T(SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, 0, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))));
+    i32 w = 0, h = 0;
+    u32 *px = wic ? wic_load(wic, file.s, &w, &h) : 0;
+    T(px && w == 64 && h == 64 && px[0] == 0xff00ff00);
+    if (px) HeapFree(GetProcessHeap(), 0, px);
+    if (wic) wic->Release();
+    DeleteFileW(file.s);
+}
+
 // Bands between paired markers: to the end, else to where the game stopped being played, the next start, the cap
 // A marker's icon: its event word, a kill as its weapon's class or a headshot, an achievement's medal.
 static void test_event_icons()
@@ -6974,6 +7015,7 @@ int main()
     test_marker_spans();
     test_marker_crowds();
     test_event_icons();
+    test_wic_largest_frame();
     test_house_flipper_2();
     test_am_pc();
     test_achievements();

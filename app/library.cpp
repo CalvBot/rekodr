@@ -800,16 +800,28 @@ static void lib_scan(const Path &save_dir, const Path &cache, const Path &ffmpeg
     log_line("library: %d files, %d probed", n, run.probed);
 }
 
-// Decodes a JPEG to BGRA with WIC. Returns HeapAlloc'd pixels, or 0.
+// Decodes a picture to BGRA with WIC. A file with several frames (an .ico) gives its largest. Returns HeapAlloc'd
+// pixels, or 0.
 static u32 *wic_load(IWICImagingFactory *wic, const wchar_t *path, i32 *w, i32 *h)
 {
     IWICBitmapDecoder *dec = 0;
     IWICBitmapFrameDecode *frame = 0;
     IWICFormatConverter *conv = 0;
     u32 *pixels = 0;
-    UINT fw = 0, fh = 0;
+    UINT fw = 0, fh = 0, frames = 0, best = 0;
+    u64 best_area = 0;
     if (FAILED(wic->CreateDecoderFromFilename(path, 0, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
-    if (FAILED(dec->GetFrame(0, &frame))) goto done;
+    if (FAILED(dec->GetFrameCount(&frames))) frames = 1;
+    for (UINT i = 0; i < frames && frames > 1; i++) {
+        IWICBitmapFrameDecode *f = 0;
+        UINT iw = 0, ih = 0;
+        if (SUCCEEDED(dec->GetFrame(i, &f)) && SUCCEEDED(f->GetSize(&iw, &ih)) && (u64)iw * ih > best_area) {
+            best_area = (u64)iw * ih;
+            best = i;
+        }
+        if (f) f->Release();
+    }
+    if (FAILED(dec->GetFrame(best, &frame))) goto done;
     if (FAILED(wic->CreateFormatConverter(&conv))) goto done;
     if (FAILED(conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, 0, 0, WICBitmapPaletteTypeCustom)))
         goto done;
