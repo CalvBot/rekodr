@@ -683,53 +683,126 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
 // A running copy of an exe, for the exes several games share: its command line, the title of its window, and when
 // asked for, where it runs from (UTF-8) and the file name of the program that started it ("" when it has ended).
 
+// The command line of process `p` (opened with PROCESS_QUERY_LIMITED_INFORMATION), "" when it can't be read.
+// ProcessCommandLineInformation (60) gives it as a UNICODE_STRING, without reading the process's memory.
+static void process_cmdline(HANDLE p, char *cmdline, i32 cap)
+{
+    cmdline[0] = 0;
+    typedef LONG(WINAPI * QueryFn)(HANDLE, ULONG, void *, ULONG, ULONG *);
+    static QueryFn query = (QueryFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
+    if (!p || !query) return;
+    static thread_local u8 buf[65552]; // the most a UNICODE_STRING holds, and itself
+    ULONG got = 0;
+    if (query(p, 60, buf, sizeof buf, &got) < 0) return;
+    struct { USHORT len, max; wchar_t *text; } *us = (decltype(us))buf;
+    if (!us->text || !us->len) return;
+    static thread_local wchar_t wide[32768];
+    i32 n = us->len / 2 < COUNT(wide) - 1 ? us->len / 2 : COUNT(wide) - 1;
+    memcpy(wide, us->text, n * sizeof(wchar_t));
+    wide[n] = 0;
+    wide_to_utf8(wide, cmdline, cap);
+}
+
+// Whether a java's command line starts a Minecraft client: its main class, a loader's or a launcher's wrapper around
+// it, or the brand flag launchers set for the game.
+static bool mc_client_cmdline(const char *cmd)
+{
+    static const char *const client[] = {
+        "net.minecraft.client.main.Main", "cpw.mods.bootstraplauncher.BootstrapLauncher", "cpw.mods.modlauncher.Launcher",
+        "net.fabricmc.loader.impl.launch.knot.KnotClient", "org.quiltmc.loader.impl.launch.knot.KnotClient",
+        "net.minecraft.launchwrapper.Launch", "org.prismlauncher.EntryPoint", "org.multimc.EntryPoint",
+        "-Dminecraft.launcher.brand=",
+    };
+    for (const char *c : client)
+        if (strstr(cmd, c)) return true;
+    return false;
+}
+
+// Of several running copies of one exe, which is the game: a Minecraft client (mc_client_cmdline) before one that
+// isn't, then one with a window of its own. A modpack's helper (ATM10's crash assistant) and a launcher written in
+// Java (ATLauncher) run as javaw.exe too. Ties go to the first; -1 if n is 0.
+struct ProcessSeen { bool client, window; };
+static i32 process_pick(const ProcessSeen *seen, i32 n)
+{
+    i32 best = -1, best_score = -1;
+    for (i32 i = 0; i < n; i++) {
+        i32 score = (seen[i].client ? 2 : 0) + (seen[i].window ? 1 : 0);
+        if (score > best_score) best = i, best_score = score;
+    }
+    return best;
+}
+
+// The running copy of `exe` that is the game (process_pick) and the program that started it. 0 if none runs.
+static DWORD process_find(const char *exe, DWORD *parent_pid = 0)
+{
+    wchar_t want[MAX_PATH];
+    utf8_to_wide(exe, want, MAX_PATH);
+    enum { MAX = 16 };
+    DWORD pids[MAX], ppids[MAX];
+    i32 n = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof pe;
+    for (BOOL ok = Process32FirstW(snap, &pe); ok && n < MAX; ok = Process32NextW(snap, &pe))
+        if (!_wcsicmp(pe.szExeFile, want)) pids[n] = pe.th32ProcessID, ppids[n++] = pe.th32ParentProcessID;
+    CloseHandle(snap);
+    i32 at = n ? 0 : -1;
+    if (n > 1) {
+        struct Owners { DWORD *pids; i32 n; bool window[MAX]; } own = {pids, n, {}};
+        EnumWindows([](HWND w, LPARAM lp) -> BOOL {
+            Owners *o = (Owners *)lp;
+            DWORD owner = 0;
+            GetWindowThreadProcessId(w, &owner);
+            if (!IsWindowVisible(w) || GetWindow(w, GW_OWNER)) return TRUE;
+            for (i32 i = 0; i < o->n; i++)
+                if (o->pids[i] == owner) o->window[i] = true;
+            return TRUE;
+        }, (LPARAM)&own);
+        ProcessSeen seen[MAX];
+        for (i32 i = 0; i < n; i++) {
+            static thread_local char cmd[32768];
+            HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pids[i]);
+            process_cmdline(p, cmd, sizeof cmd);
+            if (p) CloseHandle(p);
+            seen[i] = {mc_client_cmdline(cmd), own.window[i]};
+        }
+        at = process_pick(seen, n);
+    }
+    if (at < 0) return 0;
+    if (parent_pid) *parent_pid = ppids[at];
+    return pids[at];
+}
+
 static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *title, i32 title_cap, char *image = 0,
                           i32 image_cap = 0, char *parent = 0, i32 parent_cap = 0)
 {
     cmdline[0] = title[0] = 0;
     if (image) image[0] = 0;
     if (parent) parent[0] = 0;
-    wchar_t want[MAX_PATH];
-    utf8_to_wide(exe, want, MAX_PATH);
-    DWORD pid = 0, ppid = 0;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return false;
-    PROCESSENTRY32W pe = {};
-    pe.dwSize = sizeof pe;
-    for (BOOL ok = Process32FirstW(snap, &pe); ok && !pid; ok = Process32NextW(snap, &pe))
-        if (!_wcsicmp(pe.szExeFile, want)) pid = pe.th32ProcessID, ppid = pe.th32ParentProcessID;
-    if (pid && parent && ppid)
-        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe))
-            if (pe.th32ProcessID == ppid) {
-                wide_to_utf8(pe.szExeFile, parent, parent_cap);
-                break;
-            }
-    CloseHandle(snap);
+    DWORD ppid = 0, pid = process_find(exe, &ppid);
     if (!pid) return false;
+    if (parent && ppid) {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        PROCESSENTRY32W pe = {};
+        pe.dwSize = sizeof pe;
+        if (snap != INVALID_HANDLE_VALUE) {
+            for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe))
+                if (pe.th32ProcessID == ppid) {
+                    wide_to_utf8(pe.szExeFile, parent, parent_cap);
+                    break;
+                }
+            CloseHandle(snap);
+        }
+    }
 
-    // ProcessCommandLineInformation (60): the command line as a UNICODE_STRING, without reading the process's memory
-    typedef LONG(WINAPI * QueryFn)(HANDLE, ULONG, void *, ULONG, ULONG *);
-    static QueryFn query = (QueryFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
     HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (p && image) {
         wchar_t full[MAX_PATH * 2];
         DWORD n = COUNT(full);
         if (QueryFullProcessImageNameW(p, 0, full, &n)) wide_to_utf8(full, image, image_cap);
     }
-    if (p && query) {
-        static thread_local u8 buf[65552]; // the most a UNICODE_STRING holds, and itself
-        ULONG got = 0;
-        if (query(p, 60, buf, sizeof buf, &got) >= 0) {
-            struct { USHORT len, max; wchar_t *text; } *us = (decltype(us))buf;
-            if (us->text && us->len) {
-                static thread_local wchar_t wide[32768];
-                i32 n = us->len / 2 < COUNT(wide) - 1 ? us->len / 2 : COUNT(wide) - 1;
-                memcpy(wide, us->text, n * sizeof(wchar_t));
-                wide[n] = 0;
-                wide_to_utf8(wide, cmdline, cmd_cap);
-            }
-        }
-    }
+    process_cmdline(p, cmdline, cmd_cap);
     if (p) CloseHandle(p);
 
     struct Find { DWORD pid; wchar_t title[256]; } find = {pid, L""};
@@ -751,16 +824,7 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
 static bool process_cwd(const char *exe, char *out, i32 cap)
 {
     out[0] = 0;
-    wchar_t want[MAX_PATH];
-    utf8_to_wide(exe, want, MAX_PATH);
-    DWORD pid = 0;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return false;
-    PROCESSENTRY32W pe = {};
-    pe.dwSize = sizeof pe;
-    for (BOOL ok = Process32FirstW(snap, &pe); ok && !pid; ok = Process32NextW(snap, &pe))
-        if (!_wcsicmp(pe.szExeFile, want)) pid = pe.th32ProcessID;
-    CloseHandle(snap);
+    DWORD pid = process_find(exe);
     if (!pid) return false;
     typedef LONG(WINAPI * QueryFn)(HANDLE, ULONG, void *, ULONG, ULONG *);
     static QueryFn query = (QueryFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");

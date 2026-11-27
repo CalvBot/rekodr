@@ -2189,6 +2189,24 @@ static void test_gamedb()
         T(!strcmp(jg("C:\\java\\bin\\javaw.exe", "notstarsector.exe", ""), ""));
         T(!strcmp(jg("", "", ""), ""));
     }
+    // Of several javaw.exe, the Minecraft client is the one read: not ATLauncher's own window, not a pack's helper
+    T(mc_client_cmdline("javaw -cp x.jar cpw.mods.bootstraplauncher.BootstrapLauncher --launchTarget forgeclient"));
+    T(mc_client_cmdline("javaw -Dminecraft.launcher.brand=ATLauncher -cp x net.neoforged.fml.startup.Client"));
+    T(mc_client_cmdline("javaw -cp x net.fabricmc.loader.impl.launch.knot.KnotClient"));
+    T(mc_client_cmdline("javaw -Djava.library.path=n -cp x org.prismlauncher.EntryPoint"));
+    T(!mc_client_cmdline("javaw -jar C:\\ATLauncher\\ATLauncher.exe"));
+    T(!mc_client_cmdline("javaw -cp mods\\crash_assistant.jar dev.kostromdan.mods.crash_assistant.app.CrashAssistantApp"));
+    T(!mc_client_cmdline(""));
+    {
+        ProcessSeen launcher_first[] = {{false, true}, {false, false}, {true, true}}; // ATLauncher, helper, game
+        T(process_pick(launcher_first, 3) == 2);
+        ProcessSeen helper_first[] = {{false, false}, {true, false}}; // the game's window not up yet
+        T(process_pick(helper_first, 2) == 1);
+        ProcessSeen unread[] = {{false, false}, {false, true}}; // neither line read: the one with a window
+        T(process_pick(unread, 2) == 1);
+        ProcessSeen one[] = {{false, false}};
+        T(process_pick(one, 1) == 0 && process_pick(one, 0) == -1);
+    }
     // A game the list doesn't have still gets an id for its art, the same for the same letters
     GameInfo h;
     T(gamedb_for_art("Hollow Knight", &g) && g.id[0] == 'n' && !strcmp(g.name, "Hollow Knight"));
