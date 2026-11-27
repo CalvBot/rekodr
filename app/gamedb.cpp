@@ -78,7 +78,7 @@ struct GameDbShared {
     // now. `quiet`: a picture is there, and only whether it is still the one to show is looked at.
     struct { char id[48], key[48], hash[40], name[128]; u32 steam; GameArt kind; bool paced, quiet; } want[64];
     i32        want_count;
-    // Lookups and names the player gave (`rename`), by a hash of what is sent: being sent (body set) or answered.
+    // Lookups and games the player picked (`pick`), by a hash of what is sent: being sent (body set) or answered.
     // The oldest answer makes room.
     struct { u64 hash; char *body; bool answered, pick; LookAnswer ans; } looks[64];
     i32        look_next;
@@ -2797,7 +2797,7 @@ static bool gamedb_fetch_looks()
         q.body = 0;
         ReleaseSRWLockExclusive(&g_gamedb.lock);
         if (g_gamedb.stop) return true;
-        if (rename) continue;
+        if (pick) continue;
         Event e = {};
         e.kind = EV_GAMEDB;
         e.a = GAMEDB_RESOLVED;

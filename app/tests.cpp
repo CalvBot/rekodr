@@ -2890,22 +2890,22 @@ static void test_gamedb()
     T(!image_url_ok("https://x.images.igdb.com/x.png") && !image_url_ok(""));
     {
         // A picture is one by its first bytes
-        Path f = dir;
-        wcscat(f.s, L"\\pic.bin");
-        static const char png[] = "\x89PNG\r\n\x1a\n....", jpg[] = "\xFF\xD8\xFF\xE0", gif[] = "GIF89a..",
+        Path pic = dir;
+        wcscat(pic.s, L"\\pic.bin");
+        static const char png[] = "\x89PNG\r\n\x1a\n....", jpg[] = "\xff\330\xff\340", gif[] = "GIF89a..",
                           webp[] = "RIFF....WEBPVP8 ", html[] = "<html><body>";
         const char *const good[] = {png, jpg, gif, webp};
         const i64 good_len[] = {sizeof png - 1, sizeof jpg - 1, sizeof gif - 1, sizeof webp - 1};
         for (i32 i = 0; i < 4; i++) {
-            write_whole(f, good[i], good_len[i]);
-            T(is_image_file(f));
+            write_whole(pic, good[i], good_len[i]);
+            T(is_image_file(pic));
         }
-        write_whole(f, html, sizeof html - 1);
-        T(!is_image_file(f));
-        write_whole(f, "", 0);
-        T(!is_image_file(f));
-        DeleteFileW(f.s);
-        T(!is_image_file(f));
+        write_whole(pic, html, sizeof html - 1);
+        T(!is_image_file(pic));
+        write_whole(pic, "", 0);
+        T(!is_image_file(pic));
+        DeleteFileW(pic.s);
+        T(!is_image_file(pic));
     }
     gamedb_free(g_gamedb.index);
     g_gamedb.index = 0;
@@ -4204,7 +4204,8 @@ static void test_static_tier()
     T(static_name("Endless Sky.exe", name, sizeof name) == 0xb46 && !strcmp(name, "endlesssky.exe"));
     T(static_name("End_less-Sky.exe", name, sizeof name) == 0xb46);
     T(static_name("javaw.exe", name, sizeof name) == 0x3e8);
-    T(static_name("Pok\xc3\x89mon.exe", name, sizeof name) == 0x934 && !strcmp(name, "pok\xc3\xa9mon.exe"));
+    // An E with acute in UTF-8, upper and lower case
+    T(static_name("Pok\303\211mon.exe", name, sizeof name) == 0x934 && !strcmp(name, "pok\303\251mon.exe"));
     T(static_name("", name, sizeof name) == -1 && static_name(" -_", name, sizeof name) == -1);
 
     Path keep = g_app.paths.local_dir;
@@ -4222,6 +4223,14 @@ static void test_static_tier()
         {"tool.exe", "{\"rows\":[[\"\",\"-x\",2,0,\"tool.exe\"]],"
                      "\"answers\":[{\"game\":{\"key\":\"i3\",\"name\":\"Toolgame\"},\"matched_by\":\"exe\",\"confidence\":0.8,\"art\":{}}]}"},
         {"asked.exe", "{\"ask\":[\"-mod\"]}"},
+        // As the service writes them: the file as it is spelled, its folder, the game's whole answer
+        {"cs2.exe", "{\"rows\":[[\"win64\",\"\",0,0,\"cs2.exe\"]],\"answers\":[{\"game\":{\"key\":\"d1158877933042143272\","
+                    "\"name\":\"Counter-Strike 2\",\"year\":2023,\"discord\":\"1158877933042143272\",\"sgdb\":5363838,"
+                    "\"igdb\":242408,\"stores\":{\"steam\":\"730\"}},\"matched_by\":\"discord\",\"confidence\":0.9,"
+                    "\"art\":{\"icon\":{\"url\":\"https://cdn2.steamgriddb.com/icon/a.png\"}}}]}"},
+        {"Beached-Win64-Test.exe", "{\"rows\":[[\"win64\",\"\",0,0,\"beached-win64-test.exe\"]],\"answers\":[{\"game\":"
+                                   "{\"key\":\"d1201315800460570784\",\"name\":\"BEACHED\",\"year\":null},"
+                                   "\"matched_by\":\"discord\",\"confidence\":0.9,\"art\":{}}]}"},
     };
     for (auto &e : entries) {
         i32 shard = static_name(e[0], name, sizeof name);
@@ -4244,6 +4253,13 @@ static void test_static_tier()
     T(static_lookup("game.exe", "D:/b/game.exe", "x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "s2") &&
       ans.launcher && ans.confidence < 0.61f);
     T(static_lookup("game.exe", "D:/c/game.exe", "x", "", &ans) == STATIC_ANSWER && !ans.key[0] && !strcmp(ans.how, "none"));
+    T(static_lookup("cs2.exe", "C:/Steam/steamapps/common/Counter-Strike Global Offensive/game/bin/win64/cs2.exe", "",
+                    "", &ans) == STATIC_ANSWER && !strcmp(ans.name, "Counter-Strike 2") &&
+      !strcmp(ans.key, "d1158877933042143272"));
+    // A copy run from somewhere else is still the game when no other row has its file name
+    T(static_lookup("cs2.exe", "C:/Games/cs2.exe", "", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "d1158877933042143272"));
+    T(static_lookup("beached-win64-test.exe", "E:/Beached/Win64/Beached-Win64-Test.exe", "", "", &ans) ==
+          STATIC_ANSWER && !strcmp(ans.name, "BEACHED"));
     // One told apart by its arguments: ask again with the command line, which tells
     T(static_lookup("tool.exe", "D:/t/tool.exe", "", "", &ans) == STATIC_SHARED);
     T(static_lookup("tool.exe", "D:/t/tool.exe", "tool.exe -x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "i3"));
