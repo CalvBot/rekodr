@@ -3257,7 +3257,6 @@ static void options_recording()
 static void open_url(const char *url); // setup.cpp
 static void update_start(); // update.cpp
 static void update_stop();  // update.cpp
-static const char OPT_API_REPO_URL[] = "https://github.com/CalvBot/rekodr-api"; // the art service's code
 static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/rekodr";
 // Where Support goes (a donation page). The button is hidden while it's empty.
 // TODO: the Ko-fi (or similar) page once there is one.
@@ -6004,10 +6003,6 @@ static void options_general()
         log_line("options: steam type check %s", c.steam_type_check ? "on" : "off");
         options_apply(0);
     }
-    f32 code_w = text_w(g_font, "View the code") + dp(32);
-    opt_row_begin("The service is open source", "Read exactly what it does with a request", code_w);
-    if (kit_button("View the code##repo", KIT_SECONDARY, ImVec2(code_w, 0))) open_url(OPT_API_REPO_URL);
-    opt_row_end();
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     opt_row_begin("Cached game art", "Names, icons and covers fetched so far", ImGui::GetFrameHeight());

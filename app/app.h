@@ -147,9 +147,9 @@ struct Hotkey {
                   // every-game hotkey on the same keys
 };
 
-// The service (clipback-api, its own repo): its host and the header its requests are signed in
+// The game and art service: its host and the header its requests are signed in
 static const char ART_SERVICE_HOST[] = "api.clipback.workers.dev";
-#define ART_SERVICE_SIG_HEADER L"x-clipback"
+#define ART_SERVICE_SIG_HEADER L"x-signature"
 static const u32 ACCENT_DEFAULT = 0x00897b; // the accent until Options picks another: teal
 
 static const char SAVE_NAME_DEFAULT[] = "{game} {hh}-{mm} {DD}-{MM}-{YYYY}";

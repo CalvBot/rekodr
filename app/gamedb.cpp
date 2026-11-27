@@ -1323,7 +1323,7 @@ static void gamedb_new_run(AppInfo *a)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The service (rekodr-api), which holds Discord's list and the SteamGridDB and IGDB keys. Its calls, all signed:
+// The game and art service. Its calls, all signed:
 //   POST /v1/lookup  an exe's clues -> {"game":{"key","name",...}|null, "matched_by", "confidence",
 //                    "art":{"icon":{"url","w","h","from"}|null,"hero":..,"cover":..}, "v", "ask_args"?}
 //                    (a cover only for a game with no hero)
@@ -2264,8 +2264,8 @@ static void gamedb_publish(GameIndex *ix)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Game emojis: what a Discord card puts before the game's name. The art service keeps the list by hand
-// (data/emojis.mjs in clipback-api) and sends it whole: {"emojis":[["overwatch","<:ow:123>"], ...]}.
+// Game emojis: what a Discord card puts before the game's name. The art service sends the
+// list whole: {"emojis":[["overwatch","<:ow:123>"], ...]}.
 
 enum { EMOJI_MAX = 4096 };
 struct EmojiRow {

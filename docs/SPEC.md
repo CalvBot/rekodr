@@ -343,7 +343,7 @@ One window with a header (status, pause, Help, Options):
   if it hasn't been sorted, becomes a Game. An app the list can't place is named by hand: naming an app in
   Options searches the list as you type.
 - **Web requests:** Options > General > Look up games online turns off the game list, icons and covers above,
-  along with Rekodr's own service ([rekodr-api](https://github.com/CalvBot/rekodr-api)), which names games the
+  along with Rekodr's own service, which names games the
   list can't and hands out art from SteamGridDB and IGDB, the daily usage counts and feedback; the service and
   the counts also have their own switches. With the player's own SteamGridDB key, art comes from SteamGridDB
   directly. Apart from those, Rekodr fetches new versions from its GitHub releases (Update by itself), ffmpeg
