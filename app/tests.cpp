@@ -2719,10 +2719,10 @@ static void test_gamedb()
     T(gamedb_for_art("hollow-knight", &h) && !strcmp(g.id, h.id));
     T(gamedb_for_art("Counter-Strike 2", &g) && !strcmp(g.id, "2"));
 
-    // The art service: signed as clipback-api checks it (this one worked out with node's crypto)
+    // The art service: signed with the test key as the service checks it (worked out with Python's hmac)
     char sig[128], enc[64];
     art_service_sign("/v1/search?q=Hollow%20Knight", 1763500000, sig, sizeof sig);
-    T(!strcmp(sig, "1763500000.0e4bec4a258ac83ea7eba9a7894e6108f90447c9686e2c93ba2305e3e0d1efef"));
+    T(!strcmp(sig, "1763500000.bf1a864ff50bb641a940c034d9b582241797b3bc1a47efbe5a422179fbc284e5"));
     url_encode("Garry's Mod: 2 & co~", enc, sizeof enc);
     T(!strcmp(enc, "Garry%27s%20Mod%3A%202%20%26%20co~"));
     // Its search: the game named so, else one whose name holds the name or is held in it, else none
@@ -4168,7 +4168,7 @@ static void test_mcpack()
     // A POST is signed with its body (worked out with Python's hmac)
     char sig[128];
     art_service_sign("/v1/resolve", 1763500000, sig, sizeof sig, "{\"mc\":{\"launcher\":\"prism\"}}");
-    T(!strcmp(sig, "1763500000.2aa819f4a85e9589f05f8bc1abf247b9027dc889fa57f073bb1926bb86d4905e"));
+    T(!strcmp(sig, "1763500000.e58674c0168b200a27a89691e85d90212174664cbc1d49a36b3abc9d7690bbbd"));
 
     remove_tree(root);
     T(GetFileAttributesW(root.s) == INVALID_FILE_ATTRIBUTES);

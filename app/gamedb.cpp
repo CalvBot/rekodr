@@ -1331,10 +1331,14 @@ static void gamedb_new_run(AppInfo *a)
 //   GET /v1/search?q=<name>          -> {"games":[{"id":"s5367951","name":"...","year":2017}, ...]}
 //   POST /v1/rename  a name the player gave -> 204
 // "v" is the answer's ETag: asked again with If-None-Match, an answer that hasn't changed is a 304. A picture's
-// address changes whenever the picture does. The signature only keeps the service from being an open relay for its
-// keys, so the key it is made with is no secret.
+// address changes whenever the picture does.
 
-static const char ART_SERVICE_KEY[] = "REDACTED-OLD-SERVICE-KEY";
+// The signing key comes from the build: REKODR_SERVICE_KEY (build.bat reads it from the environment or
+// ~\.secrets\rekodr-service-key).
+#ifndef REKODR_SERVICE_KEY
+#error REKODR_SERVICE_KEY is not defined
+#endif
+static const char ART_SERVICE_KEY[] = REKODR_SERVICE_KEY;
 
 // HMAC-SHA256 of msg, in hex.
 static bool hmac_sha256_hex(const char *key, const char *msg, char out[65])

@@ -20,6 +20,10 @@ rem /pathmap writes source paths as .\... and /PDBALTPATH names the .pdb without
 rem path from this PC. /pathmap needs /experimental:deterministic, which warns (5048) on __DATE__ and __TIME__.
 set FLAGS=/nologo /std:c++20 /utf-8 /W4 /wd4100 /wd4505 /wd5048 /GR- /EHs-c- /D_HAS_EXCEPTIONS=0 /Zi /FS /experimental:deterministic /pathmap:"%CD%"=.
 if "%1"=="debug" (set FLAGS=%FLAGS% /Od /MTd /DDEBUG) else (set FLAGS=%FLAGS% /O2 /MT)
+rem The service's signing key: REKODR_SERVICE_KEY, or the file ~\.secrets\rekodr-service-key. It is never in the repo.
+if "%REKODR_SERVICE_KEY%"=="" if exist "%USERPROFILE%\.secrets\rekodr-service-key" set /p REKODR_SERVICE_KEY=<"%USERPROFILE%\.secrets\rekodr-service-key"
+if "%REKODR_SERVICE_KEY%"=="" (echo error: no service key: set REKODR_SERVICE_KEY or write ~\.secrets\rekodr-service-key& exit /b 1)
+set FLAGS=%FLAGS% /DREKODR_SERVICE_KEY=\"%REKODR_SERVICE_KEY%\"
 set LIBS=user32.lib gdi32.lib shell32.lib ole32.lib advapi32.lib d3d11.lib dxgi.lib dwmapi.lib dbghelp.lib imm32.lib mmdevapi.lib mfplat.lib mfuuid.lib windowscodecs.lib oleaut32.lib winhttp.lib bcrypt.lib shcore.lib
 
 rem ASCII only: no byte above 127 in the sources, and no non-ASCII text written as hex escapes in strings either
