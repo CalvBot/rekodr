@@ -2515,7 +2515,10 @@ static void mic_sound_popup()
     lib_popup_style_push(18);
     bool open = ImGui::BeginPopupModal("mic sound", 0, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar);
     lib_popup_style_pop();
-    if (!open) return;
+    if (!open) {
+        if (g_mic_test.state != MT_IDLE) mic_test_end();
+        return;
+    }
     InputDevice *in = p.input >= 0 && p.input < c.input_count && !_stricmp(c.inputs[p.input].id, p.id) ? &c.inputs[p.input] : 0;
     if (p.input >= 0 && !in) {
         ImGui::CloseCurrentPopup();
@@ -2588,6 +2591,44 @@ static void mic_sound_popup()
         ImGui::SetCursorScreenPos(ImVec2(row.x, row.y + ImGui::GetFrameHeight() + dp(16)));
     }
 
+    // Test: a few seconds from the mic, then Before and After. The bar fills as it records, its brightness the level.
+    {
+        MicTest &t = g_mic_test;
+        if (t.autoplay) {
+            mic_test_play(t.autoplay == 1 ? 0 : 1, 1);
+            t.autoplay = 0;
+        }
+        LONG st = t.state;
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        f32 tw = dp(110), cw = dp(96), fh2 = ImGui::GetFrameHeight();
+        bool busy = st == MT_RECORDING || st == MT_RENDERING;
+        if (kit_button(ICON_MIC "  Test", KIT_SECONDARY, ImVec2(tw, 0), !busy)) {
+            Path ffmpeg = {};
+            if (!ffmpeg_find(c.ffmpeg, &ffmpeg)) ffmpeg = {};
+            mic_test_start(p.id, s, !capture_allowed(c), ffmpeg, g_app.paths.share_dir);
+        }
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        f32 bx = a.x + tw + dp(12), bw = w - tw - dp(12) - 2 * cw - dp(20), bh = dp(8), by = floorf(a.y + (fh2 - bh) / 2);
+        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), col32(COL_BG), bh / 2);
+        if (st == MT_RECORDING) {
+            f32 lv = fminf(1, t.level * 2);
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw * t.progress, by + bh), col32(COL_ACCENT, 0.45f + 0.55f * lv), bh / 2);
+        } else if (st == MT_RENDERING || st == MT_READY) {
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), col32(COL_ACCENT, st == MT_READY ? 0.35f : 0.2f), bh / 2);
+        } else if (st == MT_FAILED) {
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), col32(COL_WARN, 0.6f), bh / 2);
+        }
+        static const char *const ab[] = {"Before##mt", "After##mt"};
+        for (i32 k = 0; k < 2; k++) {
+            ImGui::SetCursorScreenPos(ImVec2(a.x + w - (2 - k) * cw - (1 - k) * dp(8), a.y));
+            if (kit_chip(ab[k], t.playing == k, 0, cw) && st == MT_READY) {
+                if (t.playing == k) mic_test_play_stop();
+                else mic_test_play(k, k);
+            }
+        }
+        ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + fh2 + dp(16)));
+    }
+
     if (kit_button("Reset", KIT_GHOST)) {
         char id[128];
         str_set(id, s.id);
@@ -2605,6 +2646,7 @@ static void mic_sound_popup()
     if (done) {
         log_line("options: mic sound %s", p.name);
         options_apply(0);
+        mic_test_resound(s);
     }
     ImGui::EndPopup();
 }
@@ -2612,6 +2654,7 @@ static void mic_sound_popup()
 static void mic_panel_open(const char *id, const char *name, i32 input)
 {
     MicPanel &p = g_mic_panel;
+    mic_test_end();
     str_set(p.id, id);
     str_set(p.name, name);
     p.input = input;

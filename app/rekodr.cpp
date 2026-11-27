@@ -98,6 +98,7 @@ static void imgui_debug_print(const char *fmt, ...)
 #include "buffer.cpp"
 #include "layers.cpp"
 #include "save.cpp"
+#include "mictest.cpp"
 #include "plugins.cpp"
 #include "busy.cpp"
 #include "erase.cpp"

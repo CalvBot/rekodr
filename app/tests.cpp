@@ -1778,6 +1778,69 @@ static void test_mic_eq_ffmpeg()
     }
 }
 
+// The Sound panel's Test on the made-up voice (a test never opens a mic): Before is written, After is Before through
+// the sound, and a changed sound makes After again.
+static f64 test_wav_rms(const Path &p)
+{
+    i64 len = 0;
+    char *b = read_file(p.s, &len);
+    f64 sum = 0;
+    i64 n = 0;
+    for (i64 at = 12; b && at + 8 <= len;) { // the chunks after "WAVE"
+        u32 size;
+        memcpy(&size, b + at + 4, 4);
+        if (!memcmp(b + at, "data", 4)) {
+            n = (i64)(size < len - at - 8 ? size : len - at - 8) / 2;
+            const i16 *pcm = (const i16 *)(b + at + 8);
+            for (i64 i = 0; i < n; i++) sum += (f64)pcm[i] * pcm[i];
+            break;
+        }
+        at += 8 + size + (size & 1);
+    }
+    free(b);
+    return n ? sqrt(sum / (f64)n) : 0;
+}
+
+static void test_mic_test()
+{
+    Path ffmpeg = {};
+    if (!ffmpeg_find(Path{}, &ffmpeg)) {
+        printf("test_mic_test: no ffmpeg, skipped\n");
+        return;
+    }
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    Path dir = {};
+    swprintf(dir.s, MAX_PATH, L"%srekodr-test-mic-%u", temp, GetCurrentProcessId());
+    MicSound s = mic_sound_default(0);
+    s.clean = false, s.gain_db = 3;
+    MicTest &t = g_mic_test;
+    t.fast = true;
+    auto wait = [&] {
+        for (i32 i = 0; i < 600 && (t.state == MT_RECORDING || t.state == MT_RENDERING); i++) Sleep(50);
+    };
+    mic_test_start("", s, true, ffmpeg, dir);
+    wait();
+    T(t.state == MT_READY && t.autoplay == 1 && t.progress == 1);
+    t.autoplay = 0;
+    f64 before = test_wav_rms(t.before), after = test_wav_rms(t.after);
+    T(before > 1000 && fabs(20 * log10(after / before) - 3) < 0.3);
+
+    s.gain_db = -6;
+    mic_test_resound(s);
+    wait();
+    T(t.state == MT_READY && t.autoplay == 2);
+    t.autoplay = 0;
+    after = test_wav_rms(t.after);
+    T(test_wav_rms(t.before) == before && fabs(20 * log10(after / before) + 6) < 0.3);
+
+    Path b = t.before, a = t.after;
+    mic_test_end();
+    T(t.state == MT_IDLE && GetFileAttributesW(b.s) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(a.s) == INVALID_FILE_ATTRIBUTES);
+    RemoveDirectoryW(dir.s);
+    t.fast = false;
+}
+
 // What is saved comes back the same.
 static void test_settings_round_trip()
 {
@@ -7324,6 +7387,7 @@ int main()
     test_mic_tracks();
     test_mic_chain();
     test_mic_eq_ffmpeg();
+    test_mic_test();
     test_sessions_seen();
     test_sessions_other_game();
     test_audio_fail_once();
