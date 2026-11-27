@@ -14,6 +14,12 @@
 // a clip already rendered, 30 s after its last change, and a first render finished meanwhile waits to be swapped in
 // until the editor is off it. A changed edit is rendered again. An edit reset to nothing, or
 // render_edits off, puts the original back over the render.
+//
+// Open with (editors.cpp) asks for a render when the clip's copy isn't its edit as it is now (render_ask): that
+// render starts at once, ahead of any other, and goes on while a game is played. A first render is swapped in under
+// the editor, which lets go of the original and plays it again from Source. Then the editor app starts with the
+// copy. With render_edits off the copy isn't swapped in: the app gets it from Data\Rendering. A render that fails
+// sends nothing.
 
 static const i64 RENDER_SETTLE_US = 30ll * 1000000;
 static const u64 RENDER_EVERY_MS = 10000; // how often the clips are looked over
@@ -37,6 +43,9 @@ struct RenderState {
     u64     restore_logged; // the key whose original couldn't go back, logged once
     u64     waiting[LIB_MAX_ITEMS]; // clips the last look found needing a render, not yet started (keys)
     i32     waiting_count;
+    u64     ask_key;      // the clip Open with waits on (render_ask), 0 = none
+    Path    ask_exe;      // the editor app it opens in
+    char    ask_name[64];
 };
 static RenderState g_render;
 
@@ -241,22 +250,133 @@ static void render_finish()
 // The editor is on the clip (it plays the original, which a first render's swap moves).
 static bool render_editor_on(const LibItem &it) { return g_app.editor.open && g_app.editor.item.key == it.key; }
 
+// render_swap with the editor on a clip rendered for the first time: the editor lets go of the original, which the
+// swap moves into Source, and plays it from there at the same place.
+static bool render_swap_editor(const LibItem &it, const Path &made)
+{
+    if (it.rendered || !render_editor_on(it)) return render_swap(it, made);
+    Editor &ed = g_app.editor;
+    f64 at = ed.player.pos;
+    player_close(&ed.player);
+    wave_close(&ed.wave);
+    bool ok = render_swap(it, made);
+    if (ok) {
+        ed.item.rendered = true;
+        ed.path = lib_item_path(ed.item);
+    }
+    ed.tracks_ready = false;
+    player_open(&ed.player, ed.path, at, false);
+    i32 tracks[MEDIA_MAX_TRACKS];
+    i32 n = ed_tracks(ed.item.info, tracks, MEDIA_MAX_TRACKS);
+    ed.wave = wave_open(ed.path, ed.item.key, ed.item.info.duration, tracks, n);
+    return ok;
+}
+
+// What came of an Open with: in the editor's note when the editor is on the clip, else the library's.
+static void render_ask_say(u64 key, bool error, const char *text)
+{
+    Editor &ed = g_app.editor;
+    if (ed.open && ed.item.key == key) {
+        str_set(ed.result, text);
+        ed.result_error = error;
+        ui_wake();
+    } else lib_note(error, "%s", text);
+}
+
+// Starts the editor app Open with asked for with `file`, the render made for it.
+static void render_ask_open(const Path &file)
+{
+    RenderState &r = g_render;
+    char msg[160];
+    bool ok = open_with_start(r.ask_exe, r.ask_name, file, msg, sizeof msg);
+    render_ask_say(r.ask_key, !ok, msg);
+    r.ask_key = 0;
+}
+
+// The render Open with waits on, finished: swapped in (render_edits on) and sent, or sent from Data\Rendering.
+// False when the swap has to be tried again.
+static bool render_ask_done()
+{
+    RenderState &r = g_render;
+    if (!g_app.config.render_edits) {
+        render_ask_open(r.made);
+        r.made = {};
+        return true;
+    }
+    if (!render_swap_editor(r.item, r.made)) return false;
+    render_finish();
+    LibItem it = r.item;
+    it.rendered = true;
+    render_ask_open(lib_playable_path(it));
+    return true;
+}
+
 // The save worker finished, failed or stopped a render.
 static void render_on_save(u32 id, i64 what, const char *text)
 {
-    if (id != g_render.job) return;
-    g_render.job = 0;
+    RenderState &r = g_render;
+    if (id != r.job) return;
+    r.job = 0;
+    bool asked = r.ask_key == r.item.key;
     if (what == SAVE_EV_DONE) {
-        utf8_to_wide(text, g_render.made.s, MAX_PATH);
-        g_render.swap_tries = 0;
-        if (!(!g_render.item.rendered && render_editor_on(g_render.item)) && render_swap(g_render.item, g_render.made))
-            render_finish();
+        utf8_to_wide(text, r.made.s, MAX_PATH);
+        r.swap_tries = 0;
+        if (asked) render_ask_done();
+        else if (!(!r.item.rendered && render_editor_on(r.item)) && render_swap(r.item, r.made)) render_finish();
     } else if (what == SAVE_EV_FAILED) {
-        auto &f = g_render.failed[g_render.failed_at++ % COUNT(g_render.failed)];
-        f.key = g_render.item.key;
-        f.hash = g_render.edit_hash;
+        auto &f = r.failed[r.failed_at++ % COUNT(r.failed)];
+        f.key = r.item.key;
+        f.hash = r.edit_hash;
+        if (asked) {
+            char msg[160];
+            snprintf(msg, sizeof msg, "Couldn't make the edited copy, so nothing went to %s", r.ask_name);
+            render_ask_say(r.ask_key, true, msg);
+            r.ask_key = 0;
+        }
     }
-    g_render.next_ms = 0; // the next clip, if any
+    r.next_ms = 0; // the next clip, if any (an asked render stopped by a save starts again)
+}
+
+// Open with asks for the clip's playable copy as its edit is now, to start `exe` with it (render_ask_open): the
+// render starts at once, a render of another clip stopping for it. False when it couldn't start.
+static bool render_ask(const LibItem &it, const Path &exe, const char *name)
+{
+    RenderState &r = g_render;
+    i64 mtime;
+    u64 hash;
+    EditRecord rec;
+    edit_read(lib_edit_path(it), &rec);
+    if (edit_is_default(rec) || !render_edit_stamp(it, &mtime, &hash)) return false;
+    r.ask_key = it.key;
+    r.ask_exe = exe;
+    if (name != r.ask_name) str_set(r.ask_name, name);
+    if (r.item.key == it.key && r.edit_hash == hash && (r.job || r.made.s[0])) { // under way, or made
+        if (r.made.s[0]) render_ask_done();
+        return true;
+    }
+    if (r.job) {
+        log_line("render: %s waits for %s, which Open with asked for", r.item.name, it.name);
+        save_cancel(r.job);
+        r.job = 0;
+    }
+    if (r.made.s[0]) { // another clip's, not swapped in yet: made again later
+        DeleteFileW(r.made.s);
+        r.made = {};
+    }
+    if (!render_start(it, rec, mtime, hash)) {
+        r.ask_key = 0;
+        return false;
+    }
+    return true;
+}
+
+// How far the render Open with waits on for clip `key` and `exe` has got, 0..1, or -1 when it waits on none.
+static f32 render_ask_progress(u64 key, const Path &exe)
+{
+    const RenderState &r = g_render;
+    if (!r.ask_key || r.ask_key != key || _wcsicmp(r.ask_exe.s, exe.s)) return -1;
+    if (r.made.s[0]) return 1;
+    return ImMax(0.0f, render_progress(key));
 }
 
 // Clears what a render left in Data\Rendering when the app stopped in the middle.
@@ -281,7 +401,7 @@ static void render_tick()
     if (r.job) {
         const SaveJobView *v = save_view(r.job);
         if (!v || v->state >= SAVE_DONE) r.job = 0; // cancelled before it ran
-        else if (game) {
+        else if (game && r.ask_key != r.item.key) {
             log_line("render: a game is being played; %s waits", r.item.name);
             save_cancel(r.job);
             r.job = 0;
@@ -289,11 +409,34 @@ static void render_tick()
         return;
     }
     if (r.made.s[0]) {
-        if (!r.item.rendered && render_editor_on(r.item)) return;
-        if (render_swap(r.item, r.made)) render_finish();
-        else if (++r.swap_tries >= 300) { // five minutes of it held open somewhere
+        bool asked = r.ask_key == r.item.key;
+        if (asked) { // the editor lets go of the clip only every few seconds, as its player starts again
+            if (++r.swap_tries % 5 == 0 && render_ask_done()) return;
+        } else if (!r.item.rendered && render_editor_on(r.item)) return;
+        else if (render_swap(r.item, r.made)) {
+            render_finish();
+            return;
+        } else ++r.swap_tries;
+        if (r.swap_tries >= 300) { // five minutes of it held open somewhere
             DeleteFileW(r.made.s);
             r.made = {};
+            if (asked) {
+                char msg[160];
+                snprintf(msg, sizeof msg, "The edited copy couldn't go in its place, so nothing went to %s", r.ask_name);
+                render_ask_say(r.ask_key, true, msg);
+                r.ask_key = 0;
+            }
+        }
+        return;
+    }
+    if (r.ask_key) { // Open with's render, stopped by a save: again, once nothing else is waiting
+        if (g_app.saving.jobs_running > 0) return;
+        const LibItem *it = 0;
+        for (i32 i = 0; i < g_app.library.item_count; i++)
+            if (g_app.library.items[i].key == r.ask_key) it = &g_app.library.items[i];
+        if (!it || !render_ask(*it, r.ask_exe, r.ask_name)) {
+            if (it) render_ask_say(r.ask_key, true, "Couldn't make the edited copy, so nothing was sent");
+            r.ask_key = 0;
         }
         return;
     }

@@ -1,6 +1,7 @@
 // Open with: video editors a clip opens in the way Explorer's Open with opens it, the editor started with the
-// video as its one argument. A clip with an edit sends its playable copy (Clips\, render.cpp) when that is made
-// from the edit as it is now, else the original. Blick, VEGAS Pro and CapCut are found where they install, unless
+// video as its one argument. A clip with an edit sends its playable copy (Clips\, render.cpp); when that isn't made
+// from the edit as it is now, it's rendered first (render_ask), with its progress on the editor's button, and the
+// editor starts when it's done. Blick, VEGAS Pro and CapCut are found where they install, unless
 // the player picked the exe in Options; exes the player added open the same way. Each is shown with its exe's own
 // icon, and only the ones found are listed. DaVinci Resolve is listed first when it's found, but it takes no file on
 // its command line: from the editor it gets the edit's XML instead (ed_open_in), and the Library leaves it out.
@@ -31,6 +32,8 @@ static i32 g_open_with_count;
 static bool g_open_with_found;
 
 static bool render_current(const LibItem &it); // render.cpp
+static bool render_ask(const LibItem &it, const Path &exe, const char *name);
+static f32  render_ask_progress(u64 key, const Path &exe);
 static bool editor_exe(Path *out);             // options.cpp: DaVinci Resolve's
 static bool path_is_file(const wchar_t *p);    // options.cpp
 static Path lib_item_path(const LibItem &it);  // library.cpp
@@ -228,47 +231,48 @@ static ID3D11ShaderResourceView *open_with_icon(OpenWith &o)
     return o.icon;
 }
 
-// The file an editor is given for a clip: its playable copy when that has the edit as it is now, else the original.
-// *without_edit is set when the clip has an edit the file given doesn't have.
-static Path open_with_file(const LibItem &item, bool *without_edit)
+// Starts the editor app `exe` with `file`. Says what happened in msg.
+static bool open_with_start(const Path &exe, const char *name, const Path &file, char *msg, i32 cap)
 {
-    *without_edit = false;
-    const LibItem *it = &item;
-    for (i32 i = 0; i < g_app.library.item_count; i++) // the library's, which knows whether it's rendered now
-        if (g_app.library.items[i].key == item.key) { it = &g_app.library.items[i]; break; }
-    EditRecord rec;
-    edit_read(lib_edit_path(*it), &rec);
-    if (it->dir || edit_is_default(rec)) return lib_item_path(*it);
-    if (render_current(*it)) return lib_playable_path(*it);
-    *without_edit = true;
-    return lib_item_path(*it);
-}
-
-// Starts editor i with the clip. Says what happened in msg.
-static bool open_with(i32 i, const LibItem &item, char *msg, i32 cap)
-{
-    OpenWith &o = g_open_with[i];
-    bool without_edit;
-    Path file = open_with_file(item, &without_edit);
     wchar_t arg[MAX_PATH + 2], dir[MAX_PATH];
     swprintf(arg, COUNT(arg), L"\"%s\"", file.s);
-    wcscpy_s(dir, o.exe.s);
+    wcscpy_s(dir, exe.s);
     if (wchar_t *slash = wcsrchr(dir, L'\\')) *slash = 0;
     char f8[MAX_PATH * 3];
     wide_to_utf8(file.s, f8, sizeof f8);
-    if ((INT_PTR)ShellExecuteW(0, L"open", o.exe.s, arg, dir, SW_SHOWNORMAL) <= 32) {
-        log_line("open with: %s didn't start (%d)", o.name, (int)GetLastError());
-        snprintf(msg, cap, "%s didn't start", o.name);
+    if ((INT_PTR)ShellExecuteW(0, L"open", exe.s, arg, dir, SW_SHOWNORMAL) <= 32) {
+        log_line("open with: %s didn't start (%d)", name, (int)GetLastError());
+        snprintf(msg, cap, "%s didn't start", name);
         return false;
     }
-    log_line("open with: %s with %s", o.name, f8);
-    if (without_edit) snprintf(msg, cap, "Opened the original in %s: the edited copy isn't made yet", o.name);
-    else snprintf(msg, cap, "Opened in %s", o.name);
+    log_line("open with: %s with %s", name, f8);
+    snprintf(msg, cap, "Opened in %s", name);
     return true;
 }
 
-// An editor's square button: its icon, or a tile with its first letter while it has none.
-static bool open_with_button(i32 i, f32 size)
+// Starts editor i with the clip: the original when it has no edit (or it's another app's video), else its playable
+// copy, which is rendered first when it isn't made from the edit as it is now. Says what happened in msg.
+static bool open_with(i32 i, const LibItem &item, char *msg, i32 cap)
+{
+    OpenWith &o = g_open_with[i];
+    const LibItem *it = &item;
+    for (i32 k = 0; k < g_app.library.item_count; k++) // the library's, which knows whether it's rendered now
+        if (g_app.library.items[k].key == item.key) { it = &g_app.library.items[k]; break; }
+    EditRecord rec;
+    edit_read(lib_edit_path(*it), &rec);
+    if (it->dir || edit_is_default(rec)) return open_with_start(o.exe, o.name, lib_item_path(*it), msg, cap);
+    if (render_current(*it)) return open_with_start(o.exe, o.name, lib_playable_path(*it), msg, cap);
+    if (!render_ask(*it, o.exe, o.name)) {
+        snprintf(msg, cap, "Couldn't start making the edited copy, so nothing went to %s", o.name);
+        return false;
+    }
+    snprintf(msg, cap, "Making the edited copy for %s", o.name);
+    return true;
+}
+
+// An editor's square button: its icon, or a tile with its first letter while it has none. While clip `key`'s edited
+// copy is being made for it, the icon dims and a bar along its foot fills.
+static bool open_with_button(i32 i, f32 size, u64 key)
 {
     OpenWith &o = g_open_with[i];
     char id[32];
@@ -281,12 +285,23 @@ static bool open_with_button(i32 i, f32 size)
     ImVec2 z(a.x + size, a.y + size);
     dl->AddRectFilled(a, z, col32(hot ? COL_HOVER : COL_PANEL2, held ? 0.8f : 1), kit_px(6));
     f32 pad = floorf(size * 0.18f);
+    f32 making = render_ask_progress(key, o.exe);
+    f32 ink = making >= 0 ? 0.35f : 1;
     if (ID3D11ShaderResourceView *icon = open_with_icon(o))
-        dl->AddImage((ImTextureID)(intptr_t)icon, ImVec2(a.x + pad, a.y + pad), ImVec2(z.x - pad, z.y - pad));
+        dl->AddImage((ImTextureID)(intptr_t)icon, ImVec2(a.x + pad, a.y + pad), ImVec2(z.x - pad, z.y - pad),
+                     ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, (int)(255 * ink)));
     else {
         char letter[2] = {o.name[0], 0};
         ImVec2 ls = ImGui::CalcTextSize(letter);
-        dl->AddText(ImVec2(floorf(a.x + (size - ls.x) / 2), floorf(a.y + (size - ls.y) / 2)), col32(COL_TEXT), letter);
+        dl->AddText(ImVec2(floorf(a.x + (size - ls.x) / 2), floorf(a.y + (size - ls.y) / 2)), col32(COL_TEXT, ink),
+                    letter);
+    }
+    if (making >= 0) {
+        f32 m = kit_px(5), h = kit_px(3);
+        ImVec2 b0(a.x + m, z.y - m - h), b1(z.x - m, z.y - m);
+        dl->AddRectFilled(b0, b1, col32(COL_TEXT, 0.15f), h);
+        if (making > 0) dl->AddRectFilled(b0, ImVec2(b0.x + (b1.x - b0.x) * making, b1.y), col32(COL_ACCENT), h);
+        ui_wake();
     }
     if (clicked) dev_click("button", o.name);
     return clicked;

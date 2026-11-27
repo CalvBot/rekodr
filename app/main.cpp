@@ -50,8 +50,18 @@ static void run_command(const char *text)
         utf8_to_wide(path, w, MAX_PATH);
         if (!r2_share_file(w, "", "", 0, 0, 0, host[0] ? host : 0)) log_line("link: every link job is busy");
     }
-    else if (!strcmp(cmd, "open-in") && g_app.ui.screen == SCREEN_EDITOR) // open-in davinci: the editor's XML in it
-        ed_open_in();
+    else if (!strcmp(cmd, "open-in") && *arg && g_app.ui.screen == SCREEN_EDITOR) { // open-in <name>: the editor's clip in
+        Editor &ed = g_app.editor;                                            // the video editor whose name starts so
+        for (i32 i = 0; i < open_with_count(); i++) {
+            if (_strnicmp(g_open_with[i].name, arg, strlen(arg))) continue;
+            if (g_open_with[i].xml) ed_open_in();
+            else {
+                ed_save_record();
+                ed.result_error = !open_with(i, ed.item, ed.result, sizeof ed.result);
+            }
+            break;
+        }
+    }
     else if (!strcmp(cmd, "save")) {
         i64 from_us, to_us;
         i32 range = parse_range_us(arg, &from_us, &to_us);
@@ -123,6 +133,10 @@ static void run_command(const char *text)
             g_app.timeline.erase_ask = true;
         }
         else if (!strcmp(arg, "edit") || !strcmp(arg, "share")) g_app.editor.tab = !strcmp(arg, "share");
+        else if (!strcmp(arg, "open-in")) { // the editor's Edit tab, scrolled to OPEN IN
+            g_app.editor.tab = 0;
+            g_ed_show_open_in = true;
+        }
         else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail
             g_app.config.games_collapsed = !strcmp(arg, "list-collapsed");
         else if (!strcmp(arg, "delete")) g_show_dialog = 1; // the first card's Delete dialog

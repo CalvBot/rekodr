@@ -2556,6 +2556,8 @@ static void ed_simple_panel(f32 w)
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 }
 
+static bool g_ed_show_open_in; // "show open-in": the Edit tab scrolled to OPEN IN
+
 static void ed_edit_tab(f32 w)
 {
     Editor &ed = g_app.editor;
@@ -2584,13 +2586,17 @@ static void ed_edit_tab(f32 w)
 
     // The video editors found, each as its icon: Resolve gets the edit as XML, the rest the clip (editors.cpp)
     ed_caption("OPEN IN");
+    if (g_ed_show_open_in) { // `show open-in`
+        ImGui::SetScrollHereY(0.3f);
+        g_ed_show_open_in = false;
+    }
     i32 nw = open_with_count();
     if (!nw) kit_dim("No video editors found: add one in Options");
     f32 sq = kit_px(40);
     i32 per_row = ImMax(1, (i32)((w + sp) / (sq + sp)));
     for (i32 i = 0; i < nw; i++) {
         if (i % per_row) ImGui::SameLine(0, sp);
-        if (!open_with_button(i, sq)) continue;
+        if (!open_with_button(i, sq, ed.item.key)) continue;
         if (g_open_with[i].xml) ed_open_in();
         else {
             ed_save_record();
