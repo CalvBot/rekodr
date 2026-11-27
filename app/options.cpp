@@ -4576,41 +4576,28 @@ static void options_integrations()
 
     opt_section("STREAM DECK");
     opt_card_begin();
-    opt_row_begin("Stream Deck", "Elgato's app for its keypads", sw + dp(12) + bw);
+    // One row: where things stand, and the button for the next step. The button is always there, so nothing moves.
+    enum { SD_NONE, SD_NO_KEYS, SD_STOPPED, SD_WAITING, SD_CONNECTED };
+    i32 sd_st = !sd_have ? SD_NONE : !plugin_in ? SD_NO_KEYS : !sd_running ? SD_STOPPED : keys ? SD_CONNECTED : SD_WAITING;
+    static const char *sd_text[] = {"Not installed", "Keys not installed", "Not running", "Waiting", "Connected"};
+    u32 sd_col = sd_st == SD_CONNECTED ? COL_OK : sd_msg_error || sd_st == SD_STOPPED ? COL_WARN : COL_DIM;
+    opt_row_begin("Stream Deck", sd_msg[0] ? sd_msg : "Keys for Save clip, Recording and Open " APP_NAME, sw + dp(12) + bw);
     {
         f32 x = ImGui::GetCursorScreenPos().x;
-        opt_status(!sd_have ? "Not installed" : sd_running ? "Running" : "Installed, not running",
-                   !sd_have ? COL_DIM : sd_running ? COL_OK : COL_WARN, x + sw, x);
+        opt_status(sd_text[sd_st], sd_col, x + sw, x);
         ImGui::SetCursorScreenPos(ImVec2(x + sw + dp(12), opt_row_frame_y()));
-        if (!sd_have) {
-            if (kit_button("Get Stream Deck##getsd", KIT_SECONDARY, ImVec2(bw, 0))) open_url("https://www.elgato.com/downloads");
-        } else if (kit_button(sd_running ? "Show##opensd" : "Start##opensd", KIT_SECONDARY, ImVec2(bw, 0))) {
-            Path sd;
-            if (streamdeck_exe(&sd)) ShellExecuteW(0, L"open", sd.s, 0, 0, SW_SHOWNORMAL);
-        }
-    }
-    opt_row_end();
-
-    opt_row_begin(APP_NAME " keys", "Save clip, Recording on / off and Open " APP_NAME, sw + dp(12) + bw);
-    {
-        f32 x = ImGui::GetCursorScreenPos().x;
-        opt_status(plugin_in ? "Installed" : "Not installed", plugin_in ? COL_OK : COL_DIM, x + sw, x);
-        ImGui::SetCursorScreenPos(ImVec2(x + sw + dp(12), opt_row_frame_y()));
-        if (kit_button(plugin_in ? "Reinstall##sdinstall" : "Install##sdinstall", plugin_in ? KIT_SECONDARY : KIT_PRIMARY,
-                       ImVec2(bw, 0), sd_have && plugin_with_us)) {
+        if (sd_st == SD_NONE) {
+            if (kit_button("Get Stream Deck##sd", KIT_SECONDARY, ImVec2(bw, 0))) open_url("https://www.elgato.com/downloads");
+        } else if (sd_st == SD_STOPPED) {
+            if (kit_button("Start Stream Deck##sd", KIT_SECONDARY, ImVec2(bw, 0))) {
+                Path sd;
+                if (streamdeck_exe(&sd)) ShellExecuteW(0, L"open", sd.s, 0, 0, SW_SHOWNORMAL);
+            }
+        } else if (kit_button(sd_st == SD_NO_KEYS ? "Install keys##sd" : "Reinstall keys##sd", sd_st == SD_NO_KEYS ? KIT_PRIMARY : KIT_SECONDARY,
+                              ImVec2(bw, 0), plugin_with_us)) {
             sd_msg_error = !streamdeck_install(sd_msg, sizeof sd_msg);
             checked = 0;
         }
-    }
-    opt_row_end();
-
-    char conn[96];
-    if (keys) snprintf(conn, sizeof conn, "Connected");
-    else snprintf(conn, sizeof conn, "%s", !plugin_in ? "Install the keys first" : !sd_running ? "Stream Deck isn't running" : "Waiting for Stream Deck");
-    opt_row_begin("Connection", sd_msg[0] ? sd_msg : "The keys talk to " APP_NAME " on this PC only", sw + dp(12) + bw);
-    {
-        f32 x = ImGui::GetCursorScreenPos().x;
-        opt_status(conn, keys ? COL_OK : sd_msg_error ? COL_WARN : COL_DIM, x + sw, x);
     }
     opt_row_end();
     opt_card_end();
