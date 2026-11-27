@@ -7,6 +7,10 @@
 // A test copy (REKODR_HOME) leaves the hotkeys and Windows' Run list to the real Rekodr.
 static bool is_test_copy() { return test_home_hash() != 0; }
 
+// Whether Rekodr records sound and video at all: a test copy only with `test_audio = true`, so trying a copy never
+// records the PC's apps, mic or screen. Game detection and the rest still run.
+static bool capture_allowed(const Config &c) { return !is_test_copy() || c.test_audio; }
+
 static void paths_init(Paths *p)
 {
     wchar_t home[MAX_PATH] = {};
@@ -800,6 +804,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "steam_type_check")) boolean(&c->steam_type_check);
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
+    else if (!strcmp(key, "test_audio")) boolean(&c->test_audio);
     else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
     else if (!strcmp(key, "seen_version")) str_set(c->seen_version, value);
@@ -1043,6 +1048,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_names", c.share_names);
     boolean("steam_type_check", c.steam_type_check);
     boolean("send_stats", c.send_stats);
+    if (c.test_audio) boolean("test_audio", c.test_audio);
     boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);
     fprintf(f, "seen_version = %s\n", c.seen_version);

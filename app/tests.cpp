@@ -172,6 +172,22 @@ static void test_sound_plan()
     T(lib_sound_plan(false, 1, 0, out) == 1 && out[0] == 0);           // one track
 }
 
+// A test copy records nothing unless its settings say test_audio = true; the real Rekodr always records.
+static void test_capture_allowed()
+{
+    static Config c;
+    config_defaults(&c, g_app.paths);
+    wchar_t keep[MAX_PATH] = {};
+    bool had = GetEnvironmentVariableW(L"REKODR_HOME", keep, MAX_PATH) != 0;
+    SetEnvironmentVariableW(L"REKODR_HOME", 0);
+    T(capture_allowed(c));
+    SetEnvironmentVariableW(L"REKODR_HOME", L"C:\\rekodr-test-home");
+    T(!capture_allowed(c));
+    c.test_audio = true;
+    T(capture_allowed(c));
+    SetEnvironmentVariableW(L"REKODR_HOME", had ? keep : 0);
+}
+
 // With no copy running, only a plain start or `open` starts Rekodr; quit, save and the rest exit
 static void test_command_starts_app()
 {
@@ -7073,6 +7089,7 @@ int main()
     InitializeSRWLock(&g_log_lock);
     test_lengths();
     test_command_starts_app();
+    test_capture_allowed();
     test_social_copy_size();
     test_select_range();
     test_tags();

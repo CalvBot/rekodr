@@ -1491,7 +1491,8 @@ static void recorder_start()
         log_line("buffer %s: keeping %g h, at least %g GB free", dir8, g_app.config.buffer_hours, g_app.config.min_free_gb);
 
     CloseHandle(thread_start(detect_thread, 0)); // not waited for at exit: the job object ends its ffmpegs
-    g_rec.recorder_thread = thread_start(recorder_thread, 0);
+    if (capture_allowed(g_app.config)) g_rec.recorder_thread = thread_start(recorder_thread, 0);
+    else log_line("test copy: nothing is recorded (test_audio = true records)");
     g_rec.prune_thread = thread_start(prune_thread, 0);
 }
 
