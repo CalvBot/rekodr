@@ -295,6 +295,9 @@ static void tl_make_rows()
         if (tl.stream_row[s] >= 0) tl.stream_row[s] = (i16)moved_to[tl.stream_row[s]];
 }
 
+static void tl_runs_take(const BufferIdx &b);
+static void tl_peak_sums_take(const BufferIdx &b);
+
 static void tl_take_index(i64 ms)
 {
     FRAME_PART("timeline index swap");
@@ -311,6 +314,8 @@ static void tl_take_index(i64 ms)
         log_line("timeline: buffer read in %lld ms: %d video segments in %d runs, %d audio streams, %d activity lines",
                  ms, fresh->seg_count, fresh->run_count, fresh->stream_count, fresh->activity_count);
     }
+    tl_runs_take(*fresh);
+    tl_peak_sums_take(*fresh);
     tl.idx = fresh;
     tl.loaded = true;
     tl_make_rows();
@@ -1494,6 +1499,11 @@ static f32 tl_x(const TlCanvas &c, i64 t) { return c.x0 + (f32)((f64)(t - c.star
 
 static i64 tl_t(const TlCanvas &c, f32 x) { return c.start + (i64)((f64)(x - c.x0) / c.px_per_us); }
 
+// How long a column of the bars is: two pixels, the narrowest anything is drawn as. Gathered into columns, a row
+// has at most about two runs a column, so TL_RUNS_MAX holds them at any zoom on any screen.
+static i64 tl_col_us(const TlCanvas &c) { return (i64)(2 / c.px_per_us) + 1; }
+enum { TL_RUNS_MAX = 8192 };
+
 // Draws [a, b] as a bar in one row, clipped to the view, at least a pixel wide.
 static void tl_span(const TlCanvas &c, i64 a, i64 b, f32 y, f32 h, ImU32 col)
 {
@@ -1520,6 +1530,77 @@ static TlRun tl_run_add(const TlCanvas &c, TlRun *r, i64 a, i64 z, f32 y, f32 h,
     r->a = a;
     r->z = z;
     return drawn;
+}
+
+// The footage and each sound stream as runs: segments joined where the gap between them is 50 ms or less, as
+// tl_run_add joins them. Made once per index, so a wide view draws from a few hundred runs, not every segment.
+// A stream's open last segment has no end yet: its run's `open` is that segment's start, and the run reaches on to
+// min(now, open + 12 s) (tl_snd_end).
+struct TlSpan { i64 a, z, open; };
+static TlSpan *g_tl_foot; // the footage's runs (tl.idx's segs)
+static i32 g_tl_foot_count;
+static TlSpan *g_tl_snd;      // every stream's runs, by stream
+static i32 *g_tl_snd_first;   // stream st's runs are g_tl_snd[g_tl_snd_first[st]] up to g_tl_snd_first[st + 1]
+static i32 g_tl_snd_streams;
+
+// Adds a segment to the runs out[0..n), returns the new count
+static i32 tl_span_join(TlSpan *out, i32 n, i64 a, i64 z, i64 open)
+{
+    if (n && !out[n - 1].open && a - out[n - 1].z <= 50000) {
+        if (z > out[n - 1].z) out[n - 1].z = z;
+        out[n - 1].open = open;
+        return n;
+    }
+    out[n] = {a, z, open};
+    return n + 1;
+}
+
+static i64 tl_snd_end(const TlSpan &r, i64 now)
+{
+    if (!r.open) return r.z;
+    i64 e = ImMin(now, r.open + 12 * TL_SEC);
+    return e > r.z ? e : r.z;
+}
+
+// The first of runs[0..n) that ends after t
+static i32 tl_span_after(const TlSpan *runs, i32 n, i64 t)
+{
+    i32 lo = 0, hi = n;
+    while (lo < hi) {
+        i32 mid = (lo + hi) / 2;
+        if (runs[mid].z <= t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static void tl_runs_take(const BufferIdx &b)
+{
+    free(g_tl_foot);
+    free(g_tl_snd);
+    free(g_tl_snd_first);
+    g_tl_foot = (TlSpan *)malloc((b.seg_count ? b.seg_count : 1) * sizeof *g_tl_foot);
+    g_tl_snd = (TlSpan *)malloc((b.audio_seg_count ? b.audio_seg_count : 1) * sizeof *g_tl_snd);
+    g_tl_snd_first = (i32 *)malloc((b.stream_count + 1) * sizeof *g_tl_snd_first);
+    g_tl_foot_count = g_tl_snd_streams = 0;
+    if (!g_tl_foot || !g_tl_snd || !g_tl_snd_first) return;
+    for (i32 i = 0; i < b.seg_count; i++)
+        g_tl_foot_count = tl_span_join(g_tl_foot, g_tl_foot_count, b.segs[i].start_us, b.segs[i].end_us, 0);
+    i32 n = 0;
+    for (i32 st = 0; st < b.stream_count; st++) {
+        g_tl_snd_first[st] = n;
+        i32 first = n;
+        const AudioStreamInfo &info = b.streams[st];
+        for (i32 j = 0; j < info.seg_count; j++) {
+            const AudioSeg &seg = b.audio_segs[info.first_seg + j];
+            // An open segment is the one being written, or one left behind when Rekodr was killed: segments are
+            // 10 s, so it can't reach past that (else a dead stream would seem to run up to now).
+            n = first + tl_span_join(g_tl_snd + first, n - first, seg.start_us, seg.open ? seg.start_us : seg.end_us,
+                                     seg.open ? seg.start_us : 0);
+        }
+    }
+    g_tl_snd_first[b.stream_count] = n;
+    g_tl_snd_streams = b.stream_count;
 }
 
 // Where a block's label goes, inside the block from xa to xb: the icon (when there is one and it fits) and the room
@@ -1644,13 +1725,15 @@ static ID3D11ShaderResourceView *tl_thumb(i64 t)
 }
 
 // Sound groups, collapsible from their header in the track list. Kept for the run, like the view.
-// The sound lanes' waveforms: each stream's peaks.bin (audio.cpp), read whole once and then as it grows, with a
-// coarse copy (the loudest of each 64) so a long view reads a value or two per pixel. Kept for the streams drawn
-// lately; the rest are let go.
-enum { TL_PEAKS_MAX = 192, TL_PEAK_US = 100000, TL_PEAK_COARSE = 64 };
+// The sound lanes' waveforms: each stream's peaks.bin (audio.cpp), a peak every TL_PEAK_US. Two copies:
+// - every stream's summed up (TlPeakSum): the loudest of each TL_PEAK_COARSE peaks and of each TL_PEAK_COARSE2,
+//   kept for the whole buffer (a day of a stream is under 2 KB), so a wide view never reads a file;
+// - the peaks themselves (TlPeaks), read only for a close view and kept for the streams drawn lately.
+// Both are read whole once and then as the stream grows.
+enum { TL_PEAKS_MAX = 192, TL_PEAK_US = 100000, TL_PEAK_COARSE = 64, TL_PEAK_COARSE2 = 1024 };
 struct TlPeaks {
     char dir[128];
-    u8  *v, *coarse;
+    u8  *v;
     i32  count, cap;
     u64  read_tick;  // GetTickCount64 when the file was last read
     u32  used;       // the frame it was last drawn in
@@ -1658,7 +1741,41 @@ struct TlPeaks {
 static TlPeaks g_tl_peaks[TL_PEAKS_MAX];
 static u32 g_tl_peaks_frame;
 
-static const TlPeaks *tl_peaks(const BufferIdx &b, const AudioStreamInfo &info, bool growing)
+struct TlPeakSum {
+    char dir[128];
+    u8  *c1, *c2;   // the loudest of each TL_PEAK_COARSE peaks, of each TL_PEAK_COARSE2
+    i32  count;     // peaks summed up
+    i32  cap;       // room for, in peaks
+    u64  read_tick; // 0 = not read yet
+};
+static TlPeakSum *g_tl_sums; // one per stream of the index drawn (tl.idx), in its order
+static i32 g_tl_sum_count;
+static i32 g_tl_sum_reads;   // first reads this frame: a wide view of a long buffer reads its streams over a few frames
+
+// Calls take(bytes, n, at) with what peaks.bin holds past its first `from` peaks. False when it can't be read.
+template <typename F> static bool tl_peaks_read(const char *dir, i32 from, F take)
+{
+    wchar_t wdir[128];
+    utf8_to_wide(dir, wdir, COUNT(wdir));
+    Path path = path_join(path_join(path_join(g_tl.buffer_dir, L"audio"), wdir), L"peaks.bin");
+    HANDLE h = CreateFileW(path.s, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size;
+    bool ok = GetFileSizeEx(h, &size) && size.QuadPart < (1 << 24);
+    if (ok && size.QuadPart > from) {
+        i32 n = (i32)size.QuadPart - from;
+        u8 *buf = (u8 *)malloc(n);
+        LARGE_INTEGER at;
+        at.QuadPart = from;
+        DWORD got = 0;
+        if (buf && SetFilePointerEx(h, at, 0, FILE_BEGIN) && ReadFile(h, buf, n, &got, 0)) take(buf, (i32)got, from);
+        free(buf);
+    }
+    CloseHandle(h);
+    return ok;
+}
+
+static const TlPeaks *tl_peaks(const AudioStreamInfo &info, bool growing)
 {
     TlPeaks *p = 0, *oldest = &g_tl_peaks[0];
     for (TlPeaks &q : g_tl_peaks) {
@@ -1669,7 +1786,6 @@ static const TlPeaks *tl_peaks(const BufferIdx &b, const AudioStreamInfo &info, 
     if (!p) {
         p = oldest;
         free(p->v);
-        free(p->coarse);
         *p = {};
         str_set(p->dir, info.dir);
     } else if (!growing || tick - p->read_tick < 1000) {
@@ -1678,38 +1794,119 @@ static const TlPeaks *tl_peaks(const BufferIdx &b, const AudioStreamInfo &info, 
     }
     p->used = g_tl_peaks_frame;
     p->read_tick = tick;
-    // What's been added since the last read
-    wchar_t wdir[128];
-    utf8_to_wide(info.dir, wdir, COUNT(wdir));
-    Path path = path_join(path_join(path_join(g_tl.buffer_dir, L"audio"), wdir), L"peaks.bin");
-    HANDLE h = CreateFileW(path.s, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
-    if (h == INVALID_HANDLE_VALUE) return p;
-    LARGE_INTEGER size;
-    if (GetFileSizeEx(h, &size) && size.QuadPart > p->count && size.QuadPart < (1 << 24)) {
-        i32 n = (i32)size.QuadPart;
-        if (n > p->cap) {
-            i32 cap = n + 6000; // ten minutes to grow into
-            u8 *v = (u8 *)realloc(p->v, cap), *c = (u8 *)realloc(p->coarse, cap / TL_PEAK_COARSE + 1);
-            if (v) p->v = v;
-            if (c) p->coarse = c;
-            if (v && c) p->cap = cap;
+    tl_peaks_read(info.dir, p->count, [&](const u8 *v, i32 n, i32 at) {
+        if (at + n > p->cap) {
+            i32 cap = at + n + 6000; // ten minutes to grow into
+            u8 *grown = (u8 *)realloc(p->v, cap);
+            if (!grown) return;
+            p->v = grown, p->cap = cap;
         }
-        LARGE_INTEGER at;
-        at.QuadPart = p->count;
-        DWORD got = 0;
-        if (n <= p->cap && SetFilePointerEx(h, at, 0, FILE_BEGIN) && ReadFile(h, p->v + p->count, n - p->count, &got, 0)) {
-            i32 from = p->count / TL_PEAK_COARSE;
-            p->count += (i32)got;
-            for (i32 k = from; k * TL_PEAK_COARSE < p->count; k++) {
-                u8 m = 0;
-                for (i32 i = k * TL_PEAK_COARSE; i < (k + 1) * TL_PEAK_COARSE && i < p->count; i++) m = p->v[i] > m ? p->v[i] : m;
-                p->coarse[k] = m;
+        memcpy(p->v + at, v, n);
+        p->count = at + n;
+    });
+    return p;
+}
+
+// Adds peaks [at, at + n) to a summary
+static void tl_peak_sum_add(TlPeakSum *p, const u8 *v, i32 n, i32 at)
+{
+    if (at + n > p->cap) {
+        i32 cap = at + n + 6000, was1 = p->cap ? p->cap / TL_PEAK_COARSE + 1 : 0, was2 = p->cap ? p->cap / TL_PEAK_COARSE2 + 1 : 0;
+        u8 *c1 = (u8 *)realloc(p->c1, cap / TL_PEAK_COARSE + 1);
+        if (c1) p->c1 = c1;
+        u8 *c2 = (u8 *)realloc(p->c2, cap / TL_PEAK_COARSE2 + 1);
+        if (c2) p->c2 = c2;
+        if (!c1 || !c2) return;
+        memset(p->c1 + was1, 0, cap / TL_PEAK_COARSE + 1 - was1);
+        memset(p->c2 + was2, 0, cap / TL_PEAK_COARSE2 + 1 - was2);
+        p->cap = cap;
+    }
+    for (i32 i = 0; i < n; i++) {
+        i32 j = at + i;
+        if (v[i] > p->c1[j / TL_PEAK_COARSE]) p->c1[j / TL_PEAK_COARSE] = v[i];
+        if (v[i] > p->c2[j / TL_PEAK_COARSE2]) p->c2[j / TL_PEAK_COARSE2] = v[i];
+    }
+    if (at + n > p->count) p->count = at + n;
+}
+
+// Stream `st`'s summary, read when it hasn't been yet (64 streams a frame at most) and again each second while it
+// grows. 0 when it hasn't been read yet.
+static const TlPeakSum *tl_peak_sum(i32 st, bool growing)
+{
+    if (st >= g_tl_sum_count) return 0;
+    TlPeakSum *p = &g_tl_sums[st];
+    u64 tick = GetTickCount64();
+    if (p->read_tick && (!growing || tick - p->read_tick < 1000)) return p;
+    if (!p->read_tick && g_tl_sum_reads++ >= 64) {
+        ui_wake(2);
+        return 0;
+    }
+    p->read_tick = tick;
+    tl_peaks_read(p->dir, p->count, [&](const u8 *v, i32 n, i32 at) { tl_peak_sum_add(p, v, n, at); });
+    return p;
+}
+
+// The loudest of a summary's peaks from a to z (wall clock), 0..1 as drawn: from the coarser copy when that still
+// gives a few values
+static f32 tl_peak_sum_in(const TlPeakSum &p, i64 start_us, i64 a, i64 z)
+{
+    i64 i0 = (a - start_us) / TL_PEAK_US, i1 = (z - start_us) / TL_PEAK_US + 1;
+    if (i0 < 0) i0 = 0;
+    if (i1 > p.count) i1 = p.count;
+    if (i1 <= i0) return 0;
+    u8 m = 0;
+    if (i1 - i0 > 2 * TL_PEAK_COARSE2) {
+        for (i64 k = i0 / TL_PEAK_COARSE2; k * TL_PEAK_COARSE2 < i1; k++) m = p.c2[k] > m ? p.c2[k] : m;
+    } else {
+        for (i64 k = i0 / TL_PEAK_COARSE; k * TL_PEAK_COARSE < i1; k++) m = p.c1[k] > m ? p.c1[k] : m;
+    }
+    return m / 255.f;
+}
+
+static void tl_peak_sums_free()
+{
+    for (i32 i = 0; i < g_tl_sum_count; i++) {
+        free(g_tl_sums[i].c1);
+        free(g_tl_sums[i].c2);
+    }
+    free(g_tl_sums);
+    g_tl_sums = 0;
+    g_tl_sum_count = 0;
+}
+
+// A new index's summaries: the ones its streams had in the last index are carried over (by folder), the rest start
+// unread
+static void tl_peak_sums_take(const BufferIdx &b)
+{
+    TlPeakSum *sums = (TlPeakSum *)calloc(b.stream_count ? b.stream_count : 1, sizeof *sums);
+    if (!sums) return;
+    i32 slots = 16; // the old ones by their folder's hash, in a table at least twice their number
+    while (slots < 2 * g_tl_sum_count) slots *= 2;
+    i32 *table = (i32 *)malloc(slots * sizeof *table);
+    for (i32 k = 0; table && k < slots; k++) table[k] = -1;
+    for (i32 i = 0; table && i < g_tl_sum_count; i++) {
+        i32 k = (i32)(fnv64(g_tl_sums[i].dir, strlen(g_tl_sums[i].dir)) & (slots - 1));
+        while (table[k] >= 0) k = (k + 1) & (slots - 1);
+        table[k] = i;
+    }
+    for (i32 st = 0; st < b.stream_count; st++) {
+        const char *dir = b.streams[st].dir;
+        if (table) {
+            for (i32 k = (i32)(fnv64(dir, strlen(dir)) & (slots - 1)); table[k] >= 0; k = (k + 1) & (slots - 1)) {
+                TlPeakSum &old = g_tl_sums[table[k]];
+                if (old.dir[0] && !strcmp(old.dir, dir)) {
+                    sums[st] = old;
+                    old = {};
+                    break;
+                }
             }
         }
+        if (!sums[st].dir[0]) str_set(sums[st].dir, dir);
     }
-    CloseHandle(h);
-    (void)b;
-    return p;
+    free(table);
+    tl_peak_sums_free();
+    g_tl_sums = sums;
+    g_tl_sum_count = b.stream_count;
 }
 
 // Footage was deleted (erase.cpp): the next read is a whole one, and the frames and waveforms are read again.
@@ -1722,8 +1919,14 @@ static void timeline_on_erase(const Event &e)
     tl_frames_drop();
     for (TlPeaks &q : g_tl_peaks) {
         free(q.v);
-        free(q.coarse);
         q = {};
+    }
+    for (i32 i = 0; i < g_tl_sum_count; i++) { // read again from the start
+        free(g_tl_sums[i].c1);
+        free(g_tl_sums[i].c2);
+        g_tl_sums[i].c1 = g_tl_sums[i].c2 = 0;
+        g_tl_sums[i].count = g_tl_sums[i].cap = 0;
+        g_tl_sums[i].read_tick = 0;
     }
     if (tl.idx) tl_ask_index();
     if (e.b && tl.erase_step == TL_ERASE_RUNNING) tl.erase_step = TL_ERASE_DONE;
@@ -1736,13 +1939,8 @@ static f32 tl_peak_in(const TlPeaks &p, i64 start_us, i64 a, i64 z)
     i64 i0 = (a - start_us) / TL_PEAK_US, i1 = (z - start_us) / TL_PEAK_US + 1;
     if (i0 < 0) i0 = 0;
     if (i1 > p.count) i1 = p.count;
-    if (i1 <= i0) return 0;
     u8 m = 0;
-    if (i1 - i0 > 2 * TL_PEAK_COARSE) {
-        for (i64 k = i0 / TL_PEAK_COARSE; k * TL_PEAK_COARSE < i1; k++) m = p.coarse[k] > m ? p.coarse[k] : m;
-    } else {
-        for (i64 i = i0; i < i1; i++) m = p.v[i] > m ? p.v[i] : m;
-    }
+    for (i64 i = i0; i < i1; i++) m = p.v[i] > m ? p.v[i] : m;
     return m / 255.f;
 }
 
@@ -1904,8 +2102,8 @@ static i64 tl_draw_afk(const TlCanvas &c, f32 y, f32 h, f32 s, f32 mouse_x, i64 
 {
     const Layer *l = tl_data_layer(BUSY_AWAY_LAYER);
     if (!l) return 0;
-    static LayerRun runs[256];
-    i32 n = layer_steady_runs(*l, c.start, c.start + c.span, open_end, 0, runs, COUNT(runs));
+    static LayerRun runs[TL_RUNS_MAX];
+    i32 n = layer_steady_runs(*l, c.start, c.start + c.span, open_end, 0, tl_col_us(c), runs, COUNT(runs));
     i64 hit = 0;
     for (i32 i = 0; i < n; i++) {
         f32 xa = ImMax(tl_x(c, runs[i].a), c.x0), xb = ImMin(tl_x(c, runs[i].z), c.x1);
@@ -1917,11 +2115,12 @@ static i64 tl_draw_afk(const TlCanvas &c, f32 y, f32 h, f32 s, f32 mouse_x, i64 
     return hit;
 }
 
-// The stretches of a Spans or Text layer in view. Spans switches under LAYER_STEADY_US are left out.
-static i32 tl_data_runs(const Layer &l, const TlCanvas &c, i64 open_end, LayerRun *out, i32 cap)
+// The stretches of a Spans or Text layer in view. Spans switches under LAYER_STEADY_US are left out. Drawn, they
+// are gathered into columns (col_us, LayerRunLod); listed, every one is.
+static i32 tl_data_runs(const Layer &l, const TlCanvas &c, i64 open_end, i64 col_us, LayerRun *out, i32 cap)
 {
-    return layer_steady_runs(l, c.start, c.start + c.span, open_end, l.kind == LAYER_SPANS ? LAYER_STEADY_US : 0, out,
-                             cap);
+    return layer_steady_runs(l, c.start, c.start + c.span, open_end, l.kind == LAYER_SPANS ? LAYER_STEADY_US : 0,
+                             col_us, out, cap);
 }
 
 // Stretches drawn as named blocks. Returns the one under `mouse_x`, or -1.
@@ -2240,7 +2439,7 @@ static void screen_timeline()
 
     // Markers in view, on the ruler. A click on one puts the playhead there and shows its note; a right click opens
     // the whole note.
-    static Marker marks[256];
+    static Marker marks[2048]; // every marker in view: a crowd draws as one icon however many it holds
     static Marker mark_open; // the one whose note is open
     static ImVec2 mark_show_at; // where `show timeline-at` opens it; (0, 0) = at the mouse
     i32 mark_count = markers_in(c.start - c.span / 50, c.start + c.span + c.span / 50, marks, COUNT(marks));
@@ -2737,8 +2936,8 @@ static void screen_timeline()
         f32 y = y_video + 1 * s, h = video_h - 2 * s;
         TlRun run = {};
         ImU32 col = col32(TL_COL_VIDEO, 0.9f);
-        for (i32 i = tl_seg_after(b, c.start); i < b.seg_count && b.segs[i].start_us < view_end; i++)
-            tl_run_add(c, &run, b.segs[i].start_us, b.segs[i].end_us, y, h, col);
+        for (i32 i = tl_span_after(g_tl_foot, g_tl_foot_count, c.start); i < g_tl_foot_count && g_tl_foot[i].a < view_end; i++)
+            tl_run_add(c, &run, g_tl_foot[i].a, g_tl_foot[i].z, y, h, col);
         if (run.a) tl_span(c, run.a, run.z, y, h, col);
         f32 thumb_w = floorf(h * (f32)TL_FRAME_W / (f32)TL_FRAME_H);
         i64 step = tl_thumb_step((i64)((f64)thumb_w / c.px_per_us));
@@ -2789,8 +2988,8 @@ static void screen_timeline()
             };
             TlRun gr = {};
             i64 lo = e.us > c.start ? e.us : c.start, hi = end < view_end ? end : view_end;
-            for (i32 k = tl_seg_after(b, lo); k < b.seg_count && b.segs[k].start_us < hi; k++) {
-                i64 sa = b.segs[k].start_us > e.us ? b.segs[k].start_us : e.us, sz = b.segs[k].end_us < end ? b.segs[k].end_us : end;
+            for (i32 k = tl_span_after(g_tl_foot, g_tl_foot_count, lo); k < g_tl_foot_count && g_tl_foot[k].a < hi; k++) {
+                i64 sa = g_tl_foot[k].a > e.us ? g_tl_foot[k].a : e.us, sz = g_tl_foot[k].z < end ? g_tl_foot[k].z : end;
                 if (sz <= sa) continue;
                 TlRun drawn = tl_run_add(c, &gr, sa, sz, y, h, gc);
                 if (drawn.a) label(drawn);
@@ -2825,8 +3024,8 @@ static void screen_timeline()
                 snprintf(data_pin, sizeof data_pin, "%s  %.0f %s", head.label, v, head.unit);
             }
         } else {
-            static LayerRun runs[512];
-            i32 n = tl_data_runs(*l, c, now, runs, COUNT(runs));
+            static LayerRun runs[TL_RUNS_MAX];
+            i32 n = tl_data_runs(*l, c, now, tl_col_us(c), runs, COUNT(runs));
             i32 hit = tl_draw_runs(c, runs, n, y, h, s, mouse_x);
             if (hit >= 0) {
                 char len[32];
@@ -2848,6 +3047,7 @@ static void screen_timeline()
 
     // Sound: when each app had a stream open, faintly, and over it the loudest of the lane's apps at each moment
     g_tl_peaks_frame++;
+    g_tl_sum_reads = 0;
     static f32 lane_peak[COUNT(tl.rows)][2048];
     static f32 lane_cov[COUNT(tl.rows)][2048][2]; // the part of each column the lane's bars cover, x from and to
     f32 wstep = floorf(2 * s) > 1 ? floorf(2 * s) : 1;
@@ -2863,15 +3063,27 @@ static void screen_timeline()
         const AudioSeg &last = b.audio_segs[info.first_seg + info.seg_count - 1];
         i64 st_end = last.open ? now : last.end_us;
         if (st_end < c.start || info.start_us > view_end) continue;
-        const TlPeaks *pk = tl_peaks(b, info, last.open);
-        if (!pk->count) continue;
+        // Only the columns the stream is in
+        i32 i0 = (i32)ImClamp((tl_x(c, info.start_us) - c.x0) / wstep, 0.f, (f32)columns);
+        i32 i1 = (i32)ImClamp((tl_x(c, st_end) - c.x0) / wstep + 1, 0.f, (f32)columns);
         i32 k = row_lane[tl.stream_row[st]];
-        for (i32 i = 0; i < columns; i++) {
-            f32 x = c.x0 + i * wstep;
-            i64 a = tl_t(c, x), z = tl_t(c, x + wstep);
-            if (z < info.start_us || a > st_end) continue;
-            f32 v = tl_peak_in(*pk, info.start_us, a, z);
-            if (v > lane_peak[k][i]) lane_peak[k][i] = v;
+        // A wide view reads the stream's summary, a close one its peaks
+        if ((f64)wstep / c.px_per_us > 2 * TL_PEAK_COARSE * TL_PEAK_US) {
+            const TlPeakSum *sum = tl_peak_sum(st, last.open);
+            if (!sum || !sum->count) continue;
+            for (i32 i = i0; i < i1; i++) {
+                f32 x = c.x0 + i * wstep;
+                f32 v = tl_peak_sum_in(*sum, info.start_us, tl_t(c, x), tl_t(c, x + wstep));
+                if (v > lane_peak[k][i]) lane_peak[k][i] = v;
+            }
+        } else {
+            const TlPeaks *pk = tl_peaks(info, last.open);
+            if (!pk->count) continue;
+            for (i32 i = i0; i < i1; i++) {
+                f32 x = c.x0 + i * wstep;
+                f32 v = tl_peak_in(*pk, info.start_us, tl_t(c, x), tl_t(c, x + wstep));
+                if (v > lane_peak[k][i]) lane_peak[k][i] = v;
+            }
         }
     }
     // Each lane's bars: every stream's segments in it (in Simple, every app of its kind), merged so that where
@@ -2884,13 +3096,11 @@ static void screen_timeline()
     for (i32 st = 0; st < b.stream_count && st < COUNT(tl.stream_row); st++) {
         if (tl.stream_row[st] < 0) continue;
         i32 k = row_lane[tl.stream_row[st]];
-        const AudioStreamInfo &info = b.streams[st];
-        for (i32 j = 0; j < info.seg_count; j++) {
-            const AudioSeg &seg = b.audio_segs[info.first_seg + j];
-            // An open segment is the one being written, or one left behind when Rekodr was killed: segments are
-            // 10 s, so it can't reach past that (else a dead stream would seem to run up to now).
-            i64 e = seg.open ? ImMin(now, seg.start_us + 12 * TL_SEC) : seg.end_us;
-            if (e < c.start || seg.start_us > view_end) continue;
+        if (st >= g_tl_snd_streams) break;
+        for (i32 j = g_tl_snd_first[st]; j < g_tl_snd_first[st + 1]; j++) {
+            const TlSpan &r = g_tl_snd[j];
+            i64 e = tl_snd_end(r, now);
+            if (e < c.start || r.a > view_end) continue;
             if (span_count == spans_cap) {
                 i32 cap = spans_cap ? spans_cap * 2 : 4096;
                 LaneSpan *grown = (LaneSpan *)realloc(spans, cap * sizeof *spans);
@@ -2898,7 +3108,7 @@ static void screen_timeline()
                 spans = grown;
                 spans_cap = cap;
             }
-            spans[span_count++] = {seg.start_us, e, k};
+            spans[span_count++] = {r.a, e, k};
         }
     }
     qsort(spans, span_count, sizeof *spans, [](const void *x, const void *y) {
@@ -3147,8 +3357,8 @@ static void screen_timeline()
                 row(spikes[i].peak_us, "Spike", v);
             }
         } else if (l) {
-            static LayerRun runs[512];
-            i32 n = tl_data_runs(*l, c, now, runs, COUNT(runs));
+            static LayerRun runs[TL_RUNS_MAX];
+            i32 n = tl_data_runs(*l, c, now, 0, runs, COUNT(runs));
             for (i32 i = 0; i < n; i++) {
                 char len[32];
                 tl_length(runs[i].z - runs[i].a, len, sizeof len);

@@ -6340,13 +6340,77 @@ static void test_layers()
     const Layer &fl = g_layers.set.layers[front];
     T(fl.count == 5 && fl.s[0].end_us == 0 && layer_end_of(fl, 0, 0) == T0 + 10 * S && layer_end_of(fl, 4, 7) == 7);
     LayerRun runs[8];
-    i32 nr = layer_steady_runs(fl, T0, T0 + 60 * S, T0 + 60 * S, LAYER_STEADY_US, runs, COUNT(runs));
+    i32 nr = layer_steady_runs(fl, T0, T0 + 60 * S, T0 + 60 * S, LAYER_STEADY_US, 0, runs, COUNT(runs));
     T(nr == 2 && runs[0].a == T0 && runs[0].z == T0 + 20 * S && !strcmp(runs[0].label, "Discord"));
     T(runs[1].a == T0 + 30 * S && runs[1].z == T0 + 60 * S && !strcmp(runs[1].label, "Overwatch"));
     // Unsteady, every switch shows; a view starting mid-run keeps the run's start
-    T(layer_steady_runs(fl, T0, T0 + 60 * S, T0 + 60 * S, 0, runs, COUNT(runs)) == 4);
-    T(layer_steady_runs(fl, T0 + 15 * S, T0 + 16 * S, T0 + 60 * S, LAYER_STEADY_US, runs, COUNT(runs)) == 1 &&
+    T(layer_steady_runs(fl, T0, T0 + 60 * S, T0 + 60 * S, 0, 0, runs, COUNT(runs)) == 4);
+    T(layer_steady_runs(fl, T0 + 15 * S, T0 + 16 * S, T0 + 60 * S, LAYER_STEADY_US, 0, runs, COUNT(runs)) == 1 &&
       runs[0].a == T0 && runs[0].z == T0 + 20 * S);
+    // Gathered into pixel columns: a column of short runs shows the label covering most of it, long runs stay as
+    // they are, and past the cap the last run reaches on to the end
+    {
+        LayerRun lod[16];
+        LayerRunLod b = layer_lod_begin(lod, COUNT(lod), 0, 10 * S);
+        layer_lod_add(&b, {0, 3 * S, "A"});
+        layer_lod_add(&b, {3 * S, 9 * S, "B"});
+        layer_lod_add(&b, {9 * S, 10 * S, "A"});
+        layer_lod_add(&b, {10 * S, 40 * S, "C"});
+        layer_lod_add(&b, {40 * S, 42 * S, "D"});
+        layer_lod_add(&b, {42 * S, 70 * S, "C"});
+        i32 n = layer_lod_end(&b);
+        T(!strcmp(lod[0].label, "B") && lod[0].a == 0 && lod[0].z == 10 * S);
+        T(!strcmp(lod[1].label, "C") && lod[1].a == 10 * S && lod[1].z == 40 * S);
+        T(n == 4 && !strcmp(lod[2].label, "D") && lod[2].a == 40 * S && lod[2].z == 42 * S);
+        T(!strcmp(lod[3].label, "C") && lod[3].z == 70 * S);
+        b = layer_lod_begin(lod, 4, 0, 0);
+        for (i32 i = 0; i < 100; i++) layer_lod_add(&b, {i * 10 * S, (i + 1) * 10 * S, i % 2 ? "A" : "B"});
+        T(layer_lod_end(&b) == 4 && lod[3].z == 1000 * S);
+    }
+    {
+        // A day of switching every 30 s, more runs than the cap holds: at a column of 10 minutes there is about a
+        // run a column, the newest reaches now, and nothing is past the cap
+        i32 busy = layer_register("test switching", LAYER_SPANS, "Switching", 0, 0, 0);
+        T(busy >= 0);
+        const i64 day = 24 * 3600 * S, step = 30 * S;
+        for (i64 at = 0; at < day; at += step) layer_hold(busy, T0 + at, (at / step) % 3 ? "Code" : "Brave Browser");
+        const Layer &bl = g_layers.set.layers[busy];
+        static LayerRun many[512];
+        i32 plain = layer_steady_runs(bl, T0, T0 + day, T0 + day, LAYER_STEADY_US, 0, many, COUNT(many));
+        T(plain == COUNT(many) && many[plain - 1].z == T0 + day); // at the cap, the last run reaches on to the end
+        i64 col = 600 * S;
+        i32 n = layer_steady_runs(bl, T0, T0 + day, T0 + day, LAYER_STEADY_US, col, many, COUNT(many));
+        T(n > 0 && n <= (i32)(day / col) + 2 && many[n - 1].z == T0 + day && many[0].a == T0);
+        bool ordered = true;
+        for (i32 i = 1; i < n; i++) ordered = ordered && many[i].a >= many[i - 1].z;
+        T(ordered && !strcmp(many[0].label, "Code"));
+    }
+    {
+        // The timeline's runs: segments 50 ms apart or less are one run; an open segment reaches on to now, 12 s at most
+        TlSpan r[4];
+        i32 n = 0;
+        n = tl_span_join(r, n, 0, 2 * TL_SEC, 0);
+        n = tl_span_join(r, n, 2 * TL_SEC + 30000, 4 * TL_SEC, 0);
+        n = tl_span_join(r, n, 5 * TL_SEC, 7 * TL_SEC, 0);
+        n = tl_span_join(r, n, 7 * TL_SEC + 10000, 7 * TL_SEC + 10000, 7 * TL_SEC + 10000);
+        T(n == 2 && r[0].a == 0 && r[0].z == 4 * TL_SEC && r[1].a == 5 * TL_SEC && r[1].open == 7 * TL_SEC + 10000);
+        T(tl_snd_end(r[1], 100 * TL_SEC) == 19 * TL_SEC + 10000 && tl_snd_end(r[1], 8 * TL_SEC) == 8 * TL_SEC);
+        T(tl_snd_end(r[0], 100 * TL_SEC) == 4 * TL_SEC);
+        T(tl_span_after(r, n, 3 * TL_SEC) == 0 && tl_span_after(r, n, 4 * TL_SEC) == 1 && tl_span_after(r, n, 9 * TL_SEC) == 2);
+        // A stream's peaks summed up, read in two goes: the loudest of each 64 and of each 1024
+        static u8 v[3000];
+        for (i32 i = 0; i < 3000; i++) v[i] = (u8)(i % 200);
+        v[2500] = 250;
+        TlPeakSum p = {};
+        tl_peak_sum_add(&p, v, 1000, 0);
+        tl_peak_sum_add(&p, v + 1000, 2000, 1000);
+        T(p.count == 3000 && p.c1[0] == 63 && p.c1[2500 / 64] == 250 && p.c2[0] == 199 && p.c2[2] == 250);
+        T(tl_peak_sum_in(p, 0, 0, 3000 * TL_PEAK_US) == 250 / 255.f);    // wide: from the coarser copy
+        T(tl_peak_sum_in(p, 0, 0, 100 * TL_PEAK_US) == 127 / 255.f);     // the 64s it touches
+        T(tl_peak_sum_in(p, 0, 4000 * TL_PEAK_US, 5000 * TL_PEAK_US) == 0); // past its end
+        free(p.c1);
+        free(p.c2);
+    }
     // A save of 5-40 s: the held lines get their ends, the last one the save's end; in the clip they are spans again
     layers_slice(T0 + 5 * S, T0 + 40 * S, &set);
     const Layer *fs = test_layer_named(set, "test front");

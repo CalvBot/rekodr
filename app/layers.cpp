@@ -788,13 +788,92 @@ struct LayerRun {
     const char *label; // the layer's own text, never ""
 };
 
+// Runs as drawn at a zoom where a pixel column is `col_us` long. A run narrower than a column is gathered with the
+// others in its column, and the column shows the label that covers most of it. Runs of one label less than a
+// column apart join. So there are at most about two runs a column however many the layer has, and past `cap`
+// nothing is dropped: the last run reaches on to the end.
+struct LayerRunLod {
+    LayerRun   *out;
+    i32         n, cap;
+    i64         from, col_us; // col_us 0: every run as it is
+    i64         col;          // the column being gathered, -1 = none
+    i64         ca, cz;       // what its runs cover
+    const char *label[8];
+    i64         cover[8];
+    i32         labels;
+};
+
+static LayerRunLod layer_lod_begin(LayerRun *out, i32 cap, i64 from, i64 col_us)
+{
+    LayerRunLod b = {};
+    b.out = out, b.cap = cap, b.from = from, b.col_us = col_us > 0 ? col_us : 0, b.col = -1;
+    return b;
+}
+
+static void layer_lod_emit(LayerRunLod *b, LayerRun r)
+{
+    if (b->n) {
+        LayerRun &last = b->out[b->n - 1];
+        if (r.a < last.z) r.a = last.z;
+        bool join = !strcmp(last.label, r.label) && r.a <= last.z + b->col_us;
+        if (join || b->n == b->cap || r.z <= r.a) {
+            if (r.z > last.z) last.z = r.z;
+            return;
+        }
+    }
+    if (b->cap > 0) b->out[b->n++] = r;
+}
+
+static void layer_lod_flush(LayerRunLod *b)
+{
+    if (b->col < 0) return;
+    i32 best = 0;
+    for (i32 k = 1; k < b->labels; k++)
+        if (b->cover[k] > b->cover[best]) best = k;
+    LayerRun r = {b->ca, b->cz, b->label[best]};
+    b->col = -1;
+    b->labels = 0;
+    layer_lod_emit(b, r);
+}
+
+static void layer_lod_add(LayerRunLod *b, LayerRun r)
+{
+    if (!b->col_us || r.z - r.a >= b->col_us) {
+        layer_lod_flush(b);
+        layer_lod_emit(b, r);
+        return;
+    }
+    i64 d = r.a - b->from, col = d >= 0 ? d / b->col_us : -((-d + b->col_us - 1) / b->col_us);
+    if (col != b->col) {
+        layer_lod_flush(b);
+        b->col = col, b->ca = r.a, b->cz = r.z;
+    }
+    if (r.a < b->ca) b->ca = r.a;
+    if (r.z > b->cz) b->cz = r.z;
+    i32 k = 0;
+    while (k < b->labels && strcmp(b->label[k], r.label)) k++;
+    if (k == b->labels) {
+        if (k < COUNT(b->label)) b->label[b->labels++] = r.label, b->cover[k] = 0;
+        else k = COUNT(b->label) - 1; // more labels in one column than that: counted with the last
+    }
+    b->cover[k] += r.z - r.a;
+}
+
+static i32 layer_lod_end(LayerRunLod *b)
+{
+    layer_lod_flush(b);
+    return b->n;
+}
+
 // The runs of a Spans (or Text) layer that reach into [from, to): a sample shorter than `least_us` is left out and
 // the run before it carries on over it, and runs of one label next to each other join. "" (nothing in front) is a
-// gap. A held last sample lasts until `open_end`. Returns how many, at most `cap`.
+// gap. A held last sample lasts until `open_end`. With `col_us`, they are gathered into pixel columns
+// (LayerRunLod). Returns how many, at most `cap`.
 static const i64 LAYER_STEADY_US = 2000000;
-static i32 layer_steady_runs(const Layer &l, i64 from, i64 to, i64 open_end, i64 least_us, LayerRun *out, i32 cap)
+static i32 layer_steady_runs(const Layer &l, i64 from, i64 to, i64 open_end, i64 least_us, i64 col_us, LayerRun *out,
+                             i32 cap)
 {
-    i32 n = 0;
+    LayerRunLod lod = layer_lod_begin(out, cap, from, col_us);
     LayerRun cur = {};
     bool have = false;
     // Back from the sample in force at `from` to where its run starts, so a run reaching in from before keeps it
@@ -816,12 +895,12 @@ static i32 layer_steady_runs(const Layer &l, i64 from, i64 to, i64 open_end, i64
             if (z > cur.z) cur.z = z;
             continue;
         }
-        if (have && cur.label[0] && cur.z > from && n < cap) out[n++] = cur;
+        if (have && cur.label[0] && cur.z > from) layer_lod_add(&lod, cur);
         cur = {a, z, label};
         have = true;
     }
-    if (have && cur.label[0] && cur.z > from && cur.a < to && n < cap) out[n++] = cur;
-    return n;
+    if (have && cur.label[0] && cur.z > from && cur.a < to) layer_lod_add(&lod, cur);
+    return layer_lod_end(&lod);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -932,7 +1011,7 @@ static i32 layers_ass(FILE *f, const LayerSet &set, const char (*on)[LAYER_NAME_
         } else if (l.kind == LAYER_SPANS) {
             static LayerRun runs[4096];
             i64 end_us = (i64)llround(src_end * 1e6);
-            i32 nr = layer_steady_runs(l, 0, end_us, end_us, LAYER_STEADY_US, runs, COUNT(runs));
+            i32 nr = layer_steady_runs(l, 0, end_us, end_us, LAYER_STEADY_US, 0, runs, COUNT(runs));
             for (i32 i = 0; i < nr; i++)
                 count += ass_event(f, spans, n, runs[i].a / 1e6, runs[i].z / 1e6, "Spans", mv, runs[i].label);
         } else {
