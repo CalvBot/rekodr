@@ -2092,7 +2092,7 @@ static void ed_caption(const char *label)
 
 #include "adv_editor.cpp"
 
-// Open in Premiere Pro or DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which both import.
+// Open in DaVinci Resolve: the edit as a Final Cut Pro 7 XML (xmeml) sequence, which it imports.
 // A Simple edit is its pieces one after another, each a clip on every track; an Advanced edit is its items, each a
 // clip on its own track where it was put. The video track has the zoom as Basic Motion keys, and each recorded
 // track (the Mix left out) its volume as Audio Levels keys (a Simple edit's times the whole mix's); muted tracks are
@@ -2381,13 +2381,13 @@ static bool ed_export_xml(Path *out)
     return ok;
 }
 
-static bool editor_exe(bool premiere, Path *out); // options.cpp
+static bool editor_exe(Path *out); // options.cpp
 
-// Writes the XML next to the video and starts the editor; it's brought in there with File > Import.
-static void ed_open_in(bool premiere)
+// Writes the XML next to the video and starts DaVinci Resolve; it's brought in there with File > Import > Timeline.
+static void ed_open_in()
 {
     Editor &ed = g_app.editor;
-    const char *app = premiere ? "Premiere Pro" : "DaVinci Resolve";
+    const char *app = "DaVinci Resolve";
     Path xml;
     ed_save_record();
     if (!ed_export_xml(&xml)) {
@@ -2401,18 +2401,18 @@ static void ed_open_in(bool premiere)
     name = name ? name + 1 : x8;
     log_line("editor: wrote %s for %s", x8, app);
     Path exe;
-    if (!editor_exe(premiere, &exe)) {
+    if (!editor_exe(&exe)) {
         snprintf(ed.result, sizeof ed.result, "Saved %s next to the video. %s isn't found: pick its exe in Options.", name, app);
         ed.result_error = true;
         return;
     }
-    // Neither app takes the XML on its command line, so the XML is shown in its folder, ready for File > Open.
+    // Resolve doesn't take the XML on its command line, so the XML is shown in its folder, ready to import.
     ShellExecuteW(0, L"open", exe.s, 0, 0, SW_SHOWNORMAL);
     wchar_t sel[MAX_PATH + 16];
     swprintf_s(sel, L"/select,\"%s\"", xml.s);
     ShellExecuteW(0, L"open", L"explorer.exe", sel, 0, SW_SHOWNORMAL);
-    snprintf(ed.result, sizeof ed.result, "Saved %s next to the video. In %s: %s, then pick it.", name, app,
-             premiere ? "File > Open" : "File > Import > Timeline");
+    snprintf(ed.result, sizeof ed.result, "Saved %s next to the video. In %s: File > Import > Timeline, then pick it.",
+             name, app);
     ed.result_error = false;
 }
 
@@ -2597,9 +2597,7 @@ static void ed_edit_tab(f32 w)
 
     // The edit as an XML sequence, into a full editor
     ed_caption("OPEN IN");
-    if (kit_button(ICON_VIDEO "  Premiere Pro", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(true);
-    ImGui::SameLine();
-    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in(false);
+    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in();
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // Its comment (the same as the card's), saved when the box is left.

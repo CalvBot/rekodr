@@ -2578,7 +2578,7 @@ static void options_recording()
     opt_section("ENCODER");
     opt_card_begin();
     static const char *codecs[CODEC_COUNT] = {"H.264", "HEVC", "AV1"};
-    static const char *codec_notes[CODEC_COUNT] = {"plays everywhere", "smaller files", "smallest, not for Premiere"};
+    static const char *codec_notes[CODEC_COUNT] = {"plays everywhere", "smaller files", "smallest, not every editor opens it"};
     u32 no_codec = 0;
     if (rec.encoders_known)
         for (i32 i = 0; i < CODEC_COUNT; i++)
@@ -2903,45 +2903,17 @@ static bool streamdeck_install(char *msg, i32 cap)
     return true;
 }
 
-// The newest Premiere Pro in Program Files\Adobe, or DaVinci Resolve where Blackmagic puts it.
-static bool editor_find(bool premiere, Path *out)
+// DaVinci Resolve's exe: the one set in Options, else where Blackmagic puts it.
+static bool editor_exe(Path *out)
 {
-    wchar_t pf[MAX_PATH];
-    if (!GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH)) return false;
-    if (!premiere) {
-        swprintf(out->s, COUNT(out->s), L"%s\\Blackmagic Design\\DaVinci Resolve\\Resolve.exe", pf);
-        return path_is_file(out->s);
-    }
-    wchar_t pattern[MAX_PATH];
-    swprintf(pattern, MAX_PATH, L"%s\\Adobe\\Adobe Premiere Pro*", pf);
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    bool found = false;
-    wchar_t best[MAX_PATH] = L"";
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        wchar_t exe[MAX_PATH];
-        swprintf(exe, MAX_PATH, L"%s\\Adobe\\%s\\Adobe Premiere Pro.exe", pf, fd.cFileName);
-        if (path_is_file(exe) && wcscmp(fd.cFileName, best) > 0) { // "...2026" after "...2025"
-            wcscpy_s(best, fd.cFileName);
-            wcscpy_s(out->s, exe);
-            found = true;
-        }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    return found;
-}
-
-// The editor's exe: the one set in Options, else the one found.
-static bool editor_exe(bool premiere, Path *out)
-{
-    const Path &set = premiere ? g_app.config.premiere : g_app.config.resolve;
-    if (set.s[0] && path_is_file(set.s)) {
-        *out = set;
+    if (g_app.config.resolve.s[0] && path_is_file(g_app.config.resolve.s)) {
+        *out = g_app.config.resolve;
         return true;
     }
-    return editor_find(premiere, out);
+    wchar_t pf[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH)) return false;
+    swprintf(out->s, COUNT(out->s), L"%s\\Blackmagic Design\\DaVinci Resolve\\Resolve.exe", pf);
+    return path_is_file(out->s);
 }
 
 // A file of one type ("Programs", "*.exe"), starting in start's folder. False when none was picked.
@@ -4645,23 +4617,21 @@ static void options_integrations()
 
     opt_section("VIDEO EDITORS");
     opt_card_begin();
-    static const char *ed_names[2] = {"Premiere Pro", "DaVinci Resolve"};
-    for (i32 e = 0; e < 2; e++) {
-        bool premiere = e == 0;
+    {
+        const char *ed_name = "DaVinci Resolve";
         Path exe = {};
-        bool have = editor_exe(premiere, &exe);
-        Path &set = premiere ? c.premiere : c.resolve;
+        bool have = editor_exe(&exe);
+        Path &set = c.resolve;
         char shown[MAX_PATH * 3] = "Not found";
         if (have) wide_to_utf8(exe.s, shown, sizeof shown);
-        ImGui::PushID(e);
-        opt_row_begin(ed_names[e], have ? shown : "Not found: pick its exe to open clips in it", bw * 2 + dp(8));
+        opt_row_begin(ed_name, have ? shown : "Not found: pick its exe to open clips in it", bw * 2 + dp(8));
         if (kit_button(have ? "Change##pick" : "Choose its exe##pick", KIT_SECONDARY, ImVec2(bw, 0))) {
             Path picked = {};
             if (pick_file(exe, &picked, L"Programs", L"*.exe")) {
                 set = picked;
                 char u[MAX_PATH * 3];
                 wide_to_utf8(picked.s, u, sizeof u);
-                log_line("options: %s is %s", ed_names[e], u);
+                log_line("options: %s is %s", ed_name, u);
                 options_apply(0);
             }
         }
@@ -4669,12 +4639,11 @@ static void options_integrations()
         ImGui::BeginDisabled(!set.s[0]);
         if (kit_button("Find it again##auto", KIT_SECONDARY, ImVec2(bw, 0))) {
             set.s[0] = 0;
-            log_line("options: %s found by itself", ed_names[e]);
+            log_line("options: %s found by itself", ed_name);
             options_apply(0);
         }
         ImGui::EndDisabled();
         opt_row_end();
-        ImGui::PopID();
     }
     opt_card_end();
 
@@ -4691,11 +4660,6 @@ static void options_integrations()
             word_list_toggle(c.timeline_show, sizeof c.timeline_show, BUSY_LAYER);
         options_apply(0);
         busy_apply();
-    }
-    if (c.input_busy && opt_row_f32("AFK after", "No keys or mouse this long with a game in front shows as AFK on the Busy row",
-                                    "##afk", &c.afk_after_min, 0.5, 30, "min")) {
-        log_line("options: AFK after %g min", c.afk_after_min);
-        options_apply(0);
     }
     for (i32 i = 0; i < g_plugins.count; i++) {
         Plugin &p = g_plugins.p[i];

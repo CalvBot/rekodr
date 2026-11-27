@@ -91,7 +91,7 @@ Keep a whole session from start to finish.
 - **Colour:** brightness, contrast and saturation, each 0 to 200% (100% is as recorded), set with sliders under
   Colour that key the value at the playhead. The timeline has one Colour lane that shows the value picked in its
   gutter; its keys work like volume keys. The preview shows the colour, and Keep and Share render it. It isn't in
-  the Premiere/DaVinci XML.
+  the DaVinci XML.
 - **Transitions:** Fade in and Fade out (from and to black) at the start and end, and at each cut a Cut, Fade
   (through black) or Crossfade, each with a length, set under Transitions for the cut nearest the playhead. A
   transition sits on its cut, half on each side, so the length of the edit doesn't change; a crossfade uses the
@@ -359,4 +359,4 @@ One window with a header (status, pause, Help, Options):
 - Cropping to vertical for Shorts or TikTok.
 - Play-time stats per game.
 - Posting straight to YouTube, TikTok or X.
-- Sending an edit to Premiere or DaVinci directly: the XML export covers it.
+- Sending an edit to DaVinci directly: the XML export covers it.

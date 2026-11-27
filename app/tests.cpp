@@ -5548,7 +5548,7 @@ static bool xml_balanced(const char *s)
     return depth == 0;
 }
 
-// The editor's XML for Premiere and DaVinci: well formed, the trim in frames, a track per recorded track
+// The editor's XML for DaVinci: well formed, the trim in frames, a track per recorded track
 // Advanced edits: Simple to Advanced and back, the record on disk, settling overlaps, and the render's graph.
 static void test_edit_advanced()
 {

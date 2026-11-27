@@ -50,8 +50,8 @@ static void run_command(const char *text)
         utf8_to_wide(path, w, MAX_PATH);
         if (!r2_share_file(w, "", "", 0, 0, 0, host[0] ? host : 0)) log_line("link: every link job is busy");
     }
-    else if (!strcmp(cmd, "open-in") && g_app.ui.screen == SCREEN_EDITOR) // open-in premiere|davinci: the editor's XML in it
-        ed_open_in(!strcmp(arg, "premiere"));
+    else if (!strcmp(cmd, "open-in") && g_app.ui.screen == SCREEN_EDITOR) // open-in davinci: the editor's XML in it
+        ed_open_in();
     else if (!strcmp(cmd, "save")) {
         i64 from_us, to_us;
         i32 range = parse_range_us(arg, &from_us, &to_us);

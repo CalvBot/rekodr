@@ -784,7 +784,6 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "capture")) str_set(c->capture.s, value);
     else if (!strcmp(key, "window_capture")) boolean(&c->window_capture);
     else if (!strcmp(key, "encoder_args")) str_set(c->encoder_args, value);
-    else if (!strcmp(key, "premiere")) path(&c->premiere);
     else if (!strcmp(key, "resolve")) path(&c->resolve);
     else if (!strcmp(key, "preset")) str_set(c->preset.s, value);
     else if (!strcmp(key, "rate_control")) str_set(c->rate_control.s, value);
@@ -1032,7 +1031,6 @@ static bool config_save(const Config &c, const Paths &paths)
             c.peak_factor);
     boolean("spatial_aq", c.spatial_aq);
     fprintf(f, "encoder_args = %s\n", c.encoder_args);
-    path("premiere", c.premiere);
     path("resolve", c.resolve);
     fprintf(f, "\n");
     boolean("mic", c.mic);

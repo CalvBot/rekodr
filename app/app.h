@@ -259,7 +259,6 @@ struct Config {
     f32   peak_factor;
     bool  spatial_aq;
     char  encoder_args[256]; // the player's own ffmpeg options for the encoder, added after Rekodr's ("" = none)
-    Path  premiere;   // Adobe Premiere Pro's exe, for "Open in Premiere Pro"; empty = find it
     Path  resolve;    // DaVinci Resolve's exe; empty = find it
 
     // Audio
