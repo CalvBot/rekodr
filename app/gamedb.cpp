@@ -746,6 +746,44 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     return true;
 }
 
+// The folder a running copy of a java runs in (the one process_facts reads), from its process parameters, without a
+// trailing slash. Read from its memory, so only ever asked of a java. False if it isn't running or can't be read.
+static bool process_cwd(const char *exe, char *out, i32 cap)
+{
+    out[0] = 0;
+    wchar_t want[MAX_PATH];
+    utf8_to_wide(exe, want, MAX_PATH);
+    DWORD pid = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof pe;
+    for (BOOL ok = Process32FirstW(snap, &pe); ok && !pid; ok = Process32NextW(snap, &pe))
+        if (!_wcsicmp(pe.szExeFile, want)) pid = pe.th32ProcessID;
+    CloseHandle(snap);
+    if (!pid) return false;
+    typedef LONG(WINAPI * QueryFn)(HANDLE, ULONG, void *, ULONG, ULONG *);
+    static QueryFn query = (QueryFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
+    HANDLE p = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!p) return false;
+    // ProcessBasicInformation (0) gives the PEB; its ProcessParameters (+0x20) hold CurrentDirectory.DosPath (+0x38)
+    struct { LONG exit; void *peb; ULONG_PTR affinity; LONG priority; ULONG_PTR pid, parent; } pbi = {};
+    struct { USHORT len, max; wchar_t *text; } dir = {};
+    void *params = 0;
+    static thread_local wchar_t w[32768];
+    bool ok = query && query(p, 0, &pbi, sizeof pbi, 0) >= 0 && pbi.peb &&
+              ReadProcessMemory(p, (u8 *)pbi.peb + 0x20, &params, sizeof params, 0) && params &&
+              ReadProcessMemory(p, (u8 *)params + 0x38, &dir, sizeof dir, 0) && dir.text && dir.len &&
+              ReadProcessMemory(p, dir.text, w, dir.len, 0);
+    CloseHandle(p);
+    if (!ok) return false;
+    i32 n = dir.len / 2;
+    while (n > 3 && (w[n - 1] == '\\' || w[n - 1] == '/')) n--; // "C:\" keeps its slash
+    w[n] = 0;
+    wide_to_utf8(w, out, cap);
+    return out[0] != 0;
+}
+
 // Games other than Minecraft that run as java.exe or javaw.exe. Which one a running java is goes by where it runs
 // from (the Java each ships in its own folder: java_vm/ from Steam, runtime/ from a game's own installer), then by
 // the program that started it, then by its command line; each test is tried on every game before the next. Lists
@@ -819,7 +857,7 @@ static const JavaGame *java_game(const char *image, const char *parent, const ch
 }
 
 static void sessions_game_renamed(const char *exe, bool other_game); // sessions.cpp
-static bool mc_clues(const char *cmdline, char *out, i32 cap); // mcpack.cpp
+static bool mc_clues(const char *cmdline, const char *cwd, char *out, i32 cap); // mcpack.cpp
 static void mc_put(char *out, i32 cap, i32 *n, const char *s); // mcpack.cpp
 static bool exe_clues(const char *exe, const char *path, const char *name, bool game, const char *more, char *out,
                       i32 cap); // storeids.cpp
@@ -914,14 +952,16 @@ static void args_has_json(const char *ask_args, const char *cmdline, char *out, 
 }
 
 // What a lookup sends about an app: its clues (exe_clues), with its File description, a running Minecraft's
-// (mc_clues, from `cmdline`) and, with `args_has`, which of the strings the service asked about its command line
+// (mc_clues, from `cmdline` and the folder it runs in) and, with `args_has`, which of the strings the service asked about its command line
 // holds. False if it isn't to be asked about.
 static bool lookup_body(const AppInfo &a, bool game, const char *cmdline, const char *args_has, char *out, i32 cap)
 {
     static char more[16384], mc[12288];
+    char cwd[MAX_PATH * 2] = "";
     i32 n = 0;
     more[0] = 0;
-    if (cmdline[0] && mc_clues(cmdline, mc, sizeof mc)) {
+    if (cmdline[0] && is_java_exe(a.exe.s)) process_cwd(a.exe.s, cwd, sizeof cwd);
+    if (cmdline[0] && mc_clues(cmdline, cwd, mc, sizeof mc)) {
         size_t l = strlen(mc); // {"mc":{...}} -> ,"mc":{...}
         if (l > 2 && mc[0] == '{') n += snprintf(more + n, sizeof more - n, ",%.*s", (int)(l - 2), mc + 1);
     }

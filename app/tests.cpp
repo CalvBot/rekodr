@@ -3595,13 +3595,13 @@ static void test_mcpack()
     wide_to_utf8(pgame.s, dir, sizeof dir);
     snprintf(cmd, sizeof cmd, "javaw -cp net/minecraftforge/x.jar cpw.mods.bootstraplauncher.BootstrapLauncher "
                               "--gameDir \"%s\" --version 1.20.1-forge-47.2.0", dir);
-    T(mc_clues(cmd, body, sizeof body));
+    T(mc_clues(cmd, "", body, sizeof body));
     T(!strcmp(body, "{\"mc\":{\"launcher\":\"prism\",\"mc\":\"1.20.1\",\"loader\":\"forge\",\"pack\":{\"platform\":\"modrinth\","
                     "\"project\":\"1KVo5zza\",\"version\":\"vXyZ\"},\"mods\":[\"create\",\"jei\"]}}") ||
       !strcmp(body, "{\"mc\":{\"launcher\":\"prism\",\"mc\":\"1.20.1\",\"loader\":\"forge\",\"pack\":{\"platform\":\"modrinth\","
                     "\"project\":\"1KVo5zza\",\"version\":\"vXyZ\"},\"mods\":[\"jei\",\"create\"]}}"));
     T(!strstr(body, "My Own") && !strstr(body, "rekodr-mcpack"));
-    T(!mc_clues("javaw -jar notagame.jar --gameDir C:/x", body, sizeof body));
+    T(!mc_clues("javaw -jar notagame.jar --gameDir C:/x", "", body, sizeof body));
 
     // Prism hands the game its arguments on stdin: the folder from the instance beside the natives, the version
     // and the loader from mmc-pack.json
@@ -3612,9 +3612,18 @@ static void test_mcpack()
     wide_to_utf8(prism.s, pdir, sizeof pdir);
     snprintf(cmd, sizeof cmd, "javaw -XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump "
                               "-Djava.library.path=%s/natives -cp x org.prismlauncher.EntryPoint", pdir);
-    T(mc_game_dir(cmd, got, sizeof got) && strstr(got, ".minecraft"));
-    T(mc_clues(cmd, body, sizeof body) && strstr(body, "\"launcher\":\"prism\",\"mc\":\"1.21.1\",\"loader\":\"fabric\""));
-    T(!mc_game_dir("javaw -Djava.library.path=C:/x/natives -cp x some.other.Main", got, sizeof got));
+    T(mc_game_dir(cmd, "", got, sizeof got) && strstr(got, ".minecraft"));
+    T(mc_clues(cmd, "", body, sizeof body) && strstr(body, "\"launcher\":\"prism\",\"mc\":\"1.21.1\",\"loader\":\"fabric\""));
+    T(!mc_game_dir("javaw -Djava.library.path=C:/x/natives -cp x some.other.Main", "", got, sizeof got));
+    // Sodium on Windows replaces the command line the process shows: the folder it runs in, when it holds logs
+    static const char sodium[] = "net.caffeinemc.sodium / net.minecraft.client.main.Main /";
+    char pgdir[MAX_PATH * 2];
+    wide_to_utf8(pgame.s, pgdir, sizeof pgdir);
+    T(!mc_game_dir(sodium, pgdir, got, sizeof got));
+    CreateDirectoryW(path_join(pgame, L"logs").s, 0);
+    T(mc_game_dir(sodium, pgdir, got, sizeof got) && !strcmp(got, pgdir));
+    T(mc_clues(sodium, pgdir, body, sizeof body) && strstr(body, "\"launcher\":\"prism\",\"mc\":\"1.21.1\",\"loader\":\"fabric\""));
+    T(!mc_game_dir(sodium, "", got, sizeof got));
     // An instance name with spaces: Prism quotes the whole -D argument
     T(mc_arg("javaw \"-Djava.library.path=C:/i/Cobblemon Official Modpack [Fabric]/natives\" -cp x", "-Djava.library.path",
              got, sizeof got) && !strcmp(got, "C:/i/Cobblemon Official Modpack [Fabric]/natives"));
@@ -3638,7 +3647,7 @@ static void test_mcpack()
     const wchar_t *files[] = {L"prism/.minecraft/mods/jei-1.20.1-forge-15.2.0.27.jar", L"prism/.minecraft/mods/create-1.20.1-0.5.1.f.jar",
                               L"prism/.minecraft/mods/notes.txt", L"prism/instance.cfg", L"cf/minecraftinstance.json", L"ftb/instance.json"};
     for (auto f : files) DeleteFileW(path_join(root, f).s);
-    const wchar_t *dirs[] = {L"prism/.minecraft/mods", L"prism/.minecraft", L"prism", L"cf", L"ftb"};
+    const wchar_t *dirs[] = {L"prism/.minecraft/mods", L"prism/.minecraft/logs", L"prism/.minecraft", L"prism", L"cf", L"ftb"};
     for (auto d : dirs) RemoveDirectoryW(path_join(root, d).s);
     RemoveDirectoryW(root.s);
 }

@@ -47,14 +47,26 @@ static bool mc_arg(const char *cmd, const char *name, char *out, i32 cap)
 
 // A running Minecraft's game folder: --gameDir on its command line, else for Prism and MultiMC, which hand the game
 // its arguments on stdin, the instance's minecraft or .minecraft folder (the instance is the folder that holds the
-// natives folder in -Djava.library.path, which needn't exist). False if neither is there.
-static bool mc_game_dir(const char *cmd, char *out, i32 cap)
+// natives folder in -Djava.library.path, which needn't exist). Else the folder it runs in (`cwd`, may be "") when
+// that holds a logs folder: launchers start the game in its folder, and Sodium on Windows replaces the command line
+// the process shows. False if none of them is there.
+static bool mc_game_dir(const char *cmd, const char *cwd, char *out, i32 cap)
 {
     if (mc_arg(cmd, "--gameDir", out, cap)) return true;
     out[0] = 0;
-    if (!strstr(cmd, "org.prismlauncher.EntryPoint") && !strstr(cmd, "org.multimc.EntryPoint")) return false;
-    char inst[MAX_PATH * 2];
-    if (!mc_arg(cmd, "-Djava.library.path", inst, sizeof inst)) return false;
+    char inst[MAX_PATH * 2] = "";
+    bool prism = strstr(cmd, "org.prismlauncher.EntryPoint") || strstr(cmd, "org.multimc.EntryPoint");
+    if (!prism || !mc_arg(cmd, "-Djava.library.path", inst, sizeof inst)) {
+        if (!cwd[0]) return false;
+        char logs[MAX_PATH * 2];
+        snprintf(logs, sizeof logs, "%s/logs", cwd);
+        wchar_t w[MAX_PATH];
+        utf8_to_wide(logs, w, MAX_PATH);
+        DWORD at = GetFileAttributesW(w);
+        if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) return false;
+        snprintf(out, cap, "%s", cwd);
+        return true;
+    }
     char *cut = strrchr(inst, '/'), *cut2 = strrchr(inst, '\\');
     if (cut2 > cut) cut = cut2;
     if (!cut) return false;
@@ -211,16 +223,16 @@ static void mc_put(char *out, i32 cap, i32 *n, const char *s)
     out[*n] = 0;
 }
 
-// The art service's clues for a running Minecraft, from its command line: {"mc":{...}}. False if it isn't one, or
-// its folder can't be found.
-static bool mc_clues(const char *cmdline, char *out, i32 cap)
+// The art service's clues for a running Minecraft, from its command line and the folder it runs in (`cwd`, may be
+// ""): {"mc":{...}}. False if it isn't one, or its folder can't be found.
+static bool mc_clues(const char *cmdline, const char *cwd, char *out, i32 cap)
 {
     char dir[MAX_PATH * 2], ver[64];
     static char low[32768]; // modded command lines run long
     i32 l = 0;
     for (; cmdline[l] && l < (i32)sizeof low - 1; l++) low[l] = (char)tolower((u8)cmdline[l]);
     low[l] = 0;
-    if (!strstr(low, "minecraft") || !mc_game_dir(cmdline, dir, sizeof dir)) return false;
+    if (!strstr(low, "minecraft") || !mc_game_dir(cmdline, cwd, dir, sizeof dir)) return false;
     static McClues c; // big; the main thread is the only one asking
     if (!mc_read_record(dir, &c)) return false;
     if (mc_arg(cmdline, "--version", ver, sizeof ver)) {

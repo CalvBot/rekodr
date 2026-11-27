@@ -1933,11 +1933,12 @@ static void mc_log_path(wchar_t *out)
 {
     out[0] = 0;
     static char cmd[32768];
-    char title[8], dir[MAX_PATH * 2];
+    char title[8], dir[MAX_PATH * 2], cwd[MAX_PATH * 2];
     static const char *const exes[] = {"javaw.exe", "java.exe"};
     for (const char *exe : exes) {
         if (!process_facts(exe, cmd, sizeof cmd, title, sizeof title) || !strstr(cmd, "minecraft")) continue;
-        if (!mc_game_dir(cmd, dir, sizeof dir)) continue;
+        process_cwd(exe, cwd, sizeof cwd);
+        if (!mc_game_dir(cmd, cwd, dir, sizeof dir)) continue;
         wchar_t w[MAX_PATH];
         utf8_to_wide(dir, w, MAX_PATH);
         swprintf(out, MAX_PATH, L"%s\\logs\\latest.log", w);
