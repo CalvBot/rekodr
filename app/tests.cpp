@@ -966,7 +966,7 @@ static void test_telemetry()
           strstr(out, "\"hotkey_changed\":false") && strstr(out, "\"save_dir_changed\":false") && strstr(out, "\"r2_set\":false,") && strstr(out, "\"uploaders_set\":false}"));
         i32 names = 0;
         for (const char *p = out; *p; p++) names += *p == ':';
-        T(names == 73);
+        T(names == 72);
         swprintf(s.save_dir.s, MAX_PATH, L"D:\\Secret Folder");
         str_set(s.hotkeys[0].keys.s, "Ctrl+F9");
         str_set(s.sgdb_key, "abcdef0123456789");
@@ -2860,21 +2860,53 @@ static void test_gamedb()
         sgdb_first_url(0, 0, "url", pic, sizeof pic);
         T(!pic[0]);
     }
-    // Its art: the icon for an icon; the hero, else the cover sent in its place; nothing that isn't https
+    // Its art: the icon for an icon; the hero, else the cover sent in its place; only https on a picture host
     static const char art[] = "{\"key\":\"s2\",\"art\":{\"icon\":{\"url\":\"http://x/i.png\",\"from\":\"sgdb\"},\"hero\":null,"
                               "\"cover\":{\"url\":\"https://cdn2.steamgriddb.com/grid/g.png\",\"w\":920,\"h\":430,\"from\":\"sgdb\"}}}";
     char url[512], from[16];
     T(art_pick_url(art, sizeof art - 1, ART_HERO, url, sizeof url, from, sizeof from) &&
       !strcmp(url, "https://cdn2.steamgriddb.com/grid/g.png") && !strcmp(from, "sgdb"));
     T(!art_pick_url(art, sizeof art - 1, ART_ICON, url, sizeof url));
-    static const char art2[] = "{\"art\":{\"cover\":{\"url\":\"https://a/g.png\"},\"hero\":{\"url\":\"https://a/h.png\",\"w\":1920},"
-                               "\"icon\":{\"url\":\"https://a/i.png\",\"from\":\"discord\"}}}";
-    T(art_pick_url(art2, sizeof art2 - 1, ART_HERO, url, sizeof url) && !strcmp(url, "https://a/h.png"));
-    static const char art3[] = "{\"art\":{\"grid\":{\"url\":\"https://a/g.png\"},\"hero\":null}}";
+    static const char art2[] = "{\"art\":{\"cover\":{\"url\":\"https://images.igdb.com/g.png\"},"
+                               "\"hero\":{\"url\":\"https://cdn.steamgriddb.com/h.png\",\"w\":1920},"
+                               "\"icon\":{\"url\":\"https://cdn.discordapp.com/i.png\",\"from\":\"discord\"}}}";
+    const char *which = 0;
+    T(art_pick_url(art2, sizeof art2 - 1, ART_HERO, url, sizeof url, 0, 0, &which) &&
+      !strcmp(url, "https://cdn.steamgriddb.com/h.png") && which && !strcmp(which, "hero"));
+    T(art_pick_url(art, sizeof art - 1, ART_HERO, url, sizeof url, 0, 0, &which) && !strcmp(which, "cover"));
+    static const char art3[] = "{\"art\":{\"grid\":{\"url\":\"https://images.igdb.com/g.png\"},\"hero\":null}}";
     T(!art_pick_url(art3, sizeof art3 - 1, ART_HERO, url, sizeof url));
-    T(art_pick_url(art2, sizeof art2 - 1, ART_ICON, url, sizeof url, from, sizeof from) && !strcmp(url, "https://a/i.png") &&
-      !strcmp(from, "discord"));
+    T(art_pick_url(art2, sizeof art2 - 1, ART_ICON, url, sizeof url, from, sizeof from, &which) &&
+      !strcmp(url, "https://cdn.discordapp.com/i.png") && !strcmp(from, "discord") && !strcmp(which, "icon"));
     T(!art_pick_url("{}", 2, ART_HERO, url, sizeof url));
+    // A picture on another host is left out, and the cover is sent in the hero's place
+    static const char art4[] = "{\"art\":{\"hero\":{\"url\":\"https://evil.example/h.png\"},"
+                               "\"cover\":{\"url\":\"https://media.forgecdn.net/c.png\"}}}";
+    T(art_pick_url(art4, sizeof art4 - 1, ART_HERO, url, sizeof url) && !strcmp(url, "https://media.forgecdn.net/c.png"));
+    T(image_url_ok("https://cdn2.steamgriddb.com/grid/x.png") && image_url_ok("https://CDN.Modrinth.com/a"));
+    T(!image_url_ok("http://cdn2.steamgriddb.com/grid/x.png") && !image_url_ok("https://cdn2.steamgriddb.com"));
+    T(!image_url_ok("https://cdn2.steamgriddb.com.evil.example/x.png") && !image_url_ok("https://evil.example/cdn.modrinth.com/"));
+    T(!image_url_ok("https://images.igdb.com@evil.example/x.png") && !image_url_ok("https://images.igdb.com:8443/x.png"));
+    T(!image_url_ok("https://x.images.igdb.com/x.png") && !image_url_ok(""));
+    {
+        // A picture is one by its first bytes
+        Path f = dir;
+        wcscat(f.s, L"\\pic.bin");
+        static const char png[] = "\x89PNG\r\n\x1a\n....", jpg[] = "\xFF\xD8\xFF\xE0", gif[] = "GIF89a..",
+                          webp[] = "RIFF....WEBPVP8 ", html[] = "<html><body>";
+        const char *const good[] = {png, jpg, gif, webp};
+        const i64 good_len[] = {sizeof png - 1, sizeof jpg - 1, sizeof gif - 1, sizeof webp - 1};
+        for (i32 i = 0; i < 4; i++) {
+            write_whole(f, good[i], good_len[i]);
+            T(is_image_file(f));
+        }
+        write_whole(f, html, sizeof html - 1);
+        T(!is_image_file(f));
+        write_whole(f, "", 0);
+        T(!is_image_file(f));
+        DeleteFileW(f.s);
+        T(!is_image_file(f));
+    }
     gamedb_free(g_gamedb.index);
     g_gamedb.index = 0;
     DeleteFileW(json.s);
@@ -4161,6 +4193,111 @@ static void remove_tree(const Path &dir)
     op.pFrom = dbl;
     op.fFlags = FOF_NO_UI;
     SHFileOperationW(&op);
+}
+
+// The service's public files (static_lookup): an exe's name and file number, each kind of entry, and what a
+// search's icons and a test service's address come to
+static void test_static_tier()
+{
+    char name[256];
+    T(static_name("cs2.exe", name, sizeof name) == 0x4ad && !strcmp(name, "cs2.exe"));
+    T(static_name("Endless Sky.exe", name, sizeof name) == 0xb46 && !strcmp(name, "endlesssky.exe"));
+    T(static_name("End_less-Sky.exe", name, sizeof name) == 0xb46);
+    T(static_name("javaw.exe", name, sizeof name) == 0x3e8);
+    T(static_name("Pok\xc3\x89mon.exe", name, sizeof name) == 0x934 && !strcmp(name, "pok\xc3\xa9mon.exe"));
+    T(static_name("", name, sizeof name) == -1 && static_name(" -_", name, sizeof name) == -1);
+
+    Path keep = g_app.paths.local_dir;
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(g_app.paths.local_dir.s, MAX_PATH, L"%srekodr-tests-static-%lu", temp, GetCurrentProcessId());
+    CreateDirectoryW(g_app.paths.local_dir.s, 0);
+    gamedb_dir();
+    // Each name's file holds its entry; written here for the names the checks ask about
+    static const char *const entries[][2] = {
+        {"Endless Sky.exe", "{\"game\":{\"key\":\"s5\",\"name\":\"Endless Sky\"},\"matched_by\":\"exe\",\"confidence\":0.9,\"art\":{}}"},
+        {"game.exe", "{\"rows\":[[\"a\",\"\",0,0,\"game.exe\"],[\"b\",\"\",1,1,\"game.exe\"]],"
+                     "\"answers\":[{\"game\":{\"key\":\"s1\",\"name\":\"Alpha\"},\"matched_by\":\"exe\",\"confidence\":0.9,\"art\":{}},"
+                     "{\"game\":{\"key\":\"s2\",\"name\":\"Beta\"},\"matched_by\":\"exe\",\"confidence\":0.9,\"art\":{}}]}"},
+        {"tool.exe", "{\"rows\":[[\"\",\"-x\",2,0,\"tool.exe\"]],"
+                     "\"answers\":[{\"game\":{\"key\":\"i3\",\"name\":\"Toolgame\"},\"matched_by\":\"exe\",\"confidence\":0.8,\"art\":{}}]}"},
+        {"asked.exe", "{\"ask\":[\"-mod\"]}"},
+    };
+    for (auto &e : entries) {
+        i32 shard = static_name(e[0], name, sizeof name);
+        Path f = static_file(shard, L".json");
+        i64 ol = 0;
+        char *old = read_file(f.s, &ol);
+        static char text[8192];
+        i32 n = 0;
+        if (old && ol > 2) n = snprintf(text, sizeof text, "%.*s,", (int)(ol - 1), old); // two names in one file
+        else n = snprintf(text, sizeof text, "{");
+        snprintf(text + n, sizeof text - n, "\"%s\":%s}", name, e[1]);
+        free(old);
+        write_whole(f, text, (i64)strlen(text));
+    }
+    LookAnswer ans;
+    T(static_lookup("endless sky.exe", "C:/Games/ES/Endless Sky.exe", "", "", &ans) == STATIC_ANSWER &&
+      !strcmp(ans.name, "Endless Sky") && !strcmp(ans.key, "s5") && !ans.launcher);
+    // Rows: where it runs from tells the games apart; a launcher's row is less sure
+    T(static_lookup("game.exe", "D:/a/game.exe", "x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "s1"));
+    T(static_lookup("game.exe", "D:/b/game.exe", "x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "s2") &&
+      ans.launcher && ans.confidence < 0.61f);
+    T(static_lookup("game.exe", "D:/c/game.exe", "x", "", &ans) == STATIC_ANSWER && !ans.key[0] && !strcmp(ans.how, "none"));
+    // One told apart by its arguments: ask again with the command line, which tells
+    T(static_lookup("tool.exe", "D:/t/tool.exe", "", "", &ans) == STATIC_SHARED);
+    T(static_lookup("tool.exe", "D:/t/tool.exe", "tool.exe -x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "i3"));
+    T(static_lookup("tool.exe", "D:/t/tool.exe", "tool.exe -y", "", &ans) == STATIC_ANSWER && !ans.key[0]);
+    // Only a lookup can tell: an "ask" entry, a name the file hasn't, a file that is {}
+    T(static_lookup("asked.exe", "D:/asked.exe", "", "", &ans) == STATIC_LOOKUP);
+    {
+        i32 shard = static_name("endlesssky.exe", name, sizeof name);
+        char other[64] = "";
+        for (i32 i = 0; i < 100000 && !other[0]; i++) { // another name in the same file
+            char cand[32], sq[64];
+            snprintf(cand, sizeof cand, "x%d.exe", i);
+            if (static_name(cand, sq, sizeof sq) == shard) str_set(other, cand);
+        }
+        T(other[0] && static_lookup(other, "D:/x.exe", "", "", &ans) == STATIC_LOOKUP);
+        write_whole(static_file(shard, L".json"), "{}", 2);
+        T(static_lookup("endlesssky.exe", "D:/x.exe", "", "", &ans) == STATIC_LOOKUP);
+    }
+    remove_tree(g_app.paths.local_dir);
+    g_app.paths.local_dir = keep;
+
+    // A search's icons, only from a picture host; a picked game's key finds its icon
+    {
+        char names[8][128], ids[8][48], icons[8][256];
+        i32 years[8];
+        static const char games[] =
+            "{\"games\":[{\"id\":\"p:modrinth:fabulously-optimized-and-more\",\"name\":\"FO\",\"year\":2021,"
+            "\"icon\":\"https://cdn.modrinth.com/data/1/icon.png\"},{\"id\":\"s8\",\"name\":\"Greg\",\"icon\":null},"
+            "{\"id\":\"s9\",\"name\":\"Bad\",\"icon\":\"https://evil.example/i.png\"}]}";
+        T(art_search_list(games, sizeof games - 1, names, years, 8, ids, icons) == 3);
+        T(!strcmp(ids[0], "p:modrinth:fabulously-optimized-and-more") && !strcmp(icons[0], "https://cdn.modrinth.com/data/1/icon.png"));
+        T(!strcmp(ids[1], "s8") && !icons[1][0] && !icons[2][0]);
+        static decltype(g_gamedb.search_icons) was;
+        memcpy(was, g_gamedb.search_icons, sizeof was);
+        i32 was_next = g_gamedb.search_icon_next;
+        AcquireSRWLockExclusive(&g_gamedb.lock);
+        search_icon_put_locked(ids[0], icons[0]);
+        search_icon_put_locked("s8", "https://cdn2.steamgriddb.com/icon/a.png");
+        search_icon_put_locked("s8", "https://cdn2.steamgriddb.com/icon/b.png");
+        ReleaseSRWLockExclusive(&g_gamedb.lock);
+        char url[256];
+        T(search_icon(ids[0], url, sizeof url) && !strcmp(url, icons[0]));
+        T(search_icon("s8", url, sizeof url) && !strcmp(url, "https://cdn2.steamgriddb.com/icon/b.png"));
+        T(!search_icon("s9", url, sizeof url) && !search_icon("", url, sizeof url));
+        memcpy(g_gamedb.search_icons, was, sizeof was);
+        g_gamedb.search_icon_next = was_next;
+    }
+
+    // A test service on this PC is plain http to its port; no other http address is
+    T(loopback_port(L"http://127.0.0.1:8787") == 8787 && loopback_port(L"http://localhost:1") == 1);
+    T(!loopback_port(L"http://127.0.0.1:0") && !loopback_port(L"http://127.0.0.1:8787x") &&
+      !loopback_port(L"http://127.0.0.1:") && !loopback_port(L"http://127.0.0.1:70000"));
+    T(!loopback_port(L"http://example.com:80") && !loopback_port(L"rekodr.example") && !loopback_port(L"https://127.0.0.1:1"));
+    T(http_get(L"http://example.com", L"/", L"", 0) == 0);
 }
 
 static void test_mcpack()
@@ -5884,8 +6021,8 @@ static void test_storeids()
     T(lookup_parse(none, sizeof none - 1, &ans) && !ans.name[0] && !strcmp(ans.how, "none"));
     T(!lookup_parse("{\"error\":1}", 11, &ans));
 
-    // "Help name games": a game named by hand is told to the service, what it was shown as and what it is now;
-    // nothing is sent without the player's say-so, or when the name didn't change
+    // A game picked by hand is told to the service, what it was shown as and what it is now, with both keys;
+    // nothing is sent for a name with no key, or when the name didn't change
     {
         static Config saved;
         saved = g_app.config;
@@ -5903,23 +6040,31 @@ static void test_storeids()
         auto renames = [](const char **body) {
             i32 n = 0;
             for (auto &q : g_gamedb.looks)
-                if (q.rename && q.body) { n++; *body = q.body; }
+                if (q.pick && q.body) { n++; *body = q.body; }
             return n;
         };
         const char *sent = 0;
-        g_app.config.share_names = false;
-        gamedb_rename(app, "thing", "Thing");
+        static decltype(g_gamedb.named) named_keep;
+        memcpy(named_keep, g_gamedb.named, sizeof named_keep);
+        i32 named_next = g_gamedb.named_next;
+        AcquireSRWLockExclusive(&g_gamedb.lock);
+        gamedb_named_put_locked("Thing", "s77");
+        gamedb_named_put_locked("Thing 2", "p:thing-2");
+        gamedb_named_put_locked("Chess", "i9");
+        gamedb_named_put_locked("Old Thing", "d123");
+        ReleaseSRWLockExclusive(&g_gamedb.lock);
+        gamedb_pick(app, "thing", "No Such Game Typed");
         T(renames(&sent) == 0);
-        g_app.config.share_names = true;
-        gamedb_rename(app, "Thing", "Thing");
+        gamedb_pick(app, "Thing", "Thing");
         T(renames(&sent) == 0);
-        gamedb_rename(app, "thing", "Thing");
+        gamedb_pick(app, "", "Thing");
         T(renames(&sent) == 1 && strstr(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"dirs\":[") &&
-          strstr(sent, "],\"from\":\"thing\",\"to\":\"Thing\"}"));
-        // with the clues its lookup sent, when there was one
+          strstr(sent, "],\"to_key\":\"s77\",\"to\":\"Thing\",\"from_key\":\"\"}"));
+        // with the clues its lookup sent, when there was one, and the key of what it was shown as
         last_look_put("thing.exe", "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"args_has\":[\"-x\"]}");
-        gamedb_rename(app, "thing", "Thing 2");
-        T(renames(&sent) == 2 && !strcmp(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"args_has\":[\"-x\"],\"from\":\"thing\",\"to\":\"Thing 2\"}"));
+        gamedb_pick(app, "Old Thing", "Thing 2");
+        T(renames(&sent) == 2 && !strcmp(sent, "{\"exe\":\"thing.exe\",\"folder\":\"Thing\",\"args_has\":[\"-x\"],"
+                                                "\"to_key\":\"p:thing-2\",\"to\":\"Thing 2\",\"from_key\":\"d123\"}"));
 
         // A clip given a game by hand: the program longest in front during it is voted for, and a browser
         // only counts the game
@@ -5951,7 +6096,9 @@ static void test_storeids()
             fputs("500\tdiscord.exe\n1500\tchrome.exe\n4800\tdiscord.exe\n", ff);
             fclose(ff);
             gamedb_clip_game(it, "", "Chess");
-            T(renames(&sent) == 3 && !strcmp(sent, "{\"exe\":\"chrome.exe\",\"from\":\"\",\"to\":\"Chess\"}"));
+            T(renames(&sent) == 3 && !strcmp(sent, "{\"exe\":\"chrome.exe\",\"to_key\":\"i9\",\"to\":\"Chess\",\"from_key\":\"\"}"));
+            gamedb_clip_game(it, "", "Checkers, a game with no key");
+            T(renames(&sent) == 3);
             str_set(it.name, "Not saved here");
             gamedb_clip_game(it, "", "Chess");
             T(renames(&sent) == 3);
@@ -5963,6 +6110,8 @@ static void test_storeids()
             free(q.body);
             q = {};
         }
+        memcpy(g_gamedb.named, named_keep, sizeof named_keep);
+        g_gamedb.named_next = named_next;
         g_gamedb.wake = wake;
         g_gamedb.online = online;
         str_set(g_gamedb.service, service);
@@ -7731,6 +7880,7 @@ int main()
     test_wic_largest_frame();
     test_am_pc();
     test_achievements();
+    test_static_tier();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

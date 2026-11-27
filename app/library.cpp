@@ -2574,7 +2574,7 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
     static i32 online_years[8];
     i32 nl = gamedb_find_local(ts, local, ROWS);
     // The art service is asked once the text has stayed the same a moment, not for each key
-    bool settled = ImGui::GetTime() - changed_at > 0.15;
+    bool settled = ImGui::GetTime() - changed_at > 0.2;
     i32 no = *ts && settled ? gamedb_find_online(ts, online, online_years, 8) : *ts ? -1 : 0;
     i32 n = game_pick_rows(typed, lib.games, lib.game_count, local, nl, online, online_years, ImMax(no, 0), rows, ROWS);
     // New rows come in under the lit one; should it move all the same, the light goes with it

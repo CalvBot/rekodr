@@ -270,7 +270,6 @@ static void tel_settings_json(const Config &c, const Config &d, char *out, i32 c
     flag("cam_on", c.cam_on);
     flag("mic_raw", c.mic_raw);
     flag("voice_mono", c.voice_mono);
-    flag("share_names", c.share_names);
     flag("steam_type_check", c.steam_type_check);
     flag("send_crashes", c.send_crashes);
     flag("auto_update", c.auto_update);

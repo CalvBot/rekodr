@@ -1514,7 +1514,7 @@ static void apps_rename_popup()
     str_set(q, o.edit);
     char *tq = trim(q);
     i32 nl = gamedb_find_local(tq, local, ROWS);
-    bool settled = ImGui::GetTime() - changed_at > 0.15;
+    bool settled = ImGui::GetTime() - changed_at > 0.2;
     i32 no = *tq && settled ? gamedb_find_online(tq, online, online_years, 8) : *tq ? -1 : 0;
     char want[128], letters[128];
     gdb_letters(tq, want, sizeof want);
@@ -1590,7 +1590,7 @@ static void apps_rename_popup()
         str_set(was, a.name.s[0] ? a.name.s : hint);
         str_set(a.name.s, trim(name));
         log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
-        if (a.name.s[0] && app_category(g_app.config, a) == CAT_GAME) gamedb_rename(a, was, a.name.s);
+        if (picked && app_category(g_app.config, a) == CAT_GAME) gamedb_pick(a, was, a.name.s); // not a typed name
         sessions_game_renamed(a.exe.s, false);
         options_apply(APPLY_AUDIO);
         ImGui::CloseCurrentPopup();
@@ -6039,11 +6039,6 @@ static void options_general()
             log_line("options: own service key %s", shown[0] ? "set" : "cleared");
         }
         opt_row_end();
-    }
-    if (opt_row_toggle("Help name games", "When you name a game by hand, that name helps name it for other players",
-                       "##sharenames", &c.share_names)) {
-        log_line("options: help name games %s", c.share_names ? "on" : "off");
-        options_apply(0);
     }
     if (opt_row_toggle("Keep Steam's apps out of Games", "Apps Steam installs beside games, like Wallpaper Engine, are sorted as apps, by what Steam's store calls them",
                        "##steamtype", &c.steam_type_check)) {

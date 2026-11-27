@@ -368,9 +368,9 @@ static void setup_detection_by_hand(ImDrawList *dl, f32 x0, f32 x1, f32 y)
     }
 }
 
-// Game detection: whether Rekodr's service is asked about the player's games (art_service), and told the names
-// the player gives (share_names). No turns both off at once, so nothing about a game goes to the service; games are
-// then named from Discord's game list and the names the player types.
+// Game detection: whether Rekodr's service is asked about the player's games (art_service) and told the games the
+// player picks (gamedb_pick). No turns it off, so nothing about a game goes to the service; games are then named from
+// Discord's game list and the names the player types.
 static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)
 {
     Config &c = g_app.config;
@@ -387,13 +387,12 @@ static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair
     if (hit >= 0) {
         bool yes = hit == 0;
         str_set(c.art_service.s, yes ? ART_SERVICE_HOST : "");
-        c.share_names = yes;
         gamedb_set_service(c.art_service.s);
         log_line("setup: game detection %s", yes ? "on" : "off");
         options_apply(0);
     }
     const char *note = !c.game_lookup ? "Look up games online is off in Options, so this is too."
-                       : on           ? "A game's exe and the names you give it go to the service. Nothing else."
+                       : on           ? "A game's exe and the games you pick for it go to the service. Nothing else."
                                       : "Nothing about your games goes to " APP_NAME "'s service. Games Discord knows keep their art.";
     opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, note, x1);
     if (!c.game_lookup || on) return;

@@ -289,7 +289,6 @@ struct Config {
 
     // Sharing
     bool game_lookup;    // fetch the games list and art (gamedb.cpp); off = only what is already on disk
-    bool share_names;    // "Help name games": naming a game by hand tells the art service (gamedb_rename)
     bool steam_type_check; // a Steam app the service says Steam's store calls software is an App, even in a Game
                            // folder (gamedb_name_app)
     bool send_stats;     // a daily usage report to the service (telemetry.cpp); on unless the player says no

@@ -60,6 +60,7 @@ struct LookAnswer {
     f32  confidence;
     char ask_args[1344];              // a shared exe: what to look for in its command line, one a line; "" = none
     bool software;                    // a Steam app Steam's store calls software, not a game ("steam_type")
+    bool launcher;                    // the public files' row it came from is a launcher's
     bool failed;
 };
 
@@ -79,7 +80,7 @@ struct GameDbShared {
     i32        want_count;
     // Lookups and names the player gave (`rename`), by a hash of what is sent: being sent (body set) or answered.
     // The oldest answer makes room.
-    struct { u64 hash; char *body; bool answered, rename; LookAnswer ans; } looks[64];
+    struct { u64 hash; char *body; bool answered, pick; LookAnswer ans; } looks[64];
     i32        look_next;
     // A name typed when naming an app, looked for on the service: what to look for (main thread), and what it
     // found for which (the worker).
@@ -90,6 +91,13 @@ struct GameDbShared {
     // asked for by its key.
     struct { char letters[128], key[48]; } named[128];
     i32        named_next;
+    // The icons searches gave, by key: a game picked from a search shows it without asking /v1/art.
+    struct { char key[48], url[256]; } search_icons[32];
+    i32        search_icon_next;
+    // The service's public files (static_lookup), by number: to be fetched, and when one was last tried (seconds
+    // of GetTickCount64, 0 = not this run).
+    volatile u8 shard_want[4096];
+    u32        shard_tried[4096];
 };
 static GameDbShared g_gamedb;
 
@@ -108,6 +116,7 @@ static Path gamedb_dir()
     Path d = path_join(g_app.paths.local_dir, L"gamedb");
     SHCreateDirectoryExW(0, path_join(d, L"art").s, 0);
     SHCreateDirectoryExW(0, path_join(d, L"lookups").s, 0);
+    SHCreateDirectoryExW(0, path_join(d, L"g").s, 0);
     return d;
 }
 
@@ -139,13 +148,32 @@ static void key_file_id(const char *key, char *out, i32 cap)
 // Fetching: one GET over https, or a POST of `post` when it is given. The answer goes to a file (through a .part,
 // so a half-fetched file is never read) or, with no file, into memory: *body, malloc'd and 0-terminated, which the
 // caller frees. `headers` are sent with it ("" = none). Returns the status, 0 if there was no answer; the body is
-// only kept for a 200.
+// only kept for a 200, and with `etag` its ETag header too ("" for none).
+// A host written "http://127.0.0.1:<port>" (or localhost) is a test service on this PC: plain http to that port.
+// No other http address is asked.
+
+// The port of a test service on this PC, from its host; 0 for any other host.
+static u16 loopback_port(const wchar_t *host)
+{
+    const wchar_t *const loops[] = {L"http://127.0.0.1:", L"http://localhost:"};
+    for (const wchar_t *l : loops) {
+        size_t n = wcslen(l);
+        if (wcsncmp(host, l, n)) continue;
+        wchar_t *end = 0;
+        long port = wcstol(host + n, &end, 10);
+        return port > 0 && port < 65536 && end && !*end ? (u16)port : 0;
+    }
+    return 0;
+}
 
 static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *headers, const Path *file,
-                    char **body = 0, i64 *body_len = 0, const char *post = 0)
+                    char **body = 0, i64 *body_len = 0, const char *post = 0, char *etag = 0, i32 etag_cap = 0)
 {
     bool ok = false;
     u32 answer = 0;
+    if (etag && etag_cap) etag[0] = 0;
+    u16 port = loopback_port(host);
+    if (!port && wcsstr(host, L"://")) return 0;
     Path part = {};
     if (file) {
         part = *file;
@@ -154,8 +182,9 @@ static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *hea
     char *mem = 0;
     i64 mem_len = 0, mem_cap = 0, file_len = 0;
     HINTERNET session = WinHttpOpen(L"rekodr", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, 0, 0, 0);
-    HINTERNET conn = session ? WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : 0;
-    HINTERNET req = conn ? WinHttpOpenRequest(conn, post ? L"POST" : L"GET", path, 0, 0, 0, WINHTTP_FLAG_SECURE) : 0;
+    HINTERNET conn = !session ? 0 : port ? WinHttpConnect(session, L"127.0.0.1", port, 0)
+                                         : WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET req = conn ? WinHttpOpenRequest(conn, post ? L"POST" : L"GET", path, 0, 0, 0, port ? 0 : WINHTTP_FLAG_SECURE) : 0;
     DWORD post_len = post ? (DWORD)strlen(post) : 0;
     if (req) {
         DWORD unzip = WINHTTP_DECOMPRESSION_FLAG_ALL;
@@ -167,6 +196,11 @@ static u32 http_get(const wchar_t *host, const wchar_t *path, const wchar_t *hea
             WinHttpReceiveResponse(req, 0) &&
             WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &status, &len, 0))
             answer = status;
+        if (answer == 200 && etag && etag_cap) {
+            wchar_t w[128];
+            DWORD wl = sizeof w;
+            if (WinHttpQueryHeaders(req, WINHTTP_QUERY_ETAG, 0, w, &wl, 0)) wide_to_utf8(w, etag, etag_cap);
+        }
         if (answer == 200) {
             FILE *f = file ? _wfopen(part.s, L"wb") : 0;
             if (f || !file) {
@@ -619,29 +653,98 @@ static i32 gamedb_find_local(const char *q, char (*names)[128], i32 max)
 // don't fit, when no other entry in the list has an exe of that file name: a name many share (game.exe) isn't one.
 // Names are matched squeezed (gdb_squeeze); one that fits only squeezed is the game when no other entry's squeezes
 // to the same name.
+// The choosing, for Discord's list here and for the rows of the service's public files (static_lookup): start with
+// what is known of the running exe, add each way a game's exe is written (`ent`, "folders/file" as the list spells
+// it, the argument it needs, whether it is a launcher's and whether it must be told apart by its arguments, and the
+// game: `row` and its name), then pick. pick gives the row, or -1, and with *shared that only the command line and
+// the title could tell: ask again with them.
+struct ExePick {
+    char file[96], where[MAX_PATH * 2], title_letters[256], cmd_letters[2048];
+    const char *exe, *cmd;
+    i32 fl, wl, cl;
+    i32 best, best_row, guess_row, file_row, moved_row;
+    bool best_launcher, wants_more, file_many, moved_launcher, best_loose;
+
+    void start(const char *exe_, const char *path, const char *cmdline, const char *title)
+    {
+        static thread_local char low[32768]; // a modded Minecraft's command line is long: every library is on it
+        exe = exe_;
+        fl = gdb_squeeze(exe, (i32)strlen(exe), file, sizeof file);
+        wl = gdb_squeeze(path, (i32)strlen(path), where, sizeof where);
+        for (cl = 0; cmdline[cl] && cl < (i32)sizeof low - 1; cl++) low[cl] = (char)tolower((u8)cmdline[cl]);
+        low[cl] = 0;
+        cmd = low;
+        char seen[512];
+        snprintf(seen, sizeof seen, "%s", title);
+        gdb_letters(seen, title_letters, sizeof title_letters);
+        gdb_letters(cmd, cmd_letters, sizeof cmd_letters);
+        best = 0;
+        best_row = guess_row = file_row = moved_row = -1;
+        best_launcher = wants_more = file_many = moved_launcher = best_loose = false;
+    }
+
+    void add(const char *ent, i32 len, const char *want_args, bool launcher, bool strict, i32 row, const char *game)
+    {
+        char raw[200], name[200], args[200];
+        snprintf(raw, sizeof raw, "%.*s", len, ent);
+        gdb_squeeze(raw, len, name, sizeof name);
+        snprintf(args, sizeof args, "%s", want_args);
+        for (char *c = args; *c; c++) *c = (char)tolower((u8)*c);
+        // The file name must be this exe's; folders named with it must be where it runs from
+        const char *slash = strrchr(name, '/');
+        if (strcmp(slash ? slash + 1 : name, file)) return;
+        if (file_row < 0) file_row = row;
+        else if (file_row != row) file_many = true;
+        const char *raw_slash = strrchr(raw, '/');
+        bool loose = _stricmp(raw_slash ? raw_slash + 1 : raw, exe) != 0; // fits only squeezed
+        i32 score = loose ? 1 : 2;
+        if (slash && wl) { // where it runs from isn't always known; then the file name has to do
+            size_t n = strlen(name);
+            if ((size_t)wl < n + 1 || strcmp(where + wl - n, name) || where[wl - n - 1] != '/') {
+                if (!args[0] && !strict && moved_row < 0) moved_row = row, moved_launcher = launcher;
+                return;
+            }
+            score += 2;
+            for (const char *c = name; *c; c++) score += *c == '/';
+        }
+        if (args[0] || strict) {
+            if (args[0] && cl && strstr(cmd, args)) {
+                score += 10;
+            } else {
+                // Maybe not this one. If the window or the command line names the game, it is a fair guess
+                wants_more = true;
+                char letters[128];
+                i32 n = gdb_letters(game, letters, sizeof letters);
+                if (n >= 5 && guess_row < 0 && (strstr(title_letters, letters) || strstr(cmd_letters, letters)))
+                    guess_row = row;
+                if (!slash || !wl) return;
+            }
+        }
+        if (score > best) { best = score; best_row = row; best_launcher = launcher; best_loose = loose; }
+    }
+
+    i32 pick(bool *launcher, bool *shared)
+    {
+        if (best_row >= 0 && best_loose && file_many) best_row = -1;
+        if (best_row < 0 && guess_row >= 0) best_row = guess_row;
+        if (best_row < 0 && moved_row >= 0 && !file_many) best_row = moved_row, best_launcher = moved_launcher;
+        if (launcher) *launcher = best_row >= 0 && best_launcher;
+        if (shared) *shared = best_row < 0 && wants_more;
+        return best_row;
+    }
+};
+
 // *shared is set when the exe is one that several programs share and what was given couldn't tell which it is:
 // ask again with the command line and the title.
 static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline, const char *title, GameInfo *out,
                           bool *shared = 0)
 {
-    char file[96], where[MAX_PATH * 2], seen[512];
-    static thread_local char cmd[32768]; // a modded Minecraft's is long: every library is on it
-    i32 fl = gdb_squeeze(exe, (i32)strlen(exe), file, sizeof file);
-    i32 wl = gdb_squeeze(path, (i32)strlen(path), where, sizeof where);
-    i32 cl = 0;
-    for (; cmdline[cl] && cl < (i32)sizeof cmd - 1; cl++) cmd[cl] = (char)tolower((u8)cmdline[cl]);
-    cmd[cl] = 0;
-    snprintf(seen, sizeof seen, "%s", title);
-    char title_letters[256], cmd_letters[2048];
-    gdb_letters(seen, title_letters, sizeof title_letters);
-    gdb_letters(cmd, cmd_letters, sizeof cmd_letters);
-
-    i32 best = 0, best_row = -1, guess_row = -1, file_row = -1, moved_row = -1;
-    bool best_launcher = false, wants_more = false, file_many = false, moved_launcher = false, best_loose = false;
-    u64 hash = fnv64(file, fl);
+    ExePick ep;
+    ep.start(exe, path, cmdline, title);
+    u64 hash = fnv64(ep.file, ep.fl);
     AcquireSRWLockShared(&g_gamedb.lock);
     const GameIndex *ix = g_gamedb.index;
-    i32 k = ix && fl ? gdb_find(ix->exes, ix->exe_count, hash) : -1;
+    i32 k = ix && ep.fl ? gdb_find(ix->exes, ix->exe_count, hash) : -1;
     for (; k >= 0 && k < ix->exe_count && ix->exes[k].hash == hash; k++) {
         const GameRow &r = ix->rows[ix->exes[k].row];
         for (const char *x = r.exes; *x;) {
@@ -653,54 +756,19 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
             while (len && (*ent == '!' || *ent == '>')) { launcher |= *ent == '!'; strict |= *ent == '>'; ent++; len--; }
             i32 nl = 0;
             while (nl < len && ent[nl] != '\x1f') nl++;
-            char raw[200], name[200], args[200] = "";
-            snprintf(raw, sizeof raw, "%.*s", nl, ent);
-            gdb_squeeze(raw, nl, name, sizeof name);
+            char args[200] = "";
             if (nl < len) snprintf(args, sizeof args, "%.*s", len - nl - 1, ent + nl + 1);
-            for (char *c = args; *c; c++) *c = (char)tolower((u8)*c);
-            // The file name must be this exe's; folders named with it must be where it runs from
-            const char *slash = strrchr(name, '/');
-            if (strcmp(slash ? slash + 1 : name, file)) continue;
-            if (file_row < 0) file_row = ix->exes[k].row;
-            else if (file_row != ix->exes[k].row) file_many = true;
-            const char *raw_slash = strrchr(raw, '/');
-            bool loose = _stricmp(raw_slash ? raw_slash + 1 : raw, exe) != 0; // fits only squeezed
-            i32 score = loose ? 1 : 2;
-            if (slash && wl) { // where it runs from isn't always known; then the file name has to do
-                size_t n = strlen(name);
-                if ((size_t)wl < n + 1 || strcmp(where + wl - n, name) || where[wl - n - 1] != '/') {
-                    if (!args[0] && !strict && moved_row < 0) moved_row = ix->exes[k].row, moved_launcher = launcher;
-                    continue;
-                }
-                score += 2;
-                for (const char *c = name; *c; c++) score += *c == '/';
-            }
-            if (args[0] || strict) {
-                if (args[0] && cl && strstr(cmd, args)) {
-                    score += 10;
-                } else {
-                    // Maybe not this one. If the window or the command line names the game, it is a fair guess
-                    wants_more = true;
-                    char letters[128];
-                    i32 n = gdb_letters(r.name, letters, sizeof letters);
-                    if (n >= 5 && guess_row < 0 && (strstr(title_letters, letters) || strstr(cmd_letters, letters)))
-                        guess_row = ix->exes[k].row;
-                    if (!slash || !wl) continue;
-                }
-            }
-            if (score > best) { best = score; best_row = ix->exes[k].row; best_launcher = launcher; best_loose = loose; }
+            ep.add(ent, nl, args, launcher, strict, ix->exes[k].row, r.name);
         }
     }
-    if (best_row >= 0 && best_loose && file_many) best_row = -1;
-    if (best_row < 0 && guess_row >= 0) best_row = guess_row;
-    if (best_row < 0 && moved_row >= 0 && !file_many) best_row = moved_row, best_launcher = moved_launcher;
-    if (best_row >= 0) {
-        gdb_fill(ix->rows[best_row], out);
-        out->launcher = best_launcher;
+    bool launcher = false;
+    i32 row = ep.pick(&launcher, shared);
+    if (row >= 0) {
+        gdb_fill(ix->rows[row], out);
+        out->launcher = launcher;
     }
     ReleaseSRWLockShared(&g_gamedb.lock);
-    if (shared) *shared = best_row < 0 && wants_more;
-    return best_row >= 0;
+    return row >= 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -973,6 +1041,10 @@ static void mc_put(char *out, i32 cap, i32 *n, const char *s); // mcpack.cpp
 static bool exe_clues(const char *exe, const char *path, const char *name, bool game, const char *more, char *out,
                       i32 cap); // storeids.cpp
 
+enum StaticKind { STATIC_WAIT, STATIC_LOOKUP, STATIC_ANSWER, STATIC_SHARED };
+static StaticKind static_lookup(const char *exe, const char *path, const char *cmdline, const char *title,
+                                LookAnswer *ans);
+
 // Whether games are looked up on the service: online, and it is on.
 static bool gamedb_service_on() { return g_gamedb.online && g_gamedb.service[0]; }
 
@@ -1006,12 +1078,12 @@ static bool gamedb_key_for(const char *name, char *key, i32 cap)
     return key[0] != 0;
 }
 
-// Sends `body` to the service: a lookup (POST /v1/lookup), or with `rename` a name the player gave (POST
-// /v1/rename). The same body is sent once a run. A lookup returns 1 with *ans once it is answered, 0 while it is
+// Sends `body` to the service: a lookup (POST /v1/lookup), or with `pick` a game the player picked (POST
+// /v1/pick). The same body is sent once a run. A lookup returns 1 with *ans once it is answered, 0 while it is
 // being asked. Main thread.
-static i32 gamedb_lookup(const char *body, LookAnswer *ans, bool rename = false)
+static i32 gamedb_lookup(const char *body, LookAnswer *ans, bool pick = false)
 {
-    u64 hash = fnv64(body, strlen(body)) ^ (rename ? 1 : 0);
+    u64 hash = fnv64(body, strlen(body)) ^ (pick ? 1 : 0);
     i32 state = -1;
     bool ask = false;
     AcquireSRWLockExclusive(&g_gamedb.lock);
@@ -1028,7 +1100,7 @@ static i32 gamedb_lookup(const char *body, LookAnswer *ans, bool rename = false)
             if (q.body) continue;
             q.hash = hash;
             q.answered = false;
-            q.rename = rename;
+            q.pick = pick;
             q.ans = {};
             q.body = _strdup(body);
             ask = q.body != 0;
@@ -1116,7 +1188,7 @@ static bool lookup_body(const AppInfo &a, bool game, const char *cmdline, const 
     return exe_clues(a.exe.s, a.path, desc, game, more, out, cap);
 }
 
-// The clues last sent in a lookup for each exe (its command line's among them), so a rename names the same exe the
+// The clues last sent in a lookup for each exe (its command line's among them), so a pick names the same exe the
 // lookup did. Main thread.
 static struct { char exe[64]; char *body; } g_last_looks[32];
 static i32 g_last_look_next;
@@ -1151,27 +1223,22 @@ static bool is_browser(const char *exe)
     return false;
 }
 
-// "Help name games": the player named a game by hand, so the service is told that this exe, which was shown as
-// `from` ("" = nothing), is `to` (POST /v1/rename), with the clues its lookup sent and the keys of both names where
-// they are known (`to`'s only when it is a search hit). When enough players name an exe the same, the service names
-// it so for everyone. Only with the service on and the player's say-so. Main thread.
-static void gamedb_rename(const AppInfo &a, const char *from, const char *to)
+// The player picked a game for an exe, which was shown as `from` ("" = nothing): the service is told it is `to`
+// (POST /v1/pick), with the clues its lookup sent and the keys of both games ("" for `from` when it has none).
+// Only a game with a key is sent, so a name the player typed stays on this PC. When enough players pick the same
+// game for an exe, the service names it so for everyone. Only with the service on. Main thread.
+static void gamedb_pick(const AppInfo &a, const char *from, const char *to)
 {
-    if (!g_app.config.share_names || !gamedb_service_on() || !to[0] || !strcmp(from, to)) return;
+    char to_key[48], from_key[48] = "";
+    if (!gamedb_service_on() || !to[0] || !strcmp(from, to) || !gamedb_key_for(to, to_key, sizeof to_key)) return;
+    if (from[0]) gamedb_key_for(from, from_key, sizeof from_key);
     static char more[1024], body[20 * 1024];
-    i32 n = snprintf(more, sizeof more, ",\"from\":");
-    mc_put(more, sizeof more, &n, from);
+    i32 n = snprintf(more, sizeof more, ",\"to_key\":");
+    mc_put(more, sizeof more, &n, to_key);
     n += snprintf(more + n, sizeof more - n, ",\"to\":");
     mc_put(more, sizeof more, &n, to);
-    char key[48];
-    if (from[0] && gamedb_key_for(from, key, sizeof key)) {
-        n += snprintf(more + n, sizeof more - n, ",\"from_key\":");
-        mc_put(more, sizeof more, &n, key);
-    }
-    if (gamedb_key_for(to, key, sizeof key) && (key[0] == 's' || key[0] == 'i')) {
-        n += snprintf(more + n, sizeof more - n, ",\"to_key\":");
-        mc_put(more, sizeof more, &n, key);
-    }
+    n += snprintf(more + n, sizeof more - n, ",\"from_key\":");
+    mc_put(more, sizeof more, &n, from_key);
     if (n >= (i32)sizeof more - 1) return;
     const char *clues = is_browser(a.exe.s) ? 0 : last_look(a.exe.s);
     if (is_browser(a.exe.s)) {
@@ -1186,7 +1253,7 @@ static void gamedb_rename(const AppInfo &a, const char *from, const char *to)
         return;
     }
     gamedb_lookup(body, 0, true);
-    log_line("games: told the service %s is %s", a.exe.s, to);
+    log_line("games: told the service %s is %s (%s)", a.exe.s, to, to_key);
 }
 
 // The program longest in front between from_us and to_us, from focus.tsv text ("us\texe" lines, oldest first).
@@ -1239,13 +1306,14 @@ static bool focus_longest(char *text, i64 from_us, i64 to_us, char *exe, i32 cap
 static void saved_load();                      // save.cpp
 static Path lib_item_path(const LibItem &it);  // library.cpp
 
-// A clip or session was moved from game `from` to `to` by hand: with "Help name games" on, the service is told the
-// program that was in front during it is that game (gamedb_rename). Only for a file saved from this buffer while
+// A clip or session was moved from game `from` to `to` by hand: the service is told the program that was in front
+// during it is that game (gamedb_pick, so only when `to` has a key). Only for a file saved from this buffer while
 // the buffer still covers it. Main thread.
 static void gamedb_clip_game(const LibItem &it, const char *from, const char *to)
 {
     Config &c = g_app.config;
-    if (!c.share_names || !gamedb_service_on() || !to[0]) return;
+    char key[48];
+    if (!gamedb_service_on() || !to[0] || !gamedb_key_for(to, key, sizeof key)) return;
     char path[1024];
     wide_to_utf8(lib_item_path(it).s, path, sizeof path);
     saved_load();
@@ -1271,7 +1339,7 @@ static void gamedb_clip_game(const LibItem &it, const char *from, const char *to
     if (!a) return;
     AppCategory cat = app_category(c, *a);
     if (a != &browser && cat != CAT_GAME && cat != CAT_NONE) return; // a chat app or a tool in front says nothing
-    gamedb_rename(*a, from, to);
+    gamedb_pick(*a, from, to);
 }
 
 // Names an app: its description becomes the game's name, and one that hasn't been sorted yet (and that no folder
@@ -1318,7 +1386,17 @@ static bool gamedb_name_app(AppInfo *a)
         static char body[16384], has[2048];
         LookAnswer ans = {};
         bool game = cat == CAT_GAME || known || shared;
-        i32 state = lookup_body(*a, game, cmd, "", body, sizeof body) ? gamedb_lookup(body, &ans) : -1;
+        i32 state = -1;
+        if (lookup_body(*a, game, cmd, "", body, sizeof body)) {
+            // The service's public files first; a lookup only for what they can't tell
+            StaticKind k = static_lookup(a->exe.s, a->path, cmd, title, &ans);
+            if (k == STATIC_SHARED) { // its rows want the command line and the window
+                if (!facts) facts = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title);
+                k = facts ? static_lookup(a->exe.s, a->path, cmd, title, &ans) : STATIC_ANSWER;
+                if (k == STATIC_SHARED) k = STATIC_ANSWER; // none of them, then
+            }
+            state = k == STATIC_WAIT ? 0 : k == STATIC_ANSWER ? 1 : gamedb_lookup(body, &ans);
+        }
         if (state == 1 && !ans.failed && !ans.name[0] && ans.ask_args[0]) { // a shared exe: which one is it?
             if (!facts) facts = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title);
             args_has_json(ans.ask_args, cmd, has, sizeof has);
@@ -1337,7 +1415,7 @@ static bool gamedb_name_app(AppInfo *a)
         // What it found only by a name is only taken for one sorted as a Game, or when it is sure
         if (state == 1 && !ans.failed && ans.name[0] &&
             (strcmp(ans.how, "name") || ans.confidence >= 0.9f || cat == CAT_GAME)) {
-            bool launcher = known && g.launcher;
+            bool launcher = (known && g.launcher) || ans.launcher;
             g = {};
             str_set(g.name, ans.name);
             str_set(g.key, ans.key);
@@ -1404,8 +1482,11 @@ static void gamedb_new_run(AppInfo *a)
 //                    "art":{"icon":{"url","w","h","from"}|null,"hero":..,"cover":..}, "v", "ask_args"?}
 //                    (a cover only for a game with no hero)
 //   GET /v1/art/<key>                -> {"key","art":{...},"v"}
-//   GET /v1/search?q=<name>          -> {"games":[{"id":"s5367951","name":"...","year":2017}, ...]}
-//   POST /v1/rename  a name the player gave -> 204
+//   GET /v1/search?q=<name>          -> {"games":[{"id":"s5367951","name":"...","year":2017,"icon":"<url>"|null},
+//                                       ...]}: up to 8, "id" any key; with no icon, /v1/art has it
+//   POST /v1/pick    a game the player picked: the clues + "to_key", "to", "from_key" -> 204
+//   POST /v1/broken  {"version","key","kind":"icon"|"hero"|"cover","url"}: a picture that is gone -> {"ok":true}
+//   GET /g/<nnn>.json  unsigned, the public files (static_lookup)
 // "v" is the answer's ETag: asked again with If-None-Match, an answer that hasn't changed is a 304. A picture's
 // address changes whenever the picture does.
 
@@ -1562,7 +1643,7 @@ static bool art_pick_search(const char *json, i64 len, const char *name, char *i
         j_eat(&j, ':');
         if (strcmp(key, "games") || !j_eat(&j, '[')) { j_skip(&j); j_eat(&j, ','); continue; }
         while (j_eat(&j, '{')) {
-            char gid[24] = "", gname[128] = "", k[16];
+            char gid[48] = "", gname[128] = "", k[16];
             while (!j_eat(&j, '}') && j.p < j.end) {
                 if (!j_string(&j, k, sizeof k)) break;
                 j_eat(&j, ':');
@@ -1584,40 +1665,79 @@ static bool art_pick_search(const char *json, i64 len, const char *name, char *i
     return id[0] != 0;
 }
 
+// Whether a picture's address is https on one of the hosts game pictures come from. No other is fetched, so an
+// answer can't send every player to another address.
+static bool image_url_ok(const char *url)
+{
+    static const char *const hosts[] = {"cdn2.steamgriddb.com", "cdn.steamgriddb.com", "cdn.discordapp.com",
+                                        "shared.steamstatic.com", "images.igdb.com", "cdn.modrinth.com",
+                                        "media.forgecdn.net", "cdn.feed-the-beast.com", "apps.modpacks.ch"};
+    if (strncmp(url, "https://", 8)) return false;
+    const char *host = url + 8;
+    size_t hl = strcspn(host, "/?#");
+    if (!host[hl] || host[hl] != '/') return false;
+    for (const char *h : hosts)
+        if (strlen(h) == hl && !_strnicmp(host, h, hl)) return true;
+    return false;
+}
+
 // From an answer's "art", the address of a game's icon, or of its hero (a wide picture with no title on it, else
-// the cover sent in its place), and with `from` where the service had it. False if it has neither.
-static bool art_pick_url(const char *json, i64 len, GameArt kind, char *url, i32 cap, char *from = 0, i32 from_cap = 0)
+// the cover sent in its place), with `from` where the service had it and `which` which of the three it is. Only
+// an address image_url_ok allows. False if it has neither.
+static bool art_pick_url(const char *json, i64 len, GameArt kind, char *url, i32 cap, char *from = 0, i32 from_cap = 0,
+                         const char **which = 0)
 {
     url[0] = 0;
     if (from) from[0] = 0;
-    const char *const kinds[2] = {kind == ART_ICON ? "art.icon" : "art.hero", kind == ART_ICON ? 0 : "art.cover"};
+    const char *const kinds[2] = {kind == ART_ICON ? "icon" : "hero", kind == ART_ICON ? 0 : "cover"};
     for (const char *k : kinds) {
         char path[32];
         if (!k) break;
-        snprintf(path, sizeof path, "%s.url", k);
-        if (!j_get(json, len, path, url, cap) || strncmp(url, "https://", 8)) {
+        snprintf(path, sizeof path, "art.%s.url", k);
+        if (!j_get(json, len, path, url, cap) || !image_url_ok(url)) {
             url[0] = 0;
             continue;
         }
-        snprintf(path, sizeof path, "%s.from", k);
+        snprintf(path, sizeof path, "art.%s.from", k);
         if (from) j_get(json, len, path, from, from_cap);
+        if (which) *which = k;
         return true;
     }
     return false;
 }
 
-// An https address fetched to a file.
-static bool http_get_url(const char *url, const Path &out)
+// Whether a file's first bytes are a picture's: PNG, JPEG, GIF or WebP.
+static bool is_image_file(const Path &file)
 {
-    if (strncmp(url, "https://", 8)) return false;
+    u8 b[12] = {};
+    FILE *f = _wfopen(file.s, L"rb");
+    size_t n = f ? fread(b, 1, sizeof b, f) : 0;
+    if (f) fclose(f);
+    return (n >= 8 && !memcmp(b, "\x89PNG\r\n\x1a\n", 8)) || (n >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) ||
+           (n >= 6 && (!memcmp(b, "GIF87a", 6) || !memcmp(b, "GIF89a", 6))) ||
+           (n >= 12 && !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WEBP", 4));
+}
+
+// A picture fetched to a file, from an address image_url_ok allows. Returns the status (0 = not asked, or no
+// answer); a 200 that isn't a picture (is_image_file) is 415, and nothing is kept.
+static u32 http_get_url(const char *url, const Path &out)
+{
+    if (!image_url_ok(url)) return 0;
     const char *host = url + 8, *slash = strchr(host, '/');
-    if (!slash || slash == host) return false;
     wchar_t whost[128], wpath[1024];
     char h[128];
     snprintf(h, sizeof h, "%.*s", (int)(slash - host), host);
     utf8_to_wide(h, whost, COUNT(whost));
     utf8_to_wide(slash, wpath, COUNT(wpath));
-    return http_get_file(whost, wpath, out);
+    Path got = out;
+    wcsncat(got.s, L".new", MAX_PATH - wcslen(got.s) - 1);
+    u32 status = http_get(whost, wpath, L"", &got);
+    if (status == 200 && !is_image_file(got)) status = 415;
+    if (status != 200 || !MoveFileExW(got.s, out.s, MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(got.s);
+        return status == 200 ? 0 : status;
+    }
+    return 200;
 }
 
 static bool file_older_than(const WIN32_FILE_ATTRIBUTE_DATA &fa, i64 seconds)
@@ -1810,8 +1930,10 @@ static u32 art_search(const char *q, char **body, i64 *len, bool typing = false)
     return status;
 }
 
-// The games in a /v1/search answer, in its order: their names, years (0 = none) and, with `ids`, ids. How many.
-static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *years, i32 max, char (*ids)[24] = 0)
+// The games in a /v1/search answer, in its order: their names, years (0 = none), with `ids`
+// their ids and with `icons` their icons' addresses ("" = none). How many.
+static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *years, i32 max, char (*ids)[48] = 0,
+                           char (*icons)[256] = 0)
 {
     i32 n = 0;
     Json j = {json, json + len};
@@ -1822,13 +1944,14 @@ static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *y
         j_eat(&j, ':');
         if (strcmp(key, "games") || !j_eat(&j, '[')) { j_skip(&j); j_eat(&j, ','); continue; }
         while (j_eat(&j, '{')) {
-            char gname[128] = "", gid[24] = "", k[16];
+            char gname[128] = "", gid[48] = "", icon[256] = "", k[16];
             i32 year = 0;
             while (!j_eat(&j, '}') && j.p < j.end) {
                 if (!j_string(&j, k, sizeof k)) break;
                 j_eat(&j, ':');
                 if (!strcmp(k, "name")) j_string(&j, gname, sizeof gname) || (j_skip(&j), 0);
                 else if (!strcmp(k, "id")) j_string(&j, gid, sizeof gid) || (j_skip(&j), 0);
+                else if (!strcmp(k, "icon")) j_string(&j, icon, sizeof icon) || (j_skip(&j), 0);
                 else if (!strcmp(k, "year")) { j_ws(&j); year = atoi(j.p); j_skip(&j); }
                 else j_skip(&j);
                 j_eat(&j, ',');
@@ -1836,7 +1959,8 @@ static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *y
             j_eat(&j, ',');
             if (gname[0] && n < max) {
                 snprintf(names[n], 128, "%s", gname);
-                if (ids) snprintf(ids[n], 24, "%s", gid);
+                if (ids) snprintf(ids[n], 48, "%s", gid);
+                if (icons) snprintf(icons[n], 256, "%s", image_url_ok(icon) ? icon : "");
                 years[n++] = year > 0 ? year : 0;
             }
         }
@@ -1844,6 +1968,27 @@ static i32 art_search_list(const char *json, i64 len, char (*names)[128], i32 *y
         j_eat(&j, ',');
     }
     return n;
+}
+
+// A search's icon for a key, kept (search_icons) or looked up (search_icon: false if none). Under the lock.
+static void search_icon_put_locked(const char *key, const char *url)
+{
+    i32 at = -1;
+    for (i32 i = 0; i < COUNT(g_gamedb.search_icons) && at < 0; i++)
+        if (!strcmp(g_gamedb.search_icons[i].key, key)) at = i;
+    if (at < 0) at = g_gamedb.search_icon_next++ % COUNT(g_gamedb.search_icons);
+    str_set(g_gamedb.search_icons[at].key, key);
+    str_set(g_gamedb.search_icons[at].url, url);
+}
+
+static bool search_icon(const char *key, char *url, i32 cap)
+{
+    url[0] = 0;
+    AcquireSRWLockShared(&g_gamedb.lock);
+    for (auto &si : g_gamedb.search_icons)
+        if (key[0] && !strcmp(si.key, key)) snprintf(url, cap, "%s", si.url);
+    ReleaseSRWLockShared(&g_gamedb.lock);
+    return url[0] != 0;
 }
 
 // Looks for the name typed when naming an app (gamedb_find_online asked for it) on the art service. Search thread.
@@ -1858,12 +2003,15 @@ static void gamedb_fetch_find()
     char *body = 0;
     i64 len = 0;
     u32 status = g_gamedb.online ? art_search(q, &body, &len, true) : 0;
-    char names[8][128], ids[8][24];
-    i32 years[8], n = status == 200 && body ? art_search_list(body, len, names, years, 8, ids) : 0;
+    static char names[8][128], ids[8][48], icons[8][256];
+    i32 years[8], n = status == 200 && body ? art_search_list(body, len, names, years, 8, ids, icons) : 0;
     free(body);
     DEV_LOG("gamedb: art service search for \"%s\" answered %u, %d games", q, status, n);
     AcquireSRWLockExclusive(&g_gamedb.lock);
-    for (i32 i = 0; i < n; i++) gamedb_named_put_locked(names[i], ids[i]);
+    for (i32 i = 0; i < n; i++) {
+        gamedb_named_put_locked(names[i], ids[i]);
+        if (ids[i][0] && icons[i][0]) search_icon_put_locked(ids[i], icons[i]);
+    }
     snprintf(g_gamedb.found_q, sizeof g_gamedb.found_q, "%s", q);
     g_gamedb.found_count = n;
     for (i32 i = 0; i < n; i++) {
@@ -2109,19 +2257,50 @@ static bool art_json_fetch(const char *id, const char *key, const char *name, u3
     return ok || there;
 }
 
+// A picture from the service's answer that is gone or isn't one (POST /v1/broken): the game's key, which of its
+// pictures (icon, hero or cover) and the address. Once a day for each address. Worker.
+static void art_broken(const char *key, const char *which, const char *url)
+{
+    if (!g_gamedb.service[0] || !key[0] || !which) return;
+    static struct { u64 hash; u32 day; } sent[64];
+    static i32 next;
+    u32 day = (u32)(GetTickCount64() / (24 * 3600 * 1000ull)) + 1;
+    u64 h = fnv64(url, strlen(url));
+    for (auto &b : sent)
+        if (b.hash == h && b.day == day) return;
+    sent[next++ % COUNT(sent)] = {h, day};
+    static char body[1024];
+    i32 n = snprintf(body, sizeof body, "{\"version\":\"%s\",\"key\":", REKODR_VERSION);
+    mc_put(body, sizeof body, &n, key);
+    n += snprintf(body + n, sizeof body - n, ",\"kind\":\"%s\",\"url\":", which);
+    mc_put(body, sizeof body, &n, url);
+    if (n >= (i32)sizeof body - 2) return;
+    snprintf(body + n, sizeof body - n, "}");
+    u32 status = art_service_get("/v1/broken", 0, 0, body);
+    log_line("games: a picture of %s is broken; the service was told (%u)", key, status);
+}
+
 // Makes a game's icon or cover the one where its pictures are says (art_json_fetch first): fetched when its
-// address changed, removed when there is none. Discord's own picture with the service off and no other.
+// address changed, removed when there is none. Discord's own picture with the service off and no other. An icon a
+// search gave (search_icon) is used while where the game's pictures are hasn't been asked.
 // *replaced: a picture that was there was swapped for another. False if it couldn't be settled now (offline, or
 // the picture didn't come); *paced when it waits its turn for the service.
 static bool art_settle(const char *id, const char *key, const char *name, const char *hash, u32 steam, GameArt kind,
                        bool *replaced, bool *paced)
 {
     *replaced = false;
-    if (!art_json_fetch(id, key, name, steam, paced)) return false;
+    *paced = false;
     Path json = gamedb_art_json(id), pic = gamedb_art_file(id, kind), side = gamedb_art_file(id, kind, L".url");
+    char url[512] = "", was[512] = "";
+    const char *which = 0;
+    bool searched = kind == ART_ICON && g_gamedb.service[0] && GetFileAttributesW(json.s) == INVALID_FILE_ATTRIBUTES &&
+                    search_icon(key, url, sizeof url);
+    if (searched) which = "icon";
+    else if (!art_json_fetch(id, key, name, steam, paced)) return false;
     i64 jl = 0, sl = 0;
-    char *text = read_file(json.s, &jl), url[512] = "", was[512] = "";
-    if (!art_pick_url(text ? text : "", text ? jl : 0, kind, url, sizeof url) && hash[0] && !g_gamedb.service[0])
+    char *text = searched ? 0 : read_file(json.s, &jl);
+    if (!searched && !art_pick_url(text ? text : "", text ? jl : 0, kind, url, sizeof url, 0, 0, &which) && hash[0] &&
+        !g_gamedb.service[0])
         snprintf(url, sizeof url, "https://cdn.discordapp.com/app-icons/%s/%s.png?size=%d", id, hash,
                  kind == ART_ICON ? 128 : 512);
     free(text);
@@ -2132,7 +2311,16 @@ static bool art_settle(const char *id, const char *key, const char *name, const 
     bool have = GetFileAttributesExW(pic.s, GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 0;
     const char *now = url[0] ? url : "none";
     if (strcmp(was, now) || (url[0] && !have)) {
-        if (url[0] && !http_get_url(url, pic)) return false;
+        u32 status = url[0] ? http_get_url(url, pic) : 200;
+        if (status == 404 || status == 410 || status == 415) {
+            // Gone, or not a picture: the service is told, and the game has none until its pictures are asked
+            // about again
+            art_broken(key, which, url);
+            DeleteFileW(pic.s);
+            *replaced = have;
+            return write_whole(side, now, (i64)strlen(now));
+        }
+        if (status != 200) return false;
         if (!url[0]) DeleteFileW(pic.s);
         *replaced = have;
         DEV_LOG("gamedb: %s for %s %s", kind == ART_ICON ? "icon" : "hero", id, url[0] ? "fetched" : "none");
@@ -2329,6 +2517,219 @@ static void lookups_load()
     FindClose(h);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The service's public files: GET /g/<nnn>.json, unsigned, {"<name>": entry} for the exe names in it (static_name).
+// An entry is one of
+//   {"rows":[[folders, argument, flags, answer, file], ...], "answers":[answer, ...]}: the ways Discord writes the
+//     exe, told apart here as Discord's own list is (ExePick; flags & 1: a launcher's, 0.6 sure; flags & 2: told
+//     apart by its arguments), each with its game's place in "answers"
+//   a whole answer, as a lookup gives it: the exe is that game wherever it is
+//   {"ask":[...]}: only a lookup can tell
+// A name with no entry is one only a lookup can tell too. Each file is kept in gamedb\g\ and checked again when it
+// is a day old, with its ETag; one the service has none for is kept as {}.
+
+// An exe's name as the public files have it: lower case (Windows' lower case, which covers accented letters),
+// with no spaces, '-' or '_', in UTF-8, and its file's number: FNV-1a of its UTF-16 units, mod 4096. -1 for no
+// name.
+static i32 static_name(const char *exe, char *out, i32 cap)
+{
+    wchar_t w[128], q[128];
+    utf8_to_wide(exe, w, COUNT(w));
+    CharLowerBuffW(w, (DWORD)wcslen(w));
+    i32 n = 0;
+    for (const wchar_t *c = w; *c && n < COUNT(q) - 1; c++)
+        if (*c != L' ' && *c != L'-' && *c != L'_') q[n++] = *c;
+    q[n] = 0;
+    u32 h = 0x811c9dc5;
+    for (i32 i = 0; i < n; i++) h = (h ^ q[i]) * 0x01000193;
+    wide_to_utf8(q, out, cap);
+    return n ? (i32)(h % 4096) : -1;
+}
+
+static Path static_file(i32 shard, const wchar_t *ext)
+{
+    wchar_t name[32];
+    swprintf(name, COUNT(name), L"g\\%03x%s", shard, ext);
+    return path_join(gamedb_dir(), name);
+}
+
+// A whole number in JSON. False if there isn't one here.
+static bool j_int(Json *j, i64 *out)
+{
+    j_ws(j);
+    char num[24];
+    i32 n = 0;
+    while (j->p < j->end && n < (i32)sizeof num - 1 && (isdigit((u8)*j->p) || *j->p == '-')) num[n++] = *j->p++;
+    num[n] = 0;
+    *out = strtoll(num, 0, 10);
+    return n > 0;
+}
+
+// An answer from the public files, kept as a lookup's is (lookup_keep_art), once a run for each.
+static void static_keep(const char *text, i64 len, const LookAnswer &ans)
+{
+    static u64 kept[64];
+    static i32 next;
+    u64 h = fnv64(text, (size_t)len);
+    for (u64 k : kept)
+        if (k == h) return;
+    kept[next++ % COUNT(kept)] = h;
+    lookup_keep_art(text, len, ans);
+}
+
+// The answer an entry's rows give for the running exe. STATIC_SHARED when only its command line and window could
+// tell; an answer with no game when none of them is it.
+static StaticKind static_rows(const char *e, i64 el, const char *exe, const char *path, const char *cmdline,
+                              const char *title, LookAnswer *ans)
+{
+    const char *at[32];
+    i64 at_len[32];
+    i32 an = 0;
+    Json j = {e, e + el};
+    if (j_find(&j, "answers") && j_eat(&j, '[')) {
+        while (!j_eat(&j, ']') && j.p < j.end) {
+            j_ws(&j);
+            const char *v = j.p;
+            j_skip(&j);
+            if (an < COUNT(at)) at[an] = v, at_len[an++] = j.p - v;
+            j_eat(&j, ',');
+        }
+    }
+    ExePick ep;
+    ep.start(exe, path, cmdline, title);
+    j = {e, e + el};
+    if (j_find(&j, "rows") && j_eat(&j, '[')) {
+        while (j_eat(&j, '[')) {
+            char folders[160] = "", args[200] = "", file[96] = "", game[128] = "";
+            i64 flags = 0, n = -1;
+            bool ok = j_string(&j, folders, sizeof folders) && j_eat(&j, ',') && j_string(&j, args, sizeof args) &&
+                      j_eat(&j, ',') && j_int(&j, &flags) && j_eat(&j, ',') && j_int(&j, &n) && j_eat(&j, ',') &&
+                      j_string(&j, file, sizeof file);
+            while (!j_eat(&j, ']') && j.p < j.end) { j_skip(&j); j_eat(&j, ','); }
+            j_eat(&j, ',');
+            if (!ok || n < 0 || n >= an || !file[0]) continue;
+            char ent[260];
+            i32 len = snprintf(ent, sizeof ent, "%s%s%s", folders, folders[0] ? "/" : "", file);
+            if (len <= 0 || len >= (i32)sizeof ent) continue;
+            j_get(at[n], at_len[n], "game.name", game, sizeof game);
+            ep.add(ent, len, args, (flags & 1) != 0, (flags & 2) != 0, (i32)n, game);
+        }
+    }
+    bool launcher = false, shared = false;
+    i32 row = ep.pick(&launcher, &shared);
+    *ans = {};
+    if (row < 0) {
+        str_set(ans->how, "none");
+        return shared && !cmdline[0] ? STATIC_SHARED : STATIC_ANSWER;
+    }
+    if (!lookup_parse(at[row], at_len[row], ans)) return STATIC_LOOKUP;
+    ans->launcher = launcher;
+    if (launcher) ans->confidence = 0.6f;
+    static_keep(at[row], at_len[row], *ans);
+    return STATIC_ANSWER;
+}
+
+// What the public files say about an exe: STATIC_ANSWER with *ans (no game in it when they say it is none),
+// STATIC_LOOKUP when only a lookup can tell, STATIC_WAIT while its file is being fetched, STATIC_SHARED when the
+// command line and the window are wanted (ask again with them). A file a day old is used while it is checked
+// again. Main thread.
+static StaticKind static_lookup(const char *exe, const char *path, const char *cmdline, const char *title,
+                                LookAnswer *ans)
+{
+    *ans = {};
+    char name[256];
+    i32 shard = static_name(exe, name, sizeof name);
+    if (shard < 0) return STATIC_LOOKUP;
+    Path file = static_file(shard, L".json");
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    bool have = GetFileAttributesExW(file.s, GetFileExInfoStandard, &fa) != 0;
+    u32 now = (u32)(GetTickCount64() / 1000) + 1, tried = g_gamedb.shard_tried[shard];
+    if ((!have || file_older_than(fa, 24 * 3600)) && !g_gamedb.shard_want[shard] && (!tried || now - tried > 600)) {
+        AcquireSRWLockExclusive(&g_gamedb.lock);
+        g_gamedb.shard_want[shard] = 1;
+        g_gamedb.shard_tried[shard] = tried = now;
+        ReleaseSRWLockExclusive(&g_gamedb.lock);
+        SetEvent(g_gamedb.wake);
+    }
+    if (!have) return g_gamedb.shard_want[shard] ? STATIC_WAIT : STATIC_LOOKUP;
+    i64 len = 0;
+    char *text = read_file(file.s, &len);
+    if (!text) return STATIC_LOOKUP;
+    const char *e = 0;
+    i64 el = 0;
+    Json j = {text, text + len};
+    if (j_eat(&j, '{')) {
+        while (!j_eat(&j, '}') && j.p < j.end) {
+            char key[256];
+            if (!j_string(&j, key, sizeof key)) break;
+            j_eat(&j, ':');
+            j_ws(&j);
+            const char *v = j.p;
+            j_skip(&j);
+            if (!strcmp(key, name)) {
+                e = v;
+                el = j.p - v;
+                break;
+            }
+            j_eat(&j, ',');
+        }
+    }
+    StaticKind kind = STATIC_LOOKUP;
+    if (e && *e == '{') {
+        Json f = {e, e + el}, g = {e, e + el};
+        if (j_find(&f, "rows")) kind = static_rows(e, el, exe, path, cmdline, title, ans);
+        else if (j_find(&g, "ask")) kind = STATIC_LOOKUP;
+        else if (lookup_parse(e, el, ans)) {
+            static_keep(e, el, *ans);
+            kind = STATIC_ANSWER;
+        }
+    }
+    free(text);
+    return kind;
+}
+
+// Fetches the public files static_lookup wants, each with the ETag it came with. GAMEDB_RESOLVED when one is new
+// or changed, or couldn't be had, so the apps waiting for it are named.
+static void gamedb_fetch_shards()
+{
+    for (i32 i = 0; i < COUNT(g_gamedb.shard_want) && !g_gamedb.stop; i++) {
+        if (!g_gamedb.shard_want[i]) continue;
+        Path file = static_file(i, L".json"), tag = static_file(i, L".etag");
+        bool have = GetFileAttributesW(file.s) != INVALID_FILE_ATTRIBUTES;
+        u32 status = 0;
+        if (g_gamedb.service[0]) {
+            char etag[128] = "", got[128] = "";
+            i64 tl = 0;
+            char *t = have ? read_file(tag.s, &tl) : 0;
+            if (t && tl > 0 && tl < (i64)sizeof etag && !strpbrk(t, "\r\n")) snprintf(etag, sizeof etag, "%s", t);
+            free(t);
+            wchar_t host[128], path[32], header[200] = L"";
+            utf8_to_wide(g_gamedb.service, host, COUNT(host));
+            swprintf(path, COUNT(path), L"/g/%03x.json", i);
+            if (etag[0]) swprintf(header, COUNT(header), L"If-None-Match: %hs\r\n", etag);
+            status = http_get(host, path, header, &file, 0, 0, 0, got, sizeof got);
+            if (status == 200) {
+                if (got[0]) write_whole(tag, got, (i64)strlen(got));
+                else DeleteFileW(tag.s);
+            } else if (status == 304) {
+                touch_file(file);
+            } else if (status == 404) { // no exe name of the service's is in it
+                write_whole(file, "{}", 2);
+                DeleteFileW(tag.s);
+            }
+            DEV_LOG("gamedb: public file %03x answered %u", i, status);
+        }
+        AcquireSRWLockExclusive(&g_gamedb.lock);
+        g_gamedb.shard_want[i] = 0;
+        ReleaseSRWLockExclusive(&g_gamedb.lock);
+        if (status == 304 || (have && status != 200 && status != 404)) continue;
+        Event e = {};
+        e.kind = EV_GAMEDB;
+        e.a = GAMEDB_RESOLVED;
+        event_post(e);
+    }
+}
+
 // Sends what gamedb_lookup was given. False if some are left for later, the service having been asked enough for
 // now.
 static bool gamedb_fetch_looks()
@@ -2339,7 +2740,7 @@ static bool gamedb_fetch_looks()
         for (i32 i = 0; i < COUNT(g_gamedb.looks) && at < 0; i++)
             if (g_gamedb.looks[i].body && !g_gamedb.looks[i].answered) at = i;
         u64 hash = at >= 0 ? g_gamedb.looks[at].hash : 0;
-        bool rename = at >= 0 && g_gamedb.looks[at].rename;
+        bool pick = at >= 0 && g_gamedb.looks[at].pick;
         const char *body = at >= 0 ? g_gamedb.looks[at].body : 0; // its slot isn't reused while it has a body
         ReleaseSRWLockExclusive(&g_gamedb.lock);
         if (at < 0) return true;
@@ -2356,9 +2757,9 @@ static bool gamedb_fetch_looks()
         if (art_service_paced()) return false;
 
         LookAnswer ans = {};
-        if (rename) {
-            u32 status = art_service_get("/v1/rename", 0, 0, body);
-            DEV_LOG("gamedb: service rename answered %u", status);
+        if (pick) {
+            u32 status = art_service_get("/v1/pick", 0, 0, body);
+            DEV_LOG("gamedb: service pick answered %u", status);
         } else {
             wchar_t fname[64];
             swprintf(fname, COUNT(fname), L"lookups\\%016llx.json", (unsigned long long)hash);
@@ -2463,6 +2864,7 @@ static DWORD WINAPI gamedb_thread(void *)
         }
     }
     while (!g_gamedb.stop) {
+        gamedb_fetch_shards();
         bool done = gamedb_fetch_looks();
         done &= gamedb_fetch_art();
         // some waiting their turn: look again soon

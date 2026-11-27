@@ -398,7 +398,7 @@ static DWORD WINAPI fixed_covers_worker(void *)
             bool have = GetFileAttributesExW(p.s, GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 0;
             char url[128];
             snprintf(url, sizeof url, "https://cdn2.steamgriddb.com/grid/%s", g_fixed_covers[i].grid[k]);
-            if (have || (g_gamedb.online && http_get_url(url, p))) got = k + 1;
+            if (have || (g_gamedb.online && http_get_url(url, p) == 200)) got = k + 1;
             else DEV_LOG("gamedb: cover %s for %s didn't come", g_fixed_covers[i].grid[k], g_fixed_covers[i].game);
         }
         InterlockedExchange(&g_fixed.got[i], got);

@@ -205,8 +205,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->game_lookup = true;
     c->auto_update = true;
     c->tooltips = true;
-    c->share_names = true; // "Help name games" and "Send usage stats": on, the setup asks
-    c->send_stats = true;
+    c->send_stats = true; // on, the setup asks
     c->send_crashes = true;
     c->steam_type_check = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
@@ -815,7 +814,6 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "folder_warn_gb")) real(&c->folder_warn_gb);
     else if (!strcmp(key, "wave_keep_days")) real(&c->wave_keep_days);
     else if (!strcmp(key, "game_lookup")) c->game_lookup = atoi(value) != 0;
-    else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "steam_type_check")) boolean(&c->steam_type_check);
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
     else if (!strcmp(key, "send_crashes")) boolean(&c->send_crashes);
@@ -1084,7 +1082,6 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "wave_keep_days = %g\n", c.wave_keep_days);
     fprintf(f, "folder_warn_gb = %g\n", c.folder_warn_gb);
     fprintf(f, "game_lookup = %d\n", c.game_lookup ? 1 : 0);
-    boolean("share_names", c.share_names);
     boolean("steam_type_check", c.steam_type_check);
     boolean("send_stats", c.send_stats);
     boolean("send_crashes", c.send_crashes);
