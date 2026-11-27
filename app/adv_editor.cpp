@@ -409,7 +409,7 @@ static void adv_ask_dialog()
     }
     if (lib_dialog_begin("##adv_simple")) {
         i32 r = lib_confirm("Back to Simple?", "Back to Simple loses the Advanced edits.", "Undo brings them back.", 0, 0,
-                            false, "Back to Simple", KIT_DANGER);
+                            false, ICON_SIMPLE "  Back to Simple", KIT_DANGER);
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) r = -1;
         if (r) ImGui::CloseCurrentPopup();
         if (r > 0) adv_set_mode(false, true);

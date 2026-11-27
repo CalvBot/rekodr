@@ -2958,7 +2958,7 @@ static void screen_editor()
     bool back = kit_icon_button(ICON_BACK, "##back", KIT_GHOST);
     f32 mode_w = kit_px(196);
     {
-        static const char *const modes[] = {"Simple", "Advanced"};
+        static const char *const modes[] = {ICON_SIMPLE "  Simple", ICON_ADVANCED "  Advanced"};
         ImGui::SetCursorScreenPos(ImVec2(h0.x + avail.x - mode_w, h0.y + (head_h - fh) / 2));
         if (lib_switch("##mode", modes, mode_w, fh, adv_on(), COL_PANEL2, COL_HOVER, COL_OFF)) adv_set_mode(!adv_on(), false);
         adv_ask_dialog();

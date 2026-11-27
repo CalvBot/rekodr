@@ -169,6 +169,8 @@ static f32 g_dpi_scale = 1;
 #define ICON_OPEN      "\xEE\xA2\xA7" // E8A7 open in new window
 #define ICON_VIEW      "\xEE\xA2\x90" // E890 eye
 #define ICON_FILE      "\xEE\xA2\xA5" // E8A5 page
+#define ICON_SIMPLE    "\xEE\xA3\x86" // E8C6 scissors: the Simple editor, quick cuts
+#define ICON_ADVANCED  "\xEE\xA0\x9E" // E81E layers: the Advanced editor, several tracks
 
 static const char *g_help_jump; // a section's title: Help opens scrolled to it (Options' info icons)
 
@@ -1659,6 +1661,8 @@ static void help_window()
             {"[Esc]", "Close the player"},
         };
         static const HelpRow editor[] = {
+            {ICON_SIMPLE "  Simple", "Quick cuts: trim, zoom and sound keys"},
+            {ICON_ADVANCED "  Advanced", "Several tracks from one clip; the clip stays in it"},
             {"[Space]", "Play / pause"},
             {"[I] / [O]", "Trim start / end at the playhead"},
             {"Click or drag on the ruler or picture strip", "Move the playhead"},

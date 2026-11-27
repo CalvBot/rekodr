@@ -4795,7 +4795,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     // Bottom left, where nothing else goes: edited in Advanced mode, then a round badge while its playable copy is
     // being made (render.cpp): an accent arc turning while it renders, a still faint ring while it waits its turn.
     f32 bx = t0.x + kit_px(8);
-    if (lib_is_advanced(it)) bx += badge(dl, ImVec2(bx, t1.y - kit_px(10)), false, true, "Advanced") + kit_px(4);
+    if (lib_is_advanced(it)) bx += badge(dl, ImVec2(bx, t1.y - kit_px(10)), false, true, ICON_ADVANCED "  Advanced") + kit_px(4);
     f32 rf = render_progress(it.key);
     bool rendering = rf >= 0;
     if (!rendering && render_waiting(it.key)) rf = 0;
