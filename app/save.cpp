@@ -3256,8 +3256,8 @@ static bool path_is_session(const wchar_t *path)
 // made at social_kbps' target (12 Mbps at 1080p60) when that fits the budget, lower down to the floor
 // (5 Mbps at 1080p) when it doesn't; when not even the floor fits the whole clip, with SOCIAL_PREVIEW on, it's a
 // preview: the first part at the floor, as long as the budget allows, then END_CARD_S of "Continues on the page".
-// The budget (social_copy_mb, 150 MB) is under what Discord's proxy was seen to embed (250 MB) and play; the copy is
-// made SOCIAL_MARGIN under it. A copy is needed over SOCIAL_MAX_KBPS (14 Mbps) too.
+// The budget is social_copy_mb (200 MB, up to 1 GB, which Discord's proxy has played); the copy is made
+// SOCIAL_MARGIN under it. A copy is needed over SOCIAL_MAX_KBPS (14 Mbps) too.
 
 #define SOCIAL_PREVIEW 1 // experimental: 0 makes every social copy the whole clip
 enum { SOCIAL_H = 1080, SOCIAL_KBPS = 12000, SOCIAL_MIN_KBPS = 5000, SOCIAL_MAX_KBPS = 14000 };

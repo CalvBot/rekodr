@@ -454,15 +454,15 @@ static void r2_thumb_key(const char *key, char out[R2_KEY_MAX])
     snprintf(out, R2_KEY_MAX, "%s/thumb.jpg", dir);
 }
 
-// Chat apps play the video a page names only when their proxy can fetch all of it: Discord's embedded H.264 up to
-// about 250 MB and cut bigger files short. A page names a social copy of the clip, beside it in the bucket, when the
-// clip is bigger than r2_social_bytes() (social_copy_mb), over 1080p or 1920 wide, or over SOCIAL_MAX_KBPS; the
-// page itself plays the clip.
-static i64 r2_social_bytes()
-{
-    f64 mb = g_app.config.social_copy_mb;
-    return (i64)((mb < 8 ? 8 : mb > 250 ? 250 : mb) * 1000 * 1000);
-}
+// Chat apps play the video a page names only when their proxy can fetch all of it; Discord's has played 1 GB.
+// A page names a social copy of the clip, beside it in the bucket, when the clip is bigger than r2_social_bytes()
+// (social_copy_mb, Options' Card video size, 8 MB to SOCIAL_COPY_MAX_MB), over 1080p or 1920 wide, or over
+// SOCIAL_MAX_KBPS; the page itself plays the clip.
+#define SOCIAL_COPY_MAX_MB 1024.0f
+
+static f32 social_copy_clamp(f32 mb) { return mb < 8 ? 8 : mb > SOCIAL_COPY_MAX_MB ? SOCIAL_COPY_MAX_MB : mb; }
+
+static i64 r2_social_bytes() { return (i64)((f64)social_copy_clamp(g_app.config.social_copy_mb) * 1000 * 1000); }
 
 // The small copy beside a file in the bucket: "rekodr/<id>/clip.mp4" -> "rekodr/<id>/social.mp4".
 static void r2_social_key(const char *key, char out[R2_KEY_MAX])

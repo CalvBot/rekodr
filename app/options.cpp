@@ -4216,20 +4216,39 @@ static void options_sharing()
     // A link's card in Discord: how it looks
     opt_section("LINK CARD");
     opt_card_begin();
-    // The small copy a link's card plays: its size as chips across the control column
+    // The small copy a link's card plays: four sizes and Custom as chips across the control column, as Max file size
+    // has them. Picking Custom turns that chip into its number box, the same size, so nothing moves.
     {
-        static const f32 sizes[] = {50, 80, 100, 150, 200};
-        i32 n = (i32)COUNT(sizes);
-        f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - (n - 1) * gap) / n);
-        opt_row_begin("Card video size", "The small copy the card plays. Too big and it won't play", cw);
+        static const f32 sizes[] = {50, 100, 200, SOCIAL_COPY_MAX_MB};
+        static bool custom;
+        i32 n = (i32)COUNT(sizes), at = -1;
+        for (i32 i = 0; i < n; i++)
+            if (fabsf(c.social_copy_mb - sizes[i]) < 0.5f) at = i;
+        if (at < 0) custom = true;
+        f32 cw = opt_wide_w(), gap = dp(6), chip_w = floorf((cw - n * gap) / (n + 1));
+        opt_row_begin("Card video size", "The copy the card plays when the clip is bigger. Up to 1 GB", cw);
         f32 x = g_row.x1 - cw, y = opt_row_frame_y();
-        for (i32 i = 0; i < n; i++) {
+        for (i32 i = 0; i <= n; i++) {
             ImGui::SetCursorScreenPos(ImVec2(x + i * (chip_w + gap), y));
+            if (i == n && custom) {
+                ImGui::SetNextItemWidth(chip_w);
+                if (ImGui::InputFloat("##socialmb", &c.social_copy_mb, 0, 0, "%.0f MB"))
+                    c.social_copy_mb = social_copy_clamp(c.social_copy_mb);
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    log_line("options: card video %g MB", c.social_copy_mb);
+                    options_apply(0);
+                }
+                continue;
+            }
             char label[32];
-            snprintf(label, sizeof label, "%.0f MB##social%d", sizes[i], i);
-            if (kit_chip(label, fabsf(c.social_copy_mb - sizes[i]) < 0.5f, 0, chip_w)) {
-                c.social_copy_mb = sizes[i];
-                log_line("options: card video %g MB", c.social_copy_mb);
+            if (i < n) {
+                share_size_label(sizes[i], label, sizeof label);
+                snprintf(label + strlen(label), sizeof label - strlen(label), "##social%d", i);
+            } else snprintf(label, sizeof label, "Custom##socialc");
+            if (kit_chip(label, i < n && !custom && at == i, 0, chip_w)) {
+                custom = i == n;
+                if (i < n) c.social_copy_mb = sizes[i];
+                log_line("options: card video %s", custom ? "custom" : label);
                 options_apply(0);
             }
         }

@@ -1926,8 +1926,26 @@ static void test_share()
     T(!strcmp(t, "5.5 MB"));
     share_size_text(2000 * mb, t, sizeof t);
     T(!strcmp(t, "2 GB"));
-    share_size_label(1024, t, sizeof t); // Options' largest Max file size chip
+    share_size_label(1024, t, sizeof t); // Options' largest Max file size and Card video size chips
     T(!strcmp(t, "1 GB"));
+}
+
+// Card video size: the social copy's budget is 8 MB to 1 GB, 200 MB by default.
+static void test_social_copy_size()
+{
+    static Config keep, c;
+    keep = g_app.config;
+    config_defaults(&c, g_app.paths);
+    T(c.social_copy_mb == 200);
+    g_app.config.social_copy_mb = 200;
+    T(r2_social_bytes() == 200000000);
+    g_app.config.social_copy_mb = 1024;
+    T(r2_social_bytes() == 1024000000);
+    g_app.config.social_copy_mb = 5000;
+    T(r2_social_bytes() == 1024000000);
+    g_app.config.social_copy_mb = 1;
+    T(r2_social_bytes() == 8000000);
+    g_app.config = keep;
 }
 
 // The editor's lanes: a track's kind from its title, and waveforms read only where a chunk is measured.
@@ -6952,6 +6970,7 @@ int main()
     InitializeSRWLock(&g_log_lock);
     test_lengths();
     test_command_starts_app();
+    test_social_copy_size();
     test_select_range();
     test_tags();
     test_card_clicks();

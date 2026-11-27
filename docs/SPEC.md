@@ -127,7 +127,10 @@ Keep a whole session from start to finish.
     picked under Options' Advanced; r2.dev is rate-limited by Cloudflare.
     An R2 link is a small preview page (`share_link_page`, on; off gives the .mp4 itself): the clip full width on a
     dark page with a plain "Rekodr" under it, and the tags chat apps read for a card with its title and a frame
-    from a third of the way in (at most 1280 wide) that plays it. Uploader links are the .mp4. Reads of
+    from a third of the way in (at most 1280 wide) that plays it. When the clip is bigger than Card video size
+    (`social_copy_mb`: 50 MB, 100 MB, 200 MB, 1 GB or custom, 8 MB to 1 GB; 200), over 1080p or 1920 wide, or over
+    14 Mbps, the card plays a smaller H.264 copy kept beside it in the bucket, made about 5% under that size.
+    Uploader links are the .mp4. Reads of
     the page and its picture count with the clip's. A paused link's page names the clip and doesn't play it.
     The bucket holds all that the budget buys (`r2_budget`, dollars a month; 0 = R2's free 10 GB). Before each
     upload it's listed for its real size, and if the link, its page and picture would pass that, the oldest
