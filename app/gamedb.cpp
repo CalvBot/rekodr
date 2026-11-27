@@ -600,6 +600,8 @@ static i32 gamedb_find_local(const char *q, char (*names)[128], i32 max)
 // The game an exe is. `path` is where it runs from (UTF-8, either slash; "" = not known), `cmdline` and `title`
 // its command line and window title when the caller has them ("" otherwise). An entry that names folders wants the
 // path, when there is one, to end with them; one that names a command line wants it there. With several that fit, the most exact wins.
+// A copy unpacked somewhere else (an itch or DRM-free game in its own folder) still is the entry whose folders
+// don't fit, when no other entry in the list has an exe of that file name: a name many share (game.exe) isn't one.
 // *shared is set when the exe is one that several programs share and what was given couldn't tell which it is:
 // ask again with the command line and the title.
 static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline, const char *title, GameInfo *out,
@@ -621,8 +623,8 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
     gdb_letters(seen, title_letters, sizeof title_letters);
     gdb_letters(cmd, cmd_letters, sizeof cmd_letters);
 
-    i32 best = 0, best_row = -1, guess_row = -1;
-    bool best_launcher = false, wants_more = false;
+    i32 best = 0, best_row = -1, guess_row = -1, file_row = -1, moved_row = -1;
+    bool best_launcher = false, wants_more = false, file_many = false, moved_launcher = false;
     u64 hash = fnv64(file, fl);
     AcquireSRWLockShared(&g_gamedb.lock);
     const GameIndex *ix = g_gamedb.index;
@@ -645,10 +647,15 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
             // The file name must be this exe's; folders named with it must be where it runs from
             const char *slash = strrchr(name, '/');
             if (strcmp(slash ? slash + 1 : name, file)) continue;
+            if (file_row < 0) file_row = ix->exes[k].row;
+            else if (file_row != ix->exes[k].row) file_many = true;
             i32 score = 1;
             if (slash && wl) { // where it runs from isn't always known; then the file name has to do
                 size_t n = strlen(name);
-                if ((size_t)wl < n + 1 || strcmp(where + wl - n, name) || where[wl - n - 1] != '/') continue;
+                if ((size_t)wl < n + 1 || strcmp(where + wl - n, name) || where[wl - n - 1] != '/') {
+                    if (!args[0] && !strict && moved_row < 0) moved_row = ix->exes[k].row, moved_launcher = launcher;
+                    continue;
+                }
                 score += 2;
                 for (const char *c = name; *c; c++) score += *c == '/';
             }
@@ -669,6 +676,7 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
         }
     }
     if (best_row < 0 && guess_row >= 0) best_row = guess_row;
+    if (best_row < 0 && moved_row >= 0 && !file_many) best_row = moved_row, best_launcher = moved_launcher;
     if (best_row >= 0) {
         gdb_fill(ix->rows[best_row], out);
         out->launcher = best_launcher;
@@ -773,6 +781,22 @@ static DWORD process_find(const char *exe, DWORD *parent_pid = 0)
     return pids[at];
 }
 
+// The longest title of process pid's own visible windows (UTF-8), "" if it has none.
+static void process_title(DWORD pid, char *title, i32 cap)
+{
+    struct Find { DWORD pid; wchar_t title[256]; } find = {pid, L""};
+    EnumWindows([](HWND w, LPARAM lp) -> BOOL {
+        Find *f = (Find *)lp;
+        DWORD owner = 0;
+        GetWindowThreadProcessId(w, &owner);
+        if (owner != f->pid || !IsWindowVisible(w) || GetWindow(w, GW_OWNER)) return TRUE;
+        wchar_t t[256];
+        if (GetWindowTextW(w, t, COUNT(t)) > (int)wcslen(f->title)) wcscpy(f->title, t);
+        return TRUE;
+    }, (LPARAM)&find);
+    wide_to_utf8(find.title, title, cap);
+}
+
 static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *title, i32 title_cap, char *image = 0,
                           i32 image_cap = 0, char *parent = 0, i32 parent_cap = 0)
 {
@@ -781,6 +805,7 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     if (parent) parent[0] = 0;
     DWORD ppid = 0, pid = process_find(exe, &ppid);
     if (!pid) return false;
+    process_title(pid, title, title_cap);
     if (parent && ppid) {
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         PROCESSENTRY32W pe = {};
@@ -803,18 +828,6 @@ static bool process_facts(const char *exe, char *cmdline, i32 cmd_cap, char *tit
     }
     process_cmdline(p, cmdline, cmd_cap);
     if (p) CloseHandle(p);
-
-    struct Find { DWORD pid; wchar_t title[256]; } find = {pid, L""};
-    EnumWindows([](HWND w, LPARAM lp) -> BOOL {
-        Find *f = (Find *)lp;
-        DWORD owner = 0;
-        GetWindowThreadProcessId(w, &owner);
-        if (owner != f->pid || !IsWindowVisible(w) || GetWindow(w, GW_OWNER)) return TRUE;
-        wchar_t t[256];
-        if (GetWindowTextW(w, t, COUNT(t)) > (int)wcslen(f->title)) wcscpy(f->title, t);
-        return TRUE;
-    }, (LPARAM)&find);
-    wide_to_utf8(find.title, title, title_cap);
     return true;
 }
 
@@ -919,12 +932,22 @@ static const JavaGame *java_game(const char *image, const char *parent, const ch
     return 0;
 }
 
-// Whether a running java counts as a game being played: a Minecraft client or one of the Java games. A modpack's
-// helper (ATM10's crash assistant, which can outlive the game) or a launcher written in Java doesn't. One whose
-// command line couldn't be read ("") counts, as nothing says it isn't the game.
-static bool java_counts(const char *image, const char *parent, const char *cmdline)
+// A java that isn't Minecraft and isn't one of the Java games, named by its window: a game in Discord's list whose
+// name is the whole title (Mindustry, whose entry is its Steam exe, played from its own Java). Any thread.
+static bool java_titled_game(const char *cmdline, const char *title, GameInfo *out)
 {
-    return !cmdline[0] || mc_client_cmdline(cmdline) || java_game(image, parent, cmdline);
+    return title[0] && !mc_client_cmdline(cmdline) && gamedb_by_name(title, out);
+}
+
+// Whether a running java counts as a game being played: a Minecraft client, one of the Java games, or one whose
+// window names a game (java_titled_game). A modpack's helper (ATM10's crash assistant, which can outlive the game)
+// or a launcher written in Java doesn't. One whose command line couldn't be read ("") counts, as nothing says it
+// isn't the game.
+static bool java_counts(const char *image, const char *parent, const char *cmdline, const char *title)
+{
+    GameInfo g;
+    return !cmdline[0] || mc_client_cmdline(cmdline) || java_game(image, parent, cmdline) ||
+           java_titled_game(cmdline, title, &g);
 }
 
 static void sessions_game_renamed(const char *exe, bool other_game); // sessions.cpp
@@ -1239,7 +1262,8 @@ static void gamedb_clip_game(const LibItem &it, const char *from, const char *to
 // one only a Game folder rule sorts becomes an App (steam_type_check). With the service on, a game is looked up
 // there; Discord's list names it while it is asked, and when the service can't be. An exe several games share is
 // told apart by its command line: by the strings the service asks about, or by Discord's entries (else its window
-// naming a game in the list). A java that is one of the Java games (java_game) is that game, without asking. One neither knows goes by its exe's name until it is named by hand. Main thread. True if something about it changed.
+// naming a game in the list). A java that is one of the Java games (java_game), or whose window is a game's name
+// (java_titled_game), is that game, without asking. One neither knows goes by its exe's name until it is named by hand. Main thread. True if something about it changed.
 static bool gamedb_name_app(AppInfo *a)
 {
     GameInfo g;
@@ -1258,6 +1282,8 @@ static bool gamedb_name_app(AppInfo *a)
                 str_set(g.name, j->name);
             }
             if (!g.steam) g.steam = j->steam;
+            known = java = true;
+        } else if (facts && java_titled_game(cmd, title, &g)) {
             known = java = true;
         }
     }

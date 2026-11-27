@@ -2664,10 +2664,10 @@ static void test_gamedb()
         T(gamedb_find_local("zzz", found, 4) == 0 && gamedb_find_local("", found, 4) == 0);
         T(gamedb_find_local("u", found, 1) == 1 && !strcmp(found[0], "Rust"));
     }
-    // An exe: with no path the file name is enough; with one, the folders must be right
+    // An exe: with no path the file name is enough; with one, the folders are right, or no other entry has its name
     T(gamedb_by_exe("cs2.exe", "", "", "", &g) && !strcmp(g.name, "Counter-Strike 2"));
     T(gamedb_by_exe("CS2.exe", "E:\\Steam\\game\\bin\\win64\\cs2.exe", "", "", &g));
-    T(!gamedb_by_exe("cs2.exe", "E:\\Other\\cs2.exe", "", "", &g));
+    T(gamedb_by_exe("cs2.exe", "E:\\Other\\cs2.exe", "", "", &g) && !strcmp(g.id, "2"));
     T(gamedb_by_exe("rust.exe", "", "", "", &g) && g.launcher);
     T(gamedb_by_exe("rustclient.exe", "", "", "", &g) && !g.launcher);
     T(!gamedb_by_exe("notepad.exe", "", "", "", &g, &shared) && !shared);
@@ -2726,12 +2726,40 @@ static void test_gamedb()
         T(process_pick(one, 1) == 0 && process_pick(one, 0) == -1);
     }
     // Which javas count as a game being played: a client or a Java game, not a pack's helper left behind
-    T(java_counts("C:\\java\\bin\\javaw.exe", "ATLauncher.exe", "javaw -cp x cpw.mods.bootstraplauncher.BootstrapLauncher"));
-    T(java_counts("C:\\Starsector\\jre\\bin\\java.exe", "starsector.exe", "java -cp x com.fs.starfarer.StarfarerLauncher"));
-    T(java_counts("C:\\java\\bin\\javaw.exe", "", "")); // not read: nothing says it isn't the game
+    T(java_counts("C:\\java\\bin\\javaw.exe", "ATLauncher.exe", "javaw -cp x cpw.mods.bootstraplauncher.BootstrapLauncher", ""));
+    T(java_counts("C:\\Starsector\\jre\\bin\\java.exe", "starsector.exe", "java -cp x com.fs.starfarer.StarfarerLauncher", ""));
+    T(java_counts("C:\\java\\bin\\javaw.exe", "", "", "")); // not read: nothing says it isn't the game
     T(!java_counts("C:\\java\\bin\\javaw.exe", "javaw.exe",
-                   "javaw -cp mods\\crash_assistant.jar dev.kostromdan.mods.crash_assistant.app.CrashAssistantApp"));
-    T(!java_counts("C:\\java\\bin\\javaw.exe", "ATLauncher.exe", "javaw -jar C:\\ATLauncher\\ATLauncher.exe"));
+                   "javaw -cp mods\\crash_assistant.jar dev.kostromdan.mods.crash_assistant.app.CrashAssistantApp", ""));
+    T(!java_counts("C:\\java\\bin\\javaw.exe", "ATLauncher.exe", "javaw -jar C:\\ATLauncher\\ATLauncher.exe", "ATLauncher"));
+    // Exes in folders the list doesn't name, and a java named by its window, against a list that has them
+    {
+        Path tsv2 = path_join(dir, L"g2.tsv");
+        FILE *f2 = _wfopen(tsv2.s, L"wb");
+        if (f2) {
+            fprintf(f2, "6\tShattered Pixel Dungeon\t\t\t1769170\t\tshattered pixel dungeon/shattered pixel dungeon.exe\n");
+            fprintf(f2, "7\tFirst Game\t\t\t0\t\tfirst/game.exe\n");
+            fprintf(f2, "8\tSecond Game\t\t\t0\t\tsecond/game.exe\n");
+            fprintf(f2, "9\tMindustry\t\t\t1127400\t\tmindustry/mindustry.exe\n");
+            fclose(f2);
+        }
+        GameIndex *keep = g_gamedb.index;
+        g_gamedb.index = gamedb_load(tsv2);
+        // An itch copy unpacked anywhere: no other entry has its exe's name, so it is that game
+        T(gamedb_by_exe("Shattered Pixel Dungeon.exe", "C:\\games\\spd\\Shattered Pixel Dungeon.exe", "", "", &g) && !strcmp(g.id, "6"));
+        T(gamedb_by_exe("shattered pixel dungeon.exe", "D:\\Itch\\shattered-pixel-dungeon-v3.0.2\\shattered pixel dungeon.exe", "", "", &g));
+        // A name two entries have needs its folder: in another folder it is neither
+        T(!gamedb_by_exe("game.exe", "C:\\games\\x\\game.exe", "", "", &g));
+        T(gamedb_by_exe("game.exe", "C:\\games\\second\\game.exe", "", "", &g) && !strcmp(g.id, "8"));
+        // Mindustry from its own Java: its window is the game's whole name; a window that only holds it isn't
+        T(java_titled_game("javaw -jar Mindustry.jar", "Mindustry", &g) && !strcmp(g.id, "9") && g.steam == 1127400);
+        T(java_counts("C:\\Games\\Mindustry\\jre\\bin\\javaw.exe", "Mindustry.exe", "javaw -jar Mindustry.jar", "Mindustry"));
+        T(!java_titled_game("javaw -jar tool.jar", "Mindustry map editor", &g));
+        T(!java_counts("C:\\java\\bin\\javaw.exe", "", "javaw -jar tool.jar", "Some Tool"));
+        T(!java_titled_game("javaw -jar Mindustry.jar", "", &g));
+        gamedb_free(g_gamedb.index);
+        g_gamedb.index = keep;
+    }
     // A game the list doesn't have still gets an id for its art, the same for the same letters
     GameInfo h;
     T(gamedb_for_art("Hollow Knight", &g) && g.id[0] == 'n' && !strcmp(g.name, "Hollow Knight"));

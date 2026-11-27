@@ -835,15 +835,21 @@ static const AudioProc *procs_find(const AudioProcList &list, u32 pid)
 
 // Whether a running process counts as its game being played. Every exe does, except a java that isn't a game
 // (java_counts): a pack's crash helper left running after the game is killed keeps no session open. A java's
-// answer is worked out once per process, from its command line. Watcher thread.
+// answer is worked out once per process, from its command line and window; a no is asked again after a few
+// seconds, as the window that names a game comes up after the process. Watcher thread.
 static bool proc_counts(const AudioProcList &list, const AudioProc &p)
 {
     if (!is_java_exe(p.exe.s)) return true;
-    static struct { u32 pid; bool counts; } seen[64];
+    static struct { u32 pid; bool counts; u64 at; } seen[64];
     static i32 next;
-    for (const auto &s : seen)
-        if (s.pid == p.pid) return s.counts;
-    static char cmd[32768], image[MAX_PATH * 2];
+    u64 now = GetTickCount64();
+    i32 slot = -1;
+    for (i32 i = 0; i < COUNT(seen) && slot < 0; i++)
+        if (seen[i].pid == p.pid) {
+            if (seen[i].counts || now - seen[i].at < 5000) return seen[i].counts;
+            slot = i;
+        }
+    static char cmd[32768], image[MAX_PATH * 2], title[256];
     image[0] = 0;
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, p.pid);
     process_cmdline(h, cmd, sizeof cmd);
@@ -853,11 +859,15 @@ static bool proc_counts(const AudioProcList &list, const AudioProc &p)
         if (QueryFullProcessImageNameW(h, 0, full, &n)) wide_to_utf8(full, image, sizeof image);
         CloseHandle(h);
     }
+    process_title(p.pid, title, sizeof title);
     const AudioProc *parent = procs_find(list, p.parent);
-    bool counts = java_counts(image, parent ? parent->exe.s : "", cmd);
-    if (!counts) log_line("%s %u is no game (a helper or a launcher); not counted as played", p.exe.s, p.pid);
-    seen[next] = {p.pid, counts};
-    next = (next + 1) % COUNT(seen);
+    bool counts = java_counts(image, parent ? parent->exe.s : "", cmd, title);
+    if (!counts && slot < 0) log_line("%s %u is no game (a helper or a launcher); not counted as played", p.exe.s, p.pid);
+    if (slot < 0) {
+        slot = next;
+        next = (next + 1) % COUNT(seen);
+    }
+    seen[slot] = {p.pid, counts, now};
     return counts;
 }
 
