@@ -5082,6 +5082,74 @@ static void options_integrations()
         ImGui::EndDisabled();
         opt_row_end();
     }
+    {
+        // Open with's editors: looked for again each time Options is shown, then one row per editor found
+        static i32 shown_frame;
+        if (ImGui::GetFrameCount() - shown_frame > 1) open_with_find();
+        shown_frame = ImGui::GetFrameCount();
+        bool changed = false;
+        for (i32 i = 0; i < g_open_with_count; i++) {
+            OpenWith &o = g_open_with[i];
+            if (o.xml) continue;
+            ImGui::PushID(i);
+            char shown[MAX_PATH * 3];
+            wide_to_utf8(o.exe.s, shown, sizeof shown);
+            opt_row_begin(o.name, shown, bw * 2 + dp(8));
+            if (o.kind >= 0) {
+                Path &set = c.editors[o.kind];
+                if (kit_button("Change##pick", KIT_SECONDARY, ImVec2(bw, 0))) {
+                    Path picked = {};
+                    if (pick_file(o.exe, &picked, L"Programs", L"*.exe")) {
+                        set = picked;
+                        wide_to_utf8(picked.s, shown, sizeof shown);
+                        log_line("options: %s is %s", o.name, shown);
+                        changed = true;
+                    }
+                }
+                ImGui::SameLine(0, dp(8));
+                ImGui::BeginDisabled(!set.s[0]);
+                if (kit_button("Find it again##auto", KIT_SECONDARY, ImVec2(bw, 0))) {
+                    set.s[0] = 0;
+                    log_line("options: %s found by itself", o.name);
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            } else {
+                ImGui::Dummy(ImVec2(bw, 1));
+                ImGui::SameLine(0, dp(8));
+                if (kit_button("Remove##added", KIT_SECONDARY, ImVec2(bw, 0))) {
+                    c.editors_added[o.added].s[0] = 0;
+                    log_line("options: %s taken off Open with", o.name);
+                    changed = true;
+                }
+            }
+            opt_row_end();
+            ImGui::PopID();
+        }
+        i32 free_slot = -1;
+        for (i32 a = EDITORS_ADDED - 1; a >= 0; a--)
+            if (!c.editors_added[a].s[0]) free_slot = a;
+        opt_row_begin("Add an editor", "Any program that opens a video it's started with", bw);
+        if (kit_button("Choose its exe##addeditor", KIT_SECONDARY, ImVec2(bw, 0), free_slot >= 0)) {
+            Path picked = {};
+            bool have = false;
+            if (pick_file(Path{}, &picked, L"Programs", L"*.exe")) {
+                for (i32 a = 0; a < EDITORS_ADDED; a++) have = have || !_wcsicmp(c.editors_added[a].s, picked.s);
+                if (!have) {
+                    c.editors_added[free_slot] = picked;
+                    char u[MAX_PATH * 3];
+                    wide_to_utf8(picked.s, u, sizeof u);
+                    log_line("options: added %s to Open with", u);
+                    changed = true;
+                }
+            }
+        }
+        opt_row_end();
+        if (changed) {
+            options_apply(0);
+            open_with_find();
+        }
+    }
     opt_card_end();
 
     // Layers: the Front window, then each plugin in <config_dir>\Plugins with its switch

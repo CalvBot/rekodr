@@ -2260,6 +2260,24 @@ static bool lib_menu_item(const char *icon, const char *label, bool danger = fal
     return clicked;
 }
 
+// A menu row with a program's own icon in place of a glyph.
+static bool lib_menu_item_app(ID3D11ShaderResourceView *icon, const char *label)
+{
+    f32 h = kit_px(28), w = kit_px(216), is = kit_px(18);
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    char id[96];
+    snprintf(id, sizeof id, "##%s", label);
+    bool clicked = ImGui::Selectable(id, false, 0, ImVec2(w, h));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y + kit_px(2));
+    if (clicked) dev_click("menu", label);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 iy = floorf(a.y + (h - is) / 2);
+    if (icon) dl->AddImage((ImTextureID)(intptr_t)icon, ImVec2(a.x + kit_px(9), iy), ImVec2(a.x + kit_px(9) + is, iy + is));
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(a.x + kit_px(36), floorf(a.y + (h - ts.y) / 2)), col32(COL_TEXT), label);
+    return clicked;
+}
+
 // A row of the games list: the game's icon (a tile with its first letter when it has none), its name, and how
 // many it has on the right, with a star left of that when it's a favourite. The picked one is lit.
 // Collapsed, only the icon, where it was.
@@ -4091,6 +4109,14 @@ static void card_menu()
         if (lib_menu_item(ICON_PLAY, "Play")) library_play(it);
         if (lib_menu_item(ICON_EDIT, "Edit")) editor_open(it);
         if (lib_menu_item(ICON_VIDEO, "Open in the default player")) ShellExecuteW(0, L"open", path.s, 0, 0, SW_SHOWNORMAL);
+        for (i32 i = 0; i < open_with_count(); i++) { // the video editors that take a clip (editors.cpp)
+            if (g_open_with[i].xml) continue;
+            char label[96], msg[160];
+            snprintf(label, sizeof label, "Open in %s", g_open_with[i].name);
+            if (!lib_menu_item_app(open_with_icon(g_open_with[i]), label)) continue;
+            bool ok = open_with(i, it, msg, sizeof msg);
+            lib_note(!ok, "%s", msg);
+        }
         if (lib_menu_item(ICON_SHARE, "Share...") && !lib_share_refused(it)) g_card_share_open = true;
         if (lib_menu_item(ICON_LINK, "Copy link")) lib_share_item(it, SHARE_LINK);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);

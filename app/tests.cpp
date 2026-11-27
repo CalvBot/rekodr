@@ -1996,9 +1996,16 @@ static void test_settings_round_trip()
 
     str_set(a.link_uploaders, "mine"); // one uploader on
     a.rust_binds = (1u << RUST_BIND_DEATH) | (1u << RUST_BIND_SPACE);
+    wcscpy_s(a.editors[1].s, L"D:\\VEGAS\\vegas220.exe");
+    wcscpy_s(a.editors_added[0].s, L"C:\\Tools\\one.exe");
+    wcscpy_s(a.editors_added[2].s, L"C:\\Tools\\two (x).exe");
     T(config_save(a, paths));
     T(config_load(&b, paths));
     T(b.rust_binds == a.rust_binds);
+    // Open with: a picked editor, and the added exes packed together in their order
+    T(!b.editors[0].s[0] && !wcscmp(b.editors[1].s, L"D:\\VEGAS\\vegas220.exe") && !b.editors[2].s[0]);
+    T(!wcscmp(b.editors_added[0].s, L"C:\\Tools\\one.exe") && !wcscmp(b.editors_added[1].s, L"C:\\Tools\\two (x).exe") &&
+      !b.editors_added[2].s[0]);
     T(!strcmp(b.link_uploaders, "mine"));
     {
         // An empty bucket name reads as the default
@@ -7218,6 +7225,51 @@ static void test_social_preview()
     T(!path_is_session(L"D:\\Videos\\Rekodr\\Clips\\2026\\a.mp4") && !path_is_session(L"a.mp4"));
 }
 
+// Open with's finding: exe names with a *, version numbers, the newest version folder and its exe, an uninstaller
+// never.
+static void test_open_with_find()
+{
+    T(name_fits(L"vegas220.exe", L"vegas*.exe") && name_fits(L"VEGAS.EXE", L"vegas*.exe") && !name_fits(L"vegas.dll", L"vegas*.exe"));
+    T(name_fits(L"Blick.exe", L"blick.exe") && !name_fits(L"blick2.exe", L"blick.exe"));
+    T(name_version(L"VEGAS Pro 22.0") == 22000 && name_version(L"VEGAS Pro 9.0") == 9000 && name_version(L"vegas220.exe") == 220000);
+    T(name_version(L"CapCut") == 0);
+    wchar_t tmp[MAX_PATH], root[MAX_PATH], d[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    swprintf(root, MAX_PATH, L"%srekodr open with %u", tmp, GetCurrentProcessId());
+    CreateDirectoryW(root, 0);
+    const wchar_t *dirs[] = {L"VEGAS Pro 9.0", L"VEGAS Pro 22.0", L"VEGAS Pro 21.0"};
+    for (const wchar_t *v : dirs) {
+        swprintf(d, MAX_PATH, L"%s\\%s", root, v);
+        CreateDirectoryW(d, 0);
+        const wchar_t *files[] = {L"vegas.exe", L"vegas_unins.exe"};
+        for (const wchar_t *fn : files) {
+            wchar_t f[MAX_PATH];
+            swprintf(f, MAX_PATH, L"%s\\%s", d, fn);
+            FILE *h = _wfopen(f, L"wb");
+            if (h) fclose(h);
+        }
+    }
+    wchar_t pat[MAX_PATH];
+    swprintf(pat, MAX_PATH, L"%s\\VEGAS Pro *", root);
+    EditorKind k = {"VEGAS Pro", L"VEGAS Pro", L"vegas*.exe", pat};
+    Path exe = {};
+    T(editor_in_dir(k, &exe) && wcsstr(exe.s, L"VEGAS Pro 22.0\\vegas.exe"));
+    swprintf(d, MAX_PATH, L"%s\\VEGAS Pro 9.0", root);
+    T(exe_in(d, L"vegas*.exe", &exe) && !wcsstr(exe.s, L"unins"));
+    T(!exe_in(d, L"blick.exe", &exe));
+    for (const wchar_t *v : dirs) {
+        const wchar_t *files[] = {L"vegas.exe", L"vegas_unins.exe"};
+        for (const wchar_t *fn : files) {
+            wchar_t f[MAX_PATH];
+            swprintf(f, MAX_PATH, L"%s\\%s\\%s", root, v, fn);
+            DeleteFileW(f);
+        }
+        swprintf(d, MAX_PATH, L"%s\\%s", root, v);
+        RemoveDirectoryW(d);
+    }
+    RemoveDirectoryW(root);
+}
+
 static void test_edit_xml()
 {
     Editor &ed = g_app.editor;
@@ -7506,6 +7558,7 @@ int main()
     test_pieces();
     test_edit_volumes();
     test_edit_xml();
+    test_open_with_find();
     test_social_preview();
     test_edit_advanced();
     test_cam_layer();

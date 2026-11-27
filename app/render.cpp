@@ -135,6 +135,15 @@ static bool render_edit_stamp(const LibItem &it, i64 *mtime_us, u64 *hash)
     return true;
 }
 
+// Whether a clip's playable copy is its edit as the edit is now: rendered from an edit with the same bytes.
+static bool render_current(const LibItem &it)
+{
+    RenderNote n;
+    i64 mtime;
+    u64 hash;
+    return it.rendered && render_note_read(it, &n) && render_edit_stamp(it, &mtime, &hash) && n.edit_hash == hash;
+}
+
 // Where a render is made before it's swapped in: <save_dir>\Data\Rendering
 static Path render_dir() { return path_join(save_data_dir(g_app.config.save_dir), L"Rendering"); }
 

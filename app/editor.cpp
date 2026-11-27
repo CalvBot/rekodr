@@ -2370,8 +2370,6 @@ static bool ed_export_xml(Path *out)
     return ok;
 }
 
-static bool editor_exe(Path *out); // options.cpp
-
 // Writes the XML next to the video and starts DaVinci Resolve; it's brought in there with File > Import > Timeline.
 static void ed_open_in()
 {
@@ -2584,9 +2582,21 @@ static void ed_edit_tab(f32 w)
     if (kit_button(ICON_RIGHT "  Redo", KIT_GHOST, ImVec2(bw, 0), ed.redo_count > 0)) ed_undo(true);
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
-    // The edit as an XML sequence, into a full editor
+    // The video editors found, each as its icon: Resolve gets the edit as XML, the rest the clip (editors.cpp)
     ed_caption("OPEN IN");
-    if (kit_button(ICON_VIDEO "  DaVinci", KIT_GHOST, ImVec2(bw, 0))) ed_open_in();
+    i32 nw = open_with_count();
+    if (!nw) kit_dim("No video editors found: add one in Options");
+    f32 sq = kit_px(40);
+    i32 per_row = ImMax(1, (i32)((w + sp) / (sq + sp)));
+    for (i32 i = 0; i < nw; i++) {
+        if (i % per_row) ImGui::SameLine(0, sp);
+        if (!open_with_button(i, sq)) continue;
+        if (g_open_with[i].xml) ed_open_in();
+        else {
+            ed_save_record();
+            ed.result_error = !open_with(i, ed.item, ed.result, sizeof ed.result);
+        }
+    }
     ImGui::Dummy(ImVec2(1, kit_px(8)));
 
     // Its comment (the same as the card's), saved when the box is left.

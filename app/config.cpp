@@ -788,6 +788,21 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "window_capture")) boolean(&c->window_capture);
     else if (!strcmp(key, "encoder_args")) str_set(c->encoder_args, value);
     else if (!strcmp(key, "resolve")) path(&c->resolve);
+    else if (!strncmp(key, "open_with_", 10) && strcmp(key + 10, "added")) {
+        for (i32 k = 0; k < EDITOR_KINDS; k++)
+            if (!strcmp(key + 10, EDITOR_IDS[k])) path(&c->editors[k]);
+    }
+    else if (!strcmp(key, "open_with_added")) { // exes split by |
+        memset(c->editors_added, 0, sizeof c->editors_added);
+        const char *from = value;
+        for (i32 a = 0; a < EDITORS_ADDED && *from; a++) {
+            const char *bar = strchr(from, '|');
+            char one[MAX_PATH * 3];
+            snprintf(one, sizeof one, "%.*s", (int)(bar ? bar - from : strlen(from)), from);
+            utf8_to_wide(one, c->editors_added[a].s, MAX_PATH);
+            from = bar ? bar + 1 : from + strlen(from);
+        }
+    }
     else if (!strcmp(key, "preset")) str_set(c->preset.s, value);
     else if (!strcmp(key, "rate_control")) str_set(c->rate_control.s, value);
     else if (!strcmp(key, "cq")) c->cq = atoi(value);
@@ -1050,6 +1065,18 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("spatial_aq", c.spatial_aq);
     fprintf(f, "encoder_args = %s\n", c.encoder_args);
     path("resolve", c.resolve);
+    for (i32 k = 0; k < EDITOR_KINDS; k++) {
+        char key[32];
+        snprintf(key, sizeof key, "open_with_%s", EDITOR_IDS[k]);
+        path(key, c.editors[k]);
+    }
+    fputs("open_with_added = ", f);
+    for (i32 a = 0, n = 0; a < EDITORS_ADDED; a++) {
+        if (!c.editors_added[a].s[0]) continue;
+        wide_to_utf8(c.editors_added[a].s, u, sizeof u);
+        fprintf(f, "%s%s", n++ ? "|" : "", u);
+    }
+    fputs("\n", f);
     fprintf(f, "\n");
     boolean("mic", c.mic);
     fprintf(f, "\nsession_gap_min = %g\nsession_min_length_min = %g\nshare_keep_days = %g\n", c.session_gap_min,

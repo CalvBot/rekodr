@@ -224,6 +224,10 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
 enum { AM_PLUGIN_TICKS = 16, AM_PLUGIN_FOLDER = 18 };
 struct AmPluginTicks { char folder[AM_PLUGIN_FOLDER]; u32 events; };
 
+// Open with's editors (editors.cpp), by their ids in settings.txt, and how many other exes the player may add
+enum { EDITOR_KINDS = 3, EDITORS_ADDED = 4 };
+static const char *const EDITOR_IDS[EDITOR_KINDS] = {"blick", "vegas", "capcut"};
+
 struct Config {
     Path save_dir;     // <Videos>\Rekodr, holding Clips, Sessions and Data (save_clips_dir and the rest)
     Path buffer_dir;   // the rolling buffer
@@ -269,6 +273,8 @@ struct Config {
     bool  spatial_aq;
     char  encoder_args[256]; // the player's own ffmpeg options for the encoder, added after Rekodr's ("" = none)
     Path  resolve;    // DaVinci Resolve's exe; empty = find it
+    Path  editors[EDITOR_KINDS];        // Open with's editors' exes, as picked (EDITOR_IDS); empty = find it
+    Path  editors_added[EDITORS_ADDED]; // other exes Open with starts with a clip; empty = none
 
     // Audio
     bool        mic;        // Windows' default input, on the Mic track

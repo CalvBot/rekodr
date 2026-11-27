@@ -1370,6 +1370,7 @@ static ID3D11ShaderResourceView *gpu_texture(const u32 *pixels, i32 w, i32 h)
 // Screens, each in its own file. They can use everything above (theme colours, fonts, ui_wake, the kit).
 
 #include "appicons.cpp"
+#include "editors.cpp"
 #include "sessions.cpp"
 #include "player.cpp"
 #include "library.cpp"
