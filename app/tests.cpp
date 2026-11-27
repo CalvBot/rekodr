@@ -1042,6 +1042,33 @@ static void test_first_apps()
     T(!first_app_place("reg:Software\\Rekodr\\NoSuchKey|Path"));
     T(first_app_place("%WINDIR%\\explorer.exe"));
     SetEnvironmentVariableW(L"REKODR_TEST_DIR", 0);
+
+    // Windows' own programs never join the list: the Windows folder and Windows' packages, not Microsoft's store apps
+    const char *win = "C:\\Windows";
+    T(windows_own_exe("C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\TextInputHost.exe", win));
+    T(windows_own_exe("c:\\windows\\explorer.exe", win) && windows_own_exe("C:/Windows/System32/rundll32.exe", win));
+    T(windows_own_exe("C:\\Program Files\\WindowsApps\\MicrosoftWindows.WindowsSandbox_0.8.114.0_x64__cw5n1h2txyewy\\"
+                      "WindowsSandboxRemoteSession.exe", win));
+    T(!windows_own_exe("C:\\WindowsGames\\game.exe", win) && !windows_own_exe("D:\\Windows\\game.exe", win));
+    T(!windows_own_exe("C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe\\pwsh.exe", win));
+    T(!windows_own_exe("C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_7.3.3.0_x64__t4vj0pshhgkwm\\"
+                       "Telegram.exe", win));
+    T(!windows_own_exe("C:\\Program Files (x86)\\Windows Media Player\\wmplayer.exe", win));
+    T(!windows_own_exe("C:\\Games\\cw5n1h2txyewy\\game.exe", win) && !windows_own_exe("", win));
+
+    // A Windows program heard playing sound is left out of the list
+    i32 keep_count = g_app.config.app_count;
+    char heard[300];
+    GetWindowsDirectoryA(heard, MAX_PATH);
+    strcat(heard, "\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe");
+    Event e = {};
+    e.kind = EV_AUDIO;
+    e.a = AE_HEARD;
+    e.b = 1;
+    snprintf(e.text, sizeof e.text, "shellexperiencehost.exe\t%s", heard);
+    audio_on_event(e);
+    T(g_app.config.app_count == keep_count);
+    g_app.config.app_count = keep_count;
 }
 
 static void test_game_guess()

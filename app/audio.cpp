@@ -1340,6 +1340,34 @@ static void audio_set_paused(bool paused)
 
 static void hotkeys_apply(const Config &c, HWND hwnd, const char *game); // hotkeys.cpp
 
+// Whether a program is part of Windows: under the Windows folder (System32, SystemApps, ImmersiveControlPanel and
+// the rest), or in one of Windows' own packages in WindowsApps (published by Microsoft Windows: "_cw5n1h2txyewy").
+// Store apps by Microsoft Corporation, such as Xbox or PowerShell, are not.
+static bool windows_own_exe(const char *path, const char *windir)
+{
+    // Both lower case, with back slashes
+    char low[MAX_PATH], win[MAX_PATH];
+    auto fold = [](const char *from, char *to) {
+        size_t i = 0;
+        for (; from[i] && i + 1 < MAX_PATH; i++) to[i] = from[i] == '/' ? '\\' : (char)tolower((unsigned char)from[i]);
+        to[i] = 0;
+        return i;
+    };
+    fold(path, low);
+    size_t n = fold(windir, win);
+    if (n && !strncmp(low, win, n) && low[n] == '\\') return true;
+    const char *apps = strstr(low, "\\windowsapps\\");
+    return apps && strstr(apps, "_cw5n1h2txyewy\\");
+}
+
+// windows_own_exe for this PC's Windows folder.
+static bool windows_own_exe(const char *path)
+{
+    static char windir[MAX_PATH];
+    if (!windir[0] && !GetWindowsDirectoryA(windir, sizeof windir)) windir[0] = 0;
+    return path[0] && windows_own_exe(path, windir);
+}
+
 static void audio_on_event(const Event &e)
 {
     Audio &a = g_app.audio;
@@ -1367,6 +1395,11 @@ static void audio_on_event(const Event &e)
         Str64 exe;
         char path[MAX_PATH];
         split_exe_path(e.text, &exe, path, sizeof path);
+        // Windows' own programs (the taskbar's search, the touch keyboard, Explorer) never join the list: never
+        // in New, never looked up
+        bool known = false;
+        for (i32 i = 0; i < g_app.config.app_count && !known; i++) known = str_eq(g_app.config.apps[i].exe.s, exe.s);
+        if (!known && windows_own_exe(path)) break;
         i32 before = g_app.config.app_count;
         AppInfo *app = config_app(&g_app.config, exe.s); // a new one is CAT_NONE: shown as new in Options
         if (!app) break; // the table is full
@@ -1399,7 +1432,7 @@ static void audio_on_event(const Event &e)
         a.game_pid = (u32)(e.b & 0xffffffff);
         bool listed = false;
         for (i32 i = 0; exe.s[0] && i < g_app.config.app_count && !listed; i++) listed = str_eq(g_app.config.apps[i].exe.s, exe.s);
-        if (exe.s[0] && !listed && path[0]) {
+        if (exe.s[0] && !listed && path[0] && !windows_own_exe(path)) {
             // A game by its folder that has made no sound yet: listed now, so it is named and gets a session
             AppInfo *app = config_app(&g_app.config, exe.s);
             if (app) {
