@@ -849,8 +849,12 @@ static const char R2_PLAYER_CSS[] =
     "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif;-webkit-font-smoothing:antialiased}"
     "body{display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding:24px;box-sizing:border-box;"
     "overflow-x:hidden}"
-    ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(48px);opacity:.16;"
-    "z-index:-1}#ei{position:absolute;width:0;height:0}"
+    // The app's ground: the game's art in grey, its light and dark masses only, strongest on the right and faded
+    // out to the plain ground halfway across (the app's art_fade); a plain grey there when there is no art
+    ".bg{position:fixed;inset:-2vw;background:#555 center/cover no-repeat;filter:grayscale(1) contrast(1.6) blur(1vw);"
+    "opacity:.26;z-index:-1;-webkit-mask-image:var(--fade);mask-image:var(--fade);"
+    "--fade:linear-gradient(90deg,#0000 50%,#00000028 62.5%,#00000080 75%,#000000d8 87.5%,#000)}"
+    "#ei{position:absolute;width:0;height:0}"
     // The grain over it, as the app's over its art: still grey noise, faint
     "body::after{content:\"\";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.06;"
     "background:url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'>"
@@ -2207,9 +2211,11 @@ done:
 #define R2_PLAYER_TYPE "application/javascript; charset=utf-8\r\nCache-Control: public, max-age=300"
 
 // The shared player in the bucket: written when the one in the bucket isn't this copy's (by its SHA-256, kept in
-// <config_dir>\player.txt beside the bucket's name), so once a version and bucket. Worker thread only.
-static bool r2_player_ensure(const R2Conf &c)
+// <config_dir>\player.txt beside the bucket's name), so once a version and bucket. `wrote` says whether it was
+// written now. Worker thread only.
+static bool r2_player_ensure(const R2Conf &c, bool *wrote = 0)
 {
+    if (wrote) *wrote = false;
     static char *js, hash[65];
     static i32 n;
     if (!js && (js = (char *)malloc(R2_PLAYER_CAP)) != 0) {
@@ -2230,6 +2236,7 @@ static bool r2_player_ensure(const R2Conf &c)
     if (!r2_put_bytes(c, R2_PLAYER_KEY, js, n, R2_PLAYER_TYPE)) return false;
     if (!write_whole_file(file.s, want)) log_line("r2: couldn't write player.txt");
     log_line("r2: the player written (%d bytes)", n);
+    if (wrote) *wrote = true;
     return true;
 }
 
@@ -4247,14 +4254,40 @@ static bool r2_marks_live(const R2Share &s)
     return r2_in_bucket(s) && s.page_w && !s.paused && !s.moving && s.path[0];
 }
 
-// At start: the player in the bucket made this copy's, when the bucket has pages.
+// Whether a page in the bucket is a shell that loads the shared player (one read of it).
+static bool r2_page_is_shell(const R2Conf &c, const char *page_key)
+{
+    static thread_local char resp[65536];
+    u32 status = r2_send(c, "GET", page_key, "", R2Body{}, 0, resp, sizeof resp);
+    return !r2_ok(status) || strstr(resp, "<script src=\"player.js\"") != 0; // unreadable: left as it is
+}
+
+// At start: the player in the bucket made this copy's, when the bucket has pages. When it was written now, every
+// page that doesn't load it (a whole page from before the shared player) is written again as a shell.
 static void r2_run_player(const R2Task &t)
 {
-    bool pages = false;
+    bool pages = false, wrote = false;
     AcquireSRWLockShared(&g_r2.lock);
     for (i32 i = 0; i < g_r2.count && !pages; i++) pages = r2_in_bucket(g_r2.shares[i]) && g_r2.shares[i].page_w;
     ReleaseSRWLockShared(&g_r2.lock);
-    if (pages) r2_player_ensure(t.conf);
+    if (!pages || !r2_player_ensure(t.conf, &wrote) || !wrote) return;
+    i32 done = 0, failed = 0;
+    for (i32 i = 0; !g_r2.stop; i++) {
+        static R2Share s;
+        AcquireSRWLockShared(&g_r2.lock);
+        bool more = i < g_r2.count;
+        bool go = more && r2_in_bucket(g_r2.shares[i]) && g_r2.shares[i].page_w && !g_r2.shares[i].moving;
+        if (go) s = g_r2.shares[i];
+        ReleaseSRWLockShared(&g_r2.lock);
+        if (!more) break;
+        if (!go) continue;
+        char page_key[R2_KEY_MAX];
+        r2_page_key(s.key, page_key);
+        if (r2_page_is_shell(t.conf, page_key)) continue;
+        if (r2_put_page(t.conf, s, s.paused != 0)) done++;
+        else failed++;
+    }
+    if (done || failed) log_line("r2: %d page(s) from before the shared player written as shells, %d failed", done, failed);
 }
 
 // When a file was last written (0 = none), for telling when a clip's markers may have changed.
