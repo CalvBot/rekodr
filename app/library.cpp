@@ -2092,18 +2092,30 @@ static bool game_known(const char *name, char *out, i32 cap)
     return true;
 }
 
-// The name a clip or session is shown with. A name from the template in Options shows only its game
-// ("Minecraft", "Minecraft (2)" for a second file of that name), as the card's heading and line say when it is
-// from. Any other name is shown as it is.
+// The name a clip or session is shown with. A name from the template in Options shows when it is from, as
+// "27 Nov 2026 14:32" (the clock as Options sets it; "27 Nov 2026 14:32 (2)" for a second file of that name), and
+// the line under it says the game. Any other name is shown as it is.
 static void lib_shown_name(const char *name, char *out, i32 cap)
 {
     snprintf(out, cap, "%s", name);
     NameParts p;
     SYSTEMTIME t;
-    char copy[16], game[256];
+    char copy[16], hm[16] = "";
     if (!lib_name_read(g_app.config.name_template, name, p, t, copy)) return;
-    lib_name_game(p, game, sizeof game);
-    snprintf(out, cap, "%s%s", game, copy);
+    if (p.hour >= 0) {
+        hm[0] = ' ';
+        fmt_hm(t, hm + 1, sizeof hm - 1);
+    }
+    snprintf(out, cap, "%d %.3s %d%s%s", t.wDay, month_name(t.wMonth), t.wYear, hm, copy);
+}
+
+// Whether a name is shown as its date and time (lib_shown_name), so a line under it needn't say when it is from.
+static bool lib_name_dated(const char *name)
+{
+    NameParts p;
+    SYSTEMTIME t;
+    char copy[16];
+    return lib_name_read(g_app.config.name_template, name, p, t, copy);
 }
 
 // Text cut with "..." to fit `width`, in the current font.
@@ -4921,6 +4933,7 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
     bool err = renaming && lib.rename_error[0];
     if (err) str_set(line, lib.rename_error);
     else if (it.display_name[0] || (renaming && lib.rename_display_name)) snprintf(line, sizeof line, "%s  -  %s", it.name, size);
+    else if (lib_name_dated(it.name)) snprintf(line, sizeof line, "%s  -  %s", it.info.game, size);
     else snprintf(line, sizeof line, "%s  -  %s  -  %s", it.info.game, when, size);
     ImGui::PushFont(g_font_small);
     f32 line_w = tw;
@@ -5131,7 +5144,8 @@ static void lib_player_view()
     char when[48], size[24], line[200];
     fmt_when(lib.playing.when_us, when, sizeof when);
     fmt_size(lib.playing.size, size, sizeof size);
-    snprintf(line, sizeof line, "%s  -  %s  -  %s", lib.playing.info.game, when, size);
+    if (lib_name_dated(lib.playing.name)) snprintf(line, sizeof line, "%s  -  %s", lib.playing.info.game, size);
+    else snprintf(line, sizeof line, "%s  -  %s  -  %s", lib.playing.info.game, when, size);
     ImGui::PushFont(g_font_small);
     f32 lw = ImMin(ImGui::CalcTextSize(line).x, tw);
     text_clipped(dl, ImVec2(tx, my), tw, col32(COL_DIM), line);

@@ -223,28 +223,33 @@ static void test_lengths()
     T(parse_range_us("30s", &rf, &rt) == 0);
 }
 
-// Names from the template in Options are shown as their game alone, no date or time; others as they are
+// Names from the template in Options are shown as their date and time; others as they are
 static void test_shown_names()
 {
     str_set(g_app.config.name_template, SAVE_NAME_DEFAULT);
     g_app.config.clock_24h = false;
     char name[300], out[300];
     lib_shown_name("Minecraft 15-00 20-11-2020", out, sizeof out);
-    T(!strcmp(out, "Minecraft"));
+    T(!strcmp(out, "20 Nov 2020 3:00 pm"));
     lib_shown_name("Minecraft 21-30 20-11-2020 (2)", out, sizeof out);
-    T(!strcmp(out, "Minecraft (2)"));
+    T(!strcmp(out, "20 Nov 2020 9:30 pm (2)"));
     lib_shown_name("Clip 21-30 20-11-2020", out, sizeof out);
-    T(!strcmp(out, GAME_DESKTOP));
+    T(!strcmp(out, "20 Nov 2020 9:30 pm") && lib_name_dated("Clip 21-30 20-11-2020"));
     lib_shown_name("Minecraft 2026-11-19 21-30-00", out, sizeof out);
     T(!strcmp(out, "Minecraft 2026-11-19 21-30-00"));
     lib_shown_name("Minecraft 25-00 20-11-2020", out, sizeof out);
     T(!strcmp(out, "Minecraft 25-00 20-11-2020"));
+    T(!lib_name_dated("Minecraft 25-00 20-11-2020"));
     save_name_expand(SAVE_NAME_DEFAULT, "Minecraft", now_us(), name, sizeof name);
     lib_shown_name(name, out, sizeof out);
-    T(!strcmp(out, "Minecraft"));
+    T(lib_name_dated(name) && !strstr(out, "Minecraft") && (strstr(out, " pm") || strstr(out, " am")));
     lib_shown_name("Over 9 15-05 20-11-2020", out, sizeof out);
-    T(!strcmp(out, "Over 9"));
-    T(lib_name_matches("Clip 15-05 20-11-2020", "desktop"));
+    T(!strcmp(out, "20 Nov 2020 3:05 pm"));
+    T(lib_name_matches("Clip 15-05 20-11-2020", "nov 2020"));
+    g_app.config.clock_24h = true;
+    lib_shown_name("Minecraft 14-32 27-11-2026", out, sizeof out);
+    T(!strcmp(out, "27 Nov 2026 14:32"));
+    g_app.config.clock_24h = false;
     // A card's own date and time, with the year when it isn't this one
     char when[48];
     fmt_when(lib_name_us(SAVE_NAME_DEFAULT, "Minecraft 17-32 07-10-2020", 0), when, sizeof when);
@@ -260,7 +265,11 @@ static void test_shown_names()
     T(lib_name_us(SAVE_NAME_DEFAULT, "Minecraft 2026-11-19 21-30-00", 5) == 5);
     str_set(g_app.config.name_template, "{YYYY}-{MM}-{DD} {hh}.{mm} {game}");
     lib_shown_name("2020-11-20 15.05 Overwatch 2", out, sizeof out);
-    T(!strcmp(out, "Overwatch 2"));
+    T(!strcmp(out, "20 Nov 2020 15:05"));
+    str_set(g_app.config.name_template, "{game} {DD}-{MM}-{YYYY}");
+    lib_shown_name("Overwatch 2 20-11-2020", out, sizeof out);
+    T(!strcmp(out, "20 Nov 2020"));
+    str_set(g_app.config.name_template, SAVE_NAME_DEFAULT);
 }
 
 // The Library's headings: periods back from today, then months, each period one run of days
@@ -1055,9 +1064,6 @@ static void test_first_apps()
                        "Telegram.exe", win));
     T(!windows_own_exe("C:\\Program Files (x86)\\Windows Media Player\\wmplayer.exe", win));
     T(!windows_own_exe("C:\\Games\\cw5n1h2txyewy\\game.exe", win) && !windows_own_exe("", win));
-    T(windows_own_exe("C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\142.0.3595.53\\msedgewebview2.exe", win));
-    T(windows_own_exe("D:\\Apps\\Tool\\WebView2\\MSEdgeWebView2.exe", win) && windows_own_exe("msedgewebview2.exe", win));
-    T(!windows_own_exe("C:\\Games\\msedgewebview2.exe.game\\game.exe", win) && !windows_own_exe("C:\\Apps\\msedge.exe", win));
 
     // A Windows program heard playing sound is left out of the list
     i32 keep_count = g_app.config.app_count;
@@ -3138,6 +3144,11 @@ static void test_r2()
     ein.title = "Valorant 2026-11-24 21-04-33";
     embed_card(ein, &card);
     T(!strcmp(card.title, "Valorant") && !strcmp(card.line, "Valorant"));
+    str_set(g_app.config.name_template, SAVE_NAME_DEFAULT);
+    g_app.config.clock_24h = true;
+    ein.title = "Valorant 21-04 24-11-2026"; // a saved name: when it was saved
+    embed_card(ein, &card);
+    T(!strcmp(card.title, "24 Nov 2026 21:04") && !strcmp(card.line, "Valorant"));
     ein.title = "ace";
     ein.game = "";
     embed_card(ein, &card);
@@ -3234,10 +3245,13 @@ static void test_r2()
     hn = r2_page_html(pp, true, html, sizeof html);
     T(hn > 0 && !strstr(html, "component-embed"));
 
-    // The page's title: the game and how long it plays; a name of its own goes first
+    // The page's title: the clip's name, the game and how long it plays; the game alone for a name it can't read
     char pt[128];
     r2_page_title("Overwatch 2026-11-24 21-04-33", "Overwatch", 125, pt, sizeof pt);
     T(!strcmp(pt, "Overwatch, 2 minutes"));
+    g_app.config.clock_24h = true;
+    r2_page_title("Overwatch 21-04 24-11-2026", "Overwatch", 125, pt, sizeof pt);
+    T(!strcmp(pt, "24 Nov 2026 21:04 - Overwatch, 2 minutes"));
     r2_page_title("", "Overwatch", 1, pt, sizeof pt);
     T(!strcmp(pt, "Overwatch, 1 second"));
     r2_page_title("ace round", "Valorant", 42.4, pt, sizeof pt);

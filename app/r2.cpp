@@ -26,6 +26,7 @@ static void open_url(const char *url); // setup.cpp
 static void evi_key_of_marker(const char *detail, char *out, i32 cap); // evicons.cpp
 static i32 evi_svg(const char *key, char *out, i32 cap);                // evicons.cpp
 static bool evi_key_at(i32 i, char *out, i32 cap);                    // evicons.cpp
+static void lib_shown_name(const char *name, char *out, i32 cap);     // library.cpp
 static bool marker_detail_get(const char *d, const char *key, char *out, i32 cap); // markers.cpp
 static void r2_resume(const char *key);
 static void r2_auto_pause();
@@ -486,8 +487,18 @@ static bool r2_default_name(const char *title, const char *game)
     return true;
 }
 
-// The page's title: the clip's name, its game and how long it plays, as "Overwatch, 2 minutes". A name that's only
-// the game and when it was saved (the default) gives way to the game alone.
+// A clip's name as it's shown: one it was saved with as when it was saved, "27 Nov 2026 14:32" (lib_shown_name),
+// one of its own as it is. "" for a saved name that can't be read, which the game stands in for.
+static void r2_clip_name(const char *title, const char *game, char *out, i32 cap)
+{
+    out[0] = 0;
+    if (!title || !title[0]) return;
+    lib_shown_name(title, out, cap);
+    if (!strcmp(out, title) && r2_default_name(title, game ? game : "")) out[0] = 0;
+}
+
+// The page's title: the clip's name, its game and how long it plays, as "27 Nov 2026 14:32 - Overwatch, 2 minutes".
+// Without a name, the game alone: "Overwatch, 2 minutes".
 static void r2_page_title(const char *title, const char *game, f64 seconds, char *out, i32 cap)
 {
     char len[48] = "";
@@ -504,11 +515,12 @@ static void r2_page_title(const char *title, const char *game, f64 seconds, char
         if (m) snprintf(len + n, sizeof len - n, " %lld minute%s", m, m == 1 ? "" : "s");
     }
     size_t gl = strlen(game);
-    bool plain = r2_default_name(title, game);
+    char name[300];
+    r2_clip_name(title, game, name, sizeof name);
     const char *sep = len[0] ? ", " : "";
-    if (plain) snprintf(out, cap, "%s%s%s", gl ? game : "Clip", sep, len);
-    else if (gl) snprintf(out, cap, "%s - %s%s%s", title, game, sep, len);
-    else snprintf(out, cap, "%s%s%s", title, sep, len);
+    if (!name[0]) snprintf(out, cap, "%s%s%s", gl ? game : "Clip", sep, len);
+    else if (gl) snprintf(out, cap, "%s - %s%s%s", name, game, sep, len);
+    else snprintf(out, cap, "%s%s%s", name, sep, len);
 }
 
 // The picture's size for a video of w x h: at most 1280 wide, both even.
@@ -634,16 +646,16 @@ static void r2_preview_text(f64 preview, f64 seconds, char *out, i32 cap)
     snprintf(out, cap, "Preview, first %s of %s", a, b);
 }
 
-// The card for `in` in `style` (-1: the player's, config.embed_style): its own name in bold (or the game's, or
-// "Clip", for a name it was saved with), then what the style adds. A preview says how much of the clip it plays;
+// The card for `in` in `style` (-1: the player's, config.embed_style): its name in bold (r2_clip_name, else the
+// game's, else "Clip"), then what the style adds. A preview says how much of the clip it plays;
 // with nothing small enough to play, the card shows the picture.
 static void embed_card(const EmbedInput &in, EmbedCard *out, i32 style = -1)
 {
     const EmbedStyle &st = embed_style(style < 0 ? g_app.config.embed_style : style);
     *out = {};
     const char *game = in.game ? in.game : "";
-    bool named = in.title && !r2_default_name(in.title, game);
-    str_set(out->title, named ? in.title : game[0] ? game : "Clip");
+    r2_clip_name(in.title, game, out->title, sizeof out->title);
+    if (!out->title[0]) str_set(out->title, game[0] ? game : "Clip");
     if (st.line) {
         str_set(out->line, game);
     }
