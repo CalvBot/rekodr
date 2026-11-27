@@ -3576,6 +3576,18 @@ static void test_share_cancel()
     g_app.paths = keep;
 }
 
+// Deletes a folder made by a test, with everything in it
+static void remove_tree(const Path &dir)
+{
+    SHFILEOPSTRUCTW op = {};
+    wchar_t dbl[MAX_PATH + 2] = {};
+    wcscpy_s(dbl, MAX_PATH, dir.s);
+    op.wFunc = FO_DELETE;
+    op.pFrom = dbl;
+    op.fFlags = FOF_NO_UI;
+    SHFileOperationW(&op);
+}
+
 static void test_mcpack()
 {
     char v[256];
@@ -3608,6 +3620,7 @@ static void test_mcpack()
     GetTempPathW(MAX_PATH, tmp);
     Path root = {};
     swprintf(root.s, MAX_PATH, L"%srekodr-mcpack-%lu", tmp, GetCurrentProcessId());
+    remove_tree(root); // a run that stopped early, under a process id used again
     CreateDirectoryW(root.s, 0);
     Path prism = path_join(root, L"prism"), pgame = path_join(prism, L".minecraft"), pmods = path_join(pgame, L"mods");
     CreateDirectoryW(prism.s, 0);
@@ -3694,12 +3707,8 @@ static void test_mcpack()
     art_service_sign("/v1/resolve", 1763500000, sig, sizeof sig, "{\"mc\":{\"launcher\":\"prism\"}}");
     T(!strcmp(sig, "1763500000.2aa819f4a85e9589f05f8bc1abf247b9027dc889fa57f073bb1926bb86d4905e"));
 
-    const wchar_t *files[] = {L"prism/.minecraft/mods/jei-1.20.1-forge-15.2.0.27.jar", L"prism/.minecraft/mods/create-1.20.1-0.5.1.f.jar",
-                              L"prism/.minecraft/mods/notes.txt", L"prism/instance.cfg", L"cf/minecraftinstance.json", L"ftb/instance.json"};
-    for (auto f : files) DeleteFileW(path_join(root, f).s);
-    const wchar_t *dirs[] = {L"prism/.minecraft/mods", L"prism/.minecraft/logs", L"prism/.minecraft", L"prism", L"cf", L"ftb"};
-    for (auto d : dirs) RemoveDirectoryW(path_join(root, d).s);
-    RemoveDirectoryW(root.s);
+    remove_tree(root);
+    T(GetFileAttributesW(root.s) == INVALID_FILE_ATTRIBUTES);
 }
 
 static void make_dirs(const char *utf8)
