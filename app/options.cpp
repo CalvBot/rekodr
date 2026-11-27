@@ -1507,6 +1507,7 @@ static void apps_rename_popup()
     // The games: the games list's, which answer each key at once, then the art service's below them, asked once the
     // text stays the same a moment and shown only while they are for the text in the box. A name that is what was
     // typed goes first among the list's. Six rows, always, and the line under them, so the buttons stay where they are.
+    // Icons are fetched only for the rows shown once the text has settled; while typing, only ones already loaded.
     const i32 ROWS = 6;
     static char local[ROWS][128], online[8][128], names[ROWS][128];
     static i32 online_years[8], years[ROWS];
@@ -1550,7 +1551,7 @@ static void apps_rename_popup()
         }
         ImGui::PopID();
         ImVec2 i0(r0.x + dp(8), floorf(r0.y + (rh - dp(2) - is) / 2));
-        ID3D11ShaderResourceView *icon = game_db_icon(names[i]);
+        ID3D11ShaderResourceView *icon = game_db_icon(names[i], settled);
         if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, dp(6));
         else dl->AddRectFilled(i0, ImVec2(i0.x + is, i0.y + is), col32(COL_HOVER), dp(6));
         f32 right = r0.x + w - dp(10);
@@ -1590,7 +1591,10 @@ static void apps_rename_popup()
         str_set(was, a.name.s[0] ? a.name.s : hint);
         str_set(a.name.s, trim(name));
         log_line("options: %s is shown as \"%s\"", a.exe.s, a.name.s[0] ? a.name.s : hint);
-        if (picked && app_category(g_app.config, a) == CAT_GAME) gamedb_pick(a, was, a.name.s); // not a typed name
+        if (picked) { // a game from the list, not a typed name: the app is that game
+            if (app_category(g_app.config, a) != CAT_GAME) app_set_category(&a, CAT_GAME);
+            gamedb_pick(a, was, a.name.s);
+        }
         sessions_game_renamed(a.exe.s, false);
         options_apply(APPLY_AUDIO);
         ImGui::CloseCurrentPopup();
@@ -6184,7 +6188,7 @@ static void options_general()
     }
     ImGui::EndDisabled();
     f32 sw = text_w(g_font, "Run again") + dp(32);
-    opt_row_begin("First-run setup", "The clip key, tooltips and helping name games", sw);
+    opt_row_begin("First-run setup", "The clip key, tooltips and game detection", sw);
     if (kit_button("Run again##setup", KIT_SECONDARY, ImVec2(sw, 0))) {
         g_app.ui.setup_open = true;
         log_line("options: setup run again");

@@ -2602,7 +2602,7 @@ static const GamePickRow *lib_game_pick(const char *id, const char *current)
         // The icon: the game's, else a glyph (a controller for a custom game, the monitor for Desktop) or a tile
         ImVec2 i0(r0.x + kit_px(6), floorf(r0.y + (rh - kit_px(2) - is) / 2));
         bool custom = r.kind == PICK_TYPED || (r.kind == PICK_LIBRARY && game_is_custom(r.name));
-        ID3D11ShaderResourceView *icon = custom ? 0 : game_db_icon(r.name);
+        ID3D11ShaderResourceView *icon = custom ? 0 : game_db_icon(r.name, settled); // fetched once typing stops
         const char *glyph = custom ? ICON_GAME : !strcmp(r.name, GAME_DESKTOP) ? ICON_MONITOR : 0;
         if (icon) dl->AddImageRounded((ImTextureID)icon, i0, ImVec2(i0.x + is, i0.y + is), ImVec2(0, 0), ImVec2(1, 1),
                                       IM_COL32_WHITE, kit_px(5));

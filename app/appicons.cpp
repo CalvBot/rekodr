@@ -304,9 +304,15 @@ static i32 g_db_icon_count;
 // GAME_DESKTOP and GAME_NOT_OURS aren't games, so no lookup gives them an icon
 static bool game_is_none(const char *name) { return !strcmp(name, GAME_DESKTOP) || !strcmp(name, GAME_NOT_OURS); }
 
-static ID3D11ShaderResourceView *game_db_icon(const char *name)
+// With `ask` false only an icon already loaded is given: nothing is fetched or asked for.
+static ID3D11ShaderResourceView *game_db_icon(const char *name, bool ask = true)
 {
     if (game_is_none(name) || game_is_custom(name)) return 0;
+    if (!ask) {
+        for (i32 i = 0; i < g_db_icon_count; i++)
+            if (str_eq(g_db_icons[i].exe, name)) return g_db_icons[i].srv;
+        return 0;
+    }
     AppIcon *slot = icon_slot(g_db_icons, &g_db_icon_count, COUNT(g_db_icons), name);
     if (!slot) return 0;
     if (slot->srv || slot->tried) return slot->srv;
