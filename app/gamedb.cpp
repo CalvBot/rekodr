@@ -1137,7 +1137,9 @@ static bool gamedb_name_app(AppInfo *a)
             state = facts && lookup_body(*a, game, cmd, has, body, sizeof body) ? gamedb_lookup(body, &ans) : -1;
         }
         if (state >= 0) last_look_put(a->exe.s, body);
-        if (state == 0 && !known) return false; // being asked
+        // Being asked. A shared exe already named waits for the answer too: its window coming up can match a game
+        // here ("Minecraft") that the service names more closely (its modpack), and that isn't another game.
+        if (state == 0 && (!known || (shared && a->desc.s[0]))) return false;
         software = state == 1 && !ans.failed && ans.software && g_app.config.steam_type_check;
         if (software && a->category == CAT_NONE && cat == CAT_GAME) {
             a->category = CAT_APP;
