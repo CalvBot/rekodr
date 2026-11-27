@@ -793,10 +793,10 @@ static ID3D11ShaderResourceView *game_icon(const char *name)
 
 static void library_rescan(); // library.cpp
 
-// The games list has loaded, art has arrived, or a modpack has been named. Main thread.
+// The games list has loaded, art has arrived, a modpack has been named or a search answered. Main thread.
 static void gamedb_on_event(const Event &e)
 {
-    if (e.a == GAMEDB_ART_TEXTURE || e.a == GAMEDB_FIXED_COVER) {
+    if (e.a == GAMEDB_ART_TEXTURE || e.a == GAMEDB_FIXED_COVER || e.a == GAMEDB_FOUND) {
         ui_wake();
         return;
     }

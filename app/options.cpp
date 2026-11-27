@@ -1516,6 +1516,7 @@ static void apps_rename_popup()
     char *tq = trim(q);
     i32 nl = gamedb_find_local(tq, local, ROWS);
     bool settled = ImGui::GetTime() - changed_at > 0.2;
+    if (*tq && !settled) ui_wake(); // drawn on until it settles, so the search goes out then
     i32 no = *tq && settled ? gamedb_find_online(tq, online, online_years, 8) : *tq ? -1 : 0;
     char want[128], letters[128];
     gdb_letters(tq, want, sizeof want);

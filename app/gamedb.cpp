@@ -50,7 +50,7 @@ struct GameIndex {
     i32      name_count;
 };
 
-enum { GAMEDB_LOADED = 1, GAMEDB_ART = 2, GAMEDB_RESOLVED = 3 };
+enum { GAMEDB_LOADED = 1, GAMEDB_ART = 2, GAMEDB_RESOLVED = 3, GAMEDB_FOUND = 6 }; // FOUND: a search answered
 enum GameArt { ART_ICON, ART_HERO };
 
 // What the service said to a lookup. `failed`: it couldn't be asked and nothing it said before is kept, so Discord's
@@ -2019,6 +2019,10 @@ static void gamedb_fetch_find()
         g_gamedb.found[i].year = years[i];
     }
     ReleaseSRWLockExclusive(&g_gamedb.lock);
+    Event e = {}; // the name box shows them now, not at its next input
+    e.kind = EV_GAMEDB;
+    e.a = GAMEDB_FOUND;
+    event_post(e);
 }
 
 // Games the art service has by a name, for naming an app: asks for them (the worker looks while this is called
