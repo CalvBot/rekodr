@@ -65,3 +65,7 @@ and off, and open the window. `node streamdeck\pack.mjs` builds it.
 ## Files
 Settings are kept in `%APPDATA%\Rekodr`. The log, crash dumps and the game art cache are in
 `%LOCALAPPDATA%\Rekodr`. Clips and sessions are saved in `<Videos>\Rekodr` unless Options says otherwise.
+
+## Licence
+Rekodr is free software under the GNU General Public License, version 3 ([LICENSE](LICENSE)). Dear ImGui (MIT),
+zstd (BSD) and the Onest typeface (SIL OFL 1.1) are included under their own licences, which are kept beside them.
