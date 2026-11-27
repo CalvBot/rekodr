@@ -5710,98 +5710,63 @@ static void opt_watch_rows(Config &c)
 
 static bool g_opt_show_folders; // "show folders": General scrolled to its Folders
 
-// Odd art: a game from the player's list (the ones heard last first, the one in front among them) that the service
-// knows, which picture looks wrong, an optional note and Send. The answer shows under it, where room is kept for it.
-static void options_art_report(Config &c)
+// Where the game with the key chosen is in the list of keys; -1 when none is chosen or it's gone from the list.
+static i32 art_pick_at(const char *const *keys, i32 count, const char *chosen)
 {
-    enum { MAX_GAMES = 40 };
-    struct Pick { char name[64], key[64]; i64 heard; };
-    static Pick games[MAX_GAMES];
-    static const char *names[MAX_GAMES];
-    static i32 count, at;
-    static u64 read_ms;
-    static char chosen_key[64];
-    static i32 kind = 0;
-    static char note[ART_NOTE_MAX + 1];
-    u64 now = GetTickCount64();
-    if (!read_ms || now - read_ms > 2000) { // the list, made again every 2 s, keeps the pick by its key
-        read_ms = now;
-        count = 0;
-        for (i32 i = 0; i < c.app_count; i++) {
-            const AppInfo &a = c.apps[i];
-            char key[64];
-            if (a.category != CAT_GAME || !a.name.s[0] || !gamedb_key_for(a.name.s, key, sizeof key)) continue;
-            i64 heard = !_stricmp(a.exe.s, g_app.audio.game.s) ? INT64_MAX : a.last_heard_us;
-            i32 slot = -1;
-            for (i32 j = 0; j < count && slot < 0; j++) if (!strcmp(games[j].key, key)) slot = j; // one row a game
-            if (slot < 0 && count < MAX_GAMES) slot = count++, games[slot].heard = INT64_MIN;
-            if (slot < 0) { // full: it takes the place of the one heard longest ago
-                slot = 0;
-                for (i32 j = 1; j < count; j++) if (games[j].heard < games[slot].heard) slot = j;
-            }
-            if (games[slot].heard >= heard) continue;
-            Pick &g = games[slot];
-            str_set(g.name, a.name.s);
-            str_set(g.key, key);
-            g.heard = heard;
-        }
-        for (i32 i = 1; i < count; i++) // the ones heard last first
-            for (i32 j = i; j > 0 && games[j].heard > games[j - 1].heard; j--) {
-                Pick t = games[j];
-                games[j] = games[j - 1];
-                games[j - 1] = t;
-            }
-        at = 0;
-        for (i32 i = 0; i < count; i++) {
-            names[i] = games[i].name;
-            if (!strcmp(games[i].key, chosen_key)) at = i;
-        }
-    }
-    if (count) str_set(chosen_key, games[at].key);
+    if (!chosen[0]) return -1;
+    for (i32 i = 0; i < count; i++)
+        if (!strcmp(keys[i], chosen)) return i;
+    return -1;
+}
 
-    bool busy = g_tel.fb_busy != 0, sending = busy && g_tel.fb_art;
-    f32 combo_w = dp(220), chip_w = dp(64), send_w = text_w(g_font, "Sending") + dp(32), gap = dp(8);
-    opt_card_begin();
-    opt_row_begin("Odd or wrong game art", !c.game_lookup ? "Needs Look up games online" : count ? "Sent with the game and the version number"
-                  : "No game " APP_NAME " has art for yet", combo_w + dp(16) + 3 * chip_w + 2 * gap + dp(16) + send_w);
-    ImGui::BeginDisabled(!count);
-    if (opt_combo("##artgame", names, 0, count, &at, combo_w, 0, count ? 0 : "")) str_set(chosen_key, games[at].key);
-    ImGui::EndDisabled();
-    ImGui::SameLine(0, dp(16));
-    static const char *const labels[] = {"Icon##artkind", "Hero##artkind", "Cover##artkind"};
-    for (i32 i = 0; i < 3; i++) {
-        if (i) ImGui::SameLine(0, gap);
-        if (kit_chip(labels[i], kind == i, 0, chip_w)) kind = i;
+// The games a Game art report can be about: the player's games the service knows, the ones heard last first (the
+// one in front among them). The list is made again every 2 s and keeps the pick by its key; none is picked at first.
+struct ArtGames {
+    enum { MAX = 40 };
+    struct Pick { char name[64], key[64]; i64 heard; };
+    Pick games[MAX];
+    const char *names[MAX], *keys[MAX];
+    i32 count, at;
+    u64 read_ms;
+    char chosen_key[64];
+};
+static ArtGames g_art_games;
+
+static void art_games_refresh(const Config &c, u64 now)
+{
+    ArtGames &l = g_art_games;
+    if (l.read_ms && now - l.read_ms <= 2000) return;
+    l.read_ms = now;
+    l.count = 0;
+    for (i32 i = 0; i < c.app_count; i++) {
+        const AppInfo &a = c.apps[i];
+        char key[64];
+        if (a.category != CAT_GAME || !a.name.s[0] || !gamedb_key_for(a.name.s, key, sizeof key)) continue;
+        i64 heard = !_stricmp(a.exe.s, g_app.audio.game.s) ? INT64_MAX : a.last_heard_us;
+        i32 slot = -1;
+        for (i32 j = 0; j < l.count && slot < 0; j++) if (!strcmp(l.games[j].key, key)) slot = j; // one row a game
+        if (slot < 0 && l.count < ArtGames::MAX) slot = l.count++, l.games[slot].heard = INT64_MIN;
+        if (slot < 0) { // full: it takes the place of the one heard longest ago
+            slot = 0;
+            for (i32 j = 1; j < l.count; j++) if (l.games[j].heard < l.games[slot].heard) slot = j;
+        }
+        if (l.games[slot].heard >= heard) continue;
+        ArtGames::Pick &g = l.games[slot];
+        str_set(g.name, a.name.s);
+        str_set(g.key, key);
+        g.heard = heard;
     }
-    ImGui::SameLine(0, dp(16));
-    f32 wait = busy ? 0 : feedback_wait_left(g_tel.art_sent_ms, now);
-    bool can = c.game_lookup && count && !busy && wait <= 0;
-    if (kit_button(sending ? "Sending##artsend" : wait > 0 ? "##artsend" : "Send##artsend", KIT_PRIMARY, ImVec2(send_w, 0), can)) {
-        dev_click("art report", ART_KINDS[kind]);
-        if (art_report_send(games[at].key, games[at].name, kind, note)) note[0] = 0;
+    for (i32 i = 1; i < l.count; i++) // the ones heard last first
+        for (i32 j = i; j > 0 && l.games[j].heard > l.games[j - 1].heard; j--) {
+            ArtGames::Pick t = l.games[j];
+            l.games[j] = l.games[j - 1];
+            l.games[j - 1] = t;
+        }
+    for (i32 i = 0; i < l.count; i++) {
+        l.names[i] = l.games[i].name;
+        l.keys[i] = l.games[i].key;
     }
-    if (wait > 0) { // the wait after a send: a ring that empties, in the greyed button
-        ImVec2 a = ImGui::GetItemRectMin(), z = ImGui::GetItemRectMax();
-        ImVec2 mid((a.x + z.x) / 2, (a.y + z.y) / 2);
-        f32 r = (z.y - a.y) * 0.28f, top = -IM_PI / 2;
-        ImDrawList *rl = ImGui::GetWindowDrawList();
-        rl->AddCircle(mid, r, col32(COL_FAINT, 0.5f), 32, dp(2));
-        rl->PathArcTo(mid, r, top, top + 2 * IM_PI * wait, 32);
-        rl->PathStroke(col32(COL_DIM), 0, dp(2));
-        ui_wake(2);
-    }
-    opt_row_end();
-    f32 x0 = g_card.a.x + dp(OPT_PAD), box_w = g_card.w - 2 * dp(OPT_PAD);
-    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y + dp(4)));
-    ImGui::BeginDisabled(!c.game_lookup || busy || !count);
-    ImGui::SetNextItemWidth(box_w);
-    ImGui::InputTextWithHint("##artnote", "A note (optional)", note, sizeof note);
-    ImGui::EndDisabled();
-    f32 ly = ImGui::GetCursorScreenPos().y + dp(4);
-    if (!busy && g_tel.fb_result[0] && g_tel.fb_art)
-        opt_text_at(ImGui::GetWindowDrawList(), g_font_small, ImVec2(x0, ly), g_tel.fb_ok ? COL_OK : 0xff8a92, g_tel.fb_result, x0 + box_w);
-    ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, ly + g_font_small->FontSize + dp(10)));
-    opt_card_end();
+    l.at = art_pick_at(l.keys, l.count, l.chosen_key);
 }
 
 static void options_general()
@@ -6168,30 +6133,46 @@ static void options_general()
     opt_row_end();
     opt_card_end();
 
-    // Feedback: a kind, the text and Send; the answer shows under the box, where room is kept for it.
+    // Feedback: Bug, Idea or Game art, and Send. Bug and Idea take a text; Game art a game (none picked at first)
+    // and a short note, in the same room. The answer shows under it, where room is kept for it.
     opt_section("FEEDBACK");
     opt_card_begin();
     {
-        static i32 kind = 0;
-        static char text[FB_TEXT_MAX + 1];
+        static i32 tab = 0; // FEEDBACK_KINDS, then FB_TAB_ART
+        static char text[FB_TEXT_MAX + 1], note[ART_NOTE_MAX + 1];
+        enum { FB_TAB_ART = COUNT(FEEDBACK_KINDS) };
+        ArtGames &l = g_art_games;
+        u64 now = GetTickCount64();
+        bool art = tab == FB_TAB_ART;
+        if (art) art_games_refresh(c, now);
         bool busy = g_tel.fb_busy != 0;
-        f32 chip_w = dp(64), send_w = text_w(g_font, "Sending") + dp(32), gap = dp(8);
-        opt_row_begin("A bug, an idea or anything else", c.game_lookup ? "Goes to " APP_NAME "'s service with the version number" : "Needs Look up games online",
-                      3 * chip_w + 2 * gap + dp(16) + send_w);
-        static const char *const labels[] = {"Bug##fbkind", "Idea##fbkind", "Other##fbkind"};
+        f32 chip_w = text_w(g_font, "Game art") + dp(24), send_w = text_w(g_font, "Sending") + dp(32), gap = dp(8);
+        const char *sub = !c.game_lookup        ? "Needs Look up games online"
+                          : art && !l.count     ? "No game " APP_NAME " has art for yet"
+                          : art                 ? "Sent with the game and the version number"
+                                                : "Goes to " APP_NAME "'s service with the version number";
+        opt_row_begin("A bug, an idea or odd game art", sub, 3 * chip_w + 2 * gap + dp(16) + send_w);
+        static const char *const labels[] = {"Bug##fbkind", "Idea##fbkind", "Game art##fbkind"};
         for (i32 i = 0; i < 3; i++) {
             if (i) ImGui::SameLine(0, gap);
-            if (kit_chip(labels[i], kind == i, 0, chip_w)) kind = i;
+            if (kit_chip(labels[i], tab == i, 0, chip_w)) tab = i;
         }
         ImGui::SameLine(0, dp(16));
         bool any = false;
         for (const char *p = text; *p && !any; p++) any = !isspace((u8)*p);
-        f32 wait = busy ? 0 : feedback_wait_left(g_tel.fb_sent_ms, GetTickCount64());
-        bool can = c.game_lookup && !busy && wait <= 0 && any;
-        if (kit_button(busy ? "Sending##fbsend" : wait > 0 ? "##fbsend" : "Send##fbsend", KIT_PRIMARY,
+        f32 wait = busy ? 0 : feedback_wait_left(art ? g_tel.art_sent_ms : g_tel.fb_sent_ms, now);
+        bool ready = art ? l.at >= 0 && l.at < l.count : any;
+        bool can = c.game_lookup && !busy && wait <= 0 && ready;
+        bool sending = busy && g_tel.fb_art == art;
+        if (kit_button(sending ? "Sending##fbsend" : wait > 0 ? "##fbsend" : "Send##fbsend", KIT_PRIMARY,
                        ImVec2(send_w, 0), can)) {
-            dev_click("feedback", FEEDBACK_KINDS[kind]);
-            feedback_send(kind, text);
+            if (art) {
+                dev_click("art report", l.games[l.at].key);
+                if (art_report_send(l.games[l.at].key, l.games[l.at].name, note)) note[0] = 0;
+            } else {
+                dev_click("feedback", FEEDBACK_KINDS[tab]);
+                feedback_send(tab, text);
+            }
         }
         if (wait > 0) { // the wait after a send: a ring that empties, in the greyed button
             ImVec2 a = ImGui::GetItemRectMin(), z = ImGui::GetItemRectMax();
@@ -6204,11 +6185,25 @@ static void options_general()
             ui_wake(2); // it moves on its own
         }
         opt_row_end();
-        f32 x0 = g_card.a.x + dp(OPT_PAD), box_w = g_card.w - 2 * dp(OPT_PAD);
-        ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y + dp(4)));
-        ImGui::BeginDisabled(!c.game_lookup || busy);
-        ImGui::InputTextMultiline("##fbtext", text, sizeof text, ImVec2(box_w, dp(96)));
-        ImGui::EndDisabled();
+        f32 x0 = g_card.a.x + dp(OPT_PAD), box_w = g_card.w - 2 * dp(OPT_PAD), box_h = dp(96);
+        f32 y0 = ImGui::GetCursorScreenPos().y + dp(4);
+        ImGui::SetCursorScreenPos(ImVec2(x0, y0));
+        if (art) {
+            ImGui::BeginDisabled(!c.game_lookup || busy || !l.count);
+            if (opt_combo("##artgame", l.names, 0, l.count, &l.at, box_w, 0, !l.count ? "" : l.at < 0 ? "Pick a game" : 0,
+                          l.at < 0 ? COL_DIM : COL_TEXT))
+                str_set(l.chosen_key, l.games[l.at].key);
+            ImGui::SetCursorScreenPos(ImVec2(x0, y0 + ImGui::GetFrameHeight() + dp(8)));
+            ImGui::SetNextItemWidth(box_w);
+            ImGui::InputTextWithHint("##artnote", "What looks wrong (optional)", note, sizeof note);
+            ImGui::EndDisabled();
+            ImGui::SetCursorScreenPos(ImVec2(x0, y0));
+            ImGui::Dummy(ImVec2(box_w, box_h)); // the same room as the text box
+        } else {
+            ImGui::BeginDisabled(!c.game_lookup || busy);
+            ImGui::InputTextMultiline("##fbtext", text, sizeof text, ImVec2(box_w, box_h));
+            ImGui::EndDisabled();
+        }
         static bool cleared;
         if (!busy && g_tel.fb_ok && !g_tel.fb_art && !cleared) { // sent: the box empties once
             text[0] = 0;
@@ -6217,16 +6212,15 @@ static void options_general()
         if (busy) cleared = false;
         f32 ly = ImGui::GetCursorScreenPos().y + dp(4);
         char count[48];
-        snprintf(count, sizeof count, "%d of %d", (int)strlen(text), FB_TEXT_MAX);
+        snprintf(count, sizeof count, "%d of %d", (int)strlen(art ? note : text), art ? (int)ART_NOTE_MAX : FB_TEXT_MAX);
         ImDrawList *dl = ImGui::GetWindowDrawList();
-        if (!busy && g_tel.fb_result[0] && !g_tel.fb_art)
+        if (!busy && g_tel.fb_result[0] && g_tel.fb_art == art)
             opt_text_at(dl, g_font_small, ImVec2(x0, ly), g_tel.fb_ok ? COL_OK : 0xff8a92, g_tel.fb_result, x0 + box_w - dp(100));
         f32 cw = text_w(g_font_small, count);
         opt_text_at(dl, g_font_small, ImVec2(x0 + box_w - cw, ly), COL_DIM, count, x0 + box_w + 1);
         ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, ly + g_font_small->FontSize + dp(10)));
     }
     opt_card_end();
-    options_art_report(c);
 
     opt_section("ABOUT");
     opt_card_begin();

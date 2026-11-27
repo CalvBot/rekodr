@@ -942,7 +942,7 @@ static void test_telemetry()
     memset(longer, 'a', sizeof longer - 1);
     ((u8 *)longer)[FB_TEXT_MAX - 1] = 0xc3; // a two-byte character across the limit is dropped whole
     ((u8 *)longer)[FB_TEXT_MAX] = 0xa9;
-    tel_feedback_json(2, longer, out, sizeof out);
+    tel_feedback_json(0, longer, out, sizeof out);
     const char *t = strstr(out, "\"text\":\"") + 8;
     T((i32)(strrchr(out, '"') - t) == FB_TEXT_MAX - 1);
     // Send waits a minute after a send
@@ -951,14 +951,14 @@ static void test_telemetry()
     T(fabsf(feedback_wait_left(1000, 31000) - 0.5f) < 0.001f);     // half way
     T(feedback_wait_left(1000, 60999) > 0 && feedback_wait_left(1000, 61000) == 0);
     T(feedback_wait_left(5000, 1000) == 0);                        // a clock before the send
-    // An art report: the game's key and name, the kind and the note, nothing about the player
-    tel_art_json("d123", "Game \"X\"", 2, "  too dark\n", out, sizeof out);
-    T(!strcmp(out, "{\"version\":\"" REKODR_VERSION "\",\"key\":\"d123\",\"name\":\"Game \\\"X\\\"\",\"kind\":\"cover\",\"note\":\"too dark\"}"));
+    // An art report: the game's key and name and the note, nothing about the player
+    tel_art_json("d123", "Game \"X\"", "  too dark\n", out, sizeof out);
+    T(!strcmp(out, "{\"version\":\"" REKODR_VERSION "\",\"key\":\"d123\",\"name\":\"Game \\\"X\\\"\",\"note\":\"too dark\"}"));
     memset(longer, 'b', 300);
     longer[300] = 0;
-    tel_art_json("s1", "G", 0, longer, out, sizeof out);
+    tel_art_json("s1", "G", longer, out, sizeof out);
     t = strstr(out, "\"note\":\"") + 8;
-    T((i32)(strrchr(out, '"') - t) == ART_NOTE_MAX && strstr(out, "\"kind\":\"icon\""));
+    T((i32)(strrchr(out, '"') - t) == ART_NOTE_MAX);
 }
 
 // Crash reports: a log line loses the player's folder, paths, links, quoted text and account IDs, and the lines
@@ -1006,6 +1006,18 @@ static void test_crash_reports()
     T(diag_file_tail(path, 10, out, sizeof out) == 10);
     DeleteFileW(path);
     T(diag_file_tail(path, 2, out, sizeof out) == 0 && !out[0]);
+}
+
+// Odd art: no game is picked at first, and a pick stays on its game when the list is made again in a new order.
+static void test_art_pick()
+{
+    const char *keys[] = {"d1", "s2", "d3"};
+    T(art_pick_at(keys, 3, "") == -1);
+    T(art_pick_at(keys, 3, "s2") == 1);
+    const char *later[] = {"s2", "d3", "d1"};
+    T(art_pick_at(later, 3, "s2") == 0);
+    T(art_pick_at(later, 2, "d1") == -1); // gone from the list
+    T(art_pick_at(keys, 0, "d1") == -1);
 }
 
 static void test_first_run()
@@ -7455,6 +7467,7 @@ int main()
     test_ffmpeg_check();
     test_telemetry();
     test_crash_reports();
+    test_art_pick();
     test_backup_plan();
     test_backup();
     test_backup_places();

@@ -2,9 +2,9 @@
 //   /v1/stats     once a day at most, only while "Send usage stats" is on: the version, Windows build, encoder, fps
 //                 and height, and how many clips, saves, shares, links and slow-PC warnings since the last report
 //                 that went through. The counts are kept in <local_dir>\stats.txt so they outlive a restart.
-//   /v1/feedback  what the player writes in Options > General > Feedback, with its kind.
-//   /v1/artreport a game whose icon, hero or cover looks wrong, from the same card: the game's service key, the
-//                 name shown, the kind and a short note.
+//   /v1/feedback  what the player writes in Options > General > Feedback: a bug or an idea.
+//   /v1/artreport a game whose art looks wrong, from the same card's Game art tab: the game's service key, the
+//                 name shown and a short note.
 //   /v1/crash     after a crash or hang, the next start sends its report, while "Send crash reports" is on: see
 //                 crash_body for what's in it.
 // With "Look up games online" off, none is sent. The version is REKODR_VERSION (version.h).
@@ -473,7 +473,7 @@ static void telemetry_tick()
     g_tel.stats_thread = thread_start(tel_stats_thread, json);
 }
 
-static const char *const FEEDBACK_KINDS[] = {"bug", "idea", "other"};
+static const char *const FEEDBACK_KINDS[] = {"bug", "idea"};
 enum { FB_TEXT_MAX = 2000 };
 
 // The feedback body: kind and text, the text cut to FB_TEXT_MAX bytes at a character's start.
@@ -496,12 +496,11 @@ static f32 feedback_wait_left(u64 sent_ms, u64 now_ms)
     return 1 - (f32)(now_ms - sent_ms) / FEEDBACK_WAIT_MS;
 }
 
-static const char *const ART_KINDS[] = {"icon", "hero", "cover"};
 enum { ART_NOTE_MAX = 120 };
 
-// The art report body: the game's service key and shown name, the kind of picture and the note, cut to
-// ART_NOTE_MAX bytes at a character's start.
-static void tel_art_json(const char *key, const char *name, i32 kind, const char *note, char *out, i32 cap)
+// The art report body: the game's service key and shown name and the note, cut to ART_NOTE_MAX bytes at a
+// character's start.
+static void tel_art_json(const char *key, const char *name, const char *note, char *out, i32 cap)
 {
     char cut[ART_NOTE_MAX + 1], esc_note[ART_NOTE_MAX * 2 + 1], esc_key[160], esc_name[260];
     size_t len = strlen(note), n = len < ART_NOTE_MAX ? len : ART_NOTE_MAX;
@@ -511,8 +510,8 @@ static void tel_art_json(const char *key, const char *name, i32 kind, const char
     json_escape(trim(cut), esc_note, sizeof esc_note);
     json_escape(key, esc_key, sizeof esc_key);
     json_escape(name, esc_name, sizeof esc_name);
-    snprintf(out, cap, "{\"version\":\"%s\",\"key\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"note\":\"%s\"}", REKODR_VERSION,
-             esc_key, esc_name, ART_KINDS[kind], esc_note);
+    snprintf(out, cap, "{\"version\":\"%s\",\"key\":\"%s\",\"name\":\"%s\",\"note\":\"%s\"}", REKODR_VERSION,
+             esc_key, esc_name, esc_note);
 }
 
 static DWORD WINAPI tel_feedback_thread(void *)
@@ -551,10 +550,10 @@ static bool feedback_send(i32 kind, const char *text)
     return true;
 }
 
-static bool art_report_send(const char *key, const char *name, i32 kind, const char *note)
+static bool art_report_send(const char *key, const char *name, const char *note)
 {
     if (g_tel.fb_busy || feedback_wait_left(g_tel.art_sent_ms, GetTickCount64()) > 0) return false;
-    tel_art_json(key, name, kind, note, g_tel.fb_body, sizeof g_tel.fb_body);
+    tel_art_json(key, name, note, g_tel.fb_body, sizeof g_tel.fb_body);
     tel_feedback_start(true);
     return true;
 }
