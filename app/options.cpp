@@ -2424,12 +2424,12 @@ static void opt_inputs(Config &c)
     for (i32 i = 0; i < c.input_count; i++) {
         bool found = false;
         for (i32 k = 0; k < live_count && !found; k++) found = !_stricmp(live[k].id, c.inputs[i].id);
-        if (!found && c.inputs[i].mode != INPUT_OFF) rows[n++] = c.inputs[i];
+        if (!found && c.inputs[i].on) rows[n++] = c.inputs[i];
     }
     static const char *const modes[] = {"Off", "Mono", "Stereo"};
     for (i32 i = 0; i < n; i++) {
         const InputDevice *set = config_input(c.inputs, c.input_count, rows[i].id);
-        i32 mode = set ? set->mode : INPUT_OFF;
+        i32 mode = !set || !set->on ? 0 : set->stereo ? 2 : 1;
         const char *sub = !plugged[i]                          ? "Not plugged in"
                           : _stricmp(rows[i].id, default_id)     ? 0
                           : c.mic                              ? "Windows' default: on the Mic track while it is"
@@ -2440,11 +2440,12 @@ static void opt_inputs(Config &c)
             if (!d && c.input_count < COUNT(c.inputs)) d = &c.inputs[c.input_count++];
             if (d) {
                 *d = rows[i];
-                d->mode = (InputMode)mode;
+                d->on = mode != 0;
+                d->stereo = mode == 2;
             }
             // Turned off: dropped from the settings.
             for (i32 k = 0; k < c.input_count;)
-                if (c.inputs[k].mode == INPUT_OFF) c.inputs[k] = c.inputs[--c.input_count];
+                if (!c.inputs[k].on) c.inputs[k] = c.inputs[--c.input_count];
                 else k++;
             log_line("options: input %s %s", rows[i].name, modes[mode]);
             options_apply(APPLY_AUDIO);
@@ -2891,16 +2892,10 @@ static void options_recording()
         log_line("options: voices %s", c.voice_mono ? "mono" : "stereo");
         options_apply(0);
     }
-    if (opt_row_toggle("Clean the mic", "Fans, hiss and hum taken out when a clip saves", "##micclean", &c.mic_clean)) {
-        log_line("options: mic cleaning %s", c.mic_clean ? "on" : "off");
-        options_apply(0);
-    }
-    ImGui::BeginDisabled(!c.mic_clean);
-    if (opt_row_toggle("Keep a raw track", "The mic as recorded too, beside the cleaned one", "##micraw", &c.mic_raw)) {
+    if (opt_row_toggle("Keep a raw track", "Each mic as recorded too, beside the processed one", "##micraw", &c.mic_raw)) {
         log_line("options: raw mic track %s", c.mic_raw ? "on" : "off");
         options_apply(0);
     }
-    ImGui::EndDisabled();
     opt_card_end();
 
     opt_section("FFMPEG");

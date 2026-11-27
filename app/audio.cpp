@@ -13,7 +13,7 @@
 // On disk:
 //   <buffer>\audio\<yyyymmdd_hhmmss_mmm>_<exe>_<pid>\a_00000.mka ...  Opus in Matroska, 10 s segments
 //                                                    list.csv        written by ffmpeg's segment muxer
-//                                                    meta.json       {"kind","exe","pid","start_us"}
+//                                                    meta.json       {"kind","exe","path","device","pid","start_us"}
 //                                                    peaks.bin       the loudest of each 100 ms, a byte each
 //                                                    ffmpeg.log      ffmpeg's errors
 //   <buffer>\activity.tsv   "<us>\t<exe>" each time the game being played changes (empty exe = the desktop)
@@ -285,8 +285,9 @@ static bool writer_idle(AudioWriter *w)
     return true;
 }
 
-static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, const char *exe_path, u32 pid, const Path &buffer_dir,
-                        const Path &ffmpeg, i64 start_us)
+// `device`: a mic's endpoint id, the default one's too, so a save gives it that device's sound.
+static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, const char *exe_path, const char *device, u32 pid,
+                        const Path &buffer_dir, const Path &ffmpeg, i64 start_us)
 {
     *w = {};
     w->log = w->peaks = INVALID_HANDLE_VALUE;
@@ -312,12 +313,14 @@ static bool writer_open(AudioWriter *w, AudioKind kind, const char *exe, const c
         }
         out[e] = 0;
     };
-    char escaped[256], escaped_path[MAX_PATH * 2];
+    char escaped[256], escaped_path[MAX_PATH * 2], escaped_device[320];
     escape(exe, escaped, sizeof escaped);
     escape(exe_path, escaped_path, sizeof escaped_path);
-    char meta[1024];
-    snprintf(meta, sizeof meta, "{\"kind\":\"%s\",\"exe\":\"%s\",\"path\":\"%s\",\"pid\":%u,\"start_us\":%lld}",
-             kind == AUDIO_MIC ? "mic" : "app", escaped, escaped_path, pid, (long long)start_us);
+    escape(device, escaped_device, sizeof escaped_device);
+    char meta[1400];
+    snprintf(meta, sizeof meta,
+             "{\"kind\":\"%s\",\"exe\":\"%s\",\"path\":\"%s\",\"device\":\"%s\",\"pid\":%u,\"start_us\":%lld}",
+             kind == AUDIO_MIC ? "mic" : "app", escaped, escaped_path, escaped_device, pid, (long long)start_us);
     if (!write_whole_file(path_join(dir, L"meta.json").s, meta)) {
         log_line("%s: couldn't write meta.json (%d)", exe, (int)GetLastError());
         return false;
@@ -700,7 +703,10 @@ static CaptureEnd audio_capture(AudioWorker *w, u8 *packet)
             if (!writer.open) {
                 what = "starting the encoder";
                 hr = E_FAIL;
-                if (!writer_open(&writer, w->kind, w->exe.s, w->path, w->pid, w->buffer_dir, w->ffmpeg, t_us)) goto done;
+                char device[128];
+                wide_to_utf8(mic_id, device, sizeof device);
+                if (!writer_open(&writer, w->kind, w->exe.s, w->path, device, w->pid, w->buffer_dir, w->ffmpeg, t_us))
+                    goto done;
                 what = "capturing";
                 hr = S_OK;
             }
@@ -1012,7 +1018,7 @@ static void audio_tick_streams()
     i32 live_count = cfg.input_count ? audio_list_inputs(live, COUNT(live), default_id, sizeof default_id) : 0;
     auto wanted = [&](const char *id) {
         const InputDevice *d = config_input(cfg.inputs, cfg.input_count, id);
-        if (!d || d->mode == INPUT_OFF || (mic_on && !_stricmp(id, default_id))) return (const InputDevice *)0;
+        if (!d || !d->on || (mic_on && !_stricmp(id, default_id))) return (const InputDevice *)0;
         for (i32 i = 0; i < live_count; i++)
             if (!_stricmp(live[i].id, id)) return d;
         return (const InputDevice *)0;

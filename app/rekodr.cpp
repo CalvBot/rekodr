@@ -86,6 +86,7 @@ static void imgui_debug_print(const char *fmt, ...)
 }
 #include "events.cpp"
 #include "config.cpp"
+#include "micfx.cpp"
 #include "sounds.cpp"
 #include "proc.cpp"
 #include "gamedb.cpp"

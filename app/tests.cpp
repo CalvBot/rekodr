@@ -1575,32 +1575,33 @@ static void test_quality()
     g_pace_count = g_pace_next = 0;
 }
 
-// The Mic is cleaned before the Mix takes it; Mic (raw) is the Mic as recorded, on its own, in no Mix, and left out
-// of the editor's tracks.
-static void test_mic_clean()
+// Each mic track gets its device's sound before the Mix takes it; "<track> (raw)" is that mic as recorded, on its
+// own, in no Mix, and left out of the editor's tracks.
+static void test_mic_tracks()
 {
-    static AudioStreamInfo st[2];
-    static AudioSeg segs[2];
-    st[0] = {}, st[1] = {};
-    st[0].mic = true, str_set(st[0].exe, "mic"), st[0].first_seg = 0, st[0].seg_count = 1;
-    str_set(st[1].exe, "game.exe"), st[1].first_seg = 1, st[1].seg_count = 1;
-    segs[0] = {}, segs[1] = {};
-    segs[0].end_us = segs[1].end_us = 10000000;
+    static AudioStreamInfo st[3];
+    static AudioSeg segs[3];
+    st[0] = {}, st[1] = {}, st[2] = {};
+    st[0].mic = true, str_set(st[0].exe, "mic"), str_set(st[0].device, "{dev}.{default}");
+    str_set(st[1].exe, "game.exe");
+    for (i32 i = 0; i < 3; i++) st[i].first_seg = i, st[i].seg_count = 1, segs[i] = {}, segs[i].end_us = 10000000;
     SaveWork *w = &g_save_work;
     w->buf = {};
-    w->buf.streams = st, w->buf.stream_count = 2;
-    w->buf.audio_segs = segs, w->buf.audio_seg_count = 2;
+    w->buf.streams = st, w->buf.stream_count = 2; // the Mic and the game
+    w->buf.audio_segs = segs, w->buf.audio_seg_count = 3;
     w->cfg = {};
     w->cfg.voice_mono = true;
     w->stream_count = 2;
-    for (i32 i = 0; i < 2; i++) w->streams[i] = i, w->stream_segs[i][0] = 0, w->stream_segs[i][1] = 1;
+    for (i32 i = 0; i < 3; i++) w->streams[i] = i, w->stream_segs[i][0] = 0, w->stream_segs[i][1] = 1;
     w->pieces[0] = {0, 10000000, 0};
     w->piece_count = 1;
     w->game_count = 0;
 
-    w->cfg.mic_clean = true, w->cfg.mic_raw = true;
+    // A mic nobody has set is cleaned
+    w->cfg.mic_raw = true;
     make_tracks(w);
-    T(w->track_count == 3 && !strcmp(w->tracks[1].title, MIC_RAW_TITLE) && w->tracks[1].raw && w->tracks[1].mono);
+    T(w->track_count == 3 && !strcmp(w->tracks[1].title, "Mic (raw)") && w->tracks[1].raw && w->tracks[1].mono);
+    T(!strcmp(w->tracks[0].device, "{dev}.{default}"));
     T(w->stream_track[0] == 0 && w->stream_track[1] == 2);
     make_graph(w, 10000000, false);
     T(strstr(w->graph, "[u0]asplit=2[v0][r0];\n[v0]highpass=f=80,afftdn=") != 0);
@@ -1615,28 +1616,130 @@ static void test_mic_clean()
     make_graph(w, 10000000, false);
     T(strstr(w->graph, "[u0]highpass=f=80,afftdn=") != 0 && strstr(w->graph, "[r0]") == 0);
 
-    w->cfg.mic_clean = false, w->cfg.mic_raw = true; // a raw track only beside a cleaned one
+    // Its device's sound left plain: nothing done, no raw track
+    w->cfg.mic_raw = true;
+    w->cfg.mic_sound_count = 1;
+    w->cfg.mic_sounds[0] = {};
+    str_set(w->cfg.mic_sounds[0].id, "{DEV}.{DEFAULT}"); // ids match ignoring case
     make_tracks(w);
     T(w->track_count == 2);
     make_graph(w, 10000000, false);
     T(strstr(w->graph, "afftdn") == 0 && strstr(w->graph, "[u0]") == 0);
 
-    w->cfg.mic_clean = true; // no Mic heard: nothing to clean, no raw track
-    st[0].mic = false, str_set(st[0].exe, "app.exe");
+    // Another input with an EQ: its own track, processed, with its raw track after it
+    st[2] = st[1];
+    st[2].first_seg = 2;
+    st[1] = {};
+    st[1].mic = true, str_set(st[1].exe, "Line (RODE AI-1)"), str_set(st[1].path, "{dev}.{rode}");
+    st[1].first_seg = 1, st[1].seg_count = 1;
+    w->buf.stream_count = 3, w->stream_count = 3;
+    w->cfg.mic_sound_count = 2;
+    w->cfg.mic_sounds[1] = mic_sound_default("{dev}.{rode}");
+    w->cfg.mic_sounds[1].clean = false;
+    w->cfg.mic_sounds[1].bands[2] = 4;
     make_tracks(w);
-    T(w->track_count == 3 && !w->tracks[1].raw);
+    T(w->track_count == 4 && w->stream_track[1] == 1 && w->stream_track[2] == 3);
+    T(!strcmp(w->tracks[1].title, "RODE AI-1") && !strcmp(w->tracks[2].title, "RODE AI-1 (raw)") &&
+      w->tracks[2].raw && w->tracks[2].raw_of == 1);
+    make_graph(w, 10000000, false);
+    T(strstr(w->graph, "[u1]asplit=2[v1][r1];\n[v1]equalizer=f=1000:t=q:w=1:g=4.0[t1]") != 0);
+    T(strstr(w->graph, "[r1]pan=mono") != 0 && strstr(w->graph, "[m0][m1][m3]amix=inputs=3:") != 0);
+
+    // No Mic heard: no Mic raw track
+    w->cfg.mic_sound_count = 0;
+    st[0].mic = false, str_set(st[0].exe, "app.exe");
+    w->buf.stream_count = 1, w->stream_count = 1;
+    make_tracks(w);
+    T(w->track_count == 2 && !w->tracks[1].raw);
     make_graph(w, 10000000, false);
     T(strstr(w->graph, "afftdn") == 0);
     w->buf = {};
 
     static MediaInfo m;
     m = {};
-    m.track_count = 4;
-    str_set(m.tracks[0], "Mix"), str_set(m.tracks[1], "Mic"), str_set(m.tracks[2], MIC_RAW_TITLE);
-    str_set(m.tracks[3], "Game (game)");
+    m.track_count = 5;
+    str_set(m.tracks[0], "Mix"), str_set(m.tracks[1], "Mic"), str_set(m.tracks[2], "Mic (raw)");
+    str_set(m.tracks[3], "Game (game)"), str_set(m.tracks[4], "RODE AI-1 (raw)");
     i32 tracks[MEDIA_MAX_TRACKS];
     T(ed_tracks(m, tracks, MEDIA_MAX_TRACKS) == 2 && tracks[0] == 1 && tracks[1] == 3);
-    T(track_is_spare(m, 2) && !track_is_spare(m, 1));
+    T(track_is_spare(m, 2) && track_is_spare(m, 4) && !track_is_spare(m, 1));
+}
+
+// A mic's sound as filters, its presets, and the curve the panel draws.
+static void test_mic_chain()
+{
+    char chain[512];
+    MicSound s = mic_sound_default("x");
+    mic_chain(s, chain, sizeof chain);
+    T(!strcmp(chain, MIC_CLEAN));
+    T(mic_preset_of(s) == 0 && !mic_sound_plain(s));
+    s.clean = false;
+    T(mic_sound_plain(s));
+    mic_chain(s, chain, sizeof chain);
+    T(!strcmp(chain, "anull"));
+    s.bands[0] = -6, s.bands[4] = 3.5f, s.gain_db = 2, s.comp = true;
+    mic_chain(s, chain, sizeof chain);
+    T(!strcmp(chain, "lowshelf=f=100:t=q:w=0.707:g=-6.0,highshelf=f=8000:t=q:w=0.707:g=3.5,volume=2.0dB,"
+                     "acompressor=threshold=0.1:ratio=3:attack=10:release=150:makeup=1.5"));
+    T(mic_preset_of(s) == -1);
+    memcpy(s.bands, MIC_PRESETS[3].bands, sizeof s.bands);
+    T(mic_preset_of(s) == 3);
+
+    MicSound flat = mic_sound_default(0);
+    T(fabsf(mic_curve_db(flat, 1000)) < 0.01f);
+    MicSound peak = flat;
+    peak.bands[2] = 6;
+    T(fabsf(mic_curve_db(peak, 1000) - 6) < 0.05f && fabsf(mic_curve_db(peak, 20)) < 0.1f);
+    MicSound shelf = flat;
+    shelf.bands[0] = -9, shelf.gain_db = 1;
+    T(fabsf(mic_curve_db(shelf, 20) - -8) < 0.3f && fabsf(mic_curve_db(shelf, 5000) - 1) < 0.1f);
+
+    MicSound list[2] = {mic_sound_default("{a}"), mic_sound_default("{b}")};
+    list[1].gain_db = 5;
+    T(mic_sound_get(list, 2, "{B}").gain_db == 5 && mic_sound_get(list, 2, "{c}").clean && !mic_sound_get(list, 2, "{c}").comp);
+    i32 n = 2;
+    T(mic_sound_edit(list, &n, 2, "{a}") == &list[0] && n == 2 && !mic_sound_edit(list, &n, 2, "{c}"));
+}
+
+// The EQ ffmpeg runs does what mic_curve_db() draws: generated tones through the chain, measured.
+static void test_mic_eq_ffmpeg()
+{
+    Path ffmpeg = {};
+    if (!ffmpeg_find(Path{}, &ffmpeg)) {
+        printf("test_mic_eq_ffmpeg: no ffmpeg, skipped\n");
+        return;
+    }
+    MicSound s = mic_sound_default(0);
+    s.clean = false;
+    s.bands[0] = -8, s.bands[2] = 6, s.bands[3] = -3, s.bands[4] = 5, s.gain_db = 1.5f;
+    char chain[512];
+    mic_chain(s, chain, sizeof chain);
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    static const f32 tones[] = {60, 300, 1000, 3000, 12000};
+    for (f32 hz : tones) {
+        Path out = {};
+        swprintf(out.s, MAX_PATH, L"%srekodr-test-eq-%u.f32", temp, GetCurrentProcessId());
+        char src[96];
+        snprintf(src, sizeof src, "sine=frequency=%g:sample_rate=48000:duration=1", hz);
+        const char *gen[] = {"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "lavfi", "-i", src,
+                             "-af", chain, "-f", "f32le", "-ac", "1"};
+        wchar_t args[2048] = {};
+        arg_list(args, COUNT(args), gen, COUNT(gen));
+        cmd_arg(args, COUNT(args), out.s);
+        T(proc_run(ffmpeg.s, args, 60000, 0, 0) == 0);
+        i64 len = 0;
+        f32 *pcm = (f32 *)read_file(out.s, &len);
+        i64 n = pcm ? len / 4 : 0, from = n / 4; // past the filters' start
+        f64 sum = 0;
+        for (i64 i = from; i < n; i++) sum += (f64)pcm[i] * pcm[i];
+        free(pcm);
+        DeleteFileW(out.s);
+        f64 rms = n > from ? sqrt(sum / (f64)(n - from)) : 0;
+        f64 got = rms > 0 ? 20 * log10(rms / (0.125 / sqrt(2.0))) : -999, want = mic_curve_db(s, hz); // sine is at 1/8
+        if (fabs(got - want) > 0.5) printf("test_mic_eq_ffmpeg: %g Hz got %.2f dB, curve %.2f dB\n", hz, got, want);
+        T(fabs(got - want) <= 0.5);
+    }
 }
 
 // What is saved comes back the same.
@@ -1688,8 +1791,11 @@ static void test_settings_round_trip()
     str_set(a.folders[0].path, "C:\\V\\*\\off");
     a.folders[0].category = CAT_IGNORED;
     a.input_count = 2;
-    a.inputs[0] = {"{0.0.1.00000000}.{a}", "Line (RODE AI-1)", INPUT_STEREO};
-    a.inputs[1] = {"{0.0.1.00000000}.{b}", "Off one", INPUT_OFF}; // off isn't saved
+    a.inputs[0] = {"{0.0.1.00000000}.{a}", "Line (RODE AI-1)", true, true};
+    a.inputs[1] = {"{0.0.1.00000000}.{b}", "Off one", false, false}; // added and off: kept
+    a.mic_sound_count = 1;
+    a.mic_sounds[0] = mic_sound_default("{0.0.1.00000000}.{a}");
+    a.mic_sounds[0].comp = true, a.mic_sounds[0].gain_db = -2.5f, a.mic_sounds[0].bands[1] = 3, a.mic_sounds[0].bands[4] = -12;
 
     str_set(a.link_uploaders, "mine"); // one uploader on
     a.rust_binds = (1u << RUST_BIND_DEATH) | (1u << RUST_BIND_SPACE);
@@ -1812,8 +1918,10 @@ static void test_settings_round_trip()
     T(b.editor_top == 0.6f);
     T(b.editor_lane == 60);
     T(b.editor_zoom_view == 1);
-    T(b.input_count == 1 && !strcmp(b.inputs[0].id, "{0.0.1.00000000}.{a}") &&
-      !strcmp(b.inputs[0].name, "Line (RODE AI-1)") && b.inputs[0].mode == INPUT_STEREO);
+    T(b.input_count == 2 && !strcmp(b.inputs[0].id, "{0.0.1.00000000}.{a}") &&
+      !strcmp(b.inputs[0].name, "Line (RODE AI-1)") && b.inputs[0].on && b.inputs[0].stereo);
+    T(!strcmp(b.inputs[1].name, "Off one") && !b.inputs[1].on && !b.inputs[1].stereo);
+    T(b.mic_sound_count == 1 && !memcmp(&a.mic_sounds[0], &b.mic_sounds[0], sizeof a.mic_sounds[0]));
     char short_name[64];
     input_short_name("Line (RODE AI-1)", short_name, sizeof short_name);
     T(!strcmp(short_name, "RODE AI-1"));
@@ -7165,7 +7273,9 @@ int main()
     test_folder_rules();
     test_fields();
     test_hotkeys();
-    test_mic_clean();
+    test_mic_tracks();
+    test_mic_chain();
+    test_mic_eq_ffmpeg();
     test_sessions_seen();
     test_sessions_other_game();
     test_audio_fail_once();

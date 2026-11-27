@@ -36,9 +36,11 @@ struct SaveSettings {
     char    codec[64];
     u8      vendor; // the H.264 encoder Keep and Share use when they re-encode (Vendor)
     bool    voice_mono;
-    bool    mic_clean, mic_raw;
+    bool    mic_raw;
     InputDevice inputs[16];
     i32     input_count;
+    MicSound mic_sounds[32];
+    i32     mic_sound_count;
     AppInfo apps[512];
     i32     app_count;
     FolderRule folders[32];
@@ -76,11 +78,14 @@ static SaveQueue g_save_q;
 struct Track {
     char title[128];
     char exe[64]; // app tracks: the exe; input tracks: the device's endpoint id
+    char device[128]; // a mic track's endpoint id, for its sound (MicSound); "" = not known (the default sound)
     bool input;   // an input other than Windows' default
+    bool mic;     // the Mic or another input: its sound is applied
     bool chat;    // a Chat app (each Discord person is an exe of their own)
     bool mono;    // kept in mono (Options: voices in mono, or the input's own setting)
     bool game;
-    bool raw;     // the Mic as recorded, beside the cleaned one (Config.mic_raw): no streams of its own, in no Mix
+    bool raw;     // a mic as recorded, beside the processed one (Config.mic_raw): no streams of its own, in no Mix
+    i32  raw_of;  // with raw: that processed track
     i32  rank;    // position in time played (most first); INT32_MAX for apps
 };
 
@@ -351,25 +356,28 @@ static bool track_before(const Track &a, const Track &b)
     return a.rank < b.rank;
 }
 
-// Mic (Windows' default input) and, when it's cleaned and heard, Mic (raw); then one track per other input, then per
-// app: chat apps and people (in order of first sound), games (the one played most first), then the rest in order of
-// first sound. Every stream of one device or exe goes on its track.
+// A mic track's sound: its device's, else the default (cleaned only).
+static MicSound track_sound(const SaveWork *w, const Track &tr)
+{
+    return mic_sound_get(w->cfg.mic_sounds, w->cfg.mic_sound_count, tr.device);
+}
+
+// Mic (Windows' default input), then one track per other input, then per app: chat apps and people (in order of
+// first sound), games (the one played most first), then the rest in order of first sound. Every stream of one device
+// or exe goes on its track. With mic_raw, each mic track heard whose sound changes it has "<title> (raw)" after it.
 static void make_tracks(SaveWork *w)
 {
     w->track_count = 1;
     w->tracks[0] = {};
     str_set(w->tracks[0].title, "Mic");
     w->tracks[0].mono = w->cfg.voice_mono;
+    w->tracks[0].mic = true;
     bool heard = false;
     for (i32 i = 0; i < w->stream_count; i++) {
         const AudioStreamInfo &st = w->buf.streams[w->streams[i]];
-        heard |= st.mic && !st.path[0];
-    }
-    if (heard && w->cfg.mic_clean && w->cfg.mic_raw) {
-        Track *raw = &w->tracks[w->track_count++];
-        *raw = w->tracks[0];
-        str_set(raw->title, MIC_RAW_TITLE);
-        raw->raw = true;
+        if (!st.mic || st.path[0]) continue;
+        heard = true;
+        if (st.device[0]) str_set(w->tracks[0].device, st.device); // the newest stream's device, if it changed
     }
     i32 first = w->track_count; // the first track an input or app may take
     for (i32 i = 0; i < w->stream_count; i++) {
@@ -386,14 +394,15 @@ static void make_tracks(SaveWork *w)
             Track *tr = &w->tracks[w->track_count++];
             *tr = {};
             str_set(tr->exe, key);
-            tr->input = st.mic;
+            tr->input = tr->mic = st.mic;
+            if (st.mic) str_set(tr->device, st.path);
             tr->chat = cat == CAT_COMMUNICATION;
             tr->game = cat == CAT_GAME;
             char name[96];
             if (tr->input) {
                 const InputDevice *d = config_input(w->cfg.inputs, w->cfg.input_count, st.path);
                 input_short_name(d ? d->name : st.exe, name, sizeof name);
-                tr->mono = !d || d->mode != INPUT_STEREO;
+                tr->mono = !d || !d->stereo;
             } else {
                 display_name(w->cfg, st.exe, name, sizeof name);
                 tr->mono = tr->chat && w->cfg.voice_mono;
@@ -423,6 +432,21 @@ static void make_tracks(SaveWork *w)
     for (i32 t = 0; t < w->track_count; t++) moved_to[order[t]] = t;
     for (i32 i = 0; i < w->stream_count; i++)
         if (w->stream_track[i] >= 0) w->stream_track[i] = moved_to[w->stream_track[i]];
+    // The raw tracks, each after its mic
+    for (i32 t = 0; w->cfg.mic_raw && t < w->track_count && w->track_count < (i32)COUNT(w->tracks); t++) {
+        if (!w->tracks[t].mic || (t == 0 && !heard) || mic_sound_plain(track_sound(w, w->tracks[t]))) continue;
+        for (i32 k = w->track_count; k > t + 1; k--) w->tracks[k] = w->tracks[k - 1];
+        w->track_count++;
+        for (i32 i = 0; i < w->stream_count; i++)
+            if (w->stream_track[i] > t) w->stream_track[i]++;
+        Track *raw = &w->tracks[t + 1];
+        *raw = w->tracks[t];
+        snprintf(raw->title, sizeof raw->title, "%s%s", w->tracks[t].title, MIC_RAW_SUFFIX);
+        raw->raw = true;
+        raw->mic = false;
+        raw->raw_of = t;
+        t++;
+    }
     // Past what the editor reads (the Mix is one of them), the last tracks share one: other apps go first.
     const i32 max = MEDIA_MAX_TRACKS - 1;
     if (w->track_count > max) {
@@ -435,13 +459,9 @@ static void make_tracks(SaveWork *w)
     }
 }
 
-// The Mic's cleaning (Config.mic_clean): rumble below a voice cut, then the steady noise floor (fans, hiss, hum),
-// which afftdn learns as it goes, taken down by 12 dB. Speech and short sounds are left as they are.
-static const char MIC_CLEAN[] = "highpass=f=80,afftdn=nr=12:nf=-45:tn=1";
-
 // The filter graph for the audio tracks. Input 0 is the video; stream i is input i + 1. A stream's concat input
 // starts at its first remaining segment, and each stretch of it is trimmed and delayed to its place in the file.
-// The Mic is cleaned before anything takes it, and Mic (raw) is the Mic before that.
+// Each mic track gets its sound (micfx.cpp) before anything takes it; its raw track is the mic before that.
 // `mix_only` (a preview): the Mix and nothing else, so no track is written on its own.
 static void make_graph(SaveWork *w, i64 total_us, bool mix_only)
 {
@@ -484,20 +504,23 @@ static void make_graph(SaveWork *w, i64 total_us, bool mix_only)
                       a, b, w->parts[j].delay * 48000 / 1000000, i, j);
         }
     }
-    bool raw = w->track_count > 1 && w->tracks[1].raw && !mix_only;
     for (i32 t = 0; t < w->track_count; t++) {
-        if (w->tracks[t].raw) { // the Mic as it was, on its own: [r0] from below
-            if (!raw) continue;
-            if (w->tracks[t].mono) graph_add(w, "[r0]pan=mono|c0=0.5*c0+0.5*c1[o%d];\n", t);
-            else graph_add(w, "[r0]anull[o%d];\n", t);
+        if (w->tracks[t].raw) { // a mic as it was, on its own: [r<its mic>] from below
+            if (mix_only) continue;
+            i32 of = w->tracks[t].raw_of;
+            if (w->tracks[t].mono) graph_add(w, "[r%d]pan=mono|c0=0.5*c0+0.5*c1[o%d];\n", of, t);
+            else graph_add(w, "[r%d]anull[o%d];\n", of, t);
             continue;
         }
         i32 inputs = 0;
         for (i32 i = 0; i < w->stream_count; i++)
             if (w->stream_track[i] == t) inputs += w->stream_parts[i];
-        bool clean = t == 0 && inputs && w->cfg.mic_clean;
+        MicSound sound = {};
+        if (w->tracks[t].mic) sound = track_sound(w, w->tracks[t]);
+        bool processed = w->tracks[t].mic && inputs && !mic_sound_plain(sound);
+        bool raw = !mix_only && t + 1 < w->track_count && w->tracks[t + 1].raw && w->tracks[t + 1].raw_of == t;
         char lab[16];
-        snprintf(lab, sizeof lab, "%s%d", clean ? "u" : "t", t);
+        snprintf(lab, sizeof lab, "%s%d", processed ? "u" : "t", t);
         if (inputs == 0) {
             graph_add(w, "anullsrc=r=48000:cl=stereo,atrim=duration=%s[%s];\n", total, lab);
         } else {
@@ -507,8 +530,12 @@ static void make_graph(SaveWork *w, i64 total_us, bool mix_only)
             if (inputs > 1) graph_add(w, "amix=inputs=%d:normalize=0:dropout_transition=0,", inputs);
             graph_add(w, "apad=whole_dur=%s,atrim=duration=%s[%s];\n", total, total, lab);
         }
-        if (clean && raw) graph_add(w, "[u0]asplit=2[v0][r0];\n[v0]%s[t0];\n", MIC_CLEAN);
-        else if (clean) graph_add(w, "[u0]%s[t0];\n", MIC_CLEAN);
+        if (processed) {
+            char chain[1024];
+            mic_chain(sound, chain, sizeof chain);
+            if (raw) graph_add(w, "[u%d]asplit=2[v%d][r%d];\n[v%d]%s[t%d];\n", t, t, t, t, chain, t);
+            else graph_add(w, "[u%d]%s[t%d];\n", t, chain, t);
+        }
         // The Mix takes the track as it is; a mono track is only its own copy, both channels averaged.
         if (mix_only) graph_add(w, "[t%d]anull[m%d];\n", t, t);
         else if (w->tracks[t].mono)
@@ -1387,8 +1414,13 @@ static f64 fade_gain(const EditRecord &e, f64 dur, i32 i, f64 s)
 // Whether a file has the Rekodr layout: track 1 is a Mix of the tracks after it.
 static bool edit_has_mix(const MediaInfo &m) { return m.track_count >= 2 && !strcmp(m.tracks[0], "Mix"); }
 
-// Whether track t of a Rekodr file is Mic (raw): kept for other editors, never in a Mix or the editor's tracks.
-static bool track_is_spare(const MediaInfo &m, i32 t) { return edit_has_mix(m) && !strcmp(m.tracks[t], MIC_RAW_TITLE); }
+// Whether track t of a Rekodr file is a mic as recorded ("<mic> (raw)"): kept for other editors, never in a Mix or the
+// editor's tracks.
+static bool track_is_spare(const MediaInfo &m, i32 t)
+{
+    size_t n = strlen(m.tracks[t]), k = strlen(MIC_RAW_SUFFIX);
+    return edit_has_mix(m) && n > k && !strcmp(m.tracks[t] + n - k, MIC_RAW_SUFFIX);
+}
 
 // Eases (Ease in app.h): how far along (0..1) a value is, a fraction f of the way in time from one key to the next.
 static bool ease_slow_leaving(u8 e) { return e == EASE_SMOOTH || e == EASE_OUT; }
@@ -3177,10 +3209,11 @@ static u32 save_queue(SaveKind kind, i64 from_us, i64 to_us, const char *name, c
     str_set(s->name_template, c.name_template);
     str_set(s->codec, c.codec.s);
     s->voice_mono = c.voice_mono;
-    s->mic_clean = c.mic_clean;
     s->mic_raw = c.mic_raw;
     memcpy(s->inputs, c.inputs, sizeof s->inputs);
     s->input_count = c.input_count;
+    memcpy(s->mic_sounds, c.mic_sounds, sizeof s->mic_sounds);
+    s->mic_sound_count = c.mic_sound_count;
     // H.264 for edits: the encoder forced in Options if it's set, else the first whose test encode worked.
     i32 forced = vendor_parse(c.encoder.s);
     u8 ok = g_app.recorder.encoders_ok[0];

@@ -118,17 +118,26 @@ struct FolderRule {
     AppCategory category;
 };
 
-// A recording device besides Windows' default input (Config.mic), on a track of its own. Only the ones turned on
-// are kept in the settings.
-enum InputMode : u8 { INPUT_OFF, INPUT_MONO, INPUT_STEREO };
+// A mic the player added besides Windows' default input (Config.mic), on a track of its own while it's on.
 struct InputDevice {
-    char      id[128];  // the endpoint id, "{0.0.1.00000000}.{...}"
-    char      name[96]; // Windows' name for it: "Line (RODE AI-1)"
-    InputMode mode;
+    char id[128];  // the endpoint id, "{0.0.1.00000000}.{...}"
+    char name[96]; // Windows' name for it: "Line (RODE AI-1)"
+    bool on;
+    bool stereo;   // kept in stereo, else mono
 };
 
-// The title of a save's Mic track as recorded, beside the cleaned Mic (Config.mic_raw).
-static const char MIC_RAW_TITLE[] = "Mic (raw)";
+// How one mic sounds in saves (micfx.cpp), kept per device by endpoint id. A device with none is cleaned only.
+#define MIC_BANDS 5
+struct MicSound {
+    char id[128];
+    bool clean;            // fans, hiss and hum taken out (on)
+    bool comp;             // a gentle compressor (off)
+    f32  gain_db;          // -12..12
+    f32  bands[MIC_BANDS]; // the EQ, -12..12 dB at MIC_BAND_HZ
+};
+
+// The end of the title of a save's mic track as recorded, beside the processed one (Config.mic_raw): "Mic (raw)".
+static const char MIC_RAW_SUFFIX[] = " (raw)";
 
 struct Hotkey {
     Str64 keys;   // "Alt+F7"
@@ -263,8 +272,10 @@ struct Config {
 
     // Audio
     bool        mic;        // Windows' default input, on the Mic track
-    InputDevice inputs[16]; // other inputs, each on its own track
+    InputDevice inputs[16]; // the mics the player added, each on its own track
     i32         input_count;
+    MicSound    mic_sounds[32]; // each mic's sound, by device; the default input's is its device's
+    i32         mic_sound_count;
 
     // Sessions
     f32 session_gap_min;      // a game gone this long ends its session (5)
@@ -292,9 +303,8 @@ struct Config {
     bool voice_mono;      // saves keep the Mic and chat tracks in mono (voices are mono anyway; half the size)
     bool cam_on;          // the webcam is recorded into the buffer while the screen is (webcam.cpp; off)
     Str256 cam_device;    // its DirectShow name; "" = the first camera found
-    bool mic_clean;       // saves take steady noise (fans, hiss, hum) out of the Mic track (on)
-    bool mic_raw;         // with mic_clean, saves keep the Mic as recorded too, on a "Mic (raw)" track that no Mix
-                          // takes (off)
+    bool mic_raw;         // saves keep each mic whose sound is changed as recorded too, on a "<track> (raw)" track
+                          // that no Mix takes (off)
     bool clock_24h;      // times of day as 21:04 rather than 9:04 pm (Windows' own format until changed)
     bool render_edits;   // an edited clip's file in Clips is its edit rendered, the original in Source (on)
     f32 share_max_mb;    // the biggest file Share makes, in MiB as Discord counts (20)
@@ -476,6 +486,7 @@ struct AudioStreamInfo {
     char dir[128]; // folder under buffer\audio
     char exe[64];  // lower case; "mic" for the default input, the device's name for another input
     bool mic;      // an input; path is the device's endpoint id, empty for the default one
+    char device[128]; // an input's endpoint id as recorded, the default one's too (meta.json)
     u32  pid;
     char path[MAX_PATH]; // the exe's full path when it was recorded (meta.json; "" in older buffers)
     i64  start_us; // wall clock of the first sample (meta.json)

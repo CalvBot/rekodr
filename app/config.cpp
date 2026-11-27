@@ -210,7 +210,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->steam_type_check = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
-    c->mic_clean = true;
     wchar_t time_format[80] = L"";
     c->clock_24h = !GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_STIMEFORMAT, time_format, 80) ||
                    wcschr(time_format, L'H') != 0; // "HH:mm:ss" is 24-hour, "h:mm:ss tt" 12-hour
@@ -865,7 +864,6 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "embed_style")) { i32 i = embed_style_find(value); c->embed_style = (u8)(i < 0 ? 0 : i); }
     else if (!strcmp(key, "clock_24h")) boolean(&c->clock_24h);
     else if (!strcmp(key, "voice_mono")) boolean(&c->voice_mono);
-    else if (!strcmp(key, "mic_clean")) boolean(&c->mic_clean);
     else if (!strcmp(key, "cam_on")) boolean(&c->cam_on);
     else if (!strcmp(key, "cam_device")) str_set(c->cam_device.s, value);
     else if (!strcmp(key, "mic_raw")) boolean(&c->mic_raw);
@@ -903,14 +901,29 @@ static void config_set(Config *c, const char *key, char *value)
             if (n >= 13) a->toast_clip = toast_clip_parse(f[12]);
             if (n >= 14) a->mic = (i8)(atoi(f[13]) > 0 ? 1 : atoi(f[13]) < 0 ? -1 : 0);
         }
-    } else if (!strcmp(key, "input")) {
-        // input = mono | Line (RODE AI-1) | {0.0.1.00000000}.{...}
-        char *f[3] = {};
-        if (split_fields(value, f, 3) == 3 && f[2][0] && c->input_count < COUNT(c->inputs)) {
+    } else if (!strcmp(key, "mic_device")) {
+        // mic_device = on | mono | Line (RODE AI-1) | {0.0.1.00000000}.{...}
+        char *f[4] = {};
+        if (split_fields(value, f, 4) == 4 && f[3][0] && c->input_count < COUNT(c->inputs)) {
             InputDevice *d = &c->inputs[c->input_count++];
-            d->mode = !strcmp(f[0], "stereo") ? INPUT_STEREO : !strcmp(f[0], "off") ? INPUT_OFF : INPUT_MONO;
-            str_set(d->name, f[1]);
-            str_set(d->id, f[2]);
+            *d = {};
+            d->on = !strcmp(f[0], "on");
+            d->stereo = !strcmp(f[1], "stereo");
+            str_set(d->name, f[2]);
+            str_set(d->id, f[3]);
+        }
+    } else if (!strcmp(key, "mic_sound")) {
+        // mic_sound = {0.0.1.00000000}.{...} | clean | comp | gain dB | 5 bands in dB
+        char *f[9] = {};
+        if (split_fields(value, f, 9) == 9 && f[0][0] && c->mic_sound_count < COUNT(c->mic_sounds)) {
+            MicSound *s = &c->mic_sounds[c->mic_sound_count++];
+            *s = {};
+            str_set(s->id, f[0]);
+            s->clean = atoi(f[1]) != 0;
+            s->comp = atoi(f[2]) != 0;
+            auto db = [](const char *v) { f32 x = (f32)atof(v); return x < -12 ? -12.0f : x > 12 ? 12.0f : x; };
+            s->gain_db = db(f[3]);
+            for (i32 b = 0; b < MIC_BANDS; b++) s->bands[b] = db(f[4 + b]);
         }
     } else if (!strcmp(key, "folder")) {
         // folder = ignored | C:\Users\me\AppData\Local\VoiceStreams\*\clips-off
@@ -1102,7 +1115,6 @@ static bool config_save(const Config &c, const Paths &paths)
         }
     }
     boolean("voice_mono", c.voice_mono);
-    boolean("mic_clean", c.mic_clean);
     boolean("cam_on", c.cam_on);
     fprintf(f, "cam_device = %s\n", c.cam_device.s);
     boolean("mic_raw", c.mic_raw);
@@ -1138,11 +1150,17 @@ static bool config_save(const Config &c, const Paths &paths)
                 a.rec.rate_control.s, a.rec.cq, a.rec.preset.s, a.rec.height, a.path, a.rec.window,
                 toast_clip_name(a.toast_clip), a.mic);
     }
-    fprintf(f, "\n# input = mono | stereo, name | endpoint id (a recording device on a track of its own)\n");
+    fprintf(f, "\n# mic_device = on | off, mono | stereo, name | endpoint id (a mic added, on a track of its own)\n");
     for (i32 i = 0; i < c.input_count; i++)
-        if (c.inputs[i].mode != INPUT_OFF)
-            fprintf(f, "input = %s | %s | %s\n", c.inputs[i].mode == INPUT_STEREO ? "stereo" : "mono", c.inputs[i].name,
-                    c.inputs[i].id);
+        fprintf(f, "mic_device = %s | %s | %s | %s\n", c.inputs[i].on ? "on" : "off", c.inputs[i].stereo ? "stereo" : "mono",
+                c.inputs[i].name, c.inputs[i].id);
+    fprintf(f, "\n# mic_sound = endpoint id | clean | compress | gain dB | EQ dB at 100, 300, 1k, 3k, 8k Hz\n");
+    for (i32 i = 0; i < c.mic_sound_count; i++) {
+        const MicSound &s = c.mic_sounds[i];
+        fprintf(f, "mic_sound = %s | %d | %d | %g", s.id, s.clean ? 1 : 0, s.comp ? 1 : 0, s.gain_db);
+        for (i32 b = 0; b < MIC_BANDS; b++) fprintf(f, " | %g", s.bands[b]);
+        fprintf(f, "\n");
+    }
     fprintf(f, "\n# folder = category | path (every app in it or below it, unless the app has its own category)\n");
     for (i32 i = 0; i < c.folder_count; i++)
         fprintf(f, "folder = %s | %s\n", category_name(c.folders[i].category), c.folders[i].path);

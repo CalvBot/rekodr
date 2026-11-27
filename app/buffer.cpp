@@ -413,6 +413,7 @@ static bool read_stream_new(const Path &audio_dir, const char *name, BufferIdx *
     st->start_us = strtoll(num, 0, 10);
     if (json_field(json, "pid", num, sizeof num)) st->pid = (u32)strtoul(num, 0, 10);
     json_field(json, "path", st->path, sizeof st->path);
+    json_field(json, "device", st->device, sizeof st->device);
     read_stream(dir, b, s);
     b->stream_count++;
     return true;
