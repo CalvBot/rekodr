@@ -500,6 +500,59 @@ static void player_draw(const Player &p, ImVec2 a, ImVec2 b, ImVec2 uv0 = ImVec2
     }
 }
 
+// The frame on show, whole and at its own size, onto the clipboard as a picture. False if there's none yet or the
+// clipboard is busy.
+static bool player_copy_frame(const Player &p)
+{
+    if (!p.tex || !p.frame_ready) return false;
+    D3D11_TEXTURE2D_DESC d;
+    p.tex->GetDesc(&d);
+    d.Usage = D3D11_USAGE_STAGING;
+    d.BindFlags = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    d.MiscFlags = 0;
+    ID3D11Texture2D *st = 0;
+    if (FAILED(g_gpu.device->CreateTexture2D(&d, 0, &st))) return false;
+    g_gpu.context->CopyResource(st, p.tex);
+    HGLOBAL mem = 0;
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(g_gpu.context->Map(st, 0, D3D11_MAP_READ, 0, &m))) {
+        u32 w = d.Width, h = d.Height, row = w * 4;
+        mem = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + (size_t)row * h);
+        if (mem) {
+            u8 *out = (u8 *)GlobalLock(mem);
+            BITMAPINFOHEADER bh = {};
+            bh.biSize = sizeof bh;
+            bh.biWidth = (LONG)w;
+            bh.biHeight = (LONG)h; // bottom-up rows
+            bh.biPlanes = 1;
+            bh.biBitCount = 32;
+            bh.biCompression = BI_RGB;
+            bh.biSizeImage = row * h;
+            memcpy(out, &bh, sizeof bh);
+            u8 *px = out + sizeof bh;
+            for (u32 y = 0; y < h; y++) { // BGRA, as the texture holds it, made opaque
+                u8 *dst = px + (size_t)(h - 1 - y) * row;
+                memcpy(dst, (const u8 *)m.pData + (size_t)y * m.RowPitch, row);
+                for (u32 x = 0; x < w; x++) dst[x * 4 + 3] = 255;
+            }
+            GlobalUnlock(mem);
+        }
+        g_gpu.context->Unmap(st, 0);
+    }
+    st->Release();
+    if (!mem) return false;
+    if (!OpenClipboard(g_app.ui.hwnd)) {
+        GlobalFree(mem);
+        return false;
+    }
+    EmptyClipboard();
+    bool ok = SetClipboardData(CF_DIB, mem) != 0;
+    CloseClipboard();
+    if (!ok) GlobalFree(mem);
+    return ok;
+}
+
 // "1:05", "1:02:03"; with tenths, "1:05.3".
 static void fmt_time(f64 s, char *out, i32 cap, bool tenths = false)
 {

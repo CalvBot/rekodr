@@ -5008,6 +5008,27 @@ static u32 g_lib_volume_gen = 0xffffffff; // the player gen it was last given to
 static u32 g_lib_sound_gen = 0xffffffff;  // the player gen its tracks were last picked for
 static bool g_lib_sound_show;              // `show sound`: the sound menu opens
 
+// The picture's zoom in the player: z 1 (all of it) to 8; cx, cy the middle of what shows, in the frame's 0..1.
+// Back to all of it for each clip opened.
+static f32 g_lib_view_z = 1, g_lib_view_cx = 0.5f, g_lib_view_cy = 0.5f;
+static u32 g_lib_view_gen = 0xffffffff; // the player gen it's for
+static bool g_lib_view_pan;             // the press on the picture has moved: a pan, not a click
+static bool g_lib_frame_ask;            // `show frame-menu`: once there's a frame, zoomed 2x and the picture's menu open
+
+static void lib_view_clamp()
+{
+    g_lib_view_z = g_lib_view_z < 1 ? 1 : g_lib_view_z > 8 ? 8 : g_lib_view_z;
+    f32 hs = 0.5f / g_lib_view_z;
+    g_lib_view_cx = g_lib_view_cx < hs ? hs : g_lib_view_cx > 1 - hs ? 1 - hs : g_lib_view_cx;
+    g_lib_view_cy = g_lib_view_cy < hs ? hs : g_lib_view_cy > 1 - hs ? 1 - hs : g_lib_view_cy;
+}
+
+static void lib_view_reset()
+{
+    g_lib_view_z = 1;
+    g_lib_view_cx = g_lib_view_cy = 0.5f;
+}
+
 static TrackKind ed_track_kind(const char *title, i32 slot); // editor.cpp
 
 // What plays for the ticked tracks in `mask` (one bit per audio track, 0 = all ticked). The file's own tracks come
@@ -5210,10 +5231,59 @@ static void lib_player_view()
     dl->AddRectFilled(pos, ImVec2(pos.x + area.x, pos.y + area.y), IM_COL32(0, 0, 0, 255), kit_px(10));
     ImVec2 a, b;
     player_fit(p, pos, area, &a, &b);
+    // A click plays or pauses; the wheel zooms round the mouse, and a drag pans what's zoomed; a right-click has
+    // Copy frame.
     ImGui::InvisibleButton("video", area);
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) player_toggle(&p);
-    player_draw(p, a, b);
-    if (p.loaded && p.paused && !p.error[0]) lib_play_mark(dl, ImVec2((a.x + b.x) / 2, (a.y + b.y) / 2), kit_px(34));
+    bool over_pic = ImGui::IsItemHovered();
+    ImGuiIO &vio = ImGui::GetIO();
+    if (g_lib_view_gen != p.gen) {
+        lib_view_reset();
+        g_lib_view_gen = p.gen;
+    }
+    f32 pw = b.x - a.x, ph = b.y - a.y;
+    if (over_pic && vio.MouseWheel != 0 && pw > 0 && ph > 0) {
+        f32 hs = 0.5f / g_lib_view_z;
+        f32 mx = ImClamp((vio.MousePos.x - a.x) / pw, 0.f, 1.f), vy = ImClamp((vio.MousePos.y - a.y) / ph, 0.f, 1.f);
+        f32 fx = g_lib_view_cx - hs + mx * 2 * hs, fy = g_lib_view_cy - hs + vy * 2 * hs; // stays under the mouse
+        g_lib_view_z *= powf(1.25f, vio.MouseWheel);
+        lib_view_clamp();
+        hs = 0.5f / g_lib_view_z;
+        g_lib_view_cx = fx + hs - mx * 2 * hs;
+        g_lib_view_cy = fy + hs - vy * 2 * hs;
+        lib_view_clamp();
+    }
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, kit_px(4))) {
+        g_lib_view_pan = true;
+        if (g_lib_view_z > 1 && pw > 0 && ph > 0) {
+            f32 hs = 0.5f / g_lib_view_z;
+            g_lib_view_cx -= vio.MouseDelta.x / pw * 2 * hs;
+            g_lib_view_cy -= vio.MouseDelta.y / ph * 2 * hs;
+            lib_view_clamp();
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        }
+    }
+    if (ImGui::IsItemDeactivated()) {
+        if (!g_lib_view_pan && over_pic) player_toggle(&p);
+        g_lib_view_pan = false;
+    }
+    f32 vhs = 0.5f / g_lib_view_z;
+    player_draw(p, a, b, ImVec2(g_lib_view_cx - vhs, g_lib_view_cy - vhs), ImVec2(g_lib_view_cx + vhs, g_lib_view_cy + vhs));
+    if (g_lib_frame_ask && p.frame_ready) {
+        g_lib_frame_ask = false;
+        g_lib_view_z = 2;
+        player_pause(&p);
+        ImGui::OpenPopup("frame_menu");
+    } else if (over_pic && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && p.frame_ready) ImGui::OpenPopup("frame_menu");
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup("frame_menu")) {
+        if (lib_menu_item(ICON_COPY, "Copy frame")) {
+            if (player_copy_frame(p)) lib_note(false, "Frame copied, ready to paste");
+            else lib_note(true, "The clipboard was busy: copy it again");
+        }
+        if (g_lib_view_z > 1 && lib_menu_item(ICON_ZOOM_OUT, "Reset zoom")) lib_view_reset();
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
 
     // The controls: back, play, forward, the speed and the time on the left; the sound and the volume on the right.
     // Fixed widths, lined up with the picture's area.
@@ -5336,6 +5406,13 @@ static void lib_player_view()
     if (keys && shift && ImGui::IsKeyPressed(ImGuiKey_Period, false) && ri < 3) to = ri + 1;
     if (keys && shift && ImGui::IsKeyPressed(ImGuiKey_Comma, false) && ri > 0) to = ri - 1;
     if (to != ri) player_set_rate(&p, rates[to]);
+    // Comma and period pause and step a frame; held, they keep stepping.
+    for (i32 dir = -1; dir <= 1 && keys && !shift; dir += 2)
+        if (ImGui::IsKeyPressed(dir < 0 ? ImGuiKey_Comma : ImGuiKey_Period)) {
+            f64 fps = lib.playing.info.fps;
+            player_pause(&p);
+            player_seek(&p, p.pos + dir / (fps > 1 ? fps : 60));
+        }
 
     if (!ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen((const char *)0, ImGuiPopupFlags_AnyPopupId)) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) player_toggle(&p);

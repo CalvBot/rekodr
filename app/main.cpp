@@ -98,10 +98,12 @@ static void run_command(const char *text)
             library_close_player();
             ui_show(SCREEN_LIBRARY);
             lib_set_view(!strcmp(arg, "clips") ? LIB_CLIPS : LIB_SESSIONS);
-        } else if (!strcmp(arg, "player") || !strcmp(arg, "share-menu")) { // the newest clip playing, [its Share menu]
+        } else if (!strcmp(arg, "player") || !strcmp(arg, "share-menu") || !strcmp(arg, "frame-menu")) {
+            // the newest clip playing, [its Share menu, or paused, zoomed in 2x and the picture's menu open]
             ui_show(SCREEN_LIBRARY);
             if (lib.shown_count > 0) library_play(lib.items[lib.shown[0]]);
             g_lib_share_ask = !strcmp(arg, "share-menu");
+            g_lib_frame_ask = !strcmp(arg, "frame-menu");
         } else if (!strcmp(arg, "timeline")) ui_show(SCREEN_TIMELINE);
         else if (starts_with(arg, "timeline-at")) { // timeline-at <from> <to> [<marker>]: the timeline showing
             // [from, to] (Unix seconds), [with the note of the marker made at <marker> (microseconds) open, or its crowd's list]
