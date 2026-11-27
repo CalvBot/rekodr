@@ -910,7 +910,7 @@ static void opt_sounds_card(Config &c)
     for (i32 e = 0; e < SOUND_EVENT_COUNT; e++) {
         SoundPick &p = c.sounds[e];
         bool changed = false, play = false;
-        ImGui::PushID(e);
+        ImGui::PushID(SOUND_EVENTS[e].key); // a name, not e: the page's other rows push numbers
         opt_row_begin(SOUND_EVENTS[e].label, 0, control_w);
         if (refused[e][0]) {
             char line[128];
@@ -5186,7 +5186,9 @@ static void opt_watch_rows(Config &c)
     auto row = [&](const char *name, const Path &p, i32 id) {
         char sub[MAX_PATH * 3];
         wide_to_utf8(p.s, sub, sizeof sub);
-        ImGui::PushID(id);
+        char sid[16];
+        snprintf(sid, sizeof sid, "watch%d", id); // a name, not id: the page's other rows push numbers
+        ImGui::PushID(sid);
         opt_row_begin(name, sub, fh + gap + toggle_w);
         f32 y = opt_row_frame_y();
         ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - toggle_w - gap - fh, y));
@@ -5547,24 +5549,29 @@ static void options_general()
     if (kit_button("View the code##repo", KIT_SECONDARY, ImVec2(code_w, 0))) open_url(OPT_API_REPO_URL);
     opt_row_end();
     ImGui::EndDisabled();
-    f32 key_w = fminf(dp(300), ImGui::GetContentRegionAvail().x * 0.45f);
-    opt_row_begin("Your own SteamGridDB key", "Used while the service is off. Stays in settings.txt", key_w);
-    char key[sizeof c.sgdb_key];
-    if (opt_text("##sgdbkey", c.sgdb_key, key_w, ImGuiInputTextFlags_Password, "Paste it here", key, sizeof key)) {
-        str_set(c.sgdb_key, trim(key));
-        log_line("options: own SteamGridDB key %s", c.sgdb_key[0] ? "set" : "cleared");
-        options_apply(0);
-    }
-    opt_row_end();
-    f32 sgdb_w = text_w(g_font, "Open SteamGridDB") + dp(32);
-    opt_row_begin("Get a key", "Sign in at steamgriddb.com, open Preferences > API, then Generate API Key", sgdb_w);
-    if (kit_button("Open SteamGridDB##sgdb", KIT_SECONDARY, ImVec2(sgdb_w, 0))) open_url(OPT_SGDB_KEY_URL);
-    opt_row_end();
     ImGui::EndDisabled();
     opt_row_begin("Cached game art", "Names, icons and covers fetched so far", ImGui::GetFrameHeight());
     kit_next_tip("Open the folder");
     if (kit_icon_button(ICON_FOLDER, "##artdir", KIT_SECONDARY)) opt_open_dir(path_join(g_app.paths.local_dir, L"gamedb"));
     opt_row_end();
+    // The player's own art source, at the card's end so showing it moves nothing above; a saved key stays saved
+    if (!service) {
+        ImGui::BeginDisabled(!c.game_lookup);
+        f32 key_w = fminf(dp(300), ImGui::GetContentRegionAvail().x * 0.45f);
+        opt_row_begin("Your own SteamGridDB key", "Art for your games while the service is off. Stays in settings.txt", key_w);
+        char key[sizeof c.sgdb_key];
+        if (opt_text("##sgdbkey", c.sgdb_key, key_w, ImGuiInputTextFlags_Password, "Paste it here", key, sizeof key)) {
+            str_set(c.sgdb_key, trim(key));
+            log_line("options: own SteamGridDB key %s", c.sgdb_key[0] ? "set" : "cleared");
+            options_apply(0);
+        }
+        opt_row_end();
+        f32 sgdb_w = text_w(g_font, "Open SteamGridDB") + dp(32);
+        opt_row_begin("Get a key", "Sign in at steamgriddb.com, open Preferences > API, then Generate API Key", sgdb_w);
+        if (kit_button("Open SteamGridDB##sgdb", KIT_SECONDARY, ImVec2(sgdb_w, 0))) open_url(OPT_SGDB_KEY_URL);
+        opt_row_end();
+        ImGui::EndDisabled();
+    }
     opt_card_end();
 
     // Backup: a copy of sessions (and clips) on another drive or a NAS (backup.cpp). The status line moves while it runs.
