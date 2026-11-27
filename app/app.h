@@ -185,7 +185,7 @@ static const char *const AM_EVENT_NOTES[] = {"Kill", "Multi-kill", "Death", "Rou
 static_assert(sizeof AM_EVENT_COLOURS == sizeof AM_EVENT_WORDS / sizeof *AM_EVENT_WORDS, "a colour for each event");
 static_assert(sizeof AM_EVENT_NOTES == sizeof AM_EVENT_WORDS, "a note for each event");
 enum AmGameId { AMG_CS2, AMG_DOTA2, AMG_LOL, AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE,
-                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_TARKOV, AMG_RUST, AMG_STAR_CITIZEN, AMG_HOUSE_FLIPPER_2, AMG_COUNT };
+                AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER, AMG_TARKOV, AMG_RUST, AMG_STAR_CITIZEN, AMG_COUNT };
 // key: the config's name for it (auto_marks_<key>, auto_marks_<key>_on); need: what the player has to do in the
 // game for its markers, or 0.
 struct AmGame { const char *key, *name, *need; u32 events; };
@@ -208,7 +208,6 @@ static const AmGame AM_GAMES[AMG_COUNT] = {
     {"tarkov", "Escape from Tarkov", 0, AM_RAID_START | AM_RAID_END | AM_QUEST | AM_GROUP | AM_KILL},
     {"rust", "Rust", 0, AM_KILL | AM_DEATH | AM_DOWNED | AM_SERVER | AM_ACCOUNT},
     {"star_citizen", "Star Citizen", 0, AM_KILL | AM_DEATH | AM_DOWNED | AM_SPAWN | AM_CONTRACT | AM_QUEST | AM_ZONE | AM_TRAVEL},
-    {"house_flipper_2", "House Flipper 2", 0, AM_ADVANCEMENT | AM_QUEST},
 };
 
 // A plugin's event ticks in Options > Auto markers, saved as am_events_plugin_<folder> (plugins.cpp). A plugin

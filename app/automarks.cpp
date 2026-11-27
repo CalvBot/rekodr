@@ -29,7 +29,6 @@
 //   War Thunder        Its map server, http://127.0.0.1:8111, once a second while the game runs: the battle's log
 //                      and the mission's state. The player's name is the one typed in Options.
 //   Star Citizen       Game.log in the running game's folder (sclog.cpp), read once a second.
-//   House Flipper 2    Player.log in its LocalLow folder (hf2log.cpp), read once a second.
 //   Escape from Tarkov Logs\log_<started>\ in its folder, the newest run's: its application, output, backend and
 //                      push-notifications logs, only read. Nothing is written to the game or sent to it.
 //
@@ -1971,10 +1970,8 @@ static void replays_apply();
 static void rust_poll(); // rustlog.cpp
 static void rust_apply();
 static void sc_poll(); // sclog.cpp
-static void hf2_poll(); // hf2log.cpp
 static void eftkills_poll(); // eftkills.cpp
 static void eftkills_apply(const wchar_t *eft_dir);
-static void hf2_apply();
 
 // Once a second: the lines each log game on has added, and the replays games have finished.
 static void am_logs_poll()
@@ -2042,7 +2039,6 @@ static void am_logs_poll()
     replays_poll();
     rust_poll();
     sc_poll();
-    hf2_poll();
     eftkills_poll();
 }
 
@@ -2408,9 +2404,8 @@ static void automarks_apply()
     bool logs = false;
     replays_apply();
     rust_apply();
-    hf2_apply();
     static const i32 log_games[] = {AMG_MINECRAFT, AMG_POE, AMG_POE2, AMG_TF2, AMG_F1_25, AMG_IRACING, AMG_ACC, AMG_FORTNITE, AMG_SIEGE, AMG_ROCKET_LEAGUE, AMG_HEARTHSTONE, AMG_WAR_THUNDER,
-                                     AMG_TARKOV, AMG_RUST, AMG_STAR_CITIZEN, AMG_HOUSE_FLIPPER_2};
+                                     AMG_TARKOV, AMG_RUST, AMG_STAR_CITIZEN};
     for (i32 g : log_games) logs |= g_am.events[g] != 0;
     if ((g_am.gsi_on || g_am.events[AMG_LOL] || logs) && !g_am.thread) {
         g_am.wake = CreateEventW(0, FALSE, FALSE, 0);

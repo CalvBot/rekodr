@@ -4087,7 +4087,6 @@ static const AmFind AM_FIND[] = {
     {"tarkov", "escapefromtarkov.exe", 3932890},
     {"rust", "rustclient.exe", 252490},
     {"star_citizen", "starcitizen.exe", 0},
-    {"house_flipper_2", "houseflipper2.exe", 1190970},
 };
 static_assert(COUNT(AM_FIND) == AMG_COUNT, "a way to find each game");
 
@@ -4402,8 +4401,6 @@ static void options_automarks()
             if (g == AMG_CS2 && (1u << i) == AM_RAID_END) l = "Match ends";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_KILL) l = "Demolitions";
             if (g == AMG_STAR_CITIZEN && (1u << i) == AM_QUEST) l = "Contracts done";
-            if (g == AMG_HOUSE_FLIPPER_2 && (1u << i) == AM_QUEST) l = "Jobs done";
-            if (g == AMG_HOUSE_FLIPPER_2 && (1u << i) == AM_ADVANCEMENT) l = "Achievements";
             if (g == AMG_ROCKET_LEAGUE && (1u << i) == AM_DEATH) l = "Demolished";
             if (g == AMG_WAR_THUNDER && (1u << i) == AM_WIN) l = "Mission results";
             if (c.auto_marks_events[g] & (1u << i)) ticked++;
