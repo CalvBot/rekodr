@@ -145,7 +145,7 @@ struct R2Conf {
 
 enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_UPLOADER, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
                         R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS, R2_T_CLEANUP, R2_T_REPAGE,
-                        R2_T_PLAYER, R2_T_REMARK };
+                        R2_T_PLAYER, R2_T_REMARK, R2_T_RETITLE };
 
 struct R2Task {
     R2TaskKind kind;
@@ -2217,17 +2217,25 @@ done:
     return ok;
 }
 
+// Whether `file` holds just `want`.
+static bool r2_file_holds(const Path &file, const char *want)
+{
+    i64 got_len = 0;
+    char *got = read_file(file.s, &got_len);
+    bool same = got && got_len == (i64)strlen(want) && !memcmp(got, want, (size_t)got_len);
+    free(got);
+    return same;
+}
+
 // What the pages and the player are sent as: each kept by browsers and Cloudflare's cache a short while, so a change
 // to a page (its name, its markers) or to the player shows within minutes.
 #define R2_PAGE_TYPE "text/html; charset=utf-8\r\nCache-Control: public, max-age=60"
 #define R2_PLAYER_TYPE "application/javascript; charset=utf-8\r\nCache-Control: public, max-age=300"
 
 // The shared player in the bucket: written when the one in the bucket isn't this copy's (by its SHA-256, kept in
-// <config_dir>\player.txt beside the bucket's name), so once a version and bucket. `wrote` says whether it was
-// written now. Worker thread only.
-static bool r2_player_ensure(const R2Conf &c, bool *wrote = 0)
+// <config_dir>\player.txt beside the bucket's name), so once a version and bucket. Worker thread only.
+static bool r2_player_ensure(const R2Conf &c)
 {
-    if (wrote) *wrote = false;
     static char *js, hash[65];
     static i32 n;
     if (!js && (js = (char *)malloc(R2_PLAYER_CAP)) != 0) {
@@ -2240,15 +2248,10 @@ static bool r2_player_ensure(const R2Conf &c, bool *wrote = 0)
     char want[256];
     snprintf(want, sizeof want, "%s/%s\t%s\n", c.account, c.bucket, hash);
     Path file = path_join(g_app.paths.config_dir, L"player.txt");
-    i64 got_len = 0;
-    char *got = read_file(file.s, &got_len);
-    bool same = got && got_len == (i64)strlen(want) && !memcmp(got, want, (size_t)got_len);
-    free(got);
-    if (same) return true;
+    if (r2_file_holds(file, want)) return true;
     if (!r2_put_bytes(c, R2_PLAYER_KEY, js, n, R2_PLAYER_TYPE)) return false;
     if (!write_whole_file(file.s, want)) log_line("r2: couldn't write player.txt");
     log_line("r2: the player written (%d bytes)", n);
-    if (wrote) *wrote = true;
     return true;
 }
 
@@ -2605,9 +2608,9 @@ static void r2_run_upload(const R2Task &t)
     s.bytes = bytes + extra;
     s.uploaded_us = now_us();
     s.lib_key = w.lib_key;
-    str_set(s.title, w.title);
+    str_set(s.title, g_r2.work[t.slot].title); // as named now, by a name typed while it uploaded too (r2_retitle)
     str_set(s.game, w.game);
-    wide_to_utf8(w.src.s, s.path, sizeof s.path);
+    wide_to_utf8(g_r2.work[t.slot].src.s, s.path, sizeof s.path);
     s.page_w = page_w;
     s.page_h = page_h;
     s.social = page_w ? social : 0;
@@ -4266,23 +4269,43 @@ static bool r2_marks_live(const R2Share &s)
     return r2_in_bucket(s) && s.page_w && !s.paused && !s.moving && s.path[0];
 }
 
-// Whether a page in the bucket is a shell that loads the shared player (one read of it).
-static bool r2_page_is_shell(const R2Conf &c, const char *page_key)
+// How the pages are made, as a SHA-256: the player and a page for a made-up clip with a saved name, in the accent.
+// It changes with a new Rekodr whose pages differ, a new name template or a new accent.
+static bool r2_pages_stamp(char out[65])
 {
-    static thread_local char resp[65536];
-    u32 status = r2_send(c, "GET", page_key, "", R2Body{}, 0, resp, sizeof resp);
-    return !r2_ok(status) || strstr(resp, "<script src=\"player.js\"") != 0; // unreadable: left as it is
+    char *html = (char *)malloc(262144 + R2_PLAYER_CAP);
+    if (!html) return false;
+    char name[256], title[400];
+    save_name_expand(g_app.config.name_template, "Game", 0, name, sizeof name);
+    r2_page_title(name, "Game", 16, title, sizeof title);
+    EmbedInput in = {name, "Game", 16, 0, 0, true, g_app.config.accent, false};
+    EmbedCard card;
+    embed_card(in, &card);
+    R2PageParts p = {title, "https://x/p", "https://x/v", "", "https://x/t", 1920, 1080, 1920, 1080, 1280, 720, "",
+                     card.title, card.line, "", 0, "", "", g_app.config.accent, ""};
+    i32 n = r2_page_html(p, false, html, 262144);
+    i32 m = n > 0 ? r2_player_js(html + n, R2_PLAYER_CAP) : 0;
+    u8 h[32];
+    bool ok = m > 0 && r2_sha256(html, n + m, h);
+    if (ok) r2_hex(h, 32, out);
+    free(html);
+    return ok;
 }
 
-// At start: the player in the bucket made this copy's, when the bucket has pages. When it was written now, every
-// page that doesn't load it (a whole page from before the shared player) is written again as a shell.
+// At start: the player in the bucket made this copy's, when the bucket has pages, and when pages are made another
+// way than they were last written (r2_pages_stamp, kept in <config_dir>\pages.txt beside the bucket's name), every
+// page written again, once.
 static void r2_run_player(const R2Task &t)
 {
-    bool pages = false, wrote = false;
+    bool pages = false;
     AcquireSRWLockShared(&g_r2.lock);
     for (i32 i = 0; i < g_r2.count && !pages; i++) pages = r2_in_bucket(g_r2.shares[i]) && g_r2.shares[i].page_w;
     ReleaseSRWLockShared(&g_r2.lock);
-    if (!pages || !r2_player_ensure(t.conf, &wrote) || !wrote) return;
+    char stamp[65], want[256];
+    if (!pages || !r2_player_ensure(t.conf) || !r2_pages_stamp(stamp)) return;
+    snprintf(want, sizeof want, "%s/%s\t%s\n", t.conf.account, t.conf.bucket, stamp);
+    Path file = path_join(g_app.paths.config_dir, L"pages.txt");
+    if (r2_file_holds(file, want)) return;
     i32 done = 0, failed = 0;
     for (i32 i = 0; !g_r2.stop; i++) {
         static R2Share s;
@@ -4293,13 +4316,69 @@ static void r2_run_player(const R2Task &t)
         ReleaseSRWLockShared(&g_r2.lock);
         if (!more) break;
         if (!go) continue;
-        char page_key[R2_KEY_MAX];
-        r2_page_key(s.key, page_key);
-        if (r2_page_is_shell(t.conf, page_key)) continue;
         if (r2_put_page(t.conf, s, s.paused != 0)) done++;
         else failed++;
     }
-    if (done || failed) log_line("r2: %d page(s) from before the shared player written as shells, %d failed", done, failed);
+    if (!failed && !g_r2.stop && !write_whole_file(file.s, want)) log_line("r2: couldn't write pages.txt");
+    log_line("r2: %d page(s) written again as pages are now made, %d failed", done, failed);
+}
+
+// A clip renamed: its file moved from `from` to `to` (the same path for a new display name), and `title` the name its
+// links show. Every link made from it and every share of it still on its way take them, and the pages of those
+// links are written again on the worker (r2_run_retitle). UI thread.
+static void r2_retitle(const wchar_t *from, const wchar_t *to, const char *title)
+{
+    char was[1040], now[1040];
+    wide_to_utf8(from, was, sizeof was);
+    wide_to_utf8(to, now, sizeof now);
+    bool pages = false;
+    AcquireSRWLockExclusive(&g_r2.lock);
+    for (i32 i = 0; i < COUNT(g_r2.work); i++) {
+        R2Work &w = g_r2.work[i];
+        if (!g_r2.jobs[i].id || _wcsicmp(w.src.s, from)) continue;
+        str_set(w.title, title);
+        wcsncpy(w.src.s, to, COUNT(w.src.s) - 1);
+    }
+    bool changed = false;
+    for (i32 i = 0; i < g_r2.count; i++) {
+        R2Share &s = g_r2.shares[i];
+        if (!s.path[0] || _stricmp(s.path, was)) continue;
+        str_set(s.path, now);
+        if (strcmp(s.title, title)) str_set(s.title, title), changed = true;
+        pages |= r2_in_bucket(s) && s.page_w;
+    }
+    if (changed || strcmp(was, now)) r2_save_locked();
+    ReleaseSRWLockExclusive(&g_r2.lock);
+    if (!changed || !pages) return;
+    static R2Task t;
+    t = {};
+    t.kind = R2_T_RETITLE;
+    wcsncpy(t.file.s, to, COUNT(t.file.s) - 1);
+    if (r2_conf(&t.conf)) r2_queue(t);
+    SecureZeroMemory(&t, sizeof t);
+    r2_post(R2_EV_HISTORY, 0);
+}
+
+// The pages of the links made from the clip at t.file, written again with the name it has now (r2_retitle).
+static void r2_run_retitle(const R2Task &t)
+{
+    char path[1040];
+    wide_to_utf8(t.file.s, path, sizeof path);
+    i32 done = 0, failed = 0;
+    for (i32 i = 0; !g_r2.stop; i++) {
+        static R2Share s;
+        AcquireSRWLockShared(&g_r2.lock);
+        bool more = i < g_r2.count;
+        bool go = more && r2_in_bucket(g_r2.shares[i]) && g_r2.shares[i].page_w && !g_r2.shares[i].moving &&
+                  !_stricmp(g_r2.shares[i].path, path);
+        if (go) s = g_r2.shares[i];
+        ReleaseSRWLockShared(&g_r2.lock);
+        if (!more) break;
+        if (!go) continue;
+        if (r2_put_page(t.conf, s, s.paused != 0)) done++;
+        else failed++;
+    }
+    log_line("r2: %d page(s) written again with a new name, %d failed", done, failed);
 }
 
 // When a file was last written (0 = none), for telling when a clip's markers may have changed.
@@ -4513,6 +4592,7 @@ static DWORD WINAPI r2_thread(void *)
         case R2_T_REPAGE: r2_run_repage(t); break;
         case R2_T_PLAYER: r2_run_player(t); break;
         case R2_T_REMARK: r2_run_remark(t); break;
+        case R2_T_RETITLE: r2_run_retitle(t); break;
         }
         SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
         SecureZeroMemory(t.token, sizeof t.token);

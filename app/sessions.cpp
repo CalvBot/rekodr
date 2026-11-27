@@ -194,7 +194,7 @@ static bool session_save(Session *s)
     return true;
 }
 
-static bool library_set_display_name(u64 key, const char *text, const char *name); // library.cpp
+static bool library_set_display_name(u64 key, const char *text, const char *name, const wchar_t *path); // library.cpp
 
 // Follows the save jobs of sessions being saved.
 static void sessions_check_saves()
@@ -221,7 +221,7 @@ static void sessions_check_saves()
                 char stem[256];
                 str_set(stem, s->video);
                 if (char *dot = strrchr(stem, '.')) *dot = 0;
-                library_set_display_name(fnv64(&mt, sizeof mt, fnv64(&size, sizeof size)), s->display_name, stem);
+                library_set_display_name(fnv64(&mt, sizeof mt, fnv64(&size, sizeof size)), s->display_name, stem, wp);
             }
         } else {
             s->state = SES_NOT_SAVED;

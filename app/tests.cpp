@@ -398,6 +398,42 @@ static void test_buffer_many()
 }
 
 // The preview page's picture (r2.cpp): a short clip gives a JPEG of its size.
+// A renamed clip: its links and a share of it on its way take the new file and name; the pages stamp follows the
+// accent
+static void test_r2_retitle()
+{
+    static R2Share keep_shares[R2_MAX_SHARES];
+    memcpy(keep_shares, g_r2.shares, sizeof keep_shares);
+    i32 keep_count = g_r2.count;
+    R2Job keep_job = g_r2.jobs[0];
+    R2Work keep_work = g_r2.work[0];
+    g_r2.count = 2;
+    g_r2.shares[0] = {};
+    g_r2.shares[1] = {};
+    str_set(g_r2.shares[0].path, "C:\\clips\\a.mp4");
+    str_set(g_r2.shares[0].title, "a");
+    str_set(g_r2.shares[1].path, "C:\\clips\\other.mp4");
+    str_set(g_r2.shares[1].title, "other");
+    g_r2.jobs[0].id = 77;
+    wcscpy(g_r2.work[0].src.s, L"C:\\clips\\a.mp4");
+    str_set(g_r2.work[0].title, "a");
+    r2_retitle(L"c:\\clips\\A.mp4", L"C:\\clips\\b.mp4", "Best one");
+    T(!strcmp(g_r2.shares[0].path, "C:\\clips\\b.mp4") && !strcmp(g_r2.shares[0].title, "Best one"));
+    T(!strcmp(g_r2.shares[1].title, "other"));
+    T(!wcscmp(g_r2.work[0].src.s, L"C:\\clips\\b.mp4") && !strcmp(g_r2.work[0].title, "Best one"));
+    memcpy(g_r2.shares, keep_shares, sizeof keep_shares);
+    g_r2.count = keep_count;
+    g_r2.jobs[0] = keep_job;
+    g_r2.work[0] = keep_work;
+
+    u32 keep_accent = g_app.config.accent;
+    char a[65], b[65], c[65];
+    T(r2_pages_stamp(a) && r2_pages_stamp(b) && !strcmp(a, b));
+    g_app.config.accent = keep_accent ^ 0x102030;
+    T(r2_pages_stamp(c) && strcmp(a, c));
+    g_app.config.accent = keep_accent;
+}
+
 static void test_r2_thumb()
 {
     Path ffmpeg = {};
@@ -7424,6 +7460,7 @@ int main()
     test_gamedb();
     test_mcpack();
     test_r2();
+    test_r2_retitle();
     test_share_cancel();
     test_share_ready();
     test_share_ready_edit();

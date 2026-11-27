@@ -1746,11 +1746,16 @@ static bool library_set_game(const LibItem &it, const char *game)
     return lib_keyed_write(L"games.txt", &it.key, &name, 1, t);
 }
 
-// A display name for a file (empty takes it off).
-static bool library_set_display_name(u64 key, const char *text, const char *name)
+// A display name for the file `name` at `path` (empty takes it off). Its links show it, or the file's name without it.
+static bool library_set_display_name(u64 key, const char *text, const char *name, const wchar_t *path)
 {
     log_line("library: display name on %s %s", name, text[0] ? "set" : "removed");
-    return lib_keyed_write(L"names.txt", &key, &name, 1, text);
+    if (!lib_keyed_write(L"names.txt", &key, &name, 1, text)) return false;
+    char t[128];
+    str_set(t, text);
+    char *shown = trim(t);
+    r2_retitle(path, path, *shown ? shown : name);
+    return true;
 }
 
 static void lib_message(bool error, const char *fmt, ...)
@@ -3191,6 +3196,40 @@ static void lib_delete_note(const u64 *keys, i32 n, char *out, i32 cap)
 static u32 g_lib_share_job;
 static u64 g_lib_share_job_key;
 
+// The name box Share opens: while a share made from a card is on its way, a box over the note takes a name for the
+// clip, its display name, which its link's page shows too, even once the link is made. Enter keeps what's typed, Esc
+// leaves the name as it was. With nothing typed it goes when the share ends.
+static struct {
+    u32  job; // the share it came with, 0 = closed
+    u64  key;
+    char name[256]; // the file's
+    Path path;
+    char was[128], buf[128]; // the display name it opened with, and the one typed
+    bool focus;
+} g_lib_name_box;
+
+static void lib_name_box_close(bool keep)
+{
+    auto &b = g_lib_name_box;
+    if (!b.job) return;
+    b.job = 0;
+    char *t = trim(b.buf);
+    if (keep && strcmp(t, b.was)) library_set_display_name(b.key, t, b.name, b.path.s);
+}
+
+static void lib_name_box_open(const LibItem &it, u32 job)
+{
+    lib_name_box_close(true); // one still open keeps what was typed in it
+    auto &b = g_lib_name_box;
+    b.job = job;
+    b.key = it.key;
+    str_set(b.name, it.name);
+    b.path = lib_item_path(it);
+    str_set(b.was, it.display_name);
+    str_set(b.buf, it.display_name);
+    b.focus = true;
+}
+
 // Starts Share for a card as `kind`, with its edit; `host` (a ShareHostChoice's name) picks a link's host, 0 lets
 // Share's rule pick. The job joins the list the note follows. Returns it, 0 when it couldn't start.
 static u32 lib_share_now(const LibItem &it, ShareKind kind, const char *host = 0)
@@ -3211,6 +3250,7 @@ static u32 lib_share_now(const LibItem &it, ShareKind kind, const char *host = 0
     lib_upload_add(id, name, true);
     g_lib_share_job = id;
     g_lib_share_job_key = it.key;
+    lib_name_box_open(it, id);
     return id;
 }
 
@@ -3434,6 +3474,60 @@ static void lib_note_draw()
         f32 y = b.y - kit_px(5), x0 = a.x + kit_px(14), x1 = b.x - kit_px(14);
         dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + kit_px(2)), col32(COL_HOVER), kit_px(1));
         dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + (x1 - x0) * progress, y + kit_px(2)), col32(COL_ACCENT), kit_px(1));
+    }
+}
+
+// The name box, as wide as the note and just over it, where the note is while a share is on its way, so nothing
+// under it moves.
+static void lib_name_box_draw()
+{
+    auto &b = g_lib_name_box;
+    if (!b.job) return;
+    ShareJobView j = share_job(b.job);
+    bool going = j.id && j.verb[0];
+    if (!going && !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow) && !strcmp(trim(b.buf), b.was)) {
+        lib_name_box_close(false);
+        return;
+    }
+    char shown[300];
+    lib_shown_name(b.name, shown, sizeof shown);
+    ImGuiViewport *vp = ImGui::GetMainViewport();
+    f32 w = kit_px(420), h = kit_px(44), r = kit_px(10);
+    ImVec2 a(floorf(vp->Pos.x + (vp->Size.x - w) / 2), floorf(vp->Pos.y + vp->Size.y - 2 * h - kit_px(64)));
+    ImGui::SetNextWindowPos(a);
+    ImGui::SetNextWindowSize(ImVec2(w, h));
+    if (b.focus) ImGui::SetNextWindowFocus();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::Begin("##lib_name_box", 0, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground |
+                                          ImGuiWindowFlags_NoNav);
+    ImGui::PopStyleVar(2);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 e(a.x + w, a.y + h);
+    kit_frost(dl, a, e, r);
+    dl->AddRect(a, e, col32(COL_LINE), r, 0, kit_px(1));
+    f32 fs = g_font_icon->FontSize;
+    ImVec2 gs = g_font_icon->CalcTextSizeA(fs, FLT_MAX, 0, ICON_FONT);
+    dl->AddText(g_font_icon, fs, ImVec2(a.x + kit_px(14), floorf(a.y + (h - gs.y) / 2)), col32(COL_DIM), ICON_FONT);
+    f32 tx = a.x + kit_px(14) + gs.x + kit_px(10);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kit_px(6), kit_px(4)));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kit_px(6));
+    ImGui::SetCursorScreenPos(ImVec2(tx, floorf(a.y + (h - ImGui::GetFrameHeight()) / 2)));
+    ImGui::SetNextItemWidth(e.x - kit_px(14) - tx);
+    if (b.focus) {
+        ImGui::SetKeyboardFocusHere();
+        b.focus = false;
+    }
+    bool enter = ImGui::InputTextWithHint("##sharename", shown, b.buf, sizeof b.buf,
+                                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    bool esc = ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    ImGui::PopStyleVar(2);
+    ImGui::End();
+    if (esc) lib_name_box_close(false);
+    else if (enter) {
+        dev_click("name box", "Enter");
+        lib_name_box_close(true);
     }
 }
 
@@ -4196,7 +4290,8 @@ static bool lib_rename_apply()
 {
     Library &lib = g_app.library;
     if (lib.rename_display_name) {
-        if (strcmp(lib.rename_buf, lib.target.display_name)) library_set_display_name(lib.target.key, lib.rename_buf, lib.target.name);
+        if (strcmp(lib.rename_buf, lib.target.display_name))
+            library_set_display_name(lib.target.key, lib.rename_buf, lib.target.name, lib_item_path(lib.target).s);
         return true;
     }
     char name[256], cleaned[256];
@@ -4224,6 +4319,7 @@ static bool lib_rename_apply()
                                    {lib_layers_path(lib.target), lib_layers_path(renamed)}};
                 for (auto &p : pairs)
                     if (p[0].s[0] && file_exists(p[0].s)) MoveFileW(p[0].s, p[1].s);
+                r2_retitle(from.s, to.s, lib.target.display_name[0] ? lib.target.display_name : t);
                 lib_message(false, "Renamed to %s", t);
                 library_rescan();
                 return true;
@@ -6375,6 +6471,7 @@ static void screen_library()
     ImGui::PopStyleVar();
     lib_uploads_poll();
     lib_note_draw();
+    lib_name_box_draw();
     ffget_bar();
     lib_share_pending_check();
     if (lib.player.open) {
