@@ -5401,8 +5401,8 @@ static void test_star_citizen()
 // Rust's output_log.txt: deaths with who, kills and downs out of the combat log, each once across its prints
 static void test_rust()
 {
-    // Lines from a real log, and a fall. Its two non-ASCII names go in as UTF-8 bytes: a Cyrillic one, "<ru> RAMPAGE",
-    // and a Korean one
+    // Lines in the shape of a real log, with made-up players, and a fall. Its two non-ASCII names go in as UTF-8
+    // bytes: a Cyrillic one, "<ru> RAMPAGE", and a Korean one
     static const u8 ru[] = {0xD0, 0x9F, 0xD0, 0xB5, 0xD1, 0x82, 0xD1, 0x8F, 0};
     static const u8 ko[] = {0xED, 0x95, 0x98, 0xEB, 0x8A, 0x98, 0};
     char ru_name[32];
