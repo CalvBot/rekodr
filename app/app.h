@@ -219,9 +219,10 @@ struct Config {
     Path save_dir;     // <Videos>\Rekodr, holding Clips, Sessions and Data (save_clips_dir and the rest)
     Path buffer_dir;   // the rolling buffer
     Path play_dir;     // the Timeline's Play files (preview-*.mp4); the local folder unless moved to a faster drive
-    bool backup_on;    // copy sessions to backup_dir (backup.cpp)
-    Path backup_dir;   // another drive or a NAS folder; "" = none chosen
-    bool backup_clips; // clips too, not only sessions
+    bool backup_on;       // keep a copy of clips in backup_dir (backup.cpp)
+    Path backup_dir;      // another drive or a NAS folder; "" = none chosen
+    bool backup_sessions; // sessions too, not only clips
+    f32  backup_cap_gb;   // GB the backup may hold; < 0 = not set (backup_default_cap)
     char name_template[128]; // what clips and sessions are named: {game} {YYYY} {YY} {MM} {DD} {hh} {mm} {ss}
     bool buffer_by_size; // the buffer is limited by buffer_gb, else by buffer_hours; never both
     f32  buffer_hours; // keep this much footage (24)

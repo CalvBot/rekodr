@@ -196,6 +196,7 @@ static void config_defaults(Config *c, const Paths &paths)
     str_set(c->r2_bucket, "rekodr");
     c->r2_read_cap = 10000000;  // R2's free Class B requests a month
     c->r2_space_gb = -1;
+    c->backup_cap_gb = -1;
     c->r2_read_rate = 1000000;
     c->wave_keep_days = 30;
     c->game_lookup = true;
@@ -732,7 +733,8 @@ static void config_set(Config *c, const char *key, char *value)
     }
     else if (!strcmp(key, "backup_on")) boolean(&c->backup_on);
     else if (!strcmp(key, "backup_dir")) path(&c->backup_dir);
-    else if (!strcmp(key, "backup_clips")) boolean(&c->backup_clips);
+    else if (!strcmp(key, "backup_sessions")) boolean(&c->backup_sessions);
+    else if (!strcmp(key, "backup_cap_gb")) real(&c->backup_cap_gb);
     else if (!strcmp(key, "name_template")) str_set(c->name_template, value);
     else if (!strcmp(key, "buffer_hours")) real(&c->buffer_hours);
     else if (!strcmp(key, "buffer_gb")) real(&c->buffer_gb);
@@ -1010,7 +1012,8 @@ static bool config_save(const Config &c, const Paths &paths)
     path("play_dir", c.play_dir);
     boolean("backup_on", c.backup_on);
     path("backup_dir", c.backup_dir);
-    boolean("backup_clips", c.backup_clips);
+    boolean("backup_sessions", c.backup_sessions);
+    if (c.backup_cap_gb >= 0) fprintf(f, "backup_cap_gb = %g\n", c.backup_cap_gb);
     fprintf(f, "name_template = %s\n", c.name_template);
     boolean("buffer_by_size", c.buffer_by_size);
     fprintf(f, "buffer_hours = %g\nbuffer_gb = %g\n", c.buffer_hours, c.buffer_gb);

@@ -1,41 +1,120 @@
-// Backup: copies the save folder's sessions (and clips, if asked) to another drive or a NAS folder, on a thread.
-// It mirrors <save_dir>\{Sessions\<year>,Data,Clips\<year>,Clips\<year>\Source} into the same folders under
-// backup_dir. A file is copied when the backup has none or an older one; nothing at the backup is ever deleted.
-// Files written in the last two minutes wait for the next run, so a save in progress isn't copied half done. It runs
-// a minute after start, every 30 minutes, and on Back up now.
+// Backup: keeps a copy of the save folder's clips (and sessions, if asked) on another drive or a NAS folder, on a
+// thread. It mirrors <save_dir>\{Data,Clips\<year>,Clips\<year>\Source,Sessions\<year>} into the same folders under
+// backup_dir. Each run lists both sides and plans every file (backup_plan): Data is always kept, then the newest
+// clips, then the newest sessions, up to the space cap; what's past the cap is deleted at the backup or not copied.
+// A clip or Data file deleted from the save folder stays at the backup for 30 days from the run that first finds it
+// gone; Deleted.txt at the backup's root holds those times, and its time is the last backup's. Sessions the save
+// folder let go stay at the backup until the cap needs their room. Files written in the last two minutes wait for the
+// next run. It runs a minute after start, then on a timer, and on Back up now. A measure-only run (Options) lists the
+// backup without changing it.
 
 enum BackupState : LONG { BACKUP_IDLE, BACKUP_RUNNING, BACKUP_DONE, BACKUP_FAILED };
+enum BackupKind : u8 { BK_DATA, BK_CLIP, BK_SESSION, BK_KINDS };
+enum BackupAct : u8 { BK_KEEP, BK_COPY, BK_DROP, BK_SKIP };
+
+// One file, from either side or both
+struct BackupFile {
+    wchar_t rel[MAX_PATH]; // the same under the save folder and the backup folder
+    u64 size;              // the save folder's, else the backup's
+    u64 bk_size;           // the backup's
+    i64 written;           // 100 ns since 1601: the save folder's, else the backup's
+    i64 gone_since;        // when a run first found it missing from the save folder; 0 = not gone
+    u8 kind, act;
+    bool at_src, at_bk;
+    bool newer;            // the save folder's is newer than the backup's, or the backup has none
+    bool fresh;            // written in the last two minutes, so maybe still being written: not copied this run
+};
 
 struct Backup {
     volatile LONG state;
     volatile LONG stop;
-    volatile LONG wanted; // Back up now
+    volatile LONG wanted;  // Back up now
+    volatile LONG measure; // a measure-only run, for Options
+    LONG before;           // the state before a measure-only run, which it puts back
     HANDLE thread;
-    i64 next_us;          // the next run on the timer
-    CRITICAL_SECTION lock; // guards the text below
-    char current[128];    // the file being copied
-    char error[200];      // the first failure of the last run
-    i32 done, total, failed;
-    u64 bytes;            // copied in the last run
+    i64 next_us;           // the next run on the timer
+    CRITICAL_SECTION lock; // guards what's below
+    char current[128];     // the file being copied
+    char error[200];       // the first failure of the last run
+    i32 done, total, failed, dropped;
+    u64 bytes;             // copied in the last run
     volatile LONG64 file_got, file_size;
-    SYSTEMTIME finished;  // local time the last run ended
+    i64 ended_us;          // when the last run ended
+    // What the backup holds by kind, and its room: the drive's free space plus what the backup holds
+    bool measured;
+    u64 used[BK_KINDS], room;
+    i64 last_us;           // the last finished backup (Deleted.txt's time); 0 = none
     // What the run works on, copied from the config when it starts
     Path from, to;
-    bool clips;
+    bool sessions, measure_only;
+    f32 cap_gb;
 };
 static Backup g_backup;
 
 static const i64 BACKUP_EVERY_US = 30ll * 60 * 1000000;
 static const i64 BACKUP_SETTLE_100NS = 2ll * 60 * 10000000; // a file this fresh may still be being written
+static const i64 BACKUP_KEEP_GONE_100NS = 30ll * 24 * 3600 * 10000000; // a deleted clip stays this long
+static const u64 BACKUP_GB = 1000000000ull;
+static const wchar_t BACKUP_LEDGER[] = L"Deleted.txt";
 
 static void ui_wake(i32 frames); // ui.cpp
 
-static DWORD CALLBACK backup_progress(LARGE_INTEGER total, LARGE_INTEGER got, LARGE_INTEGER, LARGE_INTEGER, DWORD,
-                                      DWORD, HANDLE, HANDLE, LPVOID)
+static i64 backup_ft(FILETIME ft) { return (i64)(((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime); }
+
+static i64 backup_now_100ns()
 {
-    InterlockedExchange64(&g_backup.file_size, total.QuadPart);
-    InterlockedExchange64(&g_backup.file_got, got.QuadPart);
-    return g_backup.stop ? PROGRESS_CANCEL : PROGRESS_CONTINUE;
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    return backup_ft(ft);
+}
+
+// The cap when none is set: half the room, in whole GB, at least 1 GB
+static u64 backup_default_cap(u64 room)
+{
+    u64 gb = room / 2 / BACKUP_GB;
+    return (gb ? gb : 1) * BACKUP_GB;
+}
+
+static u64 backup_cap(f32 cap_gb, u64 room) { return cap_gb >= 0 ? (u64)((f64)cap_gb * BACKUP_GB) : backup_default_cap(room); }
+
+static int backup_rank_cmp(const void *pa, const void *pb)
+{
+    const BackupFile &a = *(const BackupFile *)pa, &b = *(const BackupFile *)pb;
+    if (a.kind != b.kind) return a.kind < b.kind ? -1 : 1;
+    return a.written > b.written ? -1 : a.written < b.written;
+}
+
+// Decides each file's act, and sorts the files in the order they're kept: Data, then clips newest first, then
+// sessions newest first. Data is always kept; the rest is kept until one doesn't fit under the cap, and from there on
+// goes: deleted at the backup (BK_DROP) or not copied (BK_SKIP). Clip and Data files gone from the save folder for
+// 30 days go first of all. A file only at the save folder isn't copied while fresh, nor a session unless sessions are
+// wanted. Returns the bytes the backup holds after the run.
+static u64 backup_plan(BackupFile *f, i32 n, u64 cap, i64 now, bool sessions)
+{
+    qsort(f, n, sizeof *f, backup_rank_cmp);
+    u64 total = 0;
+    bool full = false;
+    for (i32 i = 0; i < n; i++) {
+        BackupFile &e = f[i];
+        if (!e.at_src && e.kind != BK_SESSION && e.gone_since && now - e.gone_since >= BACKUP_KEEP_GONE_100NS) {
+            e.act = BK_DROP;
+            continue;
+        }
+        bool wanted = e.kind != BK_SESSION || sessions;
+        if (!e.at_bk && (e.fresh || !wanted)) {
+            e.act = BK_SKIP;
+            continue;
+        }
+        if (e.kind != BK_DATA && (full || total + e.size > cap)) {
+            full = true;
+            e.act = e.at_bk ? BK_DROP : BK_SKIP;
+            continue;
+        }
+        bool copy = e.at_src && e.newer && !e.fresh && wanted;
+        total += copy || !e.at_bk ? e.size : e.bk_size;
+        e.act = copy ? BK_COPY : BK_KEEP;
+    }
+    return total;
 }
 
 static void backup_fail(const char *fmt, ...)
@@ -62,74 +141,213 @@ static bool backup_is_year(const wchar_t *name)
     return wcslen(name) == 4 && iswdigit(name[0]) && iswdigit(name[1]) && iswdigit(name[2]) && iswdigit(name[3]);
 }
 
-// The files of one folder that the backup lacks or has older. Calls fn(src, dst, name, size) for each
-// and stops when it returns false. Returns the count.
-template <typename F> static i32 backup_walk_dir(const Path &src_dir, const Path &dst_dir, F fn)
+struct BackupList {
+    BackupFile *f;
+    i32 n, cap;
+};
+
+static BackupFile *backup_add(BackupList *l)
 {
-    WIN32_FIND_DATAW fd;
-    Path pattern = path_join(src_dir, L"*");
-    HANDLE h = FindFirstFileW(pattern.s, &fd);
-    if (h == INVALID_HANDLE_VALUE) return 0;
-    FILETIME now_ft;
-    GetSystemTimeAsFileTime(&now_ft);
-    i64 now = (i64)(((u64)now_ft.dwHighDateTime << 32) | now_ft.dwLowDateTime);
-    i32 n = 0;
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (backup_skip_name(fd.cFileName)) continue;
-        i64 written = (i64)(((u64)fd.ftLastWriteTime.dwHighDateTime << 32) | fd.ftLastWriteTime.dwLowDateTime);
-        if (now - written < BACKUP_SETTLE_100NS) continue;
-        Path src = path_join(src_dir, fd.cFileName), dst = path_join(dst_dir, fd.cFileName);
-        WIN32_FILE_ATTRIBUTE_DATA have;
-        if (GetFileAttributesExW(dst.s, GetFileExInfoStandard, &have) &&
-            CompareFileTime(&have.ftLastWriteTime, &fd.ftLastWriteTime) >= 0)
-            continue; // the backup's is as new
-        n++;
-        if (!fn(src, dst, fd.cFileName, ((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow)) break;
-    } while (!g_backup.stop && FindNextFileW(h, &fd));
-    FindClose(h);
-    return n;
+    if (l->n == l->cap) {
+        i32 cap = l->cap ? l->cap * 2 : 256;
+        BackupFile *f = (BackupFile *)realloc(l->f, sizeof *f * (size_t)cap);
+        if (!f) return 0;
+        l->f = f;
+        l->cap = cap;
+    }
+    BackupFile *e = &l->f[l->n++];
+    memset(e, 0, sizeof *e);
+    return e;
 }
 
-// Every folder to back up, in order: Sessions\<year>, Data, then Clips\<year> and Clips\<year>\Source.
-template <typename F> static i32 backup_walk(F fn)
+// The files of one mirrored folder on both sides (the save folder's only when `src`)
+static void backup_list_dir(BackupList *l, const wchar_t *rel_dir, u8 kind, bool src, i64 now)
+{
+    i32 first = l->n;
+    size_t rl = wcslen(rel_dir) + 1;
+    for (i32 side = src ? 0 : 1; side < 2 && !g_backup.stop; side++) {
+        WIN32_FIND_DATAW fd;
+        Path pattern = path_join(path_join(side ? g_backup.to : g_backup.from, rel_dir), L"*");
+        HANDLE h = FindFirstFileW(pattern.s, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || backup_skip_name(fd.cFileName)) continue;
+            i64 written = backup_ft(fd.ftLastWriteTime);
+            u64 size = ((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+            BackupFile *e = 0;
+            if (side)
+                for (i32 i = first; i < l->n && !e; i++)
+                    if (!_wcsicmp(l->f[i].rel + rl, fd.cFileName)) e = &l->f[i];
+            if (!e) {
+                if (!(e = backup_add(l))) break;
+                swprintf(e->rel, MAX_PATH, L"%s\\%s", rel_dir, fd.cFileName);
+                e->kind = kind;
+                e->size = size;
+                e->written = written;
+            }
+            if (!side) {
+                e->at_src = true;
+                e->fresh = now - written < BACKUP_SETTLE_100NS;
+                e->newer = true;
+            } else {
+                e->at_bk = true;
+                e->bk_size = size;
+                if (e->at_src) e->newer = e->written > written;
+            }
+        } while (!g_backup.stop && FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
+
+// The year folders under <side>\<top> on either side, ascending
+static i32 backup_years(const wchar_t *top, i32 *out, i32 cap)
 {
     i32 n = 0;
-    for (i32 top = 0; top < 3 && !g_backup.stop; top++) {
-        if (top == 1) {
-            n += backup_walk_dir(save_data_dir(g_backup.from), save_data_dir(g_backup.to), fn);
-            continue;
-        }
-        if (top == 2 && !g_backup.clips) continue;
+    for (i32 side = 0; side < 2; side++) {
         WIN32_FIND_DATAW fd;
-        Path pattern = path_join(path_join(g_backup.from, top ? L"Clips" : L"Sessions"), L"*");
+        Path pattern = path_join(path_join(side ? g_backup.to : g_backup.from, top), L"*");
         HANDLE h = FindFirstFileW(pattern.s, &fd);
         if (h == INVALID_HANDLE_VALUE) continue;
         do {
             if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !backup_is_year(fd.cFileName)) continue;
-            i32 year = _wtoi(fd.cFileName);
-            if (!top) {
-                n += backup_walk_dir(save_sessions_dir(g_backup.from, year), save_sessions_dir(g_backup.to, year), fn);
-                continue;
-            }
-            n += backup_walk_dir(save_clips_dir(g_backup.from, year), save_clips_dir(g_backup.to, year), fn);
-            if (!g_backup.stop)
-                n += backup_walk_dir(save_source_dir(g_backup.from, year), save_source_dir(g_backup.to, year), fn);
-        } while (!g_backup.stop && FindNextFileW(h, &fd));
+            i32 y = _wtoi(fd.cFileName), k = 0;
+            while (k < n && out[k] != y) k++;
+            if (k == n && n < cap) out[n++] = y;
+        } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
+    for (i32 i = 1; i < n; i++)
+        for (i32 j = i; j > 0 && out[j - 1] > out[j]; j--) {
+            i32 t = out[j];
+            out[j] = out[j - 1];
+            out[j - 1] = t;
+        }
     return n;
 }
 
-static bool backup_copy(const Path &src, const Path &dst, const wchar_t *name, u64 size)
+static void backup_list(BackupList *l, i64 now)
 {
+    backup_list_dir(l, L"Data", BK_DATA, true, now);
+    i32 years[64];
+    wchar_t rel[64];
+    i32 n = backup_years(L"Clips", years, COUNT(years));
+    for (i32 i = 0; i < n; i++) {
+        swprintf(rel, COUNT(rel), L"Clips\\%d", years[i]);
+        backup_list_dir(l, rel, BK_CLIP, true, now);
+        swprintf(rel, COUNT(rel), L"Clips\\%d\\Source", years[i]);
+        backup_list_dir(l, rel, BK_CLIP, true, now);
+    }
+    n = backup_years(L"Sessions", years, COUNT(years));
+    for (i32 i = 0; i < n; i++) {
+        swprintf(rel, COUNT(rel), L"Sessions\\%d", years[i]);
+        backup_list_dir(l, rel, BK_SESSION, g_backup.sessions, now);
+    }
+}
+
+static u64 backup_rel_hash(const wchar_t *rel)
+{
+    wchar_t low[MAX_PATH];
+    size_t n = 0;
+    for (; rel[n] && n < MAX_PATH - 1; n++) low[n] = towlower(rel[n]);
+    return fnv64(low, n * sizeof(wchar_t));
+}
+
+// Deleted.txt: a line per clip or Data file gone from the save folder, "<100 ns since 1601> <path under the
+// backup>". Sets each listed file's gone_since, and now for one newly gone. Returns the file's time, 0 if none.
+static i64 backup_ledger_read(BackupList *l, i64 now)
+{
+    struct Gone { u64 hash; i64 since; };
+    Gone *gone = 0;
+    i32 n = 0, cap = 0;
+    Path file = path_join(g_backup.to, BACKUP_LEDGER);
+    i64 at = 0;
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (GetFileAttributesExW(file.s, GetFileExInfoStandard, &fa)) at = backup_ft(fa.ftLastWriteTime);
+    if (FILE *f = _wfopen(file.s, L"rb")) {
+        char line[MAX_PATH * 3 + 32];
+        while (fgets(line, sizeof line, f)) {
+            char *end = 0;
+            i64 since = _strtoi64(line, &end, 10);
+            if (end == line || *end != ' ' || since <= 0) continue;
+            char *rel = end + 1;
+            rel[strcspn(rel, "\r\n")] = 0;
+            wchar_t w[MAX_PATH];
+            utf8_to_wide(rel, w, MAX_PATH);
+            if (n == cap) {
+                cap = cap ? cap * 2 : 64;
+                Gone *g = (Gone *)realloc(gone, sizeof *g * (size_t)cap);
+                if (!g) break;
+                gone = g;
+            }
+            gone[n++] = {backup_rel_hash(w), since};
+        }
+        fclose(f);
+    }
+    for (i32 i = 0; i < l->n; i++) {
+        BackupFile &e = l->f[i];
+        if (e.at_src || !e.at_bk || e.kind == BK_SESSION) continue;
+        u64 h = backup_rel_hash(e.rel);
+        e.gone_since = now;
+        for (i32 k = 0; k < n; k++)
+            if (gone[k].hash == h) {
+                e.gone_since = gone[k].since;
+                break;
+            }
+    }
+    free(gone);
+    return at;
+}
+
+static void backup_ledger_write(const BackupList &l)
+{
+    Path file = path_join(g_backup.to, BACKUP_LEDGER);
+    FILE *f = _wfopen(file.s, L"wb");
+    if (!f) {
+        backup_fail("%ls couldn't be written (%d)", BACKUP_LEDGER, (int)GetLastError());
+        return;
+    }
+    for (i32 i = 0; i < l.n; i++) {
+        const BackupFile &e = l.f[i];
+        if (!e.gone_since || e.act == BK_DROP) continue;
+        char rel[MAX_PATH * 3];
+        wide_to_utf8(e.rel, rel, sizeof rel);
+        fprintf(f, "%lld %s\n", (long long)e.gone_since, rel);
+    }
+    fclose(f);
+}
+
+// The free space where the backup folder is, or would be made
+static u64 backup_free(const Path &to)
+{
+    Path p = to;
+    for (;;) {
+        ULARGE_INTEGER avail;
+        if (GetDiskFreeSpaceExW(p.s, &avail, 0, 0)) return avail.QuadPart;
+        wchar_t *slash = wcsrchr(p.s, L'\\');
+        if (!slash || slash - p.s < 2) return 0;
+        *slash = 0;
+    }
+}
+
+static DWORD CALLBACK backup_progress(LARGE_INTEGER total, LARGE_INTEGER got, LARGE_INTEGER, LARGE_INTEGER, DWORD,
+                                      DWORD, HANDLE, HANDLE, LPVOID)
+{
+    InterlockedExchange64(&g_backup.file_size, total.QuadPart);
+    InterlockedExchange64(&g_backup.file_got, got.QuadPart);
+    return g_backup.stop ? PROGRESS_CANCEL : PROGRESS_CONTINUE;
+}
+
+static bool backup_copy(const BackupFile &e)
+{
+    Path src = path_join(g_backup.from, e.rel), dst = path_join(g_backup.to, e.rel);
+    const wchar_t *name = wcsrchr(e.rel, L'\\');
     char u[128];
-    wide_to_utf8(name, u, sizeof u);
+    wide_to_utf8(name ? name + 1 : e.rel, u, sizeof u);
     EnterCriticalSection(&g_backup.lock);
     str_set(g_backup.current, u);
     LeaveCriticalSection(&g_backup.lock);
     InterlockedExchange64(&g_backup.file_got, 0);
-    InterlockedExchange64(&g_backup.file_size, (LONG64)size);
+    InterlockedExchange64(&g_backup.file_size, (LONG64)e.size);
 
     Path dir = dst;
     wchar_t *slash = wcsrchr(dir.s, L'\\');
@@ -146,32 +364,81 @@ static bool backup_copy(const Path &src, const Path &dst, const wchar_t *name, u
         if (g_backup.stop) return false;
         g_backup.failed++;
         backup_fail("%s couldn't be copied (%d)", u, (int)err);
-        return true; // try the rest
+        return false;
     }
     g_backup.done++;
-    g_backup.bytes += size;
+    g_backup.bytes += e.size;
     return true;
+}
+
+static bool backup_dir_exists(const wchar_t *p)
+{
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 static DWORD WINAPI backup_thread(void *)
 {
     char to[MAX_PATH * 3];
     wide_to_utf8(g_backup.to.s, to, sizeof to);
-    log_line("backup: to %s%s", to, g_backup.clips ? ", clips too" : "");
-    SHCreateDirectoryExW(0, g_backup.to.s, 0);
-    DWORD attr = GetFileAttributesW(g_backup.to.s);
-    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    bool measure = g_backup.measure_only;
+    if (!measure) log_line("backup: to %s%s", to, g_backup.sessions ? ", sessions too" : "");
+    if (!measure) SHCreateDirectoryExW(0, g_backup.to.s, 0);
+    if (!backup_dir_exists(g_backup.from.s)) {
+        if (!measure) backup_fail("the save folder can't be reached");
+    } else if (!measure && !backup_dir_exists(g_backup.to.s)) {
         backup_fail("%s can't be reached (%d)", to, (int)GetLastError());
     } else {
-        g_backup.total = backup_walk([](const Path &, const Path &, const wchar_t *, u64) { return true; });
-        backup_walk(backup_copy);
+        i64 now = backup_now_100ns();
+        BackupList l = {};
+        backup_list(&l, now);
+        i64 last = backup_ledger_read(&l, now);
+        u64 used[BK_KINDS] = {}, held = 0;
+        for (i32 i = 0; i < l.n; i++) used[l.f[i].kind] += l.f[i].bk_size;
+        for (u64 u : used) held += u;
+        EnterCriticalSection(&g_backup.lock);
+        memcpy(g_backup.used, used, sizeof used);
+        g_backup.room = backup_free(g_backup.to) + held;
+        g_backup.last_us = last ? (last - 116444736000000000LL) / 10 : 0;
+        g_backup.measured = true;
+        LeaveCriticalSection(&g_backup.lock);
+        if (!measure && !g_backup.stop) {
+            backup_plan(l.f, l.n, backup_cap(g_backup.cap_gb, g_backup.room), now, g_backup.sessions);
+            for (i32 i = 0; i < l.n; i++) g_backup.total += l.f[i].act == BK_COPY;
+            for (i32 i = 0; i < l.n && !g_backup.stop; i++) {
+                BackupFile &e = l.f[i];
+                if (e.act != BK_DROP) continue;
+                Path p = path_join(g_backup.to, e.rel);
+                if (DeleteFileW(p.s)) g_backup.dropped++;
+                else e.act = BK_KEEP;
+            }
+            for (i32 i = 0; i < l.n && !g_backup.stop; i++)
+                if (l.f[i].act == BK_COPY && !backup_copy(l.f[i])) l.f[i].act = l.f[i].at_bk ? BK_KEEP : BK_SKIP;
+            if (!g_backup.stop) backup_ledger_write(l);
+            u64 now_used[BK_KINDS] = {};
+            for (i32 i = 0; i < l.n; i++) {
+                const BackupFile &e = l.f[i];
+                if (e.act == BK_COPY) now_used[e.kind] += e.size;
+                else if (e.act == BK_KEEP && e.at_bk) now_used[e.kind] += e.bk_size;
+            }
+            EnterCriticalSection(&g_backup.lock);
+            memcpy(g_backup.used, now_used, sizeof now_used);
+            if (!g_backup.stop) g_backup.last_us = now_us();
+            LeaveCriticalSection(&g_backup.lock);
+        }
+        free(l.f);
+    }
+    if (measure) {
+        InterlockedExchange(&g_backup.state, g_backup.before);
+        ui_wake(3);
+        return 0;
     }
     EnterCriticalSection(&g_backup.lock);
-    GetLocalTime(&g_backup.finished);
+    g_backup.ended_us = now_us();
     g_backup.current[0] = 0;
     LeaveCriticalSection(&g_backup.lock);
-    log_line("backup: %d of %d files copied (%llu bytes), %d failed%s", g_backup.done, g_backup.total,
-             (unsigned long long)g_backup.bytes, g_backup.failed, g_backup.stop ? ", stopped" : "");
+    log_line("backup: %d of %d files copied (%llu bytes), %d deleted, %d failed%s", g_backup.done, g_backup.total,
+             (unsigned long long)g_backup.bytes, g_backup.dropped, g_backup.failed, g_backup.stop ? ", stopped" : "");
     InterlockedExchange(&g_backup.state, g_backup.error[0] ? BACKUP_FAILED : BACKUP_DONE);
     ui_wake(3);
     return 0;
@@ -189,7 +456,7 @@ static bool backup_same_folder(const Path &a, const Path &b)
     return !_wcsicmp(fa, fb);
 }
 
-static void backup_start()
+static void backup_start(bool measure)
 {
     const Config &c = g_app.config;
     if (g_backup.state == BACKUP_RUNNING) return;
@@ -200,13 +467,20 @@ static void backup_start()
     }
     g_backup.from = c.save_dir;
     g_backup.to = c.backup_dir;
-    g_backup.clips = c.backup_clips;
-    g_backup.error[0] = 0;
-    g_backup.done = g_backup.total = g_backup.failed = 0;
-    g_backup.bytes = 0;
-    if (backup_same_folder(c.save_dir, c.backup_dir)) {
+    g_backup.sessions = c.backup_sessions;
+    g_backup.cap_gb = c.backup_cap_gb;
+    g_backup.measure_only = measure;
+    g_backup.before = g_backup.state;
+    bool same = backup_same_folder(c.save_dir, c.backup_dir);
+    if (measure && same) return;
+    if (!measure) {
+        g_backup.error[0] = 0;
+        g_backup.done = g_backup.total = g_backup.failed = g_backup.dropped = 0;
+        g_backup.bytes = 0;
+    }
+    if (same) {
         backup_fail("the backup folder is the save folder");
-        GetLocalTime(&g_backup.finished);
+        g_backup.ended_us = now_us();
         InterlockedExchange(&g_backup.state, BACKUP_FAILED);
         return;
     }
@@ -220,7 +494,7 @@ static void backup_init()
     g_backup.next_us = now_us() + 60ll * 1000000; // after start has settled
 }
 
-// Once a second on the main thread: starts a run when one is due.
+// Once a second on the main thread: starts a run when one is due, or a measure Options asked for.
 static void backup_tick()
 {
     const Config &c = g_app.config;
@@ -228,14 +502,28 @@ static void backup_tick()
         ui_wake(2); // the status line moves
         return;
     }
-    if (!c.backup_on || !c.backup_dir.s[0]) return;
+    if (!c.backup_dir.s[0]) return;
     i64 now = now_us();
-    if (!InterlockedExchange(&g_backup.wanted, 0) && now < g_backup.next_us) return;
-    g_backup.next_us = now + BACKUP_EVERY_US;
-    backup_start();
+    bool due = c.backup_on && (InterlockedExchange(&g_backup.wanted, 0) || now >= g_backup.next_us);
+    if (due) {
+        g_backup.next_us = now + BACKUP_EVERY_US;
+        InterlockedExchange(&g_backup.measure, 0);
+        backup_start(false);
+    } else if (InterlockedExchange(&g_backup.measure, 0)) {
+        backup_start(true);
+    }
 }
 
 static void backup_now() { InterlockedExchange(&g_backup.wanted, 1); }
+
+// Options wants the backup's size: after the folder changed, or when it isn't known yet
+static void backup_measure()
+{
+    EnterCriticalSection(&g_backup.lock);
+    g_backup.measured = false;
+    LeaveCriticalSection(&g_backup.lock);
+    InterlockedExchange(&g_backup.measure, 1);
+}
 
 static void backup_stop()
 {
@@ -252,17 +540,29 @@ static const char *backup_state_name()
 {
     const Config &c = g_app.config;
     LONG s = g_backup.state;
-    if (s == BACKUP_RUNNING) return "running";
+    if (s == BACKUP_RUNNING && !g_backup.measure_only) return "running";
     if (!c.backup_on || !c.backup_dir.s[0]) return "off";
     if (s == BACKUP_FAILED) return "failed";
-    if (s == BACKUP_DONE) return "ok";
+    if (s == BACKUP_DONE || g_backup.last_us) return "ok";
     return "waiting";
 }
 
-static void backup_size(u64 bytes, char *out, i32 cap)
+// A time for the status line: "14:05" today, else "26 Nov 14:05"
+static void backup_when(i64 us, char *out, i32 cap)
 {
-    if (bytes >= 1000000000ull) snprintf(out, cap, "%.1f GB", bytes / 1e9);
-    else snprintf(out, cap, "%.0f MB", bytes / 1e6);
+    static const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    auto local = [](i64 t, SYSTEMTIME *st) {
+        u64 ft = (u64)(t * 10 + 116444736000000000LL);
+        FILETIME f = {(DWORD)ft, (DWORD)(ft >> 32)};
+        SYSTEMTIME utc;
+        FileTimeToSystemTime(&f, &utc);
+        SystemTimeToTzSpecificLocalTime(0, &utc, st);
+    };
+    SYSTEMTIME t, n;
+    local(us, &t);
+    local(now_us(), &n);
+    if (t.wYear == n.wYear && t.wMonth == n.wMonth && t.wDay == n.wDay) snprintf(out, cap, "%02d:%02d", t.wHour, t.wMinute);
+    else snprintf(out, cap, "%d %s %02d:%02d", t.wDay, months[(t.wMonth + 11) % 12], t.wHour, t.wMinute);
 }
 
 // One line for Options: what the backup is doing or last did.
@@ -271,28 +571,25 @@ static void backup_status(char *out, i32 cap)
     const Config &c = g_app.config;
     LONG s = g_backup.state;
     EnterCriticalSection(&g_backup.lock);
-    char at[16];
-    snprintf(at, sizeof at, "%02d:%02d", g_backup.finished.wHour, g_backup.finished.wMinute);
-    if (s == BACKUP_RUNNING) {
+    char at[32] = "", last[32] = "";
+    if (g_backup.ended_us) backup_when(g_backup.ended_us, at, sizeof at);
+    if (g_backup.last_us) backup_when(g_backup.last_us, last, sizeof last);
+    if (!c.backup_dir.s[0]) {
+        snprintf(out, cap, "Choose a folder on another drive or a NAS");
+    } else if (s == BACKUP_RUNNING && !g_backup.measure_only) {
         LONG64 got = g_backup.file_got, size = g_backup.file_size;
         if (g_backup.current[0])
             snprintf(out, cap, "Copying %s, %d of %d, %d%%", g_backup.current, g_backup.done + g_backup.failed + 1,
                      g_backup.total, size > 0 ? (int)(got * 100 / size) : 0);
         else snprintf(out, cap, "Looking for new files");
     } else if (s == BACKUP_FAILED) {
-        snprintf(out, cap, "At %s: %s", at, g_backup.error);
-    } else if (s == BACKUP_DONE) {
-        char size[24];
-        backup_size(g_backup.bytes, size, sizeof size);
-        if (g_backup.done) snprintf(out, cap, "Up to date at %s, %d file%s copied (%s)", at, g_backup.done,
-                                    g_backup.done == 1 ? "" : "s", size);
-        else snprintf(out, cap, "Up to date at %s", at);
-    } else if (!c.backup_dir.s[0]) {
-        snprintf(out, cap, "Choose a folder on another drive or a NAS");
+        snprintf(out, cap, "Failed at %s: %s", at, g_backup.error);
     } else if (!c.backup_on) {
         snprintf(out, cap, "Off");
+    } else if (last[0]) {
+        snprintf(out, cap, "%s", last);
     } else {
-        snprintf(out, cap, "Starts a minute after " APP_NAME " does, then every 30 minutes");
+        snprintf(out, cap, "Not yet");
     }
     LeaveCriticalSection(&g_backup.lock);
 }
@@ -308,12 +605,6 @@ struct BackupPlace {
     char name[64];
     Path dir;
 };
-
-static bool backup_dir_exists(const wchar_t *p)
-{
-    DWORD a = GetFileAttributesW(p);
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
-}
 
 static void backup_place_add(BackupPlace *out, i32 cap, i32 *n, const char *name, const wchar_t *dir)
 {

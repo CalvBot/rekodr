@@ -3364,6 +3364,112 @@ static void opt_reads_row()
     opt_row_end();
 }
 
+// The backup's cap being picked, -1 for none: a draft the backup's Space bar previews until Save writes it to
+// backup_cap_gb, or the undo button drops it.
+static f32 g_backup_cap_draft = -1;
+
+// What the backup's last run or measure found (backup.cpp)
+struct OptBackup {
+    bool measured;
+    u64 used[BK_KINDS], room;
+};
+
+static OptBackup opt_backup_read()
+{
+    OptBackup b;
+    EnterCriticalSection(&g_backup.lock);
+    b.measured = g_backup.measured;
+    memcpy(b.used, g_backup.used, sizeof b.used);
+    b.room = g_backup.room;
+    LeaveCriticalSection(&g_backup.lock);
+    return b;
+}
+
+// What the backup holds as a bar of its cap: clips, then sessions. Past the cap (a draft below what it holds) is red:
+// the oldest sessions go first, then the oldest clips.
+static void opt_backup_space_row(const OptBackup &b)
+{
+    Config &c = g_app.config;
+    bool draft = g_backup_cap_draft >= 0;
+    u64 cap = backup_cap(draft ? g_backup_cap_draft : c.backup_cap_gb, b.room);
+    u64 clips = b.used[BK_DATA] + b.used[BK_CLIP], sessions = b.used[BK_SESSION], held = clips + sessions;
+    opt_find("Space");
+    opt_row_begin(0, 0, opt_wide_w(), dp(52));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 a, z;
+    opt_bar_frame(&a, &z);
+    f64 w = z.x - a.x, scale = (f64)(held > cap ? held : cap);
+    if (b.measured && held && scale > 0) {
+        f32 x1 = a.x + (f32)(w * clips / scale), x2 = a.x + (f32)(w * held / scale), xc = a.x + (f32)(w * cap / scale);
+        dl->PushClipRect(a, z, true);
+        if (clips) dl->AddRectFilled(a, ImVec2(fmaxf(x1, a.x + dp(3)), z.y), col32(COL_BLUE));
+        if (sessions) dl->AddRectFilled(ImVec2(x1, a.y), ImVec2(fmaxf(x2, x1 + dp(3)), z.y), col32(0x9fc4ff));
+        if (held > cap) dl->AddRectFilled(ImVec2(xc, a.y), ImVec2(x2, z.y), col32(COL_RED));
+        dl->PopClipRect();
+    }
+    char got[24], of[24], t[64], sub[128];
+    opt_gb((f64)held / BACKUP_GB, got, sizeof got);
+    opt_gb((f64)cap / BACKUP_GB, of, sizeof of);
+    snprintf(t, sizeof t, "%s of %s", got, of);
+    opt_bar_value(z, b.measured ? t : "Not read yet", COL_DIM);
+    u32 sub_col = COL_DIM;
+    if (b.measured && held > cap) {
+        char over[24];
+        opt_gb((f64)(held - cap) / BACKUP_GB, over, sizeof over);
+        if (draft) snprintf(sub, sizeof sub, "Save removes %s, the oldest first", over);
+        else snprintf(sub, sizeof sub, "%s over: the oldest go at the next backup", over);
+        sub_col = COL_RED;
+    } else if (b.measured) {
+        char cs[24], ss[24];
+        opt_gb((f64)clips / BACKUP_GB, cs, sizeof cs);
+        opt_gb((f64)sessions / BACKUP_GB, ss, sizeof ss);
+        if (sessions || c.backup_sessions) snprintf(sub, sizeof sub, "Clips %s, sessions %s", cs, ss);
+        else snprintf(sub, sizeof sub, "Clips %s", cs);
+    } else sub[0] = 0;
+    opt_row_lines("Space", g_font, sub, sub_col, false, a.x - dp(20));
+    opt_row_end();
+}
+
+// Keep up to: a slider over the backup's room (the drive's free space and what the backup holds), with the player's
+// cap or, until they move it, the default (marked on the track). Save and undo sit in fixed slots.
+static void opt_backup_cap_row(const OptBackup &b)
+{
+    Config &c = g_app.config;
+    f32 &draft = g_backup_cap_draft;
+    f32 room = (f32)((f64)b.room / BACKUP_GB), deflt = (f32)((f64)backup_default_cap(b.room) / BACKUP_GB);
+    f32 saved = c.backup_cap_gb >= 0 ? c.backup_cap_gb : deflt;
+    if (draft >= 0 && c.backup_cap_gb >= 0 && fabsf(draft - c.backup_cap_gb) < 0.5f && !ImGui::IsAnyItemActive())
+        draft = -1;
+    f32 shown = draft >= 0 ? draft : saved;
+    bool dirty = draft >= 0 && (c.backup_cap_gb < 0 || fabsf(draft - c.backup_cap_gb) >= 0.5f);
+    char size[24], all[24], label[96];
+    opt_gb(shown, size, sizeof size);
+    opt_gb(room, all, sizeof all);
+    if (b.measured) snprintf(label, sizeof label, "%s of %s on that drive", size, all);
+    else str_set(label, "Not read yet");
+    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), save_w = dp(72);
+    f32 slider_w = cw - save_w - fh - 2 * gap;
+    opt_row_begin("Keep up to", label, cw);
+    f32 x = g_row.x1 - cw, y = opt_row_frame_y(), top = fmaxf(room, 1);
+    f32 v = fminf(fmaxf(shown, 0), top);
+    ImGui::SetCursorScreenPos(ImVec2(x, floorf(y + (fh - dp(24)) / 2)));
+    if (lib_slider("##backupcap", &v, 0, top, slider_w, dp(24), c.backup_cap_gb >= 0 || draft >= 0 ? deflt : -1e9f,
+                   b.measured))
+        draft = fmaxf(1, floorf(v + 0.5f));
+    ImGui::SetCursorScreenPos(ImVec2(x + slider_w + gap, y));
+    if (kit_button("Save##backupcapsave", KIT_PRIMARY, ImVec2(save_w, 0), dirty)) {
+        c.backup_cap_gb = draft;
+        draft = -1;
+        log_line("options: backup keeps up to %.0f GB", c.backup_cap_gb);
+        options_apply(0);
+        if (c.backup_on) backup_now();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
+    kit_next_tip("Put it back");
+    if (kit_icon_button(ICON_UNDO, "##backupcapundo", KIT_GHOST, dirty)) draft = -1;
+    opt_row_end();
+}
+
 // The budget and space being picked, -1 for none: drafts the Space bar previews until Save writes them to r2_budget
 // or r2_space_gb and the bucket is cleaned up to them, or the undo button drops them.
 static f32 g_budget_draft = -1, g_space_draft = -1;
@@ -5782,17 +5888,17 @@ static void options_general()
     }
     opt_card_end();
 
-    // Backup: a copy of sessions (and clips) on another drive or a NAS (backup.cpp). The status line moves while it runs.
+    // Backup: a copy of clips (and sessions) on another drive or a NAS (backup.cpp). The status line moves while it runs.
     opt_section("BACKUP");
     opt_card_begin();
-    if (opt_row_toggle("Back up sessions", "Copies new ones every 30 minutes. Nothing at the backup is ever deleted",
-                       "##backup", &c.backup_on)) {
+    if (opt_row_toggle("Backup", "Deleted clips stay there 30 days, then go", "##backup", &c.backup_on)) {
         log_line("options: backup %s", c.backup_on ? "on" : "off");
         options_apply(0);
         if (c.backup_on) backup_now();
     }
     if (opt_row_folder("Backup folder", "Another drive, or a NAS folder such as \\\\nas\\clips", "backupdir", &c.backup_dir)) {
         options_apply(0);
+        backup_measure();
         if (c.backup_on) backup_now();
     }
     {
@@ -5821,23 +5927,47 @@ static void options_general()
                     c.backup_dir = target;
                     log_line("options: backup folder %ls (%s)", target.s, places[i].name);
                     options_apply(0);
+                    backup_measure();
                     if (c.backup_on) backup_now();
                 }
             }
             opt_row_end();
         }
     }
-    if (opt_row_toggle("Clips too", "Not only sessions", "##backupclips", &c.backup_clips)) {
-        log_line("options: backup clips %s", c.backup_clips ? "on" : "off");
-        options_apply(0);
+    {
+        static const char *const what[] = {"Clips##bkwhat0", "Clips and sessions##bkwhat1"};
+        f32 gap = kit_px(6), cw[2];
+        for (i32 i = 0; i < 2; i++) cw[i] = ImGui::CalcTextSize(what[i], 0, true).x + 2 * kit_px(14);
+        opt_row_begin("What to back up", 0, cw[0] + gap + cw[1]);
+        for (i32 i = 0; i < 2; i++) {
+            if (i) ImGui::SameLine(0, gap);
+            if (kit_chip(what[i], c.backup_sessions == (i == 1))) {
+                c.backup_sessions = i == 1;
+                log_line("options: backup %s", c.backup_sessions ? "clips and sessions" : "clips");
+                options_apply(0);
+                if (c.backup_on) backup_now();
+            }
+        }
+        opt_row_end();
+    }
+    {
+        // What the backup holds, read once when this section is first drawn with a folder set
+        static bool asked;
+        OptBackup b = opt_backup_read();
+        if (!b.measured && !asked && c.backup_dir.s[0] && g_backup.state != BACKUP_RUNNING) {
+            asked = true;
+            backup_measure();
+        }
+        opt_backup_space_row(b);
+        opt_backup_cap_row(b);
     }
     {
         char status[300];
         backup_status(status, sizeof status);
         f32 now_w = text_w(g_font, "Back up now") + dp(32);
-        opt_row_begin("Status", status, now_w);
+        opt_row_begin("Last backup", status, now_w);
         if (kit_button("Back up now##backupnow", KIT_SECONDARY, ImVec2(now_w, 0),
-                       c.backup_on && c.backup_dir.s[0] && g_backup.state != BACKUP_RUNNING))
+                       c.backup_on && c.backup_dir.s[0] && !(g_backup.state == BACKUP_RUNNING && !g_backup.measure_only)))
             backup_now();
         opt_row_end();
     }

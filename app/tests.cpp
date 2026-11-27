@@ -310,8 +310,6 @@ static bool test_known(const char *name, char *out, i32 cap)
     return g != 0;
 }
 
-// Backup: new and newer files are copied, fresh ones and ones the backup already has are left, clips only when asked,
-// and nothing at the backup is deleted.
 // A buffer with more stream folders and segments than any fixed size: the index holds all of them, the newest too,
 // and a read since the last one keeps them.
 static void test_buffer_many()
@@ -698,6 +696,72 @@ static void test_backup_places()
     T(!wcscmp(backup_place_target(p).s, L"N:\\" APP_NAME));
 }
 
+// Backup's plan: Data, then the newest clips, then the newest sessions, up to the cap; past it the oldest sessions go
+// first, then the oldest clips. A clip gone from the save folder stays 30 days; a session it let go stays while it
+// fits. Fresh files and unwanted sessions aren't copied.
+static void test_backup_plan()
+{
+    const i64 DAY = 24ll * 3600 * 10000000, now = 400 * DAY;
+    const u64 GB = BACKUP_GB;
+    static BackupFile f[8];
+    auto file = [&](i32 i, const wchar_t *rel, u8 kind, u64 gb, i64 age_days, bool src, bool bk) {
+        BackupFile &e = f[i];
+        e = {};
+        wcscpy_s(e.rel, rel);
+        e.kind = kind;
+        e.size = gb * GB;
+        e.bk_size = bk ? e.size : 0;
+        e.written = now - age_days * DAY;
+        e.at_src = src;
+        e.at_bk = bk;
+        e.newer = src && !bk;
+    };
+    auto at = [&](const wchar_t *rel) -> BackupFile & {
+        for (BackupFile &e : f)
+            if (!wcscmp(e.rel, rel)) return e;
+        return f[0];
+    };
+    file(0, L"Data\\a.edit.txt", BK_DATA, 0, 50, true, false);
+    file(1, L"Clips\\new", BK_CLIP, 10, 1, true, false);
+    file(2, L"Clips\\old", BK_CLIP, 10, 9, true, true);
+    file(3, L"Sessions\\new", BK_SESSION, 30, 2, true, true);
+    file(4, L"Sessions\\old", BK_SESSION, 30, 8, false, true); // the save folder let it go
+    file(5, L"Clips\\gone", BK_CLIP, 5, 20, false, true);
+    f[5].gone_since = now - 29 * DAY;
+    file(6, L"Clips\\long gone", BK_CLIP, 5, 40, false, true);
+    f[6].gone_since = now - 30 * DAY;
+    file(7, L"Sessions\\fresh", BK_SESSION, 1, 0, true, false);
+    f[7].fresh = true;
+
+    // Room for all: only the clip gone 30 days goes, and the fresh session waits
+    T(backup_plan(f, 8, 100 * GB, now, true) == 85 * GB);
+    T(f[0].kind == BK_DATA && f[1].kind == BK_CLIP && f[1].written > f[2].written);
+    T(at(L"Data\\a.edit.txt").act == BK_COPY && at(L"Clips\\new").act == BK_COPY && at(L"Clips\\old").act == BK_KEEP);
+    T(at(L"Clips\\gone").act == BK_KEEP && at(L"Clips\\long gone").act == BK_DROP);
+    T(at(L"Sessions\\old").act == BK_KEEP && at(L"Sessions\\fresh").act == BK_SKIP);
+    // Less room: the oldest session, then the other, then the oldest clip; Data stays
+    T(backup_plan(f, 8, 60 * GB, now, true) == 55 * GB && at(L"Sessions\\old").act == BK_DROP &&
+      at(L"Sessions\\new").act == BK_KEEP);
+    T(backup_plan(f, 8, 30 * GB, now, true) == 25 * GB && at(L"Sessions\\new").act == BK_DROP);
+    T(backup_plan(f, 8, 20 * GB, now, true) == 20 * GB && at(L"Clips\\gone").act == BK_DROP &&
+      at(L"Clips\\old").act == BK_KEEP && at(L"Data\\a.edit.txt").act == BK_COPY);
+    T(backup_plan(f, 8, 5 * GB, now, true) == 0 && at(L"Clips\\new").act == BK_SKIP && at(L"Clips\\old").act == BK_DROP);
+    // Sessions not wanted: one only at the save folder isn't copied; one at the backup stays, however long gone
+    BackupFile &sn = at(L"Sessions\\new");
+    sn.at_bk = false;
+    sn.bk_size = 0;
+    sn.newer = true;
+    at(L"Sessions\\old").gone_since = now - 100 * DAY;
+    T(backup_plan(f, 8, 100 * GB, now, false) == 55 * GB && at(L"Sessions\\new").act == BK_SKIP &&
+      at(L"Sessions\\old").act == BK_KEEP);
+
+    // The cap: the player's, else half the room in whole GB, at least 1
+    T(backup_default_cap(301 * GB) == 150 * GB && backup_default_cap(GB) == GB);
+    T(backup_cap(-1, 400 * GB) == 200 * GB && backup_cap(50, 400 * GB) == 50 * GB);
+}
+
+// Backup on folders: clips by default, sessions when asked, never fresh or .part files; a deleted clip is listed in
+// Deleted.txt and goes 30 days on; past the cap the oldest session goes first; a measure changes nothing.
 static void test_backup()
 {
     wchar_t temp[MAX_PATH];
@@ -720,6 +784,12 @@ static void test_backup()
         CloseHandle(h);
     };
     auto has = [](const Path &p) { return GetFileAttributesW(p.s) != INVALID_FILE_ATTRIBUTES; };
+    auto run = []() {
+        g_backup.error[0] = 0;
+        g_backup.done = g_backup.total = g_backup.failed = g_backup.dropped = 0;
+        g_backup.before = g_backup.state;
+        backup_thread(0);
+    };
     Path ses = save_sessions_dir(from, 2026), clips = save_clips_dir(from, 2026);
     Path bses = save_sessions_dir(to, 2026), bclips = save_clips_dir(to, 2026);
     put(ses, L"a.mp4", "a", 3600);
@@ -728,33 +798,66 @@ static void test_backup()
     put(clips, L"c.mp4", "c", 3600);
     put(save_source_dir(from, 2026), L"d.mp4", "d", 3600);
     put(save_data_dir(from), L"a.session.txt", "r", 3600);
-    put(bses, L"old.mp4", "o", 3600); // only at the backup: stays
+    put(save_data_dir(from), L"c.edit.txt", "e", 3600);
+    put(bses, L"old.mp4", "o", 7200);     // a session the save folder let go
+    put(bclips, L"gone.mp4", "g", 7200);  // a clip deleted from the save folder
 
     g_backup.from = from;
     g_backup.to = to;
-    g_backup.clips = false;
-    g_backup.done = g_backup.total = g_backup.failed = 0;
-    g_backup.error[0] = 0;
+    g_backup.sessions = false;
+    g_backup.cap_gb = -1;
+    g_backup.measure_only = false;
+    g_backup.state = BACKUP_IDLE;
     InitializeCriticalSection(&g_backup.lock);
-    backup_thread(0);
-    T(g_backup.state == BACKUP_DONE && g_backup.done == 2 && g_backup.total == 2);
-    T(has(path_join(bses, L"a.mp4")) && !has(path_join(bses, L"fresh.mp4")) && !has(path_join(bses, L"b.mp4.part")));
-    T(has(path_join(save_data_dir(to), L"a.session.txt")));
-    T(!has(path_join(bclips, L"c.mp4")) && has(path_join(bses, L"old.mp4")));
+    run();
+    T(g_backup.state == BACKUP_DONE && g_backup.done == 4 && g_backup.total == 4 && !g_backup.dropped);
+    T(has(path_join(bclips, L"c.mp4")) && has(path_join(save_source_dir(to, 2026), L"d.mp4")));
+    T(has(path_join(save_data_dir(to), L"a.session.txt")) && !has(path_join(bses, L"a.mp4")));
+    T(has(path_join(bses, L"old.mp4")) && has(path_join(bclips, L"gone.mp4")));
+    T(g_backup.used[BK_DATA] == 2 && g_backup.used[BK_CLIP] == 3 && g_backup.used[BK_SESSION] == 1 && g_backup.last_us > 0);
+    char line[256] = "";
+    Path ledger = path_join(to, BACKUP_LEDGER);
+    if (FILE *lf = _wfopen(ledger.s, L"rb")) {
+        if (!fgets(line, sizeof line, lf)) line[0] = 0;
+        fclose(lf);
+    }
+    T(strstr(line, " Clips\\2026\\gone.mp4") != 0);
 
-    g_backup.clips = true;
-    g_backup.done = g_backup.total = 0;
-    backup_thread(0);
-    T(g_backup.done == 2 && has(path_join(bclips, L"c.mp4"))); // a.mp4 is there already
-    T(has(path_join(save_source_dir(to, 2026), L"d.mp4")));
+    // Sessions too: a.mp4, not the fresh one nor the .part
+    g_backup.sessions = true;
+    run();
+    T(g_backup.done == 1 && has(path_join(bses, L"a.mp4")) && !has(path_join(bses, L"fresh.mp4")) &&
+      !has(path_join(bses, L"b.mp4.part")));
 
-    put(ses, L"a.mp4", "a2", 600); // changed since
-    g_backup.done = g_backup.total = 0;
-    backup_thread(0);
-    T(g_backup.done == 1);
+    // Thirty days on, the deleted clip goes; the session the save folder let go stays
+    if (FILE *lf = _wfopen(ledger.s, L"wb")) {
+        fprintf(lf, "%lld Clips\\2026\\gone.mp4\n", (long long)(backup_now_100ns() - BACKUP_KEEP_GONE_100NS - 10000000));
+        fclose(lf);
+    }
+    run();
+    T(g_backup.dropped == 1 && !has(path_join(bclips, L"gone.mp4")) && has(path_join(bses, L"old.mp4")));
+
+    // A measure only reads, whatever the cap
+    g_backup.cap_gb = 4.5e-9f; // 4 bytes
+    g_backup.measure_only = true;
+    LONG was = g_backup.state;
+    run();
+    T(g_backup.state == was && has(path_join(bses, L"old.mp4")) && has(path_join(bses, L"a.mp4")));
+    g_backup.measure_only = false;
+    // 5 bytes: Data (2) and both clips fit, then the newer session; the older one goes
+    g_backup.cap_gb = 5.5e-9f;
+    run();
+    T(has(path_join(bses, L"a.mp4")) && !has(path_join(bses, L"old.mp4")) && g_backup.used[BK_SESSION] == 1);
+    // 4 bytes: the other session too, the clips stay
+    g_backup.cap_gb = 4.5e-9f;
+    run();
+    T(!has(path_join(bses, L"a.mp4")) && has(path_join(bclips, L"c.mp4")) && g_backup.used[BK_SESSION] == 0);
+
     T(backup_same_folder(from, from) && !backup_same_folder(from, to));
     DeleteCriticalSection(&g_backup.lock);
     g_backup.state = BACKUP_IDLE;
+    g_backup.sessions = false;
+    g_backup.cap_gb = -1;
 
     SHFILEOPSTRUCTW op = {};
     wchar_t dbl[MAX_PATH + 2] = {};
@@ -6984,6 +7087,7 @@ int main()
     test_ffmpeg_tools_ignored();
     test_ffmpeg_check();
     test_telemetry();
+    test_backup_plan();
     test_backup();
     test_backup_places();
     test_webcam();
