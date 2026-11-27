@@ -5997,7 +5997,7 @@ static void options_general()
         options_apply(0);
     }
     ImGui::BeginDisabled(!c.game_lookup);
-    if (opt_row_toggle("Send usage stats", "Once a day: the version, Windows build, encoder, and how many clips, saves, shares and links. No names or files",
+    if (opt_row_toggle("Send usage stats", "Once a day: the version, Windows build, encoder, how many clips, saves, shares and links, and which games you played, for how long and how many clips. Your settings when they change, at most weekly: values only, for folders, keys and hotkeys only whether you changed them. No paths, names or files",
                        "##stats", &c.send_stats)) {
         log_line("options: usage stats %s", c.send_stats ? "on" : "off");
         options_apply(0);

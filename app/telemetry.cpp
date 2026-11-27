@@ -1,7 +1,11 @@
 // Usage stats, feedback and crash reports, to the service art_service names as signed POSTs, like /v1/lookup.
 //   /v1/stats     once a day at most, only while "Send usage stats" is on: the version, Windows build, encoder, fps
-//                 and height, and how many clips, saves, shares, links and slow-PC warnings since the last report
-//                 that went through. The counts are kept in <local_dir>\stats.txt so they outlive a restart.
+//                 and height, how many clips, saves, shares, links and slow-PC warnings since the last report that
+//                 went through, and per game the service has a key for, the minutes played (to the nearest 15) and
+//                 clips made. The counts are kept in <local_dir>\stats.txt so they outlive a restart.
+//   /v1/settings  with the same switch: the settings on SETTINGS_SENT's list, as plain values (on/off, a choice, a
+//                 whole number), and for the personal ones only whether they differ from the default. Sent once,
+//                 then when they change, at most once a week (tel_settings_json).
 //   /v1/feedback  what the player writes in Options > General > Feedback: a bug or an idea.
 //   /v1/artreport a game whose art looks wrong, from the same card's Game art tab: the game's service key, the
 //                 name shown and a short note.
@@ -10,6 +14,10 @@
 // With "Look up games online" off, or no service (art_service empty, or another host with no key), none is sent. The version is REKODR_VERSION (version.h).
 
 struct StatCounts { i32 clips, saves, shares, links, strain; };
+
+// A game's play time and clips since the last report, by the service's key for it.
+struct TelGame { char key[48]; i32 secs, clips; };
+enum { TEL_GAMES = 64, TEL_GAMES_SENT = 30 };
 
 struct Telemetry {
     StatCounts counts;
@@ -21,6 +29,20 @@ struct Telemetry {
     volatile LONG stats_busy;
     HANDLE stats_thread;
     StatCounts sending; // the counts the report in flight carries
+    TelGame games[TEL_GAMES];
+    i32     game_count;
+    TelGame games_sending[TEL_GAMES_SENT]; // the games the report in flight carries
+    i32     games_sending_count;
+    char    play_exe[64];  // the game being played as last seen, and the service's key for it ("" = none known)
+    char    play_key[48];
+    i64     play_key_next; // with no key yet, asked again from then
+    // The settings report
+    i64  settings_sent;    // unix seconds of the last one that went through, 0 = never
+    u64  settings_hash;    // what it carried (fnv64 of its settings)
+    i64  settings_next;    // not looked at again before this
+    u64  settings_sending;
+    volatile LONG settings_busy;
+    HANDLE settings_thread;
     // Feedback and art reports, from the Options card: one in flight at a time
     volatile LONG fb_busy;
     HANDLE fb_thread;
@@ -52,6 +74,10 @@ static void tel_save()
     const StatCounts &c = g_tel.counts;
     fprintf(f, "sent = %lld\nclips = %d\nsaves = %d\nshares = %d\nlinks = %d\nstrain = %d\n", g_tel.sent, c.clips,
             c.saves, c.shares, c.links, c.strain);
+    fprintf(f, "settings_sent = %lld\nsettings_hash = %llu\n", g_tel.settings_sent,
+            (unsigned long long)g_tel.settings_hash);
+    for (i32 i = 0; i < g_tel.game_count; i++)
+        fprintf(f, "game = %s %d %d\n", g_tel.games[i].key, g_tel.games[i].secs, g_tel.games[i].clips);
     fclose(f);
 }
 
@@ -65,8 +91,23 @@ static void tel_load()
     char line[128];
     StatCounts &c = g_tel.counts;
     while (fgets(line, sizeof line, f)) {
-        char key[32];
+        char key[48];
         long long v;
+        i32 secs, clips;
+        unsigned long long hash;
+        if (sscanf(line, "game = %47s %d %d", key, &secs, &clips) == 3) {
+            if (g_tel.game_count < TEL_GAMES) {
+                TelGame &g = g_tel.games[g_tel.game_count++];
+                g = {};
+                str_set(g.key, key);
+                g.secs = secs, g.clips = clips;
+            }
+            continue;
+        }
+        if (sscanf(line, "settings_hash = %llu", &hash) == 1) {
+            g_tel.settings_hash = hash;
+            continue;
+        }
         if (sscanf(line, "%31s = %lld", key, &v) != 2) continue;
         if (!strcmp(key, "sent")) g_tel.sent = v;
         else if (!strcmp(key, "clips")) c.clips = (i32)v;
@@ -74,6 +115,7 @@ static void tel_load()
         else if (!strcmp(key, "shares")) c.shares = (i32)v;
         else if (!strcmp(key, "links")) c.links = (i32)v;
         else if (!strcmp(key, "strain")) c.strain = (i32)v;
+        else if (!strcmp(key, "settings_sent")) g_tel.settings_sent = v;
     }
     fclose(f);
 }
@@ -85,13 +127,39 @@ static void tel_count(i32 StatCounts::*field)
     tel_save();
 }
 
+// Whether play time and clips per game are counted: "Send usage stats" on, with a service to send them to.
+static bool tel_games_on()
+{
+    const Config &c = g_app.config;
+    return c.send_stats && c.game_lookup && g_gamedb.service[0];
+}
+
+// The game with the service key `key` in the counts, added when it isn't there; 0 when they're full.
+static TelGame *tel_game(const char *key)
+{
+    for (i32 i = 0; i < g_tel.game_count; i++)
+        if (!strcmp(g_tel.games[i].key, key)) return &g_tel.games[i];
+    if (g_tel.game_count >= TEL_GAMES) return 0;
+    TelGame *g = &g_tel.games[g_tel.game_count++];
+    *g = {};
+    str_set(g->key, key);
+    return g;
+}
+
 // A save that finished: a clip, a session or a Keep, or a share copy.
 static void telemetry_on_save(const Event &e)
 {
     if (e.a != SAVE_EV_DONE) return;
     const SaveJobView *v = save_view((u32)(e.b & 0xffffffff));
     if (!v) return;
-    if (v->kind == SAVE_CLIP) tel_count(&StatCounts::clips);
+    if (v->kind == SAVE_CLIP) {
+        char key[48];
+        TelGame *g = 0;
+        if (tel_games_on() && v->game[0] && strcmp(v->game, GAME_DESKTOP) && gamedb_key_for(v->game, key, sizeof key))
+            g = tel_game(key);
+        if (g) g->clips++;
+        tel_count(&StatCounts::clips);
+    }
     else if (v->kind == SAVE_SESSION || v->kind == SAVE_KEEP) tel_count(&StatCounts::saves);
     else if (v->kind == SAVE_SHARE) tel_count(&StatCounts::shares);
 }
@@ -125,17 +193,208 @@ static void tel_windows_build(char *out, i32 cap)
     wide_to_utf8(w, out, cap);
 }
 
-// The report's JSON, with the counts in c.
-static void tel_stats_json(const StatCounts &c, char *out, i32 cap)
+// Minutes played to the nearest 15.
+static i32 tel_minutes(i32 secs) { return (secs + 450) / 900 * 15; }
+
+// The games a report carries, into out (at most TEL_GAMES_SENT): the most played of those with any rounded minutes
+// or clips. The rest wait for a later one. Returns how many.
+static i32 tel_games_pick(const TelGame *games, i32 n, TelGame *out)
+{
+    i32 k = 0;
+    for (i32 i = 0; i < n; i++) {
+        if (!tel_minutes(games[i].secs) && !games[i].clips) continue;
+        i32 at = k < TEL_GAMES_SENT ? k++ : TEL_GAMES_SENT;
+        while (at > 0 && out[at - 1].secs < games[i].secs) {
+            if (at < TEL_GAMES_SENT) out[at] = out[at - 1];
+            at--;
+        }
+        if (at < TEL_GAMES_SENT) out[at] = games[i];
+    }
+    return k;
+}
+
+// The report's JSON, with the counts in c and the games in games.
+static void tel_stats_json(const StatCounts &c, const TelGame *games, i32 game_count, char *out, i32 cap)
 {
     const Config &cfg = g_app.config;
     char win[32], enc[80];
     tel_windows_build(win, sizeof win);
     json_escape(g_app.recorder.encoder_used.s[0] ? g_app.recorder.encoder_used.s : cfg.encoder.s, enc, sizeof enc);
-    snprintf(out, cap,
-             "{\"version\":\"%s\",\"windows\":\"%s\",\"encoder\":\"%s\",\"fps\":%d,\"height\":%d,\"clips\":%d,"
-             "\"saves\":%d,\"shares\":%d,\"links\":%d,\"strain\":%d}",
-             REKODR_VERSION, win, enc, (int)cfg.fps, (int)cfg.height, c.clips, c.saves, c.shares, c.links, c.strain);
+    i32 k = snprintf(out, cap,
+                     "{\"version\":\"%s\",\"windows\":\"%s\",\"encoder\":\"%s\",\"fps\":%d,\"height\":%d,\"clips\":%d,"
+                     "\"saves\":%d,\"shares\":%d,\"links\":%d,\"strain\":%d,\"games\":[",
+                     REKODR_VERSION, win, enc, (int)cfg.fps, (int)cfg.height, c.clips, c.saves, c.shares, c.links, c.strain);
+    for (i32 i = 0; i < game_count && k < cap; i++) {
+        char key[100];
+        json_escape(games[i].key, key, sizeof key);
+        k += snprintf(out + k, cap - k, "%s{\"key\":\"%s\",\"minutes\":%d,\"clips\":%d}", i ? "," : "", key,
+                      tel_minutes(games[i].secs), games[i].clips);
+    }
+    if (k < cap) snprintf(out + k, cap - k, "]}");
+}
+
+// The settings report's "settings" object, from c, with d the defaults: SETTINGS_SENT's names only, each a plain
+// value. Paths, keys, hosts, names and anything typed are never in it; for those only whether they differ from d.
+static void tel_settings_json(const Config &c, const Config &d, char *out, i32 cap)
+{
+    i32 k = snprintf(out, cap, "{");
+    auto put = [&](const char *name, const char *value) {
+        if (k < cap) k += snprintf(out + k, cap - k, "%s\"%s\":%s", k > 1 ? "," : "", name, value);
+    };
+    auto flag = [&](const char *name, bool v) { put(name, v ? "true" : "false"); };
+    auto num = [&](const char *name, f64 v) {
+        char s[32];
+        snprintf(s, sizeof s, "%lld", (long long)floor(v + 0.5));
+        put(name, s);
+    };
+    // A choice is sent only when it is one of the list's, so nothing typed into settings.txt goes
+    auto choice = [&](const char *name, const char *v, const char *list) { // list: "a|b|c"
+        size_t n = strlen(v);
+        for (const char *one = list; n && *one;) {
+            const char *e = strchr(one, '|');
+            size_t len = e ? (size_t)(e - one) : strlen(one);
+            if (len == n && !strncmp(one, v, n)) {
+                char s[40];
+                snprintf(s, sizeof s, "\"%s\"", v);
+                put(name, s);
+                return;
+            }
+            one = e ? e + 1 : one + len;
+        }
+    };
+    flag("draw_mouse", c.draw_mouse);
+    flag("window_capture", c.window_capture);
+    flag("spatial_aq", c.spatial_aq);
+    flag("mic", c.mic);
+    flag("buffer_by_size", c.buffer_by_size);
+    flag("cam_on", c.cam_on);
+    flag("mic_raw", c.mic_raw);
+    flag("voice_mono", c.voice_mono);
+    flag("share_names", c.share_names);
+    flag("steam_type_check", c.steam_type_check);
+    flag("send_crashes", c.send_crashes);
+    flag("auto_update", c.auto_update);
+    flag("render_edits", c.render_edits);
+    flag("share_kbps_custom", c.share_kbps_custom);
+    flag("share_link_page", c.share_link_page);
+    flag("share_copy_on_close", c.share_copy_on_close);
+    flag("auto_marks", c.auto_marks);
+    flag("ach_marks", c.ach_marks);
+    flag("backup_on", c.backup_on);
+    flag("backup_sessions", c.backup_sessions);
+    flag("tooltips", c.tooltips);
+    flag("flat_look", c.flat_look);
+    flag("front_window", c.front_window);
+    flag("input_busy", c.input_busy);
+    flag("timeline_simple", c.timeline_simple);
+    flag("clock_24h", c.clock_24h);
+    choice("codec", c.codec.s, "h264|hevc|av1");
+    choice("encoder", c.encoder.s, "auto|nvenc|amf|qsv|cpu");
+    choice("capture", c.capture.s, "auto|wgc|dxgi");
+    choice("preset", c.preset.s, "p1|p2|p3|p4|p5|p6|p7");
+    choice("rate_control", c.rate_control.s, "vbr|cbr|cq");
+    choice("toast_clip", toast_clip_name(c.toast_clip), "full|small|off");
+    choice("popup_corner", corner_name(c.popup_corner), "br|bl|tr|tl");
+    choice("editor_zoom_view", c.editor_zoom_view ? "footage" : "crop", "crop|footage");
+    num("fps", c.fps);
+    num("height", c.height);
+    num("bitrate_mbps", c.bitrate_mbps);
+    num("desktop_bitrate_mbps", c.desktop_bitrate_mbps);
+    num("cq", c.cq);
+    num("buffer_hours", c.buffer_hours);
+    num("buffer_gb", c.buffer_gb);
+    num("min_free_gb", c.min_free_gb);
+    num("session_gap_min", c.session_gap_min);
+    num("session_min_length_min", c.session_min_length_min);
+    num("share_max_mb", c.share_max_mb);
+    num("social_copy_mb", c.social_copy_mb);
+    num("share_min_quality", c.share_min_quality);
+    num("share_link_days", c.share_link_days);
+    num("ach_rarer", c.ach_rarer);
+    num("folder_warn_gb", c.folder_warn_gb);
+    num("share_keep_days", c.share_keep_days);
+    num("wave_keep_days", c.wave_keep_days);
+    num("card_width", c.card_width);
+    num("mics_added", c.input_count);
+    num("hotkeys", c.hotkey_count);
+    num("watch_folders", c.watch_count);
+    bool watch = c.watch_count != d.watch_count;
+    for (i32 i = 0; i < c.watch_count && !watch; i++) watch = _wcsicmp(c.watch_dirs[i].s, d.watch_dirs[i].s) != 0;
+    bool hotkey = c.hotkey_count != d.hotkey_count;
+    for (i32 i = 0; i < c.hotkey_count && !hotkey; i++) {
+        const Hotkey &a = c.hotkeys[i], &b = d.hotkeys[i];
+        hotkey = strcmp(a.keys.s, b.keys.s) || strcmp(a.action.s, b.action.s) || strcmp(a.hold.s, b.hold.s) ||
+                 strcmp(a.game.s, b.game.s);
+    }
+    bool sounds = false;
+    for (i32 i = 0; i < SOUND_EVENT_COUNT && !sounds; i++)
+        sounds = c.sounds[i].on != d.sounds[i].on || c.sounds[i].sound != d.sounds[i].sound ||
+                 wcscmp(c.sounds[i].own.s, d.sounds[i].own.s);
+    flag("save_dir_changed", _wcsicmp(c.save_dir.s, d.save_dir.s) != 0);
+    flag("buffer_dir_changed", _wcsicmp(c.buffer_dir.s, d.buffer_dir.s) != 0);
+    flag("play_dir_changed", _wcsicmp(c.play_dir.s, d.play_dir.s) != 0);
+    flag("backup_dir_set", c.backup_dir.s[0] != 0);
+    flag("discord_dir_changed", _wcsicmp(c.discord_dir.s, d.discord_dir.s) != 0);
+    flag("watch_dirs_changed", watch);
+    flag("ffmpeg_changed", c.ffmpeg.s[0] != 0);
+    flag("hotkey_changed", hotkey);
+    flag("name_template_changed", strcmp(c.name_template, d.name_template) != 0);
+    flag("accent_changed", c.accent != d.accent);
+    flag("sounds_changed", sounds);
+    flag("popup_monitor_changed", c.popup_monitor != d.popup_monitor || c.popup_monitor_game != d.popup_monitor_game);
+    flag("encoder_args_set", c.encoder_args[0] != 0);
+    flag("art_service_changed", strcmp(c.art_service.s, d.art_service.s) != 0);
+    flag("sgdb_key_set", c.sgdb_key[0] != 0);
+    flag("r2_set", c.r2_account[0] != 0);
+    flag("uploaders_set", c.link_uploaders[0] != 0);
+    if (k < cap) snprintf(out + k, cap - k, "}");
+}
+
+static DWORD WINAPI tel_settings_thread(void *arg)
+{
+    char *json = (char *)arg;
+    u32 status = tel_post("/v1/settings", json);
+    log_line("stats: settings sent, the service answered %u", status);
+    free(json);
+    InterlockedExchange(&g_tel.settings_busy, status == 200 ? 2 : 3);
+    return 0;
+}
+
+static const i64 SETTINGS_EVERY_S = 7 * 24 * 3600;
+
+// Once a second from telemetry_tick: sends the settings when they haven't gone yet, or changed and a week has
+// passed since they last went.
+static void tel_settings_tick(i64 now)
+{
+    LONG busy = g_tel.settings_busy;
+    if (busy >= 2) {
+        WaitForSingleObject(g_tel.settings_thread, INFINITE);
+        CloseHandle(g_tel.settings_thread);
+        g_tel.settings_thread = 0;
+        if (busy == 2) {
+            g_tel.settings_sent = now;
+            g_tel.settings_hash = g_tel.settings_sending;
+            tel_save();
+        }
+        g_tel.settings_next = now + 3600;
+        InterlockedExchange(&g_tel.settings_busy, 0);
+        return;
+    }
+    if (busy || !tel_games_on() || now < g_tel.settings_next) return;
+    if (g_tel.settings_sent && now - g_tel.settings_sent < SETTINGS_EVERY_S) return;
+    g_tel.settings_next = now + 3600;
+    static Config defaults;
+    config_defaults(&defaults, g_app.paths);
+    static char settings[8192];
+    tel_settings_json(g_app.config, defaults, settings, sizeof settings);
+    u64 hash = fnv64(settings, strlen(settings));
+    if (g_tel.settings_sent && hash == g_tel.settings_hash) return;
+    i32 cap = (i32)strlen(settings) + 64;
+    char *json = (char *)malloc(cap);
+    snprintf(json, cap, "{\"version\":\"%s\",\"settings\":%s}", REKODR_VERSION, settings);
+    g_tel.settings_sending = hash;
+    InterlockedExchange(&g_tel.settings_busy, 1);
+    g_tel.settings_thread = thread_start(tel_settings_thread, json);
 }
 
 static DWORD WINAPI tel_stats_thread(void *arg)
@@ -450,6 +709,21 @@ static void telemetry_tick()
     for (i32 i = 0; i < links; i++) tel_count(&StatCounts::links);
 
     i64 now = tel_unix_now();
+    // A second of the game being played, on the service's key for it
+    const char *exe = g_app.audio.game.s;
+    if (!exe[0] || !tel_games_on()) g_tel.play_exe[0] = 0;
+    else {
+        if (strcmp(exe, g_tel.play_exe) || (!g_tel.play_key[0] && now >= g_tel.play_key_next)) {
+            char name[128];
+            audio_display_name(c, exe, name, sizeof name);
+            if (!gamedb_key_for(name, g_tel.play_key, sizeof g_tel.play_key)) g_tel.play_key[0] = 0;
+            str_set(g_tel.play_exe, exe);
+            g_tel.play_key_next = now + 60; // the lookup may not have answered yet
+        }
+        TelGame *g = g_tel.play_key[0] ? tel_game(g_tel.play_key) : 0;
+        if (g && ++g->secs % 60 == 0) tel_save();
+    }
+    tel_settings_tick(now);
     LONG busy = g_tel.stats_busy;
     if (busy >= 2) { // a report came back
         if (g_tel.stats_thread) {
@@ -461,6 +735,14 @@ static void telemetry_tick()
             StatCounts &k = g_tel.counts;
             const StatCounts &s = g_tel.sending;
             k.clips -= s.clips, k.saves -= s.saves, k.shares -= s.shares, k.links -= s.links, k.strain -= s.strain;
+            for (i32 i = 0; i < g_tel.games_sending_count; i++) {
+                TelGame *g = tel_game(g_tel.games_sending[i].key);
+                if (g) g->secs -= g_tel.games_sending[i].secs, g->clips -= g_tel.games_sending[i].clips;
+            }
+            i32 kept = 0;
+            for (i32 i = 0; i < g_tel.game_count; i++)
+                if (g_tel.games[i].secs > 0 || g_tel.games[i].clips > 0) g_tel.games[kept++] = g_tel.games[i];
+            g_tel.game_count = kept;
             g_tel.sent = now;
             tel_save();
         } else g_tel.next_try = now + 3600;
@@ -469,8 +751,9 @@ static void telemetry_tick()
     }
     if (busy || !c.send_stats || !c.game_lookup || !g_gamedb.service[0] || now - g_tel.sent < STATS_EVERY_S || now < g_tel.next_try) return;
     g_tel.sending = g_tel.counts;
-    char *json = (char *)malloc(512);
-    tel_stats_json(g_tel.sending, json, 512);
+    g_tel.games_sending_count = tel_games_pick(g_tel.games, g_tel.game_count, g_tel.games_sending);
+    char *json = (char *)malloc(4096);
+    tel_stats_json(g_tel.sending, g_tel.games_sending, g_tel.games_sending_count, json, 4096);
     InterlockedExchange(&g_tel.stats_busy, 1);
     g_tel.stats_thread = thread_start(tel_stats_thread, json);
 }
@@ -562,7 +845,7 @@ static bool art_report_send(const char *key, const char *name, const char *note)
 
 static void telemetry_stop()
 {
-    HANDLE both[] = {g_tel.stats_thread, g_tel.fb_thread};
+    HANDLE both[] = {g_tel.stats_thread, g_tel.fb_thread, g_tel.settings_thread};
     for (HANDLE h : both)
         if (h) WaitForSingleObject(h, 5000);
 }

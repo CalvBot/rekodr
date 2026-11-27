@@ -934,8 +934,50 @@ static void test_telemetry()
 {
     static char out[8192];
     StatCounts c = {3, 1, 2, 4, 5};
-    tel_stats_json(c, out, sizeof out);
-    T(strstr(out, "\"version\":\"" REKODR_VERSION "\"") && strstr(out, "\"clips\":3,\"saves\":1,\"shares\":2,\"links\":4,\"strain\":5}"));
+    tel_stats_json(c, 0, 0, out, sizeof out);
+    T(strstr(out, "\"version\":\"" REKODR_VERSION "\"") && strstr(out, "\"clips\":3,\"saves\":1,\"shares\":2,\"links\":4,\"strain\":5,\"games\":[]}"));
+    // Per game: minutes to the nearest 15, the most played first, at most TEL_GAMES_SENT; one with nothing to
+    // show waits
+    T(tel_minutes(0) == 0 && tel_minutes(449) == 0 && tel_minutes(450) == 15 && tel_minutes(5400) == 90 && tel_minutes(6300) == 105);
+    static TelGame games[TEL_GAMES], picked[TEL_GAMES_SENT];
+    games[0] = {"d1", 1000, 0};
+    games[1] = {"d2", 60, 0};   // under 7.5 minutes and no clips: not yet
+    games[2] = {"s9", 60, 2};   // no minutes but clips
+    games[3] = {"d3", 5400, 4};
+    i32 n = tel_games_pick(games, 4, picked);
+    T(n == 3 && !strcmp(picked[0].key, "d3") && !strcmp(picked[1].key, "d1") && !strcmp(picked[2].key, "s9"));
+    tel_stats_json(c, picked, n, out, sizeof out);
+    T(strstr(out, "\"games\":[{\"key\":\"d3\",\"minutes\":90,\"clips\":4},{\"key\":\"d1\",\"minutes\":15,\"clips\":0},"
+                  "{\"key\":\"s9\",\"minutes\":0,\"clips\":2}]}"));
+    for (i32 i = 0; i < TEL_GAMES; i++) {
+        games[i] = {};
+        snprintf(games[i].key, sizeof games[i].key, "d%d", i);
+        games[i].secs = 900 * (i + 1);
+    }
+    n = tel_games_pick(games, TEL_GAMES, picked);
+    T(n == TEL_GAMES_SENT && !strcmp(picked[0].key, "d63") && !strcmp(picked[TEL_GAMES_SENT - 1].key, "d34"));
+    // Settings: plain values, and for personal ones only whether they changed; never a path, key or name
+    {
+        static Config d, s;
+        config_defaults(&d, g_app.paths);
+        s = d;
+        tel_settings_json(s, d, out, sizeof out);
+        T(out[0] == '{' && strstr(out, "\"fps\":60,") && strstr(out, "\"codec\":\"h264\"") && strstr(out, "\"draw_mouse\":true") &&
+          strstr(out, "\"hotkey_changed\":false") && strstr(out, "\"save_dir_changed\":false") && strstr(out, "\"r2_set\":false,") && strstr(out, "\"uploaders_set\":false}"));
+        i32 names = 0;
+        for (const char *p = out; *p; p++) names += *p == ':';
+        T(names == 73);
+        swprintf(s.save_dir.s, MAX_PATH, L"D:\\Secret Folder");
+        str_set(s.hotkeys[0].keys.s, "Ctrl+F9");
+        str_set(s.sgdb_key, "abcdef0123456789");
+        str_set(s.r2_account, "0123456789abcdef");
+        str_set(s.codec.s, "typed by hand");
+        s.bitrate_mbps = 34.6f;
+        tel_settings_json(s, d, out, sizeof out);
+        T(strstr(out, "\"save_dir_changed\":true") && strstr(out, "\"hotkey_changed\":true") && strstr(out, "\"sgdb_key_set\":true") &&
+          strstr(out, "\"r2_set\":true") && strstr(out, "\"bitrate_mbps\":35,") && !strstr(out, "codec"));
+        T(!strstr(out, "Secret") && !strstr(out, "Ctrl") && !strstr(out, "abcdef") && !strstr(out, "\\"));
+    }
     tel_feedback_json(1, "  it \"works\"\n", out, sizeof out);
     T(!strcmp(out, "{\"version\":\"" REKODR_VERSION "\",\"kind\":\"idea\",\"text\":\"it \\\"works\\\"\"}"));
     static char longer[3000];
