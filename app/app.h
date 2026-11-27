@@ -1151,6 +1151,8 @@ struct Session {
     char         exe[64];          // the game (lower case); empty for a custom session
     u32          pid;              // the game's process for an exe several games share (javaw.exe), 0 = not known
                                    // yet; in memory only, so after a restart the first one seen is taken
+    i64          carried_us;       // open across a restart on such an exe: when it was last seen before it, until the exe is
+                                   // named again (0 = not carried); in memory only
     char         name[128];        // shown, and names the file: "Overwatch", "Stream with Sam"
     i64          start_us, end_us; // the real start and end; while open, end is when the game was last seen
     u32          job;              // the save job while SAVING

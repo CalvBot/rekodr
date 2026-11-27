@@ -539,6 +539,12 @@ static void sessions_load()
     }
     if (loaded) log_line("sessions: %d carried over from the last run", loaded);
     sessions_replay(alive_until);
+    // Neither the process nor the name of a shared exe survives a restart: its open session waits for the exe to
+    // be named again, and ends where it was if that is another game.
+    for (i32 i = 0; i < COUNT(ss.items); i++) {
+        Session *s = &ss.items[i];
+        if (s->state == SES_OPEN && !s->custom && is_java_exe(s->exe)) s->carried_us = s->end_us ? s->end_us : 1;
+    }
     ss.dirty = true;
 }
 
@@ -659,6 +665,19 @@ static void sessions_game_renamed(const char *exe, bool other_game)
         if (s->state != SES_OPEN || s->custom || strcmp(s->exe, exe)) continue;
         char name[128];
         sessions_game_name(exe, name);
+        if (s->carried_us) {
+            // Its window names Minecraft before the service names the modpack: that isn't the answer yet.
+            if (!strcmp(name, "Minecraft") && strcmp(s->name, "Minecraft")) continue;
+            if (strcmp(name, s->name)) {
+                log_line("session %u (%s): %s is %s after the restart; a new session starts", s->id, s->name, exe,
+                         name);
+                s->end_us = s->carried_us;
+                session_end(s);
+                ss.dirty = true;
+            }
+            s->carried_us = 0;
+            continue;
+        }
         if (!strcmp(name, s->name)) continue;
         if (other_game) {
             log_line("session %u (%s): %s is now %s; a new session starts", s->id, s->name, exe, name);

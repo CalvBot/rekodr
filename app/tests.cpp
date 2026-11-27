@@ -1223,6 +1223,37 @@ static void test_sessions_other_game()
     s = session_new("javaw.exe", "All the Mods 10", t, t);
     sessions_observe(t + 1000000ll, "javaw.exe", 300);
     T(s->state == SES_OPEN && s->pid == 300 && s->end_us == t + 1000000ll);
+    // Carried over a restart and the exe named another game (Rekodr restarted between two packs, inside the gap):
+    // it ends where it was last seen before the restart. The window's "Minecraft" before the pack's name isn't it.
+    memset(&ss, 0, sizeof ss);
+    ss.loaded = true;
+    s = session_new("javaw.exe", "All the Mods 10", t - 600000000ll, t);
+    s->carried_us = t;
+    sessions_observe(t + 1000000ll, "javaw.exe", 300);
+    str_set(c.apps[0].desc.s, "Minecraft");
+    sessions_game_renamed("javaw.exe", false);
+    T(s->state == SES_OPEN && !strcmp(s->name, "All the Mods 10") && s->carried_us == t);
+    str_set(c.apps[0].desc.s, "Fabulously Optimized");
+    sessions_game_renamed("javaw.exe", false);
+    T(s->state == SES_ASKING && s->end_us == t && !strcmp(s->name, "All the Mods 10"));
+    sessions_observe(t + 2000000ll, "javaw.exe", 300);
+    open = 0;
+    for (const Session &o : ss.items)
+        if (o.state == SES_OPEN) {
+            open++;
+            T(o.pid == 300 && !strcmp(o.name, "Fabulously Optimized") && !o.carried_us);
+        }
+    T(open == 1);
+    // The same game named again: it carries on, and is renamed like any other from then on
+    memset(&ss, 0, sizeof ss);
+    ss.loaded = true;
+    s = session_new("javaw.exe", "Fabulously Optimized", t - 600000000ll, t);
+    s->carried_us = t;
+    sessions_game_renamed("javaw.exe", false);
+    T(s->state == SES_OPEN && !s->carried_us);
+    str_set(c.apps[0].desc.s, "Fabulously Optimized 6");
+    sessions_game_renamed("javaw.exe", false);
+    T(s->state == SES_OPEN && !strcmp(s->name, "Fabulously Optimized 6"));
     memset(&ss, 0, sizeof ss);
     g_app.config = keep;
 }
