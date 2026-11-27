@@ -3764,7 +3764,10 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
     r2_set_status(R2_SETUP_BUSY, "Finding the bucket %s...", c->bucket);
     snprintf(path, sizeof path, "/accounts/%s/r2/buckets/%s", c->account, c->bucket);
     s = r2_cf("GET", path, bearer, 0, resp, sizeof resp);
-    if (!r2_ok(s)) {
+    // A pasted bucket token can write the bucket's files but not read its settings: the probe checks the files
+    bool bucket_only = !t.oauth && (s == 401 || s == 403);
+    if (bucket_only) log_line("r2: the token can't read the bucket's settings; checking its files instead");
+    else if (!r2_ok(s)) {
         char msg[200];
         i32 code = r2_cf_error(resp, msg, sizeof msg);
         if (s != 404 && code != CF_NO_SUCH_BUCKET) {
@@ -3782,7 +3785,8 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
     }
 
     // The player's own domain stays; otherwise the bucket's r2.dev address, turned on
-    if (t.conf.public_url[0] && !strstr(t.conf.public_url, ".r2.dev")) str_set(c->public_url, t.conf.public_url);
+    if (t.conf.public_url[0] && (bucket_only || !strstr(t.conf.public_url, ".r2.dev")))
+        str_set(c->public_url, t.conf.public_url);
     else {
         r2_set_status(R2_SETUP_BUSY, "Turning on the bucket's public address...");
         snprintf(path, sizeof path, "/accounts/%s/r2/buckets/%s/domains/managed", c->account, c->bucket);
@@ -3795,6 +3799,11 @@ static bool r2_setup_steps(const R2Task &t, const char *bearer, R2Conf *c, char 
             have = r2_ok(s) && r2_parse_domain(resp, domain, sizeof domain, &on) && on;
         }
         if (!have) {
+            if (bucket_only) {
+                r2_set_status(R2_SETUP_FAILED, "The token can't turn on the bucket's public address: sign in with "
+                              "Cloudflare, or paste a token made with the link");
+                return false;
+            }
             r2_cf_fail(s, resp, "turning on the public address");
             return false;
         }
