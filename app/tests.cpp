@@ -5778,6 +5778,26 @@ static void test_storeids()
     char has[256];
     args_has_json(ans.ask_args, "hl2.exe -GAME garrysmod -windowed", has, sizeof has);
     T(!strcmp(has, "[\"-game garrysmod\"]"));
+    args_has_json(ans.ask_args, "\"C:\\hl2.exe\" -game \"garrysmod\"", has, sizeof has);
+    T(!strcmp(has, "[\"-game garrysmod\"]"));
+    // Only whole arguments count: nothing is told about part of one, such as a token's first letters
+    static const char probe[] = "{\"game\":null,\"ask_args\":[\"--accesstoken a\",\"--accesstoken abc123\",\"-game gar\","
+                                "\"-game\",\"net.minecraft.client.main.main\"],\"v\":\"7\"}";
+    T(lookup_parse(probe, sizeof probe - 1, &ans));
+    args_has_json(ans.ask_args, "launcher.exe --accesstoken=x --AccessToken abc123def -game garrysmod "
+                                "net.minecraft.client.main.Main", has, sizeof has);
+    T(!strcmp(has, "[\"-game\",\"net.minecraft.client.main.main\"]"));
+    // Asks with other characters, more than three words or over 64 bytes are dropped, and only 20 are kept
+    static const char odd[] = "{\"game\":null,\"ask_args\":[\"a\\\\b\",\"x*\",\"a  b\",\"a b c d\",\" a\",\"-game tf\","
+                              "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]}";
+    T(lookup_parse(odd, sizeof odd - 1, &ans) && !strcmp(ans.ask_args, "-game tf"));
+    {
+        static char many[2048];
+        i32 mn = snprintf(many, sizeof many, "{\"game\":null,\"ask_args\":[");
+        for (i32 i = 0; i < 25; i++) mn += snprintf(many + mn, sizeof many - mn, "%s\"-a%d\"", i ? "," : "", i);
+        snprintf(many + mn, sizeof many - mn, "]}");
+        T(lookup_parse(many, (i64)strlen(many), &ans) && strstr(ans.ask_args, "-a19") && !strstr(ans.ask_args, "-a20"));
+    }
     static const char none[] = "{\"game\":null,\"matched_by\":\"none\",\"confidence\":0,\"art\":{}}";
     T(lookup_parse(none, sizeof none - 1, &ans) && !ans.name[0] && !strcmp(ans.how, "none"));
     T(!lookup_parse("{\"error\":1}", 11, &ans));

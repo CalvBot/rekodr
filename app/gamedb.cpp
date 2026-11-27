@@ -60,7 +60,7 @@ enum GameArt { ART_ICON, ART_HERO };
 struct LookAnswer {
     char name[128], key[48], how[16]; // how: its "matched_by"
     f32  confidence;
-    char ask_args[512];               // a shared exe: what to look for in its command line, one a line; "" = none
+    char ask_args[1344];              // a shared exe: what to look for in its command line, one a line; "" = none
     bool software;                    // a Steam app Steam's store calls software, not a game ("steam_type")
     bool failed;
 };
@@ -1001,26 +1001,60 @@ static i32 gamedb_lookup(const char *body, LookAnswer *ans, bool rename = false)
     return state;
 }
 
-// Which of the strings the service asked about (one a line) the command line holds: a JSON array, lower case.
+// Which of the arguments the service asked about (one a line) the command line holds: a JSON array, lower case.
+// One counts only as whole arguments in a row ("-game garrysmod"), never inside one, so an answer can't tell
+// anything about the rest of the line, such as a launcher's sign-in token. lookup_parse keeps only short asks.
 static void args_has_json(const char *ask_args, const char *cmdline, char *out, i32 cap)
 {
+    // The command line's arguments, lower case, quotes taken off
     static char low[32768];
-    i32 cl = 0;
-    for (; cmdline[cl] && cl < (i32)sizeof low - 1; cl++) low[cl] = (char)tolower((u8)cmdline[cl]);
-    low[cl] = 0;
+    static const char *arg[1024];
+    i32 cl = 0, na = 0;
+    for (const char *c = cmdline; *c && cl < (i32)sizeof low - 2 && na < (i32)COUNT(arg);) {
+        while (*c == ' ' || *c == '\t') c++;
+        if (!*c) break;
+        arg[na++] = low + cl;
+        for (bool quoted = false; *c && (quoted || (*c != ' ' && *c != '\t')) && cl < (i32)sizeof low - 2; c++)
+            if (*c == '"') quoted = !quoted;
+            else low[cl++] = (char)tolower((u8)*c);
+        low[cl++] = 0;
+    }
     i32 n = snprintf(out, cap, "[");
     for (const char *p = ask_args; *p;) {
         const char *e = strchr(p, '\n');
-        char one[128];
+        char one[128], words[128];
         snprintf(one, sizeof one, "%.*s", (int)(e ? e - p : strlen(p)), p);
         for (char *c = one; *c; c++) *c = (char)tolower((u8)*c);
-        if (one[0] && strstr(low, one)) {
+        const char *w[4];
+        i32 nw = 0;
+        str_set(words, one);
+        for (char *t = strtok(words, " "); t && nw < (i32)COUNT(w); t = strtok(0, " ")) w[nw++] = t;
+        bool found = false;
+        for (i32 a = 0; nw && a + nw <= na && !found; a++) {
+            found = true;
+            for (i32 k = 0; k < nw && found; k++) found = !strcmp(arg[a + k], w[k]);
+        }
+        if (found) {
             if (n > 1 && n < cap - 1) out[n++] = ',';
             mc_put(out, cap, &n, one);
         }
         p = e ? e + 1 : p + strlen(p);
     }
     snprintf(out + n, cap - n, "]");
+}
+
+// An argument the service may ask about: 1 to 3 words of letters, digits and "-_.=", 64 bytes at most, one space
+// between words.
+static bool ask_arg_ok(const char *s)
+{
+    i32 len = (i32)strlen(s), words = 1;
+    if (!len || len > 64 || s[0] == ' ' || s[len - 1] == ' ') return false;
+    for (const char *c = s; *c; c++) {
+        if (*c == ' ') {
+            if (c[1] == ' ' || ++words > 3) return false;
+        } else if (!isalnum((u8)*c) && !strchr("-_.=", *c)) return false;
+    }
+    return true;
 }
 
 // What a lookup sends about an app: its clues (exe_clues), with its File description, a running Minecraft's
@@ -2086,13 +2120,13 @@ static bool lookup_parse(const char *text, i64 len, LookAnswer *ans)
     char type[16];
     ans->software = j_get(text, len, "steam_type", type, sizeof type) && !strcmp(type, "software");
     Json j = {text, text + len};
+    // At most 20 asks, each one ask_arg_ok allows; the rest go unanswered
     if (j_find(&j, "ask_args") && j_eat(&j, '[')) {
-        i32 n = 0;
+        i32 n = 0, asks = 0;
         while (!j_eat(&j, ']') && j.p < j.end) {
             char one[128];
             if (!j_string(&j, one, sizeof one)) { j_skip(&j); j_eat(&j, ','); continue; }
-            for (char *c = one; *c; c++) *c = *c == '\n' ? ' ' : *c;
-            if (one[0] && n + (i32)strlen(one) + 2 < (i32)sizeof ans->ask_args)
+            if (ask_arg_ok(one) && asks < 20 && n + (i32)strlen(one) + 2 < (i32)sizeof ans->ask_args && ++asks)
                 n += snprintf(ans->ask_args + n, sizeof ans->ask_args - n, "%s%s", n ? "\n" : "", one);
             j_eat(&j, ',');
         }
