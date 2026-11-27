@@ -1,13 +1,13 @@
 // rustlog.cpp: Rust's markers, from output_log.txt in the game's folder, which the game starts afresh at each
 // launch. Each line the game writes begins "<UTC time>|<thread>|", as "2026-11-25T11:32:14.389Z|0x5c28|...".
 //
-//   Deaths  "You died: killed by <name> (<SteamID64>)", or "You died: <cause>". The killer's name and id go in the
-//           marker's detail, which stays on this PC.
+//   Deaths  "You died: killed by <name> (<SteamID64>)", or "You died: <cause>". A killer with a SteamID64 is a player,
+//           "player" in the marker's detail, never their name or id; one without (an NPC, an animal) by its name.
 //   Kills   The combat log: a table the game writes each time the player prints it (the combatlog command), a
 //           header "time attacker target weapon ammo area distance old_hp new_hp info ..." and a row a hit in
 //           columns under it, the time being the seconds before the print. A row of the player's ("you") with
 //           info "killed" is a kill, a headshot when the area is "head"; one against the player with "wounded" is
-//           the player downed. The table holds the last 30 hits and leaves out the last 10 seconds', so a hit comes
+//           the player downed. The other side is a player's "player_<id>", kept as "player", or an NPC's kind. The table holds the last 30 hits and leaves out the last 10 seconds', so a hit comes
 //           again in later prints: it is known by its moment (within RUST_SAME_US), its kind, target and weapon.
 //   Joins   "Loading custom map from <url>" as the player joins a server, at that moment, the server's name from
 //           its welcome ("<size=45>...Welcome to</color> <color=...>Name</color></size>", tags taken out) and the map's
@@ -140,8 +140,7 @@ static void rust_death(const char *r, i64 t, RustMark *out, i32 cap, i32 *n)
                 open[-1] = 0;
             } else name[l - 1] = ')';
         }
-        marker_detail_add(detail, "killer", name);
-        marker_detail_add(detail, "steam_id", id);
+        marker_detail_add(detail, "killer", id[0] ? "player" : name);
         str_set(note, "Death");
     } else snprintf(note, sizeof note, "Death: %s", r);
     rust_push(out, cap, n, t, AM_DEATH, "death", "", "", note, detail);
@@ -164,7 +163,8 @@ static void rust_row(const char *row, const RustCols &c, i64 printed, RustMark *
     if (wl > 7 && !strcmp(weapon + wl - 7, ".entity")) weapon[wl - 7] = 0;
     i64 t = printed - (i64)(atof(row) * 1e6);
     char detail[256] = "";
-    marker_detail_add(detail, kill ? "target" : "attacker", kill ? target : attacker);
+    const char *other = kill ? target : attacker;
+    marker_detail_add(detail, kill ? "target" : "attacker", !strncmp(other, "player_", 7) ? "player" : other);
     marker_detail_add(detail, "weapon", weapon);
     marker_detail_add(detail, "area", area);
     marker_detail_add(detail, "distance", distance);

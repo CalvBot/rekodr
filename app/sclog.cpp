@@ -6,8 +6,9 @@
 //            "<AccountLoginCharacterStatus_Character> ... name <name> - state STATE_CURRENT".
 //   Kills    "<Actor Death> CActor::Kill: '<victim>' [id] in zone '<zone>' killed by '<killer>' [id] using
 //   Deaths   '<weapon>' [Class <class>] with damage type '<type>' ...". The game logs only deaths the player is
-//            in: the player as killer is a kill, as victim a death. The other side, weapon, damage type and zone go
-//            in the marker's detail, which stays on this PC.
+//            in: the player as killer is a kill, as victim a death. The weapon, damage type and zone go in the
+//            marker's detail, and the other side: an NPC by its kind ("PU_Human-...-Grunt_10", named with the id the
+//            game puts on an entity's end), another player as "player", never by their handle.
 //   Downed   "Logged an incap.! nickname: <name>, causes: [<cause> (<n> damage), ...]".
 //   Spawns   "[CSessionManager::OnClientSpawned] Spawned!" in the universe: after "<Join PU> address[...]" and until
 //            "[CSessionManager::RequestFrontEnd] Started" back to the menu, whose own spawn is no marker. Once on
@@ -50,12 +51,15 @@ static bool sc_between(const char *s, const char *from, const char *to, char *ou
     return true;
 }
 
-// An entity's name without the id the game puts on its end ("_123456789012"), as "PU_Human-...-Grunt_10".
-static void sc_bare(char *s)
+// An entity's name without the id the game puts on its end ("_123456789012"), as "PU_Human-...-Grunt_10". Whether
+// it had one: a player's handle has none.
+static bool sc_bare(char *s)
 {
     size_t l = strlen(s), d = l;
     while (d && isdigit((u8)s[d - 1])) d--;
-    if (l - d >= 9 && d > 1 && s[d - 1] == '_') s[d - 1] = 0;
+    if (l - d < 9 || d <= 1 || s[d - 1] != '_') return false;
+    s[d - 1] = 0;
+    return true;
 }
 
 // HUD text as shown: <EMn> tags out, runs of spaces made one, the ": " the game puts on its end and spaces around it
@@ -105,16 +109,17 @@ static i32 sc_line(ScSeen *s, u32 events, const char *line, bool old, AutoMark *
         if (!sc_between(line, "] using '", "'", weapon, sizeof weapon)) weapon[0] = 0;
         if (!sc_between(line, " [Class ", "]", cls, sizeof cls) || !strcmp(cls, "unknown")) cls[0] = 0;
         if (!sc_between(line, "with damage type '", "'", type, sizeof type)) type[0] = 0;
-        sc_bare(victim), sc_bare(zone), sc_bare(killer), sc_bare(weapon);
+        bool npc_victim = sc_bare(victim), npc_killer = sc_bare(killer);
+        sc_bare(zone), sc_bare(weapon);
         bool died = !strcmp(victim, s->me), killed = !strcmp(killer, s->me);
         if (died && (events & AM_DEATH)) {
-            if (!killed) marker_detail_add(d, "killer", killer);
+            if (!killed) marker_detail_add(d, "killer", npc_killer ? killer : "player");
             marker_detail_add(d, "weapon", cls[0] ? cls : weapon);
             marker_detail_add(d, "damage", type);
             marker_detail_add(d, "zone", zone);
             am_push(out, cap, &n, AM_DEATH, 1, killed ? "Death: suicide" : "Death", false, d);
         } else if (killed && !died && (events & AM_KILL)) {
-            marker_detail_add(d, "target", victim);
+            marker_detail_add(d, "target", npc_victim ? victim : "player");
             marker_detail_add(d, "weapon", cls[0] ? cls : weapon);
             marker_detail_add(d, "damage", type);
             marker_detail_add(d, "zone", zone);

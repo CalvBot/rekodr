@@ -3860,9 +3860,16 @@ static void test_automarks()
     T(mc_line(&mc, mce, "[12:00:01] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", true, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", false, m, 8) == 1 &&
       !strcmp(m[0].note, "Death") && m[0].colour == 1 && !strcmp(m[0].detail, "killer=Zombie"));
-    // The death message's killer and weapon, or its cause; a kill names who died
+    // The death message's killer and weapon, or its cause; a killer that may be a player is left out, a kill never
+    // names who died
     T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was slain by Alex using [Diamond Sword]", false, m, 8) == 1 &&
-      !strcmp(m[0].detail, "killer=Alex;weapon=Diamond Sword"));
+      !strcmp(m[0].detail, "weapon=Diamond Sword"));
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was shot by Skeleton", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "killer=Skeleton"));
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was slain by Cave Spider", false, m, 8) == 1 &&
+      !strcmp(m[0].detail, "killer=Cave Spider"));
+    T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was blown up by Notch_99", false, m, 8) == 1 &&
+      !m[0].detail[0]);
     T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve drowned whilst trying to escape Drowned", false, m, 8) == 1 &&
       !strcmp(m[0].detail, "killer=Drowned"));
     T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve fell from a high place", false, m, 8) == 1 &&
@@ -3873,9 +3880,9 @@ static void test_automarks()
       !strcmp(m[0].note, "Stone Age") && m[0].colour == 6);
     T(mc_line(&mc, mce, "[12:00:04] [Render thread/INFO]: [System] [CHAT] Alex has made the advancement [Stone Age]", false, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:05] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steve", false, m, 8) == 1 && !strcmp(m[0].note, "Kill") &&
-      !strcmp(m[0].detail, "target=Alex"));
+      !m[0].detail[0]);
     T(mc_line(&mc, mce, "[12:00:05] [Render thread/INFO]: [System] [CHAT] Alex was slain by Steve using [Netherite Sword]", false, m, 8) == 1 &&
-      !strcmp(m[0].detail, "target=Alex;weapon=Netherite Sword") && evi_weapon_class("Netherite Sword") == EVI_MELEE);
+      !strcmp(m[0].detail, "weapon=Netherite Sword") && evi_weapon_class("Netherite Sword") == EVI_MELEE);
     T(mc_line(&mc, mce, "[12:00:06] [Render thread/INFO]: [System] [CHAT] Alex was shot by Steven", false, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:07] [Render thread/INFO]: [System] [CHAT] <Alex> Steve was slain by me", false, m, 8) == 0);
     T(mc_line(&mc, AM_KILL, "[12:00:08] [Render thread/INFO]: [System] [CHAT] Steve drowned", false, m, 8) == 0);
@@ -3896,11 +3903,11 @@ static void test_automarks()
     Tf2Seen tf = {};
     str_set(tf.me, "Pyro Main");
     T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower.", false, m, 8) == 1 && !strcmp(m[0].note, "Kill"));
-    T(!strcmp(m[0].detail, "target=Scout Guy;weapon=flamethrower"));
+    T(!strcmp(m[0].detail, "weapon=flamethrower"));
     T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with sniperrifle. (crit)", false, m, 8) == 1 &&
-      !strcmp(m[0].detail, "target=Scout Guy;weapon=sniperrifle"));
+      !strcmp(m[0].detail, "weapon=sniperrifle"));
     T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Main with scattergun.", false, m, 8) == 1 && !strcmp(m[0].note, "Death") &&
-      !strcmp(m[0].detail, "killer=Scout Guy;weapon=scattergun"));
+      !strcmp(m[0].detail, "weapon=scattergun"));
     T(tf2_line(&tf, tfe, "Pyro Main suicided.", false, m, 8) == 1 && !strcmp(m[0].note, "Death"));
     T(tf2_line(&tf, tfe, "Scout Guy killed Pyro Mainer with scattergun.", false, m, 8) == 0);
     T(tf2_line(&tf, tfe, "Pyro Main killed Scout Guy with flamethrower.", true, m, 8) == 0);
@@ -4741,16 +4748,24 @@ static void test_star_citizen()
       marker_detail_get(m[0].detail, "damage", v, sizeof v) && !strcmp(v, "Bullet") &&
       marker_detail_get(m[0].detail, "zone", v, sizeof v) && !strcmp(v, "OOC_Stanton_3a_Lyria"));
     T(sc_line(&s, AM_DEATH, kill, false, m, 8) == 0);
-    // A death: the killer's weapon by its name when its class is unknown; killing oneself has no killer
+    // A death: the killer's weapon by its name when its class is unknown, another player as "player", never their
+    // handle; killing oneself has no killer
     T(sc_line(&s, ev, "<2026-11-27T10:06:00.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-1_A' [123456789013] in zone "
                       "'ANVL_Valkyrie_PU_AI_NT_QIG_1234567890123' killed by 'Pilot-2_B' [123456789015] using 'BEHR_LaserCannon_S5_1234567890123' "
                       "[Class unknown] with damage type 'VehicleDestruction' from direction x: 0, y: 0, z: 0", false, m, 8) == 1 &&
-      !strcmp(m[0].note, "Death") && m[0].colour == 1 && marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "Pilot-2_B") &&
+      !strcmp(m[0].note, "Death") && m[0].colour == 1 && marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "player") &&
       marker_detail_get(m[0].detail, "weapon", v, sizeof v) && !strcmp(v, "BEHR_LaserCannon_S5") &&
       marker_detail_get(m[0].detail, "zone", v, sizeof v) && !strcmp(v, "ANVL_Valkyrie_PU_AI_NT_QIG"));
     T(sc_line(&s, ev, "<2026-11-27T10:07:00.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-1_A' [1] in zone 'Stanton1' killed by "
                       "'Pilot-1_A' [1] using 'unknown' [Class unknown] with damage type 'Crash' from direction x: 0", false, m, 8) == 1 &&
       !strcmp(m[0].note, "Death: suicide") && !marker_detail_get(m[0].detail, "killer", v, sizeof v));
+    T(sc_line(&s, ev, "<2026-11-27T10:07:10.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-2_B' [2] in zone 'Stanton1' killed by "
+                      "'Pilot-1_A' [1] using 'x' [Class x] with damage type 'Bullet' from", false, m, 8) == 1 &&
+      !strcmp(m[0].note, "Kill") && marker_detail_get(m[0].detail, "target", v, sizeof v) && !strcmp(v, "player"));
+    T(sc_line(&s, ev, "<2026-11-27T10:07:20.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-1_A' [1] in zone 'Stanton1' killed by "
+                      "'PU_Pilots-Human-Criminal-Gunner_Light_123456789012' [3] using 'x' [Class x] with damage type 'Bullet' from",
+                      false, m, 8) == 1 &&
+      marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "PU_Pilots-Human-Criminal-Gunner_Light"));
     T(sc_line(&s, ev, "<2026-11-27T10:07:30.000Z> [Notice] <Actor Death> CActor::Kill: 'Pilot-3_C' [1] in zone 'Stanton1' killed by "
                       "'Pilot-2_B' [2] using 'x' [Class x] with damage type 'Bullet' from", false, m, 8) == 0); // not the player's
     T(sc_line(&s, ev, "<2026-11-27T10:08:00.000Z> Logged an incap.! nickname: Pilot-1_A, causes: [Bleed (0.350000 damage)]", false, m, 8) == 1 &&
@@ -4804,8 +4819,6 @@ static void test_rust()
     // and a Korean one
     static const u8 ru[] = {0xD0, 0x9F, 0xD0, 0xB5, 0xD1, 0x82, 0xD1, 0x8F, 0};
     static const u8 ko[] = {0xED, 0x95, 0x98, 0xEB, 0x8A, 0x98, 0};
-    char ru_name[32];
-    snprintf(ru_name, sizeof ru_name, "%s RAMPAGE", (const char *)ru);
     static const char form[] =
         "2026-11-25T11:32:14.389Z|0x5c28|You died: killed by Marlow (76561198000000011)\n"
         "2026-11-25T11:50:46.587Z|0x5c28|You died: killed by Captain Wobble (76561198000000012)\n"
@@ -4829,25 +4842,22 @@ static void test_rust()
     T(rust_marks(log, m, 16) == 7);
     char v[128];
     T(m[0].event == AM_DEATH && m[0].t_us == rust_time("2026-11-25T11:32:14.389Z|") && !strcmp(m[0].note, "Death"));
-    T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "Marlow"));
-    T(marker_detail_get(m[0].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000011"));
-    T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Captain Wobble"));
-    T(marker_detail_get(m[2].detail, "killer", v, sizeof v) && !strcmp(v, ru_name));
-    T(marker_detail_get(m[2].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000013"));
+    // A killer with a SteamID64 is a player: "player", never their name or id
+    T(!strcmp(m[0].detail, "killer=player") && !strcmp(m[1].detail, "killer=player") && !strcmp(m[2].detail, "killer=player"));
     // The kill, in three prints, is one: a headshot, at the first print less its age
     T(m[3].event == AM_KILL && !strcmp(m[3].note, "Headshot") && m[3].t_us == rust_time("2026-11-25T13:40:59.375Z|") - 468070000);
-    T(marker_detail_get(m[3].detail, "target", v, sizeof v) && !strcmp(v, "player_505050"));
+    T(marker_detail_get(m[3].detail, "target", v, sizeof v) && !strcmp(v, "player"));
     T(marker_detail_get(m[3].detail, "weapon", v, sizeof v) && !strcmp(v, "pistol_semiauto"));
     T(marker_detail_get(m[3].detail, "distance", v, sizeof v) && !strcmp(v, "16.8m"));
     T(m[4].event == AM_DOWNED && !strcmp(m[4].note, "Downed") && m[4].t_us == rust_time("2026-11-25T13:41:08.644Z|") - 14520000);
-    T(marker_detail_get(m[4].detail, "attacker", v, sizeof v) && !strcmp(v, "player_6060606"));
-    T(marker_detail_get(m[5].detail, "killer", v, sizeof v) && !strcmp(v, (const char *)ko));
+    T(marker_detail_get(m[4].detail, "attacker", v, sizeof v) && !strcmp(v, "player"));
+    T(!strcmp(m[5].detail, "killer=player"));
     T(m[6].event == AM_DEATH && !strcmp(m[6].note, "Death: Fall") && !m[6].detail[0]);
     T(rust_time("2026-11-25 13:45:00|x") == 0 && rust_marks("", m, 16) == 0 && rust_marks(log, m, 2) == 2);
-    // A name with brackets of its own, and no id
+    // A name with brackets of its own; a killer with no id (an NPC) by its name
     T(rust_marks("2026-11-25T13:45:00.000Z|0x1|You died: killed by [AB] (x) (76561198000000001)\n"
                  "2026-11-25T13:46:00.000Z|0x1|You died: killed by Scientist\n", m, 16) == 2);
-    T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "[AB] (x)"));
+    T(!strcmp(m[0].detail, "killer=player") && !strcmp(m[1].detail, "killer=Scientist"));
     T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Scientist"));
     T(!marker_detail_get(m[1].detail, "steam_id", v, sizeof v));
     // The account played as, kept on this PC; a join at its map's load, named by its welcome
@@ -4951,7 +4961,7 @@ static void test_rust()
         i32 n = 0;
         while (event_take(&e)) {
             n += e.kind == EV_MARKER;
-            if (e.kind == EV_MARKER && strstr(e.text, "Marlow")) T(!strcmp(e.text, "Death\tevent=death;killer=Marlow;steam_id=76561198000000011"));
+            if (e.kind == EV_MARKER) T(!strstr(e.text, "Marlow") && !strstr(e.text, "steam_id"));
         }
         return n;
     };
@@ -6125,11 +6135,11 @@ static void test_layers()
     T(layers_mark_add(late_file, T0 + 40 * S, 4, "Kill") && layers_mark_add(late_file, T0 + 10 * S, 1, "Death"));
     T(!layers_mark_add(late_file, T0 + 25 * S, 4, "Gap") && !layers_mark_add(late_file, T0 + 60 * S, 4, "After"));
     T(!layers_mark_add(late_file, T0 + 40 * S, 4, "Kill"));
-    T(layers_mark_add(late_file, T0 + 12 * S, 1, "Death", "killer=Marlow;steam_id=76561198000000011"));
+    T(layers_mark_add(late_file, T0 + 12 * S, 1, "Death", "killer=player;weapon=ak47u"));
     Marker late[8];
     T(layers_marks_read(late_file, late, 8) == 3);
     T(late[0].t_us == 2 * S && late[0].colour == 1 && !strcmp(late[0].note, "Death") && !late[0].detail[0]);
-    T(late[1].t_us == 4 * S && !strcmp(late[1].note, "Death") && !strcmp(late[1].detail, "killer=Marlow;steam_id=76561198000000011"));
+    T(late[1].t_us == 4 * S && !strcmp(late[1].note, "Death") && !strcmp(late[1].detail, "killer=player;weapon=ak47u"));
     T(late[2].t_us == 22 * S && late[2].colour == 4 && !strcmp(late[2].note, "Kill"));
     T(!layers_read(late_file, &none));
     layer_set_free(&none);

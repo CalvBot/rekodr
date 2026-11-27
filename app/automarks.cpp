@@ -402,9 +402,27 @@ static bool mc_death_words(const char *rest)
     return false;
 }
 
+// Whether a death message's killer is a mob or a thing ("Zombie", "Cave Spider", "a falling anvil"), not a player:
+// a player's name is one word, so a killer of one word is kept only when it is a vanilla mob's.
+static bool mc_not_player(const char *killer)
+{
+    if (strchr(killer, ' ')) return true;
+    static const char *const mobs[] = {
+        "Allay", "Armadillo", "Axolotl", "Bat", "Bee", "Blaze", "Bogged", "Breeze", "Camel", "Cat", "Chicken", "Cod",
+        "Cow", "Creaking", "Creeper", "Dolphin", "Donkey", "Drowned", "Enderman", "Endermite", "Evoker", "Fireball",
+        "Fox", "Frog", "Ghast", "Goat", "Guardian", "Hoglin", "Horse", "Husk", "Illusioner", "Llama", "Mooshroom",
+        "Mule", "Ocelot", "Panda", "Parrot", "Phantom", "Pig", "Piglin", "Pillager", "Pufferfish", "Rabbit", "Ravager",
+        "Salmon", "Sheep", "Shulker", "Silverfish", "Skeleton", "Slime", "Sniffer", "Spider", "Squid", "Stray",
+        "Strider", "Tadpole", "Trident", "Turtle", "Vex", "Villager", "Vindicator", "Warden", "Witch", "Wither",
+        "Wolf", "Zoglin", "Zombie", "Arrow", "TNT"};
+    for (const char *m : mobs)
+        if (!strcmp(killer, m)) return true;
+    return false;
+}
+
 // A vanilla death message's detail, from the words after the dead player's name: killer (and weapon) when one is
 // named ("was slain by Zombie using [Diamond Sword]", "drowned whilst trying to escape Zombie"), else the cause
-// ("fell from a high place").
+// ("fell from a high place"). A killer that may be a player is left out, its weapon kept.
 static void mc_death_detail(char (&d)[256], const char *rest)
 {
     char words[160], killer[96] = "", weapon[96] = "";
@@ -428,7 +446,7 @@ static void mc_death_detail(char (&d)[256], const char *rest)
     }
     d[0] = 0;
     if (killer[0]) {
-        marker_detail_add(d, "killer", killer);
+        if (mc_not_player(killer)) marker_detail_add(d, "killer", killer);
         marker_detail_add(d, "weapon", weapon);
     } else {
         marker_detail_add(d, "cause", words);
@@ -436,7 +454,8 @@ static void mc_death_detail(char (&d)[256], const char *rest)
 }
 
 // Minecraft's latest.log: the player's deaths and advancements, and the players whose death message names the
-// player (a kill). Chat lines (<name> ...) and other players' advancements are passed over.
+// player (a kill, its weapon kept and the other player's name left out). Chat lines (<name> ...) and other players'
+// advancements are passed over.
 static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
 {
     if (const char *u = strstr(line, "]: Setting user: ")) {
@@ -466,7 +485,7 @@ static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *
         return n;
     }
     if (!mc_death_words(rest)) return 0;
-    char d[256], victim[64];
+    char d[256];
     if (mine) {
         mc_death_detail(d, rest);
         if (events & AM_DEATH) am_push(out, cap, &n, AM_DEATH, 1, "Death", false, d);
@@ -474,9 +493,7 @@ static i32 mc_line(McSeen *s, u32 events, const char *line, bool old, AutoMark *
         char said[256], weapon[96] = "";
         mc_death_detail(said, rest); // the weapon the victim's message names is the player's
         marker_detail_get(said, "weapon", weapon, sizeof weapon);
-        snprintf(victim, sizeof victim, "%.*s", (int)(sp - c), c);
         str_set(d, "");
-        marker_detail_add(d, "target", victim);
         marker_detail_add(d, "weapon", weapon);
         am_push(out, cap, &n, AM_KILL, 4, "Kill", false, d);
     }
@@ -515,6 +532,7 @@ static i32 poe_line(PoeSeen *s, u32 events, const char *line, bool old, AutoMark
 struct Tf2Seen { char me[64]; }; // the player's name, from the name cvar in config.cfg
 
 // Team Fortress 2's console.log: "<attacker> killed <victim> with <weapon>." (and " (crit)"), "<name> suicided.".
+// A kill or death keeps the weapon, never the other player's name.
 static i32 tf2_line(Tf2Seen *s, u32 events, const char *line, bool old, AutoMark *out, i32 cap)
 {
     size_t me = strlen(s->me);
@@ -527,20 +545,16 @@ static i32 tf2_line(Tf2Seen *s, u32 events, const char *line, bool old, AutoMark
     }
     const char *with = strstr(line, " with ");
     if (!with) return 0;
-    char weapon[64], who[64], d[256] = "";
+    char weapon[64], d[256] = "";
     snprintf(weapon, sizeof weapon, "%s", with + 6);
     if (char *dot = strchr(weapon, '.')) *dot = 0;
     if (starts && !strncmp(line + me, " killed ", 8)) {
-        snprintf(who, sizeof who, "%.*s", (int)(with - (line + me + 8)), line + me + 8);
-        marker_detail_add(d, "target", who);
         marker_detail_add(d, "weapon", weapon);
         if (events & AM_KILL) am_push(out, cap, &n, AM_KILL, 4, "Kill", false, d);
         return n;
     }
     const char *k = strstr(line, " killed ");
     if (k && k < with && (size_t)(with - (k + 8)) == me && !strncmp(k + 8, s->me, me) && (events & AM_DEATH)) {
-        snprintf(who, sizeof who, "%.*s", (int)(k - line), line);
-        marker_detail_add(d, "killer", who);
         marker_detail_add(d, "weapon", weapon);
         am_push(out, cap, &n, AM_DEATH, 1, "Death", false, d);
     }
