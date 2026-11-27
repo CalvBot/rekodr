@@ -1199,6 +1199,31 @@ static void test_sessions_other_game()
     for (const Session &o : ss.items) open += o.state == SES_OPEN;
     T(open == 0);
     ss = {};
+    // A new java process ends the open session, even inside the gap (FO killed, ATM10 started); the same one
+    // extends it, and one carried over from the last run (no process known yet) takes the first one seen
+    ss.loaded = true;
+    str_set(c.apps[0].desc.s, "Fabulously Optimized");
+    sessions_observe(t, "javaw.exe", 100);
+    sessions_observe(t + 600000000ll, "javaw.exe", 100);
+    Session *fo = 0;
+    for (Session &o : ss.items)
+        if (o.state == SES_OPEN) fo = &o;
+    T(fo && fo->pid == 100 && fo->end_us == t + 600000000ll);
+    str_set(c.apps[0].desc.s, "All the Mods 10");
+    sessions_observe(t + 620000000ll, "javaw.exe", 200);
+    open = 0;
+    for (const Session &o : ss.items)
+        if (o.state == SES_OPEN) {
+            open++;
+            T(o.pid == 200 && o.start_us == t + 620000000ll && !strcmp(o.name, "All the Mods 10"));
+        }
+    T(open == 1 && fo->state == SES_ASKING && !strcmp(fo->name, "Fabulously Optimized"));
+    memset(&ss, 0, sizeof ss); // ss = {} would put a copy of every slot on the stack
+    ss.loaded = true;
+    s = session_new("javaw.exe", "All the Mods 10", t, t);
+    sessions_observe(t + 1000000ll, "javaw.exe", 300);
+    T(s->state == SES_OPEN && s->pid == 300 && s->end_us == t + 1000000ll);
+    memset(&ss, 0, sizeof ss);
     g_app.config = keep;
 }
 
@@ -2207,6 +2232,13 @@ static void test_gamedb()
         ProcessSeen one[] = {{false, false}};
         T(process_pick(one, 1) == 0 && process_pick(one, 0) == -1);
     }
+    // Which javas count as a game being played: a client or a Java game, not a pack's helper left behind
+    T(java_counts("C:\\java\\bin\\javaw.exe", "ATLauncher.exe", "javaw -cp x cpw.mods.bootstraplauncher.BootstrapLauncher"));
+    T(java_counts("C:\\Starsector\\jre\\bin\\java.exe", "starsector.exe", "java -cp x com.fs.starfarer.StarfarerLauncher"));
+    T(java_counts("C:\\java\\bin\\javaw.exe", "", "")); // not read: nothing says it isn't the game
+    T(!java_counts("C:\\java\\bin\\javaw.exe", "javaw.exe",
+                   "javaw -cp mods\\crash_assistant.jar dev.kostromdan.mods.crash_assistant.app.CrashAssistantApp"));
+    T(!java_counts("C:\\java\\bin\\javaw.exe", "ATLauncher.exe", "javaw -jar C:\\ATLauncher\\ATLauncher.exe"));
     // A game the list doesn't have still gets an id for its art, the same for the same letters
     GameInfo h;
     T(gamedb_for_art("Hollow Knight", &g) && g.id[0] == 'n' && !strcmp(g.name, "Hollow Knight"));

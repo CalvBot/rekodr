@@ -920,6 +920,14 @@ static const JavaGame *java_game(const char *image, const char *parent, const ch
     return 0;
 }
 
+// Whether a running java counts as a game being played: a Minecraft client or one of the Java games. A modpack's
+// helper (ATM10's crash assistant, which can outlive the game) or a launcher written in Java doesn't. One whose
+// command line couldn't be read ("") counts, as nothing says it isn't the game.
+static bool java_counts(const char *image, const char *parent, const char *cmdline)
+{
+    return !cmdline[0] || mc_client_cmdline(cmdline) || java_game(image, parent, cmdline);
+}
+
 static void sessions_game_renamed(const char *exe, bool other_game); // sessions.cpp
 static bool mc_clues(const char *cmdline, const char *cwd, char *out, i32 cap); // mcpack.cpp
 static void mc_put(char *out, i32 cap, i32 *n, const char *s); // mcpack.cpp

@@ -454,6 +454,7 @@ struct Audio {
     AudioLive streams[64]; // live streams in the order they started
     i32       stream_count;
     Str64     game;        // the game being played (lower-case exe); empty on the desktop
+    u32       game_pid;    // its process, when its exe is one several games share (javaw.exe); 0 = not known
     u64       window;      // the game window being recorded (an HWND); 0 = the monitor
 };
 
@@ -1148,6 +1149,8 @@ struct Session {
     bool         custom;           // a name typed by hand rather than a game
     bool         asked;            // the session toast has shown it
     char         exe[64];          // the game (lower case); empty for a custom session
+    u32          pid;              // the game's process for an exe several games share (javaw.exe), 0 = not known
+                                   // yet; in memory only, so after a restart the first one seen is taken
     char         name[128];        // shown, and names the file: "Overwatch", "Stream with Sam"
     i64          start_us, end_us; // the real start and end; while open, end is when the game was last seen
     u32          job;              // the save job while SAVING

@@ -827,6 +827,34 @@ static const AudioProc *procs_find(const AudioProcList &list, u32 pid)
     return 0;
 }
 
+// Whether a running process counts as its game being played. Every exe does, except a java that isn't a game
+// (java_counts): a pack's crash helper left running after the game is killed keeps no session open. A java's
+// answer is worked out once per process, from its command line. Watcher thread.
+static bool proc_counts(const AudioProcList &list, const AudioProc &p)
+{
+    if (!is_java_exe(p.exe.s)) return true;
+    static struct { u32 pid; bool counts; } seen[64];
+    static i32 next;
+    for (const auto &s : seen)
+        if (s.pid == p.pid) return s.counts;
+    static char cmd[32768], image[MAX_PATH * 2];
+    image[0] = 0;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, p.pid);
+    process_cmdline(h, cmd, sizeof cmd);
+    if (h) {
+        wchar_t full[MAX_PATH * 2];
+        DWORD n = COUNT(full);
+        if (QueryFullProcessImageNameW(h, 0, full, &n)) wide_to_utf8(full, image, sizeof image);
+        CloseHandle(h);
+    }
+    const AudioProc *parent = procs_find(list, p.parent);
+    bool counts = java_counts(image, parent ? parent->exe.s : "", cmd);
+    if (!counts) log_line("%s %u is no game (a helper or a launcher); not counted as played", p.exe.s, p.pid);
+    seen[next] = {p.pid, counts};
+    next = (next + 1) % COUNT(seen);
+    return counts;
+}
+
 // Browsers and launchers play sound from a child process. Process loopback captures a whole tree, so climb to the
 // topmost ancestor that is still the same program.
 static u32 procs_root_of(const AudioProcList &list, u32 pid)
@@ -1160,7 +1188,7 @@ static void audio_tick_activity()
     }
 
     const char *game_path = "";
-    if (front && audio_category_at(cfg, front->exe.s, front_path) == CAT_GAME) {
+    if (front && audio_category_at(cfg, front->exe.s, front_path) == CAT_GAME && proc_counts(g_aw.procs, *front)) {
         game = front->exe;
         game_path = front_path;
     } else {
@@ -1170,7 +1198,8 @@ static void audio_tick_activity()
             const AppInfo &a = cfg.apps[i];
             if (app_category_in(cfg.apps, cfg.app_count, cfg.folders, cfg.folder_count, a.exe.s, a.path) != CAT_GAME) continue;
             bool running = false;
-            for (i32 k = 0; k < g_aw.procs.count && !running; k++) running = !strcmp(g_aw.procs.items[k].exe.s, a.exe.s);
+            for (i32 k = 0; k < g_aw.procs.count && !running; k++)
+                running = !strcmp(g_aw.procs.items[k].exe.s, a.exe.s) && proc_counts(g_aw.procs, g_aw.procs.items[k]);
             if (!running) continue;
             if (str_eq(g_aw.game.s, a.exe.s)) prev_running = true;
             if (!first || strcmp(a.exe.s, first) < 0) first = a.exe.s;
@@ -1181,28 +1210,33 @@ static void audio_tick_activity()
             if (str_eq(cfg.apps[i].exe.s, game.s)) game_path = cfg.apps[i].path;
     }
 
-    Path file = path_join(cfg.buffer_dir, L"activity.tsv");
-    // A fresh line on start (and when the buffer moves) so the file always says what was on.
-    if (g_aw.activity_started && str_eq(game.s, g_aw.game.s) && !wcscmp(file.s, g_aw.activity_file.s)) return;
-
-    // Whether it is played in another process than last time (the one before ended): for an exe several games
-    // share, maybe another game
+    // Whether it is played in another process than last time (the one before ended, or only a helper of the same
+    // exe is left): for an exe several games share, maybe another game. Asked before the early return below, so a
+    // java that ends and another that starts between two looks are still told apart.
     bool new_run = false;
+    u32 pid = 0;
     if (game.s[0]) {
-        u32 pid = front && str_eq(front->exe.s, game.s) ? front->pid : 0;
+        pid = front && str_eq(front->exe.s, game.s) && proc_counts(g_aw.procs, *front) ? front->pid : 0;
         for (i32 k = 0; k < g_aw.procs.count && !pid; k++)
-            if (str_eq(g_aw.procs.items[k].exe.s, game.s)) pid = g_aw.procs.items[k].pid;
+            if (str_eq(g_aw.procs.items[k].exe.s, game.s) && proc_counts(g_aw.procs, g_aw.procs.items[k]))
+                pid = g_aw.procs.items[k].pid;
         i32 r = -1;
         for (i32 i = 0; i < COUNT(g_aw.runs) && r < 0; i++)
             if (str_eq(g_aw.runs[i].exe.s, game.s)) r = i;
         const AudioProc *last = r >= 0 ? procs_find(g_aw.procs, g_aw.runs[r].pid) : 0;
-        new_run = !last || !str_eq(last->exe.s, game.s);
+        new_run = r < 0 || (pid && (!last || !str_eq(last->exe.s, game.s) || !proc_counts(g_aw.procs, *last)));
         if (new_run) {
             if (r < 0) r = g_aw.run_next, g_aw.run_next = (g_aw.run_next + 1) % COUNT(g_aw.runs);
             g_aw.runs[r].exe = game;
             g_aw.runs[r].pid = pid;
+        } else {
+            pid = g_aw.runs[r].pid;
         }
     }
+
+    Path file = path_join(cfg.buffer_dir, L"activity.tsv");
+    // A fresh line on start (and when the buffer moves) so the file always says what was on.
+    if (g_aw.activity_started && !new_run && str_eq(game.s, g_aw.game.s) && !wcscmp(file.s, g_aw.activity_file.s)) return;
 
     SHCreateDirectoryExW(0, cfg.buffer_dir.s, 0);
     buffer_log_append(file, game.s);
@@ -1222,7 +1256,7 @@ static void audio_tick_activity()
     Event e = {};
     e.kind = EV_AUDIO;
     e.a = AE_GAME;
-    e.b = new_run;
+    e.b = (i64)pid | (new_run ? 1ll << 32 : 0); // its process, and whether that is a new one
     if (game.s[0]) snprintf(e.text, sizeof e.text, "%s	%s", game.s, game_path);
     event_post(e);
 }
@@ -1354,6 +1388,7 @@ static void audio_on_event(const Event &e)
         char path[MAX_PATH];
         split_exe_path(e.text, &exe, path, sizeof path);
         a.game = exe;
+        a.game_pid = (u32)(e.b & 0xffffffff);
         bool listed = false;
         for (i32 i = 0; exe.s[0] && i < g_app.config.app_count && !listed; i++) listed = str_eq(g_app.config.apps[i].exe.s, exe.s);
         if (exe.s[0] && !listed && path[0]) {
@@ -1373,7 +1408,7 @@ static void audio_on_event(const Event &e)
             for (i32 i = 0; exe.s[0] && i < g_app.config.app_count; i++) {
                 AppInfo *app = &g_app.config.apps[i];
                 if (!str_eq(app->exe.s, exe.s)) continue;
-                if (e.b) gamedb_new_run(app);
+                if (e.b >> 32) gamedb_new_run(app);
                 if (gamedb_name_app(app)) config_save(g_app.config, g_app.paths);
             }
         }

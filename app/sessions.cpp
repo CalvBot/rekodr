@@ -279,15 +279,22 @@ static void session_end(Session *s)
     }
 }
 
-// The game being played at `now` (empty on the desktop). Extends its session or starts one, and ends sessions
-// whose game has been gone longer than the gap.
-static void sessions_observe(i64 now, const char *game)
+// The game being played at `now` (empty on the desktop) and its process (0 = not known). Extends its session or
+// starts one, and ends sessions whose game has been gone longer than the gap. For an exe several games share
+// (javaw.exe) a new process is a new game started: the open session ends where it was and one starts for it.
+static void sessions_observe(i64 now, const char *game, u32 pid = 0)
 {
     Sessions &ss = g_app.sessions;
-    bool found = false;
+    bool found = false, shared = is_java_exe(game);
     for (i32 i = 0; i < COUNT(ss.items); i++) {
         Session *s = &ss.items[i];
         if (s->state != SES_OPEN || s->custom || !game[0] || strcmp(s->exe, game)) continue;
+        if (shared && pid && s->pid && s->pid != pid) {
+            log_line("session %u (%s): %s is a new process; a new session starts", s->id, s->name, game);
+            session_end(s);
+            continue;
+        }
+        if (shared && pid) s->pid = pid;
         s->end_us = now;
         found = true;
     }
@@ -300,7 +307,10 @@ static void sessions_observe(i64 now, const char *game)
         char name[128];
         sessions_game_name(game, name);
         Session *s = session_new(game, name, now, now);
-        if (s) log_line("session %u (%s): started", s->id, name);
+        if (s) {
+            if (shared) s->pid = pid;
+            log_line("session %u (%s): started", s->id, name);
+        }
     }
 }
 
@@ -621,7 +631,7 @@ static void sessions_tick()
     if (!ss.loaded) sessions_load();
     i64 now = now_us();
     // Until the watcher has spoken (2 s after start) every game looks gone, and a carried-over session would end.
-    if (ss.game_known) sessions_observe(now, g_app.audio.game.s);
+    if (ss.game_known) sessions_observe(now, g_app.audio.game.s, g_app.audio.game_pid);
     sessions_check_saves();
     sessions_expire();
     sessions_prompt();
@@ -666,7 +676,7 @@ static void sessions_on_game(const char *exe)
     Sessions &ss = g_app.sessions;
     if (!ss.loaded) sessions_load();
     ss.game_known = true;
-    sessions_observe(now_us(), exe);
+    sessions_observe(now_us(), exe, g_app.audio.game_pid);
 }
 
 // Saves a session from the list or the library.
