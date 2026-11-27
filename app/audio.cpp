@@ -795,6 +795,8 @@ struct AudioWatch {
     HWND          window;        // the game window being recorded, 0 = the monitor
     Str64         window_exe;    // whose it is
     char          window_path[MAX_PATH];
+    struct { Str64 exe; u32 pid; } runs[8]; // the process each game was last played in
+    i32           run_next;
 };
 
 static AudioWatch g_aw;
@@ -1183,6 +1185,25 @@ static void audio_tick_activity()
     // A fresh line on start (and when the buffer moves) so the file always says what was on.
     if (g_aw.activity_started && str_eq(game.s, g_aw.game.s) && !wcscmp(file.s, g_aw.activity_file.s)) return;
 
+    // Whether it is played in another process than last time (the one before ended): for an exe several games
+    // share, maybe another game
+    bool new_run = false;
+    if (game.s[0]) {
+        u32 pid = front && str_eq(front->exe.s, game.s) ? front->pid : 0;
+        for (i32 k = 0; k < g_aw.procs.count && !pid; k++)
+            if (str_eq(g_aw.procs.items[k].exe.s, game.s)) pid = g_aw.procs.items[k].pid;
+        i32 r = -1;
+        for (i32 i = 0; i < COUNT(g_aw.runs) && r < 0; i++)
+            if (str_eq(g_aw.runs[i].exe.s, game.s)) r = i;
+        const AudioProc *last = r >= 0 ? procs_find(g_aw.procs, g_aw.runs[r].pid) : 0;
+        new_run = !last || !str_eq(last->exe.s, game.s);
+        if (new_run) {
+            if (r < 0) r = g_aw.run_next, g_aw.run_next = (g_aw.run_next + 1) % COUNT(g_aw.runs);
+            g_aw.runs[r].exe = game;
+            g_aw.runs[r].pid = pid;
+        }
+    }
+
     SHCreateDirectoryExW(0, cfg.buffer_dir.s, 0);
     buffer_log_append(file, game.s);
     if (g_aw.activity_started) {
@@ -1201,6 +1222,7 @@ static void audio_tick_activity()
     Event e = {};
     e.kind = EV_AUDIO;
     e.a = AE_GAME;
+    e.b = new_run;
     if (game.s[0]) snprintf(e.text, sizeof e.text, "%s	%s", game.s, game_path);
     event_post(e);
 }
@@ -1346,9 +1368,14 @@ static void audio_on_event(const Event &e)
                 config_save(g_app.config, g_app.paths);
             }
         } else {
-            // An exe several games share (javaw.exe) is whichever one is running now, so ask while it is
-            for (i32 i = 0; exe.s[0] && i < g_app.config.app_count; i++)
-                if (str_eq(g_app.config.apps[i].exe.s, exe.s) && gamedb_name_app(&g_app.config.apps[i])) config_save(g_app.config, g_app.paths);
+            // An exe several games share (javaw.exe) is whichever one is running now, so ask while it is. In a new
+            // process its last game's name is put away first: it may be another game.
+            for (i32 i = 0; exe.s[0] && i < g_app.config.app_count; i++) {
+                AppInfo *app = &g_app.config.apps[i];
+                if (!str_eq(app->exe.s, exe.s)) continue;
+                if (e.b) gamedb_new_run(app);
+                if (gamedb_name_app(app)) config_save(g_app.config, g_app.paths);
+            }
         }
         recorder_settings_changed(); // a game can have its own recording settings
         // And its own hotkeys, unless Options is taking a hotkey's keys (they're all off meanwhile)

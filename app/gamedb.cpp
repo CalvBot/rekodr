@@ -1194,6 +1194,21 @@ static bool gamedb_name_app(AppInfo *a)
     return changed;
 }
 
+// An exe several games share (java), played in a new process: the game it was named as is put away
+// (gamedb_untold_put), as this one may be another game. It has no session until gamedb_name_app names it again.
+static void gamedb_new_run(AppInfo *a)
+{
+    GameInfo g;
+    bool shared = false;
+    gamedb_by_exe(a->exe.s, a->path, "", "", &g, &shared);
+    if (!shared && !is_java_exe(a->exe.s)) return;
+    char own[128] = "";
+    exe_description(a->path, own, sizeof own);
+    if (!a->desc.s[0] || !strcmp(a->desc.s, own)) return;
+    gamedb_untold_put(a->exe.s, a->desc.s);
+    a->desc.s[0] = 0;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The service (rekodr-api), which holds Discord's list and the SteamGridDB and IGDB keys. Its calls, all signed:
 //   POST /v1/lookup  an exe's clues -> {"game":{"key","name",...}|null, "matched_by", "confidence",
