@@ -2741,6 +2741,9 @@ static void test_gamedb()
             fprintf(f2, "7\tFirst Game\t\t\t0\t\tfirst/game.exe\n");
             fprintf(f2, "8\tSecond Game\t\t\t0\t\tsecond/game.exe\n");
             fprintf(f2, "9\tMindustry\t\t\t1127400\t\tmindustry/mindustry.exe\n");
+            fprintf(f2, "10\tEndless Sky\t\t\t404410\t\tendless sky/endlesssky.exe\n");
+            fprintf(f2, "11\tMy Game\t\t\t0\t\ta/my-game.exe\n");
+            fprintf(f2, "12\tMygame\t\t\t0\t\tb/mygame.exe\n");
             fclose(f2);
         }
         GameIndex *keep = g_gamedb.index;
@@ -2751,6 +2754,15 @@ static void test_gamedb()
         // A name two entries have needs its folder: in another folder it is neither
         T(!gamedb_by_exe("game.exe", "C:\\games\\x\\game.exe", "", "", &g));
         T(gamedb_by_exe("game.exe", "C:\\games\\second\\game.exe", "", "", &g) && !strcmp(g.id, "8"));
+        // Names match without spaces, '-' and '_': the GitHub build's "Endless Sky.exe" is "endlesssky.exe"
+        T(gamedb_by_exe("Endless Sky.exe", "C:\\Games\\Endless Sky\\Endless Sky.exe", "", "", &g) && !strcmp(g.id, "10"));
+        T(gamedb_by_exe("Endless Sky.exe", "D:\\endless-sky-win64\\Endless Sky.exe", "", "", &g) && !strcmp(g.id, "10"));
+        T(gamedb_by_exe("endless_sky.exe", "", "", "", &g) && !strcmp(g.id, "10"));
+        // Two that squeeze to one name: the exact name in its folder is its game, any other spelling is neither
+        T(gamedb_by_exe("my-game.exe", "C:\\a\\my-game.exe", "", "", &g) && !strcmp(g.id, "11"));
+        T(gamedb_by_exe("mygame.exe", "C:\\b\\mygame.exe", "", "", &g) && !strcmp(g.id, "12"));
+        T(!gamedb_by_exe("My Game.exe", "C:\\b\\My Game.exe", "", "", &g));
+        T(!gamedb_by_exe("my_game.exe", "", "", "", &g) && !gamedb_by_exe("mygame.exe", "C:\\x\\mygame.exe", "", "", &g));
         // Mindustry from its own Java: its window is the game's whole name; a window that only holds it isn't
         T(java_titled_game("javaw -jar Mindustry.jar", "Mindustry", &g) && !strcmp(g.id, "9") && g.steam == 1127400);
         T(java_counts("C:\\Games\\Mindustry\\jre\\bin\\javaw.exe", "Mindustry.exe", "javaw -jar Mindustry.jar", "Mindustry"));

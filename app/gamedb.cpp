@@ -432,6 +432,19 @@ static const char *gdb_exe_file(const char *e, i32 len, i32 *file_len)
     return e + start;
 }
 
+// An exe name or path as the list is matched on: lower case, with spaces, '-' and '_' left out, so "Endless Sky.exe"
+// is "endless sky/endlesssky.exe"'s file. Returns the length written to out.
+static i32 gdb_squeeze(const char *s, i32 len, char *out, i32 cap)
+{
+    i32 n = 0;
+    for (i32 i = 0; i < len && s[i] && n < cap - 1; i++) {
+        char c = s[i] == '\\' ? '/' : (char)tolower((u8)s[i]);
+        if (c != ' ' && c != '-' && c != '_') out[n++] = c;
+    }
+    out[n] = 0;
+    return n;
+}
+
 static GameIndex *gamedb_load(const Path &tsv)
 {
     i64 size = 0;
@@ -478,7 +491,9 @@ static GameIndex *gamedb_load(const Path &tsv)
             const char *e = strchr(x, '|');
             i32 len = (i32)(e ? e - x : strlen(x)), fl = 0;
             const char *file = gdb_exe_file(x, len, &fl);
-            if (fl) ix->exes[ix->exe_count++] = {fnv64(file, fl), i};
+            char key[96];
+            fl = gdb_squeeze(file, fl, key, sizeof key);
+            if (fl) ix->exes[ix->exe_count++] = {fnv64(key, fl), i};
             x = e ? e + 1 : x + len;
         }
     }
@@ -602,6 +617,8 @@ static i32 gamedb_find_local(const char *q, char (*names)[128], i32 max)
 // path, when there is one, to end with them; one that names a command line wants it there. With several that fit, the most exact wins.
 // A copy unpacked somewhere else (an itch or DRM-free game in its own folder) still is the entry whose folders
 // don't fit, when no other entry in the list has an exe of that file name: a name many share (game.exe) isn't one.
+// Names are matched squeezed (gdb_squeeze); one that fits only squeezed is the game when no other entry's squeezes
+// to the same name.
 // *shared is set when the exe is one that several programs share and what was given couldn't tell which it is:
 // ask again with the command line and the title.
 static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline, const char *title, GameInfo *out,
@@ -609,12 +626,8 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
 {
     char file[96], where[MAX_PATH * 2], seen[512];
     static thread_local char cmd[32768]; // a modded Minecraft's is long: every library is on it
-    i32 fl = 0;
-    for (; exe[fl] && fl < (i32)sizeof file - 1; fl++) file[fl] = (char)tolower((u8)exe[fl]);
-    file[fl] = 0;
-    i32 wl = 0;
-    for (; path[wl] && wl < (i32)sizeof where - 1; wl++) where[wl] = path[wl] == '\\' ? '/' : (char)tolower((u8)path[wl]);
-    where[wl] = 0;
+    i32 fl = gdb_squeeze(exe, (i32)strlen(exe), file, sizeof file);
+    i32 wl = gdb_squeeze(path, (i32)strlen(path), where, sizeof where);
     i32 cl = 0;
     for (; cmdline[cl] && cl < (i32)sizeof cmd - 1; cl++) cmd[cl] = (char)tolower((u8)cmdline[cl]);
     cmd[cl] = 0;
@@ -624,7 +637,7 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
     gdb_letters(cmd, cmd_letters, sizeof cmd_letters);
 
     i32 best = 0, best_row = -1, guess_row = -1, file_row = -1, moved_row = -1;
-    bool best_launcher = false, wants_more = false, file_many = false, moved_launcher = false;
+    bool best_launcher = false, wants_more = false, file_many = false, moved_launcher = false, best_loose = false;
     u64 hash = fnv64(file, fl);
     AcquireSRWLockShared(&g_gamedb.lock);
     const GameIndex *ix = g_gamedb.index;
@@ -640,8 +653,9 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
             while (len && (*ent == '!' || *ent == '>')) { launcher |= *ent == '!'; strict |= *ent == '>'; ent++; len--; }
             i32 nl = 0;
             while (nl < len && ent[nl] != '\x1f') nl++;
-            char name[200], args[200] = "";
-            snprintf(name, sizeof name, "%.*s", nl, ent);
+            char raw[200], name[200], args[200] = "";
+            snprintf(raw, sizeof raw, "%.*s", nl, ent);
+            gdb_squeeze(raw, nl, name, sizeof name);
             if (nl < len) snprintf(args, sizeof args, "%.*s", len - nl - 1, ent + nl + 1);
             for (char *c = args; *c; c++) *c = (char)tolower((u8)*c);
             // The file name must be this exe's; folders named with it must be where it runs from
@@ -649,7 +663,9 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
             if (strcmp(slash ? slash + 1 : name, file)) continue;
             if (file_row < 0) file_row = ix->exes[k].row;
             else if (file_row != ix->exes[k].row) file_many = true;
-            i32 score = 1;
+            const char *raw_slash = strrchr(raw, '/');
+            bool loose = _stricmp(raw_slash ? raw_slash + 1 : raw, exe) != 0; // fits only squeezed
+            i32 score = loose ? 1 : 2;
             if (slash && wl) { // where it runs from isn't always known; then the file name has to do
                 size_t n = strlen(name);
                 if ((size_t)wl < n + 1 || strcmp(where + wl - n, name) || where[wl - n - 1] != '/') {
@@ -672,9 +688,10 @@ static bool gamedb_by_exe(const char *exe, const char *path, const char *cmdline
                     if (!slash || !wl) continue;
                 }
             }
-            if (score > best) { best = score; best_row = ix->exes[k].row; best_launcher = launcher; }
+            if (score > best) { best = score; best_row = ix->exes[k].row; best_launcher = launcher; best_loose = loose; }
         }
     }
+    if (best_row >= 0 && best_loose && file_many) best_row = -1;
     if (best_row < 0 && guess_row >= 0) best_row = guess_row;
     if (best_row < 0 && moved_row >= 0 && !file_many) best_row = moved_row, best_launcher = moved_launcher;
     if (best_row >= 0) {
