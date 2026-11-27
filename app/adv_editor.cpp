@@ -1207,7 +1207,7 @@ static void adv_timeline(ImVec2 o, f32 w, f32 h)
         if (ln) {
             ImGui::SetCursorScreenPos(ImVec2(gx, by));
             kit_next_tip("Which colour this lane shows");
-            if (kit_icon_button(ICON_SLIDERS, "##pick", KIT_GHOST)) ImGui::OpenPopup("##adv_color_pick");
+            if (kit_icon_button(ICON_COLOR, "##pick", KIT_GHOST)) ImGui::OpenPopup("##adv_color_pick");
             lib_popup_style_push(6);
             if (ImGui::BeginPopup("##adv_color_pick")) {
                 for (i32 c = 0; c < EDIT_COLORS; c++)

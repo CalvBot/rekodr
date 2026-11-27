@@ -4121,7 +4121,7 @@ static void card_menu()
         if (lib_menu_item(ICON_LINK, "Copy link")) lib_share_item(it, SHARE_LINK);
         if (lib_menu_item(ICON_FOLDER, "Show in folder")) show_in_folder(path.s);
         ImGui::Separator();
-        if (lib_menu_item(ICON_ADD, "Add to a folder")) folders = true;
+        if (lib_menu_item(ICON_NEW_FOLDER, "Add to a folder")) folders = true;
         if (lib_menu_item(ICON_GAME, "Change game")) game = true;
         if (lib_menu_item(ICON_RENAME, "Rename")) rename = true;
         if (lib_menu_item(ICON_FONT, it.display_name[0] ? "Change the display name" : "Add a display name")) display_name = true;
@@ -4161,7 +4161,7 @@ static void card_menu()
             ImGui::PopID();
         }
         if (n) ImGui::Separator();
-        if (lib_menu_item(ICON_ADD, "New folder")) {
+        if (lib_menu_item(ICON_NEW_FOLDER, "New folder")) {
             i32 i = lib_folder_new("New folder");
             if (i >= 0) {
                 lib_folder_put(it, i, true);
@@ -4749,7 +4749,7 @@ static void lib_sel_bar(ImVec2 at, f32 right, i32 n)
                 col32(COL_TEXT), count);
     ImGui::SetCursorScreenPos(ImVec2(at.x + kit_px(4) + slot + kit_px(12), at.y));
     bool in_folder = g_app.config.side_folders && lib.folder[0];
-    if (lib_bar_button("##sel_all", ICON_CHECK, "Select all")) lib_sel_all();
+    if (lib_bar_button("##sel_all", ICON_SELECT_ALL, "Select all")) lib_sel_all();
     ImVec2 game_at = ImGui::GetCursorScreenPos();
     if (lib_bar_button("##sel_game", ICON_GAME, "Change game")) ImGui::OpenPopup("sel_game");
     ImVec2 folder_at = ImGui::GetCursorScreenPos();
@@ -4776,7 +4776,7 @@ static void lib_sel_bar(ImVec2 at, f32 right, i32 n)
             ImGui::PopID();
         }
         if (shown) ImGui::Separator();
-        if (lib_menu_item(ICON_ADD, "New folder", false, kit_px(200))) {
+        if (lib_menu_item(ICON_NEW_FOLDER, "New folder", false, kit_px(200))) {
             i32 i = lib_folder_new("New folder");
             if (i >= 0) {
                 lib_sel_folder_put(i, true);

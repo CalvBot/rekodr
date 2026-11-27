@@ -160,7 +160,6 @@ static f32 g_dpi_scale = 1;
 #define ICON_FWD30     "\xEE\xB4\xBD" // ED3D skip forward 30
 #define ICON_SOLO      "\xEE\x9F\xB6" // E7F6 headphone
 #define ICON_PIN       "\xEE\x9C\x98" // E718
-#define ICON_PINNED    "\xEE\xA1\x80" // E840
 #define ICON_REFRESH   "\xEE\x9C\xAC" // E72C
 #define ICON_INFO      "\xEE\xA5\x86" // E946
 #define ICON_GLOBE     "\xEE\x9D\xB4" // E774
@@ -171,6 +170,10 @@ static f32 g_dpi_scale = 1;
 #define ICON_FILE      "\xEE\xA2\xA5" // E8A5 page
 #define ICON_SIMPLE    "\xEE\xA3\x86" // E8C6 scissors: the Simple editor, quick cuts
 #define ICON_ADVANCED  "\xEE\xA0\x9E" // E81E layers: the Advanced editor, several tracks
+#define ICON_PASTE     "\xEE\x9D\xBF" // E77F
+#define ICON_SELECT_ALL "\xEE\xA2\xB3" // E8B3
+#define ICON_COLOR     "\xEE\x9E\x90" // E790 palette
+#define ICON_NEW_FOLDER "\xEE\xA3\xB4" // E8F4 folder with a plus
 
 static const char *g_help_jump; // a section's title: Help opens scrolled to it (Options' info icons)
 

@@ -1864,8 +1864,8 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 i32 k = ed_put_key(l, ed.menu_t, ed.menu_v);
                 if (k >= 0) ed.sel[l] |= 1ull << k;
             }
-            if (ed.clip_count && lib_menu_item(ICON_COPY, "Paste at the playhead")) ed_paste(p.pos);
-            if (ln_count(ed.edit, l) && lib_menu_item(ICON_CHECK, "Select the lane's keys")) {
+            if (ed.clip_count && lib_menu_item(ICON_PASTE, "Paste at the playhead")) ed_paste(p.pos);
+            if (ln_count(ed.edit, l) && lib_menu_item(ICON_SELECT_ALL, "Select the lane's keys")) {
                 ed_sel_clear();
                 ed.sel[l] = bits_all(ln_count(ed.edit, l));
             }
@@ -1879,7 +1879,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
                 ed.sel[l] = 0;
                 ed.dirty = true;
             }
-            if (ln_is_volume(l) && lib_menu_item(ICON_VOLUME, "Refresh the audio preview")) ed_refresh_wave();
+            if (ln_is_volume(l) && lib_menu_item(ICON_REFRESH, "Refresh the audio preview")) ed_refresh_wave();
         }
         ImGui::EndPopup();
     }
@@ -1922,7 +1922,7 @@ static void ed_timeline(ImVec2 o, f32 w, f32 h)
         } else if (l >= ED_COLOR) {
             ImGui::SetCursorScreenPos(ImVec2(gx, by));
             kit_next_tip("Which colour this lane shows");
-            if (kit_icon_button(ICON_SLIDERS, "##pick", KIT_GHOST)) ImGui::OpenPopup("color_pick");
+            if (kit_icon_button(ICON_COLOR, "##pick", KIT_GHOST)) ImGui::OpenPopup("color_pick");
             lib_popup_style_push(6);
             if (ImGui::BeginPopup("color_pick")) {
                 for (i32 c = 0; c < EDIT_COLORS; c++)
