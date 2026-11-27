@@ -3591,15 +3591,16 @@ static void test_mcpack()
     T(!mc_clues("javaw -jar notagame.jar --gameDir C:/x", body, sizeof body));
 
     // Prism hands the game its arguments on stdin: the folder from the instance beside the natives, the version
-    // from mmc-pack.json
+    // and the loader from mmc-pack.json
     put_file(path_join(prism, L"mmc-pack.json"), "{\"components\": [{\"uid\": \"org.lwjgl3\", \"version\": \"3.3.3\"}, "
-                                                 "{\"cachedVersion\": \"1.21.1\", \"uid\": \"net.minecraft\", \"version\": \"1.21.1\"}]}");
+                                                 "{\"cachedVersion\": \"1.21.1\", \"uid\": \"net.minecraft\", \"version\": \"1.21.1\"}, "
+                                                 "{\"uid\": \"net.fabricmc.intermediary\"}, {\"uid\": \"net.fabricmc.fabric-loader\"}]}");
     char pdir[MAX_PATH * 2], got[MAX_PATH * 2];
     wide_to_utf8(prism.s, pdir, sizeof pdir);
     snprintf(cmd, sizeof cmd, "javaw -XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump "
                               "-Djava.library.path=%s/natives -cp x org.prismlauncher.EntryPoint", pdir);
     T(mc_game_dir(cmd, got, sizeof got) && strstr(got, ".minecraft"));
-    T(mc_clues(cmd, body, sizeof body) && strstr(body, "\"launcher\":\"prism\",\"mc\":\"1.21.1\""));
+    T(mc_clues(cmd, body, sizeof body) && strstr(body, "\"launcher\":\"prism\",\"mc\":\"1.21.1\",\"loader\":\"fabric\""));
     T(!mc_game_dir("javaw -Djava.library.path=C:/x/natives -cp x some.other.Main", got, sizeof got));
     // An instance name with spaces: Prism quotes the whole -D argument
     T(mc_arg("javaw \"-Djava.library.path=C:/i/Cobblemon Official Modpack [Fabric]/natives\" -cp x", "-Djava.library.path",

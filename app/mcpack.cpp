@@ -5,7 +5,8 @@
 // path, and never an instance's name, which the player chose. Where each launcher keeps its record, from the game's
 // folder:
 //   Prism, MultiMC   ..\instance.cfg: ManagedPack, ManagedPackType (flame = CurseForge, modrinth), ManagedPackID,
-//                    ManagedPackVersionID; ..\mmc-pack.json: the net.minecraft component's version
+//                    ManagedPackVersionID; ..\mmc-pack.json: the net.minecraft component's version, and the loader
+//                    by its component (Prism's command line names no main class)
 //   CurseForge       minecraftinstance.json (in it, or one up): projectID, fileID (0 for a pack imported from a zip)
 //   FTB App          ..\instance.json (or in it): id, versionId
 //   GDLauncher       ..\instance.json: modpack {platform, project_id, version_id or file_id}
@@ -144,12 +145,15 @@ static bool mc_read_record(const char *game_dir, McClues *c)
         }
         free(t);
         t = 0;
-        // The Minecraft version: Prism puts no --version on the command line
+        // The Minecraft version and the loader: Prism puts neither --version nor the loader's main class on the
+        // command line
         if ((t = mc_read(up, L"mmc-pack.json", &len)) != 0) {
             const char *u = strstr(t, "\"net.minecraft\"");
             const char *k = u ? strstr(u, "\"version\"") : 0;
             const char *q = k ? strchr(k + 9, '"') : 0;
             for (i32 n = 0; q && n < (i32)sizeof c->mc - 1 && (isdigit((u8)q[1 + n]) || q[1 + n] == '.'); n++) c->mc[n] = q[1 + n], c->mc[n + 1] = 0;
+            str_set(c->loader, strstr(t, "\"org.quiltmc.quilt-loader\"") ? "quilt" : strstr(t, "\"net.fabricmc.fabric-loader\"") ? "fabric"
+                               : strstr(t, "\"net.neoforged\"") ? "neoforge" : strstr(t, "\"net.minecraftforge\"") ? "forge" : "");
         }
     } else if ((t = mc_read(here, L"minecraftinstance.json", &len)) != 0 || (t = mc_read(up, L"minecraftinstance.json", &len)) != 0) {
         str_set(c->launcher, "curseforge");
@@ -224,8 +228,9 @@ static bool mc_clues(const char *cmdline, char *out, i32 cap)
         while (n < (i32)sizeof c.mc - 1 && (isdigit((u8)ver[n]) || ver[n] == '.')) { c.mc[n] = ver[n]; n++; }
         c.mc[n] = 0;
     }
-    str_set(c.loader, strstr(low, "net.fabricmc") ? "fabric" : strstr(low, "org.quiltmc") ? "quilt"
-                      : strstr(low, "neoforge") ? "neoforge" : strstr(low, "forge") || strstr(low, "fml") ? "forge" : "vanilla");
+    if (!c.loader[0])
+        str_set(c.loader, strstr(low, "net.fabricmc") ? "fabric" : strstr(low, "org.quiltmc") ? "quilt"
+                          : strstr(low, "neoforge") ? "neoforge" : strstr(low, "forge") || strstr(low, "fml") ? "forge" : "vanilla");
     if (!c.launcher[0]) str_set(c.launcher, "other");
 
     i32 n = snprintf(out, cap, "{\"mc\":{\"launcher\":");
