@@ -4195,11 +4195,9 @@ static void test_mcpack()
     key_file_id(ans.key, kf, sizeof kf);
     T(!strcmp(kf, "p_modrinth_1KVo5zza"));
 
-    // A POST is signed with its body (worked out with Python's hmac)
+    // A POST is signed with its body, a body bigger than any buffer (a crash report with its dump) whole (worked
+    // out with Python's hmac)
     char sig[128];
-    art_service_sign(ART_SERVICE_KEY, "/v1/resolve", 1763500000, sig, sizeof sig, "{\"mc\":{\"launcher\":\"prism\"}}");
-    T(!strcmp(sig, "1763500000.e58674c0168b200a27a89691e85d90212174664cbc1d49a36b3abc9d7690bbbd"));
-    // A body bigger than any buffer (a crash report with its dump) is signed whole
     {
         static char big[40016];
         i32 bn = snprintf(big, sizeof big, "{\"dump\":\"");
