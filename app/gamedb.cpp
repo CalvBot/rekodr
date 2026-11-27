@@ -1340,16 +1340,16 @@ static void gamedb_new_run(AppInfo *a)
 #endif
 static const char ART_SERVICE_KEY[] = REKODR_SERVICE_KEY;
 
-// HMAC-SHA256 of msg, in hex.
-static bool hmac_sha256_hex(const char *key, const char *msg, char out[65])
+// HMAC-SHA256 of the parts, one after another, in hex.
+static bool hmac_sha256_hex(const char *key, const char *const *parts, i32 n, char out[65])
 {
     BCRYPT_ALG_HANDLE alg = 0;
     BCRYPT_HASH_HANDLE h = 0;
     u8 mac[32];
     bool ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, 0, BCRYPT_ALG_HANDLE_HMAC_FLAG)) &&
-              BCRYPT_SUCCESS(BCryptCreateHash(alg, &h, 0, 0, (PUCHAR)key, (ULONG)strlen(key), 0)) &&
-              BCRYPT_SUCCESS(BCryptHashData(h, (PUCHAR)msg, (ULONG)strlen(msg), 0)) &&
-              BCRYPT_SUCCESS(BCryptFinishHash(h, mac, sizeof mac, 0));
+              BCRYPT_SUCCESS(BCryptCreateHash(alg, &h, 0, 0, (PUCHAR)key, (ULONG)strlen(key), 0));
+    for (i32 i = 0; ok && i < n; i++) ok = BCRYPT_SUCCESS(BCryptHashData(h, (PUCHAR)parts[i], (ULONG)strlen(parts[i]), 0));
+    ok = ok && BCRYPT_SUCCESS(BCryptFinishHash(h, mac, sizeof mac, 0));
     if (h) BCryptDestroyHash(h);
     if (alg) BCryptCloseAlgorithmProvider(alg, 0);
     out[0] = 0;
@@ -1359,13 +1359,13 @@ static bool hmac_sha256_hex(const char *key, const char *msg, char out[65])
 }
 
 // The signature header (ART_SERVICE_SIG_HEADER) for a path (with its query, as sent): "<unix seconds>.<hmac of "seconds\npath">", and
-// for a POST "seconds\npath\nbody".
+// for a POST "seconds\npath\nbody". The body is hashed as it is, whatever its size.
 static void art_service_sign(const char *path, i64 seconds, char *out, i32 cap, const char *post = 0)
 {
-    static thread_local char msg[16384];
-    char mac[65];
-    snprintf(msg, sizeof msg, post ? "%lld\n%s\n%s" : "%lld\n%s", seconds, path, post ? post : "");
-    hmac_sha256_hex(ART_SERVICE_KEY, msg, mac);
+    char secs[24], mac[65];
+    snprintf(secs, sizeof secs, "%lld\n", seconds);
+    const char *parts[] = {secs, path, "\n", post};
+    hmac_sha256_hex(ART_SERVICE_KEY, parts, post ? 4 : 2, mac);
     snprintf(out, cap, "%lld.%s", seconds, mac);
 }
 

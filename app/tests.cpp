@@ -4192,6 +4192,15 @@ static void test_mcpack()
     char sig[128];
     art_service_sign("/v1/resolve", 1763500000, sig, sizeof sig, "{\"mc\":{\"launcher\":\"prism\"}}");
     T(!strcmp(sig, "1763500000.e58674c0168b200a27a89691e85d90212174664cbc1d49a36b3abc9d7690bbbd"));
+    // A body bigger than any buffer (a crash report with its dump) is signed whole
+    {
+        static char big[40016];
+        i32 bn = snprintf(big, sizeof big, "{\"dump\":\"");
+        memset(big + bn, 'A', 40000);
+        strcpy(big + bn + 40000, "\"}");
+        art_service_sign("/v1/crash", 1763500000, sig, sizeof sig, big);
+        T(!strcmp(sig, "1763500000.aec7cabcf1e78ff30f5bb78a34fc599bbda7d2285b7039f5ae98381d83bb3d20"));
+    }
 
     remove_tree(root);
     T(GetFileAttributesW(root.s) == INVALID_FILE_ATTRIBUTES);
