@@ -140,6 +140,10 @@ static void run_command(const char *text)
         else if (!strcmp(arg, "list") || !strcmp(arg, "list-collapsed")) // the library's list on the left, or its rail
             g_app.config.games_collapsed = !strcmp(arg, "list-collapsed");
         else if (!strcmp(arg, "delete")) g_show_dialog = 1; // the first card's Delete dialog
+        else if (!strcmp(arg, "card-menu") && lib.shown_count > 0) { // the first card's menu
+            lib.target = lib.items[lib.shown[0]];
+            lib.open_menu = true;
+        }
         else if (!strcmp(arg, "sound")) g_lib_sound_show = true; // the player's sound menu
         else if (!strcmp(arg, "comment") && lib.shown_count > 0) lib_comment_open(lib.items[lib.shown[0]]); // its Comment
         else if (!strcmp(arg, "tags") && lib.shown_count > 0) lib_tags_open(lib.items[lib.shown[0]]); // its Tags
