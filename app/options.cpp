@@ -1567,7 +1567,7 @@ static void folders_rows(i32 rows, f32 rh, i32 *open_popup)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 fh = ImGui::GetFrameHeight();
     f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
-    f32 more_x = x1 - fh, pills_x = more_x - dp(20) - cat_pills_w();
+    f32 more_x = x1 - fh, pills_x = more_x - fh - dp(24) - cat_pills_w(); // in line with the apps' pills
     f32 is = dp(34), text_x = x0 + is + dp(14), text_max = pills_x - dp(16);
     i16 shown[COUNT(c.folders)];
     i32 n = 0;
@@ -1699,8 +1699,10 @@ static void options_apps()
     if (folders) folders_rows(rows, rh, &open_popup);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 x0 = g_card.a.x + dp(OPT_PAD), x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
-    f32 more_x = x1 - fh, pills_x = more_x - dp(20) - cat_pills_w();
+    // A new app's row has Remove from list beside its menu; the slot is kept on every row so nothing moves
+    f32 more_x = x1 - fh, remove_x = more_x - fh - dp(4), pills_x = remove_x - dp(20) - cat_pills_w();
     f32 is = dp(34), text_x = x0 + is + dp(14), text_max = pills_x - dp(16);
+    i32 remove = -1; // done after the rows: it takes the app out of the list they are drawn from
 
     for (i32 r = 0; r < rows && !folders; r++) {
         i32 k = o.apps_page * rows + r;
@@ -1748,6 +1750,11 @@ static void options_apps()
 
         cat_pills(&a, pills_x, cy);
 
+        if (is_new) {
+            ImGui::SetCursorScreenPos(ImVec2(remove_x, cy));
+            kit_next_tip("Remove from list");
+            if (kit_icon_button(ICON_CLOSE, "##remove")) remove = idx;
+        }
         ImGui::SetCursorScreenPos(ImVec2(more_x, cy));
         kit_next_tip("More options. Right-click the row too");
         bool more = kit_icon_button(ICON_MORE, "##more");
@@ -1760,6 +1767,7 @@ static void options_apps()
         opt_row_end();
     }
     opt_card_end(10);
+    if (remove >= 0) app_dismiss(remove);
 
     if (open_popup == 1) ImGui::OpenPopup("app menu");
     lib_popup_style_push(8);
