@@ -2927,8 +2927,8 @@ static void test_r2()
     r2_thumb_size(0, 1080, &tw, &th);
     T(!tw && !th);
 
-    // The page: the tags for a card that plays, the name, the game line and the player; the title made safe and
-    // ASCII; paused, no clip and nothing that plays it
+    // The page: the tags for a card that plays, the name and the clip for the player to build on, and its data; the
+    // title made safe and ASCII; paused, no clip and nothing that plays it
     static char html[65536];
     static const u8 past_ascii[] = {'c', 'a', 'f', 0xc3, 0xa9, ' ', 0xf0, 0x9f, 0x8e, 0xae, 0x01, 0}; // e-acute, a pad, a control
     char title[96];
@@ -2943,6 +2943,7 @@ static void test_r2()
     T(ascii);
     T(strstr(html, "<title>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</title>") != 0);
     T(strstr(html, "<h1>ace &lt;b&gt;&quot;round&quot;&lt;/b&gt; &amp; caf&#233; &#127918;</h1>") != 0);
+    T(strstr(html, "{\"t\":\"ace \\u003cb\\u003e\\\"round\\\"\\u003c/b\\u003e \\u0026 caf\\u00e9 \\ud83c\\udfae\""));
     T(strstr(html, "<meta property=\"og:type\" content=\"video.other\">") != 0);
     T(strstr(html, "<meta property=\"og:site_name\" content=\"Rekodr\">") != 0);
     T(strstr(html, "<meta property=\"og:image\" content=\"https://x.dev/rekodr/abc/thumb.jpg?v=2\">") != 0);
@@ -2965,48 +2966,52 @@ static void test_r2()
     T(strstr(html, "twitter:player:height\" content=\"720\"") != 0 && strstr(html, "twitter:image\"") != 0);
     T(strstr(html, "noindex") != 0 && !strstr(html, "og:video:width\" content=\"2560\""));
     T(strstr(html, "<video src=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" poster=\"https://x.dev/rekodr/abc/thumb.jpg?v=2\"") != 0);
-    T(strstr(html, "width=\"2560\" height=\"1440\" controls playsinline") != 0 && strstr(html, "aspect-ratio:2560/1440"));
-    T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/rekodr/abc/thumb.jpg?v=2')\">"));
-    // Onest is in the page: no font, nor anything else, from another site
-    T(strstr(html, "@font-face{font-family:Onest;") && strstr(html, "src:url(data:font/woff2;base64,d09GMg"));
-    T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
-    // the player as wide as the height leaves room for, at the clip's shape; a volume slider beside the sound button
-    T(strstr(html, "<main style=\"--w:2560;--h:1440\">") && strstr(html, "calc((100svh - var(--room)) * var(--w) / var(--h))"));
-    T(strstr(html, "<input id=\"vl\" type=\"range\" min=\"0\" max=\"1\"") && strstr(html, "v.volume=+this.value"));
-    // Download (in the accent), Copy link, and "via Rekodr" linking to the project, after the name; no game line
-    // without one
-    T(strstr(html, "<a class=\"btn p ib\" href=\"https://x.dev/rekodr/abc/clip.mp4?v=2\" download aria-label=\"Download\">"));
-    T(strstr(html, "<a class=\"via\" href=\"https://github.com/CalvBot/rekodr\"><svg viewBox=\"0 0 607 607\"") &&
-      strstr(html, "</svg>via <b>Rekodr</b></a>") && !strstr(html, "emojis/1575548227070201897"));
-    T(strstr(html, "aria-label=\"Copy link\"") && !strstr(html, "class=\"game\""));
-    // the accent, in the CSS and as the theme colour: the default, or the one picked
-    T(strstr(html, "--accent:#00897b;") && strstr(html, "background:var(--accent)") &&
-      strstr(html, "<meta name=\"theme-color\" content=\"#00897b\">"));
+    T(strstr(html, "width=\"2560\" height=\"1440\" controls playsinline") != 0);
+    T(strstr(html, "<main id=\"rk\" style=\"--w:2560;--h:1440\">") && strstr(html, "\"p\":\"https://x.dev/rekodr/abc/thumb.jpg?v=2\""));
+    // the shared player from beside the page; nothing from another site, and no game line without one
+    T(strstr(html, "<script src=\"player.js\" defer></script>") && !strstr(html, "fonts.g") && !strstr(html, "\"l\":"));
+    T(!strstr(html, "emojis/") && !strstr(html, "class=\"via\""));
+    // the accent, and as the theme colour: the default, or the one picked
+    T(strstr(html, "--accent:#00897b;--ink:#fff}") && strstr(html, "<meta name=\"theme-color\" content=\"#00897b\">"));
     pp.accent = 0xffe066;
     hn = r2_page_html(pp, false, html, sizeof html);
     T(hn > 0 && strstr(html, "--accent:#ffe066;") && strstr(html, "content=\"#ffe066\"") && !strstr(html, "#00897b"));
-    T(strstr(html, "--ink:#0a0a0a;") && !r2_accent_ink(0) && r2_accent_ink(0xffe066));
+    T(strstr(html, "--ink:#0a0a0a}") && !r2_accent_ink(0) && r2_accent_ink(0xffe066));
     pp.accent = 0;
-    // #t= starts the clip there; no preview, no markers
-    T(strstr(html, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(html, "var CB={pv:0.000,m:[]};"));
-    // a preview and markers go to the player, the labels made safe for the script tag; each marker's icon once, in
-    // a sheet, from the app's own; a dot for one with no icon or a name that isn't plain; no icon lane without markers
-    T(!strstr(html, "id=\"ln\"") && !strstr(html, "id=\"ei\""));
+    // no preview, no markers
+    T(strstr(html, ",\"pv\":0.000,\"m\":[]}</script>"));
+    // a preview and markers go in the data, the labels made safe for the script tag; the icon by its name, a dot for
+    // one with none or a name that isn't plain
     pp.preview = 210;
     char marks[128];
     snprintf(marks, sizeof marks, "12.400 kill First kill%c17.000 - </script>%c25.5 Bad\"key x%c30 kill Kill: AK", R2_MARK_SEP,
              R2_MARK_SEP, R2_MARK_SEP);
     pp.marks = marks;
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "var CB={pv:210.000,m:[[12.400,\"First kill\",\"kill\"],[17.000,\"\\u003c/script\\u003e\",\"dot\"],"
-                             "[25.500,\"x\",\"dot\"],[30.000,\"Kill: AK\",\"kill\"]]};</script>"));
-    T(strstr(html, "<div class=\"lane\" id=\"ln\"><span class=\"lbl\" id=\"lb\" hidden></span></div><div class=\"scrub\""));
-    const char *sheet = strstr(html, "<svg id=\"ei\"");
-    T(sheet && strstr(sheet, "<symbol id=\"ei-kill\" viewBox=\"0 0 14 14\"><circle stroke=\"currentColor\" fill=\"none\" "
-                             "cx=\"7\" cy=\"7\" r=\"4\" stroke-width=\"2\"/><rect x=\"6\" y=\"0\" width=\"2\" height=\"3\"/>"));
-    T(sheet && strstr(sheet, "<symbol id=\"ei-dot\"") && !strstr(strstr(sheet, "ei-kill") + 1, "id=\"ei-kill\""));
+    T(hn > 0 && strstr(html, ",\"pv\":210.000,\"m\":[[12.400,\"First kill\",\"kill\"],[17.000,\"\\u003c/script\\u003e\",\"dot\"],"
+                             "[25.500,\"x\",\"dot\"],[30.000,\"Kill: AK\",\"kill\"]]}</script>"));
     pp.preview = 0;
     pp.marks = 0;
+    // The shared player: Onest in it, the look, the controls, the via line, and every event icon once in its sheet
+    {
+        static char js[R2_PLAYER_CAP];
+        i32 jn = r2_player_js(js, sizeof js);
+        T(jn > 0 && jn == (i32)strlen(js) && starts_with(js, "(function(){var R2CSS=\"@font-face{font-family:Onest;"));
+        bool js_ascii = true;
+        for (i32 i = 0; i < jn; i++) js_ascii = js_ascii && (u8)js[i] < 0x80 && (js[i] != '\n' || i == jn - 1);
+        T(js_ascii && strstr(js, "src:url(data:font/woff2;base64,d09GMg") && !strstr(js, "fonts.g"));
+        T(strstr(js, "font:14px/1.5 Onest,\\\"Segoe UI\\\",system-ui,sans-serif"));
+        T(strstr(js, "calc((100svh - var(--room)) * var(--w) / var(--h))") && strstr(js, "v.volume=+this.value"));
+        T(strstr(js, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(js, "background:var(--accent)"));
+        T(strstr(js, "<a class=\\\"via\\\" href=\\\"https://github.com/CalvBot/rekodr\\\"><svg viewBox=\\\"0 0 607 607\\\"") &&
+          strstr(js, "</svg>via <b>Rekodr</b></a>"));
+        T(strstr(js, "<input id=\\\"vl\\\" type=\\\"range\\\" min=\\\"0\\\" max=\\\"1\\\"") && strstr(js, "aria-label=\\\"Copy link\\\""));
+        const char *kill = strstr(js, "<symbol id=\\\"ei-kill\\\" viewBox=\\\"0 0 14 14\\\"><circle stroke=\\\"currentColor\\\" "
+                                      "fill=\\\"none\\\" cx=\\\"7\\\" cy=\\\"7\\\" r=\\\"4\\\" stroke-width=\\\"2\\\"/>");
+        T(kill && !strstr(kill + 20, "id=\\\"ei-kill\\\"") && strstr(js, "<symbol id=\\\"ei-dot\\\""));
+        T(strstr(js, "$('ei-'+m[2])?m[2]:'dot'") && strstr(js, "done()})()\n"));
+        T(r2_player_js(js, 1024) == 0);
+    }
     // A page marker: its icon from the detail (a kill by its weapon's class, a headshot), the weapon after the note
     char me[400];
     r2_mark_entry(9.862, "Kill", "event=kill;weapon=MP-133 12ga shotgun;name=Someone", me, sizeof me);
@@ -3030,28 +3035,27 @@ static void test_r2()
     }
     char nosvg[64];
     T(!evi_svg("nope", nosvg, sizeof nosvg) && !evi_svg("", nosvg, sizeof nosvg) && !evi_svg("death", nosvg, 16));
+    T(evi_key_at(1, nosvg, sizeof nosvg) && !evi_key_at(EVI_COUNT, nosvg, sizeof nosvg) && !evi_key_at(0, nosvg, 8));
     // the heading and the game line with its emoji
     pp.heading = "Ace";
     pp.line = "Valorant";
     pp.emoji = "<a:val:123>";
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "<h1>Ace</h1>\n<div class=\"game\"><img src=\"https://cdn.discordapp.com/emojis/123.gif\" "
-                             "alt=\"\">Valorant</div>"));
+    T(hn > 0 && strstr(html, "{\"t\":\"Ace\",\"l\":\"Valorant\",\"em\":\"https://cdn.discordapp.com/emojis/123.gif\",")
+      && strstr(html, "<h1>Ace</h1>"));
     // the game's icon goes before the line instead of the emoji
     pp.icon = "data:image/png;base64,iVBORw0K";
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "<div class=\"game\"><img class=\"icon\" src=\"data:image/png;base64,iVBORw0K\" "
-                             "alt=\"\">Valorant</div>") && !strstr(html, "emojis/123"));
+    T(hn > 0 && strstr(html, "\"l\":\"Valorant\",\"ic\":\"data:image/png;base64,iVBORw0K\",") && !strstr(html, "emojis/123"));
     pp.icon = "";
     pp.emoji = "nope";
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "<div class=\"game\">Valorant</div>"));
+    T(hn > 0 && strstr(html, "\"l\":\"Valorant\",\"p\":") && !strstr(html, "\"em\":"));
     pp.heading = pp.line = pp.emoji = pp.icon = 0;
     // the game's art goes behind the page instead of the clip's picture
     pp.art = "data:image/png;base64,iVBORw0K";
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "<div class=\"bg\" style=\"background-image:url('data:image/png;base64,iVBORw0K')\">")
-      && !strstr(html, "url('https://x.dev/rekodr/abc/thumb.jpg"));
+    T(hn > 0 && strstr(html, "\"bg\":\"data:image/png;base64,iVBORw0K\"") && !strstr(html, "\"p\":"));
     pp.art = 0;
     // an icon for the page: a PNG scaled to R2_ICON_PX, in base64
     {
@@ -3090,9 +3094,9 @@ static void test_r2()
     hn = r2_page_html(pp, true, html, sizeof html);
     T(hn > 0 && strstr(html, "<title>ace</title>") && strstr(html, "This clip isn't playing right now."));
     T(!strstr(html, "<video") && !strstr(html, "og:video") && !strstr(html, "clip.mp4") && !strstr(html, "twitter:player"));
-    T(!strstr(html, "thumb.jpg") && !strstr(html, "<script") && strstr(html, "via <b>Rekodr</b></a>"));
+    T(!strstr(html, "thumb.jpg") && strstr(html, "{\"t\":\"ace\",\"x\":1}</script>") && strstr(html, "src=\"player.js\""));
     hn = r2_page_html(pp, false, html, sizeof html);
-    T(hn > 0 && strstr(html, "via <b>Rekodr</b></a>") > strstr(html, "<h1>") && strstr(html, "<h1>") > strstr(html, "<video"));
+    T(hn > 0 && strstr(html, "<h1>") > strstr(html, "<video") && strstr(html, "<video") > strstr(html, "id=\"rk-data\""));
     T(r2_page_html(pp, false, html, 64) == 0);
 
     // Discord's card: title, line, the video and the via line; names escaped for markdown, JSON and the script tag

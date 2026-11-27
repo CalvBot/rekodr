@@ -25,6 +25,7 @@
 static void open_url(const char *url); // setup.cpp
 static void evi_key_of_marker(const char *detail, char *out, i32 cap); // evicons.cpp
 static i32 evi_svg(const char *key, char *out, i32 cap);                // evicons.cpp
+static bool evi_key_at(i32 i, char *out, i32 cap);                    // evicons.cpp
 static bool marker_detail_get(const char *d, const char *key, char *out, i32 cap); // markers.cpp
 static void r2_resume(const char *key);
 static void r2_auto_pause();
@@ -142,7 +143,8 @@ struct R2Conf {
 };
 
 enum R2TaskKind : u8 { R2_T_PROBE, R2_T_UPLOAD, R2_T_UPLOADER, R2_T_DELETE, R2_T_SETUP, R2_T_SIGNIN, R2_T_USAGE,
-                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS, R2_T_CLEANUP, R2_T_REPAGE };
+                        R2_T_SIGNOUT, R2_T_PAUSE, R2_T_RESUME, R2_T_DOMAINS, R2_T_CLEANUP, R2_T_REPAGE,
+                        R2_T_PLAYER, R2_T_REMARK };
 
 struct R2Task {
     R2TaskKind kind;
@@ -807,19 +809,6 @@ static bool r2_accent_ink(u32 c)
     return 1.05f / (l + 0.05f) < 3; // as ink_on
 }
 
-// The page for a link, in the app's look and sizes: the game's art (else the clip's picture) grey, blurred and faint
-// behind it all, a light grain over it; the clip first, in a player laid out like the Library's (ghost icon buttons,
-// a speed chip, a short volume slider; its markers as ticks on the seek bar, each with its event icon in a thin strip
-// over the bar, which names it beside the icon on hover or tap), as wide as the screen's height leaves room for; on
-// a phone the player runs edge to edge with bigger buttons and no volume slider; under it the name and the game line
-// (after the game's icon, else its emoji) with Download and Copy link beside them, then "via Rekodr" (a link to the
-// project). The accent fills the played part, the volume and Download. The volume and mute are kept in the browser
-// under one key, so every clip on the host opens at the last level. The head has the tags chat
-// apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the picture, and
-// Discord's own card (`card`) before them. A #t= in the address (seconds, or m:ss or h:mm:ss) starts the clip there,
-// which is where a card's preview tag links to; when cards play a preview, a button and a green tick mark where it
-// stops. Paused, the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the
-// length, 0 if it didn't fit.
 // A page marker's parts (r2_mark_entry): its time, its icon (`key`, "" for none or one that isn't a plain name) and
 // its label. False when it isn't one.
 static bool r2_mark_split(const char *m, size_t n, f64 *at, char *key, i32 key_cap, char *label, i32 label_cap)
@@ -839,6 +828,335 @@ static bool r2_mark_split(const char *m, size_t n, f64 *at, char *key, i32 key_c
     return true;
 }
 
+// The shared player every page loads (R2_PLAYER_KEY, beside the pages): the look, the controls and their script.
+// A page is a shell of tags for link cards, its data and a plain <video>; the player builds the page around that
+// video from the data. A page made before a player change gets the new player the next time it's opened.
+#define R2_PLAYER_KEY "rekodr/player.js"
+enum { R2_PLAYER_CAP = 1 << 17 };
+
+// The app's surfaces, radii and type; Onest is in the player itself, so a page asks nothing of anyone else. The
+// page's accent and its ink are the page's own (r2_page_html).
+static const char R2_PLAYER_FONT[] = "@font-face{font-family:Onest;font-weight:400 700;font-display:swap;"
+                                     "src:url(data:font/woff2;base64,";
+// Room the page keeps above and below the picture: its padding, the controls, the title and game line, the via
+// line. The player is as wide as the screen's height leaves room for, at the clip's shape.
+static const char R2_PLAYER_CSS[] =
+    ") format(\"woff2\")}"
+    ":root{--fg:#f2f2f2;--dim:#969696;--line:#363636;--panel:#161616;--raised:#1f1f1f;--hover:#262626;"
+    "--scrim:#000000c0;--mark:#fff;--prev:#4cc985;--room:236px;--hot:color-mix(in srgb,var(--accent) 85%,#fff);"
+    "color-scheme:dark}"
+    "html{background:#0a0a0a}body{margin:0;min-height:100vh;min-height:100svh;color:var(--fg);"
+    "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif;-webkit-font-smoothing:antialiased}"
+    "body{display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding:24px;box-sizing:border-box;"
+    "overflow-x:hidden}"
+    ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(48px);opacity:.16;"
+    "z-index:-1}#ei{position:absolute;width:0;height:0}"
+    // The grain over it, as the app's over its art: still grey noise, faint
+    "body::after{content:\"\";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.06;"
+    "background:url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'>"
+    "<filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/>"
+    "<feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 .5 .5 .5 0 -.25'/></filter>"
+    "<rect width='256' height='256' filter='url(%23g)'/></svg>\")}"
+    "main{width:min(100%,1600px,max(640px,calc((100vh - var(--room)) * var(--w) / var(--h))));"
+    "width:min(100%,1600px,max(640px,calc((100svh - var(--room)) * var(--w) / var(--h))));"
+    "display:grid;gap:12px}main:not(:has(.player)){width:min(100%,640px)}"
+    ".info{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 24px;flex-wrap:wrap}"
+    ".info>:first-child{min-width:0;flex:1 1 320px;display:grid;gap:2px}"
+    "h1{font-size:18px;line-height:1.3;font-weight:700;letter-spacing:-.01em;margin:0;overflow-wrap:anywhere}"
+    ".game{display:flex;gap:6px;align-items:center;color:var(--dim);font-size:13px}"
+    ".game img{width:16px;height:16px}.game .icon{border-radius:4px}.via svg{width:14px;height:14px}"
+    ".player{border-radius:10px;overflow:hidden;background:var(--panel);outline:none}"
+    ".player:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    ".view{position:relative;overflow:hidden;background:#000;max-height:calc(100vh - var(--room));"
+    "max-height:calc(100svh - var(--room));margin:auto;cursor:zoom-in;touch-action:none}"
+    ".view.z{cursor:grab}.view.d{cursor:grabbing}"
+    "video{display:block;width:100%;height:100%;max-width:none;object-fit:contain;transform-origin:0 0;"
+    "background:#000}"
+    ".tag{position:absolute;top:12px;font-size:13px;font-weight:600;background:var(--scrim);border-radius:999px;"
+    "padding:4px 12px;font-variant-numeric:tabular-nums}"
+    ".tag button{all:unset;cursor:pointer;color:var(--dim);margin-left:8px}"
+    ".ctrl{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;padding:4px 10px 8px}"
+    ".scrub{position:relative;height:20px;cursor:pointer;touch-action:none}"
+    ".scrub>*{position:absolute;pointer-events:none}"
+    ".rail,.done{left:0;top:8px;height:4px;border-radius:2px;transition:height .1s,top .1s}"
+    ".rail{right:0;background:var(--hover)}.done{background:var(--accent)}"
+    ".scrub:hover .rail,.scrub:hover .done{top:7.5px;height:5px}"
+    ".head{top:4px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:#fff}"
+    ".scrub:hover .head{top:3px;width:14px;height:14px;margin-left:-7px}"
+    "#tk{inset:0}.tick{position:absolute;top:5px;width:2px;height:10px;margin-left:-1px;background:var(--mark)}"
+    ".tick.pv{background:var(--prev);top:2px;height:16px}.tick.on{background:var(--accent)}"
+    // The markers' strip: each event icon over its tick, its name beside it in plain text
+    ".lane{position:relative;height:16px;margin-top:2px}"
+    ".ev{position:absolute;top:0;width:16px;height:16px;margin-left:-8px;border:0;border-radius:4px;padding:0;"
+    "background:none;color:var(--dim);cursor:pointer;display:grid;place-items:center}"
+    ".ev svg{width:12px;height:12px}.ev:hover,.ev.on{color:var(--accent)}.ev.un{visibility:hidden}"
+    "#ei .h{fill:var(--panel)}#ei .hs{stroke:var(--panel)}"
+    ".lbl{position:absolute;top:0;height:16px;line-height:16px;color:var(--fg);font-size:12px;font-weight:600;"
+    "white-space:nowrap;pointer-events:none;z-index:1}"
+    ".row{display:flex;align-items:center;gap:2px;font-size:13px;color:var(--dim);"
+    "font-variant-numeric:tabular-nums}"
+    ".ic{flex:none;width:32px;height:32px;border:0;border-radius:999px;background:none;color:var(--fg);"
+    "cursor:pointer;display:grid;place-items:center;padding:0}"
+    ".ic:hover{background:var(--hover)}svg{width:18px;height:18px;fill:currentColor}"
+    ".vol{display:flex;align-items:center;gap:2px}"
+    ".vol input{flex:none;width:96px;height:20px;margin:0 6px 0 2px;background:none;cursor:pointer;"
+    "-webkit-appearance:none;appearance:none;--f:100%}"
+    ".vol input::-webkit-slider-runnable-track{height:4px;border-radius:2px;"
+    "background:linear-gradient(90deg,var(--accent) var(--f),var(--hover) var(--f))}"
+    ".vol input::-moz-range-track{height:4px;border-radius:2px;"
+    "background:linear-gradient(90deg,var(--accent) var(--f),var(--hover) var(--f))}"
+    ".vol input::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;"
+    "border:0;border-radius:50%;background:#fff}"
+    ".vol input::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:#fff}"
+    ".vol input:hover::-webkit-slider-thumb{width:14px;height:14px;margin-top:-5px}"
+    ".time{margin:0 8px;white-space:nowrap}"
+    ".chip{font:inherit;font-size:12.5px;font-weight:600;color:var(--fg);background:var(--raised);border:0;"
+    "border-radius:999px;height:24px;min-width:46px;padding:0 10px;margin:0 4px 0 auto;cursor:pointer}"
+    ".chip:hover{background:var(--hover)}"
+    ".pill{font:inherit;font-size:12.5px;font-weight:600;color:var(--fg);background:none;white-space:nowrap;"
+    "border:1px solid var(--prev);border-radius:999px;height:24px;padding:0 10px;cursor:pointer}"
+    ".via{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim);text-decoration:none;"
+    "justify-self:start}"
+    ".via b{color:var(--fg);font-weight:600}.via:hover b{color:var(--accent)}"
+    ".acts{display:flex;gap:6px}"
+    ".btn{font:inherit;font-size:14px;font-weight:600;color:var(--fg);background:var(--raised);border:0;"
+    "border-radius:999px;height:32px;padding:0 14px;box-sizing:border-box;cursor:pointer;display:inline-flex;"
+    "gap:6px;align-items:center;text-decoration:none;white-space:nowrap}"
+    ".btn:hover{background:var(--hover)}.btn.p{background:var(--accent);color:var(--ink)}"
+    ".btn.p:hover{background:var(--hot)}.btn svg{width:16px;height:16px}"
+    ".btn.ib{width:32px;padding:0;justify-content:center;position:relative}.btn.ib svg{width:18px;height:18px}"
+    ".said{position:absolute;bottom:calc(100% + 6px);right:0;background:var(--raised);color:var(--fg);"
+    "font-size:12.5px;padding:3px 10px;border-radius:999px;white-space:nowrap;pointer-events:none}"
+    "button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    "p{margin:0;color:var(--dim)}"
+    "@media(pointer:coarse){.lane{height:22px}.ev{top:0;width:22px;height:22px;margin-left:-11px}"
+    ".ev svg{width:14px;height:14px}.lbl{height:22px;line-height:22px}.scrub{height:28px}"
+    ".rail,.done{top:12px}.scrub:hover .rail,.scrub:hover .done{top:11.5px}.head,.scrub:hover .head{top:7px;"
+    "width:14px;height:14px;margin-left:-7px}.tick{top:9px}.tick.pv{top:6px}.view{touch-action:pan-y}}"
+    "@media(max-width:600px){body{padding:0 0 20px;place-items:start center}main{width:100%;gap:12px}"
+    ".player{border-radius:0}.info{padding:0 16px;gap:12px}.via{margin-left:16px}h1{font-size:17px}"
+    ".ctrl{padding:2px 8px 6px}#fb,#ff,.vol input{display:none}"
+    ".ic{width:40px;height:40px}.time{margin:0 0 0 4px;font-size:12.5px}"
+    ".pill{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:6px}"
+    ".info{flex-wrap:nowrap}.info>:first-child{flex:1 1 0}}"
+    // A short screen (a phone on its side): the video leaves room for the controls only, the rest scrolls
+    "@media(max-height:500px){:root{--room:130px}body{padding-top:0}.player{border-radius:0 0 10px 10px}}"
+    // Full screen: the video takes what the controls leave
+    ".player.full{display:flex;flex-direction:column;width:100%;height:100%;border-radius:0}"
+    ".player.full .view{flex:1;min-height:0;max-height:none;width:100%;aspect-ratio:auto!important}";
+
+// The page around the video: the player (the video goes first in its view), the name and game line with Download
+// and Copy link, then "via Rekodr" with Rekodr's mono logo (assets/icons/rekodr-logo.svg) in the text's colour.
+static const char R2_PLAYER_HTML[] =
+    "<div class=\"player\" id=\"pl\" tabindex=\"0\"><div class=\"view\" id=\"vw\">"
+    "<div class=\"tag\" id=\"zt\" style=\"right:10px\" hidden><span id=\"zv\"></span>"
+    "<button id=\"zr\" type=\"button\">Reset</button></div></div>"
+    "<div class=\"ctrl\" id=\"ct\"><div class=\"lane\" id=\"ln\"><span class=\"lbl\" id=\"lb\" hidden></span></div>"
+    "<div class=\"scrub\" id=\"sc\"><i class=\"rail\"></i>"
+    "<i class=\"done\" id=\"dn\"></i><span id=\"tk\"></span><i class=\"head\" id=\"hd\"></i></div>"
+    "<div class=\"row\">"
+    "<button class=\"ic\" id=\"pb\" aria-label=\"Play\"><svg viewBox=\"0 0 24 24\"><path id=\"pi\" "
+    "d=\"M7 4l13 8-13 8z\"/></svg></button>"
+    "<button class=\"ic\" id=\"fb\" aria-label=\"Back one frame (,)\"><svg viewBox=\"0 0 24 24\">"
+    "<path d=\"M6 5h2v14H6zM20 5 9 12l11 7z\"/></svg></button>"
+    "<button class=\"ic\" id=\"ff\" aria-label=\"Forward one frame (.)\"><svg viewBox=\"0 0 24 24\">"
+    "<path d=\"M16 5h2v14h-2zM4 5l11 7-11 7z\"/></svg></button>"
+    "<span class=\"vol\"><button class=\"ic\" id=\"mu\" aria-label=\"Sound (m)\"><svg viewBox=\"0 0 24 24\">"
+    "<path id=\"mi\" d=\"M4 9h4l5-4v14l-5-4H4z\"/></svg></button>"
+    "<input id=\"vl\" type=\"range\" min=\"0\" max=\"1\" step=\"0.01\" value=\"1\" aria-label=\"Volume\"></span>"
+    "<span class=\"time\" id=\"tm\">0:00</span>"
+    "<button class=\"pill\" id=\"kw\" type=\"button\" hidden></button>"
+    "<button class=\"chip\" id=\"sp\" type=\"button\" aria-label=\"Speed ([ and ])\">1x</button>"
+    "<button class=\"ic\" id=\"fs\" aria-label=\"Full screen\"><svg viewBox=\"0 0 24 24\">"
+    "<path d=\"M4 4h6v2H6v4H4zM14 4h6v6h-2V6h-4zM4 14h2v4h4v2H4zM18 14h2v6h-6v-2h4z\"/></svg></button>"
+    "</div></div></div>"
+    "<div class=\"info\"><div><h1 id=\"ti\"></h1><div class=\"game\" id=\"gm\"></div>"
+    "<p id=\"ps\" hidden>This clip isn't playing right now.</p></div><div class=\"acts\" id=\"ac\">"
+    "<a class=\"btn p ib\" id=\"dl\" download aria-label=\"Download\"><svg viewBox=\"0 0 24 24\" "
+    "aria-hidden=\"true\"><path d=\"M11 3h2v10l4-4 1.4 1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg></a>"
+    "<button class=\"btn ib\" id=\"cp\" type=\"button\" aria-label=\"Copy link\"><svg viewBox=\"0 0 24 24\" "
+    "aria-hidden=\"true\"><path d=\"M10.6 "
+    "13.4a1 1 0 0 1 0-1.4l3.5-3.5a1 1 0 1 1 1.4 1.4L12 13.4a1 1 0 0 1-1.4 0zM7.1 20.5a4 4 0 0 "
+    "1-2.8-6.8l2.8-2.8 1.4 1.4-2.8 2.8a2 2 0 1 0 2.8 2.8l2.8-2.8 1.4 1.4-2.8 2.8a4 4 0 0 1-2.8 "
+    "1.2zM16.9 13.1l-1.4-1.4 2.8-2.8a2 2 0 1 0-2.8-2.8l-2.8 2.8-1.4-1.4 2.8-2.8a4 4 0 0 1 5.6 "
+    "5.6z\"/></svg><span class=\"said\" id=\"cl\" role=\"status\" hidden></span></button></div></div>"
+    "<a class=\"via\" href=\"" R2_HOME_URL "\"><svg viewBox=\"0 0 607 607\" aria-hidden=\"true\">"
+    "<circle cx=\"303.5\" cy=\"303.5\" r=\"119.2\"/><path d=\"M130 271.7c0-78.3 63.5-141.7 141.7-141.7h67.4"
+    "c6.8 0 13.3-3.2 17.4-8.6l66.2-86C433.9 20.9 423.5 0 405.3 0H273.5C201 0 131.1 28.2 79.8 79.4 28.3 130.7 0 "
+    "199 0 271.7v133.6c0 18.2 20.9 28.6 35.4 17.4l86-66.2c5.4-4.2 8.6-10.6 8.6-17.4z\"/><path d=\"M477 267.9v67.4"
+    "c0 78.3-63.5 141.7-141.7 141.7h-67.4c-6.8 0-13.3 3.2-17.4 8.6l-66.2 86c-11.1 14.5-.8 35.4 17.4 35.4h133.6"
+    "c72.6 0 140.8-28.3 192.1-79.6 51.3-51.3 79.6-119.6 79.6-192.1V201.7c0-18.2-20.9-28.6-35.4-17.4l-86 66.2"
+    "c-5.4 4.2-8.6 10.6-8.6 17.4z\"/></svg>via <b>" APP_NAME "</b></a>";
+
+// The player's script, after its strings (R2CSS, R2HTML, R2ICONS). It reads the page's data (r2_page_html), puts
+// in the look, builds the page around the page's video and runs the controls: a scroll zooms into the picture and
+// a drag moves it, , and . step a frame, [ and ] change the speed, markers and the end of the cards' preview jump
+// there, and a #t= in the address (seconds, m:ss or h:mm:ss) starts there. Paused, it shows the name and says so.
+// Each marker's icon comes from the player's sheet, a dot for one the sheet doesn't have. The volume and mute are
+// kept in the browser under one key, so every clip on the host opens at the last level.
+static const char R2_PLAYER_JS1[] =
+    "var d=document,$=function(i){return d.getElementById(i)},D,main=$('rk');"
+    "function done(){d.documentElement.classList.remove('rk')}"
+    "try{D=JSON.parse($('rk-data').textContent)}catch(e){}"
+    "if(!D||!main){done();return}"
+    "var st=d.createElement('style');st.textContent=R2CSS;d.head.appendChild(st);"
+    "var v=main.querySelector('video');main.innerHTML=R2HTML;"
+    "d.body.insertAdjacentHTML('afterbegin','<svg id=\"ei\" aria-hidden=\"true\">'+R2ICONS+'</svg>"
+    "<div class=\"bg\" id=\"bg\"></div>');"
+    "var bg=D.bg||D.p;if(bg)$('bg').style.backgroundImage='url(\"'+bg+'\")';"
+    "$('ti').textContent=D.t||'Clip';var gm=$('gm');"
+    "if(D.l){if(D.ic||D.em){var im=d.createElement('img');im.alt='';im.src=D.ic||D.em;if(D.ic)im.className='icon';"
+    "gm.appendChild(im)}gm.appendChild(d.createTextNode(D.l))}else gm.remove();"
+    "if(!v||D.x){$('pl').remove();$('ac').remove();$('ps').hidden=!D.x;done();return}"
+    "var pl=$('pl'),vw=$('vw'),sc=$('sc'),ln=$('ln'),lb=$('lb'),S=[.1,.25,.5,1,1.5,2],si=3,fps=60,z=1,x=0,y=0,"
+    "lastMT=-1,best=0,ticks=[],evs=[],quiet=0;"
+    "vw.insertBefore(v,vw.firstChild);"
+    "vw.style.aspectRatio=(v.getAttribute('width')||16)+'/'+(v.getAttribute('height')||9);$('dl').href=v.src;"
+    "var CB={pv:+D.pv||0,m:(D.m||[]).map(function(m){return[m[0],m[1],$('ei-'+m[2])?m[2]:'dot']})};"
+    "if(!CB.m.length){ln.remove();ln=lb=null}"
+    "function clock(s){s=Math.max(0,Math.floor(s));var h=Math.floor(s/3600),m=Math.floor(s/60)%60,r=s%60;"
+    "return(h?h+':'+(m<10?'0':''):'')+m+':'+(r<10?'0':'')+r}"
+    "v.controls=false;"
+    "function D2(){return isFinite(v.duration)&&v.duration>0?v.duration:0}"
+    "function ui(){var d=D2(),f=d?v.currentTime/d*100:0;$('dn').style.width=f+'%';$('hd').style.left=f+'%';"
+    "$('tm').textContent=clock(v.currentTime)+' / '+clock(d);"
+    "$('pi').setAttribute('d',v.paused?'M7 4l13 8-13 8z':'M6 4h4v16H6zM14 4h4v16h-4z');"
+    "$('pb').setAttribute('aria-label',v.paused?'Play':'Pause');"
+    "var vol=v.muted?0:v.volume,vl=$('vl');if(document.activeElement!==vl)vl.value=vol;"
+    "vl.style.setProperty('--f',vol*100+'%');"
+    "$('mi').setAttribute('d',!vol?'M4 9h4l5-4v14l-5-4H4zM16 9l5 6M21 9l-5 6':vol<.5?'M4 9h4l5-4v14l-5-4H4zM16 "
+    "9.5a3.5 3.5 0 0 1 0 5':'M4 9h4l5-4v14l-5-4H4zM16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10')}"
+    "function marks(){var d=D2(),tk=$('tk');if(!d||tk.childNodes.length)return;"
+    "function add(t,pv){if(t<0||t>d)return;var i=document.createElement('i');"
+    "i.className='tick'+(pv?' pv':'');i.style.left=t/d*100+'%';tk.appendChild(i);ticks.push(t);return i}"
+    "if(CB.pv>0&&CB.pv<d){add(CB.pv,1);var k=$('kw');k.hidden=false;"
+    "k.textContent='Keep watching from '+clock(CB.pv);k.onclick=function(){go(CB.pv);v.play()}}"
+    "CB.m.forEach(function(m){var i=add(m[0]);if(!i||!ln)return;var b=document.createElement('button'),"
+    "e={t:m[0],b:b,i:i,l:m[1],x:0};b.className='ev';b.type='button';b.setAttribute('aria-label',m[1]);"
+    "b.innerHTML='<svg viewBox=\"0 0 14 14\"><use href=\"#ei-'+m[2]+'\"/></svg>';"
+    "b.onclick=function(){go(e.t);say(e,1)};b.onpointerenter=function(){say(e)};"
+    "b.onpointerleave=function(p){if(p.pointerType=='mouse')hush()};ln.appendChild(b);evs.push(e)});"
+    "evs.sort(function(a,b){return a.t-b.t});lay()}"
+    // Each icon over its moment on the bar, nudged apart where they would overlap, and kept inside the bar
+    "function lay(){if(!evs.length)return;var W=ln.clientWidth,g=evs[0].b.offsetWidth+2,h=g/2,d=D2(),i;"
+    "for(i=0;i<evs.length;i++){var e=evs[i];e.x=Math.max(h,e.t/d*W,i?evs[i-1].x+g:0)}"
+    "for(i=evs.length-1;i>=0;i--)evs[i].x=Math.max(h,Math.min(evs[i].x,W-h,i<evs.length-1?evs[i+1].x-g:W));"
+    "evs.forEach(function(e){e.b.style.left=e.x+'px'})}"
+    // The label beside its icon: to its right, or to its left where the bar ends; the icons it covers hidden
+    "function say(e,tap){hush();lb.textContent=e.l;lb.hidden=false;e.b.classList.add('on');"
+    "e.i.classList.add('on');var w=lb.offsetWidth,W=ln.clientWidth,g=e.b.offsetWidth/2+4,"
+    "l=e.x+g+w<=W?e.x+g:Math.max(0,e.x-g-w);lb.style.left=l+'px';evs.forEach(function(o){var r=o.b.offsetWidth/2;"
+    "if(o!=e&&o.x+r>l&&o.x-r<l+w)o.b.classList.add('un')});if(tap)quiet=setTimeout(hush,2500)}"
+    "function hush(){clearTimeout(quiet);if(lb)lb.hidden=true;evs.forEach(function(e){"
+    "e.b.classList.remove('on','un');e.i.classList.remove('on')})}"
+    "function go(t){v.currentTime=Math.min(D2()||t,Math.max(0,t));ui()}"
+    "function step(n){v.pause();go(Math.round(v.currentTime*fps+n)/fps)}"
+    "function speed(n){si=Math.min(S.length-1,Math.max(0,si+n));v.playbackRate=S[si];"
+    "$('sp').textContent=S[si]+'x'}"
+    "function toggle(){if(v.paused)v.play();else v.pause()}";
+static const char R2_PLAYER_JS2[] =
+    "function frame(n,meta){if(lastMT>=0){var dt=meta.mediaTime-lastMT;"
+    "if(dt>0.004&&dt<0.1&&(!best||dt<best)){best=dt;fps=Math.round(1/dt)}}lastMT=meta.mediaTime;"
+    "v.requestVideoFrameCallback(frame)}"
+    "if(v.requestVideoFrameCallback)v.requestVideoFrameCallback(frame);"
+    "try{var sv=JSON.parse(localStorage.getItem('rekodr-volume'));if(sv){var n=+sv.v;if(n>=0&&n<=1)v.volume=n;"
+    "v.muted=!!sv.m}}catch(e){}"
+    "v.addEventListener('volumechange',function(){try{localStorage.setItem('rekodr-volume',"
+    "JSON.stringify({v:v.volume,m:v.muted}))}catch(e){}});"
+    "['play','pause','timeupdate','seeked','volumechange'].forEach(function(e){v.addEventListener(e,ui)});"
+    "v.addEventListener('loadedmetadata',function(){marks();ui();"
+    "var h=/[#&]t=([0-9:.]+)/.exec(location.hash),t=0;if(h){h[1].split(':').forEach(function(p){"
+    "t=t*60+(+p||0)});go(t)}});"
+    "if(v.readyState>0)v.dispatchEvent(new Event('loadedmetadata'));"
+    "(function tick(){if(!v.paused)ui();requestAnimationFrame(tick)})();"
+    "var drag=0;function at(e){var r=sc.getBoundingClientRect(),d=D2(),t=(e.clientX-r.left)/r.width*d;"
+    "ticks.forEach(function(k){if(Math.abs(k-t)/d*r.width<6)t=k});go(t)}"
+    "sc.onpointerdown=function(e){drag=1;sc.setPointerCapture(e.pointerId);at(e)};"
+    "sc.onpointermove=function(e){if(drag)at(e)};sc.onpointerup=function(){drag=0};"
+    "function zoom(){var r=vw.getBoundingClientRect();x=Math.min(0,Math.max(r.width*(1-z),x));"
+    "y=Math.min(0,Math.max(r.height*(1-z),y));v.style.transform=z>1?'translate('+x+'px,'+y+'px) scale('+z+')':'';"
+    "vw.classList.toggle('z',z>1);$('zt').hidden=z<=1;$('zv').textContent=z.toFixed(1)+'x'}"
+    "function unzoom(){z=1;x=y=0;zoom()}"
+    "vw.addEventListener('wheel',function(e){e.preventDefault();var r=vw.getBoundingClientRect(),"
+    "cx=e.clientX-r.left,cy=e.clientY-r.top,n=Math.min(8,Math.max(1,z*(e.deltaY<0?1.2:1/1.2)));"
+    "x=cx-(cx-x)*n/z;y=cy-(cy-y)*n/z;z=n;zoom()},{passive:false});"
+    "var pan=null;vw.onpointerdown=function(e){if(e.target.closest('.tag'))return;"
+    "pan={x:e.clientX,y:e.clientY,ox:x,oy:y,m:0};vw.setPointerCapture(e.pointerId)};"
+    "vw.onpointermove=function(e){if(!pan)return;var dx=e.clientX-pan.x,dy=e.clientY-pan.y;"
+    "if(Math.abs(dx)+Math.abs(dy)>4)pan.m=1;if(pan.m&&z>1){vw.classList.add('d');x=pan.ox+dx;y=pan.oy+dy;zoom()}};"
+    "vw.onpointerup=function(){if(pan&&!pan.m)toggle();pan=null;vw.classList.remove('d')};"
+    "vw.onpointercancel=function(){pan=null;vw.classList.remove('d')};"
+    "vw.ondblclick=unzoom;$('zr').onclick=unzoom;window.addEventListener('resize',function(){zoom();lay()});"
+    "$('pb').onclick=toggle;$('fb').onclick=function(){step(-1)};$('ff').onclick=function(){step(1)};"
+    "$('sp').onclick=function(){speed(si<S.length-1?1:-si)};"
+    "function mute(){if(v.muted||!v.volume){v.muted=false;if(!v.volume)v.volume=1}else v.muted=true}"
+    "$('mu').onclick=mute;$('vl').oninput=function(){v.volume=+this.value;v.muted=!v.volume;ui()};"
+    "$('fs').onclick=function(){if(document.fullscreenElement)document.exitFullscreen();"
+    "else if(pl.requestFullscreen)pl.requestFullscreen();else if(v.webkitEnterFullscreen)v.webkitEnterFullscreen()};"
+    "document.addEventListener('fullscreenchange',function(){pl.classList.toggle('full',"
+    "document.fullscreenElement==pl);zoom();lay()});"
+    "$('cp').onclick=function(){var u=location.href.split('#')[0],t=Math.floor(v.currentTime);"
+    "if(t>0)u+='#t='+t;function said(s){var c=$('cl');c.textContent=s;c.hidden=false;clearTimeout(c.q);"
+    "c.q=setTimeout(function(){c.hidden=true},1500)}"
+    "if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){said(t>0?'Copied at '+clock(t):"
+    "'Copied')},function(){prompt('Link',u)});else prompt('Link',u)};"
+    "document.addEventListener('keydown',function(e){var k=e.key,b=e.target.tagName=='BUTTON';"
+    "if(e.ctrlKey||e.metaKey||e.altKey||e.target.tagName=='INPUT')return;"
+    "if(k==',')step(-1);else if(k=='.')step(1);else if(k=='[')speed(-1);else if(k==']')speed(1);"
+    "else if((k==' '&&!b)||k=='k')toggle();else if(k=='ArrowLeft')go(v.currentTime-5);"
+    "else if(k=='ArrowRight')go(v.currentTime+5);else if(k=='m')mute();"
+    "else if(k=='f')$('fs').onclick();else if(k=='0'||k=='Escape'&&z>1)unzoom();else return;"
+    "e.preventDefault()});ui();done()";
+
+// `s` as the inside of a JavaScript string in double quotes.
+static void r2_js_text(const char *s, char *out, i32 cap, i32 *len)
+{
+    for (; *s && *len < cap - 2; s++) {
+        if (*s == '"' || *s == '\\') out[(*len)++] = '\\';
+        out[(*len)++] = *s;
+    }
+    out[*len] = 0;
+}
+
+// The shared player: its strings (the CSS with Onest in it, the page's markup, every event icon from the app's own
+// (evi_svg) and a dot for a marker with none), then its script. Returns the length, 0 if it didn't fit.
+static i32 r2_player_js(char *out, i32 cap)
+{
+    i32 len = 0;
+    auto put = [&](const char *s) {
+        i32 n = (i32)strlen(s);
+        if (len + n < cap) memcpy(out + len, s, n + 1), len += n;
+        else len = cap;
+    };
+    put("(function(){var R2CSS=\"");
+    r2_js_text(R2_PLAYER_FONT, out, cap, &len);
+    r2_js_text(ONEST_LATIN_WOFF2, out, cap, &len);
+    r2_js_text(R2_PLAYER_CSS, out, cap, &len);
+    put("\",R2HTML=\"");
+    r2_js_text(R2_PLAYER_HTML, out, cap, &len);
+    put("\",R2ICONS=\"");
+    char key[32];
+    for (i32 i = 1; evi_key_at(i, key, sizeof key) && len < cap; i++) {
+        char svg[2048], sym[2200];
+        if (!evi_svg(key, svg, sizeof svg)) continue;
+        snprintf(sym, sizeof sym, "<symbol id=\"ei-%s\" viewBox=\"0 0 14 14\">%s</symbol>", key, svg);
+        r2_js_text(sym, out, cap, &len);
+    }
+    r2_js_text("<symbol id=\"ei-dot\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"3\"/></symbol>", out, cap, &len);
+    put("\";");
+    put(R2_PLAYER_JS1);
+    put(R2_PLAYER_JS2);
+    put("})()\n");
+    return len < cap - 1 ? len : 0;
+}
+
+// A link's page: a shell the shared player (R2_PLAYER_KEY, loaded from beside it) builds the page in. It holds the
+// tags chat apps read for a card that plays `embed` (the clip, or a small copy of it), or with none a card with the
+// picture, and Discord's own card (`card`) before them; the accent; the page's data for the player (its name, the
+// game line with the game's icon or emoji, the art behind it, the cards' preview and the markers); and the clip in a
+// plain <video> with the browser's controls, which is the page while the player loads or without script. Paused,
+// the page names the clip and doesn't play it. Kept from search engines. All ASCII. Returns the length, 0 if it
+// didn't fit.
 static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 cap)
 {
     if (cap < 2) return 0;
@@ -847,19 +1165,20 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
     if (!p.embed) p.embed = "";
     i32 len = 0;
     out[0] = 0;
-    r2_page_put("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
+    auto put = [&](const char *fmt, auto... a) {
+        if (len < cap) len += snprintf(out + len, cap - len, fmt, a...);
+    };
+    r2_page_put("<!doctype html>\n<html lang=\"en\" class=\"rk\"><head><meta charset=\"utf-8\">\n"
                 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
                 "<meta name=\"robots\" content=\"noindex\">\n<title>%T</title>\n"
                 "<meta property=\"og:type\" content=\"video.other\">\n<meta property=\"og:title\" content=\"%T\">\n"
                 "<meta property=\"og:site_name\" content=\"" APP_NAME "\">\n<meta property=\"og:url\" content=\"%P\">\n",
                 p, out, cap, &len);
     // The accent as the theme colour: the edge of a link card that isn't Discord's own, and the browser's bar
-    if (len + 48 < cap)
-        len += snprintf(out + len, cap - len, "<meta name=\"theme-color\" content=\"#%06x\">\n",
-                        p.accent ? p.accent & 0xffffff : ACCENT_DEFAULT);
+    u32 accent = p.accent ? p.accent & 0xffffff : ACCENT_DEFAULT;
+    put("<meta name=\"theme-color\" content=\"#%06x\">\n", accent);
     if (!paused && p.card && p.card[0] && len + (i32)strlen(p.card) + 80 < cap)
-        len += snprintf(out + len, cap - len,
-                        "<script id=\"discord:component-embed\" type=\"application/json\">%s</script>\n", p.card);
+        put("<script id=\"discord:component-embed\" type=\"application/json\">%s</script>\n", p.card);
     if (!paused)
         r2_page_put("<meta property=\"og:image\" content=\"%I\">\n<meta property=\"og:image:width\" content=\"%w\">\n"
                     "<meta property=\"og:image:height\" content=\"%h\">\n",
@@ -882,231 +1201,45 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
         r2_page_put("<meta name=\"twitter:card\" content=\"summary_large_image\">\n"
                     "<meta name=\"twitter:title\" content=\"%T\">\n<meta name=\"twitter:image\" content=\"%I\">\n",
                     p, out, cap, &len);
-    // The app's surfaces, radii and type; Onest is in the page itself, so it asks nothing of anyone else.
-    r2_page_put("<style>@font-face{font-family:Onest;font-weight:400 700;font-display:swap;"
-                "src:url(data:font/woff2;base64,",
-                p, out, cap, &len);
-    r2_page_put(ONEST_LATIN_WOFF2, p, out, cap, &len);
-    r2_page_put(") format(\"woff2\")}"
-                ":root{--fg:#f2f2f2;--dim:#969696;--line:#363636;--panel:#161616;--raised:#1f1f1f;--hover:#262626;"
-                "--scrim:#000000c0;",
-                p, out, cap, &len);
-    if (len + 24 < cap) len += snprintf(out + len, cap - len, "--accent:#%06x;", p.accent ? p.accent & 0xffffff : ACCENT_DEFAULT);
-    if (len + 24 < cap) len += snprintf(out + len, cap - len, "--ink:%s;", r2_accent_ink(p.accent) ? "#0a0a0a" : "#fff");
-    // Room the page keeps above and below the picture: its padding, the controls, the title and game line, the
-    // via line. The player is as wide as the screen's height leaves room for, at the clip's shape.
-    r2_page_put(
-        "--mark:#fff;--prev:#4cc985;--room:236px;--hot:color-mix(in srgb,var(--accent) 85%,#fff);"
-        "color-scheme:dark}"
-        "html{background:#0a0a0a}body{margin:0;min-height:100vh;min-height:100svh;color:var(--fg);"
-        "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif;-webkit-font-smoothing:antialiased}"
-        "body{display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding:24px;box-sizing:border-box;"
-        "overflow-x:hidden}"
-        ".bg{position:fixed;inset:-80px;background:center/cover no-repeat;filter:grayscale(1) blur(48px);opacity:.16;"
-        "z-index:-1}"
-        // The grain over it, as the app's over its art: still grey noise, faint
-        "body::after{content:\"\";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.06;"
-        "background:url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'>"
-        "<filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/>"
-        "<feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 .5 .5 .5 0 -.25'/></filter>"
-        "<rect width='256' height='256' filter='url(%23g)'/></svg>\")}"
-        "main{width:min(100%,1600px,max(640px,calc((100vh - var(--room)) * var(--w) / var(--h))));"
-        "width:min(100%,1600px,max(640px,calc((100svh - var(--room)) * var(--w) / var(--h))));"
-        "display:grid;gap:12px}main:not(:has(.player)){width:min(100%,640px)}"
-        ".info{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 24px;flex-wrap:wrap}"
-        ".info>:first-child{min-width:0;flex:1 1 320px;display:grid;gap:2px}"
-        "h1{font-size:18px;line-height:1.3;font-weight:700;letter-spacing:-.01em;margin:0;overflow-wrap:anywhere}"
-        ".game{display:flex;gap:6px;align-items:center;color:var(--dim);font-size:13px}"
-        ".game img{width:16px;height:16px}.game .icon{border-radius:4px}.via svg{width:14px;height:14px}"
-        ".player{border-radius:10px;overflow:hidden;background:var(--panel);outline:none}"
-        ".player:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
-        ".view{position:relative;overflow:hidden;background:#000;max-height:calc(100vh - var(--room));"
-        "max-height:calc(100svh - var(--room));margin:auto;cursor:zoom-in;touch-action:none}"
-        ".view.z{cursor:grab}.view.d{cursor:grabbing}"
-        "video{display:block;width:100%;height:100%;object-fit:contain;transform-origin:0 0;background:#000}"
-        ".tag{position:absolute;top:12px;font-size:13px;font-weight:600;background:var(--scrim);border-radius:999px;"
-        "padding:4px 12px;font-variant-numeric:tabular-nums}"
-        ".tag button{all:unset;cursor:pointer;color:var(--dim);margin-left:8px}"
-        ".ctrl{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;padding:4px 10px 8px}"
-        ".scrub{position:relative;height:20px;cursor:pointer;touch-action:none}"
-        ".scrub>*{position:absolute;pointer-events:none}"
-        ".rail,.done{left:0;top:8px;height:4px;border-radius:2px;transition:height .1s,top .1s}"
-        ".rail{right:0;background:var(--hover)}.done{background:var(--accent)}"
-        ".scrub:hover .rail,.scrub:hover .done{top:7.5px;height:5px}"
-        ".head{top:4px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:#fff}"
-        ".scrub:hover .head{top:3px;width:14px;height:14px;margin-left:-7px}"
-        "#tk{inset:0}.tick{position:absolute;top:5px;width:2px;height:10px;margin-left:-1px;background:var(--mark)}"
-        ".tick.pv{background:var(--prev);top:2px;height:16px}.tick.on{background:var(--accent)}"
-        // The markers' strip: each event icon over its tick, its name beside it in plain text
-        ".lane{position:relative;height:16px;margin-top:2px}"
-        ".ev{position:absolute;top:0;width:16px;height:16px;margin-left:-8px;border:0;border-radius:4px;padding:0;"
-        "background:none;color:var(--dim);cursor:pointer;display:grid;place-items:center}"
-        ".ev svg{width:12px;height:12px}.ev:hover,.ev.on{color:var(--accent)}.ev.un{visibility:hidden}"
-        "#ei .h{fill:var(--panel)}#ei .hs{stroke:var(--panel)}"
-        ".lbl{position:absolute;top:0;height:16px;line-height:16px;color:var(--fg);font-size:12px;font-weight:600;"
-        "white-space:nowrap;pointer-events:none;z-index:1}"
-        ".row{display:flex;align-items:center;gap:2px;font-size:13px;color:var(--dim);"
-        "font-variant-numeric:tabular-nums}"
-        ".ic{flex:none;width:32px;height:32px;border:0;border-radius:999px;background:none;color:var(--fg);"
-        "cursor:pointer;display:grid;place-items:center;padding:0}"
-        ".ic:hover{background:var(--hover)}svg{width:18px;height:18px;fill:currentColor}"
-        ".vol{display:flex;align-items:center;gap:2px}"
-        ".vol input{flex:none;width:96px;height:20px;margin:0 6px 0 2px;background:none;cursor:pointer;"
-        "-webkit-appearance:none;appearance:none;--f:100%}"
-        ".vol input::-webkit-slider-runnable-track{height:4px;border-radius:2px;"
-        "background:linear-gradient(90deg,var(--accent) var(--f),var(--hover) var(--f))}"
-        ".vol input::-moz-range-track{height:4px;border-radius:2px;"
-        "background:linear-gradient(90deg,var(--accent) var(--f),var(--hover) var(--f))}"
-        ".vol input::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;"
-        "border:0;border-radius:50%;background:#fff}"
-        ".vol input::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:#fff}"
-        ".vol input:hover::-webkit-slider-thumb{width:14px;height:14px;margin-top:-5px}"
-        ".time{margin:0 8px;white-space:nowrap}"
-        ".chip{font:inherit;font-size:12.5px;font-weight:600;color:var(--fg);background:var(--raised);border:0;"
-        "border-radius:999px;height:24px;min-width:46px;padding:0 10px;margin:0 4px 0 auto;cursor:pointer}"
-        ".chip:hover{background:var(--hover)}"
-        ".pill{font:inherit;font-size:12.5px;font-weight:600;color:var(--fg);background:none;white-space:nowrap;"
-        "border:1px solid var(--prev);border-radius:999px;height:24px;padding:0 10px;cursor:pointer}"
-        ".via{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim);text-decoration:none;"
-        "justify-self:start}"
-        ".via b{color:var(--fg);font-weight:600}.via:hover b{color:var(--accent)}"
-        ".acts{display:flex;gap:6px}"
-        ".btn{font:inherit;font-size:14px;font-weight:600;color:var(--fg);background:var(--raised);border:0;"
-        "border-radius:999px;height:32px;padding:0 14px;box-sizing:border-box;cursor:pointer;display:inline-flex;"
-        "gap:6px;align-items:center;text-decoration:none;white-space:nowrap}"
-        ".btn:hover{background:var(--hover)}.btn.p{background:var(--accent);color:var(--ink)}"
-        ".btn.p:hover{background:var(--hot)}.btn svg{width:16px;height:16px}"
-        ".btn.ib{width:32px;padding:0;justify-content:center;position:relative}.btn.ib svg{width:18px;height:18px}"
-        ".said{position:absolute;bottom:calc(100% + 6px);right:0;background:var(--raised);color:var(--fg);"
-        "font-size:12.5px;padding:3px 10px;border-radius:999px;white-space:nowrap;pointer-events:none}"
-        "button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
-        "p{margin:0;color:var(--dim)}"
-        "@media(pointer:coarse){.lane{height:22px}.ev{top:0;width:22px;height:22px;margin-left:-11px}"
-        ".ev svg{width:14px;height:14px}.lbl{height:22px;line-height:22px}.scrub{height:28px}"
-        ".rail,.done{top:12px}.scrub:hover .rail,.scrub:hover .done{top:11.5px}.head,.scrub:hover .head{top:7px;"
-        "width:14px;height:14px;margin-left:-7px}.tick{top:9px}.tick.pv{top:6px}.view{touch-action:pan-y}}"
-        "@media(max-width:600px){body{padding:0 0 20px;place-items:start center}main{width:100%;gap:12px}"
-        ".player{border-radius:0}.info{padding:0 16px;gap:12px}.via{margin-left:16px}h1{font-size:17px}"
-        ".ctrl{padding:2px 8px 6px}#fb,#ff,.vol input{display:none}"
-        ".ic{width:40px;height:40px}.time{margin:0 0 0 4px;font-size:12.5px}"
-        ".pill{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:6px}"
-        ".info{flex-wrap:nowrap}.info>:first-child{flex:1 1 0}}"
-        // A short screen (a phone on its side): the video leaves room for the controls only, the rest scrolls
-        "@media(max-height:500px){:root{--room:130px}body{padding-top:0}.player{border-radius:0 0 10px 10px}}"
-        // Full screen: the video takes what the controls leave
-        ".player.full{display:flex;flex-direction:column;width:100%;height:100%;border-radius:0}"
-        ".player.full .view{flex:1;min-height:0;max-height:none;width:100%;aspect-ratio:auto!important}"
-        "</style>\n"
-        "</head><body>\n",
-        p, out, cap, &len);
-    // Behind it all: the game's art, else the clip's picture
-    if (p.art && p.art[0] && len + (i32)strlen(p.art) + 80 < cap)
-        len += snprintf(out + len, cap - len, "<div class=\"bg\" style=\"background-image:url('%s')\"></div>\n", p.art);
-    else if (!paused && p.image && p.image[0])
-        r2_page_put("<div class=\"bg\" style=\"background-image:url('%I')\"></div>\n", p, out, cap, &len);
-    if (len + 40 < cap)
-        len += snprintf(out + len, cap - len, "<main style=\"--w:%d;--h:%d\">\n", p.w > 0 && p.h > 0 ? p.w : 16,
-                        p.w > 0 && p.h > 0 ? p.h : 9);
-    if (!paused) {
-        r2_page_put(
-            "<div class=\"player\" id=\"pl\" tabindex=\"0\">"
-            "<div class=\"view\" id=\"vw\" style=\"aspect-ratio:%W/%H\">"
-            "<video src=\"%V\" poster=\"%I\" width=\"%W\" height=\"%H\" controls playsinline preload=\"metadata\">"
-            "</video>"
-            "<div class=\"tag\" id=\"zt\" style=\"right:10px\" hidden><span id=\"zv\"></span>"
-            "<button id=\"zr\" type=\"button\">Reset</button></div></div>\n"
-            "<div class=\"ctrl\" id=\"ct\" hidden>",
-            p, out, cap, &len);
-        if (p.marks && p.marks[0])
-            r2_page_put("<div class=\"lane\" id=\"ln\"><span class=\"lbl\" id=\"lb\" hidden></span></div>", p, out, cap, &len);
-        r2_page_put(
-            "<div class=\"scrub\" id=\"sc\"><i class=\"rail\"></i>"
-            "<i class=\"done\" id=\"dn\"></i><span id=\"tk\"></span><i class=\"head\" id=\"hd\"></i></div>\n"
-            "<div class=\"row\">"
-            "<button class=\"ic\" id=\"pb\" aria-label=\"Play\"><svg viewBox=\"0 0 24 24\"><path id=\"pi\" "
-            "d=\"M7 4l13 8-13 8z\"/></svg></button>"
-            "<button class=\"ic\" id=\"fb\" aria-label=\"Back one frame (,)\"><svg viewBox=\"0 0 24 24\">"
-            "<path d=\"M6 5h2v14H6zM20 5 9 12l11 7z\"/></svg></button>"
-            "<button class=\"ic\" id=\"ff\" aria-label=\"Forward one frame (.)\"><svg viewBox=\"0 0 24 24\">"
-            "<path d=\"M16 5h2v14h-2zM4 5l11 7-11 7z\"/></svg></button>"
-            "<span class=\"vol\"><button class=\"ic\" id=\"mu\" aria-label=\"Sound (m)\"><svg viewBox=\"0 0 24 24\">"
-            "<path id=\"mi\" d=\"M4 9h4l5-4v14l-5-4H4z\"/></svg></button>"
-            "<input id=\"vl\" type=\"range\" min=\"0\" max=\"1\" step=\"0.01\" value=\"1\" aria-label=\"Volume\"></span>"
-            "<span class=\"time\" id=\"tm\">0:00</span>"
-            "<button class=\"pill\" id=\"kw\" type=\"button\" hidden></button>"
-            "<button class=\"chip\" id=\"sp\" type=\"button\" aria-label=\"Speed ([ and ])\">1x</button>"
-            "<button class=\"ic\" id=\"fs\" aria-label=\"Full screen\"><svg viewBox=\"0 0 24 24\">"
-            "<path d=\"M4 4h6v2H6v4H4zM14 4h6v6h-2V6h-4zM4 14h2v4h4v2H4zM18 14h2v6h-6v-2h4z\"/></svg></button>"
-            "</div></div></div>\n",
-            p, out, cap, &len);
-    }
-    r2_page_put("<div class=\"info\"><div><h1>", p, out, cap, &len);
-    r2_html_text(p.heading && p.heading[0] ? p.heading : p.title, out, cap, &len);
-    r2_page_put("</h1>\n", p, out, cap, &len);
+    // The accent and its ink; the plain page until the player has built its own (hidden a few seconds at most)
+    put("<style>:root{--accent:#%06x;--ink:%s}"
+        "html{background:#0a0a0a;color:#f2f2f2;font:14px/1.5 system-ui,sans-serif}body{margin:0;padding:24px}"
+        "main video{display:block;max-width:100%%;height:auto}html.rk main{visibility:hidden}</style>\n"
+        "<script>setTimeout(function(){document.documentElement.classList.remove('rk')},3000)</script>\n"
+        "<script src=\"player.js\" defer></script>\n",
+        accent, r2_accent_ink(p.accent) ? "#0a0a0a" : "#fff");
+    // The page's data for the player
+    put("<script id=\"rk-data\" type=\"application/json\">{\"t\":\"");
+    r2_json_text(p.heading && p.heading[0] ? p.heading : p.title, false, out, cap, &len);
+    put("\"");
     if (p.line && p.line[0]) {
-        r2_page_put("<div class=\"game\">", p, out, cap, &len);
+        put(",\"l\":\"");
+        r2_json_text(p.line, false, out, cap, &len);
+        put("\"");
         char src[160];
-        if (p.icon && p.icon[0] && len + (i32)strlen(p.icon) + 200 < cap)
-            len += snprintf(out + len, cap - len, "<img class=\"icon\" src=\"%s\" alt=\"\">", p.icon);
-        else if (r2_emoji_url(p.emoji, src, sizeof src) && len + 200 < cap)
-            len += snprintf(out + len, cap - len, "<img src=\"%s\" alt=\"\">", src);
-        r2_html_text(p.line, out, cap, &len);
-        r2_page_put("</div>\n", p, out, cap, &len);
+        if (p.icon && p.icon[0]) {
+            put(",\"ic\":\"");
+            r2_json_text(p.icon, false, out, cap, &len);
+            put("\"");
+        } else if (r2_emoji_url(p.emoji, src, sizeof src)) {
+            put(",\"em\":\"");
+            r2_json_text(src, false, out, cap, &len);
+            put("\"");
+        }
     }
-    if (paused) r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
-    r2_page_put("</div><div class=\"acts\">", p, out, cap, &len);
-    if (!paused)
-        r2_page_put("<a class=\"btn p ib\" href=\"%V\" download aria-label=\"Download\"><svg viewBox=\"0 0 24 24\" "
-                    "aria-hidden=\"true\"><path d=\"M11 3h2v10l4-4 1.4 1.4L12 16.8 5.6 10.4 7 9l4 4zM4 19h16v2H4z\"/></svg></a>"
-                    "<button class=\"btn ib\" id=\"cp\" type=\"button\" aria-label=\"Copy link\"><svg viewBox=\"0 0 24 24\" "
-                    "aria-hidden=\"true\"><path d=\"M10.6 "
-                    "13.4a1 1 0 0 1 0-1.4l3.5-3.5a1 1 0 1 1 1.4 1.4L12 13.4a1 1 0 0 1-1.4 0zM7.1 20.5a4 4 0 0 "
-                    "1-2.8-6.8l2.8-2.8 1.4 1.4-2.8 2.8a2 2 0 1 0 2.8 2.8l2.8-2.8 1.4 1.4-2.8 2.8a4 4 0 0 1-2.8 "
-                    "1.2zM16.9 13.1l-1.4-1.4 2.8-2.8a2 2 0 1 0-2.8-2.8l-2.8 2.8-1.4-1.4 2.8-2.8a4 4 0 0 1 5.6 "
-                    "5.6z\"/></svg><span class=\"said\" id=\"cl\" role=\"status\" hidden></span></button>",
-                    p, out, cap, &len);
-    // the via line: Rekodr's mono logo (assets/icons/rekodr-logo.svg) in the text's colour
-    r2_page_put("</div></div>\n<a class=\"via\" href=\"" R2_HOME_URL "\"><svg viewBox=\"0 0 607 607\" aria-hidden=\"true\">"
-                "<circle cx=\"303.5\" cy=\"303.5\" r=\"119.2\"/><path d=\"M130 271.7c0-78.3 63.5-141.7 141.7-141.7h67.4"
-                "c6.8 0 13.3-3.2 17.4-8.6l66.2-86C433.9 20.9 423.5 0 405.3 0H273.5C201 0 131.1 28.2 79.8 79.4 28.3 130.7 0 "
-                "199 0 271.7v133.6c0 18.2 20.9 28.6 35.4 17.4l86-66.2c5.4-4.2 8.6-10.6 8.6-17.4z\"/><path d=\"M477 267.9v67.4"
-                "c0 78.3-63.5 141.7-141.7 141.7h-67.4c-6.8 0-13.3 3.2-17.4 8.6l-66.2 86c-11.1 14.5-.8 35.4 17.4 35.4h133.6"
-                "c72.6 0 140.8-28.3 192.1-79.6 51.3-51.3 79.6-119.6 79.6-192.1V201.7c0-18.2-20.9-28.6-35.4-17.4l-86 66.2"
-                "c-5.4 4.2-8.6 10.6-8.6 17.4z\"/></svg>via <b>" APP_NAME "</b></a>\n</main>\n",
-                p, out, cap, &len);
-    if (!paused) {
-        // The player's facts, then the player: own controls (the browser's stay without script), a scroll zooms
-        // into the picture and a drag moves it, , and . step a frame, [ and ] change the speed, markers and the
-        // end of the cards' preview jump there, and a #t= in the address (seconds, m:ss or h:mm:ss) starts there.
-        // the markers' icons, each once, from the app's own (evi_svg); a dot for one with none
-        char keys[48][32];
-        i32 nkeys = 0;
-        bool dot = false;
-        for (const char *m = p.marks ? p.marks : ""; *m;) {
-            const char *end = strchr(m, R2_MARK_SEP);
-            size_t n = end ? (size_t)(end - m) : strlen(m);
-            f64 at;
-            char key[32], label[300];
-            if (r2_mark_split(m, n, &at, key, sizeof key, label, sizeof label)) {
-                bool have = !key[0];
-                dot = dot || !key[0];
-                for (i32 i = 0; i < nkeys && !have; i++) have = !strcmp(keys[i], key);
-                if (!have && nkeys < COUNT(keys)) str_set(keys[nkeys++], key);
-            }
-            m += n;
-            if (*m) m++;
-        }
-        if (nkeys || dot) {
-            r2_page_put("<svg id=\"ei\" width=\"0\" height=\"0\" style=\"position:absolute\" aria-hidden=\"true\">", p, out, cap, &len);
-            for (i32 i = 0; i < nkeys; i++) {
-                char svg[2048];
-                if (!evi_svg(keys[i], svg, sizeof svg) || len + (i32)strlen(svg) + 80 >= cap) continue;
-                len += snprintf(out + len, cap - len, "<symbol id=\"ei-%s\" viewBox=\"0 0 14 14\">%s</symbol>", keys[i], svg);
-            }
-            if (dot) r2_page_put("<symbol id=\"ei-dot\" viewBox=\"0 0 14 14\"><circle cx=\"7\" cy=\"7\" r=\"3\"/></symbol>", p, out, cap, &len);
-            r2_page_put("</svg>\n", p, out, cap, &len);
-        }
-        if (len + 64 < cap) len += snprintf(out + len, cap - len, "<script>var CB={pv:%.3f,m:[", p.preview);
+    // behind it all: the game's art, else the clip's picture
+    if (p.art && p.art[0]) {
+        put(",\"bg\":\"");
+        r2_json_text(p.art, false, out, cap, &len);
+        put("\"");
+    } else if (!paused && p.image && p.image[0]) {
+        put(",\"p\":\"");
+        r2_json_text(p.image, false, out, cap, &len);
+        put("\"");
+    }
+    if (paused) put(",\"x\":1");
+    else {
+        put(",\"pv\":%.3f,\"m\":[", p.preview);
         bool first = true;
         for (const char *m = p.marks ? p.marks : ""; *m && len + 32 < cap;) {
             const char *end = strchr(m, R2_MARK_SEP);
@@ -1114,118 +1247,28 @@ static i32 r2_page_html(const R2PageParts &parts, bool paused, char *out, i32 ca
             f64 at;
             char key[32], label[300];
             if (r2_mark_split(m, n, &at, key, sizeof key, label, sizeof label)) {
-                bool drawn = false; // an icon the sheet has
-                for (i32 i = 0; i < nkeys && !drawn; i++) drawn = !strcmp(keys[i], key);
-                len += snprintf(out + len, cap - len, "%s[%.3f,\"", first ? "" : ",", at);
+                put("%s[%.3f,\"", first ? "" : ",", at);
                 r2_json_text(label, false, out, cap, &len);
-                if (len + 48 < cap) len += snprintf(out + len, cap - len, "\",\"%s\"]", drawn ? key : "dot");
+                put("\",\"%s\"]", key[0] ? key : "dot");
                 first = false;
             }
             m += n;
             if (*m) m++;
         }
-        r2_page_put("]};</script>\n", p, out, cap, &len);
-        r2_page_put(
-            "<script>(function(){"
-            "var $=function(i){return document.getElementById(i)},v=document.querySelector('video'),pl=$('pl'),"
-            "vw=$('vw'),sc=$('sc'),ln=$('ln'),lb=$('lb'),S=[.1,.25,.5,1,1.5,2],si=3,fps=60,z=1,x=0,y=0,lastMT=-1,"
-            "best=0,ticks=[],evs=[],quiet=0;"
-            "function clock(s){s=Math.max(0,Math.floor(s));var h=Math.floor(s/3600),m=Math.floor(s/60)%60,r=s%60;"
-            "return(h?h+':'+(m<10?'0':''):'')+m+':'+(r<10?'0':'')+r}"
-            "v.controls=false;$('ct').hidden=false;"
-            "function D(){return isFinite(v.duration)&&v.duration>0?v.duration:0}"
-            "function ui(){var d=D(),f=d?v.currentTime/d*100:0;$('dn').style.width=f+'%';$('hd').style.left=f+'%';"
-            "$('tm').textContent=clock(v.currentTime)+' / '+clock(d);"
-            "$('pi').setAttribute('d',v.paused?'M7 4l13 8-13 8z':'M6 4h4v16H6zM14 4h4v16h-4z');"
-            "$('pb').setAttribute('aria-label',v.paused?'Play':'Pause');"
-            "var vol=v.muted?0:v.volume,vl=$('vl');if(document.activeElement!==vl)vl.value=vol;"
-            "vl.style.setProperty('--f',vol*100+'%');"
-            "$('mi').setAttribute('d',!vol?'M4 9h4l5-4v14l-5-4H4zM16 9l5 6M21 9l-5 6':vol<.5?'M4 9h4l5-4v14l-5-4H4zM16 "
-            "9.5a3.5 3.5 0 0 1 0 5':'M4 9h4l5-4v14l-5-4H4zM16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10')}"
-            "function marks(){var d=D(),tk=$('tk');if(!d||tk.childNodes.length)return;"
-            "function add(t,pv){if(t<0||t>d)return;var i=document.createElement('i');"
-            "i.className='tick'+(pv?' pv':'');i.style.left=t/d*100+'%';tk.appendChild(i);ticks.push(t);return i}"
-            "if(CB.pv>0&&CB.pv<d){add(CB.pv,1);var k=$('kw');k.hidden=false;"
-            "k.textContent='Keep watching from '+clock(CB.pv);k.onclick=function(){go(CB.pv);v.play()}}"
-            "CB.m.forEach(function(m){var i=add(m[0]);if(!i||!ln)return;var b=document.createElement('button'),"
-            "e={t:m[0],b:b,i:i,l:m[1],x:0};b.className='ev';b.type='button';b.setAttribute('aria-label',m[1]);"
-            "b.innerHTML='<svg viewBox=\"0 0 14 14\"><use href=\"#ei-'+m[2]+'\"/></svg>';"
-            "b.onclick=function(){go(e.t);say(e,1)};b.onpointerenter=function(){say(e)};"
-            "b.onpointerleave=function(p){if(p.pointerType=='mouse')hush()};ln.appendChild(b);evs.push(e)});"
-            "evs.sort(function(a,b){return a.t-b.t});lay()}"
-            // Each icon over its moment on the bar, nudged apart where they would overlap, and kept inside the bar
-            "function lay(){if(!evs.length)return;var W=ln.clientWidth,g=evs[0].b.offsetWidth+2,h=g/2,d=D(),i;"
-            "for(i=0;i<evs.length;i++){var e=evs[i];e.x=Math.max(h,e.t/d*W,i?evs[i-1].x+g:0)}"
-            "for(i=evs.length-1;i>=0;i--)evs[i].x=Math.max(h,Math.min(evs[i].x,W-h,i<evs.length-1?evs[i+1].x-g:W));"
-            "evs.forEach(function(e){e.b.style.left=e.x+'px'})}"
-            // The label beside its icon: to its right, or to its left where the bar ends; the icons it covers hidden
-            "function say(e,tap){hush();lb.textContent=e.l;lb.hidden=false;e.b.classList.add('on');"
-            "e.i.classList.add('on');var w=lb.offsetWidth,W=ln.clientWidth,g=e.b.offsetWidth/2+4,"
-            "l=e.x+g+w<=W?e.x+g:Math.max(0,e.x-g-w);lb.style.left=l+'px';evs.forEach(function(o){var r=o.b.offsetWidth/2;"
-            "if(o!=e&&o.x+r>l&&o.x-r<l+w)o.b.classList.add('un')});if(tap)quiet=setTimeout(hush,2500)}"
-            "function hush(){clearTimeout(quiet);if(lb)lb.hidden=true;evs.forEach(function(e){"
-            "e.b.classList.remove('on','un');e.i.classList.remove('on')})}"
-            "function go(t){v.currentTime=Math.min(D()||t,Math.max(0,t));ui()}"
-            "function step(n){v.pause();go(Math.round(v.currentTime*fps+n)/fps)}"
-            "function speed(n){si=Math.min(S.length-1,Math.max(0,si+n));v.playbackRate=S[si];"
-            "$('sp').textContent=S[si]+'x'}"
-            "function toggle(){if(v.paused)v.play();else v.pause()}"
-            "function frame(n,meta){if(lastMT>=0){var dt=meta.mediaTime-lastMT;"
-            "if(dt>0.004&&dt<0.1&&(!best||dt<best)){best=dt;fps=Math.round(1/dt)}}lastMT=meta.mediaTime;"
-            "v.requestVideoFrameCallback(frame)}"
-            "if(v.requestVideoFrameCallback)v.requestVideoFrameCallback(frame);"
-                        // The volume and mute, the same for every clip on the host: restored, and kept on each change
-            "try{var sv=JSON.parse(localStorage.getItem('rekodr-volume'));if(sv){var n=+sv.v;if(n>=0&&n<=1)v.volume=n;"
-            "v.muted=!!sv.m}}catch(e){}"
-            "v.addEventListener('volumechange',function(){try{localStorage.setItem('rekodr-volume',"
-            "JSON.stringify({v:v.volume,m:v.muted}))}catch(e){}});"
-            "['play','pause','timeupdate','seeked','volumechange'].forEach(function(e){v.addEventListener(e,ui)});"
-            "v.addEventListener('loadedmetadata',function(){marks();ui();"
-            "var h=/[#&]t=([0-9:.]+)/.exec(location.hash),t=0;if(h){h[1].split(':').forEach(function(p){"
-            "t=t*60+(+p||0)});go(t)}});"
-            "if(v.readyState>0)v.dispatchEvent(new Event('loadedmetadata'));"
-            "(function tick(){if(!v.paused)ui();requestAnimationFrame(tick)})();"
-            "var drag=0;function at(e){var r=sc.getBoundingClientRect(),d=D(),t=(e.clientX-r.left)/r.width*d;"
-            "ticks.forEach(function(k){if(Math.abs(k-t)/d*r.width<6)t=k});go(t)}"
-            "sc.onpointerdown=function(e){drag=1;sc.setPointerCapture(e.pointerId);at(e)};"
-            "sc.onpointermove=function(e){if(drag)at(e)};sc.onpointerup=function(){drag=0};"
-            "function zoom(){var r=vw.getBoundingClientRect();x=Math.min(0,Math.max(r.width*(1-z),x));"
-            "y=Math.min(0,Math.max(r.height*(1-z),y));v.style.transform=z>1?'translate('+x+'px,'+y+'px) scale('+z+')':'';"
-            "vw.classList.toggle('z',z>1);$('zt').hidden=z<=1;$('zv').textContent=z.toFixed(1)+'x'}"
-            "function unzoom(){z=1;x=y=0;zoom()}"
-            "vw.addEventListener('wheel',function(e){e.preventDefault();var r=vw.getBoundingClientRect(),"
-            "cx=e.clientX-r.left,cy=e.clientY-r.top,n=Math.min(8,Math.max(1,z*(e.deltaY<0?1.2:1/1.2)));"
-            "x=cx-(cx-x)*n/z;y=cy-(cy-y)*n/z;z=n;zoom()},{passive:false});"
-            "var pan=null;vw.onpointerdown=function(e){if(e.target.closest('.tag'))return;"
-            "pan={x:e.clientX,y:e.clientY,ox:x,oy:y,m:0};vw.setPointerCapture(e.pointerId)};"
-            "vw.onpointermove=function(e){if(!pan)return;var dx=e.clientX-pan.x,dy=e.clientY-pan.y;"
-            "if(Math.abs(dx)+Math.abs(dy)>4)pan.m=1;if(pan.m&&z>1){vw.classList.add('d');x=pan.ox+dx;y=pan.oy+dy;zoom()}};"
-            "vw.onpointerup=function(){if(pan&&!pan.m)toggle();pan=null;vw.classList.remove('d')};"
-            "vw.onpointercancel=function(){pan=null;vw.classList.remove('d')};"
-            "vw.ondblclick=unzoom;$('zr').onclick=unzoom;window.addEventListener('resize',function(){zoom();lay()});"
-            "$('pb').onclick=toggle;$('fb').onclick=function(){step(-1)};$('ff').onclick=function(){step(1)};"
-            "$('sp').onclick=function(){speed(si<S.length-1?1:-si)};"
-            "function mute(){if(v.muted||!v.volume){v.muted=false;if(!v.volume)v.volume=1}else v.muted=true}"
-            "$('mu').onclick=mute;$('vl').oninput=function(){v.volume=+this.value;v.muted=!v.volume;ui()};"
-            "$('fs').onclick=function(){if(document.fullscreenElement)document.exitFullscreen();"
-            "else if(pl.requestFullscreen)pl.requestFullscreen();else if(v.webkitEnterFullscreen)v.webkitEnterFullscreen()};"
-            "document.addEventListener('fullscreenchange',function(){pl.classList.toggle('full',"
-            "document.fullscreenElement==pl);zoom();lay()});"
-            "$('cp').onclick=function(){var u=location.href.split('#')[0],t=Math.floor(v.currentTime);"
-            "if(t>0)u+='#t='+t;function said(s){var c=$('cl');c.textContent=s;c.hidden=false;clearTimeout(c.q);"
-            "c.q=setTimeout(function(){c.hidden=true},1500)}"
-            "if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){said(t>0?'Copied at '+clock(t):"
-            "'Copied')},function(){prompt('Link',u)});else prompt('Link',u)};"
-            "document.addEventListener('keydown',function(e){var k=e.key,b=e.target.tagName=='BUTTON';"
-            "if(e.ctrlKey||e.metaKey||e.altKey||e.target.tagName=='INPUT')return;"
-            "if(k==',')step(-1);else if(k=='.')step(1);else if(k=='[')speed(-1);else if(k==']')speed(1);"
-            "else if((k==' '&&!b)||k=='k')toggle();else if(k=='ArrowLeft')go(v.currentTime-5);"
-            "else if(k=='ArrowRight')go(v.currentTime+5);else if(k=='m')mute();"
-            "else if(k=='f')$('fs').onclick();else if(k=='0'||k=='Escape'&&z>1)unzoom();else return;"
-            "e.preventDefault()});ui()})()</script>\n",
-            p, out, cap, &len);
+        put("]");
     }
-    r2_page_put("</body></html>\n", p, out, cap, &len);
+    put("}</script>\n</head><body>\n");
+    if (len + 40 < cap)
+        put("<main id=\"rk\" style=\"--w:%d;--h:%d\">\n", p.w > 0 && p.h > 0 ? p.w : 16, p.w > 0 && p.h > 0 ? p.h : 9);
+    if (!paused)
+        r2_page_put("<video src=\"%V\" poster=\"%I\" width=\"%W\" height=\"%H\" controls playsinline "
+                    "preload=\"metadata\"></video>\n",
+                    p, out, cap, &len);
+    r2_page_put("<h1>", p, out, cap, &len);
+    r2_html_text(p.heading && p.heading[0] ? p.heading : p.title, out, cap, &len);
+    r2_page_put("</h1>\n", p, out, cap, &len);
+    if (paused) r2_page_put("<p>This clip isn't playing right now.</p>\n", p, out, cap, &len);
+    r2_page_put("</main>\n</body></html>\n", p, out, cap, &len);
     return len < cap - 1 ? len : 0;
 }
 
@@ -2158,6 +2201,38 @@ done:
     return ok;
 }
 
+// What the pages and the player are sent as: each kept by browsers and Cloudflare's cache a short while, so a change
+// to a page (its name, its markers) or to the player shows within minutes.
+#define R2_PAGE_TYPE "text/html; charset=utf-8\r\nCache-Control: public, max-age=60"
+#define R2_PLAYER_TYPE "application/javascript; charset=utf-8\r\nCache-Control: public, max-age=300"
+
+// The shared player in the bucket: written when the one in the bucket isn't this copy's (by its SHA-256, kept in
+// <config_dir>\player.txt beside the bucket's name), so once a version and bucket. Worker thread only.
+static bool r2_player_ensure(const R2Conf &c)
+{
+    static char *js, hash[65];
+    static i32 n;
+    if (!js && (js = (char *)malloc(R2_PLAYER_CAP)) != 0) {
+        u8 h[32];
+        n = r2_player_js(js, R2_PLAYER_CAP);
+        if (n > 0 && r2_sha256(js, n, h)) r2_hex(h, 32, hash);
+        else n = 0;
+    }
+    if (!js || n <= 0) return false;
+    char want[256];
+    snprintf(want, sizeof want, "%s/%s\t%s\n", c.account, c.bucket, hash);
+    Path file = path_join(g_app.paths.config_dir, L"player.txt");
+    i64 got_len = 0;
+    char *got = read_file(file.s, &got_len);
+    bool same = got && got_len == (i64)strlen(want) && !memcmp(got, want, (size_t)got_len);
+    free(got);
+    if (same) return true;
+    if (!r2_put_bytes(c, R2_PLAYER_KEY, js, n, R2_PLAYER_TYPE)) return false;
+    if (!write_whole_file(file.s, want)) log_line("r2: couldn't write player.txt");
+    log_line("r2: the player written (%d bytes)", n);
+    return true;
+}
+
 // Writes a share's preview page (under the lock's copy `s`): playing, or paused.
 static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
 {
@@ -2207,7 +2282,7 @@ static bool r2_put_page(const R2Conf &c, const R2Share &s, bool paused)
     i32 n = r2_page_html(p, paused, html, sizeof html);
     free(icon);
     free(art);
-    return n > 0 && r2_put_bytes(c, page_key, html, n, "text/html; charset=utf-8");
+    return n > 0 && r2_player_ensure(c) && r2_put_bytes(c, page_key, html, n, R2_PAGE_TYPE);
 }
 
 // One of a page's markers: "<seconds> <icon> <label>", the icon the marker's evi_key ("-" for none), the label its
@@ -4166,6 +4241,113 @@ static void r2_run_repage(const R2Task &t)
     log_line("r2: %d page(s) rewritten in the accent %06x, %d failed", done, g_app.config.accent & 0xffffff, failed);
 }
 
+// Whether a share's page plays from the bucket and shows markers kept with its clip.
+static bool r2_marks_live(const R2Share &s)
+{
+    return r2_in_bucket(s) && s.page_w && !s.paused && !s.moving && s.path[0];
+}
+
+// At start: the player in the bucket made this copy's, when the bucket has pages.
+static void r2_run_player(const R2Task &t)
+{
+    bool pages = false;
+    AcquireSRWLockShared(&g_r2.lock);
+    for (i32 i = 0; i < g_r2.count && !pages; i++) pages = r2_in_bucket(g_r2.shares[i]) && g_r2.shares[i].page_w;
+    ReleaseSRWLockShared(&g_r2.lock);
+    if (pages) r2_player_ensure(t.conf);
+}
+
+// When a file was last written (0 = none), for telling when a clip's markers may have changed.
+static u64 r2_file_stamp(const wchar_t *file)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExW(file, GetFileExInfoStandard, &a)) return 0;
+    return ((u64)a.ftLastWriteTime.dwHighDateTime << 32) | a.ftLastWriteTime.dwLowDateTime;
+}
+
+// Markers that came late or changed: for each live page whose clip, its layers file or markers.tsv was written
+// since the last look (every page on the first), the clip's markers are read again (r2_probe_marks) and, when they
+// differ from the page's, the page is written again with them. Only for a link of the whole clip: a cut or an
+// edit plays in its own time, so its page keeps the markers it was made with.
+static volatile LONG g_r2_remark_queued;
+static void r2_run_remark(const R2Task &t)
+{
+    InterlockedExchange(&g_r2_remark_queued, 0);
+    static struct { char key[R2_KEY_MAX]; u64 stamp; } seen[R2_MAX_SHARES];
+    static i32 nseen;
+    Path ffmpeg = {};
+    if (!ffmpeg_find(g_app.config.ffmpeg, &ffmpeg)) return;
+    u64 marks_file = r2_file_stamp(path_join(g_app.paths.local_dir, L"markers.tsv").s);
+    i32 rewritten = 0;
+    for (i32 i = 0; !g_r2.stop; i++) {
+        static R2Share s;
+        AcquireSRWLockShared(&g_r2.lock);
+        bool more = i < g_r2.count, go = more && r2_marks_live(g_r2.shares[i]);
+        if (go) s = g_r2.shares[i];
+        ReleaseSRWLockShared(&g_r2.lock);
+        if (!more) break;
+        if (!go) continue;
+        Path src;
+        utf8_to_wide(s.path, src.s, COUNT(src.s));
+        u64 stamp = r2_file_stamp(src.s);
+        if (!stamp) continue; // the clip is gone: its page stays as it is
+        if (marks_file > stamp) stamp = marks_file;
+        const Path &save_dir = g_app.config.save_dir;
+        size_t root = wcslen(save_dir.s);
+        if (root && !_wcsnicmp(src.s, save_dir.s, root)) {
+            u64 l = r2_file_stamp(layers_video_path(save_dir, src).s);
+            if (l > stamp) stamp = l;
+        }
+        i32 k = 0;
+        while (k < nseen && strcmp(seen[k].key, s.key)) k++;
+        if (k < nseen && seen[k].stamp == stamp) continue;
+        if (k == nseen && nseen < COUNT(seen)) str_set(seen[nseen++].key, s.key);
+        if (k < nseen) seen[k].stamp = stamp;
+        MediaInfo m = {};
+        char tagged[256];
+        if (!lib_probe(ffprobe_for(ffmpeg), src, &m, tagged, sizeof tagged) || fabs(m.duration - s.seconds) > 0.25)
+            continue;
+        static char marks[sizeof s.marks];
+        r2_probe_marks(src, ffmpeg, marks, sizeof marks);
+        if (!strcmp(marks, s.marks)) continue;
+        AcquireSRWLockExclusive(&g_r2.lock);
+        i32 at = r2_find_locked(s.key);
+        bool still = at >= 0 && r2_marks_live(g_r2.shares[at]);
+        if (still) {
+            str_set(g_r2.shares[at].marks, marks);
+            s = g_r2.shares[at];
+            r2_save_locked();
+        }
+        ReleaseSRWLockExclusive(&g_r2.lock);
+        if (!still) continue;
+        if (r2_put_page(t.conf, s, false)) rewritten++;
+        else log_line("r2: couldn't write the markers to the page of %s", s.key);
+    }
+    if (rewritten) {
+        log_line("r2: %d page(s) written again with their clip's markers", rewritten);
+        r2_post(R2_EV_HISTORY, 0);
+    }
+}
+
+// How long since the PC had a key press or mouse move, in seconds.
+static i64 r2_idle_seconds()
+{
+    LASTINPUTINFO in = {sizeof in};
+    return GetLastInputInfo(&in) ? (i64)(DWORD)(GetTickCount() - in.dwTime) / 1000 : 0;
+}
+
+// One player or marker run on the worker (r2_run_player, r2_run_remark).
+static void r2_queue_kind(R2TaskKind kind)
+{
+    static R2Task t;
+    t = {};
+    t.kind = kind;
+    if (!r2_conf(&t.conf) || !r2_queue(t)) {
+        if (kind == R2_T_REMARK) InterlockedExchange(&g_r2_remark_queued, 0);
+    }
+    SecureZeroMemory(&t, sizeof t);
+}
+
 // The loopback listener: waits for the browser to come back from Cloudflare's sign-in page, answers it with a
 // page that says it can be closed, and queues the sign-in task with the code.
 static DWORD WINAPI r2_signin_thread(void *)
@@ -4284,6 +4466,8 @@ static DWORD WINAPI r2_thread(void *)
         case R2_T_DOMAINS: r2_run_domains(t); break;
         case R2_T_CLEANUP: r2_run_cleanup(t); break;
         case R2_T_REPAGE: r2_run_repage(t); break;
+        case R2_T_PLAYER: r2_run_player(t); break;
+        case R2_T_REMARK: r2_run_remark(t); break;
         }
         SecureZeroMemory(t.conf.secret, sizeof t.conf.secret);
         SecureZeroMemory(t.token, sizeof t.token);
@@ -4844,6 +5028,16 @@ static void r2_tick()
     next = now + 60ll * 1000000;
     if (!r2_ready()) return;
     r2_usage();
+    static bool player_asked;
+    if (!player_asked) {
+        player_asked = true;
+        r2_queue_kind(R2_T_PLAYER);
+    }
+    static i64 next_marks;
+    if (now >= next_marks && r2_idle_seconds() >= 120 && !InterlockedCompareExchange(&g_r2_remark_queued, 1, 0)) {
+        next_marks = now + 600ll * 1000000;
+        r2_queue_kind(R2_T_REMARK);
+    }
     static i32 plan[R2_MAX_SHARES];
     AcquireSRWLockShared(&g_r2.lock);
     bool sized = g_r2.usage_us != 0; // the cleanup's cap needs the account's usage

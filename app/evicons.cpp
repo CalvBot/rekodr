@@ -318,3 +318,11 @@ static i32 evi_svg(const char *key, char *out, i32 cap)
     }
     return len;
 }
+
+// The key (evi_key) of icon number `i`, from 1. False past the last.
+static bool evi_key_at(i32 i, char *out, i32 cap)
+{
+    if (i < 1 || i >= EVI_COUNT) return false;
+    evi_key((EvIcon)i, out, cap);
+    return true;
+}
