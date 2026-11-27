@@ -1946,6 +1946,26 @@ static void mc_log_path(wchar_t *out)
     }
 }
 
+// The player's name from the start of a latest.log, where "Setting user:" is: a modded game's log grows past
+// AM_TAIL_BACK, so one found late (Rekodr started while it ran) has it before the part read.
+static void mc_me_from_head(const wchar_t *path, McSeen *s)
+{
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, 0, 0);
+    if (f == INVALID_HANDLE_VALUE) return;
+    static char buf[1 << 20];
+    DWORD got = 0;
+    if (!ReadFile(f, buf, sizeof buf - 1, &got, 0)) got = 0;
+    CloseHandle(f);
+    buf[got] = 0;
+    for (DWORD i = 0; i < got; i++) if (!buf[i]) buf[i] = ' ';
+    const char *u = strstr(buf, "]: Setting user: ");
+    if (!u) return;
+    u += 17;
+    i32 n = 0;
+    while (u[n] && u[n] != '\r' && u[n] != '\n' && n < (i32)sizeof s->me - 1) n++;
+    snprintf(s->me, sizeof s->me, "%.*s", n, u);
+}
+
 static void replays_poll(); // replays.cpp
 static void replays_apply();
 static void rust_poll(); // rustlog.cpp
@@ -1966,7 +1986,10 @@ static void am_logs_poll()
         if (now >= g_am.mc_next) {
             wchar_t p[MAX_PATH];
             mc_log_path(p);
-            if (p[0] && wcscmp(p, g_am.mc_log)) g_am.mc = {}, g_am.mc_tail = {}, wcscpy_s(g_am.mc_log, p);
+            if (p[0] && wcscmp(p, g_am.mc_log)) {
+                g_am.mc = {}, g_am.mc_tail = {}, wcscpy_s(g_am.mc_log, p);
+                mc_me_from_head(p, &g_am.mc);
+            }
             g_am.mc_next = now + 5000000;
         }
         if (g_am.mc_log[0] && !am_tail(&g_am.mc_tail, g_am.mc_log, [&](const char *l, bool old) {

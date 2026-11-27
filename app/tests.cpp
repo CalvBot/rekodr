@@ -3865,6 +3865,21 @@ static void test_automarks()
     // Minecraft's latest.log
     u32 mce = AM_GAMES[AMG_MINECRAFT].events;
     McSeen mc = {};
+    {   // The player's name from the head of a log found late
+        wchar_t mtemp[MAX_PATH], mlog[MAX_PATH];
+        GetTempPathW(MAX_PATH, mtemp);
+        swprintf(mlog, MAX_PATH, L"%srekodr-tests-mc-%lu.log", mtemp, GetCurrentProcessId());
+        const char *head = "[11:59:58] [main/INFO]: Loading\n[11:59:59] [Render thread/INFO]: Setting user: Time_Tu\r\n[12:00:00] x\n";
+        HANDLE f = CreateFileW(mlog, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
+        DWORD put = 0; WriteFile(f, head, (DWORD)strlen(head), &put, 0); CloseHandle(f);
+        McSeen hs = {};
+        mc_me_from_head(mlog, &hs);
+        T(!strcmp(hs.me, "Time_Tu"));
+        DeleteFileW(mlog);
+        McSeen none = {};
+        mc_me_from_head(mlog, &none);
+        T(!none.me[0]);
+    }
     T(mc_line(&mc, mce, "[12:00:00] [Render thread/INFO]: Setting user: Steve", true, m, 8) == 0 && !strcmp(mc.me, "Steve"));
     T(mc_line(&mc, mce, "[12:00:01] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", true, m, 8) == 0);
     T(mc_line(&mc, mce, "[12:00:02] [Render thread/INFO]: [System] [CHAT] Steve was slain by Zombie", false, m, 8) == 1 &&
