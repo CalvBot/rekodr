@@ -1341,7 +1341,8 @@ static void audio_set_paused(bool paused)
 static void hotkeys_apply(const Config &c, HWND hwnd, const char *game); // hotkeys.cpp
 
 // Whether a program is part of Windows: under the Windows folder (System32, SystemApps, ImmersiveControlPanel and
-// the rest), or in one of Windows' own packages in WindowsApps (published by Microsoft Windows: "_cw5n1h2txyewy").
+// the rest), in one of Windows' own packages in WindowsApps (published by Microsoft Windows: "_cw5n1h2txyewy"), or
+// the WebView2 runtime (msedgewebview2.exe, wherever it is installed: apps' web pages play sound through it).
 // Store apps by Microsoft Corporation, such as Xbox or PowerShell, are not.
 static bool windows_own_exe(const char *path, const char *windir)
 {
@@ -1356,6 +1357,8 @@ static bool windows_own_exe(const char *path, const char *windir)
     fold(path, low);
     size_t n = fold(windir, win);
     if (n && !strncmp(low, win, n) && low[n] == '\\') return true;
+    const char *name = strrchr(low, '\\');
+    if (!strcmp(name ? name + 1 : low, "msedgewebview2.exe")) return true;
     const char *apps = strstr(low, "\\windowsapps\\");
     return apps && strstr(apps, "_cw5n1h2txyewy\\");
 }

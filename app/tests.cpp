@@ -1055,6 +1055,9 @@ static void test_first_apps()
                        "Telegram.exe", win));
     T(!windows_own_exe("C:\\Program Files (x86)\\Windows Media Player\\wmplayer.exe", win));
     T(!windows_own_exe("C:\\Games\\cw5n1h2txyewy\\game.exe", win) && !windows_own_exe("", win));
+    T(windows_own_exe("C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\142.0.3595.53\\msedgewebview2.exe", win));
+    T(windows_own_exe("D:\\Apps\\Tool\\WebView2\\MSEdgeWebView2.exe", win) && windows_own_exe("msedgewebview2.exe", win));
+    T(!windows_own_exe("C:\\Games\\msedgewebview2.exe.game\\game.exe", win) && !windows_own_exe("C:\\Apps\\msedge.exe", win));
 
     // A Windows program heard playing sound is left out of the list
     i32 keep_count = g_app.config.app_count;
