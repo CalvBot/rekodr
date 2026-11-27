@@ -2096,25 +2096,6 @@ static void tl_draw_busy(const TlCanvas &c, const Layer &l, f32 y, f32 h, f32 s,
     }
 }
 
-// The AFK spans over the busy bar: light grey with a dark stripe through the middle. Returns how long the one under
-// `mouse_x` is (0 when none).
-static i64 tl_draw_afk(const TlCanvas &c, f32 y, f32 h, f32 s, f32 mouse_x, i64 open_end)
-{
-    const Layer *l = tl_data_layer(BUSY_AWAY_LAYER);
-    if (!l) return 0;
-    static LayerRun runs[TL_RUNS_MAX];
-    i32 n = layer_steady_runs(*l, c.start, c.start + c.span, open_end, 0, tl_col_us(c), runs, COUNT(runs));
-    i64 hit = 0;
-    for (i32 i = 0; i < n; i++) {
-        f32 xa = ImMax(tl_x(c, runs[i].a), c.x0), xb = ImMin(tl_x(c, runs[i].z), c.x1);
-        if (xb - xa < 1) xb = xa + 1;
-        c.dl->AddRectFilled(ImVec2(xa, y + 2 * s), ImVec2(xb, y + h - 2 * s), col32(0x8a9096));
-        c.dl->AddRectFilled(ImVec2(xa, y + h / 2 - 1 * s), ImVec2(xb, y + h / 2 + 1 * s), col32(0x3a3e43));
-        if (mouse_x >= xa && mouse_x < xb) hit = runs[i].z - runs[i].a;
-    }
-    return hit;
-}
-
 // The stretches of a Spans or Text layer in view. Spans switches under LAYER_STEADY_US are left out. Drawn, they
 // are gathered into columns (col_us, LayerRunLod); listed, every one is.
 static i32 tl_data_runs(const Layer &l, const TlCanvas &c, i64 open_end, i64 col_us, LayerRun *out, i32 cap)
@@ -3009,18 +2990,9 @@ static void screen_timeline()
         f32 mouse_x = k == data_hit && bar_hovered ? io.MousePos.x : -1e9f;
         if (l->kind == LAYER_VALUE) {
             f64 v;
-            i64 afk = 0;
-            if (!strcmp(l->name, BUSY_LAYER)) {
-                tl_draw_busy(c, *l, y, h, s, mouse_x, &v);
-                afk = tl_draw_afk(c, y, h, s, mouse_x, now);
-            } else {
-                tl_draw_value(c, *l, y, h, s, mouse_x, &v);
-            }
-            if (afk) {
-                char len[32];
-                tl_length(afk, len, sizeof len);
-                snprintf(data_pin, sizeof data_pin, "AFK  %s", len);
-            } else if (!isnan(v)) {
+            if (!strcmp(l->name, BUSY_LAYER)) tl_draw_busy(c, *l, y, h, s, mouse_x, &v);
+            else tl_draw_value(c, *l, y, h, s, mouse_x, &v);
+            if (!isnan(v)) {
                 snprintf(data_pin, sizeof data_pin, "%s  %.0f %s", head.label, v, head.unit);
             }
         } else {

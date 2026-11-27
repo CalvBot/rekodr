@@ -343,7 +343,6 @@ struct Config {
     char timeline_show[512];
     bool front_window;      // the Front window layer is recorded (on)
     bool input_busy;        // the Busy layer is recorded: how many keys and mouse moves a second, never which (off)
-    f32  afk_after_min;     // no input this long with a game in front is AFK on the Busy row (2)
     char plugins_off[512];  // plugin folders switched off, |-separated
     char am_open[512];      // Auto markers: the rows shown open, |-separated: game keys, plugin:<folder>, ach, other
     AmPluginTicks am_plugin[AM_PLUGIN_TICKS]; // plugins' event ticks, newest last

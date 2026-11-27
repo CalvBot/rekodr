@@ -184,7 +184,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->share_link_page = true;
     str_set(c->timeline_show, "Clips|Sessions");
     c->front_window = true;
-    c->afk_after_min = 2;
     c->share_link_days = 0;
     c->share_copy_on_close = false;
     c->auto_marks = true;
@@ -756,7 +755,6 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "timeline_show")) str_set(c->timeline_show, value);
     else if (!strcmp(key, "front_window")) c->front_window = atoi(value) != 0;
     else if (!strcmp(key, "input_busy")) c->input_busy = atoi(value) != 0;
-    else if (!strcmp(key, "afk_after_min")) real(&c->afk_after_min);
     else if (!strcmp(key, "plugins_off")) str_set(c->plugins_off, value);
     else if (!strcmp(key, "auto_marks_open")) str_set(c->am_open, value);
     else if (!strcmp(key, "editor_top")) real(&c->editor_top);
@@ -1109,7 +1107,7 @@ static bool config_save(const Config &c, const Paths &paths)
     fprintf(f, "timeline_lane = %d\n", c.timeline_lane);
     fprintf(f, "timeline_top = %g\ntimeline_names = %d\ntimeline_simple = %d\n", c.timeline_top, c.timeline_names,
             c.timeline_simple ? 1 : 0);
-    fprintf(f, "input_busy = %d\nafk_after_min = %g\n", c.input_busy ? 1 : 0, c.afk_after_min);
+    fprintf(f, "input_busy = %d\n", c.input_busy ? 1 : 0);
     fprintf(f, "timeline_show = %s\nfront_window = %d\nplugins_off = %s\n", c.timeline_show, c.front_window ? 1 : 0,
             c.plugins_off);
     fprintf(f, "auto_marks_open = %s\n", c.am_open);
