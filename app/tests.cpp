@@ -3053,6 +3053,29 @@ static void test_r2()
     T(!uploader_parse(rx, (i64)strlen(rx), &up, why, sizeof why));
     const char *js = "{\"Body\":\"JSON\",\"RequestURL\":\"https://x.example/\"}";
     T(!uploader_parse(js, (i64)strlen(js), &up, why, sizeof why));
+    {
+        // Headers that wouldn't fit what's sent are refused, as are too many, too long or with a line break
+        static char hx[16384];
+        i32 hn = snprintf(hx, sizeof hx, "{\"RequestURL\":\"https://x.example/\",\"Body\":\"Binary\",\"Headers\":{");
+        for (i32 i = 0; i < 12; i++)
+            hn += snprintf(hx + hn, sizeof hx - hn, "%s\"H%02d%0250d\":\"%0255d\"", i ? "," : "", i, 0, 0);
+        snprintf(hx + hn, sizeof hx - hn, "}}");
+        T(!uploader_parse(hx, (i64)strlen(hx), &up, why, sizeof why) && strstr(why, "too long"));
+        hn = snprintf(hx, sizeof hx, "{\"RequestURL\":\"https://x.example/\",\"Body\":\"Binary\",\"Headers\":{");
+        for (i32 i = 0; i < 13; i++) hn += snprintf(hx + hn, sizeof hx - hn, "%s\"H%d\":\"v\"", i ? "," : "", i);
+        snprintf(hx + hn, sizeof hx - hn, "}}");
+        T(!uploader_parse(hx, (i64)strlen(hx), &up, why, sizeof why) && strstr(why, "more than 12"));
+        snprintf(hx, sizeof hx, "{\"RequestURL\":\"https://x.example/\",\"Body\":\"Binary\",\"Headers\":{\"H\":\"%0256d\"}}", 0);
+        T(!uploader_parse(hx, (i64)strlen(hx), &up, why, sizeof why) && strstr(why, "256"));
+        const char *crlf = "{\"RequestURL\":\"https://x.example/\",\"Body\":\"Binary\",\"Headers\":{\"H\":\"a\rX-Evil: 1\"}}";
+        T(!uploader_parse(crlf, (i64)strlen(crlf), &up, why, sizeof why) && strstr(why, "character"));
+        // Twelve headers that fit are kept
+        hn = snprintf(hx, sizeof hx, "{\"RequestURL\":\"https://x.example/\",\"Body\":\"Binary\",\"Headers\":{");
+        for (i32 i = 0; i < 12; i++)
+            hn += snprintf(hx + hn, sizeof hx - hn, "%s\"H%02d%080d\":\"%080d\"", i ? "," : "", i, 0, 0);
+        snprintf(hx + hn, sizeof hx - hn, "}}");
+        T(uploader_parse(hx, (i64)strlen(hx), &up, why, sizeof why) && up.count[0] == 12);
+    }
 
     char link[256];
     const char *ans = "{\"ok\":true,\"files\":[{\"url\":\"https://a/1\"},{\"url\":\"https://a/2.mp4\",\"n\":[1,2]}]}";

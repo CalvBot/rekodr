@@ -2723,7 +2723,10 @@ static void r2_run_cleanup(const R2Task &t)
 // {response} / $response$ for all of it, {json:a.b[0].c} / $json:a.b[0].c$ for a value in it. {filename} in a
 // value is "clip.mp4".
 
-enum { UP_PAIRS = 12 };
+// An uploader may have up to UP_PAIRS headers and arguments, each name and value under 256 bytes, its header lines
+// ("name: value\r\n") at most UP_HEADER_BYTES in all and its arguments' names and values UP_ARG_BYTES; one with
+// more is refused when it's read.
+enum { UP_PAIRS = 12, UP_HEADER_BYTES = 2048, UP_ARG_BYTES = 4096 };
 
 struct Uploader {
     char name[64];
@@ -2829,18 +2832,20 @@ static void uploader_fill(const char *in, char *out, i32 cap)
     out[n] = 0;
 }
 
-// The pairs of a top-level object ("Headers"), string values only. Returns how many.
+// The pairs of a top-level object ("Headers"), string values only. Returns how many, -1 when there are more than
+// max or a name or value is 256 bytes or longer.
 static i32 uploader_pairs(const char *text, i64 len, const char *key, char (*out)[2][256], i32 max)
 {
     Json j = {text, text + len};
     if (!j_key(&j, key, strlen(key)) || !j_eat(&j, '{')) return 0;
     i32 n = 0;
     while (!j_eat(&j, '}') && j.p < j.end) {
-        char k[256], v[256];
+        char k[512], v[512];
         if (!j_string(&j, k, sizeof k)) break;
         j_eat(&j, ':');
         j_ws(&j);
-        if (j.p < j.end && *j.p == '"' && j_string(&j, v, sizeof v) && n < max) {
+        if (j.p < j.end && *j.p == '"' && j_string(&j, v, sizeof v)) {
+            if (n == max || strlen(k) > 255 || strlen(v) > 255) return -1;
             uploader_fill(k, out[n][0], 256);
             uploader_fill(v, out[n][1], 256);
             n++;
@@ -2871,6 +2876,17 @@ static bool uploader_parse(const char *text, i64 len, Uploader *u, char *why, i3
     u->count[1] = uploader_pairs(text, len, "Arguments", u->pairs[1], UP_PAIRS);
     char params[UP_PAIRS][2][256];
     i32 np = uploader_pairs(text, len, "Parameters", params, UP_PAIRS);
+    // Header lines and form fields go out as they are: no control bytes, and no ':' or '"' in a name
+    i32 header_bytes = 0, arg_bytes = 0;
+    bool bad_pair = false;
+    for (i32 t = 0; t < 2; t++)
+        for (i32 i = 0; i < u->count[t]; i++) {
+            const char *k = u->pairs[t][i][0], *v = u->pairs[t][i][1];
+            if (!k[0] || strpbrk(k, ":\"")) bad_pair = true;
+            for (const char *c = k; *c; c++) bad_pair |= (u8)*c < ' ' || *c == 127;
+            for (const char *c = v; *c; c++) bad_pair |= (u8)*c < ' ' || *c == 127;
+            (t ? arg_bytes : header_bytes) += (i32)(strlen(k) + strlen(v)) + (t ? 0 : 4);
+        }
     for (i32 i = 0; i < np; i++) {
         char k[768], v[768];
         r2_uri_encode(params[i][0], k, sizeof k);
@@ -2879,7 +2895,13 @@ static bool uploader_parse(const char *text, i64 len, Uploader *u, char *why, i3
         snprintf(u->url + at, sizeof u->url - at, "%s%s=%s", strchr(u->url, '?') ? "&" : "?", k, v);
     }
     if (!body[0]) str_set(body, u->form_name[0] ? "MultipartFormData" : "Binary");
-    if (!starts_with(u->url, "https://")) snprintf(why, cap, "It must send to an https:// address");
+    if (u->count[0] < 0 || u->count[1] < 0 || np < 0)
+        snprintf(why, cap, "It has more than %d headers, arguments or parameters, or one 256 characters or longer",
+                 UP_PAIRS);
+    else if (header_bytes > UP_HEADER_BYTES || arg_bytes > UP_ARG_BYTES)
+        snprintf(why, cap, "Its headers or arguments are too long");
+    else if (bad_pair) snprintf(why, cap, "A header or argument has a character that can't be sent");
+    else if (!starts_with(u->url, "https://")) snprintf(why, cap, "It must send to an https:// address");
     else if (strcmp(u->method, "POST") && strcmp(u->method, "PUT") && strcmp(u->method, "PATCH"))
         snprintf(why, cap, "It sends with %s: only POST, PUT and PATCH upload", u->method);
     else if (!strcmp(body, "MultipartFormData") && !u->form_name[0])
@@ -3019,10 +3041,11 @@ static u32 up_send(const UpRequest &q, HANDLE f, i64 size, R2Progress *prog, cha
     r2_random(rnd, 24);
     snprintf(boundary, sizeof boundary, "rekodr%s", rnd);
     if (q.form_name && q.form_name[0]) {
-        for (i32 i = 0; i < q.nfields; i++)
+        for (i32 i = 0; i < q.nfields && len < (i32)sizeof pre; i++)
             len += snprintf(pre + len, sizeof pre - len,
                             "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", boundary,
                             q.fields[i][0], q.fields[i][1]);
+        if (len >= (i32)sizeof pre) return 0;
         len += snprintf(pre + len, sizeof pre - len,
                         "--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"clip.mp4\"\r\n"
                         "Content-Type: video/mp4\r\n\r\n",
@@ -3144,9 +3167,9 @@ static void r2_run_uploader(const R2Task &t)
         R2Progress prog = {job, 0, size.QuadPart > 0 ? size.QuadPart : 1};
         char why[256] = "";
         if (uploader_load(nm, &u, why, sizeof why)) {
-            char headers[2600] = "";
+            char headers[UP_HEADER_BYTES + 1] = "";
             i32 hl = 0;
-            for (i32 i = 0; i < u.count[0]; i++)
+            for (i32 i = 0; i < u.count[0] && hl < (i32)sizeof headers; i++)
                 hl += snprintf(headers + hl, sizeof headers - hl, "%s: %s\r\n", u.pairs[0][i][0], u.pairs[0][i][1]);
             const char *fields[UP_PAIRS][2];
             for (i32 i = 0; i < u.count[1]; i++) {
