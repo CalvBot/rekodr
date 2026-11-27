@@ -287,6 +287,7 @@ struct Config {
     bool steam_type_check; // a Steam app the service says Steam's store calls software is an App, even in a Game
                            // folder (gamedb_name_app)
     bool send_stats;     // a daily usage report to the service (telemetry.cpp); on unless the player says no
+    bool send_crashes;   // after a crash or hang, the next start sends its report (diag.cpp, telemetry.cpp)
     bool test_audio;     // a test copy (REKODR_HOME) records sound and video only with this on (off)
     bool auto_update;    // fetch and verify new versions (update.cpp); the top bar then offers the restart
     char sgdb_key[72];   // the player's own SteamGridDB key, for art the art service doesn't hand out; settings.txt only

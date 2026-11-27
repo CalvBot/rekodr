@@ -404,6 +404,7 @@ static LONG WINAPI on_crash(EXCEPTION_POINTERS *info)
         diag_log_stack(GetCurrentThread(), *info->ContextRecord, false);
     }
     log_flush(); // before the new copy starts adding to the same log
+    diag_report(info, L"crash");
     restart_after_crash();
     log_flush();
     return EXCEPTION_EXECUTE_HANDLER;

@@ -207,6 +207,7 @@ static void config_defaults(Config *c, const Paths &paths)
     c->tooltips = true;
     c->share_names = true; // "Help name games" and "Send usage stats": on, the setup asks
     c->send_stats = true;
+    c->send_crashes = true;
     c->steam_type_check = true;
     str_set(c->art_service.s, ART_SERVICE_HOST);
     c->voice_mono = true;
@@ -802,6 +803,7 @@ static void config_set(Config *c, const char *key, char *value)
     else if (!strcmp(key, "share_names")) boolean(&c->share_names);
     else if (!strcmp(key, "steam_type_check")) boolean(&c->steam_type_check);
     else if (!strcmp(key, "send_stats")) boolean(&c->send_stats);
+    else if (!strcmp(key, "send_crashes")) boolean(&c->send_crashes);
     else if (!strcmp(key, "test_audio")) boolean(&c->test_audio);
     else if (!strcmp(key, "auto_update")) boolean(&c->auto_update);
     else if (!strcmp(key, "tooltips")) boolean(&c->tooltips);
@@ -1058,6 +1060,7 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("share_names", c.share_names);
     boolean("steam_type_check", c.steam_type_check);
     boolean("send_stats", c.send_stats);
+    boolean("send_crashes", c.send_crashes);
     if (c.test_audio) boolean("test_audio", c.test_audio);
     boolean("auto_update", c.auto_update);
     boolean("tooltips", c.tooltips);

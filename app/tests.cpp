@@ -961,6 +961,53 @@ static void test_telemetry()
     T((i32)(strrchr(out, '"') - t) == ART_NOTE_MAX && strstr(out, "\"kind\":\"icon\""));
 }
 
+// Crash reports: a log line loses the player's folder, paths, links, quoted text and account IDs, and the lines
+// that carry names are left out; the body has the report's facts, those lines and the dump in base64.
+static void test_crash_reports()
+{
+    char out[512];
+    const char *prof = "C:\\Users\\Someone";
+    T(!crash_scrub_line("[2026-11-20 22:45:37.574 t34340] library: renamed \"my clip\"", prof, out, sizeof out));
+    T(!crash_scrub_line("share: link for x", prof, out, sizeof out));
+    T(crash_scrub_line("[2026-11-20 22:45:37.574 t34340] game: C:\\Users\\Someone\\Games\\x.exe started", prof, out, sizeof out) &&
+      !strcmp(out, "game: %USERPROFILE%\\Games\\x.exe started"));
+    T(crash_scrub_line("open D:\\Clips\\My clip.mp4, failed (5)", prof, out, sizeof out) && !strcmp(out, "open <path>, failed (5)"));
+    T(crash_scrub_line("fetch https://a.example/c?d=1 done", prof, out, sizeof out) && !strcmp(out, "fetch <url> done"));
+    T(crash_scrub_line("window \"Secret title\" exe 'game.exe'", prof, out, sizeof out) && !strcmp(out, "window \"<text>\" exe 'game.exe'"));
+    T(crash_scrub_line("user 76561198000000000 ok, 1080p 60 fps", prof, out, sizeof out) && !strcmp(out, "user <id> ok, 1080p 60 fps"));
+    T(crash_scrub_line("proc discord-someone-450827036068544522.exe 12-34", prof, out, sizeof out) && !strcmp(out, "proc discord-<id>.exe 12-34"));
+    T(crash_scrub_line("short\r\n", prof, out, 4) && !strcmp(out, "sho"));
+    // Base64
+    crash_b64((const u8 *)"Man", 3, out);
+    T(!strcmp(out, "TWFu"));
+    crash_b64((const u8 *)"Ma", 2, out);
+    T(!strcmp(out, "TWE="));
+    crash_b64((const u8 *)"M", 1, out);
+    T(!strcmp(out, "TQ=="));
+    // The body
+    char *b = crash_body("kind crash\ncode 0xc0000005\nwhere rekodr.exe+0x1a2b\nuptime 42\nlog\n"
+                         "[2026-11-20 22:45:37.574 t1] library: x\ngame: \"Title\"\n", (const u8 *)"abc", 3, prof, "26300");
+    T(b && strstr(b, "\"version\":\"" REKODR_VERSION "\",\"windows\":\"26300\",\"kind\":\"crash\",\"code\":\"0xc0000005\","
+                     "\"where\":\"rekodr.exe+0x1a2b\",\"uptime\":42,\"log\":\"game: \\\"<text>\\\"\\u000a\",\"dump\":\"YWJj\"}"));
+    free(b);
+    b = crash_body("kind hang\ncode 0x00000000\nwhere \nuptime 7\nlog\n", (const u8 *)"", 0, prof, "1");
+    T(b && strstr(b, "\"kind\":\"hang\"") && strstr(b, "\"where\":\"\",\"uptime\":7,\"log\":\"\",\"dump\":\"\"}"));
+    free(b);
+    T(!crash_body("not a report", (const u8 *)"", 0, prof, "1"));
+    // The log's last lines
+    wchar_t temp[MAX_PATH], path[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(path, MAX_PATH, L"%lsrekodr-tail-%u.txt", temp, GetCurrentProcessId());
+    FILE *f = _wfopen(path, L"wb");
+    fputs("a\nb\nc\nd\ne\n", f);
+    fclose(f);
+    T(diag_file_tail(path, 2, out, sizeof out) == 4 && !strcmp(out, "d\ne\n"));
+    T(diag_file_tail(path, 10, out, 6) == 4 && !strcmp(out, "d\ne\n")); // the cut first line is dropped
+    T(diag_file_tail(path, 10, out, sizeof out) == 10);
+    DeleteFileW(path);
+    T(diag_file_tail(path, 2, out, sizeof out) == 0 && !out[0]);
+}
+
 static void test_first_run()
 {
     f32 gb, keep;
@@ -7407,6 +7454,7 @@ int main()
     test_ffmpeg_tools_ignored();
     test_ffmpeg_check();
     test_telemetry();
+    test_crash_reports();
     test_backup_plan();
     test_backup();
     test_backup_places();

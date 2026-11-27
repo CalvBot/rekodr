@@ -133,6 +133,96 @@ static Path diag_dump(EXCEPTION_POINTERS *info, const wchar_t *kind)
     return dump;
 }
 
+// The crash reports waiting to be sent (Options > Privacy > Send crash reports) are in <local_dir>\reports, a pair
+// each: <kind>-<date>-<time>.dmp, a small dump with no memory but the stack pointers and no folder names, and .txt,
+// a few facts and the log's last lines as they were. telemetry.cpp scrubs the lines and sends the pair.
+static const i32 REPORT_LOG_LINES = 200;
+
+static Path diag_reports_dir() { return path_join(g_app.paths.local_dir, L"reports"); }
+
+// The last `lines` lines of the file into out (at most cap - 1 bytes); their length. No heap: it runs in a crash.
+static i32 diag_file_tail(const wchar_t *path, i32 lines, char *out, i32 cap)
+{
+    out[0] = 0;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER size = {}, at = {};
+    GetFileSizeEx(f, &size);
+    at.QuadPart = size.QuadPart > cap - 1 ? size.QuadPart - (cap - 1) : 0;
+    SetFilePointerEx(f, at, 0, FILE_BEGIN);
+    DWORD n = 0;
+    if (!ReadFile(f, out, (DWORD)(cap - 1), &n, 0)) n = 0;
+    CloseHandle(f);
+    out[n] = 0;
+    i32 start = 0, seen = 0;
+    for (i32 i = (i32)n - 2; i >= 0; i--) // from the end, not counting a last newline
+        if (out[i] == '\n' && ++seen == lines) {
+            start = i + 1;
+            break;
+        }
+    if (!start && at.QuadPart > 0) { // the first line read is cut
+        char *nl = strchr(out, '\n');
+        start = nl ? (i32)(nl + 1 - out) : (i32)n;
+    }
+    memmove(out, out + start, n - start + 1);
+    return (i32)n - start;
+}
+
+// Writes a report pair for a crash (info) or a hang (info 0). The log is flushed first so its last lines are there.
+static void diag_report(EXCEPTION_POINTERS *info, const wchar_t *kind)
+{
+    static char text[96 * 1024];
+    Path dir = diag_reports_dir();
+    CreateDirectoryW(dir.s, 0);
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    wchar_t name[64];
+    swprintf(name, 64, L"%s-%04d%02d%02d-%02d%02d%02d", kind, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    Path base = path_join(dir, name);
+    Path dmp = base, txt = base;
+    wcscat_s(dmp.s, L".dmp");
+    wcscat_s(txt.s, L".txt");
+    HANDLE f = CreateFileW(dmp.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return;
+    MINIDUMP_EXCEPTION_INFORMATION mei = {GetCurrentThreadId(), info, FALSE};
+    MINIDUMP_TYPE type = (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpFilterMemory | MiniDumpFilterModulePaths |
+                                         MiniDumpWithUnloadedModules);
+    bool ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f, type, info ? &mei : 0, 0, 0) != 0;
+    CloseHandle(f);
+    if (!ok) {
+        DeleteFileW(dmp.s);
+        return;
+    }
+    // Where: the module the crash was in and how far into it
+    char where[96] = "";
+    if (info) {
+        void *pc = info->ExceptionRecord->ExceptionAddress;
+        HMODULE mod = 0;
+        wchar_t mpath[MAX_PATH] = L"";
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR)pc, &mod) && GetModuleFileNameW(mod, mpath, MAX_PATH)) {
+            const wchar_t *slash = wcsrchr(mpath, L'\\');
+            snprintf(where, sizeof where, "%ls+0x%llx", slash ? slash + 1 : mpath, (u64)((u8 *)pc - (u8 *)mod));
+        }
+    }
+    FILETIME made, gone, kt, ut, now;
+    GetProcessTimes(GetCurrentProcess(), &made, &gone, &kt, &ut);
+    GetSystemTimeAsFileTime(&now);
+    i64 up = (i64)((((u64)now.dwHighDateTime << 32 | now.dwLowDateTime) - ((u64)made.dwHighDateTime << 32 | made.dwLowDateTime)) / 10000000);
+    log_flush();
+    i32 n = snprintf(text, sizeof text, "kind %ls\ncode 0x%08x\nwhere %s\nuptime %lld\nlog\n", kind,
+                     info ? (u32)info->ExceptionRecord->ExceptionCode : 0, where, up);
+    n += diag_file_tail(g_log_path, REPORT_LOG_LINES, text + n, (i32)sizeof text - n);
+    f = CreateFileW(txt.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) {
+        DeleteFileW(dmp.s);
+        return;
+    }
+    DWORD w = 0;
+    WriteFile(f, text, (DWORD)n, &w, 0);
+    CloseHandle(f);
+}
+
 // Suspends the main thread just long enough to copy its registers and stack, then logs where it was.
 static void diag_log_main_stack()
 {
@@ -186,6 +276,7 @@ static DWORD WINAPI diag_watchdog(void *)
             diag_log_main_stack();
             Path dump = diag_dump(0, L"hang");
             log_line("dump: %ls", dump.s);
+            diag_report(0, L"hang");
         } else if (!busy && stuck) {
             stuck = false;
             log_line("the main thread is responding again (stuck for %lld ms)", g_diag.beat_ms - since);

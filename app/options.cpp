@@ -5974,6 +5974,11 @@ static void options_general()
         log_line("options: usage stats %s", c.send_stats ? "on" : "off");
         options_apply(0);
     }
+    if (opt_row_toggle("Send crash reports", "After a crash or freeze, the next start sends where it stopped and the log's last lines, without your folder names, window titles or links",
+                       "##crashes", &c.send_crashes)) {
+        log_line("options: crash reports %s", c.send_crashes ? "on" : "off");
+        options_apply(0);
+    }
     ImGui::EndDisabled();
     opt_card_end();
 

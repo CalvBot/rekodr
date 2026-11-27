@@ -119,9 +119,10 @@ static void setup_finish(const char *how)
     g_app.ui.setup_open = false;
     g_setup_page = SETUP_WELCOME;
     options_apply(0);
-    log_line("setup %s: look-up %s, game detection %s, own key %s, usage stats %s, tooltips %s, cloudflare %s", how,
-             c.game_lookup ? "on" : "off", c.art_service.s[0] ? c.art_service.s : "off", c.sgdb_key[0] ? "set" : "none",
-             c.send_stats ? "on" : "off", c.tooltips ? "on" : "off", r2_set_up() ? "set up" : "none");
+    log_line("setup %s: look-up %s, game detection %s, own key %s, usage stats %s, crash reports %s, tooltips %s, "
+             "cloudflare %s", how, c.game_lookup ? "on" : "off", c.art_service.s[0] ? c.art_service.s : "off",
+             c.sgdb_key[0] ? "set" : "none", c.send_stats ? "on" : "off", c.send_crashes ? "on" : "off",
+             c.tooltips ? "on" : "off", r2_set_up() ? "set up" : "none");
 }
 
 // The clip key: the first hotkey that saves, and how much it saves ("save 30s" -> 30). False with none.
@@ -399,7 +400,8 @@ static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair
     setup_detection_by_hand(dl, x0, x1, y + pair_h + dp(40));
 }
 
-// Help development: the daily usage counts. The begging picture shows only once the answer is no.
+// Help development: the daily usage counts, and under them crash reports. The begging picture shows only once the
+// answer to the counts is no.
 static void setup_page_development(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)
 {
     Config &c = g_app.config;
@@ -415,6 +417,18 @@ static void setup_page_development(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pa
     if (hit >= 0) {
         c.send_stats = hit == 0;
         log_line("setup: usage stats %s", c.send_stats ? "on" : "off");
+        options_apply(0);
+    }
+    y += pair_h + dp(16);
+    ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    static const char *const crash_titles[] = {"Send crash reports", "Keep them here"};
+    static const char *const crash_subs[] = {"Where it stopped, after a crash", "Send nothing"};
+    ImGui::BeginDisabled(!c.game_lookup);
+    hit = setup_pair("crashes", crash_titles, crash_subs, c.send_crashes && c.game_lookup ? 0 : 1, x1 - x0, pair_h);
+    ImGui::EndDisabled();
+    if (hit >= 0) {
+        c.send_crashes = hit == 0;
+        log_line("setup: crash reports %s", c.send_crashes ? "on" : "off");
         options_apply(0);
     }
     if (c.send_stats && c.game_lookup) return;
