@@ -18,8 +18,6 @@
 //   art\<id>-icon.png, art\<id>-art.jpg   the pictures, each with a .url file beside it naming the address it came
 //                         from ("none" = there is none); one whose address isn't the art file's any more is fetched
 //                         again
-//   emojis.txt        the service's emoji for each game on Discord cards (/v1/emojis), one game a line: its name's
-//                     key (emoji_key), a tab, the emoji. Fetched again after a day; offline, the one there is is used
 // A game's id is its file name there: the service's key for it (":" made "_"), Discord's id with the service off,
 // or "n" and a hash of its name's letters for one known only by its name.
 // One worker thread does the fetching and the loading. The index is never changed once built, only replaced, and
@@ -2134,6 +2132,33 @@ static bool lookup_parse(const char *text, i64 len, LookAnswer *ans)
     return true;
 }
 
+// A Discord custom emoji as a message writes it: "<:name:id>", or "<a:name:id>" for an animated one; the name 2 to
+// 32 letters, digits or _.
+static bool emoji_ok(const char *e)
+{
+    if (!e || e[0] != '<') return false;
+    const char *p = e + 1;
+    if (*p == 'a') p++;
+    if (*p++ != ':') return false;
+    i32 n = 0;
+    while (isalnum((u8)*p) || *p == '_') p++, n++;
+    if (n < 2 || n > 32 || *p++ != ':') return false;
+    n = 0;
+    while (*p >= '0' && *p <= '9') p++, n++;
+    return n >= 1 && n <= 20 && p[0] == '>' && !p[1];
+}
+
+// An answer's "emoji" (a lookup's, /v1/art's or the art file's) into out when it is one (emoji_ok); "" and false
+// for null or none.
+static bool art_emoji(const char *text, i64 len, char *out, i32 cap)
+{
+    char e[64];
+    out[0] = 0;
+    if (!j_get(text, len, "emoji", e, sizeof e) || !emoji_ok(e)) return false;
+    snprintf(out, cap, "%s", e);
+    return true;
+}
+
 // Where an answer's "art" is in its text. False if it has none.
 static bool answer_art(const char *text, i64 len, const char **art, i64 *art_len)
 {
@@ -2145,8 +2170,9 @@ static bool answer_art(const char *text, i64 len, const char **art, i64 *art_len
     return true;
 }
 
-// A lookup's answer about a game: its key for the name, and where its pictures are, as {"key","art"} (no "v": that
-// is the lookup's, not /v1/art's). GAMEDB_ART (b = 1) when those changed, so what shows them looks again.
+// A lookup's answer about a game: its key for the name, where its pictures are and its emoji, as
+// {"key","art","emoji"} (no "v": that is the lookup's, not /v1/art's). GAMEDB_ART (b = 1) when those changed, so
+// what shows them looks again.
 static void lookup_keep_art(const char *text, i64 len, const LookAnswer &ans)
 {
     const char *art;
@@ -2160,8 +2186,11 @@ static void lookup_keep_art(const char *text, i64 len, const LookAnswer &ans)
     Path file = gamedb_art_json(id);
     i64 ol = 0, oal = 0;
     const char *oart;
-    char *old = read_file(file.s, &ol);
-    bool had = old != 0, same = old && answer_art(old, ol, &oart, &oal) && oal == al && !memcmp(oart, art, (size_t)al);
+    char *old = read_file(file.s, &ol), emoji[64], was[64] = "";
+    art_emoji(text, len, emoji, sizeof emoji);
+    if (old) art_emoji(old, ol, was, sizeof was);
+    bool had = old != 0, same = old && answer_art(old, ol, &oart, &oal) && oal == al && !memcmp(oart, art, (size_t)al) &&
+                               !strcmp(was, emoji);
     free(old);
     if (same) {
         touch_file(file);
@@ -2170,8 +2199,10 @@ static void lookup_keep_art(const char *text, i64 len, const LookAnswer &ans)
     static char keep[16384];
     i32 n = snprintf(keep, sizeof keep, "{\"key\":");
     mc_put(keep, sizeof keep, &n, ans.key);
-    if (n + al + 10 >= (i64)sizeof keep) return;
-    n += snprintf(keep + n, sizeof keep - n, ",\"art\":%.*s}", (int)al, art);
+    if (n + al + 100 >= (i64)sizeof keep) return;
+    n += snprintf(keep + n, sizeof keep - n, ",\"art\":%.*s,\"emoji\":", (int)al, art);
+    if (emoji[0]) n += snprintf(keep + n, sizeof keep - n, "\"%s\"}", emoji);
+    else n += snprintf(keep + n, sizeof keep - n, "null}");
     write_whole(file, keep, n);
     if (!had) return;
     Event e = {};
@@ -2298,173 +2329,23 @@ static void gamedb_publish(GameIndex *ix)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Game emojis: what a Discord card puts before the game's name. The art service sends the
-// list whole: {"emojis":[["overwatch","<:ow:123>"], ...]}.
+// Game emojis: what a Discord card puts before the game's name. Only some games have one: the service says which
+// in a lookup's and /v1/art's "emoji" (null for none), kept with where the game's pictures are.
 
-enum { EMOJI_MAX = 4096 };
-struct EmojiRow {
-    char key[64];   // emoji_key of the game's name
-    char emoji[64]; // "<:name:id>" or "<a:name:id>"
-};
-static struct {
-    SRWLOCK   lock;
-    EmojiRow *rows; // sorted by key
-    i32       count;
-} g_emoji;
-
-// A Discord custom emoji as a message writes it: "<:name:id>", or "<a:name:id>" for an animated one; the name 2 to
-// 32 letters, digits or _.
-static bool emoji_ok(const char *e)
-{
-    if (!e || e[0] != '<') return false;
-    const char *p = e + 1;
-    if (*p == 'a') p++;
-    if (*p++ != ':') return false;
-    i32 n = 0;
-    while (isalnum((u8)*p) || *p == '_') p++, n++;
-    if (n < 2 || n > 32 || *p++ != ':') return false;
-    n = 0;
-    while (*p >= '0' && *p <= '9') p++, n++;
-    return n >= 1 && n <= 20 && p[0] == '>' && !p[1];
-}
-
-// A game's name as the emoji list matches it: its ASCII letters and digits, lower case. "Counter-Strike 2" ->
-// "counterstrike2", which stays apart from "Counter-Strike".
-static void emoji_key(const char *name, char *out, i32 cap)
-{
-    i32 n = 0;
-    for (const char *p = name ? name : ""; *p && n < cap - 1; p++)
-        if (*p >= 'A' && *p <= 'Z') out[n++] = (char)(*p - 'A' + 'a');
-        else if ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9')) out[n++] = *p;
-    out[n] = 0;
-}
-
-static int emoji_cmp(const void *a, const void *b)
-{
-    return strcmp(((const EmojiRow *)a)->key, ((const EmojiRow *)b)->key);
-}
-
-// The rows of /v1/emojis's answer, or of emojis.txt (`tsv`: "key\temoji" lines), into out (at most max), sorted.
-// A row with a key that isn't a key or an emoji that isn't one is skipped. Returns how many; -1 when `text` isn't
-// the answer at all.
-static i32 emoji_parse(const char *text, bool tsv, EmojiRow *out, i32 max)
-{
-    i32 n = 0;
-    const char *p = text;
-    if (!tsv) {
-        p = strstr(text, "\"emojis\":[");
-        if (!p) return -1;
-        p += 10;
-    }
-    while (*p && n < max) {
-        char key[96], emoji[96];
-        i32 used = 0;
-        if (tsv) {
-            const char *end = p + strcspn(p, "\r\n"), *tab = (const char *)memchr(p, '\t', end - p);
-            if (tab && tab - p < (i64)sizeof key && end - tab - 1 < (i64)sizeof emoji) {
-                memcpy(key, p, tab - p);
-                key[tab - p] = 0;
-                memcpy(emoji, tab + 1, end - tab - 1);
-                emoji[end - tab - 1] = 0;
-                used = (i32)(end - p);
-            }
-        } else {
-            while (*p == ' ' || *p == ',' || *p == '\r' || *p == '\n') p++;
-            if (*p != '[') break;
-            if (sscanf(p, "[\"%95[^\"]\",\"%95[^\"]\"]%n", key, emoji, &used) != 2 || !used) break;
-        }
-        if (used) {
-            char check[96];
-            emoji_key(key, check, sizeof check);
-            if (key[0] && !strcmp(check, key) && strlen(key) < sizeof out->key && emoji_ok(emoji)) {
-                str_set(out[n].key, key);
-                str_set(out[n].emoji, emoji);
-                n++;
-            }
-            p += used;
-        }
-        if (tsv) {
-            while (*p && *p != '\n') p++;
-            if (*p) p++;
-        }
-    }
-    qsort(out, n, sizeof *out, emoji_cmp);
-    return n;
-}
-
-// Puts `rows` in place of the list there was.
-static void emoji_publish(EmojiRow *rows, i32 n)
-{
-    AcquireSRWLockExclusive(&g_emoji.lock);
-    EmojiRow *old = g_emoji.rows;
-    g_emoji.rows = rows;
-    g_emoji.count = n;
-    ReleaseSRWLockExclusive(&g_emoji.lock);
-    free(old);
-}
-
-// The emoji for the game called `name` into out ("" and false for none). Any thread.
+// The game's emoji for Discord cards into out ("" and false for none). Asks the service where the game's pictures
+// are when that wasn't asked lately: waits on the network, not for the UI thread.
 static bool gamedb_emoji(const char *name, char *out, i32 cap)
 {
-    EmojiRow want;
-    emoji_key(name, want.key, sizeof want.key);
     out[0] = 0;
-    if (!want.key[0]) return false;
-    AcquireSRWLockShared(&g_emoji.lock);
-    const EmojiRow *r =
-        g_emoji.rows ? (const EmojiRow *)bsearch(&want, g_emoji.rows, g_emoji.count, sizeof want, emoji_cmp) : 0;
-    if (r) snprintf(out, cap, "%s", r->emoji);
-    ReleaseSRWLockShared(&g_emoji.lock);
-    return out[0] != 0;
-}
-
-// Loads emojis.txt, then, online and when it is a day old or missing, fetches the list again and keeps it there.
-static void gamedb_emojis(bool fetch)
-{
-    Path file = path_join(gamedb_dir(), L"emojis.txt");
-    EmojiRow *rows = (EmojiRow *)calloc(EMOJI_MAX, sizeof(EmojiRow));
-    if (!rows) return;
-    if (char *text = read_file(file.s, 0)) {
-        i32 n = emoji_parse(text, true, rows, EMOJI_MAX);
-        free(text);
-        emoji_publish(rows, n);
-        rows = (EmojiRow *)calloc(EMOJI_MAX, sizeof(EmojiRow));
-        if (!rows) return;
-    }
-    if (!fetch || !g_gamedb.service[0]) {
-        free(rows);
-        return;
-    }
-    char *body = 0;
+    GameInfo g;
+    if (!g_gamedb.service[0] || !name || !name[0] || !gamedb_for_art(name, &g)) return false;
+    bool paced;
+    if (!art_json_fetch(g.id, g.key, g.name, g.steam, &paced)) return false;
     i64 len = 0;
-    u32 status = art_service_get("/v1/emojis", &body, &len);
-    i32 n = status == 200 && body ? emoji_parse(body, false, rows, EMOJI_MAX) : -1;
-    free(body);
-    if (n < 0) {
-        log_line("game emojis: couldn't fetch them (%u)", status);
-        free(rows);
-        return;
-    }
-    Path part = file;
-    wcsncat(part.s, L".part", MAX_PATH - wcslen(part.s) - 1);
-    FILE *f = _wfopen(part.s, L"wb");
-    bool ok = f != 0;
-    for (i32 i = 0; f && i < n; i++) ok &= fprintf(f, "%s\t%s\n", rows[i].key, rows[i].emoji) > 0;
-    if (f) ok &= fclose(f) == 0;
-    if (!ok || !MoveFileExW(part.s, file.s, MOVEFILE_REPLACE_EXISTING)) log_line("game emojis: couldn't keep them");
-    emoji_publish(rows, n);
-    log_line("game emojis: %d", n);
-}
-
-// Whether the emoji list is due to be fetched again: missing, or a day old.
-static bool gamedb_emojis_due()
-{
-    WIN32_FILE_ATTRIBUTE_DATA fa;
-    if (!GetFileAttributesExW(path_join(gamedb_dir(), L"emojis.txt").s, GetFileExInfoStandard, &fa)) return true;
-    FILETIME now;
-    GetSystemTimeAsFileTime(&now);
-    i64 at = (i64)fa.ftLastWriteTime.dwHighDateTime << 32 | fa.ftLastWriteTime.dwLowDateTime;
-    return ((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - at > 24 * 3600 * 10000000ll;
+    char *text = read_file(gamedb_art_json(g.id).s, &len);
+    bool ok = text && art_emoji(text, len, out, cap);
+    free(text);
+    return ok;
 }
 
 static DWORD WINAPI gamedb_thread(void *)
@@ -2486,12 +2367,10 @@ static DWORD WINAPI gamedb_thread(void *)
             log_line("games list: couldn't fetch it%s", have ? "; using the one from before" : "");
         }
     }
-    gamedb_emojis(g_gamedb.online && gamedb_emojis_due());
     while (!g_gamedb.stop) {
         bool done = gamedb_fetch_looks();
         done &= gamedb_fetch_art();
-        if (g_gamedb.online && gamedb_emojis_due()) gamedb_emojis(true);
-        // some waiting their turn: look again soon; else within the hour, for the emojis
+        // some waiting their turn: look again soon
         WaitForSingleObject(g_gamedb.wake, done ? 3600 * 1000 : 2000);
     }
     return 0;

@@ -3382,29 +3382,13 @@ static void test_r2()
     T(!emoji_ok("<:ab:>") && !emoji_ok("<:ab:1> ") && !emoji_ok("<:a b:1>") && !emoji_ok("<:ab:x1>"));
     T(!emoji_ok("<:abcdefghijabcdefghijabcdefghijabc:1>") && !emoji_ok("<:ab:123456789012345678901>"));
 
-    // The game emoji list: a game's letters and digits are its key, so Counter-Strike and Counter-Strike 2 differ
-    char ekey[64];
-    emoji_key("Counter-Strike 2", ekey, sizeof ekey);
-    T(!strcmp(ekey, "counterstrike2"));
-    emoji_key("Counter-Strike", ekey, sizeof ekey);
-    T(!strcmp(ekey, "counterstrike"));
-    static EmojiRow erows[8];
-    static const char eans[] = "{\"emojis\":[[\"overwatch\",\"<:ow:77>\"],[\"counterstrike2\",\"<:cs2:2>\"],"
-                               "[\"Bad Key\",\"<:x1:1>\"],[\"counterstrike\",\"<a:cs:1>\"],[\"nope\",\":nope:\"]]}";
-    T(emoji_parse(eans, false, erows, 8) == 3);
-    T(!strcmp(erows[0].key, "counterstrike") && !strcmp(erows[1].key, "counterstrike2"));
-    T(!strcmp(erows[2].emoji, "<:ow:77>"));
-    T(emoji_parse("{\"emojis\":[]}", false, erows, 8) == 0 && emoji_parse("<html>", false, erows, 8) == -1);
-    T(emoji_parse("overwatch\t<:ow:77>\r\nbad\nhades\t<:hades:3>\n", true, erows, 8) == 2);
-    T(!strcmp(erows[0].key, "hades") && !strcmp(erows[1].emoji, "<:ow:77>"));
-    EmojiRow *elist = (EmojiRow *)calloc(8, sizeof(EmojiRow));
-    T(emoji_parse(eans, false, elist, 8) == 3);
-    emoji_publish(elist, 3);
+    // A game's emoji is the service's "emoji" for it: null, none or one that isn't an emoji is no emoji
     char eout[64];
-    T(gamedb_emoji("Counter-Strike 2", eout, sizeof eout) && !strcmp(eout, "<:cs2:2>"));
-    T(gamedb_emoji("COUNTER-STRIKE", eout, sizeof eout) && !strcmp(eout, "<a:cs:1>"));
-    T(!gamedb_emoji("Valorant", eout, sizeof eout) && !eout[0] && !gamedb_emoji("", eout, sizeof eout));
-    emoji_publish(0, 0);
+    static const char eart[] = "{\"key\":\"d1\",\"art\":{\"icon\":null},\"emoji\":\"<:92127:1575822398433923205>\"}";
+    T(art_emoji(eart, (i64)strlen(eart), eout, sizeof eout) && !strcmp(eout, "<:92127:1575822398433923205>"));
+    T(!art_emoji("{\"key\":\"d1\",\"emoji\":null}", 25, eout, sizeof eout) && !eout[0]);
+    T(!art_emoji("{\"key\":\"d1\",\"art\":{}}", 21, eout, sizeof eout) && !eout[0]);
+    T(!art_emoji("{\"emoji\":\":nope:\"}", 18, eout, sizeof eout) && !eout[0]);
     // the style: found by its id, the first when the id is unknown; a preview tags the line
     T(embed_style_count() == 1 && !strcmp(embed_style_id(0), "rekodr") && embed_style_find("rekodr") == 0);
     T(embed_style_find("nope") == -1 && !strcmp(embed_style_name(5), "Rekodr"));
