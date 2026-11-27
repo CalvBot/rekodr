@@ -172,6 +172,17 @@ static void test_sound_plan()
     T(lib_sound_plan(false, 1, 0, out) == 1 && out[0] == 0);           // one track
 }
 
+// With no copy running, only a plain start or `open` starts Rekodr; quit, save and the rest exit
+static void test_command_starts_app()
+{
+    T(command_starts_app(""));
+    T(command_starts_app("open"));
+    T(!command_starts_app("quit"));
+    T(!command_starts_app("save 30s"));
+    T(!command_starts_app("show general"));
+    T(!command_starts_app("opener"));
+}
+
 static void test_lengths()
 {
     T(parse_length_secs("30s") == 30);
@@ -6940,6 +6951,7 @@ int main()
 {
     InitializeSRWLock(&g_log_lock);
     test_lengths();
+    test_command_starts_app();
     test_select_range();
     test_tags();
     test_card_clicks();

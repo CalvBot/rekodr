@@ -2,8 +2,8 @@
 //
 // `rekodr.exe` with no arguments starts Rekodr (or opens the window of the copy already running).
 // `rekodr.exe <command>` hands the command to the running copy as WM_COPYDATA and exits; Stream Deck keys use
-// this. With no running copy it starts Rekodr and runs the command there, except `save`, which plays the Failed
-// sound and exits: there's no buffer to save from.
+// this. With no running copy only `open` starts Rekodr; any other command exits without starting it, and `save`
+// plays the Failed sound first: there's no buffer to save from.
 //
 // Commands: open | timeline | options | save <length> | pause | resume | toggle | folder | quit | dev [off]
 
@@ -424,6 +424,13 @@ static void command_from_args(char *out, i32 out_size)
     LocalFree(argv);
 }
 
+// Whether a command starts Rekodr when no copy is running: only a plain start, or `open`.
+static bool command_starts_app(const char *command)
+{
+    while (*command == ' ') command++;
+    return !*command || !strcmp(command, "open") || !strncmp(command, "open ", 5);
+}
+
 // Sends the command to a running copy. Returns false if there isn't one.
 static bool send_to_running(const char *command)
 {
@@ -485,11 +492,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
         }
         return 1;
     }
-    if (!strncmp(command, "save", 4) && (!command[4] || command[4] == ' ')) {
-        paths_init(&g_app.paths);
-        config_load(&g_app.config, g_app.paths);
-        const SoundPick &p = g_app.config.sounds[SOUND_FAILED];
-        if (p.on) sound_play_pick(p.sound, p.own, true);
+    if (!command_starts_app(command)) {
+        if (!strncmp(command, "save", 4) && (!command[4] || command[4] == ' ')) {
+            paths_init(&g_app.paths);
+            config_load(&g_app.config, g_app.paths);
+            const SoundPick &p = g_app.config.sounds[SOUND_FAILED];
+            if (p.on) sound_play_pick(p.sound, p.own, true);
+        }
         CloseHandle(single);
         return 1;
     }
@@ -602,6 +611,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     }
 
     log_line("Rekodr quitting");
+    audio_stop(); // first, so no stream starts while the rest stops
     pipe_stop();
     library_stop();
     automarks_stop();
@@ -614,7 +624,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int)
     update_stop();
     backup_stop();
     telemetry_stop();
-    audio_stop();
     layers_close_held(now_us());
     recorder_stop();
     save_stop();

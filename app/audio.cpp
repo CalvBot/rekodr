@@ -1281,7 +1281,7 @@ static DWORD WINAPI audio_watch_thread(void *)
         if (tick % 2 == 0) audio_tick_activity();
         bool paused = g_aw.paused != 0;
         if (paused && !was_paused) workers_stop_all();
-        if (!paused) audio_tick_streams();
+        if (!paused && WaitForSingleObject(g_aw.stop_event, 0) == WAIT_TIMEOUT) audio_tick_streams(); // none after quitting
         was_paused = paused;
         if (WaitForSingleObject(g_aw.stop_event, 1000) != WAIT_TIMEOUT) break;
     }
