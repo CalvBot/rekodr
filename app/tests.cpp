@@ -4638,14 +4638,14 @@ static void test_eft_kills()
 
     // Frames of a scrolling list: a row seen again adds nothing, two kills in one second are two, a weapon one read
     // missed comes from another
-    EkKill a = {173, "Scav", ""}, b = {173, "Scav", "MPX"}, c = {174, "Scav", "MPX"}, d = {173, "PMC", "MPX"};
+    EkKill a = {173, "Scav", ""}, b = {173, "Scav", "MPX"}, c = {174, "Scav", "MPX"}, d = {173, "USEC", "MPX"};
     EkKill all[8];
     i32 n = 0;
     EkKill first[] = {a, c};
     ek_merge(all, COUNT(all), &n, first, 2);
     EkKill next[] = {b, c, d};
     ek_merge(all, COUNT(all), &n, next, 3);
-    T(n == 3 && !strcmp(all[0].weapon, "MPX") && !strcmp(all[2].side, "PMC"));
+    T(n == 3 && !strcmp(all[0].weapon, "MPX") && !strcmp(all[2].side, "USEC"));
     EkKill twice[] = {a, b};
     ek_merge(all, COUNT(all), &n, twice, 2);
     T(n == 4);
@@ -4667,12 +4667,23 @@ static void test_eft_kills()
     ek_kill_note(got[0], note, sizeof note);
     T(!strcmp(note, "MPX kill on Scav"));
     ek_kill_note(d, note, sizeof note);
-    T(!strcmp(note, "MPX kill on PMC"));
+    T(!strcmp(note, "MPX kill on USEC"));
     ek_kill_note(a, note, sizeof note);
     T(!strcmp(note, "Kill on Scav"));
 
     // Rows must fit the columns
     const EkLang &en = EK_LANGS[0];
+    // Every faction the list names is the kill's side, as the list says it
+    T(ek_side(en, "USEC") == 0 && ek_side(en, "bear") == 1 && !strcmp(EK_SIDES[ek_side(en, "SCAV")], "Scav"));
+    T(!strcmp(EK_SIDES[ek_side(en, "BOSS")], "Boss") && !strcmp(EK_SIDES[ek_side(en, "GUARD")], "Guard") &&
+      !strcmp(EK_SIDES[ek_side(en, "RAIDER")], "Raider") && !strcmp(EK_SIDES[ek_side(en, "ROGUE")], "Rogue") &&
+      !strcmp(EK_SIDES[ek_side(en, "CULTIST")], "Cultist"));
+    T(ek_side(en, "PMC") < 0 && ek_side(en, "LOOT") < 0 && ek_side(en, "") < 0);
+    T(ek_row_fits(en, "Lighthouse", "", "ROGUE", "Killed (M4A1, thorax, 80m)") &&
+      ek_row_fits(en, "Reserve", "", "RAIDER", "Headshot (MPX, 12m)") && ek_row_fits(en, "Customs", "", "BOSS", "Killed (SVD, 140m)"));
+    EkKill boss = {300, "Boss", ""};
+    ek_kill_note(boss, note, sizeof note);
+    T(!strcmp(note, "Kill on Boss"));
     T(ek_row_fits(en, "Ground Zero", "", "SCAV", "Headshot (MPX, 22m)") &&
       ek_row_fits(en, "Customs", "--", "BEAR", "Killed (MP-443 Grach, thorax, 16.8m)") &&
       ek_row_fits(en, "Woods", "42", "usec", "Headshot (M4A1, 101rn)"));
@@ -4688,6 +4699,13 @@ static void test_eft_kills()
     n = ek_kill_list(frame, en, got, COUNT(got));
     T(n == 9);
     for (i32 i = 0; i < n && i < 9; i++) T(got[i].secs == secs[i]);
+    // The same row killing a guard
+    test_grey_text(frame, w, 1490, 1060, 200, 60, 40, L"GUARD");
+    n = ek_kill_list(frame, en, got, COUNT(got));
+    i32 guards = 0;
+    for (i32 i = 0; i < n; i++) guards += !strcmp(got[i].side, "Guard");
+    T(n == 10 && guards == 1);
+    test_grey_text(frame, w, 1490, 1060, 200, 60, 40, L"LOOT");
     // Without its STATUS column head it isn't the kill list's table
     test_grey_text(frame, w, 1700, 270, 200, 50, 30, L" ");
     T(ek_kill_list(frame, en, got, COUNT(got)) == 0);
@@ -4933,6 +4951,8 @@ static void test_rust()
     // and a Korean one
     static const u8 ru[] = {0xD0, 0x9F, 0xD0, 0xB5, 0xD1, 0x82, 0xD1, 0x8F, 0};
     static const u8 ko[] = {0xED, 0x95, 0x98, 0xEB, 0x8A, 0x98, 0};
+    char ru_name[32];
+    snprintf(ru_name, sizeof ru_name, "%s RAMPAGE", (const char *)ru);
     static const char form[] =
         "2026-11-25T11:32:14.389Z|0x5c28|You died: killed by Marlow (76561198000000011)\n"
         "2026-11-25T11:50:46.587Z|0x5c28|You died: killed by Captain Wobble (76561198000000012)\n"
@@ -4956,22 +4976,25 @@ static void test_rust()
     T(rust_marks(log, m, 16) == 7);
     char v[128];
     T(m[0].event == AM_DEATH && m[0].t_us == rust_time("2026-11-25T11:32:14.389Z|") && !strcmp(m[0].note, "Death"));
-    // A killer with a SteamID64 is a player: "player", never their name or id
-    T(!strcmp(m[0].detail, "killer=player") && !strcmp(m[1].detail, "killer=player") && !strcmp(m[2].detail, "killer=player"));
+    T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "Marlow"));
+    T(marker_detail_get(m[0].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000011"));
+    T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Captain Wobble"));
+    T(marker_detail_get(m[2].detail, "killer", v, sizeof v) && !strcmp(v, ru_name));
+    T(marker_detail_get(m[2].detail, "steam_id", v, sizeof v) && !strcmp(v, "76561198000000013"));
     // The kill, in three prints, is one: a headshot, at the first print less its age
     T(m[3].event == AM_KILL && !strcmp(m[3].note, "Headshot") && m[3].t_us == rust_time("2026-11-25T13:40:59.375Z|") - 468070000);
-    T(marker_detail_get(m[3].detail, "target", v, sizeof v) && !strcmp(v, "player"));
+    T(marker_detail_get(m[3].detail, "target", v, sizeof v) && !strcmp(v, "player_505050"));
     T(marker_detail_get(m[3].detail, "weapon", v, sizeof v) && !strcmp(v, "pistol_semiauto"));
     T(marker_detail_get(m[3].detail, "distance", v, sizeof v) && !strcmp(v, "16.8m"));
     T(m[4].event == AM_DOWNED && !strcmp(m[4].note, "Downed") && m[4].t_us == rust_time("2026-11-25T13:41:08.644Z|") - 14520000);
-    T(marker_detail_get(m[4].detail, "attacker", v, sizeof v) && !strcmp(v, "player"));
-    T(!strcmp(m[5].detail, "killer=player"));
+    T(marker_detail_get(m[4].detail, "attacker", v, sizeof v) && !strcmp(v, "player_6060606"));
+    T(marker_detail_get(m[5].detail, "killer", v, sizeof v) && !strcmp(v, (const char *)ko));
     T(m[6].event == AM_DEATH && !strcmp(m[6].note, "Death: Fall") && !m[6].detail[0]);
     T(rust_time("2026-11-25 13:45:00|x") == 0 && rust_marks("", m, 16) == 0 && rust_marks(log, m, 2) == 2);
-    // A name with brackets of its own; a killer with no id (an NPC) by its name
+    // A name with brackets of its own, and no id
     T(rust_marks("2026-11-25T13:45:00.000Z|0x1|You died: killed by [AB] (x) (76561198000000001)\n"
                  "2026-11-25T13:46:00.000Z|0x1|You died: killed by Scientist\n", m, 16) == 2);
-    T(!strcmp(m[0].detail, "killer=player") && !strcmp(m[1].detail, "killer=Scientist"));
+    T(marker_detail_get(m[0].detail, "killer", v, sizeof v) && !strcmp(v, "[AB] (x)"));
     T(marker_detail_get(m[1].detail, "killer", v, sizeof v) && !strcmp(v, "Scientist"));
     T(!marker_detail_get(m[1].detail, "steam_id", v, sizeof v));
     // The account played as, kept on this PC; a join at its map's load, named by its welcome
@@ -5075,7 +5098,7 @@ static void test_rust()
         i32 n = 0;
         while (event_take(&e)) {
             n += e.kind == EV_MARKER;
-            if (e.kind == EV_MARKER) T(!strstr(e.text, "Marlow") && !strstr(e.text, "steam_id"));
+            if (e.kind == EV_MARKER && strstr(e.text, "Marlow")) T(!strcmp(e.text, "Death\tevent=death;killer=Marlow;steam_id=76561198000000011"));
         }
         return n;
     };
