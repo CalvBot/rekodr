@@ -5,17 +5,20 @@
 // the player picked the exe in Options; exes the player added open the same way. Each is shown with its exe's own
 // icon, and only the ones found are listed. DaVinci Resolve is listed first when it's found, but it takes no file on
 // its command line: from the editor it gets the edit's XML instead (ed_open_in), and the Library leaves it out.
+// CapCut ignores a file on its command line too: it is started bare, and the clip is shown selected in Explorer
+// to drag in.
 
 struct EditorKind {
     const char    *name;
     const wchar_t *listed; // its name in Windows' list of installed programs, or the start of it before a space
     const wchar_t *exe;    // its exe's name; one * stands for any run of characters
     const wchar_t *dir;    // where it installs, with %variables%; one * in the last folder for a version
+    bool           bare;   // ignores a file on its command line: started without one, the clip shown in Explorer
 };
 static const EditorKind EDITOR_KIND[EDITOR_KINDS] = {
-    {"Blick", L"Blick Video Editor", L"blick.exe", L"%ProgramFiles%\\BlickVideoEditor"},
-    {"VEGAS Pro", L"VEGAS Pro", L"vegas*.exe", L"%ProgramFiles%\\VEGAS\\VEGAS Pro *"},
-    {"CapCut", L"CapCut", L"CapCut.exe", L"%LOCALAPPDATA%\\CapCut\\Apps"},
+    {"Blick", L"Blick Video Editor", L"blick.exe", L"%ProgramFiles%\\BlickVideoEditor", false},
+    {"VEGAS Pro", L"VEGAS Pro", L"vegas*.exe", L"%ProgramFiles%\\VEGAS\\VEGAS Pro *", false},
+    {"CapCut", L"CapCut", L"CapCut.exe", L"%LOCALAPPDATA%\\CapCut\\Apps", true},
 };
 
 struct OpenWith {
@@ -48,6 +51,16 @@ static bool name_fits(const wchar_t *name, const wchar_t *pat)
     if (!star) return !_wcsicmp(name, pat);
     size_t pre = star - pat, post = wcslen(star + 1), n = wcslen(name);
     return n >= pre + post && !_wcsnicmp(name, pat, pre) && !_wcsicmp(name + n - post, star + 1);
+}
+
+// Whether the editor at exe is one started without the file (EditorKind.bare), found or added by the player.
+static bool editor_bare(const wchar_t *exe)
+{
+    const wchar_t *slash = wcsrchr(exe, L'\\');
+    const wchar_t *name = slash ? slash + 1 : exe;
+    for (i32 k = 0; k < EDITOR_KINDS; k++)
+        if (EDITOR_KIND[k].bare && name_fits(name, EDITOR_KIND[k].exe)) return true;
+    return false;
 }
 
 // The first number in a name and the one after its dot: "VEGAS Pro 22.0" 22000, "vegas220.exe" 220000.
@@ -231,19 +244,27 @@ static ID3D11ShaderResourceView *open_with_icon(OpenWith &o)
     return o.icon;
 }
 
-// Starts the editor app `exe` with `file`. Says what happened in msg.
+// Starts the editor app `exe` with `file`, or one that ignores a file (editor_bare) with none and the file shown in
+// Explorer. Says what happened in msg.
 static bool open_with_start(const Path &exe, const char *name, const Path &file, char *msg, i32 cap)
 {
+    bool bare = editor_bare(exe.s);
     wchar_t arg[MAX_PATH + 2], dir[MAX_PATH];
     swprintf(arg, COUNT(arg), L"\"%s\"", file.s);
     wcscpy_s(dir, exe.s);
     if (wchar_t *slash = wcsrchr(dir, L'\\')) *slash = 0;
     char f8[MAX_PATH * 3];
     wide_to_utf8(file.s, f8, sizeof f8);
-    if ((INT_PTR)ShellExecuteW(0, L"open", exe.s, arg, dir, SW_SHOWNORMAL) <= 32) {
+    if ((INT_PTR)ShellExecuteW(0, L"open", exe.s, bare ? 0 : arg, dir, SW_SHOWNORMAL) <= 32) {
         log_line("open with: %s didn't start (%d)", name, (int)GetLastError());
         snprintf(msg, cap, "%s didn't start", name);
         return false;
+    }
+    if (bare) {
+        reveal_file(file);
+        log_line("open with: %s, and %s shown in Explorer", name, f8);
+        snprintf(msg, cap, "Opened %s. Drag the clip in from Explorer", name);
+        return true;
     }
     log_line("open with: %s with %s", name, f8);
     snprintf(msg, cap, "Opened in %s", name);

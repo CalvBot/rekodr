@@ -7285,6 +7285,9 @@ static void test_open_with_find()
     T(name_fits(L"Blick.exe", L"blick.exe") && !name_fits(L"blick2.exe", L"blick.exe"));
     T(name_version(L"VEGAS Pro 22.0") == 22000 && name_version(L"VEGAS Pro 9.0") == 9000 && name_version(L"vegas220.exe") == 220000);
     T(name_version(L"CapCut") == 0);
+    // CapCut, which ignores a file argument, is started without one, wherever it is; the others get the file
+    T(editor_bare(L"C:\\Users\\a\\AppData\\Local\\CapCut\\Apps\\9.9.0\\CapCut.exe") && editor_bare(L"D:\\capcut.exe"));
+    T(!editor_bare(L"C:\\Program Files\\BlickVideoEditor\\blick.exe") && !editor_bare(L"vegas220.exe"));
     wchar_t tmp[MAX_PATH], root[MAX_PATH], d[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     swprintf(root, MAX_PATH, L"%srekodr open with %u", tmp, GetCurrentProcessId());
