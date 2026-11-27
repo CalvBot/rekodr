@@ -2727,7 +2727,7 @@ static void test_r2()
     T(strstr(html, "<div class=\"bg\" style=\"background-image:url('https://x.dev/rekodr/abc/thumb.jpg?v=2')\">"));
     // Onest is in the page: no font, nor anything else, from another site
     T(strstr(html, "@font-face{font-family:Onest;") && strstr(html, "src:url(data:font/woff2;base64,d09GMg"));
-    T(!strstr(html, "fonts.g") && strstr(html, "font:15px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
+    T(!strstr(html, "fonts.g") && strstr(html, "font:14px/1.5 Onest,\"Segoe UI\",system-ui,sans-serif"));
     // the player as wide as the height leaves room for, at the clip's shape; a volume slider beside the sound button
     T(strstr(html, "<main style=\"--w:2560;--h:1440\">") && strstr(html, "calc((100svh - var(--room)) * var(--w) / var(--h))"));
     T(strstr(html, "<input id=\"vl\" type=\"range\" min=\"0\" max=\"1\"") && strstr(html, "v.volume=+this.value"));
