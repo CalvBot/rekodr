@@ -3145,15 +3145,9 @@ static void opt_status(const char *text, u32 col, f32 right, f32 left)
 }
 
 // Sharing: links to clips (r2.cpp). With no setup they go to the free public hosts and the player's uploaders (ShareX
-// .sxcu files) in link_hosts; with the player's
-// own Cloudflare R2 bucket they go there. The secret key goes to Windows' Credential Manager, never settings.txt.
-// Space for Rekodr is its share of the account's free 10 GB; the budget picks the most a month may cost for more. The
-// bucket holds both (r2_cap_for), and the oldest unpinned links are removed before an upload that wouldn't fit, or
-// when a lower space or budget is saved.
-// The budget is US dollars a month, what Cloudflare bills in. The slider runs from $0 (no paid space) to
-// R2_BUDGET_TOP (about 10 TB) on a cubic curve, so the low end isn't cramped, in steps of $0.05; typed amounts go to
-// the cent, up to R2_BUDGET_MOST.
-static const f64 R2_BUDGET_TOP = 150, R2_BUDGET_MOST = 10000;
+// .sxcu files) in link_hosts; with the player's own Cloudflare R2 bucket they go there. The secret key goes to
+// Windows' Credential Manager, never settings.txt. Rekodr's space in the bucket is what's left of the account's free
+// 10 GB (r2_space), never paid space; the oldest unpinned links are removed before an upload that wouldn't fit.
 
 // "$" where Windows' currency is US dollars, else "US$", so it's never read as another dollar
 static const char *opt_usd()
@@ -3174,15 +3168,6 @@ static void opt_gb(f64 gb, char *out, i32 cap)
     if (gb >= 1000) gb /= 1000, unit = "TB";
     if (fabs(gb - floor(gb + 0.5)) < 0.05) snprintf(out, cap, "%.0f %s", gb, unit);
     else snprintf(out, cap, "%.1f %s", gb, unit);
-}
-
-// The budget's label: the amount, then the space it buys past Rekodr's free space. "$4.50 a month: 300 GB more".
-static void opt_budget_label(f64 dollars, char *out, i32 cap)
-{
-    char size[24];
-    opt_gb(dollars / R2_PRICE_GB, size, sizeof size);
-    if (dollars <= 0) snprintf(out, cap, "None: the free space only");
-    else snprintf(out, cap, "%s%.2f a month: %s more", opt_usd(), dollars, size);
 }
 
 // A count with thousands commas: 1,204
@@ -3230,18 +3215,19 @@ static void opt_bar_value(ImVec2 z, const char *text, u32 col)
                 ImVec2(z.x + dp(10), floorf(z.y - h + (h - g_font_small->FontSize) / 2)), col, text, g_row.x1);
 }
 
-// What's in the bucket, oldest first, for the Space row: each link, whether it goes at the limit being looked at
-// (`now`: a draft budget below what the links take) and whether it goes next, to make room for a clip of the max
-// file size (`next`). Read again when the history or the limit changes, and every 2 s.
+// What's in the bucket, oldest first, for the Space row: each link, whether it's over Rekodr's space already (`now`:
+// other buckets grew; the next cleanup removes it) and whether it goes next, to make room for a clip of the max file
+// size (`next`). Read again when the history or the space changes, and every 2 s.
 struct OptSpace {
     R2Share s[R2_MAX_SHARES];
     u8 now[R2_MAX_SHARES], next[R2_MAX_SHARES];
-    i32 n, going;
+    i32 n;
     i64 other, total, limit;
     u32 gen;
     f64 at;
 };
 static OptSpace g_space;
+static R2Share g_space_menu; // the link whose Delete link confirm is open from the Space bar
 
 static void opt_space_read(i64 limit)
 {
@@ -3257,21 +3243,44 @@ static void opt_space_read(i64 limit)
     r2_evict_preview(limit, (i64)(g_app.config.share_max_mb * 1e6), with, v.s, R2_MAX_SHARES);
     v.other = r2_untracked_bytes();
     v.total = v.other;
-    v.going = 0;
     for (i32 i = 0; i < v.n; i++) {
         v.next[i] = with[i] && !v.now[i];
-        v.going += v.now[i];
         v.total += v.s[i].bytes;
     }
 }
 
-// The bucket as a bar of `limit`: a block per link, sized by its bytes, the oldest on the left. Pinned ones have a
-// light top edge, the ones that go next are amber, and the ones a draft budget would remove are red and struck
-// through. Other files in the bucket are grey, at the end. The line under the name says what's under the mouse.
-static void opt_space_row(i64 limit, bool draft)
+// The block under `mx` on a Space bar from `x0`, `w` wide for `scale` bytes: a link's index, -2 for the other files,
+// -1 for none.
+static i32 opt_space_hit(const OptSpace &v, f32 x0, f32 w, i64 scale, f32 mx)
+{
+    f64 x = x0;
+    for (i32 i = 0; i <= v.n; i++) {
+        i64 bytes = i < v.n ? v.s[i].bytes : v.other;
+        if (bytes <= 0) continue;
+        f64 x1 = x + (f64)w * bytes / scale;
+        if (mx >= x && mx < x1) return i < v.n ? i : -2;
+        x = x1;
+    }
+    return -1;
+}
+
+// A link's block was right-clicked: its confirm is for that link, even when the bar is read again under it.
+static void opt_space_pick(i32 i)
+{
+    g_space_menu = g_space.s[i];
+    dev_click("options", "space", "delete link");
+}
+
+// The bucket as a bar of Rekodr's space: a block per link, sized by its bytes, the oldest on the left. Pinned ones
+// have a light top edge, the ones that go next are amber, and the ones over the space already are red and struck
+// through. Other files in the bucket are grey, at the end. Hovering a block names its clip and size in the line under
+// the name; right-clicking one opens the Share menu's Delete link confirm (lib_link_delete_menu). Otherwise the line
+// says how much of the free 10 GB the account's other buckets use, after an info icon.
+static void opt_space_row()
 {
     OptSpace &v = g_space;
     bool ready = r2_ready();
+    i64 limit = r2_cap_now(), others = r2_others_now();
     if (ready) opt_space_read(limit);
     opt_find("Space");
     opt_row_begin(0, 0, opt_wide_w(), dp(52));
@@ -3283,8 +3292,13 @@ static void opt_space_row(i64 limit, bool draft)
     ImGui::SetCursorScreenPos(a);
     ImGui::InvisibleButton("##space", ImVec2(w, z.y - a.y));
     bool over = ImGui::IsItemHovered();
-    f32 mx = ImGui::GetIO().MousePos.x, mid = floorf((a.y + z.y) / 2);
-    i32 hot = -1; // a link's index, or -2 for the other files
+    f32 mid = floorf((a.y + z.y) / 2);
+    i32 hot = ready && over ? opt_space_hit(v, a.x, w, scale, ImGui::GetIO().MousePos.x) : -1;
+    if (hot >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        opt_space_pick(hot);
+        ImGui::OpenPopup("space_link_delete");
+    }
+    lib_link_delete_menu("space_link_delete", g_space_menu);
     if (ready) {
         dl->PushClipRect(a, z, true);
         f64 x = a.x;
@@ -3293,7 +3307,6 @@ static void opt_space_row(i64 limit, bool draft)
             if (bytes <= 0) continue;
             f32 x0 = (f32)x, x1 = (f32)(x + (f64)w * bytes / scale);
             x += (f64)w * bytes / scale;
-            if (over && mx >= x0 && mx < x1) hot = i < v.n ? i : -2;
             bool pinned = i < v.n && v.s[i].pinned, now = i < v.n && v.now[i], next = i < v.n && v.next[i];
             u32 col = i == v.n ? COL_FAINT : now ? COL_RED : next ? COL_WARN : pinned ? 0x9fc4ff : COL_BLUE;
             f32 x1g = x1 - (x1 - x0 > dp(3) ? kit_px(1) : 0);
@@ -3302,7 +3315,7 @@ static void opt_space_row(i64 limit, bool draft)
             if (pinned) dl->AddRectFilled(ImVec2(x0, a.y), ImVec2(x1g, a.y + dp(3)), col32(0xffffff, 0.85f));
             if (now) dl->AddLine(ImVec2(x0, mid), ImVec2(x1g, mid), col32(COL_BG), dp(2));
         }
-        // Where the limit cuts the bar, when the links are over it
+        // Where the space ends, when the links are over it
         if (scale > limit) {
             f32 lx = floorf(a.x + w * (f32)((f64)limit / scale));
             dl->AddLine(ImVec2(lx, a.y - dp(3)), ImVec2(lx, z.y + dp(3)), col32(COL_TEXT), dp(2));
@@ -3311,6 +3324,7 @@ static void opt_space_row(i64 limit, bool draft)
     }
     char used[32], lim[32], t[80], sub[320];
     u32 sub_col = COL_DIM;
+    bool info = false;
     lib_r2_size(ready ? v.total : 0, used, sizeof used);
     lib_r2_size(limit, lim, sizeof lim);
     snprintf(t, sizeof t, "%s of %s", used, lim);
@@ -3321,19 +3335,29 @@ static void opt_space_row(i64 limit, bool draft)
         char size[32];
         lib_r2_size(h.bytes, size, sizeof size);
         snprintf(sub, sizeof sub, "%s - %s%s", h.title[0] ? h.title : h.game[0] ? h.game : "Clip", size,
-                 v.now[hot] ? ", removed on Save" : v.next[hot] ? ", goes next" : h.pinned ? ", pinned" : "");
+                 v.now[hot] ? ", over the space" : v.next[hot] ? ", goes next" : h.pinned ? ", pinned" : "");
         sub_col = COL_TEXT;
     } else if (hot == -2) {
         char size[32];
         lib_r2_size(v.other, size, sizeof size);
         snprintf(sub, sizeof sub, "Other files - %s", size);
         sub_col = COL_TEXT;
-    } else if (ready && draft && v.going) {
-        snprintf(sub, sizeof sub, "Save removes %d link%s", v.going, v.going == 1 ? "" : "s");
-        sub_col = COL_RED;
-    } else if (ready && u.class_a >= 0) snprintf(sub, sizeof sub, "About %s%.2f this month", opt_usd(), u.month_cost);
+    } else if (ready && others > 0) {
+        char size[32];
+        lib_r2_size(others, size, sizeof size);
+        snprintf(sub, sizeof sub, "Other things on your Cloudflare use %s", size);
+        info = true;
+    } else if (ready && u.class_a >= 0 && u.month_cost >= 0.005)
+        snprintf(sub, sizeof sub, "About %s%.2f this month", opt_usd(), u.month_cost);
     else sub[0] = 0;
-    opt_row_lines("Space", g_font, sub, sub_col, false, a.x - dp(20));
+    if (info) {
+        // The info icon where the line starts, the line after it
+        f32 nh = g_font->FontSize, sh = g_font_small->FontSize, ty = floorf(g_row.y + (g_row.h - nh - dp(3) - sh) / 2);
+        f32 x0 = g_row.x0;
+        dl->AddText(g_font_icon, sh, ImVec2(x0, ty + nh + dp(3)), col32(COL_DIM), ICON_INFO);
+        opt_text_at(dl, g_font, ImVec2(x0, ty), COL_TEXT, "Space", a.x - dp(20));
+        opt_text_at(dl, g_font_small, ImVec2(x0 + sh + dp(4), ty + nh + dp(3)), sub_col, sub, a.x - dp(20));
+    } else opt_row_lines("Space", g_font, sub, sub_col, false, a.x - dp(20));
     opt_row_end();
 }
 
@@ -3467,115 +3491,6 @@ static void opt_backup_cap_row(const OptBackup &b)
     ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
     kit_next_tip("Put it back");
     if (kit_icon_button(ICON_UNDO, "##backupcapundo", KIT_GHOST, dirty)) draft = -1;
-    opt_row_end();
-}
-
-// The budget and space being picked, -1 for none: drafts the Space bar previews until Save writes them to r2_budget
-// or r2_space_gb and the bucket is cleaned up to them, or the undo button drops them.
-static f32 g_budget_draft = -1, g_space_draft = -1;
-
-// Space for Rekodr: a slider over the free 10 GB, with the player's value or, until they move it, the default
-// (r2_space_default, marked on the track). What the account's other buckets hold is grey at the track's right end.
-// Save and undo sit in the same slots as the budget's.
-static void opt_space_gb_row()
-{
-    Config &c = g_app.config;
-    f32 &draft = g_space_draft;
-    i64 others = r2_others_now();
-    f32 deflt = (f32)((f64)r2_space_default(others) / (f64)R2_GB);
-    f32 saved = c.r2_space_gb >= 0 ? c.r2_space_gb : deflt;
-    if (draft >= 0 && c.r2_space_gb >= 0 && fabsf(draft - c.r2_space_gb) < 0.05f && !ImGui::IsAnyItemActive())
-        draft = -1;
-    f32 shown = draft >= 0 ? draft : saved;
-    bool dirty = draft >= 0 && (c.r2_space_gb < 0 || fabsf(draft - c.r2_space_gb) >= 0.05f);
-    char size[24], free_gb[24], label[96];
-    opt_gb(shown, size, sizeof size);
-    opt_gb(R2_FREE_GB, free_gb, sizeof free_gb);
-    if (draft >= 0 || c.r2_space_gb >= 0) snprintf(label, sizeof label, "%s of the free %s", size, free_gb);
-    else if (others >= 0) snprintf(label, sizeof label, "%s: what other buckets leave", size);
-    else snprintf(label, sizeof label, "%s until the account is read", size);
-    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), save_w = dp(72);
-    f32 slider_w = cw - save_w - fh - 2 * gap;
-    opt_row_begin("Space for Rekodr", label, cw);
-    f32 x = g_row.x1 - cw, y = opt_row_frame_y(), top = (f32)R2_FREE_GB;
-    f32 v = fminf(fmaxf(shown, 0), top);
-    ImVec2 at(x, floorf(y + (fh - dp(24)) / 2));
-    ImGui::SetCursorScreenPos(at);
-    if (lib_slider("##r2space", &v, 0, top, slider_w, dp(24), c.r2_space_gb >= 0 || draft >= 0 ? deflt : -1e9f))
-        draft = floorf(v * 10 + 0.5f) / 10;
-    if (others > 0) {
-        // The same track ends as lib_slider's: inside its knob padding
-        f32 pad = kit_px(7), x0 = at.x + pad, x1 = at.x + slider_w - pad, cy = floorf(at.y + dp(24) / 2), th = kit_px(4);
-        f32 gx = x1 - (x1 - x0) * fminf(1.f, (f32)((f64)others / (f64)R2_GB / top));
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(gx, cy - th / 2), ImVec2(x1, cy + th / 2), col32(COL_FAINT), th);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(x + slider_w + gap, y));
-    if (kit_button("Save##r2spacesave", KIT_PRIMARY, ImVec2(save_w, 0), dirty)) {
-        c.r2_space_gb = draft;
-        draft = -1;
-        log_line("options: R2 space %.1f GB", c.r2_space_gb);
-        options_apply(0);
-        r2_cleanup_now();
-    }
-    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
-    kit_next_tip("Put it back");
-    if (kit_icon_button(ICON_UNDO, "##r2spaceundo", KIT_GHOST, dirty)) draft = -1;
-    opt_row_end();
-}
-
-// The budget: a slider (R2_BUDGET_TOP above), a box for an exact amount, then Save and undo, all in fixed slots.
-static void opt_budget_row()
-{
-    Config &c = g_app.config;
-    f32 &draft = g_budget_draft;
-    if (draft >= 0 && fabsf(draft - c.r2_budget) < 0.004f && !ImGui::IsAnyItemActive()) draft = -1;
-    f64 shown = draft >= 0 ? draft : c.r2_budget;
-    bool dirty = draft >= 0 && fabsf(draft - c.r2_budget) >= 0.004f;
-    char label[96];
-    opt_budget_label(shown, label, sizeof label);
-    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), box_w = dp(92), save_w = dp(72);
-    f32 slider_w = cw - box_w - save_w - fh - 3 * gap;
-    opt_row_begin("Monthly budget", label, cw);
-    f32 x = g_row.x1 - cw, y = opt_row_frame_y();
-    f32 v = (f32)cbrt(fmin(fmax(shown, 0), R2_BUDGET_TOP) / R2_BUDGET_TOP);
-    ImGui::SetCursorScreenPos(ImVec2(x, floorf(y + (fh - dp(24)) / 2)));
-    if (lib_slider("##r2budget", &v, 0, 1, slider_w, dp(24))) {
-        f64 d = R2_BUDGET_TOP * v * v * v;
-        draft = (f32)(floor(d / 0.05 + 0.5) * 0.05);
-    }
-    // The exact amount, with the currency sign inside the box: what's typed is the draft as it's typed
-    static char typed[24];
-    static bool editing;
-    if (!editing) snprintf(typed, sizeof typed, "%.2f", shown);
-    const char *usd = opt_usd();
-    f32 pad = dp(8), sign_w = text_w(g_font, usd);
-    ImVec2 box(x + slider_w + gap, y);
-    ImGui::SetCursorScreenPos(box);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad + sign_w + dp(3), ImGui::GetStyle().FramePadding.y));
-    ImGui::SetNextItemWidth(box_w);
-    bool typed_now = ImGui::InputText("##r2budgettype", typed, sizeof typed,
-                                      ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
-    editing = ImGui::IsItemActive();
-    bool left = ImGui::IsItemDeactivated();
-    ImGui::PopStyleVar();
-    opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(box.x + pad, floorf(box.y + (fh - g_font->FontSize) / 2)),
-                COL_DIM, usd, box.x + box_w);
-    if (typed_now || left) {
-        char *end = 0;
-        f64 d = strtod(typed, &end);
-        if (end != typed && d >= 0) draft = (f32)(floor(fmin(d, R2_BUDGET_MOST) * 100 + 0.5) / 100);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(box.x + box_w + gap, y));
-    if (kit_button("Save##r2budgetsave", KIT_PRIMARY, ImVec2(save_w, 0), dirty)) {
-        c.r2_budget = draft;
-        draft = -1;
-        log_line("options: R2 budget $%.2f a month", c.r2_budget);
-        options_apply(0);
-        r2_cleanup_now();
-    }
-    ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
-    kit_next_tip("Put it back");
-    if (kit_icon_button(ICON_UNDO, "##r2budgetundo", KIT_GHOST, dirty)) draft = -1;
     opt_row_end();
 }
 
@@ -3782,61 +3697,6 @@ static void opt_read_cap_row()
     if ((slid || typed_done) && c.r2_read_cap != g_read_cap_saved) {
         g_read_cap_saved = c.r2_read_cap;
         log_line("options: R2 reads limit %dM", m);
-        options_apply(0);
-    }
-    opt_row_end();
-}
-
-// Links last: a slider of days with ticks at 1 day, 1 week and 30 days that a drag snaps to, Forever at its right
-// end, and a box for the number of days (empty or 0 is Forever).
-static i32 g_link_days_saved = -1;
-static void opt_link_days_row()
-{
-    Config &c = g_app.config;
-    static const f32 snaps[] = {1, 7, 30, LINK_DAYS_MAX + 1};
-    f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), box_w = dp(92);
-    f32 slider_w = cw - box_w - gap;
-    opt_row_begin("Links last", "Then they're deleted from the bucket. The Share menu can pick another", cw, dp(52));
-    f32 x = g_row.x1 - cw, y = opt_row_frame_y();
-    i32 d = c.share_link_days;
-    f32 v = link_days_slider(d);
-    ImGui::SetCursorScreenPos(ImVec2(x, floorf(y + (fh - dp(24)) / 2)));
-    if (lib_slider("##linkdays", &v, 1, LINK_DAYS_MAX + 1, slider_w, dp(24), -1e9f, true, COL_ACCENT, snaps, COUNT(snaps)))
-        d = link_days_from_slider(v);
-    bool slid = ImGui::IsItemDeactivated();
-    // The days, with "days" inside the box, or "Forever" greyed in an empty one
-    static char typed[8];
-    static bool editing;
-    if (!editing) {
-        if (d) snprintf(typed, sizeof typed, "%d", d);
-        else typed[0] = 0;
-    }
-    f32 pad = dp(8);
-    ImVec2 box(x + slider_w + gap, y);
-    ImGui::SetCursorScreenPos(box);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, ImGui::GetStyle().FramePadding.y));
-    ImGui::SetNextItemWidth(box_w);
-    ImGui::InputTextWithHint("##linkdaystype", "Forever", typed, sizeof typed,
-                             ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
-    editing = ImGui::IsItemActive();
-    bool typed_done = ImGui::IsItemDeactivated();
-    ImGui::PopStyleVar();
-    if (typed[0]) {
-        const char *unit = atoi(typed) == 1 ? "day" : "days";
-        opt_text_at(ImGui::GetWindowDrawList(), g_font,
-                    ImVec2(box.x + box_w - pad - text_w(g_font, unit), floorf(box.y + (fh - g_font->FontSize) / 2)), COL_DIM,
-                    unit, box.x + box_w);
-    }
-    if (typed_done) {
-        i32 t = atoi(typed);
-        d = t < 1 ? 0 : t > LINK_DAYS_MAX ? LINK_DAYS_MAX : t;
-    }
-    c.share_link_days = d;
-    if ((slid || typed_done) && c.share_link_days != g_link_days_saved) {
-        g_link_days_saved = c.share_link_days;
-        char s[24];
-        link_days_text(d, s, sizeof s);
-        log_line("options: bucket links last %s", s);
         options_apply(0);
     }
     opt_row_end();
@@ -4193,13 +4053,8 @@ static void options_sharing()
         opt_row_end();
     }
 
-    opt_space_gb_row();
-    opt_budget_row();
-    opt_space_row(r2_cap_for(g_budget_draft >= 0 ? g_budget_draft : c.r2_budget,
-                             g_space_draft >= 0 ? g_space_draft : c.r2_space_gb, r2_others_now()),
-                  g_budget_draft >= 0 || g_space_draft >= 0);
+    opt_space_row();
     opt_reads_row();
-    opt_link_days_row();
 
     // Last in the card, so opening them moves nothing above: the Advanced rows, and the token rows for a token made
     // by hand. Each link has a slot as wide as its longer wording, so neither moves when the other is clicked.

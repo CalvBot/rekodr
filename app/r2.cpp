@@ -97,7 +97,7 @@ struct R2Share {
 };
 
 struct R2Usage {
-    i64 used_bytes, limit_bytes; // what the links take up (the history), and the cap (r2_cap_for)
+    i64 used_bytes, limit_bytes; // what the links take up (the history), and the cap (r2_space)
     i64 other_bytes;             // what the account's other buckets hold, -1 when not known
     f64 cost_per_gb_month, free_gb;
     i64 bucket_bytes;            // Cloudflare's count of what the bucket holds, -1 until fetched
@@ -208,9 +208,6 @@ static struct {
     i8       signed_in; // the same for the sign-in's refresh token
     char     access[2048]; // worker: the sign-in's access token, until access_until_us
     i64      access_until_us;
-    f64      budget;       // the monthly budget in force (r2_cleanup_now), once budget_known
-    f32      space_gb;     // the same for the space setting (Config::r2_space_gb)
-    bool     budget_known;
     bool     cleanup_waiting; // a cleanup found the space unknown (r2_may_clear_locked): it runs after the next usage
     i64      folder_bytes; // the bucket's rekodr/ folder when last listed, 0 before
     struct {
@@ -229,25 +226,16 @@ static struct {
 // ---------------------------------------------------------------------------------------------------------------
 // Prices and limits
 
-// The free storage is the account's, shared with its other buckets. Rekodr's space when the player hasn't set
-// one: the free 10 GB less what the other buckets hold (`others`, bytes) less 5% spare, or 2 GB when the account's
-// total couldn't be read (`others` < 0).
+// The free storage is the account's, shared with its other buckets. What Rekodr may store, in bytes: the free 10 GB
+// less what the other buckets hold (`others`, bytes) less 5% spare, never paid space; 2 GB when the account's total
+// couldn't be read (`others` < 0). Before each upload the bucket is listed for its real size and the oldest links
+// are cleared to fit (r2_run_upload), so it never holds more.
 static const f64 R2_SPARE = 0.05, R2_UNREAD_GB = 2;
-static i64 r2_space_default(i64 others)
+static i64 r2_space(i64 others)
 {
     if (others < 0) return (i64)(R2_UNREAD_GB * (f64)R2_GB);
     i64 room = (i64)(R2_FREE_GB * (1 - R2_SPARE) * (f64)R2_GB) - others;
     return room > 0 ? room : 0;
-}
-
-// What Rekodr may store, in bytes: its space (`space_gb`, or the default when < 0) and all that the monthly
-// budget buys. Before each upload the bucket is listed for its real size and the oldest links are cleared to fit
-// (r2_run_upload), so it never holds more.
-static i64 r2_cap_for(f64 dollars, f32 space_gb, i64 others)
-{
-    if (dollars < 0) dollars = 0;
-    i64 space = space_gb >= 0 ? (i64)((f64)space_gb * (f64)R2_GB) : r2_space_default(others);
-    return space + (i64)(dollars / R2_PRICE_GB * (f64)R2_GB);
 }
 
 // What the account's other buckets hold, from the last usage answer; -1 when not known.
@@ -258,9 +246,9 @@ static i64 r2_others_locked()
     return n > 0 ? n : 0;
 }
 
-// Whether links may be removed to fit the cap: only when the space is the player's own or the account's total is
-// known, never for the 2 GB that stands in while it isn't.
-static bool r2_may_clear(f32 space_gb, i64 others) { return space_gb >= 0 || others >= 0; }
+// Whether links may be removed to fit the space: only when the account's total is known, never for the 2 GB that
+// stands in while it isn't.
+static bool r2_may_clear(i64 others) { return others >= 0; }
 
 // Room kept for a preview page and its picture while a link's room is made; the entry counts what they really take.
 static const i64 R2_PAGE_ROOM = 1 << 20;
@@ -1356,23 +1344,10 @@ static void r2_token_secret(const char *token, char out[65])
     SecureZeroMemory(h, sizeof h);
 }
 
-// The cap in force (r2_cap_for), with the lock held: the budget and space that were saved, until r2_cleanup_now
-// puts new ones in force. Options' drafts never change them.
-static i64 r2_cap_locked()
-{
-    if (!g_r2.budget_known) {
-        g_r2.budget = g_app.config.r2_budget;
-        g_r2.space_gb = g_app.config.r2_space_gb;
-        g_r2.budget_known = true;
-    }
-    return r2_cap_for(g_r2.budget, g_r2.space_gb, r2_others_locked());
-}
+// Rekodr's space (r2_space), with the lock held
+static i64 r2_cap_locked() { return r2_space(r2_others_locked()); }
 
-static bool r2_may_clear_locked()
-{
-    r2_cap_locked(); // loads the settings in force
-    return r2_may_clear(g_r2.space_gb, r2_others_locked());
-}
+static bool r2_may_clear_locked() { return r2_may_clear(r2_others_locked()); }
 
 static i64 r2_cap_now()
 {
@@ -2453,10 +2428,10 @@ static void r2_run_upload(const R2Task &t)
                                                 incoming + r2_untracked_locked(folder), reuse, plan, COUNT(plan));
     if (folder < 0) str_set(err, "Couldn't read how full the bucket is: try again");
     else if (clear < 0)
-        str_set(err, incoming > cap ? "The clip is bigger than your limit: raise it in Options"
-                                    : "Pinned clips fill your limit: unpin some or raise it");
+        str_set(err, incoming > cap ? "The clip is bigger than the free space on your Cloudflare"
+                                    : "Pinned clips fill the free space: unpin some");
     else if (clear > 0 && !may_clear) {
-        str_set(err, "Couldn't read the account's space yet: try again soon, or set Space for Rekodr in Options");
+        str_set(err, "Couldn't read the account's space yet: try again soon");
         clear = 0;
     }
     ReleaseSRWLockExclusive(&g_r2.lock);
@@ -2585,8 +2560,8 @@ static void r2_run_upload(const R2Task &t)
     if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
-// Expired links go from the bucket. Then, after a new budget or space, the oldest unpinned links go until the
-// bucket, at its real size, fits the cap. While the space isn't known none go for it; that part waits for the next
+// Expired links go from the bucket. Then the oldest unpinned links go until the bucket, at its real size, fits
+// Rekodr's space (less when other buckets grew). While the space isn't known none go for it; that part waits for the next
 // usage answer (r2_event).
 static void r2_run_cleanup(const R2Task &t)
 {
@@ -2606,7 +2581,7 @@ static void r2_run_cleanup(const R2Task &t)
     }
     i64 folder = r2_folder_bytes(t.conf);
     if (folder < 0) {
-        log_line("r2: couldn't read how full the bucket is to fit the new budget");
+        log_line("r2: couldn't read how full the bucket is to fit its space");
         return;
     }
     AcquireSRWLockExclusive(&g_r2.lock);
@@ -2614,7 +2589,7 @@ static void r2_run_cleanup(const R2Task &t)
     i32 n = r2_plan_cleanup(g_r2.shares, g_r2.count, r2_cap_locked(), r2_untracked_locked(folder), -1, plan,
                             COUNT(plan));
     ReleaseSRWLockExclusive(&g_r2.lock);
-    if (n < 0) log_line("r2: pinned links alone are over the new budget: nothing removed");
+    if (n < 0) log_line("r2: pinned links alone are over the space: nothing removed");
     else if (n > 0) r2_remove_planned(t.conf, plan, n);
 }
 
@@ -4353,18 +4328,6 @@ static void r2_queue_cleanup()
     SecureZeroMemory(&t, sizeof t);
 }
 
-// Options' Save, after writing r2_budget or r2_space_gb: the new cap is in force from now, and the oldest unpinned
-// links are cleared on the worker until the bucket fits it.
-static void r2_cleanup_now()
-{
-    AcquireSRWLockExclusive(&g_r2.lock);
-    g_r2.budget = g_app.config.r2_budget;
-    g_r2.space_gb = g_app.config.r2_space_gb;
-    g_r2.budget_known = true;
-    ReleaseSRWLockExclusive(&g_r2.lock);
-    r2_queue_cleanup();
-}
-
 // The accent changed: the bucket's preview pages are written again in it on the worker (r2_run_repage). One run
 // waits at a time, and it reads the accent as it goes.
 static void r2_repage_all()
@@ -4827,7 +4790,7 @@ static void r2_move(const char *key, bool pause, u8 how)
     SecureZeroMemory(&t, sizeof t);
 }
 
-// Pauses an R2 link: it stops answering until resumed. The file stays in the bucket (and in the budget).
+// Pauses an R2 link: it stops answering until resumed. The file stays in the bucket (and in its space).
 static void r2_pause(const char *key) { r2_move(key, true, 1); }
 
 static void r2_resume(const char *key) { r2_move(key, false, 1); }
@@ -4880,7 +4843,7 @@ static void r2_tick()
     if (sized && now >= next_check) {
         next_check = now + 6 * 3600ll * 1000000;
         next_expiry = now + 600ll * 1000000;
-        r2_cleanup_now();
+        r2_queue_cleanup();
     } else if (expired && now >= next_expiry) {
         next_expiry = now + 600ll * 1000000;
         r2_queue_cleanup();

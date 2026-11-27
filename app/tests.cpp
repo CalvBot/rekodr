@@ -2552,16 +2552,13 @@ static void test_r2()
     T(!strcmp(url, "https://clips.example.com/k.mp4?v=3"));
 
     // Space: the free 10 GB less the other buckets less 5%, 2 GB when the account's total can't be read, nothing
-    // when the other buckets already hold it all; the player's value wins. Then $0.015 a GB-month more.
-    T(r2_space_default(3 * R2_GB) == 6500000000ll);
-    T(r2_space_default(0) == 9500000000ll);
-    T(r2_space_default(-1) == 2 * R2_GB);
-    T(r2_space_default(12 * R2_GB) == 0 && r2_space_default(9600000000ll) == 0);
-    T(r2_cap_for(0, -1, 3 * R2_GB) == 6500000000ll);
-    T(r2_cap_for(0, -1, -1) == 2 * R2_GB);
-    T(r2_cap_for(0, 4, 3 * R2_GB) == 4 * R2_GB && r2_cap_for(0, 4, -1) == 4 * R2_GB && r2_cap_for(0, 0, 0) == 0);
-    T(r2_cap_for(1.35, 10, -1) / R2_GB == 100 || r2_cap_for(1.35, 10, -1) / R2_GB == 99);
-    T(r2_cap_for(1.5, -1, 12 * R2_GB) / R2_GB == 100 || r2_cap_for(1.5, -1, 12 * R2_GB) / R2_GB == 99);
+    // when the other buckets already hold it all; never past the free 10 GB
+    T(r2_space(3 * R2_GB) == 6500000000ll);
+    T(r2_space(0) == 9500000000ll);
+    T(r2_space(-1) == 2 * R2_GB);
+    T(r2_space(12 * R2_GB) == 0 && r2_space(9600000000ll) == 0 && r2_space(9500000000ll) == 0);
+    T(r2_space(1) == 9499999999ll && r2_space(R2_GB / 2) == 9 * R2_GB);
+    for (i64 others = 0; others < 12 * R2_GB; others += R2_GB / 3) T(!r2_space(others) || r2_space(others) + others <= 10 * R2_GB);
     T(fabs(r2_cost_for(100 * R2_GB) - 1.35) < 1e-9 && r2_cost_for(5 * R2_GB) == 0);
 
     // Cleanup: oldest unpinned first, until it fits
@@ -3211,35 +3208,25 @@ static void test_r2()
     {
         R2Fetched keep_f = g_r2.fetched;
         i64 keep_us = g_r2.usage_us;
-        f64 keep_budget = g_r2.budget;
-        f32 keep_space = g_r2.space_gb;
-        bool keep_known = g_r2.budget_known;
         g_r2.fetched = {};
         g_r2.fetched.bytes = 1000;
         g_r2.fetched.account_bytes = 4005;
         g_r2.usage_us = 1;
-        g_r2.budget = 0;
-        g_r2.space_gb = -1;
-        g_r2.budget_known = true;
-        T(r2_others_now() == 3005 && r2_cap_now() == r2_space_default(3005));
-        g_r2.space_gb = 3;
-        T(r2_cap_now() == 3 * R2_GB);
-        g_r2.space_gb = -1;
+        T(r2_others_now() == 3005 && r2_cap_now() == r2_space(3005));
+        g_r2.fetched.account_bytes = 800; // under the bucket's own count: no other buckets
+        T(r2_others_now() == 0 && r2_cap_now() == r2_space(0));
         g_r2.fetched.account_bytes = -1;
         T(r2_others_now() == -1 && r2_cap_now() == 2 * R2_GB);
         g_r2.fetched.account_bytes = 4005;
         g_r2.usage_us = 0; // not asked yet
         T(r2_cap_now() == 2 * R2_GB);
-        // Links are removed only for a space that's the player's or comes from a known total, never the 2 GB stand-in
-        T(!r2_may_clear(-1, -1) && r2_may_clear(3, -1) && r2_may_clear(-1, 0) && r2_may_clear(-1, 5 * R2_GB));
+        // Links are removed only for a space that comes from a known total, never the 2 GB stand-in
+        T(!r2_may_clear(-1) && r2_may_clear(0) && r2_may_clear(5 * R2_GB));
         AcquireSRWLockExclusive(&g_r2.lock);
         T(!r2_may_clear_locked());
         g_r2.usage_us = 1;
         T(r2_may_clear_locked());
         g_r2.usage_us = 0;
-        g_r2.space_gb = 3;
-        T(r2_may_clear_locked());
-        g_r2.space_gb = -1;
         ReleaseSRWLockExclusive(&g_r2.lock);
         // A cleanup while the space isn't known lists nothing, removes nothing and waits for the usage
         {
@@ -3253,9 +3240,6 @@ static void test_r2()
         }
         g_r2.fetched = keep_f;
         g_r2.usage_us = keep_us;
-        g_r2.budget = keep_budget;
-        g_r2.space_gb = keep_space;
-        g_r2.budget_known = keep_known;
     }
     T(r2_op_class("UploadPart") == 'A' && r2_op_class("HeadObject") == 'B' && r2_op_class("DeleteObject") == 0);
     char q[3200];
@@ -3546,11 +3530,9 @@ static void test_share_ready_edit()
     T(slider_snap(10.4f, 0.6f, 1, 100, 10, 0, 0) == 10 && slider_snap(11, 0.6f, 1, 100, 10, 0, 0) == 11);
     T(slider_snap(6.7f, 0.5f, 0, 30, -1e9f, snaps, 2) == 7 && slider_snap(4, 0.5f, 0, 30, -1e9f, snaps, 2) == 4);
     T(slider_snap(0.5f, 1, 2, 30, -1e9f, snaps, 2) == 0.5f); // a tick outside the range is none
-    // Links last: days 1 to LINK_DAYS_MAX on the slider, Forever (0) at the stop past them
+    // How long a link lasts, as the Share menu names it
     {
         char t[24];
-        T(link_days_slider(0) == LINK_DAYS_MAX + 1 && link_days_slider(3) == 3);
-        T(link_days_from_slider(LINK_DAYS_MAX + 0.8f) == 0 && link_days_from_slider(2.6f) == 3 && link_days_from_slider(0.2f) == 1);
         link_days_text(0, t, sizeof t);
         T(!strcmp(t, "Forever"));
         link_days_text(7, t, sizeof t);
@@ -3589,11 +3571,12 @@ static void test_share_cancel()
     g_r2.loaded = false;
     r2_net_fake = net_fake;
     R2Conf conf = {"acct", "key", "secret", "bucket", "https://clips.example"};
-    // A cap far above these files: uploads here never clear room
-    f32 keep_space = g_r2.space_gb;
-    bool keep_known = g_r2.budget_known;
-    g_r2.space_gb = 1000;
-    g_r2.budget_known = true;
+    // The account read, with no other buckets: 9.5 GB, far above these files, so uploads here never clear room
+    R2Fetched keep_fetched = g_r2.fetched;
+    i64 keep_usage = g_r2.usage_us;
+    g_r2.fetched = {};
+    g_r2.fetched.account_bytes = 0;
+    g_r2.usage_us = 1;
     Path file = path_join(g_app.paths.config_dir, L"copy.mp4");
     auto make = [&](i64 bytes) { // sized without writing it all
         HANDLE h = CreateFileW(file.s, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);
@@ -3718,22 +3701,18 @@ static void test_share_cancel()
         g_net.list = "<ListBucketResult><Contents><Key>rekodr/old/clip.mp4</Key><Size>3000000000</Size></Contents>"
                      "</ListBucketResult>";
     };
-    R2Fetched keep_fetched = g_r2.fetched;
-    i64 keep_usage = g_r2.usage_us;
     R2Task ct = {};
     ct.kind = R2_T_CLEANUP;
     ct.conf = conf;
     old_link();
-    g_r2.space_gb = -1;
     g_r2.usage_us = 0;
     r2_run_cleanup(ct);
     T(g_net.n == 0 && !g_r2.shares[0].removed && g_r2.cleanup_waiting);
     old_link();
-    g_r2.space_gb = 1;
+    g_r2.usage_us = 1; // no other buckets: 9.5 GB holds the 3 GB link
     r2_run_cleanup(ct);
-    T(net_count("DELETE rekodr/old/clip.mp4") == 1 && g_r2.shares[0].removed && !g_r2.cleanup_waiting);
+    T(net_count("DELETE rekodr/old/clip.mp4") == 0 && !g_r2.shares[0].removed && !g_r2.cleanup_waiting);
     old_link();
-    g_r2.space_gb = -1;
     g_r2.usage_us = 1;
     g_r2.fetched = {};
     g_r2.fetched.bytes = 3 * R2_GB;
@@ -3752,8 +3731,6 @@ static void test_share_cancel()
     T(GetFileAttributesW(g_app.paths.config_dir.s) == INVALID_FILE_ATTRIBUTES); // nothing else was left in it
     g_r2.count = 0;
     g_r2.loaded = false;
-    g_r2.space_gb = keep_space;
-    g_r2.budget_known = keep_known;
     g_app.paths = keep;
 }
 
@@ -7048,6 +7025,74 @@ static void test_edit_xml()
 }
 
 // The settings search: every word somewhere in a row's texts, in any case
+// The Space bar in Options: each link a block as wide as its bytes, the bucket's other files last. A right-click
+// picks the link under the mouse for the Delete link confirm, kept while the bar is read again; its delete queues the
+// bucket's delete task for that key (never run here: the worker is held off). The Share menu's link length is kept as
+// the default for the next.
+static void test_space_bar()
+{
+    static OptSpace keep_space;
+    keep_space = g_space;
+    OptSpace &v = g_space;
+    memset(&v, 0, sizeof v); // 4 MB: never a temporary on the stack
+    v.n = 3;
+    v.s[0].bytes = 100;
+    str_set(v.s[0].key, "rekodr/aaaa/clip.mp4");
+    v.s[1].bytes = 0; // no block
+    v.s[2].bytes = 300;
+    str_set(v.s[2].key, "rekodr/cccc/clip.mp4");
+    v.other = 100;
+    // 500 bytes over 500 px from x 10
+    T(opt_space_hit(v, 10, 500, 500, 9) == -1 && opt_space_hit(v, 10, 500, 500, 10) == 0);
+    T(opt_space_hit(v, 10, 500, 500, 109.5f) == 0 && opt_space_hit(v, 10, 500, 500, 110) == 2);
+    T(opt_space_hit(v, 10, 500, 500, 409.5f) == 2 && opt_space_hit(v, 10, 500, 500, 410) == -2);
+    T(opt_space_hit(v, 10, 500, 500, 510) == -1);
+    // Scaled to what's held when that's over the space: the blocks narrow, the end is empty
+    T(opt_space_hit(v, 10, 500, 1000, 59) == 0 && opt_space_hit(v, 10, 500, 1000, 70) == 2);
+    T(opt_space_hit(v, 10, 500, 1000, 300) == -1);
+    // The right-click's pick outlives the bar being read again
+    opt_space_pick(2);
+    T(!strcmp(g_space_menu.key, "rekodr/cccc/clip.mp4") && g_space_menu.bytes == 300);
+    v.s[2] = {};
+    T(!strcmp(g_space_menu.key, "rekodr/cccc/clip.mp4"));
+    // Its delete: one R2_T_DELETE task for that key, queued, not run
+    T(!g_r2.thread);
+    if (!g_r2.thread) {
+        i32 keep_tasks = g_r2.task_count;
+        g_r2.thread = (HANDLE)(intptr_t)-2; // the worker counts as started, so none starts
+        r2_delete(g_space_menu.key);
+        T(g_r2.task_count == keep_tasks + 1);
+        const R2Task &q = g_r2.tasks[g_r2.task_count - 1];
+        T(q.kind == R2_T_DELETE && !strcmp(q.key, "rekodr/cccc/clip.mp4"));
+        g_r2.task_count = keep_tasks;
+        g_r2.thread = 0;
+    }
+    g_space = keep_space;
+    g_space_menu = {};
+
+    // The Share menu's length: for the next share, and the default after it
+    Paths keep_paths = g_app.paths;
+    i32 keep_days = g_app.config.share_link_days;
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(g_app.paths.config_dir.s, MAX_PATH, L"%srekodr-tests-days-%lu", temp, GetCurrentProcessId());
+    g_app.paths.settings = path_join(g_app.paths.config_dir, L"settings.txt");
+    CreateDirectoryW(g_app.paths.config_dir.s, 0);
+    g_app.config.share_link_days = 0;
+    share_pick_link_days(7);
+    T(g_share_link_days == 7 && g_app.config.share_link_days == 7);
+    static Config read;
+    read = {};
+    config_defaults(&read, g_app.paths);
+    T(config_load(&read, g_app.paths) && read.share_link_days == 7);
+    g_share_link_days = -1;
+    DeleteFileW(path_join(g_app.paths.config_dir, L"settings.txt").s);
+    RemoveDirectoryW(g_app.paths.config_dir.s);
+    T(GetFileAttributesW(g_app.paths.config_dir.s) == INVALID_FILE_ATTRIBUTES);
+    g_app.paths = keep_paths;
+    g_app.config.share_link_days = keep_days;
+}
+
 static void test_settings_search()
 {
     const char *row[] = {"Bitrate", "How much video a second", 0, "VIDEO"};
@@ -7113,6 +7158,7 @@ int main()
     test_r2_thumb();
     test_save_names();
     test_settings_search();
+    test_space_bar();
     test_buffer_names();
     test_shown_names();
     test_lib_periods();

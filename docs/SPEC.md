@@ -132,11 +132,12 @@ Keep a whole session from start to finish.
     14 Mbps, the card plays a smaller H.264 copy kept beside it in the bucket, made about 5% under that size.
     Uploader links are the .mp4. Reads of
     the page and its picture count with the clip's. A paused link's page names the clip and doesn't play it.
-    The bucket holds all that the budget buys (`r2_budget`, dollars a month; 0 = R2's free 10 GB). Before each
+    The bucket holds what's left of the account's free 10 GB: 10 GB less what its other buckets hold (from
+    Cloudflare's analytics) less 5%, never paid space; 2 GB until the account's total is read. Before each
     upload it's listed for its real size, and if the link, its page and picture would pass that, the oldest
     unpinned links are cleared until they fit; their entries stay so they can be shared again. A clip bigger than
-    the budget, or one only pinned links leave no room for, is refused with nothing uploaded. Uploads to the
-    bucket run one at a time.
+    the space, or one only pinned links leave no room for, is refused with nothing uploaded. Uploads to the
+    bucket run one at a time. How long a link lasts is picked in the Share menu; the last pick is the default.
     An R2 link can be paused (its file moved to a hidden name). Links pause by themselves so R2 costs nothing
     unexpected: all of them until the 1st when the account's reads this month near `r2_read_cap` (10 M, R2's
     free amount), and one until the next day past `r2_read_rate` reads in 24 hours (1 M); 0 turns either off.

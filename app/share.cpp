@@ -10,7 +10,7 @@ static void telemetry_shared();                        // telemetry.cpp
 struct ShareHosts {
     bool bucket;           // the player's own R2 bucket is set up
     char uploaders[256];   // the ShareX uploaders switched on (link_uploaders), "" = none
-    i64  bucket_limit;     // what the budget keeps, 0 = not checked
+    i64  bucket_limit;     // Rekodr's space in the bucket (r2_space), 0 = not checked
 };
 
 // A size as Share's menu says it: "18 MB", "2 GB" (in MiB, as Discord counts).
@@ -510,17 +510,10 @@ static bool share_ready_link(u64 lib_key, u64 source, char *url, i32 cap)
     return false;
 }
 
-// How long the next bucket link lasts, as the Share menu picked it (share_link_days' values), -1 = the setting. The
-// next share_start takes it and sets it back.
+// How long the next bucket link lasts, as the Share menu picked it (share_link_days' values), -1 = not picked: the
+// next share_start takes it and sets it back. A link given again with a length picked lasts that long from now.
 static i32 g_share_link_days = -1;
 
-// How long a link lasts as the sliders show it: days 1 to LINK_DAYS_MAX, and Forever at the stop past the last day
-static f32 link_days_slider(i32 days) { return days > 0 ? (f32)days : (f32)(LINK_DAYS_MAX + 1); }
-static i32 link_days_from_slider(f32 v)
-{
-    i32 d = (i32)(v + 0.5f);
-    return d > LINK_DAYS_MAX ? 0 : d < 1 ? 1 : d;
-}
 // "Forever", "1 day", "1 week" or "<n> days"
 static void link_days_text(i32 days, char *s, i32 cap)
 {
@@ -528,6 +521,18 @@ static void link_days_text(i32 days, char *s, i32 cap)
     else if (days == 1) snprintf(s, cap, "1 day");
     else if (days == 7) snprintf(s, cap, "1 week");
     else snprintf(s, cap, "%d days", days);
+}
+
+// The Share menu picked how long a link lasts: for the next share, and kept as the default (share_link_days).
+static void share_pick_link_days(i32 days)
+{
+    g_share_link_days = days;
+    if (g_app.config.share_link_days == days) return;
+    g_app.config.share_link_days = days;
+    char s[24];
+    link_days_text(days, s, sizeof s);
+    log_line("share: bucket links last %s", s);
+    config_save(g_app.config, g_app.paths);
 }
 
 // Starts a Share. A clip with a ready link (share_ready_link) gets that link on the clipboard at once, whatever the

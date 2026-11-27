@@ -3556,6 +3556,32 @@ static i64 share_host_cap(LinkHost host)
 }
 
 // A square icon button in the menu, `ink` its icon's colour; true when clicked.
+// The confirm a link's delete opens (ImGui::OpenPopup(popup)), from the Share menu's link row and the Space bar in
+// Options: "Delete it from the bucket", or for an uploader's link "Remove from the list" (the file stays there), and
+// "Keep it". True on the frame the delete is queued (r2_delete).
+static bool lib_link_delete_menu(const char *popup, const R2Share &s)
+{
+    char host[64];
+    share_host_label(s, host, sizeof host);
+    bool gone = false;
+    lib_popup_style_push(6);
+    if (ImGui::BeginPopup(popup)) {
+        ImGui::PushFont(g_font_small);
+        if (host[0]) kit_dim("  The file stays on %s", host);
+        else kit_dim("  Discord may keep showing it for a while");
+        ImGui::PopFont();
+        if (lib_menu_item(ICON_DELETE, host[0] ? "Remove from the list" : "Delete it from the bucket", true, kit_px(240))) {
+            log_line("library: link %s %s", s.key, host[0] ? "taken off the list" : "deleted");
+            r2_delete(s.key);
+            gone = true;
+        }
+        lib_menu_item(ICON_CLOSE, "Keep it", false, kit_px(240));
+        ImGui::EndPopup();
+    }
+    lib_popup_style_pop();
+    return gone;
+}
+
 static bool share_menu_icon(const char *icon, const char *id, u32 ink, f32 sz, bool enabled = true)
 {
     ImVec2 a = ImGui::GetCursorScreenPos();
@@ -3741,24 +3767,11 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
         ImGui::SetCursorScreenPos(ImVec2(bx + (icons - 1) * (isz + igap), by));
         if (share_menu_icon(ICON_DELETE, "##smdelete", 0xff8a92, isz)) ImGui::OpenPopup("link_delete");
         kit_tip(host[0] ? "Remove from the list" : "Delete the link");
-        lib_popup_style_push(6);
-        if (ImGui::BeginPopup("link_delete")) {
-            ImGui::PushFont(g_font_small);
-            if (host[0]) kit_dim("  The file stays on %s", host);
-            else kit_dim("  Discord may keep showing it for a while");
-            ImGui::PopFont();
-            if (lib_menu_item(ICON_DELETE, host[0] ? "Remove from the list" : "Delete it from the bucket", true, kit_px(240))) {
-                log_line("library: link %s %s", s.key, host[0] ? "taken off the list" : "deleted");
-                r2_delete(s.key);
-            }
-            lib_menu_item(ICON_CLOSE, "Keep it", false, kit_px(240));
-            ImGui::EndPopup();
-        }
-        lib_popup_style_pop();
+        lib_link_delete_menu("link_delete", s);
         y = b.y + gap;
     }
 
-    // Link to, with how long a bucket link lasts on the right (the next share only; the setting is the default)
+    // Link to, with how long a bucket link lasts on the right: the last one picked is the default for the next
     {
         static ShareHostChoice c[24];
         i32 n = share_host_choices(m, edit, c, COUNT(c));
@@ -3784,7 +3797,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
                 bool hot = ImGui::IsItemHovered(), on = cur == days[i];
                 if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
                 if (clicked) {
-                    g_share_link_days = days[i];
+                    share_pick_link_days(days[i]);
                     dev_click("chip", names[i]);
                 }
                 dl->AddRectFilled(a, b, col32(COL_WHITE, on ? 1 : hot ? 0.14f : 0.06f), ph / 2);
@@ -3819,7 +3832,7 @@ static i32 share_menu_body(const ShareDecision &d, const MediaInfo &m, const Edi
                 if (ImGui::IsItemDeactivated()) {
                     i32 t = atoi(typed);
                     if (t >= 1) {
-                        g_share_link_days = t > LINK_DAYS_MAX ? LINK_DAYS_MAX : t;
+                        share_pick_link_days(t > LINK_DAYS_MAX ? LINK_DAYS_MAX : t);
                         dev_click("chip", "days");
                     }
                 }

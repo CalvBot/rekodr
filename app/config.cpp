@@ -199,7 +199,6 @@ static void config_defaults(Config *c, const Paths &paths)
     c->ach_rarer = 5;
     str_set(c->r2_bucket, "rekodr");
     c->r2_read_cap = 10000000;  // R2's free Class B requests a month
-    c->r2_space_gb = -1;
     c->backup_cap_gb = -1;
     c->r2_read_rate = 1000000;
     c->wave_keep_days = 30;
@@ -818,8 +817,6 @@ static void config_set(Config *c, const char *key, char *value)
         if (value[0]) str_set(c->r2_bucket, value); // empty keeps the default
     }
     else if (!strcmp(key, "r2_public_url")) str_set(c->r2_public_url, value);
-    else if (!strcmp(key, "r2_budget")) real(&c->r2_budget);
-    else if (!strcmp(key, "r2_space_gb")) real(&c->r2_space_gb);
     else if (!strcmp(key, "r2_read_cap")) c->r2_read_cap = atoi(value);
     else if (!strcmp(key, "r2_read_rate")) c->r2_read_rate = atoi(value);
     else if (!strcmp(key, "link_uploaders")) str_set(c->link_uploaders, value);
@@ -1056,9 +1053,8 @@ static bool config_save(const Config &c, const Paths &paths)
     boolean("setup_done", c.setup_done);
     if (c.sgdb_key[0]) fprintf(f, "sgdb_key = %s\n", c.sgdb_key);
     if (strcmp(c.art_service.s, ART_SERVICE_HOST)) fprintf(f, "art_service = %s\n", c.art_service.s); // once changed
-    fprintf(f, "r2_account = %s\nr2_access_key = %s\nr2_bucket = %s\nr2_public_url = %s\nr2_budget = %g\n",
-            c.r2_account, c.r2_access_key, c.r2_bucket, c.r2_public_url, c.r2_budget);
-    if (c.r2_space_gb >= 0) fprintf(f, "r2_space_gb = %g\n", c.r2_space_gb);
+    fprintf(f, "r2_account = %s\nr2_access_key = %s\nr2_bucket = %s\nr2_public_url = %s\n",
+            c.r2_account, c.r2_access_key, c.r2_bucket, c.r2_public_url);
     fprintf(f, "r2_read_cap = %d\nr2_read_rate = %d\n", c.r2_read_cap, c.r2_read_rate);
     fprintf(f, "link_uploaders = %s\n", c.link_uploaders);
     fprintf(f, "share_max_mb = %g\nshare_min_quality = %d\n", c.share_max_mb, c.share_min_quality);

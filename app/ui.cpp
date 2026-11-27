@@ -1731,7 +1731,7 @@ static void help_window()
             {"Where a link goes", "Your bucket, or without one your servers"},
             {"Link to", "In the Share menu: pick the host yourself"},
             {"Your bucket", "Your own Cloudflare storage: links you can pause and delete"},
-            {"Budget and space", "The budget sets the space the bucket's links can take. Past it the oldest go first; pinned ones stay"},
+            {"Space", "Your bucket uses what's free of Cloudflare's free 10 GB, never paid space. Past it the oldest links go first; pinned ones stay. Right-click a clip on the bar to delete its link"},
             {"Reads", "Each play of a bucket link counts. 10 million a month are free"},
             {"Reads limit", "Near it, bucket links pause until the 1st"},
             {"Your servers", "Upload servers of your own, added from a .sxcu file"},
