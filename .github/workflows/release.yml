@@ -1,0 +1,89 @@
+# Builds a release on a v* tag (Forgejo's push mirror carries tags here) or by hand for an existing tag, and
+# never on a push or PR. Repo secrets: REKODR_SERVICE_KEY (the service's signing key, a build define) and
+# REKODR_RELEASE_KEY (the PEM text of the key that signs latest.txt). Uploads rekodr-<version>.exe,
+# rekodr-setup.exe and latest.txt to the release; the .pdb is kept as a workflow artifact for 90 days.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, e.g. v0.3.0"
+        required: true
+
+permissions:
+  contents: write   # creating the release and uploading its files
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Tag matches version.h
+        shell: pwsh
+        run: |
+          $v = [regex]::Match((Get-Content app\version.h -Raw), 'REKODR_VERSION "([^"]+)"').Groups[1].Value
+          if ("v$v" -ne $env:TAG) { throw "tag $env:TAG but version.h says $v" }
+
+      - name: Build
+        shell: cmd
+        env:
+          REKODR_SERVICE_KEY: ${{ secrets.REKODR_SERVICE_KEY }}
+        run: app\build.bat
+
+      - name: Tests
+        shell: cmd
+        run: app\test.bat
+
+      - name: Sign and package
+        shell: pwsh
+        env:
+          REKODR_RELEASE_KEY: ${{ secrets.REKODR_RELEASE_KEY }}
+        run: |
+          $key = Join-Path $env:RUNNER_TEMP "release-key.pem"
+          [IO.File]::WriteAllText($key, $env:REKODR_RELEASE_KEY)
+          try { pwsh -NoProfile -File app\release.ps1 -Key $key } finally { Remove-Item $key -Force }
+
+      - name: No runner paths in the exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\rekodr-*.exe | Where-Object Name -ne "rekodr-setup.exe" | Select-Object -First 1
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe.FullName))
+          foreach ($p in @($env:GITHUB_WORKSPACE, "D:\a\", "C:\Users\", "runneradmin")) {
+            if ($text.IndexOf($p, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "$($exe.Name) contains '$p'" }
+          }
+
+      - name: Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = $env:TAG.Substring(1)
+          $notes = Join-Path $env:RUNNER_TEMP "notes.md"
+          # This version's section of whatsnew.txt
+          $lines = Get-Content app\whatsnew.txt
+          $start = [array]::IndexOf($lines, "# $v")
+          $end = ($lines[($start + 1)..($lines.Count - 1)] | Select-String -Pattern '^# ' | Select-Object -First 1).LineNumber
+          $body = if ($end) { $lines[($start + 1)..($start + $end - 1)] } else { $lines[($start + 1)..($lines.Count - 1)] }
+          $body | Set-Content $notes
+          gh release create $env:TAG "dist\rekodr-$v.exe" dist\rekodr-setup.exe dist\latest.txt `
+            --title "Rekodr $v" --notes-file $notes --verify-tag
+
+      - name: Keep the .pdb for crash dumps
+        uses: actions/upload-artifact@v4
+        with:
+          name: rekodr-pdb-${{ env.TAG }}
+          path: dist/rekodr-*.pdb
+          retention-days: 90
