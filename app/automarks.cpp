@@ -1913,7 +1913,8 @@ static void am_wt_poll(HINTERNET session)
         am_put(marks, wt_mission(&s, ev, buf, len, marks, COUNT(marks)), AMG_WAR_THUNDER);
 }
 
-// Minecraft's latest.log: in the running game's folder (mc_game_dir). Looked for every 5 s while it isn't known.
+// Minecraft's latest.log: in the running game's folder (mc_game_dir). Looked for every 5 s, as another instance
+// started is another folder.
 static void mc_log_path(wchar_t *out)
 {
     out[0] = 0;
@@ -1947,10 +1948,10 @@ static void am_logs_poll()
     auto feed = [&](i32 game, i32 n) { am_put(marks, n, game); };
     if (u32 ev = g_am.events[AMG_MINECRAFT]) {
         i64 now = now_us();
-        if (!g_am.mc_tail.path[0] && now >= g_am.mc_next) {
+        if (now >= g_am.mc_next) {
             wchar_t p[MAX_PATH];
             mc_log_path(p);
-            if (p[0]) wcscpy_s(g_am.mc_log, p);
+            if (p[0] && wcscmp(p, g_am.mc_log)) g_am.mc = {}, g_am.mc_tail = {}, wcscpy_s(g_am.mc_log, p);
             g_am.mc_next = now + 5000000;
         }
         if (g_am.mc_log[0] && !am_tail(&g_am.mc_tail, g_am.mc_log, [&](const char *l, bool old) {
