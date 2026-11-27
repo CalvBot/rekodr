@@ -32,7 +32,8 @@ static void options_apply(u32 what)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Start with Windows: a "Rekodr" value under HKCU\...\Run.
+// Start with Windows: a "Rekodr" value under HKCU\...\Run. It is on from the first start (main.cpp); the installer
+// sets it too. A test copy leaves the Run key alone and keeps the switch in g_startup_test_on.
 
 static const wchar_t *RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
@@ -51,11 +52,23 @@ static bool startup_read(wchar_t *out, i32 cap)
     return RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, L"rekodr", RRF_RT_REG_SZ, 0, out, &bytes) == ERROR_SUCCESS;
 }
 
+static bool g_startup_test_on = true;
+
+// Whether this exe is the Run value.
+static bool startup_on()
+{
+    if (is_test_copy()) return g_startup_test_on;
+    wchar_t now[MAX_PATH + 8], cmd[MAX_PATH + 8];
+    startup_command(cmd, COUNT(cmd));
+    return startup_read(now, COUNT(now)) && !_wcsicmp(now, cmd);
+}
+
 static void startup_set(bool on)
 {
     wchar_t cmd[MAX_PATH + 8];
     startup_command(cmd, COUNT(cmd));
     if (is_test_copy()) {
+        g_startup_test_on = on;
         log_line("start with Windows %s; a test copy leaves the Run key alone (it would %s HKCU\\%ls\\rekodr%s%ls)",
                  on ? "on" : "off", on ? "set" : "delete", RUN_KEY, on ? " = " : "", on ? cmd : L"");
         return;

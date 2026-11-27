@@ -168,7 +168,7 @@ static f32 setup_page_head(ImDrawList *dl, f32 x0, f32 x1, f32 y, const char *ti
     return ImGui::GetCursorScreenPos().y + dp(20);
 }
 
-// Welcome: what Rekodr does, the clip key as key caps, and tooltips.
+// Welcome: what Rekodr does, the clip key as key caps, tooltips and starting with Windows.
 static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h)
 {
     Config &c = g_app.config;
@@ -232,6 +232,25 @@ static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h
         options_apply(0);
     }
     opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, "Either way, F1 lists every key.", x1);
+    y += pair_h + dp(10) + g_font_small->FontSize + dp(24);
+
+    // Start with Windows: the Run value, read when the page comes into view and after the switch is turned
+    static bool on;
+    static i32 read_frame;
+    i32 frame = ImGui::GetFrameCount();
+    if (!read_frame || frame - read_frame > 1) on = startup_on();
+    read_frame = frame;
+    f32 rh = dp(64), tw = kit_px(36);
+    dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + rh), col32(COL_PANEL), dp(12));
+    f32 sy = floorf(y + (rh - g_font_bold->FontSize - dp(5) - g_font_small->FontSize) / 2);
+    opt_text_at(dl, g_font_bold, ImVec2(x0 + dp(20), sy), COL_TEXT, "Start with Windows", x1 - tw - dp(40));
+    opt_text_at(dl, g_font_small, ImVec2(x0 + dp(20), sy + g_font_bold->FontSize + dp(5)), COL_DIM, "Ready when you sign in",
+                x1 - tw - dp(40));
+    ImGui::SetCursorScreenPos(ImVec2(x1 - dp(20) - tw, floorf(y + (rh - ImGui::GetFrameHeight()) / 2)));
+    if (kit_toggle("##setupstartup", &on)) {
+        startup_set(on);
+        log_line("setup: start with Windows %s", on ? "on" : "off");
+    }
 }
 
 // What No leaves to the player, shown while No is picked: the same clip as a library card with the service, filed
