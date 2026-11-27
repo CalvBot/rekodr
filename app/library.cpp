@@ -2133,24 +2133,7 @@ static f32 badge(ImDrawList *dl, ImVec2 corner, bool right, bool bottom, const c
     return w;
 }
 
-static bool edit_is_advanced(const Path &edit_file); // editor.cpp
 static void fmt_count(i64 n, char *out, i32 cap); // options.cpp
-
-// Whether a card's edit is an Advanced one, for its badge. The edit file's first line is read again at most every
-// 2 s per card, so an edit saved in the editor shows up without a rescan.
-static bool lib_is_advanced(const LibItem &it)
-{
-    struct Seen { u64 key; f64 at; bool advanced; };
-    static Seen seen[256];
-    Seen &s = seen[it.key % COUNT(seen)];
-    f64 now = ImGui::GetTime();
-    if (s.key != it.key || now - s.at >= 2) {
-        s.key = it.key;
-        s.at = now;
-        s.advanced = edit_is_advanced(lib_edit_path(it));
-    }
-    return s.advanced;
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Controls the library, the player and the editor share. Generic enough to move to the kit in ui.cpp.
@@ -4792,10 +4775,9 @@ static void lib_card(const LibItem &it, ImVec2 a, f32 w, f32 thumb_h, f32 day_h,
         fmt_time(it.info.duration, text, sizeof text);
         badge(dl, ImVec2(t1.x - kit_px(8), t1.y - kit_px(8)), true, true, text);
     }
-    // Bottom left, where nothing else goes: edited in Advanced mode, then a round badge while its playable copy is
-    // being made (render.cpp): an accent arc turning while it renders, a still faint ring while it waits its turn.
+    // Bottom left, where nothing else goes: a round badge while its playable copy is being made (render.cpp): an
+    // accent arc turning while it renders, a still faint ring while it waits its turn.
     f32 bx = t0.x + kit_px(8);
-    if (lib_is_advanced(it)) bx += badge(dl, ImVec2(bx, t1.y - kit_px(10)), false, true, ICON_ADVANCED "  Advanced") + kit_px(4);
     f32 rf = render_progress(it.key);
     bool rendering = rf >= 0;
     if (!rendering && render_waiting(it.key)) rf = 0;

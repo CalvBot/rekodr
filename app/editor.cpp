@@ -42,17 +42,6 @@ static void edit_write_layers(FILE *f, const EditRecord &e)
     for (i32 i = 0; i < e.layer_on_count; i++) fprintf(f, "layer = %s\n", e.layer_on[i]);
 }
 
-// Whether an edit file holds an Advanced edit: its first line says so.
-static bool edit_is_advanced(const Path &file)
-{
-    FILE *f = _wfopen(file.s, L"rb");
-    if (!f) return false;
-    char line[64] = {};
-    bool adv = fgets(line, sizeof line, f) && !strncmp(line, "mode = advanced", 15);
-    fclose(f);
-    return adv;
-}
-
 static void edit_read(const Path &file, EditRecord *e)
 {
     *e = {};

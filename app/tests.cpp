@@ -5645,13 +5645,11 @@ static void test_edit_advanced()
     Path file = {};
     swprintf(file.s, MAX_PATH, L"%srekodr-test-adv-%u.edit.txt", dir, GetCurrentProcessId());
     edit_write(file, a);
-    T(edit_is_advanced(file));
     static EditRecord r;
     edit_read(file, &r);
     DeleteFileW(file.s);
     T(r.mode == EDIT_ADVANCED && r.item_count == a.item_count && r.ikey_count == a.ikey_count && adv_same(r, a, m));
     edit_write(file, s);
-    T(!edit_is_advanced(file));
     DeleteFileW(file.s);
 
     // An item run over the next one on its track is cut back to it; one left too short goes
