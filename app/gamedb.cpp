@@ -1289,9 +1289,10 @@ static bool gamedb_name_app(AppInfo *a)
         sessions_game_renamed(a->exe.s, was_game);
         return true;
     }
+    // Still being asked: the name before is kept for when the answer comes
+    if (!known) return sorted;
     for (auto &u : g_untold)
         if (!strcmp(u.exe, a->exe.s)) u.exe[0] = 0;
-    if (!known) return sorted;
     bool changed = sorted;
     if (strcmp(a->desc.s, g.name)) {
         snprintf(a->desc.s, sizeof a->desc.s, "%s", g.name);
