@@ -3829,7 +3829,7 @@ static void options_sharing()
     // The largest file Share sends: five sizes and Custom as chips across the control column. Picking Custom turns
     // that chip into its number box, the same size, so nothing moves.
     {
-        static const f32 sizes[] = {20, 50, 100, 500, 2048};
+        static const f32 sizes[] = {20, 50, 100, 500, 1024};
         static bool custom;
         i32 n = (i32)COUNT(sizes), at = -1;
         for (i32 i = 0; i < n; i++)

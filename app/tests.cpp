@@ -1915,6 +1915,8 @@ static void test_share()
     T(!strcmp(t, "5.5 MB"));
     share_size_text(2000 * mb, t, sizeof t);
     T(!strcmp(t, "2 GB"));
+    share_size_label(1024, t, sizeof t); // Options' largest Max file size chip
+    T(!strcmp(t, "1 GB"));
 }
 
 // The editor's lanes: a track's kind from its title, and waveforms read only where a chunk is measured.

@@ -108,7 +108,7 @@ Keep a whole session from start to finish.
     recommended upload bitrates: 1 / 1.5, 2.5 / 4, 5 / 7.5, 8 / 12, 16 / 24 and 35 / 53 Mbit/s for 360p, 480p, 720p,
     1080p, 1440p and 2160p at 30 / 60 fps. Between rows it goes along the pixel count, below 360p and above 2160p
     in proportion to it; between 30 and 60 fps along the frame rate, above 60 in proportion to it. Sound adds
-    128 kbit/s. Under the *Max size* (`share_max_mb`, in MiB as Discord counts; 20, 50, 100, 500, 2000 or a custom
+    128 kbit/s. Under the *Max size* (`share_max_mb`, in MiB as Discord counts; 20, 50, 100, 500, 1024 or a custom
     size, default 20) Share makes a file at the recommended size; when *Lower quality to fit* (`share_min_quality`,
     a percent from 50 to 100, default 67, 100 = off) of it fits the max, a file squeezed to the max; further over,
     a link. Every file is a new H.264 copy with the edit applied and one stereo mix, in
