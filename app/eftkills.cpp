@@ -11,9 +11,9 @@
 // trusted: its title, its column heads in their order, and rows that fit each column (ek_row_fits). Anything else on
 // the screen, and every other end-of-raid screen, gives no kill. OCR can't read the time column's italic digital
 // digits, so they are matched against EK_DIGITS. A row seen in several frames (the list scrolls) is kept once. Each
-// becomes a Kill marker at spawn + its time, its note the weapon and the side killed ("MPX kill on Scav", PMC for USEC
-// and BEAR, "Kill on PMC" with no weapon read), its detail the side and weapon. The player's name and level are never
-// kept.
+// becomes a Kill marker at spawn + its time, its note the weapon and the faction killed as the list names it ("MPX
+// kill on Scav", "M4A1 kill on USEC", "Kill on Boss" with no weapon read; EK_SIDES), its detail the side and weapon.
+// The player's name and level are never kept.
 //
 // Raids are found in every run's output log in <game>\Logs, so raids recorded before this ran get their kills too,
 // and the log's other markers (raid start and end, quests, groups), each at its line's time, unless a marker with the
@@ -435,6 +435,9 @@ done:
 // ---------------------------------------------------------------------------------------------------------------
 // The kill list
 
+// The factions the kill list's faction column names, as a kill's side is written
+static const char *const EK_SIDES[] = {"USEC", "BEAR", "Scav", "Boss", "Guard", "Raider", "Rogue", "Cultist"};
+
 // What the kill list says in a language of the game's UI (Game.ini's "Language"), upper case, and the OCR
 // languages that read it, best first.
 struct EkLang {
@@ -442,16 +445,24 @@ struct EkLang {
     const wchar_t *ocr[2];
     const char *ended, *title;                                       // the screen's head and the line under it
     const char *location, *time, *player, *level, *faction, *status; // the column heads, left to right
-    const char *factions[3];                                         // what the faction column may say, the Scavs' last
+    const char *factions[COUNT(EK_SIDES)];                           // what the faction column says, as EK_SIDES
 };
 static const EkLang EK_LANGS[] = {
     {"en", {L"en-US", L"en-GB"}, "RAID ENDED", "KILL LIST", "LOCATION", "TIME", "PLAYER", "LVL", "FACTION", "STATUS",
-     {"USEC", "BEAR", "SCAV"}},
+     {"USEC", "BEAR", "SCAV", "BOSS", "GUARD", "RAIDER", "ROGUE", "CULTIST"}},
 };
 
+// Which of EK_SIDES a faction cell names; -1 for none
+static i32 ek_side(const EkLang &lang, const char *faction)
+{
+    for (i32 i = 0; i < COUNT(lang.factions); i++)
+        if (lang.factions[i] && !_stricmp(faction, lang.factions[i])) return i;
+    return -1;
+}
+
 struct EkKill {
-    i32  secs;    // into the raid, from the player's spawn
-    char side[8]; // PMC or Scav
+    i32  secs;     // into the raid, from the player's spawn
+    char side[12]; // one of EK_SIDES
     char weapon[48];
 };
 
@@ -495,9 +506,7 @@ static bool ek_row_fits(const EkLang &lang, const char *location, const char *le
         else if (*c != ' ') other++;
     }
     if (other || (digits && dashes) || digits > 2 || (digits && atoi(level) < 1)) return false;
-    bool known = false;
-    for (const char *f : lang.factions) known |= f && !_stricmp(faction, f);
-    if (!known) return false;
+    if (ek_side(lang, faction) < 0) return false;
     const char *open = strchr(how, '(');
     if (!open || open == how) return false;
     for (const char *c = how; c < open; c++)
@@ -576,7 +585,7 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
         ek_cell_text(words, row, k, faction->x - pad, status->x - pad, side, sizeof side);
         ek_cell_text(words, row, k, status->x - pad, 1e9f, how, sizeof how);
         if (!who[0] || !ek_row_fits(lang, where, lv, side, how)) continue;
-        str_set(kill.side, !_stricmp(side, lang.factions[COUNT(lang.factions) - 1]) ? "Scav" : "PMC");
+        str_set(kill.side, EK_SIDES[ek_side(lang, side)]);
         // "Headshot (MPX, 22m)": the weapon is what the brackets start with.
         if (const char *open = strchr(how, '(')) {
             open++;
@@ -597,7 +606,7 @@ static i32 ek_kill_list(const u8 *px, const EkLang &lang, EkKill *out, i32 cap)
     return rows;
 }
 
-// A kill's marker note: "MPX kill on Scav", or "Kill on PMC" with no weapon
+// A kill's marker note: "MPX kill on Scav", or "Kill on USEC" with no weapon
 static void ek_kill_note(const EkKill &k, char *out, i32 cap)
 {
     if (k.weapon[0]) snprintf(out, cap, "%s kill on %s", k.weapon, k.side);
