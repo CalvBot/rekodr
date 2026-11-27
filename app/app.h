@@ -1203,6 +1203,7 @@ struct MonitorInfo {
 struct OptionsUi {
     i32  tab;             // OptionsTab
     i32  last_frame;      // ImGui frame Options was last drawn in: a gap means it was entered again
+    char find[64];        // the settings search in the sidebar: while it has words, the page shows what matches
     // Apps
     i32  filter;          // AppsFilter (options.cpp)
     char search[64];

@@ -193,6 +193,10 @@ static void run_command(const char *text)
             g_app.ui.setup_open = true;
             g_setup_page = arg[5] ? SETUP_DETECTION : SETUP_WELCOME;
         }
+        else if (starts_with(arg, "search ")) { // search <words>: Options with the settings search showing what matches
+            ui_show(SCREEN_OPTIONS);
+            str_set(g_app.options.find, arg + 7);
+        }
         else {
             static const char *const tabs[OPT_TAB_COUNT] = {"apps", "recording", "hotkeys", "integrations", "auto-markers", "general"};
             i32 t = -1;
@@ -201,7 +205,8 @@ static void run_command(const char *text)
             if (t >= 0) {
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, timeline-at, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, game-settings, setup, setup-detection)", arg);
+                g_app.options.find[0] = 0;
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, timeline-at, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, search <words>, game-settings, setup, setup-detection)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "gsi-dump")) {

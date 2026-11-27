@@ -272,6 +272,131 @@ static void opt_pill(ImDrawList *dl, ImVec2 p, const char *text, u32 fill, u32 i
                 text, p.x + w);
 }
 
+// Search: does every word of `q` (split at spaces) appear, in any case, in one of the `n` texts? Null texts are
+// skipped; a query of no words matches nothing.
+static bool opt_search_match(const char *q, const char *const *texts, i32 n)
+{
+    bool any = false;
+    for (const char *w = q; *w;) {
+        while (*w == ' ') w++;
+        i32 len = 0;
+        while (w[len] && w[len] != ' ') len++;
+        if (!len) break;
+        bool found = false;
+        for (i32 i = 0; i < n && !found; i++)
+            for (const char *h = texts[i]; h && *h && !found; h++) found = !_strnicmp(h, w, len);
+        if (!found) return false;
+        any = true;
+        w += len;
+    }
+    return any;
+}
+
+// The settings search draws every page but Apps one after another and shows only the rows that match, each under
+// its page's name and its section's caption, working as on their page. What isn't shown is drawn hidden: clipped
+// to nothing, so it takes no clicks, and the cursor goes back to where the hiding began, so it takes no room.
+struct OptSearch {
+    bool on;
+    const char *q;
+    const char *page, *icon; // the page being drawn
+    const char *section;     // its last opt_section
+    bool page_shown, section_shown, row_shown;
+    const char *find;        // opt_find: the next row's own words
+    bool force;              // opt_find_force: the next row is shown
+    i32 shown;               // rows shown
+    bool hidden;
+    ImVec2 cursor, prev_line, max_pos, ideal_max, line_size, prev_line_size;
+};
+static OptSearch g_search;
+
+// Words the next row is also found by, for a row that draws its name by hand (or has none, as a hotkey).
+static void opt_find(const char *words) { g_search.find = words; }
+static void opt_find_force(bool show) { g_search.force = show; }
+
+static void opt_hide()
+{
+    OptSearch &s = g_search;
+    if (s.hidden) return;
+    ImGuiWindow *w = ImGui::GetCurrentWindow();
+    s.cursor = w->DC.CursorPos;
+    s.prev_line = w->DC.CursorPosPrevLine;
+    s.max_pos = w->DC.CursorMaxPos;
+    s.ideal_max = w->DC.IdealMaxPos;
+    s.line_size = w->DC.CurrLineSize;
+    s.prev_line_size = w->DC.PrevLineSize;
+    ImGui::PushClipRect(ImVec2(-1e6f, -1e6f), ImVec2(-1e6f, -1e6f), false);
+    s.hidden = true;
+}
+
+static void opt_show()
+{
+    OptSearch &s = g_search;
+    if (!s.hidden) return;
+    ImGui::PopClipRect();
+    ImGuiWindow *w = ImGui::GetCurrentWindow();
+    w->DC.CursorPos = s.cursor;
+    w->DC.CursorPosPrevLine = s.prev_line;
+    w->DC.CursorMaxPos = s.max_pos;
+    w->DC.IdealMaxPos = s.ideal_max;
+    w->DC.CurrLineSize = s.line_size;
+    w->DC.PrevLineSize = s.prev_line_size;
+    s.hidden = false;
+}
+
+// A shown row's page name and section caption, the first time each has one
+static void opt_search_heads()
+{
+    OptSearch &s = g_search;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (!s.page_shown) {
+        s.page_shown = true;
+        if (s.shown) ImGui::Dummy(ImVec2(0, dp(10)));
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        f32 h = g_font_bold->FontSize;
+        ImGui::PushFont(g_font_icon);
+        f32 iw = ImGui::CalcTextSize(s.icon).x;
+        dl->AddText(ImVec2(p.x + dp(4), floorf(p.y + (h - g_font_icon->FontSize) / 2)), col32(COL_DIM), s.icon);
+        ImGui::PopFont();
+        opt_text_at(dl, g_font_bold, ImVec2(p.x + dp(4) + iw + dp(10), p.y), COL_TEXT, s.page, p.x + ImGui::GetContentRegionAvail().x);
+        ImGui::Dummy(ImVec2(0, h + dp(4)));
+    }
+    if (!s.section_shown && s.section) {
+        s.section_shown = true;
+        ImGui::PushFont(g_font_small);
+        ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
+        ImGui::TextUnformatted(s.section);
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - dp(4));
+    }
+}
+
+// Is a row with this name and line shown? Shows or hides what follows. A row with neither and no opt_find words
+// goes with the row before it in its card (the second line of a setting, a list's empty rows).
+static bool opt_search_row(const char *name, const char *sub, bool first_in_card)
+{
+    OptSearch &s = g_search;
+    const char *find = s.find;
+    bool force = s.force;
+    s.find = 0;
+    s.force = false;
+    bool show = force;
+    if (!show && !name && !find) show = s.row_shown && !first_in_card;
+    else if (!show) {
+        const char *texts[] = {name, sub, find, s.section};
+        show = opt_search_match(s.q, texts, COUNT(texts));
+    }
+    s.row_shown = show;
+    if (!show) {
+        opt_hide();
+        return false;
+    }
+    opt_show();
+    s.shown++;
+    return true;
+}
+
 // Cards: a raised panel as tall as what's drawn in it. The draw list is split so the panel goes under its rows.
 struct OptCard { ImVec2 a; f32 w; i32 rows; };
 static OptCard g_card;
@@ -290,12 +415,21 @@ static void opt_card_begin()
 static void opt_card_end(f32 space_after = 12)
 {
     ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (g_search.on) {
+        if (!g_card.rows) {
+            dl->ChannelsMerge();
+            return;
+        }
+        opt_show();
+        space_after = 12;
+    }
     f32 y = ImGui::GetCursorScreenPos().y + dp(4);
     dl->ChannelsSetCurrent(0);
     dl->AddRectFilled(g_card.a, ImVec2(g_card.a.x + g_card.w, y), col32(COL_PANEL), dp(10));
     dl->ChannelsMerge();
     ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, y));
     ImGui::Dummy(ImVec2(g_card.w, dp(space_after) - ImGui::GetStyle().ItemSpacing.y));
+    if (g_search.on) opt_hide();
 }
 
 // Opens a folder in Explorer (made first if it isn't there yet).
@@ -309,6 +443,11 @@ static void opt_open_dir(Path dir)
 // A small caption over a card: "VIDEO", "BUFFER".
 static void opt_section(const char *text)
 {
+    if (g_search.on) { // drawn over the first row shown under it
+        g_search.section = text;
+        g_search.section_shown = false;
+        return;
+    }
     ImGui::PushFont(g_font_small);
     ImGui::PushStyleColor(ImGuiCol_Text, rgb(COL_DIM));
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
@@ -339,11 +478,20 @@ static void opt_row_begin(const char *name, const char *sub, f32 control_w, f32 
         snprintf(warn_line, sizeof warn_line, ICON_WARNING "  %s", warn);
         sub = warn_line;
     }
+    bool counted = true;
+    if (g_search.on) {
+        counted = opt_search_row(name, sub, !g_card.rows);
+        if (counted && !g_card.rows) { // the card starts at its first row shown
+            opt_search_heads();
+            g_card.a = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, g_card.a.y + dp(4)));
+        }
+    }
     g_row.x0 = g_card.a.x + dp(OPT_PAD);
     g_row.x1 = g_card.a.x + g_card.w - dp(OPT_PAD);
     g_row.y = ImGui::GetCursorScreenPos().y;
     g_row.h = h > 0 ? h : dp(sub ? 52.f : 44.f);
-    if (g_card.rows++ && line) dl->AddLine(ImVec2(g_row.x0, g_row.y), ImVec2(g_row.x1, g_row.y), col32(COL_LINE));
+    if (counted && g_card.rows++ && line) dl->AddLine(ImVec2(g_row.x0, g_row.y), ImVec2(g_row.x1, g_row.y), col32(COL_LINE));
     if (name) {
         f32 max_x = g_row.x1 - control_w - dp(20), nx = g_row.x0;
         f32 nh = g_font->FontSize, sh = g_font_small->FontSize, gap = dp(3);
@@ -354,7 +502,11 @@ static void opt_row_begin(const char *name, const char *sub, f32 control_w, f32 
     ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - control_w, g_row.y + floorf((g_row.h - ImGui::GetFrameHeight()) / 2)));
 }
 
-static void opt_row_end() { ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, g_row.y + g_row.h)); }
+static void opt_row_end()
+{
+    ImGui::SetCursorScreenPos(ImVec2(g_card.a.x, g_row.y + g_row.h));
+    if (g_search.on) opt_hide(); // what comes between rows
+}
 
 // Where a list row's text sits: vertically centred in the row.
 static f32 opt_row_text_y(ImFont *font) { return floorf(g_row.y + (g_row.h - font->FontSize) / 2); }
@@ -2027,6 +2179,19 @@ static void options_hotkeys()
 
     f32 fh = ImGui::GetFrameHeight(), rh = dp(46), head_h = dp(30);
     i32 rows = opt_rows_fit(rh, head_h + opt_pager_h() + ImGui::GetFrameHeightWithSpacing() + dp(2));
+    // In a search: every hotkey on one page, found by what it does
+    bool search = g_search.on;
+    i32 page = search ? 0 : o.hotkeys_page;
+    if (search) rows = c.hotkey_count;
+    auto action_words = [&](const Hotkey &h) {
+        i32 act = action_index(h.action.s);
+        return act >= 0 ? ACTION_LABELS[act] : h.action.s;
+    };
+    bool any = false;
+    for (i32 i = 0; search && i < c.hotkey_count; i++) {
+        const char *texts[] = {action_words(c.hotkeys[i])};
+        any |= opt_search_match(g_search.q, texts, 1);
+    }
     f32 add_w = dp(132);
     ImGui::AlignTextToFramePadding();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
@@ -2059,6 +2224,7 @@ static void options_hotkeys()
     f32 warn_x = hold_unit_x + unit_w + dp(14);
     f32 pad = ImGui::GetStyle().FramePadding.x;
 
+    opt_find_force(any);
     opt_row_begin(0, 0, 0, head_h);
     opt_caption(x0, "KEYS");
     opt_caption(game_x + pad, "GAME");
@@ -2067,7 +2233,8 @@ static void options_hotkeys()
     opt_caption(hold_x + pad, "HOLD");
     opt_row_end();
     for (i32 r = 0; r < rows; r++) {
-        i32 i = o.hotkeys_page * rows + r;
+        i32 i = page * rows + r;
+        if (i < c.hotkey_count) opt_find(action_words(c.hotkeys[i]));
         opt_row_begin(0, 0, 0, rh, i < c.hotkey_count);
         if (i >= c.hotkey_count) {
             if (c.hotkey_count == 0 && r == 0) opt_empty_row("No hotkeys");
@@ -2202,7 +2369,7 @@ static void options_hotkeys()
     char left[96];
     if (is_test_copy()) snprintf(left, sizeof left, "Test copy: the real " APP_NAME " keeps the hotkeys");
     else snprintf(left, sizeof left, "%d hotkey%s", c.hotkey_count, c.hotkey_count == 1 ? "" : "s");
-    opt_pager("hotkeys", &o.hotkeys_page, c.hotkey_count, rows, left);
+    if (!search) opt_pager("hotkeys", &o.hotkeys_page, c.hotkey_count, rows, left);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2488,6 +2655,7 @@ static void opt_rows_ffmpeg(Config &c)
     f32 bw = text_w(g_font, "Download") + dp(32); // every button here is this wide
     const char *warn = g_row_warn;
     g_row_warn = 0;
+    opt_find("ffmpeg");
     opt_row_begin(0, 0, 2 * bw + bgap, dp(70));
     {
         ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -3105,6 +3273,7 @@ static void opt_space_row(i64 limit, bool draft)
     OptSpace &v = g_space;
     bool ready = r2_ready();
     if (ready) opt_space_read(limit);
+    opt_find("Space");
     opt_row_begin(0, 0, opt_wide_w(), dp(52));
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 a, z;
@@ -3353,6 +3522,7 @@ static void opt_uploader_rows()
     {
         const char *how = "How to set one up";
         f32 bw = dp(96), arrows = 2 * fh + dp(4), how_w = text_w(g_font_small, how);
+        opt_find("Your servers");
         opt_row_begin(0, 0, 0, dp(52));
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec2 ic(g_row.x0 + is / 2, g_row.y + g_row.h / 2);
@@ -3420,6 +3590,7 @@ static void opt_uploader_rows()
         }
         const OptUploader &u = g_uploaders[k];
         ImGui::PushID(k);
+        opt_find(u.name);
         opt_row_begin(0, 0, fh + dp(12) + sw, dp(52));
         ImDrawList *dl = ImGui::GetWindowDrawList();
         // The icon: the name's first letter on a disc
@@ -3629,6 +3800,7 @@ static void opt_quality_table()
     static i32 editing = -1; // the cell being typed in, row * 2 + column
     f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), sh = g_font_small->FontSize, nh = g_font->FontSize;
     f32 reset_w = dp(72), toggle_w = kit_px(36), gap = dp(8);
+    opt_find("Use recommended");
     opt_row_begin(0, 0, reset_w + gap + toggle_w, dp(52));
     ImDrawList *dl = ImGui::GetWindowDrawList();
     f32 ty = floorf(g_row.y + (g_row.h - nh - dp(3) - sh) / 2);
@@ -3895,6 +4067,7 @@ static void options_sharing()
     bool signed_in = r2_signed_in(), has = r2_has_token(), waiting = st.state == R2_SETUP_WAITING;
     {
         f32 fh = ImGui::GetFrameHeight(), mw = text_w(g_font, "Sign in again") + dp(32), gap = dp(8);
+        opt_find("Cloudflare");
         opt_row_begin(0, 0, mw + gap + fh, dp(60));
         char text[400];
         u32 col = r2_account_line(st, text, sizeof text);
@@ -4178,6 +4351,7 @@ static bool opt_am_row_begin(const char *key, const char *game, const char *name
 {
     Config &c = g_app.config;
     ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (g_search.on && opt_search_row(name, status, false)) opt_search_heads();
     ImVec2 a = ImGui::GetCursorScreenPos();
     g_am_row = a;
     g_am_row_alpha = dim ? 0.5f : 1;
@@ -4253,6 +4427,7 @@ static void opt_am_row_end()
     dl->ChannelsMerge();
     ImGui::SetCursorScreenPos(ImVec2(a.x, y));
     ImGui::Dummy(ImVec2(w, dp(8) - ImGui::GetStyle().ItemSpacing.y));
+    if (g_search.on) opt_hide();
 }
 
 // A game's events as ticks on the page's grid, so every card's ticks sit in the same columns. True when one changed.
@@ -5111,6 +5286,7 @@ static void opt_copies_row()
     else str_set(sub, "Edited clips in Clips play as edited anywhere");
     f32 cw = opt_wide_w(), fh = ImGui::GetFrameHeight(), gap = dp(8), save_w = dp(72), toggle_w = kit_px(36);
     f32 text_w_ = dp(72), bar_w = cw - text_w_ - save_w - fh - toggle_w - 4 * gap, bh = dp(OPT_BAR_H);
+    opt_find("Playable copies of edits");
     opt_row_begin(0, 0, cw, dp(52));
     opt_row_lines("Playable copies of edits", g_font, sub, sub_col, false, g_row.x1 - cw - dp(20));
     f32 x = g_row.x1 - cw, y = opt_row_frame_y();
@@ -5794,6 +5970,41 @@ static void options_general()
 
 // ---------------------------------------------------------------------------------------------------------------
 
+// The settings search's results: the pages but Apps, each drawn with only its rows that match (OptSearch).
+static void options_search(const char *const *names, const char *const *icons)
+{
+    OptSearch &s = g_search;
+    s = {};
+    s.on = true;
+    s.q = g_app.options.find;
+    static const i32 pages[] = {OPT_RECORDING, OPT_HOTKEYS, OPT_INTEGRATIONS, OPT_AUTOMARKS, OPT_GENERAL};
+    for (i32 t : pages) {
+        s.page = names[t];
+        s.icon = icons[t];
+        s.section = 0;
+        s.page_shown = s.section_shown = s.row_shown = false;
+        ImGui::PushID(names[t]);
+        opt_hide();
+        switch (t) {
+        case OPT_RECORDING: options_recording(); break;
+        case OPT_HOTKEYS: options_hotkeys(); break;
+        case OPT_INTEGRATIONS: options_integrations(); break;
+        case OPT_AUTOMARKS: options_automarks(); break;
+        case OPT_GENERAL: options_general(); break;
+        default: break;
+        }
+        opt_show();
+        ImGui::PopID();
+    }
+    s.on = false;
+    if (!s.shown) {
+        ImGui::Dummy(ImVec2(0, dp(24)));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + dp(4));
+        kit_dim("No settings match");
+    }
+    ImGui::Dummy(ImVec2(0, 0));
+}
+
 static void screen_options()
 {
     OptionsUi &o = g_app.options;
@@ -5826,11 +6037,20 @@ static void screen_options()
     s0.x += kit_px(8);
     ImGui::SetCursorScreenPos(ImVec2(s0.x + kit_px(6), s0.y + pad_y));
     ImGui::BeginGroup();
+    // The settings search, over the sections. While it has words no section is lit; a section clicked clears it
+    bool searching = false;
+    for (const char *q = o.find; *q && !searching; q++) searching = *q != ' ';
+    ImGui::BeginDisabled(o.capture_slot != 0);
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) && !o.capture_slot) ImGui::SetKeyboardFocusHere();
+    kit_search("##find", o.find, sizeof o.find, "Search", row_w);
+    ImGui::EndDisabled();
+    ImGui::Dummy(ImVec2(0, kit_px(4)));
     for (i32 t = 0; t < OPT_TAB_COUNT; t++) {
         ImGui::PushID(t);
         ImGui::BeginDisabled(o.capture_slot != 0 && o.tab != t); // finish setting the hotkey first
-        if (lib_game_item(0, names[t], t == OPT_APPS && new_apps ? new_apps : -1, o.tab == t, row_w, false, icons[t])) {
+        if (lib_game_item(0, names[t], t == OPT_APPS && new_apps ? new_apps : -1, !searching && o.tab == t, row_w, false, icons[t])) {
             o.tab = t;
+            o.find[0] = 0;
             dev_click("tab", names[t]);
         }
         ImGui::EndDisabled();
@@ -5850,14 +6070,18 @@ static void screen_options()
 
     // List pages fit their page and turn pages; the others scroll if the window is short. A scrollbar goes to the
     // right of the column, so the cards keep the column's width (whether it scrolls is known from the last frame).
-    bool list = o.tab == OPT_APPS || o.tab == OPT_HOTKEYS;
+    bool list = !searching && (o.tab == OPT_APPS || o.tab == OPT_HOTKEYS);
     g_combo_wheel = list;
     static bool scrolls;
     f32 bar = !list && scrolls ? ImGui::GetStyle().ScrollbarSize : 0;
     ImGui::SetCursorScreenPos(a);
     ImGui::BeginChild("page", ImVec2(col_w + bar, 0), ImGuiChildFlags_None,
                       list ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
-    switch (o.tab) {
+    static char searched[sizeof o.find];
+    if (searching && strcmp(searched, o.find)) ImGui::SetScrollY(0);
+    str_set(searched, searching ? o.find : "");
+    if (searching) options_search(names, icons);
+    else switch (o.tab) {
     case OPT_APPS: options_apps(); break;
     case OPT_RECORDING: options_recording(); break;
     case OPT_HOTKEYS: options_hotkeys(); break;

@@ -1632,7 +1632,7 @@ static void help_window()
             {"`rekodr toggle`", "Recording on / off"},
         };
         static const HelpRow window[] = {{"[F1]", "This help"}, {"[Esc]", "Close this help"},
-                                         {"[Esc]", "Options, setting a hotkey's keys: cancel"}};
+                                         {"[Ctrl]+[F]", "Options: search the settings"}, {"[Esc]", "Options, setting a hotkey's keys: cancel"}};
         static const HelpRow library[] = {
             {"[Ctrl]+[F]", "Search"},
             {"Mouse wheel", "Scroll"},

@@ -6899,6 +6899,22 @@ static void test_edit_xml()
     ed = blank;
 }
 
+// The settings search: every word somewhere in a row's texts, in any case
+static void test_settings_search()
+{
+    const char *row[] = {"Bitrate", "How much video a second", 0, "VIDEO"};
+    T(opt_search_match("bit", row, 4));
+    T(opt_search_match("BITRATE", row, 4));
+    T(opt_search_match("video bit", row, 4));
+    T(opt_search_match("  second  ", row, 4));
+    T(!opt_search_match("bit audio", row, 4));
+    T(!opt_search_match("", row, 4));
+    T(!opt_search_match("   ", row, 4));
+    const char *hotkey[] = {0, 0, "Recording on / off", 0};
+    T(opt_search_match("recording", hotkey, 4));
+    T(!opt_search_match("save", hotkey, 4));
+}
+
 static void test_save_names()
 {
     // 2026-11-15 21:04:05 local, whatever the time zone
@@ -6944,6 +6960,7 @@ int main()
     test_erase();
     test_r2_thumb();
     test_save_names();
+    test_settings_search();
     test_buffer_names();
     test_shown_names();
     test_lib_periods();
