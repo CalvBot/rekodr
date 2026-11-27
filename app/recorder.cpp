@@ -203,12 +203,21 @@ static bool rec_sleep(u32 ms, bool wake)
     return WaitForMultipleObjects(wake ? 2 : 1, h, FALSE, ms) == WAIT_OBJECT_0;
 }
 
+// A test copy given REKODR_CAPTURE_WINDOW (an HWND as a number) records that window and nothing else: never the
+// monitor, so a capture is tested without the window coming to the front or the desktop being recorded.
+static u64 rec_test_window()
+{
+    wchar_t v[32];
+    return is_test_copy() && GetEnvironmentVariableW(L"REKODR_CAPTURE_WINDOW", v, COUNT(v)) ? (u64)_wtoi64(v) : 0;
+}
+
 // The settings to record with while `game` (lower-case exe, empty = the desktop) is the game being played: the
 // desktop bitrate with no game, else the game bitrate, then whatever that game sets for itself. `window` is the
 // game window to record instead of the monitor (audio.cpp keeps it), 0 for the monitor.
 static RecSettings rec_settings_from(const Config &c, const Paths &paths, const char *game, u64 window)
 {
     RecSettings s = {};
+    if (rec_test_window()) window = rec_test_window();
     s.ffmpeg = c.ffmpeg;
     s.buffer_dir = c.buffer_dir;
     s.local_dir = paths.local_dir;
@@ -420,7 +429,8 @@ static void record_args(Args *a, i32 v, const RecSettings &s)
 // handing out the same frame forever. gfxcapture scales on the GPU, and it only delivers a frame when the screen
 // changed. The output side repeats frames to hold the frame rate and counts them (dup_frames in -progress), but
 // only once the next frame comes: while the screen stays the same no segment is written, and the gap is filled in
-// when it changes. The dup count is how a frozen capture is spotted.
+// when it changes. The dup count, beside the recorder's own look at the picture (ScreenWatch), is how a frozen
+// capture is spotted.
 static void capture_args(Args *a, i32 vendor, const RecSettings &s, bool wgc)
 {
     a->s[0] = 0;
@@ -684,6 +694,77 @@ static void capture_stop(Proc *p, HMONITOR nudge)
     }
 }
 
+// The frozen check's own look at the picture. Windows Graphics Capture hands out a frame for every change, so a
+// picture that keeps changing while no new frame comes is a stuck capture, and one that doesn't change is a still
+// picture (a paused game, a menu behind the Steam overlay) that the capture is right to send nothing for. In each
+// second the capture sent no new frame the picture is read and hashed, and a hash that differs from the one before
+// is a change: a monitor as a 64 x 36 copy of what DWM shows, through GDI (about 17 ms for a 1080p screen); a window
+// by PrintWindow, which draws it even behind other windows. Neither has the mouse pointer. A game in motion with a
+// working capture is never looked at.
+struct ScreenWatch {
+    u64 hash;
+    u64 sample_tick;  // the last look, taken or not
+    u64 change_tick;  // the last change seen
+    i64 changes;      // changes seen since the capture started
+    bool have;        // `hash` holds a sample
+};
+
+static void screen_watch_push(ScreenWatch *w, u64 hash, u64 tick)
+{
+    if (w->have && hash != w->hash) {
+        w->changes++;
+        w->change_tick = tick;
+    }
+    w->hash = hash;
+    w->have = true;
+}
+
+// A window that is closed, hidden or minimised, or a desktop that can't be read (locked), gives no sample.
+static bool screen_sample(HMONITOR mon, HWND hwnd, u64 *hash)
+{
+    RECT r;
+    if (hwnd) {
+        if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd) || !GetWindowRect(hwnd, &r)) return false;
+    } else {
+        MONITORINFO mi = {sizeof mi};
+        if (!GetMonitorInfoW(mon, &mi)) return false;
+        r = mi.rcMonitor;
+    }
+    i32 rw = r.right - r.left, rh = r.bottom - r.top;
+    if (rw <= 0 || rh <= 0 || rw > 16384 || rh > 16384) return false;
+    i32 W = hwnd ? rw : 64, H = hwnd ? rh : 36;
+    HDC screen = GetDC(0);
+    if (!screen) return false;
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = W;
+    bi.bmiHeader.biHeight = -H;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = 0;
+    HBITMAP bmp = mem ? CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, 0, 0) : 0;
+    bool ok = false;
+    if (bmp) {
+        HGDIOBJ old = SelectObject(mem, bmp);
+        if (hwnd) {
+            ok = PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT) != 0;
+        } else {
+            SetStretchBltMode(mem, HALFTONE);
+            SetBrushOrgEx(mem, 0, 0, 0);
+            ok = StretchBlt(mem, 0, 0, W, H, screen, r.left, r.top, rw, rh, SRCCOPY) != 0;
+        }
+        GdiFlush();
+        if (ok) *hash = fnv64(bits, (size_t)W * H * 4);
+        SelectObject(mem, old);
+        DeleteObject(bmp);
+    }
+    if (mem) DeleteDC(mem);
+    ReleaseDC(0, screen);
+    return ok;
+}
+
 static void run_name(wchar_t *out, i32 cap)
 {
     SYSTEMTIME t;
@@ -759,6 +840,10 @@ static DWORD WINAPI recorder_thread(void *)
             continue;
         }
         const RecSettings s = without_bad_window(snap.s);
+        if (rec_test_window() && !s.hwnd) {
+            rec_sleep(1000, true);
+            continue;
+        }
         if (!log_cleared) {
             // A fresh ffmpeg-video.log each start.
             Path log = path_join(s.local_dir, L"ffmpeg-video.log");
@@ -830,6 +915,8 @@ static DWORD WINAPI recorder_thread(void *)
         g_reader.frames = g_reader.dups = g_reader.drops = g_reader.progress_tick = g_reader.out_us = 0;
         HANDLE reader = thread_start(stderr_thread, &g_reader);
         HMONITOR nudge = wgc && !s.hwnd ? (HMONITOR)(uintptr_t)s.hmonitor : 0;
+        ScreenWatch watch = {};
+        i64 window_changes = 0, watch_frames = 0, watch_dups = 0;
 
         u64 started = GetTickCount64();
         bool announced = false;
@@ -866,13 +953,25 @@ static DWORD WINAPI recorder_thread(void *)
             // error in an external library"). No new segment for 15 s (they come every 2 s) means it's stuck.
             i64 last_seg = g_reader.segment_tick;
             u64 since = last_seg ? (u64)last_seg : started;
-            // Windows Graphics Capture on a screen that isn't changing writes nothing either. That's an idle screen,
-            // not a stuck ffmpeg, when ffmpeg still reports progress, no game is played and nobody has touched the
-            // mouse or keyboard since the last segment: wait, and the repeats fill the gap once the screen changes.
-            // Up to a minute, so the encoder never has a long stretch of repeats to catch up on.
+            if (wgc && now.s.game && GetTickCount64() - watch.sample_tick >= 1000) {
+                watch.sample_tick = GetTickCount64();
+                i64 f = g_reader.frames, d = g_reader.dups;
+                bool none_new = f - watch_frames <= d - watch_dups;
+                watch_frames = f;
+                watch_dups = d;
+                u64 h;
+                if (none_new && screen_sample((HMONITOR)(uintptr_t)s.hmonitor, (HWND)(intptr_t)s.hwnd, &h))
+                    screen_watch_push(&watch, h, watch.sample_tick);
+            }
+            // Windows Graphics Capture on a screen that isn't changing writes nothing either. That's a still picture,
+            // not a stuck ffmpeg, when ffmpeg still reports progress and, while a game is played, the picture hasn't
+            // changed since the last segment (ScreenWatch), or, on the desktop, nobody has touched the mouse or
+            // keyboard since then: wait, and the repeats fill the gap once the picture changes. Up to a minute, so
+            // the encoder never has a long stretch of repeats to catch up on.
             LASTINPUTINFO input = {sizeof input};
-            bool still = wgc && !now.s.game && GetTickCount64() - (u64)g_reader.progress_tick < 3000 &&
-                         GetLastInputInfo(&input) && (i32)(input.dwTime - (DWORD)since) <= 0;
+            bool unchanged = now.s.game ? watch.change_tick < since
+                                        : GetLastInputInfo(&input) && (i32)(input.dwTime - (DWORD)since) <= 0;
+            bool still = wgc && GetTickCount64() - (u64)g_reader.progress_tick < 3000 && unchanged;
             u64 quiet = GetTickCount64() - since;
             if (still && quiet > 15000 && quiet <= 60000) {
                 if (!idle) log_line("screen unchanged: the capture waits for it to change");
@@ -887,13 +986,14 @@ static DWORD WINAPI recorder_thread(void *)
                 code = 2; // handled like ffmpeg stopping by itself: retry with backoff
                 break;
             }
-            // Frozen: a game is being played but every frame of the last 10 s repeated the one before. A game redraws
-            // all the time, so the capture lost it (Windows Graphics Capture only hands out changed frames; the
-            // output side fills in repeats). A new capture picks it up again.
+            // Frozen: a game is being played, its picture changed in most seconds of the last 10 s, and yet every
+            // frame written repeated the one before. The capture lost it; a new capture picks it up again. A picture
+            // that stays the same gets no new frames either, and that is a still picture, so it keeps being recorded.
             u64 tick = GetTickCount64();
             if (tick - window_tick >= 10000) {
                 i64 f = g_reader.frames, d = g_reader.dups, dr = g_reader.drops, o = g_reader.out_us;
-                bool same = f > window_frames && f - window_frames <= d - window_dups;
+                bool lost = f - window_frames <= d - window_dups && watch.changes - window_changes >= 6;
+                window_changes = watch.changes;
                 f64 pace = window_out && o > window_out ? (f64)(o - window_out) / ((f64)(tick - window_tick) * 1000) : 0;
                 if (announced && now.s.game && pace > 0) {
                     // The window for the quality warning (quality.cpp)
@@ -923,7 +1023,7 @@ static DWORD WINAPI recorder_thread(void *)
                 window_tick = tick;
                 window_frames = f;
                 window_dups = d;
-                if (wgc && announced && now.s.game && same) {
+                if (wgc && announced && now.s.game && lost) {
                     bool again = last_frozen && tick - last_frozen < 120000;
                     last_frozen = tick;
                     if (again && now.s.capture == CAPTURE_AUTO) {
@@ -931,7 +1031,7 @@ static DWORD WINAPI recorder_thread(void *)
                         dxgi_fails = 0;
                         log_line("video frozen again while a game is played: switching to Desktop Duplication");
                     } else {
-                        log_line("video frozen: no new frame for 10 s while a game is played; restarting the capture");
+                        log_line("video frozen: the game's picture kept changing but no new frame came for 10 s; restarting the capture");
                     }
                     capture_stop(&p, nudge);
                     frozen = true;

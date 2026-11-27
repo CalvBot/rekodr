@@ -1304,6 +1304,19 @@ static void test_news()
 }
 
 // The quality warning: what's too much for the encoder, the monitor or the disk, and what keeps up
+// The frozen check's picture watch: a first sample is no change, a repeated one neither, a new one is
+static void test_screen_watch()
+{
+    ScreenWatch w = {};
+    screen_watch_push(&w, 5, 1000);
+    screen_watch_push(&w, 5, 2000);
+    T(w.changes == 0 && w.change_tick == 0);
+    screen_watch_push(&w, 7, 3000);
+    screen_watch_push(&w, 7, 4000);
+    screen_watch_push(&w, 5, 5000);
+    T(w.changes == 2 && w.change_tick == 5000);
+}
+
 static void test_quality()
 {
     Config c = {};
@@ -6737,6 +6750,7 @@ int main()
     test_settings_round_trip();
     test_watch_scan();
     test_news();
+    test_screen_watch();
     test_quality();
     test_pieces();
     test_edit_volumes();
