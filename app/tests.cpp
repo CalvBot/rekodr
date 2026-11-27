@@ -3200,6 +3200,10 @@ static void test_r2()
         T(strstr(js, "font:14px/1.5 Onest,\\\"Segoe UI\\\",system-ui,sans-serif"));
         T(strstr(js, "calc((100svh - var(--room)) * var(--w) / var(--h))") && strstr(js, "v.volume=+this.value"));
         T(strstr(js, "/[#&]t=([0-9:.]+)/.exec(location.hash)") && strstr(js, "background:var(--accent)"));
+        // The time goes in the address paused, without history; the picture's menu; no zoom readout on it
+        T(strstr(js, "u+='#t='+t.toFixed(3)") && strstr(js, "history.replaceState(") && !strstr(js, "pushState"));
+        T(strstr(js, ">Copy frame</button>") && strstr(js, ">Reset zoom</button>") && strstr(js, "1.25:1/1.25") &&
+          !strstr(js, "id=\\\"zt\\\"") && !strstr(js, "class=\\\"tag\\\""));
         T(strstr(js, "<a class=\\\"via\\\" href=\\\"https://github.com/CalvBot/rekodr\\\"><svg viewBox=\\\"0 0 607 607\\\"") &&
           strstr(js, "</svg>via <b>Rekodr</b></a>"));
         T(strstr(js, "<input id=\\\"vl\\\" type=\\\"range\\\" min=\\\"0\\\" max=\\\"1\\\"") && strstr(js, "aria-label=\\\"Copy link\\\""));

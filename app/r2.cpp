@@ -888,9 +888,11 @@ static const char R2_PLAYER_CSS[] =
     ".view.z{cursor:grab}.view.d{cursor:grabbing}"
     "video{display:block;width:100%;height:100%;max-width:none;object-fit:contain;transform-origin:0 0;"
     "background:#000}"
-    ".tag{position:absolute;top:12px;font-size:13px;font-weight:600;background:var(--scrim);border-radius:999px;"
-    "padding:4px 12px;font-variant-numeric:tabular-nums}"
-    ".tag button{all:unset;cursor:pointer;color:var(--dim);margin-left:8px}"
+    // The picture's menu (a right-click on it)
+    ".menu{position:fixed;z-index:5;min-width:150px;padding:4px;background:var(--raised);border-radius:8px;"
+    "box-shadow:0 6px 24px #0009;display:grid}.menu[hidden]{display:none}"
+    ".menu button{all:unset;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600}"
+    ".menu button:hover,.menu button:focus-visible{background:var(--hover)}.menu button[hidden]{display:none}"
     ".ctrl{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;padding:4px 10px 8px}"
     ".scrub{position:relative;height:20px;cursor:pointer;touch-action:none}"
     ".scrub>*{position:absolute;pointer-events:none}"
@@ -964,9 +966,9 @@ static const char R2_PLAYER_CSS[] =
 // The page around the video: the player (the video goes first in its view), the name and game line with Download
 // and Copy link, then "via Rekodr" with Rekodr's mono logo (assets/icons/rekodr-logo.svg) in the text's colour.
 static const char R2_PLAYER_HTML[] =
-    "<div class=\"player\" id=\"pl\" tabindex=\"0\"><div class=\"view\" id=\"vw\">"
-    "<div class=\"tag\" id=\"zt\" style=\"right:10px\" hidden><span id=\"zv\"></span>"
-    "<button id=\"zr\" type=\"button\">Reset</button></div></div>"
+    "<div class=\"player\" id=\"pl\" tabindex=\"0\"><div class=\"view\" id=\"vw\"></div>"
+    "<div class=\"menu\" id=\"mn\" role=\"menu\" hidden><button id=\"mf\" type=\"button\" role=\"menuitem\">"
+    "Copy frame</button><button id=\"mz\" type=\"button\" role=\"menuitem\">Reset zoom</button></div>"
     "<div class=\"ctrl\" id=\"ct\"><div class=\"lane\" id=\"ln\"><span class=\"lbl\" id=\"lb\" hidden></span></div>"
     "<div class=\"scrub\" id=\"sc\"><i class=\"rail\"></i>"
     "<i class=\"done\" id=\"dn\"></i><span id=\"tk\"></span><i class=\"head\" id=\"hd\"></i></div>"
@@ -1005,9 +1007,12 @@ static const char R2_PLAYER_HTML[] =
     "c-5.4 4.2-8.6 10.6-8.6 17.4z\"/></svg>via <b>" APP_NAME "</b></a>";
 
 // The player's script, after its strings (R2CSS, R2HTML, R2ICONS). It reads the page's data (r2_page_html), puts
-// in the look, builds the page around the page's video and runs the controls: a scroll zooms into the picture and
-// a drag moves it, , and . step a frame, [ and ] change the speed, markers and the end of the cards' preview jump
-// there, and a #t= in the address (seconds, m:ss or h:mm:ss) starts there. Paused, it shows the name and says so.
+// in the look, builds the page around the page's video and runs the controls: a click on the picture plays or
+// pauses it, a scroll zooms into it around the cursor (1x to 8x) and a drag moves it there, , and . step a frame,
+// [ and ] or Shift with , and . change the speed, a right-click offers Copy frame (the whole frame at its own size)
+// and Reset zoom, and markers and the end of the cards' preview jump there. Paused, or after a step or a seek, the
+// address ends in the time, #t=12.345 (without a new history entry); playing, it doesn't. A #t= in the address
+// (seconds, m:ss or h:mm:ss) opens the clip paused there. A paused link shows the name and says so.
 // Each marker's icon comes from the player's sheet, a dot for one the sheet doesn't have. The volume and mute are
 // kept in the browser under one key, so every clip on the host opens at the last level.
 static const char R2_PLAYER_JS1[] =
@@ -1069,7 +1074,10 @@ static const char R2_PLAYER_JS1[] =
     "function step(n){v.pause();go(Math.round(v.currentTime*fps+n)/fps)}"
     "function speed(n){si=Math.min(S.length-1,Math.max(0,si+n));v.playbackRate=S[si];"
     "$('sp').textContent=S[si]+'x'}"
-    "function toggle(){if(v.paused)v.play();else v.pause()}";
+    "function toggle(){if(v.paused)v.play();else v.pause()}"
+    "function where(){var u=location.href.split('#')[0],t=v.currentTime;"
+    "if(v.paused&&t>0)u+='#t='+t.toFixed(3);if(u!=location.href)try{history.replaceState(history.state,'',u)}"
+    "catch(e){}}";
 static const char R2_PLAYER_JS2[] =
     "function frame(n,meta){if(lastMT>=0){var dt=meta.mediaTime-lastMT;"
     "if(dt>0.004&&dt<0.1&&(!best||dt<best)){best=dt;fps=Math.round(1/dt)}}lastMT=meta.mediaTime;"
@@ -1080,6 +1088,7 @@ static const char R2_PLAYER_JS2[] =
     "v.addEventListener('volumechange',function(){try{localStorage.setItem('rekodr-volume',"
     "JSON.stringify({v:v.volume,m:v.muted}))}catch(e){}});"
     "['play','pause','timeupdate','seeked','volumechange'].forEach(function(e){v.addEventListener(e,ui)});"
+    "['play','pause','seeked'].forEach(function(e){v.addEventListener(e,where)});"
     "v.addEventListener('loadedmetadata',function(){marks();ui();"
     "var h=/[#&]t=([0-9:.]+)/.exec(location.hash),t=0;if(h){h[1].split(':').forEach(function(p){"
     "t=t*60+(+p||0)});go(t)}});"
@@ -1091,18 +1100,31 @@ static const char R2_PLAYER_JS2[] =
     "sc.onpointermove=function(e){if(drag)at(e)};sc.onpointerup=function(){drag=0};"
     "function zoom(){var r=vw.getBoundingClientRect();x=Math.min(0,Math.max(r.width*(1-z),x));"
     "y=Math.min(0,Math.max(r.height*(1-z),y));v.style.transform=z>1?'translate('+x+'px,'+y+'px) scale('+z+')':'';"
-    "vw.classList.toggle('z',z>1);$('zt').hidden=z<=1;$('zv').textContent=z.toFixed(1)+'x'}"
+    "vw.classList.toggle('z',z>1)}"
     "function unzoom(){z=1;x=y=0;zoom()}"
     "vw.addEventListener('wheel',function(e){e.preventDefault();var r=vw.getBoundingClientRect(),"
-    "cx=e.clientX-r.left,cy=e.clientY-r.top,n=Math.min(8,Math.max(1,z*(e.deltaY<0?1.2:1/1.2)));"
+    "cx=e.clientX-r.left,cy=e.clientY-r.top,n=Math.min(8,Math.max(1,z*(e.deltaY<0?1.25:1/1.25)));"
     "x=cx-(cx-x)*n/z;y=cy-(cy-y)*n/z;z=n;zoom()},{passive:false});"
-    "var pan=null;vw.onpointerdown=function(e){if(e.target.closest('.tag'))return;"
+    "var pan=null;vw.onpointerdown=function(e){if(e.button)return;"
     "pan={x:e.clientX,y:e.clientY,ox:x,oy:y,m:0};vw.setPointerCapture(e.pointerId)};"
     "vw.onpointermove=function(e){if(!pan)return;var dx=e.clientX-pan.x,dy=e.clientY-pan.y;"
     "if(Math.abs(dx)+Math.abs(dy)>4)pan.m=1;if(pan.m&&z>1){vw.classList.add('d');x=pan.ox+dx;y=pan.oy+dy;zoom()}};"
     "vw.onpointerup=function(){if(pan&&!pan.m)toggle();pan=null;vw.classList.remove('d')};"
     "vw.onpointercancel=function(){pan=null;vw.classList.remove('d')};"
-    "vw.ondblclick=unzoom;$('zr').onclick=unzoom;window.addEventListener('resize',function(){zoom();lay()});"
+    "vw.ondblclick=unzoom;window.addEventListener('resize',function(){zoom();lay();shut()});"
+    "var mn=$('mn');function shut(){mn.hidden=true}"
+    "vw.oncontextmenu=function(e){e.preventDefault();$('mz').hidden=z<=1;mn.hidden=false;"
+    "var w=mn.offsetWidth,h=mn.offsetHeight;mn.style.left=Math.max(4,Math.min(e.clientX,innerWidth-w-4))+'px';"
+    "mn.style.top=Math.max(4,Math.min(e.clientY,innerHeight-h-4))+'px';$('mf').focus({preventScroll:true})};"
+    "document.addEventListener('pointerdown',function(e){if(!mn.contains(e.target))shut()},true);"
+    "window.addEventListener('scroll',shut,true);window.addEventListener('blur',shut);"
+    "$('mz').onclick=function(){shut();unzoom()};"
+    "$('mf').onclick=function(){shut();var c=d.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;"
+    "function no(){said('Couldn\\'t copy the frame')}"
+    "if(!c.width||!navigator.clipboard||!window.ClipboardItem)return no();"
+    "try{c.getContext('2d').drawImage(v,0,0);navigator.clipboard.write([new ClipboardItem({'image/png':"
+    "new Promise(function(ok,bad){c.toBlob(function(b){b?ok(b):bad()},'image/png')})})])"
+    ".then(function(){said('Frame copied')},no)}catch(e){no()}};"
     "$('pb').onclick=toggle;$('fb').onclick=function(){step(-1)};$('ff').onclick=function(){step(1)};"
     "$('sp').onclick=function(){speed(si<S.length-1?1:-si)};"
     "function mute(){if(v.muted||!v.volume){v.muted=false;if(!v.volume)v.volume=1}else v.muted=true}"
@@ -1111,14 +1133,18 @@ static const char R2_PLAYER_JS2[] =
     "else if(pl.requestFullscreen)pl.requestFullscreen();else if(v.webkitEnterFullscreen)v.webkitEnterFullscreen()};"
     "document.addEventListener('fullscreenchange',function(){pl.classList.toggle('full',"
     "document.fullscreenElement==pl);zoom();lay()});"
-    "$('cp').onclick=function(){var u=location.href.split('#')[0],t=Math.floor(v.currentTime);"
-    "if(t>0)u+='#t='+t;function said(s){var c=$('cl');c.textContent=s;c.hidden=false;clearTimeout(c.q);"
+    "function said(s){var c=$('cl');c.textContent=s;c.hidden=false;clearTimeout(c.q);"
     "c.q=setTimeout(function(){c.hidden=true},1500)}"
-    "if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){said(t>0?'Copied at '+clock(t):"
+    "$('cp').onclick=function(){var u=location.href.split('#')[0],t=v.currentTime;"
+    "if(t>0)u+='#t='+(v.paused?t.toFixed(3):Math.floor(t));"
+    "if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){said(t>=1?'Copied at '+clock(t):"
     "'Copied')},function(){prompt('Link',u)});else prompt('Link',u)};"
     "document.addEventListener('keydown',function(e){var k=e.key,b=e.target.tagName=='BUTTON';"
     "if(e.ctrlKey||e.metaKey||e.altKey||e.target.tagName=='INPUT')return;"
-    "if(k==',')step(-1);else if(k=='.')step(1);else if(k=='[')speed(-1);else if(k==']')speed(1);"
+    "if(!mn.hidden){if(k=='Escape'){shut();e.preventDefault()}return}"
+    "var c=e.code=='Comma'?-1:e.code=='Period'?1:0;"
+    "if(c&&e.shiftKey||k=='<'||k=='>')speed(c||(k=='<'?-1:1));else if(c||k==','||k=='.')step(c||(k==','?-1:1));"
+    "else if(k=='[')speed(-1);else if(k==']')speed(1);"
     "else if((k==' '&&!b)||k=='k')toggle();else if(k=='ArrowLeft')go(v.currentTime-5);"
     "else if(k=='ArrowRight')go(v.currentTime+5);else if(k=='m')mute();"
     "else if(k=='f')$('fs').onclick();else if(k=='0'||k=='Escape'&&z>1)unzoom();else return;"
