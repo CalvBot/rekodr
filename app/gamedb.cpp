@@ -71,6 +71,7 @@ struct GameDbShared {
     volatile LONG stop;
     bool       online;      // may fetch
     char       service[128]; // the service's host; "" = don't ask it
+    char       service_key[72]; // what requests to it are signed with (gamedb_set_service)
     char       sgdb_key[72]; // the player's own SteamGridDB key; "" = none
     // Art asked for, not fetched yet, newest first. `paced`: it needs the service, which has been asked enough for
     // now. `quiet`: a picture is there, and only whether it is still the one to show is looked at.
@@ -1372,6 +1373,57 @@ static void gamedb_new_run(AppInfo *a)
 #endif
 static const char ART_SERVICE_KEY[] = REKODR_SERVICE_KEY;
 
+// A service of the player's own (art_service set to another host) has its own signing key: Options takes it and it
+// is kept in Windows' Credential Manager, not settings.txt. A test copy (REKODR_HOME) keeps its own.
+static void service_key_target(wchar_t *out, i32 cap)
+{
+    u32 h = test_home_hash();
+    if (h) swprintf(out, cap, L"rekodr-%08x/service-key", h);
+    else swprintf(out, cap, L"rekodr/service-key");
+}
+
+static void service_key_get(char *out, i32 cap)
+{
+    out[0] = 0;
+    wchar_t target[64];
+    service_key_target(target, COUNT(target));
+    CREDENTIALW *cred = 0;
+    if (!CredReadW(target, CRED_TYPE_GENERIC, 0, &cred)) return;
+    i32 n = (i32)cred->CredentialBlobSize;
+    if (n >= cap) n = cap - 1;
+    memcpy(out, cred->CredentialBlob, n);
+    out[n] = 0;
+    CredFree(cred);
+}
+
+// Stores the key; "" removes it.
+static void service_key_store(const char *s)
+{
+    wchar_t target[64];
+    service_key_target(target, COUNT(target));
+    if (!s[0]) {
+        CredDeleteW(target, CRED_TYPE_GENERIC, 0);
+        return;
+    }
+    CREDENTIALW cred = {};
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = target;
+    cred.CredentialBlobSize = (DWORD)strlen(s);
+    cred.CredentialBlob = (LPBYTE)s;
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    cred.UserName = (wchar_t *)L"rekodr";
+    if (!CredWriteW(&cred, 0)) log_line("gamedb: couldn't store the service key (%d)", (int)GetLastError());
+}
+
+// The key requests to `host` are signed with: the player's own if one is set, else the built-in one, which only
+// Rekodr's own host gets. "" = none, and then nothing is sent there.
+static const char *service_key_for(const char *host, const char *own)
+{
+    if (!host[0]) return "";
+    if (own[0]) return own;
+    return strcmp(host, ART_SERVICE_HOST) ? "" : ART_SERVICE_KEY;
+}
+
 // HMAC-SHA256 of the parts, one after another, in hex.
 static bool hmac_sha256_hex(const char *key, const char *const *parts, i32 n, char out[65])
 {
@@ -1392,12 +1444,12 @@ static bool hmac_sha256_hex(const char *key, const char *const *parts, i32 n, ch
 
 // The signature header (ART_SERVICE_SIG_HEADER) for a path (with its query, as sent): "<unix seconds>.<hmac of "seconds\npath">", and
 // for a POST "seconds\npath\nbody". The body is hashed as it is, whatever its size.
-static void art_service_sign(const char *path, i64 seconds, char *out, i32 cap, const char *post = 0)
+static void art_service_sign(const char *key, const char *path, i64 seconds, char *out, i32 cap, const char *post = 0)
 {
     char secs[24], mac[65];
     snprintf(secs, sizeof secs, "%lld\n", seconds);
     const char *parts[] = {secs, path, "\n", post};
-    hmac_sha256_hex(ART_SERVICE_KEY, parts, post ? 4 : 2, mac);
+    hmac_sha256_hex(key, parts, post ? 4 : 2, mac);
     snprintf(out, cap, "%lld.%s", seconds, mac);
 }
 
@@ -1438,7 +1490,7 @@ static u32 art_service_get(const char *path, char **body, i64 *len, const char *
         FILETIME now;
         GetSystemTimeAsFileTime(&now);
         i64 unix_seconds = (((i64)now.dwHighDateTime << 32 | now.dwLowDateTime) - 116444736000000000ll) / 10000000;
-        art_service_sign(path, unix_seconds, sig, sizeof sig, post);
+        art_service_sign(g_gamedb.service_key, path, unix_seconds, sig, sizeof sig, post);
         i32 hl = swprintf(header, COUNT(header), ART_SERVICE_SIG_HEADER L": %hs\r\n%s", sig,
                           post ? L"content-type: application/json\r\n" : L"");
         if (etag[0] && hl > 0 && strlen(etag) < 64) swprintf(header + hl, COUNT(header) - hl, L"If-None-Match: \"%hs\"\r\n", etag);
@@ -2386,14 +2438,23 @@ static DWORD WINAPI gamedb_find_thread(void *)
     return 0;
 }
 
-// Points the lookups at another art service host, or at none with "", while they run. Workers read the host
-// without a lock, so a host is written in behind an empty first byte and the first byte goes in last.
-static void gamedb_set_service(const char *host)
+// Points the lookups and reports at another service host, or at none with "", while they run, signed with the key
+// service_key_for picks; a host with no key to sign with counts as none. Workers read the host without a lock, so
+// the key and the host are written in behind an empty first byte and the first byte goes in last.
+static void gamedb_set_service(const char *want)
 {
-    if (!strcmp(g_gamedb.service, host)) return;
-    g_gamedb.service[0] = 0;
-    MemoryBarrier();
-    if (!host[0]) return;
+    char own[72];
+    service_key_get(own, sizeof own);
+    const char *key = service_key_for(want, own);
+    const char *host = key[0] ? want : "";
+    bool same = !strcmp(g_gamedb.service, host) && !strcmp(g_gamedb.service_key, key);
+    if (!same) {
+        g_gamedb.service[0] = 0;
+        MemoryBarrier();
+        str_set(g_gamedb.service_key, key);
+    }
+    SecureZeroMemory(own, sizeof own);
+    if (same || !host[0]) return;
     snprintf(g_gamedb.service + 1, sizeof g_gamedb.service - 1, "%s", host + 1);
     MemoryBarrier();
     g_gamedb.service[0] = host[0];
@@ -2402,7 +2463,7 @@ static void gamedb_set_service(const char *host)
 static void gamedb_start(bool online)
 {
     g_gamedb.online = online;
-    str_set(g_gamedb.service, g_app.config.art_service.s);
+    gamedb_set_service(g_app.config.art_service.s);
     str_set(g_gamedb.sgdb_key, g_app.config.sgdb_key);
     g_gamedb.wake = CreateEventW(0, FALSE, FALSE, 0);
     g_gamedb.thread = thread_start(gamedb_thread, 0);

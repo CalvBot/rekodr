@@ -2740,7 +2740,7 @@ static void test_gamedb()
 
     // The art service: signed with the test key as the service checks it (worked out with Python's hmac)
     char sig[128], enc[64];
-    art_service_sign("/v1/search?q=Hollow%20Knight", 1763500000, sig, sizeof sig);
+    art_service_sign(ART_SERVICE_KEY, "/v1/search?q=Hollow%20Knight", 1763500000, sig, sizeof sig);
     T(!strcmp(sig, "1763500000.bf1a864ff50bb641a940c034d9b582241797b3bc1a47efbe5a422179fbc284e5"));
     url_encode("Garry's Mod: 2 & co~", enc, sizeof enc);
     T(!strcmp(enc, "Garry%27s%20Mod%3A%202%20%26%20co~"));
@@ -4197,7 +4197,7 @@ static void test_mcpack()
 
     // A POST is signed with its body (worked out with Python's hmac)
     char sig[128];
-    art_service_sign("/v1/resolve", 1763500000, sig, sizeof sig, "{\"mc\":{\"launcher\":\"prism\"}}");
+    art_service_sign(ART_SERVICE_KEY, "/v1/resolve", 1763500000, sig, sizeof sig, "{\"mc\":{\"launcher\":\"prism\"}}");
     T(!strcmp(sig, "1763500000.e58674c0168b200a27a89691e85d90212174664cbc1d49a36b3abc9d7690bbbd"));
     // A body bigger than any buffer (a crash report with its dump) is signed whole
     {
@@ -4205,8 +4205,26 @@ static void test_mcpack()
         i32 bn = snprintf(big, sizeof big, "{\"dump\":\"");
         memset(big + bn, 'A', 40000);
         strcpy(big + bn + 40000, "\"}");
-        art_service_sign("/v1/crash", 1763500000, sig, sizeof sig, big);
+        art_service_sign(ART_SERVICE_KEY, "/v1/crash", 1763500000, sig, sizeof sig, big);
         T(!strcmp(sig, "1763500000.aec7cabcf1e78ff30f5bb78a34fc599bbda7d2285b7039f5ae98381d83bb3d20"));
+    }
+    // Requests are signed with the player's own key if one is set; the built-in key goes only to Rekodr's host
+    T(!strcmp(service_key_for(ART_SERVICE_HOST, ""), ART_SERVICE_KEY));
+    T(!strcmp(service_key_for("api.example.org", ""), ""));
+    T(!strcmp(service_key_for("api.example.org", "theirs"), "theirs"));
+    T(!strcmp(service_key_for(ART_SERVICE_HOST, "theirs"), "theirs"));
+    T(!strcmp(service_key_for("", "theirs"), ""));
+    // A host with no key to sign with is no service at all, so nothing (reports included) is sent there
+    {
+        char keep[128], keep_key[72];
+        str_set(keep, g_gamedb.service);
+        str_set(keep_key, g_gamedb.service_key);
+        gamedb_set_service("api.example.org");
+        T(!g_gamedb.service[0] && !g_gamedb.service_key[0] && tel_post("/v1/feedback", "{}") == 0);
+        gamedb_set_service(ART_SERVICE_HOST);
+        T(!strcmp(g_gamedb.service, ART_SERVICE_HOST) && !strcmp(g_gamedb.service_key, ART_SERVICE_KEY));
+        str_set(g_gamedb.service_key, keep_key);
+        str_set(g_gamedb.service, keep);
     }
 
     remove_tree(root);

@@ -6022,6 +6022,24 @@ static void options_general()
         options_apply(0);
     }
     ImGui::BeginDisabled(!service);
+    // A service of the player's own: its host, and the key it signs with (none set = nothing is sent there)
+    if (service && strcmp(c.art_service.s, ART_SERVICE_HOST)) {
+        f32 key_w = fminf(dp(300), ImGui::GetContentRegionAvail().x * 0.45f);
+        opt_row_begin(c.art_service.s, "Your own service, from settings.txt. Its key stays in Windows' Credential Manager", key_w);
+        static char shown[72], key[72];
+        static bool loaded;
+        if (!loaded) {
+            service_key_get(shown, sizeof shown);
+            loaded = true;
+        }
+        if (opt_text("##servicekey", shown, key_w, ImGuiInputTextFlags_Password, "Its signing key", key, sizeof key)) {
+            str_set(shown, trim(key));
+            service_key_store(shown);
+            gamedb_set_service(c.art_service.s);
+            log_line("options: own service key %s", shown[0] ? "set" : "cleared");
+        }
+        opt_row_end();
+    }
     if (opt_row_toggle("Help name games", "When you name a game by hand, that name helps name it for other players",
                        "##sharenames", &c.share_names)) {
         log_line("options: help name games %s", c.share_names ? "on" : "off");
@@ -6211,10 +6229,12 @@ static void options_general()
         if (art) art_games_refresh(c, now);
         bool busy = g_tel.fb_busy != 0;
         f32 chip_w = text_w(g_font, "Game art") + dp(24), send_w = text_w(g_font, "Sending") + dp(32), gap = dp(8);
+        bool to = c.game_lookup && g_gamedb.service[0];
         const char *sub = !c.game_lookup        ? "Needs Look up games online"
+                          : !to                 ? "Needs the art service on"
                           : art && !l.count     ? "No game " APP_NAME " has art for yet"
                           : art                 ? "Sent with the game and the version number"
-                                                : "Goes to " APP_NAME "'s service with the version number";
+                                                : "Sent with the version number";
         opt_row_begin("A bug, an idea or odd game art", sub, 3 * chip_w + 2 * gap + dp(16) + send_w);
         static const char *const labels[] = {"Bug##fbkind", "Idea##fbkind", "Game art##fbkind"};
         for (i32 i = 0; i < 3; i++) {
@@ -6226,7 +6246,7 @@ static void options_general()
         for (const char *p = text; *p && !any; p++) any = !isspace((u8)*p);
         f32 wait = busy ? 0 : feedback_wait_left(art ? g_tel.art_sent_ms : g_tel.fb_sent_ms, now);
         bool ready = art ? l.at >= 0 && l.at < l.count : any;
-        bool can = c.game_lookup && !busy && wait <= 0 && ready;
+        bool can = to && !busy && wait <= 0 && ready;
         bool sending = busy && g_tel.fb_art == art;
         if (kit_button(sending ? "Sending##fbsend" : wait > 0 ? "##fbsend" : "Send##fbsend", KIT_PRIMARY,
                        ImVec2(send_w, 0), can)) {

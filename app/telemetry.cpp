@@ -1,4 +1,4 @@
-// Usage stats and feedback, both to Rekodr's service as signed POSTs, like /v1/lookup.
+// Usage stats, feedback and crash reports, to the service art_service names as signed POSTs, like /v1/lookup.
 //   /v1/stats     once a day at most, only while "Send usage stats" is on: the version, Windows build, encoder, fps
 //                 and height, and how many clips, saves, shares, links and slow-PC warnings since the last report
 //                 that went through. The counts are kept in <local_dir>\stats.txt so they outlive a restart.
@@ -7,7 +7,7 @@
 //                 name shown and a short note.
 //   /v1/crash     after a crash or hang, the next start sends its report, while "Send crash reports" is on: see
 //                 crash_body for what's in it.
-// With "Look up games online" off, none is sent. The version is REKODR_VERSION (version.h).
+// With "Look up games online" off, or no service (art_service empty, or another host with no key), none is sent. The version is REKODR_VERSION (version.h).
 
 struct StatCounts { i32 clips, saves, shares, links, strain; };
 
@@ -98,14 +98,16 @@ static void telemetry_on_save(const Event &e)
 
 static void telemetry_shared() { tel_count(&StatCounts::shares); } // a Share done: a file or a link
 
-// A signed POST of json to the service. Returns the status (0 = no answer).
+// A signed POST of json to the service art_service names (gamedb_set_service). Returns the status (0 = no answer,
+// or no service to send to).
 static u32 tel_post(const char *path, const char *json)
 {
+    if (!g_gamedb.service[0]) return 0;
     wchar_t host[128], wpath[64], header[320];
-    utf8_to_wide(ART_SERVICE_HOST, host, COUNT(host));
+    utf8_to_wide(g_gamedb.service, host, COUNT(host));
     utf8_to_wide(path, wpath, COUNT(wpath));
     char sig[128];
-    art_service_sign(path, tel_unix_now(), sig, sizeof sig, json);
+    art_service_sign(g_gamedb.service_key, path, tel_unix_now(), sig, sizeof sig, json);
     swprintf(header, COUNT(header), ART_SERVICE_SIG_HEADER L": %hs\r\ncontent-type: application/json\r\n", sig);
     char *body = 0;
     i64 len = 0;
@@ -411,7 +413,7 @@ static void crash_tick(i64 now)
         InterlockedExchange(&g_crash.busy, 0);
         return;
     }
-    if (busy || !c.send_crashes || !c.game_lookup || now < g_crash.next_try || now - g_crash.sent < CRASH_EVERY_S) return;
+    if (busy || !c.send_crashes || !c.game_lookup || !g_gamedb.service[0] || now < g_crash.next_try || now - g_crash.sent < CRASH_EVERY_S) return;
     g_crash.next_try = now + 600; // look again in a while
     Path base;
     if (!crash_waiting(&base, 1)) return;
@@ -465,7 +467,7 @@ static void telemetry_tick()
         InterlockedExchange(&g_tel.stats_busy, 0);
         return;
     }
-    if (busy || !c.send_stats || !c.game_lookup || now - g_tel.sent < STATS_EVERY_S || now < g_tel.next_try) return;
+    if (busy || !c.send_stats || !c.game_lookup || !g_gamedb.service[0] || now - g_tel.sent < STATS_EVERY_S || now < g_tel.next_try) return;
     g_tel.sending = g_tel.counts;
     char *json = (char *)malloc(512);
     tel_stats_json(g_tel.sending, json, 512);
@@ -520,7 +522,7 @@ static DWORD WINAPI tel_feedback_thread(void *)
     log_line("%s: sent, the service answered %u", g_tel.fb_art ? "art report" : "feedback", status);
     g_tel.fb_ok = status == 200;
     if (status == 200) str_set(g_tel.fb_result, "Sent. Thank you");
-    else if (status == 0) str_set(g_tel.fb_result, "Couldn't reach " APP_NAME "'s service");
+    else if (status == 0) str_set(g_tel.fb_result, "Couldn't reach the service");
     else if (status == 429) str_set(g_tel.fb_result, "Sent too often. Try again in a minute");
     else snprintf(g_tel.fb_result, sizeof g_tel.fb_result, "The service turned it down (%u)", status);
     InterlockedExchange(&g_tel.fb_busy, 0);
