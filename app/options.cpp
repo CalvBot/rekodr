@@ -5055,73 +5055,33 @@ static void options_integrations()
     opt_section("VIDEO EDITORS");
     opt_card_begin();
     {
-        const char *ed_name = "DaVinci Resolve";
-        Path exe = {};
-        bool have = editor_exe(&exe);
-        Path &set = c.resolve;
-        char shown[MAX_PATH * 3] = "Not found";
-        if (have) wide_to_utf8(exe.s, shown, sizeof shown);
-        opt_row_begin(ed_name, have ? shown : "Not found: pick its exe to open clips in it", bw * 2 + dp(8));
-        if (kit_button(have ? "Change##pick" : "Choose its exe##pick", KIT_SECONDARY, ImVec2(bw, 0))) {
-            Path picked = {};
-            if (pick_file(exe, &picked, L"Programs", L"*.exe")) {
-                set = picked;
-                char u[MAX_PATH * 3];
-                wide_to_utf8(picked.s, u, sizeof u);
-                log_line("options: %s is %s", ed_name, u);
-                options_apply(0);
-            }
-        }
-        ImGui::SameLine(0, dp(8));
-        ImGui::BeginDisabled(!set.s[0]);
-        if (kit_button("Find it again##auto", KIT_SECONDARY, ImVec2(bw, 0))) {
-            set.s[0] = 0;
-            log_line("options: %s found by itself", ed_name);
-            options_apply(0);
-        }
-        ImGui::EndDisabled();
-        opt_row_end();
-    }
-    {
-        // Open with's editors: looked for again each time Options is shown, then one row per editor found
-        static i32 shown_frame;
+        // DaVinci Resolve, then Open with's editors, looked for again each time Options is shown: a row per editor
+        // found, each with one menu (Change, Find it again, Show in folder, Remove), so no row is cut short however
+        // narrow the window is
+        static i32 shown_frame, menu_row; // menu_row: the row whose menu is open, -1 = Resolve's
         if (ImGui::GetFrameCount() - shown_frame > 1) open_with_find();
         shown_frame = ImGui::GetFrameCount();
-        bool changed = false;
+        f32 ib = ImGui::GetFrameHeight();
+        bool open_menu = false;
+        Path rexe = {};
+        bool rhave = editor_exe(&rexe);
+        char shown[MAX_PATH * 3] = "";
+        if (rhave) wide_to_utf8(rexe.s, shown, sizeof shown);
+        opt_row_begin("DaVinci Resolve", rhave ? shown : "Not found: pick its exe to open clips in it", ib);
+        if (kit_icon_button(ICON_MORE, "##resolvemenu")) {
+            menu_row = -1;
+            open_menu = true;
+        }
+        opt_row_end();
         for (i32 i = 0; i < g_open_with_count; i++) {
             OpenWith &o = g_open_with[i];
             if (o.xml) continue;
             ImGui::PushID(i);
-            char shown[MAX_PATH * 3];
             wide_to_utf8(o.exe.s, shown, sizeof shown);
-            opt_row_begin(o.name, shown, bw * 2 + dp(8));
-            if (o.kind >= 0) {
-                Path &set = c.editors[o.kind];
-                if (kit_button("Change##pick", KIT_SECONDARY, ImVec2(bw, 0))) {
-                    Path picked = {};
-                    if (pick_file(o.exe, &picked, L"Programs", L"*.exe")) {
-                        set = picked;
-                        wide_to_utf8(picked.s, shown, sizeof shown);
-                        log_line("options: %s is %s", o.name, shown);
-                        changed = true;
-                    }
-                }
-                ImGui::SameLine(0, dp(8));
-                ImGui::BeginDisabled(!set.s[0]);
-                if (kit_button("Find it again##auto", KIT_SECONDARY, ImVec2(bw, 0))) {
-                    set.s[0] = 0;
-                    log_line("options: %s found by itself", o.name);
-                    changed = true;
-                }
-                ImGui::EndDisabled();
-            } else {
-                ImGui::Dummy(ImVec2(bw, 1));
-                ImGui::SameLine(0, dp(8));
-                if (kit_button("Remove##added", KIT_SECONDARY, ImVec2(bw, 0))) {
-                    c.editors_added[o.added].s[0] = 0;
-                    log_line("options: %s taken off Open with", o.name);
-                    changed = true;
-                }
+            opt_row_begin(o.name, shown, ib);
+            if (kit_icon_button(ICON_MORE, "##editormenu")) {
+                menu_row = i;
+                open_menu = true;
             }
             opt_row_end();
             ImGui::PopID();
@@ -5129,8 +5089,10 @@ static void options_integrations()
         i32 free_slot = -1;
         for (i32 a = EDITORS_ADDED - 1; a >= 0; a--)
             if (!c.editors_added[a].s[0]) free_slot = a;
-        opt_row_begin("Add an editor", "Any program that opens a video it's started with", bw);
-        if (kit_button("Choose its exe##addeditor", KIT_SECONDARY, ImVec2(bw, 0), free_slot >= 0)) {
+        bool changed = false;
+        opt_row_begin("Add an editor", "Any program that opens a video it's started with", ib);
+        kit_next_tip("Choose its exe");
+        if (kit_icon_button(ICON_ADD, "##addeditor", KIT_GHOST, free_slot >= 0)) {
             Path picked = {};
             bool have = false;
             if (pick_file(Path{}, &picked, L"Programs", L"*.exe")) {
@@ -5145,6 +5107,40 @@ static void options_integrations()
             }
         }
         opt_row_end();
+
+        if (open_menu) ImGui::OpenPopup("editor menu");
+        lib_popup_style_push(8);
+        bool menu = ImGui::BeginPopup("editor menu");
+        lib_popup_style_pop();
+        if (menu) {
+            bool resolve = menu_row < 0;
+            OpenWith *o = !resolve && menu_row < g_open_with_count ? &g_open_with[menu_row] : 0;
+            const char *name = resolve ? "DaVinci Resolve" : o ? o->name : "";
+            Path exe = resolve ? rexe : o ? o->exe : Path{};
+            bool found = resolve ? rhave : o != 0;
+            Path *set = resolve ? &c.resolve : o && o->kind >= 0 ? &c.editors[o->kind] : 0;
+            if (set && lib_menu_item(ICON_EDIT, found ? "Change" : "Choose its exe")) {
+                Path picked = {};
+                if (pick_file(exe, &picked, L"Programs", L"*.exe")) {
+                    *set = picked;
+                    wide_to_utf8(picked.s, shown, sizeof shown);
+                    log_line("options: %s is %s", name, shown);
+                    changed = true;
+                }
+            }
+            if (set && set->s[0] && lib_menu_item(ICON_REFRESH, "Find it again")) {
+                set->s[0] = 0;
+                log_line("options: %s found by itself", name);
+                changed = true;
+            }
+            if (found && lib_menu_item(ICON_FOLDER, "Show in folder")) reveal_file(exe);
+            if (o && o->kind < 0 && lib_menu_item(ICON_CLOSE, "Remove")) {
+                c.editors_added[o->added].s[0] = 0;
+                log_line("options: %s taken off Open with", o->name);
+                changed = true;
+            }
+            ImGui::EndPopup();
+        }
         if (changed) {
             options_apply(0);
             open_with_find();

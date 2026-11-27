@@ -3090,7 +3090,9 @@ static void screen_editor()
 
     // The transport bar, as the Timeline's: Play and the playhead's time, zoom, then the in and out and their
     // length on the right with a button to clear them (with pieces: how many and their length, and in Advanced
-    // Split and Delete). Fixed places, so nothing moves.
+    // Split and Delete). Fixed places, so nothing moves. What fits is decided by the bar's width and the file's
+    // length alone, never by the times shown: in a narrow window the zoom buttons go first (- and + still zoom), then
+    // the in and out, leaving their length, then that too.
     ImVec2 r0(pos.x, pos.y + video_h + kit_px(10));
     dl->AddRectFilled(r0, ImVec2(r0.x + main_w, r0.y + bar_h), col32(COL_PANEL), kit_px(10));
     f32 pad = kit_px(8), y = r0.y + (bar_h - fh) / 2;
@@ -3107,15 +3109,29 @@ static void screen_editor()
     fmt_time(dur, t1, sizeof t1, true); // the file's length holds the place in either mode, so nothing moves
     x += ImGui::CalcTextSize(t1).x + kit_px(18);
     ImGui::PopFont();
-    ImGui::SetCursorScreenPos(ImVec2(x, y));
-    kit_next_tip("Zoom out", "-");
-    if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, ed.view_span < alen)) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
-    ImGui::SameLine(0, kit_px(2));
-    kit_next_tip("Zoom in", "+");
-    if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, ed.view_span > 0.51)) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
+    f32 x_clear = r0.x + main_w - pad - fh, zoom_r = x + fh * 2 + kit_px(2);
+    bool zoom_fits = zoom_r + kit_px(6) <= x_clear;
+    if (zoom_fits) {
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        kit_next_tip("Zoom out", "-");
+        if (kit_icon_button(ICON_ZOOM_OUT, "##view_out", KIT_GHOST, ed.view_span < alen)) ed_view_zoom(2, ed.view_from + ed.view_span / 2);
+        ImGui::SameLine(0, kit_px(2));
+        kit_next_tip("Zoom in", "+");
+        if (kit_icon_button(ICON_ZOOM_IN, "##view_in", KIT_GHOST, ed.view_span > 0.51)) ed_view_zoom(0.5, ed.view_from + ed.view_span / 2);
+    }
     {
         bool lit = ed.edit.piece_count > 0 && !adv_on();
-        f32 x_clear = r0.x + main_w - pad - fh, text_r = x_clear;
+        f32 text_r = x_clear;
+        // The room for the in and out: from the zoom buttons (or the playhead's time) to the clear button. The
+        // widest each form can be is measured with the file's length in place of every time.
+        f32 room = text_r - kit_px(6) - ((zoom_fits ? zoom_r : x - kit_px(18)) + kit_px(12));
+        char wide[112], dt[32];
+        fmt_time(dur, dt, sizeof dt, true);
+        snprintf(wide, sizeof wide, "%s - %s   %s", dt, dt, dt); // or "99 pieces   <len>", whichever is wider
+        f32 ww = ImGui::CalcTextSize(wide).x;
+        snprintf(wide, sizeof wide, "99 pieces   %s", dt);
+        ww = ImMax(ww, ImGui::CalcTextSize(wide).x);
+        i32 form = ww <= room ? 2 : ImGui::CalcTextSize(dt).x <= room ? 1 : 0;
         char ta[32], tz[32], len[32], sel[112];
         ImGui::SetCursorScreenPos(ImVec2(x_clear, y));
         kit_next_tip("Clear in and out");
@@ -3135,9 +3151,12 @@ static void screen_editor()
             fmt_time(alen, len, sizeof len, true);
             snprintf(sel, sizeof sel, "%d piece%s   %s", np, np == 1 ? "" : "s", len);
         }
-        ImVec2 ks = ImGui::CalcTextSize(sel);
-        f32 kx = text_r - kit_px(6) - ks.x;
-        dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(lit ? COL_TEXT : COL_DIM), sel);
+        if (form == 1) str_set(sel, len);
+        if (form) {
+            ImVec2 ks = ImGui::CalcTextSize(sel);
+            f32 kx = text_r - kit_px(6) - ks.x;
+            dl->AddText(ImVec2(kx, floorf(y + (fh - ks.y) / 2)), col32(lit ? COL_TEXT : COL_DIM), sel);
+        }
     }
 
     // The side panel: Edit, or Keep & share.
