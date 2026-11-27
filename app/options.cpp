@@ -2402,56 +2402,303 @@ static void monitor_note(i32 i, char *out, i32 cap)
     snprintf(out, cap, "%dx%d, %d Hz%s", m.width, m.height, m.hz, m.primary ? ", main" : "");
 }
 
-// The inputs plugged in (listed again every 2 s), then the ones turned on that aren't: each Off, Mono or Stereo.
-// One that isn't off records to a track of its own.
-static void opt_inputs(Config &c)
+// The mics plugged in, listed again every 2 s, and which one is Windows' default.
+struct MicLive { InputDevice dev[16]; i32 count; char default_id[128]; u64 listed; };
+static MicLive g_mic_live;
+
+static void mic_live_refresh()
 {
-    static InputDevice live[16];
-    static i32 live_count;
-    static char default_id[128];
-    static u64 listed;
-    if (!listed || GetTickCount64() - listed > 2000) {
-        live_count = audio_list_inputs(live, COUNT(live), default_id, sizeof default_id);
-        listed = GetTickCount64();
+    MicLive &m = g_mic_live;
+    if (m.listed && GetTickCount64() - m.listed < 2000) return;
+    m.count = audio_list_inputs(m.dev, COUNT(m.dev), m.default_id, sizeof m.default_id);
+    m.listed = GetTickCount64();
+}
+
+static const InputDevice *mic_live_find(const char *id)
+{
+    for (i32 i = 0; i < g_mic_live.count; i++)
+        if (!_stricmp(g_mic_live.dev[i].id, id)) return &g_mic_live.dev[i];
+    return 0;
+}
+
+// The Sound panel: which mic it's for. input = the added mic's index, -1 = the default input.
+struct MicPanel { char id[128]; char name[96]; i32 input; bool open; };
+static MicPanel g_mic_panel;
+
+// Where a frequency and a level sit in the curve's box: 20 Hz to 20 kHz across, +-15 dB up and down.
+struct MicCurveBox { ImVec2 a, z; };
+static f32 mic_curve_x(const MicCurveBox &b, f32 hz)
+{
+    return b.a.x + (b.z.x - b.a.x) * (log10f(hz) - log10f(20)) / (log10f(20000) - log10f(20));
+}
+static f32 mic_curve_y(const MicCurveBox &b, f32 db) { return (b.a.y + b.z.y) / 2 - db / 15 * (b.z.y - b.a.y) / 2; }
+
+// The EQ: its curve, and a handle on each band to drag up or down (a double-click sets it back to 0). Returns
+// whether a band changed; *done when a handle is let go.
+static bool mic_eq_draw(MicSound *s, f32 w, f32 h, bool *done)
+{
+    *done = false;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    MicCurveBox b = {ImGui::GetCursorScreenPos(), {}};
+    b.z = ImVec2(b.a.x + w, b.a.y + h);
+    dl->AddRectFilled(b.a, b.z, col32(COL_BG), dp(8));
+    static const f32 grid_hz[] = {100, 1000, 10000};
+    for (f32 hz : grid_hz) dl->AddLine(ImVec2(mic_curve_x(b, hz), b.a.y), ImVec2(mic_curve_x(b, hz), b.z.y), col32(COL_LINE));
+    static const f32 grid_db[] = {-12, -6, 6, 12};
+    for (f32 db : grid_db)
+        dl->AddLine(ImVec2(b.a.x, mic_curve_y(b, db)), ImVec2(b.z.x, mic_curve_y(b, db)), col32(COL_LINE, 0.5f));
+    dl->AddLine(ImVec2(b.a.x, mic_curve_y(b, 0)), ImVec2(b.z.x, mic_curve_y(b, 0)), col32(COL_FAINT));
+
+    MicSound eq = *s;
+    eq.gain_db = 0;
+    ImVec2 pts[160];
+    for (i32 i = 0; i < COUNT(pts); i++) {
+        f32 x = b.a.x + w * i / (COUNT(pts) - 1);
+        f32 hz = powf(10, log10f(20) + (log10f(20000) - log10f(20)) * i / (COUNT(pts) - 1));
+        f32 db = fmaxf(-15, fminf(15, mic_curve_db(eq, hz)));
+        pts[i] = ImVec2(x, mic_curve_y(b, db));
     }
-    InputDevice rows[COUNT(live) + COUNT(c.inputs)];
-    bool plugged[COUNT(rows)] = {};
-    i32 n = 0;
-    for (i32 i = 0; i < live_count; i++) {
-        plugged[n] = true;
-        rows[n++] = live[i];
+    dl->PushClipRect(b.a, b.z, true);
+    dl->AddPolyline(pts, COUNT(pts), col32(COL_ACCENT), 0, dp(2));
+    dl->PopClipRect();
+
+    static const char *const band_names[MIC_BANDS] = {"100", "300", "1k", "3k", "8k"};
+    bool changed = false;
+    f32 r = dp(7), hit = dp(22);
+    for (i32 k = 0; k < MIC_BANDS; k++) {
+        ImVec2 c(mic_curve_x(b, MIC_BAND_HZ[k]), mic_curve_y(b, s->bands[k]));
+        ImGui::SetCursorScreenPos(ImVec2(c.x - hit / 2, c.y - hit / 2));
+        ImGui::PushID(k);
+        ImGui::InvisibleButton("##band", ImVec2(hit, hit));
+        ImGui::PopID();
+        bool held = ImGui::IsItemActive(), hot = held || ImGui::IsItemHovered();
+        if (held && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0)) {
+            f32 my = ImGui::GetIO().MousePos.y, mid = (b.a.y + b.z.y) / 2;
+            f32 db = -(my - mid) / ((b.z.y - b.a.y) / 2) * 15;
+            db = roundf(fmaxf(-MIC_DB_MAX, fminf(MIC_DB_MAX, db)) * 2) / 2;
+            if (db != s->bands[k]) s->bands[k] = db, changed = true;
+        }
+        if (hot && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && s->bands[k] != 0) {
+            s->bands[k] = 0;
+            changed = *done = true;
+        }
+        if (ImGui::IsItemDeactivated()) *done = true;
+        c.y = mic_curve_y(b, s->bands[k]);
+        dl->AddCircleFilled(c, hot ? r + dp(2) : r, col32(hot ? COL_WHITE : COL_ACCENT));
+        dl->AddCircle(c, hot ? r + dp(2) : r, col32(COL_WHITE), 0, dp(1.5f));
+        if (hot) {
+            char v[16];
+            snprintf(v, sizeof v, "%+.1f dB", s->bands[k]);
+            f32 tw = text_w(g_font_small, v), ty = s->bands[k] > 6 ? c.y + r + dp(6) : c.y - r - dp(6) - g_font_small->FontSize;
+            opt_text_at(dl, g_font_small, ImVec2(floorf(c.x - tw / 2), floorf(ty)), COL_TEXT, v, c.x + tw);
+        }
+        f32 nw = text_w(g_font_small, band_names[k]);
+        opt_text_at(dl, g_font_small, ImVec2(floorf(c.x - nw / 2), b.z.y + dp(6)), COL_DIM, band_names[k], c.x + nw);
     }
-    for (i32 i = 0; i < c.input_count; i++) {
-        bool found = false;
-        for (i32 k = 0; k < live_count && !found; k++) found = !_stricmp(live[k].id, c.inputs[i].id);
-        if (!found && c.inputs[i].on) rows[n++] = c.inputs[i];
+    ImGui::SetCursorScreenPos(ImVec2(b.a.x, b.z.y + dp(6) + g_font_small->FontSize + dp(4)));
+    ImGui::Dummy(ImVec2(w, 1));
+    return changed;
+}
+
+// A mic's Sound: presets, the EQ, gain, Clean and the compressor, and mono or stereo for an added mic. Kept per
+// device: the default input's is its device's, whichever device that is.
+static void mic_sound_popup()
+{
+    Config &c = g_app.config;
+    MicPanel &p = g_mic_panel;
+    if (p.open) {
+        ImGui::OpenPopup("mic sound");
+        p.open = false;
     }
-    static const char *const modes[] = {"Off", "Mono", "Stereo"};
-    for (i32 i = 0; i < n; i++) {
-        const InputDevice *set = config_input(c.inputs, c.input_count, rows[i].id);
-        i32 mode = !set || !set->on ? 0 : set->stereo ? 2 : 1;
-        const char *sub = !plugged[i]                          ? "Not plugged in"
-                          : _stricmp(rows[i].id, default_id)     ? 0
-                          : c.mic                              ? "Windows' default: on the Mic track while it is"
-                                                               : "Windows' default";
-        ImGui::PushID(i);
-        if (opt_row_combo(rows[i].name, sub, "##input", modes, 0, COUNT(modes), &mode, dp(200))) {
-            InputDevice *d = (InputDevice *)config_input(c.inputs, c.input_count, rows[i].id);
-            if (!d && c.input_count < COUNT(c.inputs)) d = &c.inputs[c.input_count++];
-            if (d) {
-                *d = rows[i];
-                d->on = mode != 0;
-                d->stereo = mode == 2;
+    ImGui::SetNextWindowSize(ImVec2(kit_px(600), 0));
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    lib_popup_style_push(18);
+    bool open = ImGui::BeginPopupModal("mic sound", 0, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar);
+    lib_popup_style_pop();
+    if (!open) return;
+    InputDevice *in = p.input >= 0 && p.input < c.input_count && !_stricmp(c.inputs[p.input].id, p.id) ? &c.inputs[p.input] : 0;
+    if (p.input >= 0 && !in) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    kit_heading(p.name);
+    MicSound s = mic_sound_get(c.mic_sounds, c.mic_sound_count, p.id);
+    bool changed = false, done = false;
+
+    i32 preset = mic_preset_of(s);
+    for (i32 i = 0; i <= (i32)COUNT(MIC_PRESETS); i++) {
+        bool custom = i == (i32)COUNT(MIC_PRESETS);
+        char id[48];
+        snprintf(id, sizeof id, "%s##preset%d", custom ? "Custom" : MIC_PRESETS[i].name, i);
+        if (i) ImGui::SameLine();
+        if (kit_chip(id, custom ? preset < 0 : preset == i) && !custom && preset != i) {
+            memcpy(s.bands, MIC_PRESETS[i].bands, sizeof s.bands);
+            changed = done = true;
+        }
+    }
+
+    f32 w = ImGui::GetContentRegionAvail().x;
+    bool eq_done;
+    changed |= mic_eq_draw(&s, w, dp(180), &eq_done);
+    done |= eq_done;
+
+    // Gain: the name, a slider across the rest, the value
+    {
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        f32 lw = dp(80), vw = dp(70), sh = dp(24);
+        opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(a.x, floorf(a.y + (sh - g_font->FontSize) / 2)), COL_TEXT, "Gain", a.x + lw);
+        ImGui::SetCursorScreenPos(ImVec2(a.x + lw, a.y));
+        f32 g = s.gain_db;
+        if (lib_slider("##gain", &g, -MIC_DB_MAX, MIC_DB_MAX, w - lw - vw, sh, 0)) {
+            s.gain_db = roundf(g * 2) / 2;
+            changed = true;
+        }
+        if (ImGui::IsItemDeactivated()) done = true;
+        char v[16];
+        snprintf(v, sizeof v, "%+.1f dB", s.gain_db);
+        opt_text_right(ImGui::GetWindowDrawList(), g_font, a.x + w, floorf(a.y + (sh - g_font->FontSize) / 2), COL_DIM, v, a.x + w - vw);
+        ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + sh + dp(10)));
+    }
+
+    // The switches, on one line
+    {
+        auto named = [&](const char *name, f32 at) {
+            ImVec2 a = ImGui::GetCursorScreenPos();
+            f32 fh = ImGui::GetFrameHeight();
+            opt_text_at(ImGui::GetWindowDrawList(), g_font, ImVec2(a.x, floorf(a.y + (fh - g_font->FontSize) / 2)), COL_TEXT, name, a.x + at);
+            ImGui::SetCursorScreenPos(ImVec2(a.x + at, a.y));
+        };
+        ImVec2 row = ImGui::GetCursorScreenPos();
+        named("Clean", dp(80));
+        if (kit_toggle("##clean", &s.clean)) changed = done = true;
+        ImGui::SetCursorScreenPos(ImVec2(row.x + dp(180), row.y));
+        named("Compress", dp(90));
+        if (kit_toggle("##comp", &s.comp)) changed = done = true;
+        if (in) {
+            static const char *const chans[] = {"Mono", "Stereo"};
+            i32 sel = in->stereo ? 1 : 0;
+            ImGui::SetCursorScreenPos(ImVec2(row.x + w - dp(180), row.y));
+            if (kit_segmented("##chans", chans, 2, &sel, dp(90))) {
+                in->stereo = sel == 1;
+                log_line("options: mic %s %s", in->name, chans[sel]);
+                options_apply(APPLY_AUDIO);
             }
-            // Turned off: dropped from the settings.
-            for (i32 k = 0; k < c.input_count;)
-                if (!c.inputs[k].on) c.inputs[k] = c.inputs[--c.input_count];
-                else k++;
-            log_line("options: input %s %s", rows[i].name, modes[mode]);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(row.x, row.y + ImGui::GetFrameHeight() + dp(16)));
+    }
+
+    if (kit_button("Reset", KIT_GHOST)) {
+        char id[128];
+        str_set(id, s.id);
+        s = mic_sound_default(id);
+        changed = done = true;
+    }
+    ImGui::SameLine();
+    kit_align_right(dp(100));
+    if (kit_button("Done", KIT_PRIMARY, ImVec2(dp(100), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+
+    if (changed) {
+        MicSound *e = mic_sound_edit(c.mic_sounds, &c.mic_sound_count, COUNT(c.mic_sounds), p.id);
+        if (e) *e = s;
+    }
+    if (done) {
+        log_line("options: mic sound %s", p.name);
+        options_apply(0);
+    }
+    ImGui::EndPopup();
+}
+
+static void mic_panel_open(const char *id, const char *name, i32 input)
+{
+    MicPanel &p = g_mic_panel;
+    str_set(p.id, id);
+    str_set(p.name, name);
+    p.input = input;
+    p.open = true;
+}
+
+// MICROPHONES: Windows' default input, the mics added (each on a track of its own while it's on, and listed while
+// it's off or unplugged), then Add mic, which lists the ones plugged in that aren't added. Each has its Sound.
+static void opt_mics(Config &c)
+{
+    mic_live_refresh();
+    const MicLive &m = g_mic_live;
+    f32 fh = ImGui::GetFrameHeight(), gap = dp(10), cw = 2 * fh + dp(36) + 2 * gap;
+    // The controls from the right: remove, the switch, Sound
+    auto controls = [&](const char *id, const char *name, i32 input, bool *on, bool sound_ok) -> i32 {
+        f32 x = g_row.x1 - cw, y = opt_row_frame_y();
+        i32 what = 0;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        kit_next_tip("Sound");
+        if (kit_icon_button(ICON_SLIDERS, "##sound", KIT_GHOST, sound_ok)) mic_panel_open(id, name, input);
+        ImGui::SetCursorScreenPos(ImVec2(x + fh + gap, y));
+        if (kit_toggle("##on", on)) what = 1;
+        if (input >= 0) {
+            ImGui::SetCursorScreenPos(ImVec2(g_row.x1 - fh, y));
+            kit_next_tip("Remove");
+            if (kit_icon_button(ICON_CLOSE, "##remove")) what = 2;
+        }
+        return what;
+    };
+
+    const InputDevice *def = m.default_id[0] ? mic_live_find(m.default_id) : 0;
+    opt_row_begin("Default input", def ? def->name : "No mic plugged in", cw);
+    ImGui::PushID("default");
+    if (controls(m.default_id, def ? def->name : "", -1, &c.mic, def != 0) == 1) {
+        log_line("options: mic %s", c.mic ? "on" : "off");
+        options_apply(APPLY_AUDIO);
+    }
+    ImGui::PopID();
+    opt_row_end();
+
+    for (i32 i = 0; i < c.input_count; i++) {
+        InputDevice &d = c.inputs[i];
+        bool plugged = mic_live_find(d.id) != 0;
+        opt_row_begin(d.name, plugged ? 0 : "Not plugged in", cw);
+        ImGui::PushID(i);
+        i32 what = controls(d.id, d.name, i, &d.on, true);
+        ImGui::PopID();
+        opt_row_end();
+        if (what == 1) {
+            log_line("options: mic %s %s", d.name, d.on ? "on" : "off");
+            options_apply(APPLY_AUDIO);
+        } else if (what == 2) {
+            log_line("options: mic %s removed", d.name);
+            memmove(&c.inputs[i], &c.inputs[i + 1], (c.input_count - i - 1) * sizeof c.inputs[0]);
+            c.input_count--;
+            i--;
             options_apply(APPLY_AUDIO);
         }
-        ImGui::PopID();
     }
+
+    // Add mic
+    f32 aw = dp(220);
+    opt_row_begin(0, 0, g_card.w - 2 * dp(OPT_PAD));
+    ImGui::SetCursorScreenPos(ImVec2(g_row.x0, opt_row_frame_y()));
+    const char *names[16], *notes[16];
+    i32 idx[16], n = 0;
+    for (i32 i = 0; i < m.count && n < COUNT(names); i++) {
+        if (config_input(c.inputs, c.input_count, m.dev[i].id)) continue;
+        names[n] = m.dev[i].name;
+        notes[n] = !_stricmp(m.dev[i].id, m.default_id) ? "default" : 0;
+        idx[n++] = i;
+    }
+    static const char *const none[] = {"No other mics"};
+    f32 pw = n ? opt_combo_popup_w(names, notes, n) : opt_combo_popup_w(none, 0, 1);
+    if (opt_combo_begin("##addmic", ICON_ADD "  Add mic", aw, pw, COL_DIM)) {
+        for (i32 k = 0; k < n; k++)
+            if (opt_combo_item(names[k], notes[k], false) && c.input_count < COUNT(c.inputs)) {
+                InputDevice d = m.dev[idx[k]];
+                d.on = true, d.stereo = false;
+                c.inputs[c.input_count++] = d;
+                log_line("options: mic %s added", d.name);
+                options_apply(APPLY_AUDIO);
+            }
+        if (!n) opt_combo_item(none[0], 0, false, true);
+        opt_combo_end();
+    }
+    opt_row_end();
 }
 
 // Monitor, resolution and frame rate: Options > Recording and the first-run setup.
@@ -2881,13 +3128,14 @@ static void options_recording()
         ImGui::SetScrollHereY(0);
         g_opt_show_audio = false;
     }
+    opt_section("MICROPHONES");
+    opt_card_begin();
+    opt_mics(c);
+    opt_card_end();
+    mic_sound_popup();
+
     opt_section("AUDIO");
     opt_card_begin();
-    if (opt_row_toggle("Default input", "Windows' recording device, on the Mic track", "##mic", &c.mic)) {
-        log_line("options: mic %s", c.mic ? "on" : "off");
-        options_apply(APPLY_AUDIO);
-    }
-    opt_inputs(c);
     if (opt_row_toggle("Voices in mono", "The Mic and chat tracks in saves, at half the size", "##voicemono", &c.voice_mono)) {
         log_line("options: voices %s", c.voice_mono ? "mono" : "stereo");
         options_apply(0);
