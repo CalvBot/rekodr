@@ -4195,103 +4195,6 @@ static void remove_tree(const Path &dir)
     SHFileOperationW(&op);
 }
 
-// The day's note of games the public files named: kept once each, in seen.txt across starts, up to 30 and 32 KB a
-// note, and what each answer does with them
-static void test_seen()
-{
-    Path keep = g_app.paths.local_dir;
-    wchar_t temp[MAX_PATH];
-    GetTempPathW(MAX_PATH, temp);
-    swprintf(g_app.paths.local_dir.s, MAX_PATH, L"%srekodr-tests-seen-%lu", temp, GetCurrentProcessId());
-    CreateDirectoryW(g_app.paths.local_dir.s, 0);
-    bool was_online = g_gamedb.online;
-    char was_service[sizeof g_gamedb.service];
-    memcpy(was_service, g_gamedb.service, sizeof was_service);
-    auto reset = [] {
-        for (i32 i = 0; i < g_seen_games.count; i++) free(g_seen_games.items[i].clues);
-        g_seen_games.count = 0;
-        g_seen_games.loaded = false;
-        g_seen_games.sent_day = g_seen_games.tried_day = 0;
-    };
-    reset();
-    static char note[32 * 1024];
-
-    // Off: nothing kept
-    g_gamedb.online = false;
-    seen_put("s5", "{\"exe\":\"a.exe\"}");
-    T(g_seen_games.count == 0);
-    g_gamedb.online = true;
-    str_set(g_gamedb.service, "127.0.0.1:1");
-    // Once per game and clues; tabs and new lines never go in the file
-    seen_put("s5", "{\"exe\":\"a.exe\"}");
-    seen_put("s5", "{\"exe\":\"a.exe\"}");
-    seen_put("s5", "{\"exe\":\"b.exe\"}");
-    seen_put("d7", "{\"exe\":\"a.exe\"}");
-    seen_put("d8", "{\"exe\":\"a\tb.exe\"}");
-    seen_put("", "{\"exe\":\"a.exe\"}");
-    T(g_seen_games.count == 3);
-    AcquireSRWLockExclusive(&g_seen_games.lock);
-    T(seen_note_locked(note, sizeof note) == 3);
-    ReleaseSRWLockExclusive(&g_seen_games.lock);
-    T(!strcmp(note, "{\"version\":\"" REKODR_VERSION "\",\"games\":[{\"key\":\"s5\",\"clues\":{\"exe\":\"a.exe\"}},"
-                    "{\"key\":\"s5\",\"clues\":{\"exe\":\"b.exe\"}},{\"key\":\"d7\",\"clues\":{\"exe\":\"a.exe\"}}]}"));
-    // Back after a start, from the file
-    reset();
-    seen_put("s5", "{\"exe\":\"a.exe\"}");
-    T(g_seen_games.count == 3 && !strcmp(g_seen_games.items[2].key, "d7"));
-    // A 503 keeps them, tried for today; a 2xx sends them and the day
-    AcquireSRWLockExclusive(&g_seen_games.lock);
-    seen_answered_locked(503, 2, 20261128);
-    T(g_seen_games.count == 3 && g_seen_games.tried_day == 20261128 && !g_seen_games.sent_day);
-    seen_answered_locked(200, 2, 20261128);
-    T(g_seen_games.count == 1 && !strcmp(g_seen_games.items[0].key, "d7") && g_seen_games.sent_day == 20261128);
-    ReleaseSRWLockExclusive(&g_seen_games.lock);
-    reset();
-    seen_put("d9", "{\"exe\":\"c.exe\"}");
-    T(g_seen_games.count == 2 && g_seen_games.sent_day == 20261128 && !g_seen_games.tried_day);
-    // A 400 drops them but no note went today
-    AcquireSRWLockExclusive(&g_seen_games.lock);
-    g_seen_games.sent_day = 0;
-    seen_answered_locked(400, 1, 20261128);
-    T(g_seen_games.count == 1 && !strcmp(g_seen_games.items[0].key, "d9") && !g_seen_games.sent_day);
-    ReleaseSRWLockExclusive(&g_seen_games.lock);
-
-    // 64 kept at most; 30 to a note, and fewer when they'd pass 32 KB
-    reset();
-    DeleteFileW(seen_file().s);
-    for (i32 i = 0; i < 70; i++) {
-        char key[16];
-        snprintf(key, sizeof key, "d%d", i);
-        seen_put(key, "{\"exe\":\"a.exe\"}");
-    }
-    T(g_seen_games.count == 64 && !strcmp(g_seen_games.items[63].key, "d63"));
-    AcquireSRWLockExclusive(&g_seen_games.lock);
-    T(seen_note_locked(note, sizeof note) == 30 && strstr(note, "\"d29\"") && !strstr(note, "\"d30\""));
-    ReleaseSRWLockExclusive(&g_seen_games.lock);
-    reset();
-    DeleteFileW(seen_file().s);
-    {
-        static char big[4100];
-        snprintf(big, sizeof big, "{\"exe\":\"%03990d\"}", 0);
-        for (i32 i = 0; i < 10; i++) {
-            char key[16];
-            snprintf(key, sizeof key, "d%d", i);
-            seen_put(key, big);
-        }
-        T(g_seen_games.count == 10);
-        AcquireSRWLockExclusive(&g_seen_games.lock);
-        i32 took = seen_note_locked(note, sizeof note);
-        ReleaseSRWLockExclusive(&g_seen_games.lock);
-        T(took == 8 && strlen(note) < sizeof note && !strcmp(note + strlen(note) - 3, "}]}"));
-    }
-
-    reset();
-    g_gamedb.online = was_online;
-    memcpy(g_gamedb.service, was_service, sizeof was_service);
-    remove_tree(g_app.paths.local_dir);
-    g_app.paths.local_dir = keep;
-}
-
 // The service's public files (static_lookup): an exe's name and file number, each kind of entry, and what a
 // search's icons and a test service's address come to
 static void test_static_tier()
@@ -4314,20 +4217,13 @@ static void test_static_tier()
     // Each name's file holds its entry; written here for the names the checks ask about
     static const char *const entries[][2] = {
         {"Endless Sky.exe", "{\"game\":{\"key\":\"s5\",\"name\":\"Endless Sky\"},\"matched_by\":\"exe\",\"confidence\":0.9,\"art\":{}}"},
-        {"game.exe", "{\"rows\":[[\"a\",\"\",0,0,\"game.exe\"],[\"b\",\"\",1,1,\"game.exe\"]],"
-                     "\"answers\":[{\"game\":{\"key\":\"s1\",\"name\":\"Alpha\"},\"matched_by\":\"exe\",\"confidence\":0.9,\"art\":{}},"
-                     "{\"game\":{\"key\":\"s2\",\"name\":\"Beta\"},\"matched_by\":\"exe\",\"confidence\":0.9,\"art\":{}}]}"},
-        {"tool.exe", "{\"rows\":[[\"\",\"-x\",2,0,\"tool.exe\"]],"
-                     "\"answers\":[{\"game\":{\"key\":\"i3\",\"name\":\"Toolgame\"},\"matched_by\":\"exe\",\"confidence\":0.8,\"art\":{}}]}"},
         {"asked.exe", "{\"ask\":[\"-mod\"]}"},
-        // As the service writes them: the file as it is spelled, its folder, the game's whole answer
-        {"cs2.exe", "{\"rows\":[[\"win64\",\"\",0,0,\"cs2.exe\"]],\"answers\":[{\"game\":{\"key\":\"d1158877933042143272\","
-                    "\"name\":\"Counter-Strike 2\",\"year\":2023,\"discord\":\"1158877933042143272\",\"sgdb\":5363838,"
-                    "\"igdb\":242408,\"stores\":{\"steam\":\"730\"}},\"matched_by\":\"discord\",\"confidence\":0.9,"
-                    "\"art\":{\"icon\":{\"url\":\"https://cdn2.steamgriddb.com/icon/a.png\"}}}]}"},
-        {"Beached-Win64-Test.exe", "{\"rows\":[[\"win64\",\"\",0,0,\"beached-win64-test.exe\"]],\"answers\":[{\"game\":"
-                                   "{\"key\":\"d1201315800460570784\",\"name\":\"BEACHED\",\"year\":null},"
-                                   "\"matched_by\":\"discord\",\"confidence\":0.9,\"art\":{}}]}"},
+        {"folder.exe", "{\"ask\":[\"folder\"]}"},
+        {"launch.exe", "{\"game\":{\"key\":\"d9\",\"name\":\"Launched\"},\"matched_by\":\"discord\",\"confidence\":0.6,\"launcher\":true,\"art\":{}}"},
+        // As the service writes it: the game's whole answer
+        {"cs2.exe", "{\"game\":{\"key\":\"d1158877933042143272\",\"name\":\"Counter-Strike 2\",\"year\":2023,"
+                    "\"discord\":\"1158877933042143272\",\"sgdb\":5363838,\"igdb\":242408,\"stores\":{\"steam\":\"730\"}},"
+                    "\"matched_by\":\"discord\",\"confidence\":0.9,\"art\":{\"icon\":{\"url\":\"https://cdn2.steamgriddb.com/icon/a.png\"}}}"},
     };
     for (auto &e : entries) {
         i32 shard = static_name(e[0], name, sizeof name);
@@ -4343,26 +4239,14 @@ static void test_static_tier()
         write_whole(f, text, (i64)strlen(text));
     }
     LookAnswer ans;
-    T(static_lookup("endless sky.exe", "C:/Games/ES/Endless Sky.exe", "", "", &ans) == STATIC_ANSWER &&
-      !strcmp(ans.name, "Endless Sky") && !strcmp(ans.key, "s5") && !ans.launcher);
-    // Rows: where it runs from tells the games apart; a launcher's row is less sure
-    T(static_lookup("game.exe", "D:/a/game.exe", "x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "s1"));
-    T(static_lookup("game.exe", "D:/b/game.exe", "x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "s2") &&
-      ans.launcher && ans.confidence < 0.61f);
-    T(static_lookup("game.exe", "D:/c/game.exe", "x", "", &ans) == STATIC_ANSWER && !ans.key[0] && !strcmp(ans.how, "none"));
-    T(static_lookup("cs2.exe", "C:/Steam/steamapps/common/Counter-Strike Global Offensive/game/bin/win64/cs2.exe", "",
-                    "", &ans) == STATIC_ANSWER && !strcmp(ans.name, "Counter-Strike 2") &&
+    T(static_lookup("endless sky.exe", &ans) == STATIC_ANSWER && !strcmp(ans.name, "Endless Sky") &&
+      !strcmp(ans.key, "s5") && !ans.launcher);
+    T(static_lookup("cs2.exe", &ans) == STATIC_ANSWER && !strcmp(ans.name, "Counter-Strike 2") &&
       !strcmp(ans.key, "d1158877933042143272"));
-    // A copy run from somewhere else is still the game when no other row has its file name
-    T(static_lookup("cs2.exe", "C:/Games/cs2.exe", "", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "d1158877933042143272"));
-    T(static_lookup("beached-win64-test.exe", "E:/Beached/Win64/Beached-Win64-Test.exe", "", "", &ans) ==
-          STATIC_ANSWER && !strcmp(ans.name, "BEACHED"));
-    // One told apart by its arguments: ask again with the command line, which tells
-    T(static_lookup("tool.exe", "D:/t/tool.exe", "", "", &ans) == STATIC_SHARED);
-    T(static_lookup("tool.exe", "D:/t/tool.exe", "tool.exe -x", "", &ans) == STATIC_ANSWER && !strcmp(ans.key, "i3"));
-    T(static_lookup("tool.exe", "D:/t/tool.exe", "tool.exe -y", "", &ans) == STATIC_ANSWER && !ans.key[0]);
     // Only a lookup can tell: an "ask" entry, a name the file hasn't, a file that is {}
-    T(static_lookup("asked.exe", "D:/asked.exe", "", "", &ans) == STATIC_LOOKUP);
+    T(static_lookup("launch.exe", &ans) == STATIC_ANSWER && !strcmp(ans.key, "d9") && ans.launcher && ans.confidence < 0.61f);
+    T(static_lookup("asked.exe", &ans) == STATIC_LOOKUP && !ans.name[0]);
+    T(static_lookup("folder.exe", &ans) == STATIC_LOOKUP && !ans.name[0]);
     {
         i32 shard = static_name("endlesssky.exe", name, sizeof name);
         char other[64] = "";
@@ -4371,9 +4255,9 @@ static void test_static_tier()
             snprintf(cand, sizeof cand, "x%d.exe", i);
             if (static_name(cand, sq, sizeof sq) == shard) str_set(other, cand);
         }
-        T(other[0] && static_lookup(other, "D:/x.exe", "", "", &ans) == STATIC_LOOKUP);
+        T(other[0] && static_lookup(other, &ans) == STATIC_LOOKUP);
         write_whole(static_file(shard, L".json"), "{}", 2);
-        T(static_lookup("endlesssky.exe", "D:/x.exe", "", "", &ans) == STATIC_LOOKUP);
+        T(static_lookup("endlesssky.exe", &ans) == STATIC_LOOKUP);
     }
     remove_tree(g_app.paths.local_dir);
     g_app.paths.local_dir = keep;
@@ -7994,7 +7878,6 @@ int main()
     test_am_pc();
     test_achievements();
     test_static_tier();
-    test_seen();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

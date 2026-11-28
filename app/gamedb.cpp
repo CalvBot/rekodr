@@ -60,7 +60,7 @@ struct LookAnswer {
     f32  confidence;
     char ask_args[1344];              // a shared exe: what to look for in its command line, one a line; "" = none
     bool software;                    // a Steam app Steam's store calls software, not a game ("steam_type")
-    bool launcher;                    // the public files' row it came from is a launcher's
+    bool launcher;                    // a launcher's exe gave it ("launcher": true), so it is less sure
     bool failed;
 };
 
@@ -653,8 +653,7 @@ static i32 gamedb_find_local(const char *q, char (*names)[128], i32 max)
 // don't fit, when no other entry in the list has an exe of that file name: a name many share (game.exe) isn't one.
 // Names are matched squeezed (gdb_squeeze); one that fits only squeezed is the game when no other entry's squeezes
 // to the same name.
-// The choosing, for Discord's list here and for the rows of the service's public files (static_lookup): start with
-// what is known of the running exe, add each way a game's exe is written (`ent`, "folders/file" as the list spells
+// The choosing, for Discord's list here (gamedb_by_exe): start with what is known of the running exe, add each way a game's exe is written (`ent`, "folders/file" as the list spells
 // it, the argument it needs, whether it is a launcher's and whether it must be told apart by its arguments, and the
 // game: `row` and its name), then pick. pick gives the row, or -1, and with *shared that only the command line and
 // the title could tell: ask again with them.
@@ -1041,14 +1040,11 @@ static void mc_put(char *out, i32 cap, i32 *n, const char *s); // mcpack.cpp
 static bool exe_clues(const char *exe, const char *path, const char *name, bool game, const char *more, char *out,
                       i32 cap); // storeids.cpp
 
-enum StaticKind { STATIC_WAIT, STATIC_LOOKUP, STATIC_ANSWER, STATIC_SHARED };
-static StaticKind static_lookup(const char *exe, const char *path, const char *cmdline, const char *title,
-                                LookAnswer *ans);
+enum StaticKind { STATIC_WAIT, STATIC_LOOKUP, STATIC_ANSWER };
+static StaticKind static_lookup(const char *exe, LookAnswer *ans);
 
 // Whether games are looked up on the service: online, and it is on.
 static bool gamedb_service_on() { return g_gamedb.online && g_gamedb.service[0]; }
-
-static void seen_put(const char *key, const char *clues);
 
 // Keeps the service's key for a name. Under the exclusive lock.
 static void gamedb_named_put_locked(const char *name, const char *key)
@@ -1390,14 +1386,8 @@ static bool gamedb_name_app(AppInfo *a)
         bool game = cat == CAT_GAME || known || shared;
         i32 state = -1;
         if (lookup_body(*a, game, cmd, "", body, sizeof body)) {
-            // The service's public files first; a lookup only for what they can't tell
-            StaticKind k = static_lookup(a->exe.s, a->path, cmd, title, &ans);
-            if (k == STATIC_SHARED) { // its rows want the command line and the window
-                if (!facts) facts = process_facts(a->exe.s, cmd, sizeof cmd, title, sizeof title);
-                k = facts ? static_lookup(a->exe.s, a->path, cmd, title, &ans) : STATIC_ANSWER;
-                if (k == STATIC_SHARED) k = STATIC_ANSWER; // none of them, then
-            }
-            if (k == STATIC_ANSWER && ans.key[0]) seen_put(ans.key, body); // counted in the day's note
+            // The service's public files first; a lookup, with every clue, for the rest
+            StaticKind k = static_lookup(a->exe.s, &ans);
             state = k == STATIC_WAIT ? 0 : k == STATIC_ANSWER ? 1 : gamedb_lookup(body, &ans);
         }
         if (state == 1 && !ans.failed && !ans.name[0] && ans.ask_args[0]) { // a shared exe: which one is it?
@@ -1488,8 +1478,6 @@ static void gamedb_new_run(AppInfo *a)
 //   GET /v1/search?q=<name>          -> {"games":[{"id":"s5367951","name":"...","year":2017,"icon":"<url>"|null},
 //                                       ...]}: up to 8, "id" any key; with no icon, /v1/art has it
 //   POST /v1/pick    a game the player picked: the clues + "to_key", "to", "from_key" -> 204
-//   POST /v1/seen  {"version","games":[{"key","clues":{<a lookup's body>}}]} -> 2xx: once a day, the games the
-//                  public files named (seen_send)
 //   POST /v1/broken  {"version","key","kind":"icon"|"hero"|"cover","url"}: a picture that is gone -> {"ok":true}
 //   GET /g/<nnn>.json  unsigned, the public files (static_lookup)
 // "v" is the answer's ETag: asked again with If-None-Match, an answer that hasn't changed is a 304. A picture's
@@ -1766,142 +1754,6 @@ static bool write_whole(const Path &file, const char *text, i64 len)
     if (ok) ok = MoveFileExW(part.s, file.s, MOVEFILE_REPLACE_EXISTING) != 0;
     if (!ok) DeleteFileW(part.s);
     return ok;
-}
-
-// The games the public files named (static_lookup), each with the clues a lookup would have sent: the service is
-// told them in one note a day (POST /v1/seen), as it counts the lookups it answers itself. Up to 30 go in a note;
-// the rest wait for the next. <gamedb>\seen.txt keeps them, and the day a note last went, across starts: a "sent
-// <yyyymmdd>" line, then "key<TAB>clues" lines. Only with the service on. Any thread.
-static struct {
-    SRWLOCK lock;
-    bool    loaded;
-    u32     sent_day, tried_day; // local yyyymmdd; tried: this run, a note that didn't go (asked again next start)
-    i32     count;
-    struct { char key[48]; u64 hash; char *clues; } items[64];
-} g_seen_games;
-
-static u32 seen_today()
-{
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    return t.wYear * 10000u + t.wMonth * 100u + t.wDay;
-}
-
-static Path seen_file() { return path_join(gamedb_dir(), L"seen.txt"); }
-
-static u64 seen_hash(const char *key, const char *clues)
-{
-    return fnv64(key, strlen(key)) * 31 ^ fnv64(clues, strlen(clues));
-}
-
-static void seen_load_locked()
-{
-    if (g_seen_games.loaded) return;
-    g_seen_games.loaded = true;
-    char *text = read_file(seen_file().s, 0);
-    if (!text) return;
-    char *save = 0;
-    for (char *line = strtok_s(text, "\r\n", &save); line; line = strtok_s(0, "\r\n", &save)) {
-        if (!strncmp(line, "sent ", 5)) {
-            g_seen_games.sent_day = (u32)strtoul(line + 5, 0, 10);
-            continue;
-        }
-        char *tab = strchr(line, '\t');
-        if (!tab || tab == line || tab - line >= 48 || !tab[1] || g_seen_games.count >= COUNT(g_seen_games.items)) continue;
-        auto &it = g_seen_games.items[g_seen_games.count];
-        snprintf(it.key, sizeof it.key, "%.*s", (int)(tab - line), line);
-        it.clues = _strdup(tab + 1);
-        it.hash = seen_hash(it.key, tab + 1);
-        if (it.clues) g_seen_games.count++;
-    }
-    free(text);
-}
-
-static void seen_save_locked()
-{
-    size_t cap = 32;
-    for (i32 i = 0; i < g_seen_games.count; i++) cap += strlen(g_seen_games.items[i].key) + strlen(g_seen_games.items[i].clues) + 2;
-    char *text = (char *)malloc(cap);
-    if (!text) return;
-    i64 n = snprintf(text, cap, "sent %u\n", g_seen_games.sent_day);
-    for (i32 i = 0; i < g_seen_games.count; i++)
-        n += snprintf(text + n, cap - (size_t)n, "%s\t%s\n", g_seen_games.items[i].key, g_seen_games.items[i].clues);
-    write_whole(seen_file(), text, n);
-    free(text);
-}
-
-// A game the public files named for an exe, with the clues (a /v1/lookup body). Once per game and clues until
-// they are sent; none past 64 waiting. Main thread.
-static void seen_put(const char *key, const char *clues)
-{
-    if (!gamedb_service_on() || !key[0] || !clues[0] || strlen(key) >= 48 || strpbrk(clues, "\t\r\n")) return;
-    u64 h = seen_hash(key, clues);
-    AcquireSRWLockExclusive(&g_seen_games.lock);
-    seen_load_locked();
-    bool have = false;
-    for (i32 i = 0; i < g_seen_games.count && !have; i++) have = g_seen_games.items[i].hash == h;
-    if (!have && g_seen_games.count < COUNT(g_seen_games.items)) {
-        auto &it = g_seen_games.items[g_seen_games.count];
-        str_set(it.key, key);
-        it.hash = h;
-        it.clues = _strdup(clues);
-        if (it.clues) {
-            g_seen_games.count++;
-            seen_save_locked();
-        }
-    }
-    ReleaseSRWLockExclusive(&g_seen_games.lock);
-}
-
-// The day's note: {"version":..,"games":[{"key":..,"clues":{..}},..]}, the first ones waiting, up to 30 and 32 KB.
-// How many went in. Under the lock.
-static i32 seen_note_locked(char *out, i32 cap)
-{
-    i32 n = snprintf(out, cap, "{\"version\":\"%s\",\"games\":[", REKODR_VERSION), took = 0;
-    for (; took < g_seen_games.count && took < 30; took++) {
-        auto &it = g_seen_games.items[took];
-        if (n + (i64)strlen(it.key) * 2 + (i64)strlen(it.clues) + 32 >= cap) break;
-        n += snprintf(out + n, cap - n, "%s{\"key\":", took ? "," : "");
-        mc_put(out, cap, &n, it.key);
-        n += snprintf(out + n, cap - n, ",\"clues\":%s}", it.clues);
-    }
-    snprintf(out + n, cap - n, "]}");
-    return took;
-}
-
-// What an answer to a note does with the `took` games in it: any 2xx, they were told (the day's note has gone);
-// 400, nothing in them was usable, so they go too; else they wait for the next start or day. Under the lock.
-static void seen_answered_locked(u32 status, i32 took, u32 today)
-{
-    if (status / 100 != 2 && status != 400) {
-        g_seen_games.tried_day = today;
-        return;
-    }
-    for (i32 i = 0; i < took; i++) free(g_seen_games.items[i].clues);
-    memmove(g_seen_games.items, g_seen_games.items + took, (g_seen_games.count - took) * sizeof g_seen_games.items[0]);
-    g_seen_games.count -= took;
-    if (status / 100 == 2) g_seen_games.sent_day = today;
-    seen_save_locked();
-}
-
-// Sends the day's note when one is due: games waiting, none sent today, and none tried today this run. Worker
-// thread; seen_put only adds after the ones being sent, so they stay where they are meanwhile.
-static void seen_send()
-{
-    if (!gamedb_service_on()) return;
-    static char note[32 * 1024];
-    u32 today = seen_today();
-    AcquireSRWLockExclusive(&g_seen_games.lock);
-    seen_load_locked();
-    bool due = g_seen_games.count && g_seen_games.sent_day != today && g_seen_games.tried_day != today;
-    i32 took = due ? seen_note_locked(note, sizeof note) : 0;
-    ReleaseSRWLockExclusive(&g_seen_games.lock);
-    if (!took) return;
-    u32 status = art_service_get("/v1/seen", 0, 0, note);
-    AcquireSRWLockExclusive(&g_seen_games.lock);
-    seen_answered_locked(status, took, today);
-    ReleaseSRWLockExclusive(&g_seen_games.lock);
-    log_line("games: the day's note of %d games named by the public files went to the service (%u)", took, status);
 }
 
 // Marks a file as written now: what is in it was just found to be still so.
@@ -2545,6 +2397,8 @@ static bool lookup_parse(const char *text, i64 len, LookAnswer *ans)
     if (j_get(text, len, "confidence", conf, sizeof conf)) ans->confidence = (f32)atof(conf);
     char type[16];
     ans->software = j_get(text, len, "steam_type", type, sizeof type) && !strcmp(type, "software");
+    char flag[8];
+    ans->launcher = j_get(text, len, "launcher", flag, sizeof flag) && !strcmp(flag, "true");
     Json j = {text, text + len};
     // At most 20 asks, each one ask_arg_ok allows; the rest go unanswered
     if (j_find(&j, "ask_args") && j_eat(&j, '[')) {
@@ -2665,11 +2519,9 @@ static void lookups_load()
 // ---------------------------------------------------------------------------------------------------------------
 // The service's public files: GET /g/<nnn>.json, unsigned, {"<name>": entry} for the exe names in it (static_name).
 // An entry is one of
-//   {"rows":[[folders, argument, flags, answer, file], ...], "answers":[answer, ...]}: the ways Discord writes the
-//     exe, told apart here as Discord's own list is (ExePick; flags & 1: a launcher's, 0.6 sure; flags & 2: told
-//     apart by its arguments), each with its game's place in "answers"
-//   a whole answer, as a lookup gives it: the exe is that game wherever it is
-//   {"ask":[...]}: only a lookup can tell
+//   a whole answer, as a lookup gives it: the exe is that game wherever it is, with nothing else to tell
+//   {"ask":["folder","args"]}: the service tells it by its folders and/or its command line, so a lookup asks it,
+//     sending every clue (the list only says which ones it matches on)
 // A name with no entry is one only a lookup can tell too. Each file is kept in gamedb\g\ and checked again when it
 // is a day old, with its ETag; one the service has none for is kept as {}.
 
@@ -2698,18 +2550,6 @@ static Path static_file(i32 shard, const wchar_t *ext)
     return path_join(gamedb_dir(), name);
 }
 
-// A whole number in JSON. False if there isn't one here.
-static bool j_int(Json *j, i64 *out)
-{
-    j_ws(j);
-    char num[24];
-    i32 n = 0;
-    while (j->p < j->end && n < (i32)sizeof num - 1 && (isdigit((u8)*j->p) || *j->p == '-')) num[n++] = *j->p++;
-    num[n] = 0;
-    *out = strtoll(num, 0, 10);
-    return n > 0;
-}
-
 // An answer from the public files, kept as a lookup's is (lookup_keep_art), once a run for each.
 static void static_keep(const char *text, i64 len, const LookAnswer &ans)
 {
@@ -2722,64 +2562,9 @@ static void static_keep(const char *text, i64 len, const LookAnswer &ans)
     lookup_keep_art(text, len, ans);
 }
 
-// The answer an entry's rows give for the running exe. STATIC_SHARED when only its command line and window could
-// tell; an answer with no game when none of them is it.
-static StaticKind static_rows(const char *e, i64 el, const char *exe, const char *path, const char *cmdline,
-                              const char *title, LookAnswer *ans)
-{
-    const char *at[32];
-    i64 at_len[32];
-    i32 an = 0;
-    Json j = {e, e + el};
-    if (j_find(&j, "answers") && j_eat(&j, '[')) {
-        while (!j_eat(&j, ']') && j.p < j.end) {
-            j_ws(&j);
-            const char *v = j.p;
-            j_skip(&j);
-            if (an < COUNT(at)) at[an] = v, at_len[an++] = j.p - v;
-            j_eat(&j, ',');
-        }
-    }
-    ExePick ep;
-    ep.start(exe, path, cmdline, title);
-    j = {e, e + el};
-    if (j_find(&j, "rows") && j_eat(&j, '[')) {
-        while (j_eat(&j, '[')) {
-            char folders[160] = "", args[200] = "", file[96] = "", game[128] = "";
-            i64 flags = 0, n = -1;
-            bool ok = j_string(&j, folders, sizeof folders) && j_eat(&j, ',') && j_string(&j, args, sizeof args) &&
-                      j_eat(&j, ',') && j_int(&j, &flags) && j_eat(&j, ',') && j_int(&j, &n) && j_eat(&j, ',') &&
-                      j_string(&j, file, sizeof file);
-            while (!j_eat(&j, ']') && j.p < j.end) { j_skip(&j); j_eat(&j, ','); }
-            j_eat(&j, ',');
-            if (!ok || n < 0 || n >= an || !file[0]) continue;
-            char ent[260];
-            i32 len = snprintf(ent, sizeof ent, "%s%s%s", folders, folders[0] ? "/" : "", file);
-            if (len <= 0 || len >= (i32)sizeof ent) continue;
-            j_get(at[n], at_len[n], "game.name", game, sizeof game);
-            ep.add(ent, len, args, (flags & 1) != 0, (flags & 2) != 0, (i32)n, game);
-        }
-    }
-    bool launcher = false, shared = false;
-    i32 row = ep.pick(&launcher, &shared);
-    *ans = {};
-    if (row < 0) {
-        str_set(ans->how, "none");
-        return shared && !cmdline[0] ? STATIC_SHARED : STATIC_ANSWER;
-    }
-    if (!lookup_parse(at[row], at_len[row], ans)) return STATIC_LOOKUP;
-    ans->launcher = launcher;
-    if (launcher) ans->confidence = 0.6f;
-    static_keep(at[row], at_len[row], *ans);
-    return STATIC_ANSWER;
-}
-
-// What the public files say about an exe: STATIC_ANSWER with *ans (no game in it when they say it is none),
-// STATIC_LOOKUP when only a lookup can tell, STATIC_WAIT while its file is being fetched, STATIC_SHARED when the
-// command line and the window are wanted (ask again with them). A file a day old is used while it is checked
-// again. Main thread.
-static StaticKind static_lookup(const char *exe, const char *path, const char *cmdline, const char *title,
-                                LookAnswer *ans)
+// What the public files say about an exe: STATIC_ANSWER with *ans, STATIC_LOOKUP when only a lookup can tell,
+// STATIC_WAIT while its file is being fetched. A file a day old is used while it is checked again. Main thread.
+static StaticKind static_lookup(const char *exe, LookAnswer *ans)
 {
     *ans = {};
     char name[256];
@@ -2821,14 +2606,13 @@ static StaticKind static_lookup(const char *exe, const char *path, const char *c
     }
     StaticKind kind = STATIC_LOOKUP;
     if (e && *e == '{') {
-        Json f = {e, e + el}, g = {e, e + el};
-        if (j_find(&f, "rows")) kind = static_rows(e, el, exe, path, cmdline, title, ans);
-        else if (j_find(&g, "ask")) kind = STATIC_LOOKUP;
-        else if (lookup_parse(e, el, ans)) {
+        Json g = {e, e + el};
+        if (!j_find(&g, "ask") && lookup_parse(e, el, ans) && ans->key[0]) {
             static_keep(e, el, *ans);
             kind = STATIC_ANSWER;
         }
     }
+    if (kind != STATIC_ANSWER) *ans = {};
     free(text);
     return kind;
 }
@@ -3012,7 +2796,6 @@ static DWORD WINAPI gamedb_thread(void *)
         gamedb_fetch_shards();
         bool done = gamedb_fetch_looks();
         done &= gamedb_fetch_art();
-        seen_send();
         // some waiting their turn: look again soon
         WaitForSingleObject(g_gamedb.wake, done ? 3600 * 1000 : 2000);
     }
