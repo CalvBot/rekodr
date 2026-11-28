@@ -1,6 +1,7 @@
 // The first-run setup: a few short pages on a first start, over the library, while recording already runs on the
-// defaults. They show the clip key and ask about tooltips, game detection, usage stats and sharing. Each answer
-// changes the setting at once; Done on the last page marks it finished. Options > General runs it again.
+// defaults. They show the clip key and ask about tooltips, the clips folder, game detection, usage stats and
+// sharing. Each answer changes the setting at once; Done on the last page marks it finished. Options > General runs
+// it again.
 
 enum { SETUP_BEG_RESOURCE = 10, SETUP_EXAMPLE_RESOURCE = 11 };
 // The begging picture (assets/images/setup-beg.jpg): 15 frames of 240 x 230, 5 across and 3 down, at 10 a second.
@@ -109,7 +110,7 @@ static f32 setup_keycap(ImDrawList *dl, ImVec2 p, f32 h, const char *name)
 }
 
 // The setup's pages, in order. Back and Next (Done on the last) sit in the same place on every page.
-enum SetupPage { SETUP_WELCOME, SETUP_DETECTION, SETUP_DEVELOPMENT, SETUP_SHARING, SETUP_PAGES };
+enum SetupPage { SETUP_WELCOME, SETUP_FOLDER, SETUP_DETECTION, SETUP_DEVELOPMENT, SETUP_SHARING, SETUP_PAGES };
 static i32 g_setup_page;
 
 static void setup_finish(const char *how)
@@ -252,6 +253,154 @@ static void setup_page_welcome(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair_h
         startup_set(on);
         log_line("setup: start with Windows %s", on ? "on" : "off");
     }
+}
+
+// A drive clips can go on
+struct SetupDrive {
+    wchar_t letter;
+    char name[48]; // its label, "" with none
+    u64 total, free;
+};
+static const i32 SETUP_DRIVES = 4;                 // the page shows this many at most
+static const u64 SETUP_LOW_BYTES = 20000000000ull; // less free than this is drawn as a warning
+
+// The folder for clips on a drive: the default folder on the default's own drive, <drive>:\Rekodr on any other.
+static Path setup_folder_on(const Path &def, wchar_t letter)
+{
+    if (def.s[0] && def.s[1] == L':' && towupper(def.s[0]) == towupper(letter)) return def;
+    Path p = {};
+    swprintf(p.s, MAX_PATH, L"%c:\\" APP_NAME, towupper(letter));
+    return p;
+}
+
+// Keeps the `keep` drives with the most free space, in letter order. Returns how many are left.
+static i32 setup_drives_keep(SetupDrive *d, i32 n, i32 keep)
+{
+    while (n > keep) {
+        i32 least = 0;
+        for (i32 i = 1; i < n; i++)
+            if (d[i].free < d[least].free) least = i;
+        for (i32 i = least; i + 1 < n; i++) d[i] = d[i + 1];
+        n--;
+    }
+    return n;
+}
+
+// The PC's fixed drives, the SETUP_DRIVES with the most free space when there are more.
+static i32 setup_drives(SetupDrive *out)
+{
+    SetupDrive all[26];
+    i32 n = 0;
+    DWORD mask = GetLogicalDrives();
+    for (i32 i = 0; i < 26; i++) {
+        if (!(mask & (1u << i))) continue;
+        wchar_t root[] = {(wchar_t)(L'A' + i), L':', L'\\', 0}, label[64] = L"";
+        ULARGE_INTEGER avail, total;
+        if (GetDriveTypeW(root) != DRIVE_FIXED || !GetDiskFreeSpaceExW(root, &avail, &total, 0) || !total.QuadPart) continue;
+        GetVolumeInformationW(root, label, COUNT(label), 0, 0, 0, 0, 0);
+        SetupDrive &d = all[n++];
+        d = {};
+        d.letter = root[0];
+        d.total = total.QuadPart;
+        d.free = avail.QuadPart;
+        wide_to_utf8(label, d.name, sizeof d.name);
+    }
+    n = setup_drives_keep(all, n, SETUP_DRIVES);
+    memcpy(out, all, n * sizeof *out);
+    return n;
+}
+
+// One drive: its letter and name, a bar of how full it is, and its free space. The one the clips folder is on is
+// raised and edged in the accent, as a picked answer is; all keep their size and place.
+static bool setup_drive_card(const SetupDrive &d, bool chosen, f32 w, f32 h)
+{
+    ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + w, a.y + h);
+    char letter[8], free_text[32], line[48];
+    snprintf(letter, sizeof letter, "%c:", (char)d.letter);
+    bool clicked = ImGui::InvisibleButton("##drive", ImVec2(w, h));
+    if (clicked) dev_click("drive", letter);
+    bool hot = ImGui::IsItemHovered() && !chosen;
+    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    f32 rr = dp(12), pad = dp(16), x0 = a.x + pad, x1 = b.x - pad;
+    dl->AddRectFilled(a, b, col32(chosen ? COL_PANEL2 : hot ? COL_HOVER : COL_PANEL), rr);
+    if (chosen) dl->AddRect(a, b, col32(COL_ACCENT), rr, 0, dp(1.5f));
+    f32 y = a.y + dp(14), lw = text_w(g_font_big, letter);
+    opt_text_at(dl, g_font_big, ImVec2(x0, y), chosen || hot ? COL_TEXT : COL_DIM, letter, x1);
+    opt_text_at(dl, g_font_small, ImVec2(x0 + lw + dp(8), floorf(y + g_font_big->FontSize - g_font_small->FontSize - dp(2))),
+                COL_FAINT, d.name, x1);
+    y += g_font_big->FontSize + dp(12);
+    f32 bar_h = dp(6), used = d.total ? (f32)((f64)(d.total - d.free) / (f64)d.total) : 0;
+    bool low = d.free < SETUP_LOW_BYTES;
+    dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + bar_h), col32(COL_OFF), bar_h / 2);
+    f32 ux = fmaxf(x0 + bar_h, floorf(x0 + (x1 - x0) * fminf(1, used)));
+    dl->AddRectFilled(ImVec2(x0, y), ImVec2(ux, y + bar_h), col32(low ? COL_WARN : chosen ? COL_ACCENT : COL_DIM), bar_h / 2);
+    y += bar_h + dp(10);
+    bytes_text((i64)d.free, free_text, sizeof free_text);
+    snprintf(line, sizeof line, "%s free", free_text);
+    opt_text_at(dl, g_font_bold, ImVec2(x0, y), low ? COL_WARN : chosen || hot ? COL_TEXT : COL_DIM, line, x1);
+    return clicked;
+}
+
+// The clips folder: the PC's drives side by side with their free space, and under them the folder and a button for
+// any other one. A drive's card puts the folder on it (setup_folder_on).
+static void setup_page_folder(ImDrawList *dl, f32 x0, f32 x1, f32 y)
+{
+    Config &c = g_app.config;
+    y = setup_page_head(dl, x0, x1, y, "Where should clips go?", "Clips and sessions are saved here. Pick a drive with room.");
+    // The drives, read when the page comes into view and after the folder changes
+    static SetupDrive drives[SETUP_DRIVES];
+    static i32 drive_count, read_frame;
+    static u64 folder_free;
+    i32 frame = ImGui::GetFrameCount();
+    if (!read_frame || frame - read_frame > 1) {
+        drive_count = setup_drives(drives);
+        folder_free = backup_free(c.save_dir);
+    }
+    read_frame = frame;
+
+    bool changed = false;
+    wchar_t on = c.save_dir.s[1] == L':' ? (wchar_t)towupper(c.save_dir.s[0]) : 0;
+    f32 gap = dp(12), card_h = dp(104);
+    i32 cols = drive_count < 2 ? 2 : drive_count;
+    f32 cw = floorf((x1 - x0 - gap * (cols - 1)) / cols);
+    for (i32 i = 0; i < drive_count; i++) {
+        ImGui::SetCursorScreenPos(ImVec2(x0 + i * (cw + gap), y));
+        ImGui::PushID(i);
+        if (setup_drive_card(drives[i], drives[i].letter == on, cw, card_h) && drives[i].letter != on) {
+            c.save_dir = setup_folder_on(config_default_save_dir(), drives[i].letter);
+            changed = true;
+        }
+        ImGui::PopID();
+    }
+    if (drive_count) y += card_h + dp(16);
+
+    // The folder, and the picker for one that isn't a drive's own
+    f32 rh = dp(64), fh = ImGui::GetFrameHeight(), pad = dp(20);
+    dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + rh), col32(COL_PANEL), dp(12));
+    char path[MAX_PATH * 3], free_text[32], sub[64];
+    wide_to_utf8(c.save_dir.s, path, sizeof path);
+    bytes_text((i64)folder_free, free_text, sizeof free_text);
+    snprintf(sub, sizeof sub, "%s free", free_text);
+    f32 ty = floorf(y + (rh - g_font_bold->FontSize - dp(5) - g_font_small->FontSize) / 2), tx1 = x1 - pad - fh - dp(16);
+    opt_text_mid(dl, g_font_bold, ImVec2(x0 + pad, ty), COL_TEXT, path, tx1);
+    opt_text_at(dl, g_font_small, ImVec2(x0 + pad, ty + g_font_bold->FontSize + dp(5)),
+                folder_free < SETUP_LOW_BYTES ? COL_WARN : COL_DIM, sub, tx1);
+    ImGui::SetCursorScreenPos(ImVec2(x1 - pad - fh, floorf(y + (rh - fh) / 2)));
+    Path picked = {};
+    kit_next_tip("Choose a folder");
+    if (kit_icon_button(ICON_FOLDER, "##setupfolder", KIT_SECONDARY) && pick_folder(c.save_dir, &picked) &&
+        wcscmp(picked.s, c.save_dir.s)) {
+        c.save_dir = picked;
+        changed = true;
+    }
+    if (changed) {
+        wide_to_utf8(c.save_dir.s, path, sizeof path);
+        log_line("setup: save folder %s", path);
+        options_apply(0);
+        read_frame = 0; // read the free space again
+    }
+    opt_text_at(dl, g_font_small, ImVec2(x0, y + rh + dp(12)), COL_DIM, "Or later, in Options > General.", x1);
 }
 
 // What No leaves to the player, shown while No is picked: the same clip as a library card with the service, filed
@@ -519,6 +668,7 @@ static void setup_window()
     i32 page = g_setup_page;
     switch (page) {
     case SETUP_WELCOME: setup_page_welcome(dl, x0, x1, y, PAIR_H); break;
+    case SETUP_FOLDER: setup_page_folder(dl, x0, x1, y); break;
     case SETUP_DETECTION: setup_page_detection(dl, x0, x1, y, PAIR_H); break;
     case SETUP_DEVELOPMENT: setup_page_development(dl, x0, x1, y, PAIR_H); break;
     default: setup_page_sharing(dl, x0, x1, y); break;

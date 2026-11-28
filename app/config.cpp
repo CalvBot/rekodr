@@ -127,20 +127,29 @@ static i32 watch_found(Path *out, const char **from, i32 max)
     return n;
 }
 
-static void config_defaults(Config *c, const Paths &paths)
+// Where clips and sessions go until the player picks: <Videos>\Rekodr, or a test copy's <REKODR_HOME>\Rekodr
+static Path config_default_save_dir()
 {
-    *c = {};
+    Path p = {};
     wchar_t home[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"REKODR_HOME", home, MAX_PATH) && home[0]) {
-        swprintf(c->save_dir.s, MAX_PATH, L"%s\\" APP_NAME, home);
-        swprintf(c->buffer_dir.s, MAX_PATH, L"%s\\buffer", home);
+        swprintf(p.s, MAX_PATH, L"%s\\" APP_NAME, home);
     } else {
         wchar_t *videos = 0;
         SHGetKnownFolderPath(FOLDERID_Videos, 0, 0, &videos);
-        swprintf(c->save_dir.s, MAX_PATH, L"%s\\" APP_NAME, videos ? videos : L".");
+        swprintf(p.s, MAX_PATH, L"%s\\" APP_NAME, videos ? videos : L".");
         CoTaskMemFree(videos);
-        c->buffer_dir = path_join(paths.local_dir, L"buffer");
     }
+    return p;
+}
+
+static void config_defaults(Config *c, const Paths &paths)
+{
+    *c = {};
+    c->save_dir = config_default_save_dir();
+    wchar_t home[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"REKODR_HOME", home, MAX_PATH) && home[0]) swprintf(c->buffer_dir.s, MAX_PATH, L"%s\\buffer", home);
+    else c->buffer_dir = path_join(paths.local_dir, L"buffer");
     c->play_dir = paths.local_dir;
     c->watch_count = watch_found(c->watch_dirs, 0, WATCH_MAX);
     const KNOWNFOLDERID *discord_in[] = {&FOLDERID_Videos, &FOLDERID_Documents};

@@ -7774,6 +7774,29 @@ static void test_setup_name()
     T(!install_is_setup_name(L"C:\\Users\\me\\AppData\\Local\\Rekodr\\update\\rekodr-0.3.0.exe"));
 }
 
+// The setup's clips folder on a drive, and which drives its page shows
+static void test_setup_folder()
+{
+    Path def = {};
+    wcscpy_s(def.s, L"C:\\Users\\me\\Videos\\Rekodr");
+    T(!wcscmp(setup_folder_on(def, L'C').s, def.s) && !wcscmp(setup_folder_on(def, L'c').s, def.s));
+    T(!wcscmp(setup_folder_on(def, L'D').s, L"D:\\Rekodr") && !wcscmp(setup_folder_on(def, L'e').s, L"E:\\Rekodr"));
+    Path share = {};
+    wcscpy_s(share.s, L"\\\\nas\\videos\\Rekodr"); // a default that is on no drive
+    T(!wcscmp(setup_folder_on(share, L'C').s, L"C:\\Rekodr"));
+
+    SetupDrive d[5] = {};
+    const u64 free[] = {50, 10, 900, 10, 300};
+    for (i32 i = 0; i < 5; i++) {
+        d[i].letter = (wchar_t)(L'C' + i);
+        d[i].free = free[i];
+    }
+    T(setup_drives_keep(d, 5, 4) == 4); // the first of the two emptiest goes
+    T(d[0].letter == L'C' && d[1].letter == L'E' && d[2].letter == L'F' && d[3].letter == L'G');
+    T(setup_drives_keep(d, 4, 4) == 4 && setup_drives_keep(d, 0, 4) == 0);
+    T(setup_drives_keep(d, 4, 2) == 2 && d[0].letter == L'E' && d[1].letter == L'G');
+}
+
 static void test_save_names()
 {
     // 2026-11-15 21:04:05 local, whatever the time zone
@@ -7889,6 +7912,7 @@ int main()
     test_achievements();
     test_static_tier();
     test_setup_name();
+    test_setup_folder();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

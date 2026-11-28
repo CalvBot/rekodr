@@ -208,10 +208,10 @@ static void run_command(const char *text)
             g_app.options.tab = OPT_GENERAL;
             g_opt_show_folders = true;
         }
-        else if (!strcmp(arg, "setup") || !strcmp(arg, "setup-detection")) { // the first-run setup, at its first page
-            ui_show(SCREEN_LIBRARY);                                          // or its game detection page
+        else if (!strcmp(arg, "setup") || !strcmp(arg, "setup-folder") || !strcmp(arg, "setup-detection")) {
+            ui_show(SCREEN_LIBRARY); // the first-run setup, at its first page, its folder page or its game detection page
             g_app.ui.setup_open = true;
-            g_setup_page = arg[5] ? SETUP_DETECTION : SETUP_WELCOME;
+            g_setup_page = !arg[5] ? SETUP_WELCOME : arg[6] == 'f' ? SETUP_FOLDER : SETUP_DETECTION;
         }
         else if (starts_with(arg, "search ")) { // search <words>: Options with the settings search showing what matches
             ui_show(SCREEN_OPTIONS);
@@ -226,7 +226,7 @@ static void run_command(const char *text)
                 ui_show(SCREEN_OPTIONS);
                 g_app.options.tab = t;
                 g_app.options.find[0] = 0;
-            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, timeline-at, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, search <words>, game-settings, setup, setup-detection)", arg);
+            } else log_line("show: no page \"%s\" (clips, sessions, player, share-menu, timeline, timeline-at, edit, share, game, list, list-collapsed, delete, delete-folder, comment, tags, session-toast, saved-toast, note, free-links, help, news, folders, cloudflare, rust, audio, apps, recording, hotkeys, integrations, auto-markers, general, search <words>, game-settings, setup, setup-folder, setup-detection)", arg);
         }
         ui_wake();
     } else if (!strcmp(cmd, "gsi-dump")) {
