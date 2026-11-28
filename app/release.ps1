@@ -1,16 +1,16 @@
-# `build release` runs this after the build. It writes dist\rekodr-<version>.exe, the same exe as
-# rekodr-setup.exe (the download for new players), its .pdb (for reading crash dumps from that version) and
-# latest.txt, the manifest the update check reads (update.cpp):
+# `build release` runs this after the build. It writes dist\rekodr-setup.exe (the exe: run by that name it
+# installs, and an installed copy updates itself from it), rekodr-<version>.pdb (for reading crash dumps from that
+# version) and latest.txt, the manifest the update check reads (update.cpp):
 #   version <version>
-#   url <where rekodr-<version>.exe is downloaded from>
+#   url <where that release's rekodr-setup.exe is downloaded from>
 #   size <bytes>
 #   sha256 <hex>
 #   sig <hex>
-# Releases are GitHub Releases of CalvBot/rekodr, tagged v<version>. Upload rekodr-<version>.exe,
-# rekodr-setup.exe and latest.txt to the release; the .pdb stays here. The update check reads latest.txt from the
-# newest release (UPDATE_MANIFEST_URL in update.cpp) and downloads the exe from its own tag. The sig line is an ECDSA P-256 signature with the
-# release key (~\.secrets\rekodr-release-key.pem), r then s as 128 hex digits, over the SHA-256 of every byte
-# before it. Needs PowerShell 7 (pwsh) for the key.
+# Releases are GitHub Releases of CalvBot/rekodr, tagged v<version>. Upload rekodr-setup.exe and latest.txt to the
+# release; the .pdb stays here. The update check reads latest.txt from the newest release (UPDATE_MANIFEST_URL in
+# update.cpp) and downloads the exe from its own tag. The sig line is an ECDSA P-256 signature with the release key
+# (~\.secrets\rekodr-release-key.pem), r then s as 128 hex digits, over the SHA-256 of every byte before it. Needs
+# PowerShell 7 (pwsh) for the key.
 param([string]$Build = "$PSScriptRoot\build", [string]$Dist = "$PSScriptRoot\..\dist",
       [string]$Key = "$HOME\.secrets\rekodr-release-key.pem")
 $ErrorActionPreference = "Stop"
@@ -26,14 +26,13 @@ if (-not (Select-String -Path "$PSScriptRoot\whatsnew.txt" -Pattern "^# $([regex
 if (-not (Test-Path $Key)) { throw "no release key at $Key" }
 
 New-Item -ItemType Directory -Force $Dist | Out-Null
-$exe = Join-Path $Dist "rekodr-$version.exe"
+$exe = Join-Path $Dist "rekodr-setup.exe"
 Copy-Item "$Build\rekodr.exe" $exe
-Copy-Item "$Build\rekodr.exe" (Join-Path $Dist "rekodr-setup.exe") # the same exe; by this name it installs
 Copy-Item "$Build\rekodr.pdb" (Join-Path $Dist "rekodr-$version.pdb")
 $size = (Get-Item $exe).Length
 $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 # LF line ends and no BOM: the signature covers these exact bytes
-$text = "version $version`nurl $releases/download/v$version/rekodr-$version.exe`nsize $size`nsha256 $sha`n"
+$text = "version $version`nurl $releases/download/v$version/rekodr-setup.exe`nsize $size`nsha256 $sha`n"
 $ecdsa = [System.Security.Cryptography.ECDsa]::Create()
 $ecdsa.ImportFromPem((Get-Content $Key -Raw))
 $sig = $ecdsa.SignData([Text.Encoding]::ASCII.GetBytes($text), [System.Security.Cryptography.HashAlgorithmName]::SHA256,
@@ -41,4 +40,4 @@ $sig = $ecdsa.SignData([Text.Encoding]::ASCII.GetBytes($text), [System.Security.
 $ecdsa.Dispose()
 $text += "sig " + (($sig | ForEach-Object { $_.ToString("x2") }) -join "") + "`n"
 [IO.File]::WriteAllText((Join-Path $Dist "latest.txt"), $text)
-Write-Host "$exe ($size bytes), rekodr-setup.exe and a signed latest.txt, for a release tagged v$version"
+Write-Host "$exe ($size bytes) and a signed latest.txt, for a release tagged v$version"

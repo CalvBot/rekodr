@@ -1,6 +1,6 @@
 @echo off
 rem Builds app\build\rekodr.exe from the single translation unit rekodr.cpp. `build debug` for a debug build,
-rem `build release` for an optimised build plus dist\rekodr-<version>.exe and its update manifest (release.ps1).
+rem `build release` for an optimised build plus dist\rekodr-setup.exe and its update manifest (release.ps1).
 setlocal
 cd /d "%~dp0"
 if not exist build mkdir build

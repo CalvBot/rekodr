@@ -7764,6 +7764,16 @@ static void test_settings_search()
     T(!opt_search_match("save", hotkey, 4));
 }
 
+// Only the setup's file name installs: an installed or updated copy is rekodr.exe and starts as the program
+static void test_setup_name()
+{
+    T(install_is_setup_name(L"C:\\Users\\me\\Downloads\\rekodr-setup.exe"));
+    T(install_is_setup_name(L"rekodr-setup.exe") && install_is_setup_name(L"D:\\Rekodr-Setup (1).exe"));
+    T(!install_is_setup_name(L"C:\\Users\\me\\AppData\\Local\\Programs\\Rekodr\\rekodr.exe"));
+    T(!install_is_setup_name(L"C:\\rekodr-setup\\rekodr.exe") && !install_is_setup_name(L"C:\\x\\rekodr.old.exe"));
+    T(!install_is_setup_name(L"C:\\Users\\me\\AppData\\Local\\Rekodr\\update\\rekodr-0.3.0.exe"));
+}
+
 static void test_save_names()
 {
     // 2026-11-15 21:04:05 local, whatever the time zone
@@ -7878,6 +7888,7 @@ int main()
     test_am_pc();
     test_achievements();
     test_static_tier();
+    test_setup_name();
     printf("%d checks, %d failed\n", g_checked, g_failed);
     return g_failed;
 }

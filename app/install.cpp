@@ -1,5 +1,5 @@
 // Installing and uninstalling, done by rekodr.exe itself. It installs per user, with no admin rights:
-//   rekodr-setup-<version>.exe (or rekodr.exe install)
+//   rekodr-setup.exe (or rekodr.exe install)
 //       asks once, quits a Rekodr that's running, copies this exe to %LOCALAPPDATA%\Programs\Rekodr, adds the
 //       Start menu shortcut, the Run value (start with Windows) and the Apps entry, and starts the installed copy.
 //   rekodr.exe uninstall (the Apps entry's uninstall command)
@@ -331,14 +331,21 @@ static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_comman
     return 0;
 }
 
-// The setup exe is rekodr.exe named rekodr-setup-<version>.exe
+// The setup exe is rekodr.exe named rekodr-setup.exe. A browser's second download of it, "rekodr-setup (1).exe", is
+// one too.
+static bool install_is_setup_name(const wchar_t *path)
+{
+    static const wchar_t SETUP[] = L"rekodr-setup";
+    const wchar_t *name = wcsrchr(path, L'\\');
+    name = name ? name + 1 : path;
+    return !_wcsnicmp(name, SETUP, COUNT(SETUP) - 1);
+}
+
 static bool install_is_setup_exe()
 {
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(0, self, MAX_PATH);
-    const wchar_t *name = wcsrchr(self, L'\\');
-    name = name ? name + 1 : self;
-    return !_wcsnicmp(name, L"rekodr-setup", 14);
+    return install_is_setup_name(self);
 }
 
 // For main: runs "install" and "uninstall" (and the setup exe with no command). True if it was one of them, and
