@@ -3267,8 +3267,7 @@ static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/rekodr";
 // TODO: the invite once the bot has made it.
 static const char OPT_DISCORD_URL[] = "";
 // Where Support goes (a donation page). The button is hidden while it's empty.
-// TODO: the Ko-fi page once there is one.
-static const char OPT_SUPPORT_URL[] = "";
+static const char OPT_SUPPORT_URL[] = "https://ko-fi.com/calvbot";
 static const char OPT_SGDB_KEY_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
 
 static const wchar_t SD_PLUGIN[] = L"dev.calvbot.rekodr.sdPlugin";
