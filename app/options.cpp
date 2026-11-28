@@ -5996,13 +5996,13 @@ static void options_general()
 
     opt_section("PRIVACY");
     opt_card_begin();
-    if (opt_row_toggle("Look up games online", "Names, icons and art for your games. Applies from the next start",
+    if (opt_row_toggle("Look up games online", "Names, icons and art for your games. Sends each game's exe and folder names, store id and other install clues, plus what you search for and pick; counted per game to name games better. Never a path. Applies from the next start",
                        "##lookup", &c.game_lookup)) {
         log_line("options: look up games %s", c.game_lookup ? "on" : "off");
         options_apply(0);
     }
     ImGui::BeginDisabled(!c.game_lookup);
-    if (opt_row_toggle("Send usage stats", "Once a day: the version, Windows build, encoder, how many clips, saves, shares and links, and which games you played, for how long and how many clips. Your settings when they change, at most weekly: values only, for folders, keys and hotkeys only whether you changed them. No paths, names or files",
+    if (opt_row_toggle("Send usage stats", "Once a day: version, Windows build, encoder, fps and height, counts of clips, saves, shares, links and slow-PC warnings, and per game the play time and clips. Your settings when they change, at most weekly: values only, folders, keys and hotkeys just whether you changed them. No paths or files",
                        "##stats", &c.send_stats)) {
         log_line("options: usage stats %s", c.send_stats ? "on" : "off");
         options_apply(0);

@@ -392,7 +392,7 @@ static void setup_page_detection(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pair
         options_apply(0);
     }
     const char *note = !c.game_lookup ? "Look up games online is off in Options, so this is too."
-                       : on           ? "A game's exe and the games you pick for it go to the service. Nothing else."
+                       : on           ? "A game's exe, folder names, store id and the game you pick for it go to the service. Never a path."
                                       : "Nothing about your games goes to " APP_NAME "'s service. Games Discord knows keep their art.";
     opt_text_at(dl, g_font_small, ImVec2(x0, y + pair_h + dp(10)), COL_DIM, note, x1);
     if (!c.game_lookup || on) return;
@@ -405,13 +405,13 @@ static void setup_page_development(ImDrawList *dl, f32 x0, f32 x1, f32 y, f32 pa
 {
     Config &c = g_app.config;
     y = setup_page_head(dl, x0, x1, y, "Help development?",
-                        "Once a day, " APP_NAME " sends how many clips, saves, shares and links you made, which games "
-                        "you played, for how long and how many clips, with its version, your Windows build and "
-                        "encoder. Your settings too, at most weekly: values only, for folders, keys and hotkeys only "
-                        "whether you changed them. No paths, names or files.");
+                        "Once a day, " APP_NAME " sends its version, your Windows build and encoder, counts of clips, "
+                        "saves, shares and links, and per game the play time and clips. Your settings too, at most "
+                        "weekly: values only, for folders, keys and hotkeys only whether you changed them. No paths or "
+                        "files.");
     ImGui::SetCursorScreenPos(ImVec2(x0, y));
     static const char *const titles[] = {"Sure, send", "No thanks"};
-    static const char *const subs[] = {"Counts and settings", "Send nothing"};
+    static const char *const subs[] = {"Counts, play time, settings", "Send nothing"};
     ImGui::BeginDisabled(!c.game_lookup);
     i32 hit = setup_pair("stats", titles, subs, c.send_stats && c.game_lookup ? 0 : 1, x1 - x0, pair_h);
     ImGui::EndDisabled();
