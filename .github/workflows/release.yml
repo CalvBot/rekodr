@@ -1,4 +1,4 @@
-# Builds a release on a v* tag (Forgejo's push mirror carries tags here) or by hand for an existing tag, and
+# Builds a release on a v* tag pushed here or by hand for an existing tag, and
 # never on a push or PR. Repo secrets: REKODR_SERVICE_KEY (the service's signing key, a build define) and
 # REKODR_RELEASE_KEY (the PEM text of the key that signs latest.txt). Uploads rekodr-<version>.exe,
 # rekodr-setup.exe and latest.txt to the release; the .pdb is kept as a workflow artifact for 90 days.
