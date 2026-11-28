@@ -5,9 +5,11 @@
 A replay recorder for Windows. It records your screen all the time, so when something happens you press a key
 and keep it.
 
-Rekodr is in beta: things may change between versions.
+Rekodr is in beta: things may change between versions. Bugs, ideas and clips go to
+[Rekodr's Discord](https://discord.gg/Usjkpcv2tK).
 
 [<img src="docs/images/support-me-on-kofi.png" alt="Support me on Ko-fi" height="36">](https://ko-fi.com/calvbot)
+[<img src="https://discord.com/api/guilds/1575899783829262406/widget.png?style=shield" alt="Discord">](https://discord.gg/Usjkpcv2tK)
 
 ## What it does
 - **Hours of replay.** Because the buffer is kept on disk rather than in memory, it holds hours, not minutes.

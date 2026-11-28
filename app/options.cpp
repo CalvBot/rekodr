@@ -3265,8 +3265,7 @@ static void update_start(); // update.cpp
 static void update_stop();  // update.cpp
 static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/rekodr";
 // Rekodr's Discord server (the invite made for the app). The button is hidden while it's empty.
-// TODO: the invite once the bot has made it.
-static const char OPT_DISCORD_URL[] = "";
+static const char OPT_DISCORD_URL[] = "https://discord.gg/Z2DsddRTGb";
 // Where Support goes (a donation page). The button is hidden while it's empty.
 static const char OPT_SUPPORT_URL[] = "https://ko-fi.com/calvbot";
 static const char OPT_SGDB_KEY_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
