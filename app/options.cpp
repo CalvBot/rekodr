@@ -3263,8 +3263,11 @@ static void open_url(const char *url); // setup.cpp
 static void update_start(); // update.cpp
 static void update_stop();  // update.cpp
 static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/rekodr";
+// Rekodr's Discord server (the invite made for the app). The button is hidden while it's empty.
+// TODO: the invite once the bot has made it.
+static const char OPT_DISCORD_URL[] = "";
 // Where Support goes (a donation page). The button is hidden while it's empty.
-// TODO: the Ko-fi (or similar) page once there is one.
+// TODO: the Ko-fi page once there is one.
 static const char OPT_SUPPORT_URL[] = "";
 static const char OPT_SGDB_KEY_URL[] = "https://www.steamgriddb.com/profile/preferences/api";
 
@@ -6308,11 +6311,18 @@ static void options_general()
 
     opt_section("ABOUT");
     opt_card_begin();
-    f32 gh_w = text_w(g_font, "GitHub") + dp(32), sup_w = OPT_SUPPORT_URL[0] ? text_w(g_font, "Support") + dp(32) : 0;
+    // A quiet Support, then Discord and GitHub; one whose address is empty isn't shown.
     f32 bgap = ImGui::GetStyle().ItemSpacing.x;
-    opt_row_begin(APP_NAME " " REKODR_VERSION, "Built " __DATE__, gh_w + (sup_w > 0 ? bgap + sup_w : 0));
-    if (sup_w > 0) { // a quiet Support beside GitHub
+    f32 gh_w = text_w(g_font, "GitHub") + dp(32), dc_w = OPT_DISCORD_URL[0] ? text_w(g_font, "Discord") + dp(32) : 0,
+        sup_w = OPT_SUPPORT_URL[0] ? text_w(g_font, "Support") + dp(32) : 0;
+    opt_row_begin(APP_NAME " " REKODR_VERSION, "Built " __DATE__,
+                  gh_w + (dc_w > 0 ? bgap + dc_w : 0) + (sup_w > 0 ? bgap + sup_w : 0));
+    if (sup_w > 0) {
         if (kit_button("Support##support", KIT_GHOST, ImVec2(sup_w, 0))) open_url(OPT_SUPPORT_URL);
+        ImGui::SameLine(0, bgap);
+    }
+    if (dc_w > 0) {
+        if (kit_button("Discord##discord", KIT_SECONDARY, ImVec2(dc_w, 0))) open_url(OPT_DISCORD_URL);
         ImGui::SameLine(0, bgap);
     }
     if (kit_button("GitHub##apprepo", KIT_SECONDARY, ImVec2(gh_w, 0))) open_url(OPT_APP_REPO_URL);
