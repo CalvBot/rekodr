@@ -7,6 +7,8 @@ and keep it.
 
 Rekodr is in beta: things may change between versions.
 
+[<img src="docs/images/support-me-on-kofi.png" alt="Support me on Ko-fi" height="36">](https://ko-fi.com/calvbot)
+
 ## What it does
 - **Hours of replay.** Because the buffer is kept on disk rather than in memory, it holds hours, not minutes.
 - **Every app's sound on its own track.** Game, voice chat and music stay separate, to mix or mute later.
@@ -17,8 +19,6 @@ Rekodr is in beta: things may change between versions.
   uploader.
 - **Auto markers.** Kills and other moments in Counter-Strike 2 and League of Legends are marked as they happen.
 - **Free.** Every feature, for everyone.
-
-If you'd like to help keep it going, there's a [Ko-fi](https://ko-fi.com/calvbot).
 
 Game names and art come from Rekodr's own service. With it turned off, names come from Discord's public list of
 games and art from SteamGridDB with your own key.

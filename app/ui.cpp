@@ -875,6 +875,25 @@ static bool kit_icon_button(const char *icon, const char *id, KitKind kind = KIT
     return clicked && enabled;
 }
 
+// A round ghost button showing a picture as it is (a brand's mark), `pic` px square in the middle. Takes
+// kit_next_tip's tooltip like kit_icon_button.
+static bool kit_image_button(ImTextureID tex, const char *id, f32 pic, f32 size = 0)
+{
+    const char *tip = g_next_tip, *tip_keys = g_next_tip_keys;
+    g_next_tip = g_next_tip_keys = 0;
+    if (size <= 0) size = ImGui::GetFrameHeight();
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size)) && !kit_closed_here(ImGui::GetItemID());
+    if (tip) kit_tip(tip, tip_keys);
+    if (clicked) dev_click("button", id);
+    bool hot = ImGui::IsItemHovered(), held = hot && ImGui::IsItemActive();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    if (hot) dl->AddRectFilled(a, ImVec2(a.x + size, a.y + size), col32(COL_WHITE, held ? 0.064f : 0.08f), size / 2);
+    ImVec2 p(floorf(a.x + (size - pic) / 2), floorf(a.y + (size - pic) / 2));
+    dl->AddImage(tex, p, ImVec2(p.x + pic, p.y + pic));
+    return clicked;
+}
+
 // A button with an arrow on its right edge, in one piece `size` wide: the main part does the usual thing, the arrow
 // (as wide as the button is tall) opens a choice. Returns 1 for the main part, 2 for the arrow or a right-click on
 // either, 0 for neither. Each part is on or off by itself.

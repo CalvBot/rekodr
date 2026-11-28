@@ -3260,6 +3260,7 @@ static void options_recording()
 // pipe) and the video editors a clip opens in.
 
 static void open_url(const char *url); // setup.cpp
+static ID3D11ShaderResourceView *resource_texture(i32 id, i32 *w, i32 *h); // setup.cpp
 static void update_start(); // update.cpp
 static void update_stop();  // update.cpp
 static const char OPT_APP_REPO_URL[] = "https://github.com/CalvBot/rekodr";
@@ -6310,18 +6311,27 @@ static void options_general()
 
     opt_section("ABOUT");
     opt_card_begin();
-    // A quiet Support, then Discord and GitHub; one whose address is empty isn't shown.
-    f32 bgap = ImGui::GetStyle().ItemSpacing.x;
-    f32 gh_w = text_w(g_font, "GitHub") + dp(32), dc_w = OPT_DISCORD_URL[0] ? text_w(g_font, "Discord") + dp(32) : 0,
-        sup_w = OPT_SUPPORT_URL[0] ? text_w(g_font, "Support") + dp(32) : 0;
-    opt_row_begin(APP_NAME " " REKODR_VERSION, "Built " __DATE__,
-                  gh_w + (dc_w > 0 ? bgap + dc_w : 0) + (sup_w > 0 ? bgap + sup_w : 0));
-    if (sup_w > 0) {
-        if (kit_button("Support##support", KIT_GHOST, ImVec2(sup_w, 0))) open_url(OPT_SUPPORT_URL);
+    // Ko-fi's and Discord's marks as small round buttons, then GitHub; one whose address is empty isn't shown.
+    static ID3D11ShaderResourceView *discord_mark, *kofi_mark;
+    static bool marks_tried;
+    if (!marks_tried) {
+        marks_tried = true;
+        i32 w, h;
+        discord_mark = resource_texture(22, &w, &h);
+        kofi_mark = resource_texture(23, &w, &h);
+    }
+    bool dc = OPT_DISCORD_URL[0] && discord_mark, kofi = OPT_SUPPORT_URL[0] && kofi_mark;
+    f32 bgap = ImGui::GetStyle().ItemSpacing.x, ib = ImGui::GetFrameHeight(), pic = floorf(ib * 0.6f);
+    f32 gh_w = text_w(g_font, "GitHub") + dp(32);
+    opt_row_begin(APP_NAME " " REKODR_VERSION, "Built " __DATE__, gh_w + (dc ? bgap + ib : 0) + (kofi ? bgap + ib : 0));
+    if (kofi) {
+        kit_next_tip("Support on Ko-fi");
+        if (kit_image_button((ImTextureID)(intptr_t)kofi_mark, "##kofi", pic)) open_url(OPT_SUPPORT_URL);
         ImGui::SameLine(0, bgap);
     }
-    if (dc_w > 0) {
-        if (kit_button("Discord##discord", KIT_SECONDARY, ImVec2(dc_w, 0))) open_url(OPT_DISCORD_URL);
+    if (dc) {
+        kit_next_tip("Join the Discord");
+        if (kit_image_button((ImTextureID)(intptr_t)discord_mark, "##discord", pic)) open_url(OPT_DISCORD_URL);
         ImGui::SameLine(0, bgap);
     }
     if (kit_button("GitHub##apprepo", KIT_SECONDARY, ImVec2(gh_w, 0))) open_url(OPT_APP_REPO_URL);

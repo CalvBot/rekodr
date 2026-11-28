@@ -12,6 +12,10 @@
 // Cloudflare's own icon, from its site, for Share's host rows (library.cpp host_logo).
 21 RCDATA "../assets/images/host-cloudflare.png"
 
+// About's Discord and Ko-fi buttons: each brand's own mark from its brand kit, only scaled to 64 px (options.cpp).
+22 RCDATA "../assets/images/discord-symbol-white.png"
+23 RCDATA "../assets/images/kofi-cup.png"
+
 // The app's typeface, Onest (fonts/OFL.txt is its licence), read in place by ui_load_fonts.
 30 RCDATA "fonts/Onest-Regular.ttf"
 31 RCDATA "fonts/Onest-SemiBold.ttf"
