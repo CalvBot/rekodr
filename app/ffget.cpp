@@ -1,7 +1,7 @@
 // Fetching ffmpeg. When no ffmpeg is found (Options path, PATH, winget), Rekodr downloads one pinned build on its
 // own: Gyan's 8.1.1 full shared build from its GitHub release. The zip is checked against its size and SHA-256
 // while it streams in, then unpacked with Windows' own tar.exe into ffget_dir() (local_dir\ffmpeg). ffmpeg_find
-// picks it up from there, so the recorder (which retries every 5 s) starts by itself once it lands.
+// picks it up from there: the recorder retries every 5 s, and audio is set up again once it lands.
 // The build is GPL; its LICENSE file is kept next to it. Options can also fetch it while another ffmpeg is found
 // and switch to it, and uninstall it: that deletes ffget_dir() and nothing else.
 
@@ -234,8 +234,8 @@ static void ffget_uninstall()
     g_ffget.thread = thread_start(ffget_remove_thread, 0);
 }
 
-// Called once a second on the main thread: once the download lands, the library scans again with ffmpeg, and
-// Options switches to it if that's what it was fetched for.
+// Called once a second on the main thread: once the download lands, audio looks for ffmpeg again and starts its
+// streams, the library scans again with ffmpeg, and Options switches to it if that's what it was fetched for.
 static void ffget_tick()
 {
     if (g_ffget.state == FFGET_DONE && !g_ffget.announced) {
@@ -244,6 +244,7 @@ static void ffget_tick()
             g_ffget.use = false;
             ffget_use();
         }
+        audio_config_changed();
         library_rescan();
         ui_wake();
     }

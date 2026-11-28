@@ -43,8 +43,8 @@ static InstallPlace install_place()
     return p;
 }
 
-// A message box. A test install with REKODR_INSTALL_ANSWER set (yes, no or cancel) shows none and gives that
-// answer, so tests open no windows.
+// A message box, brought to the front so it isn't hidden behind the browser the setup was run from. A test install
+// with REKODR_INSTALL_ANSWER set (yes, no or cancel) shows none and gives that answer, so tests open no windows.
 static i32 install_ask(const InstallPlace &p, const wchar_t *text, const wchar_t *title, UINT flags)
 {
     wchar_t answer[16] = {};
@@ -56,7 +56,7 @@ static i32 install_ask(const InstallPlace &p, const wchar_t *text, const wchar_t
         log_line("install: asked \"%s\", answered %ls", t, answer);
         return !_wcsicmp(answer, L"yes") ? IDYES : !_wcsicmp(answer, L"no") ? IDNO : !_wcsicmp(answer, L"cancel") ? IDCANCEL : IDOK;
     }
-    return MessageBoxW(0, text, title, flags);
+    return MessageBoxW(0, text, title, flags | MB_SETFOREGROUND | MB_TOPMOST);
 }
 
 // A string value under HKCU\<key>, or in registry.ini's [<key>] section for a test install. 0 deletes it.
@@ -152,7 +152,7 @@ static bool install_swap(const wchar_t *from, const wchar_t *to, const wchar_t *
     return true;
 }
 
-// Starts an exe with its arguments, not waiting for it.
+// Starts an exe with its arguments, not waiting for it. It may bring its window to the front.
 static bool install_start(const wchar_t *exe, const wchar_t *args, DWORD *pid = 0)
 {
     wchar_t cmd[MAX_PATH * 2];
@@ -166,6 +166,7 @@ static bool install_start(const wchar_t *exe, const wchar_t *args, DWORD *pid = 
         log_line("install: couldn't start %ls (%lu)", exe, GetLastError());
         return false;
     }
+    AllowSetForegroundWindow(pi.dwProcessId);
     if (pid) *pid = pi.dwProcessId;
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
@@ -283,6 +284,43 @@ static void install_delete_data()
     install_recycle(paths.local_dir.s);
 }
 
+// Copies a path into a PowerShell single-quoted string, ' doubled.
+static void install_ps_quote(wchar_t *out, i32 cap, const wchar_t *path)
+{
+    i32 n = 0;
+    out[n++] = L'\'';
+    for (const wchar_t *c = path; *c && n < cap - 3; c++) {
+        if (*c == L'\'') out[n++] = L'\'';
+        out[n++] = *c;
+    }
+    out[n++] = L'\'';
+    out[n] = 0;
+}
+
+// The installed exe can't delete itself while it runs: a hidden PowerShell waits for this process to exit, then
+// deletes the exe, the copy moved aside by an update and the folder (if nothing else is in it).
+static void install_delete_self(const InstallPlace &p)
+{
+    wchar_t ps[MAX_PATH], exe[MAX_PATH * 2], old_exe[MAX_PATH * 2], dir[MAX_PATH * 2], cmd[MAX_PATH * 8];
+    GetSystemDirectoryW(ps, MAX_PATH);
+    wcscat_s(ps, L"\\WindowsPowerShell\\v1.0\\powershell.exe");
+    install_ps_quote(exe, COUNT(exe), p.exe.s);
+    install_ps_quote(old_exe, COUNT(old_exe), p.old_exe.s);
+    install_ps_quote(dir, COUNT(dir), p.dir.s);
+    swprintf(cmd, COUNT(cmd),
+             L"\"%s\" -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$ErrorActionPreference='SilentlyContinue'; "
+             L"Wait-Process -Id %lu -Timeout 120; Remove-Item -LiteralPath %s,%s -Force; Remove-Item -LiteralPath %s\"",
+             ps, GetCurrentProcessId(), exe, old_exe, dir);
+    STARTUPINFOW si = {sizeof si};
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(ps, cmd, 0, 0, FALSE, CREATE_NO_WINDOW, 0, 0, &si, &pi)) {
+        log_line("install: couldn't start PowerShell to delete %ls (%lu)", p.exe.s, GetLastError());
+        return;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_command)
 {
     InstallPlace p = install_place();
@@ -305,29 +343,18 @@ static i32 install_uninstall(const wchar_t *msg_class, ULONG_PTR copydata_comman
     install_reg_drop_apps(p);
     automarks_uninstall(); // the file put in Counter-Strike 2's folder
     if (answer == IDYES) install_delete_data();
-    // This exe may be the installed one, which can't delete itself while running: a hidden cmd does it once this
-    // process has gone.
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(0, self, MAX_PATH);
+    bool self_installed = !_wcsicmp(self, p.exe.s);
     DeleteFileW(p.old_exe.s);
-    if (_wcsicmp(self, p.exe.s)) {
+    if (!self_installed) {
         DeleteFileW(p.exe.s);
         RemoveDirectoryW(p.dir.s);
-    } else {
-        wchar_t cmd_exe[MAX_PATH], cmd[MAX_PATH * 3];
-        GetEnvironmentVariableW(L"ComSpec", cmd_exe, MAX_PATH);
-        swprintf(cmd, COUNT(cmd), L"\"%s\" /d /c ping -n 3 127.0.0.1 >nul & del /f /q \"%s\" & rmdir \"%s\"",
-                 cmd_exe, p.exe.s, p.dir.s);
-        STARTUPINFOW si = {sizeof si};
-        PROCESS_INFORMATION pi = {};
-        if (CreateProcessW(cmd_exe, cmd, 0, 0, FALSE, CREATE_NO_WINDOW, 0, 0, &si, &pi)) {
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-        }
     }
     install_ask(p, answer == IDYES ? L"" APP_NAME " and your files are gone (your files are in the Recycle Bin)."
                                    : L"" APP_NAME " is uninstalled. Your clips, sessions and settings are still there.",
                 L"Uninstall " APP_NAME, MB_ICONINFORMATION);
+    if (self_installed) install_delete_self(p);
     return 0;
 }
 
